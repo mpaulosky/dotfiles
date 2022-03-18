@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/JanDeDobbeleer/oh-my-posh/main/themes/schema.json",
+  "blocks": [
+    {
+      "alignment": "left",
+      "segments": [
+        {
+          "type": "path",
+          "style": "diamond",
+          "background": "green",
+          "foreground": "#fff",
+          "leading_diamond": "",
+          "trailing_diamond": "",
+          "properties": {
+            "postfix": " ",
+            "prefix": " ",
+            "style": "folder"
+          }
+        },
+        {
+          "type": "git",
+          "style": "diamond",
+          "background": "#000080",
+          "foreground": "#fff",
+          "leading_diamond": "",
+          "trailing_diamond": "",
+          "properties": {
+            "display_status": true,
+            "postfix": " ",
+            "prefix": " "
+          }
+        },
+				{
+
+					"type": "dotnet",
+					"style": "diamond",
+					"display_mode": "files",
+          "leading_diamond": "",
+          "trailing_diamond": "",
+					"foreground": "#000000",
+					"background": "#00ffff",
+					"properties": {
+						"prefix": " \uE77F "
+					}
+				},
+        {
+          "type": "time",
+          "style": "diamond",
+          "background": "lightMagenta",
+          "foreground": "#fff",
+          "leading_diamond": "",
+          "trailing_diamond": "",
+          "properties": {
+            "postfix": " ",
+            "prefix": " ",
+            "time_format": "15:04"
+          }
+        },
+        {
+            "type": "exit",
+            "style": "diamond",
+            "foreground": "#ffffff",
+            "background": "#2e9599",
+            "leading_diamond": "",
+            "trailing_diamond": "",
+            "properties": {
+                "always_enabled": true,
+                "color_background": true,
+                "display_exit_code": false,
+                "error_color": "#f1184c",
+                "prefix": " "
+            }
+        }
+      ],
+      "type": "prompt"
+    }
+  ],
+  "final_space": true
+}

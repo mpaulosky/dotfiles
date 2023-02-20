@@ -27,3 +27,4 @@ if [ -d "$HOME/.local/bin" ] ; then
 fi
 
 eval "$(oh-my-posh init bash --config .poshthemes/night-owl-mjp.omp.json)"
+eval "$(oh-my-posh init pwsh --config .poshthemes/night-owl-mjp.omp.json)"

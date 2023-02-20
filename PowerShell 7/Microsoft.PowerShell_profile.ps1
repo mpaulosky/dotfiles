@@ -12,7 +12,7 @@ Import-Module -Name Terminal-Icons
 
 # oh-my-posh
 
-oh-my-posh --init --shell pwsh --config "$env:POSH_THEMES_PATH\night-owl-mjp.omp.json" | Invoke-Expression
+oh-my-posh --init --shell pwsh --config ".poshthemes/night-owl-mjp.omp.json" | Invoke-Expression
 
 # Set PS Read Line Options
 

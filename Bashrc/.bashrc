@@ -126,4 +126,4 @@ if [ "$TERM" != "linux" ] && [ -f "$GOPATH/bin/powerline-go" ]; then
     PROMPT_COMMAND="_update_ps1; $PROMPT_COMMAND"
 fi
 
-eval "$(oh-my-posh init bash --config .poshthemes/night-owl.omp.json)"
+eval "$(oh-my-posh init bash --config .poshthemes/night-owl-mjp.omp.json)"

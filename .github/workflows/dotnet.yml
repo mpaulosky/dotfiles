@@ -1,0 +1,107 @@
+# This workflow will build a .NET project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
+
+name: Build and Test .NET projects
+
+on:
+  push:
+    paths-ignore:
+      - "**/*.docs"
+      - "**/*.md"
+      - "**/*.gitignore"
+      - "**/*.gitattributes"
+
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "The reason for running the workflow"
+        required: true
+        default: "Manual run"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: |
+            **/Web/package-lock.json
+
+      - name: Install Node.js dependencies
+        working-directory: Web
+        run: npm install
+
+      - name: Build Tailwind CSS
+        working-directory: Web
+        run: npm run build:css
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Create Test Results Directory
+        run: mkdir -p TestResults
+
+      - name: Run all tests in all test projects
+        run: |
+          for proj in $(find . -name "*.csproj" -path "*/Tests/*"); do
+            name=$(basename "$proj" .csproj)
+            dotnet test "$proj" --no-build --no-restore --logger "trx;LogFileName=${{ github.workspace }}/TestResults/${name}.trx" --settings runsettings.xml
+          done
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: Solution-Test-Results
+          path: TestResults
+
+      - name: Codecov
+        uses: codecov/codecov-action@v5.4.3
+
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        id: test-results
+        if: always()
+        with:
+          files: |
+            TestResults/**/*.trx
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4.0.0
+        with:
+          versionSpec: "6.0"
+
+      - name: Use GitVersion
+        id: gitversion # step id used as a reference for output values
+        uses: gittools/actions/gitversion/execute@v4.0.0
+
+      - run: |
+          echo "FullSemVer: ${{ steps.gitversion.outputs.fullSemVer }}"
+          echo "MajorMinorPatch: ${{ steps.gitversion.outputs.majorMinorPatch }}"

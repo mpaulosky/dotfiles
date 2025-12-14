@@ -4,7 +4,7 @@ root = true
 ########################################
 # Global defaults
 ########################################
-[ * ]
+[*]
 # Use UTF-8 for all text files
 charset = utf-8
 # Enforce LF for repository (change to crlf if you prefer Windows-native EOL)

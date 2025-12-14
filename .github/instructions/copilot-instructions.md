@@ -6,6 +6,29 @@ These instructions define the required coding, architecture, and project rules f
 
 ---
 
+## Technology Stack (Required)
+
+### Framework and Language Versions
+
+- **.NET Version:** `10.0` (latest stable)
+  - All projects must target .NET 10
+  - Use the latest stable runtime and SDK
+- **C# Language Version:** `14.0` (latest stable)
+  - Leverage latest language features when appropriate
+  - Configure via `<LangVersion>14.0</LangVersion>` in project files or Directory.Build.props
+- **API Documentation:** `Scalar` with `OpenAPI 3.0+`
+  - Use Scalar for interactive API documentation
+  - All REST APIs must expose OpenAPI specifications
+  - See Documentation section for additional requirements
+
+### Platform Requirements
+
+- **Minimum SDK:** `.NET 10 SDK`
+- **Target Framework:** `net10.0`
+- **Runtime:** `.NET 10 Runtime` (latest stable patch version)
+
+---
+
 ## C# (Required)
 
 ### Style
@@ -84,8 +107,9 @@ These instructions define the required coding, architecture, and project rules f
 ### Documentation (Required)
 
 - **Require XML Docs:** `true` (see `<summary>` in test and code files)
-- **Require Swagger:** `true` (for REST APIs)
-- **Require OpenAPI:** `true` (OpenAPI/Swagger must be provided for all APIs)
+- **Require Scalar:** `true` (Scalar is the required API documentation tool; use instead of Swagger UI)
+- **Require OpenAPI:** `true` (OpenAPI 3.0+ specifications must be provided for all REST APIs)
+- **Use Scalar for API Explorer:** `true` (interactive API documentation via Scalar, not Swagger UI)
 - **Require Component Documentation:** `true` (see `<summary>` in Blazor tests)
 - **Require README:** `true` (see `README.md`, `docs/README.md`)
 - **Require CONTRIBUTING.md:** `true` (see `docs/CONTRIBUTING.md`)
@@ -103,9 +127,13 @@ These instructions define the required coding, architecture, and project rules f
 ### Database (Required)
 
 - **Use Entity Framework Core:** `true`
+- **Use SQL Server:** `false`
+- **Use Migrations:** `false` (for SQL Server)
+- **Use PostgreSQL:** `false`
+- **Use Migrations:** `false` (for PostgreSQL)
 - **Use MongoDB:** `true` (see `Persistence.MongoDb/`)
-- **Prefer Async Operations:** `true`
 - **Use Migrations:** `false` (for MongoDB)
+- **Prefer Async Operations:** `true`
 - **Use TestContainers:** `true` (for Integration testing, see `Tests/TailwindBlog.Persistence.MongoDb.Tests.Integration/`)
 - **Use Change Tracking:** `true`
 - **Use DbContext Pooling:** `true`

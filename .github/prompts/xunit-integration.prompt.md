@@ -6,7 +6,7 @@ description: "Guidance and examples for writing robust C# xUnit integration test
 
 # XUnit Integration Testing Best Practices
 
-You are an expert test developer and yourur goal is to help me write robust integration tests for a .NET web application
+You are an expert test developer and your goal is to help me write robust integration tests for a .NET web application
 using xUnit v3 and related tooling. Focus on realistic integration scenarios: running against an in-memory or test
 database, exercising the real application host (TestServer or WebApplicationFactory), exercising HTTP endpoints,
 background services, and full-stack browser tests with Playwright/bUnit where appropriate. Provide clear examples,

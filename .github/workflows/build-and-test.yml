@@ -1,0 +1,179 @@
+name: Build and Test
+
+permissions:
+  issues: write
+  checks: write
+  contents: read
+  pull-requests: write
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - "**"
+      - "!main"
+
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "The reason for running the workflow"
+        required: true
+        default: "Manual run"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+      fail-fast: false
+
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+      # Test environment Auth0 configuration (dummy values for integration tests)
+      Auth0__Domain: test-tenant.auth0.com
+      Auth0__ClientId: test-client-id
+      Auth0__ClientSecret: test-client-secret-for-ci
+      Auth0__Audience: https://api.test.local
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4
+        with:
+          versionSpec: "6.3.0"
+
+      - name: Use GitVersion
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4
+
+      - name: Display GitVersion
+        run: |
+          echo "FullSemVer: ${{ steps.gitversion.outputs.fullSemVer }}"
+          echo "MajorMinorPatch: ${{ steps.gitversion.outputs.majorMinorPatch }}"
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build solution
+        run: dotnet build NotesApp.slnx --configuration Release --no-restore
+
+      - name: Run Tests
+        id: run-tests
+        run: |
+          mkdir -p "test-results"
+
+          overall_rc=0
+
+          # Find all test projects and run each with unique result files
+          while IFS= read -r proj; do
+            if grep -q "<IsTestProject>true</IsTestProject>" "$proj" 2>/dev/null; then
+              name=$(basename "$proj" .csproj)
+              echo "Running tests for: $proj -> test-results/${name}.trx"
+
+              # Skip code coverage for Architecture tests to avoid Coverlet/NetArchTest conflict
+              if [[ "$name" == *"Architecture"* ]]; then
+                echo "::notice::Skipping code coverage for Architecture tests (Coverlet conflicts with NetArchTest)"
+                set +e
+                dotnet test "$proj" \
+                  --configuration Release \
+                  --no-build \
+                  --no-restore \
+                  --logger "trx;LogFileName=${name}.trx" \
+                  --results-directory "test-results"
+                rc=$?
+                set -e
+              else
+                set +e
+                dotnet test "$proj" \
+                  --configuration Release \
+                  --no-build \
+                  --no-restore \
+                  --collect:"XPlat Code Coverage" \
+                  --logger "trx;LogFileName=${name}.trx" \
+                  --results-directory "test-results"
+                rc=$?
+                set -e
+              fi
+
+              if [ "$rc" -ne 0 ]; then
+                echo "::error::Tests failed for $proj (exit code $rc)"
+                overall_rc=1
+              else
+                echo "::notice::Tests passed for $proj"
+              fi
+            fi
+          done < <( find Tests -type f -name "*.csproj" 2>/dev/null || true )
+
+          # Fail the step if any tests failed
+          if [ "$overall_rc" -ne 0 ]; then
+            echo "::error::One or more test projects failed"
+            exit $overall_rc
+          fi
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v6
+        if: always() && (hashFiles('test-results/*') != '')
+        with:
+          name: Solution-Test-Results
+          path: test-results
+
+      - name: Codecov
+        uses: codecov/codecov-action@v5
+        if: always()
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2.21.0
+        id: test-results
+        if: always()
+        with:
+          files: |
+            test-results/**/*.trx
+
+      - name: Generate Job Summary
+        if: always()
+        run: |
+          echo "## Build and Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.gitversion.outputs.fullSemVer }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.run-tests.outcome }}" == "success" ]; then
+            echo "### ✅ Tests Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ❌ Tests Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See test results above for details." >> $GITHUB_STEP_SUMMARY

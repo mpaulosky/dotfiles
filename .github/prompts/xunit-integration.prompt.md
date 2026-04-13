@@ -28,6 +28,7 @@ idiomatic patterns, and reusable fixtures.
 
 - Use the .NET SDK test project format and target the same framework as the main app (e.g., `net7.0`).
 - Recommended package references:
+
   ```xml
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="*" />
@@ -293,24 +294,26 @@ Project setup (packages & templates)
 - Recommended project template: create a new test project using the xUnit template (e.g.,
   `dotnet new xunit -n Web.Tests.Integration`) and add the packages above.
 
-# Aspire projects
+## Aspire projects
 
 - If the solution is using the Aspire framework, create the integration test project from the "aspire-xunit" project
   template (e.g., `dotnet new aspire-xunit -n Web.Tests.Integration`) instead of the default xunit template. The "
   aspire-xunit" template ensures Aspire-specific test helpers, DI wiring, and conventions are present so the
   Testcontainers fixture and WebApplicationFactory integrate cleanly with the application's Aspire wiring.
 
-# Database strategy (Testcontainers-first)
+## Database strategy (Testcontainers-first)
 
 - Use DotNet.Testcontainers to run a real Postgres (or other) container per suite and a unique database name per
   factory/test to isolate state.
 
+```yaml
 name: Integration Tests
 
 on:
 workflow_dispatch:
 push:
 paths:
+
 - 'tests/Web.Tests.Integration/**'
 - '.github/workflows/integration-tests.yml'
 
@@ -320,6 +323,7 @@ runs-on: ubuntu-latest
 env:
 DOTNET_CLI_TELEMETRY_OPTOUT: '1'
 steps:
+
 - name: Checkout repo
 uses: actions/checkout@v4
 
@@ -341,5 +345,4 @@ uses: actions/checkout@v4
         run: dotnet test tests/Web.Tests.Integration/Web.Tests.Integration.csproj --logger "trx;LogFileName=integration.trx" --verbosity normal --no-build
         env:
           DOTNET_TEST_CONTAINER_OVERRIDE: 'true'
-
-``````
+```

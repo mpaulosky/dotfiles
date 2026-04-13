@@ -1,9 +1,11 @@
 # MongoDB Filter Pattern Skill
 
 ## Overview
+
 Pattern for adding conditional filters to MongoDB repository queries using the `Builders<T>.Filter` API.
 
 ## When to Use
+
 - Adding search/filter capabilities to existing paginated queries
 - Implementing case-insensitive text searches
 - Combining multiple optional filter conditions
@@ -12,6 +14,7 @@ Pattern for adding conditional filters to MongoDB repository queries using the `
 ## Pattern
 
 ### 1. Repository Interface
+
 Add optional parameters to the interface method:
 
 ```csharp
@@ -24,11 +27,13 @@ Task<Result<(IReadOnlyList<TDto> Items, long Total)>> GetAllAsync(
 ```
 
 **Key principles:**
+
 - Interface defines the contract (update interface first)
 - Optional parameters use `= null` defaults
 - Document parameters with XML comments
 
 ### 2. Repository Implementation
+
 Build filters conditionally using `Builders<T>.Filter`:
 
 ```csharp
@@ -66,6 +71,7 @@ var entities = await _collection
 ```
 
 **Key principles:**
+
 - Start with a list of base filters (always required)
 - Add optional filters conditionally using `if` statements
 - Use `BsonRegularExpression(pattern, "i")` for case-insensitive regex
@@ -74,6 +80,7 @@ var entities = await _collection
 - Apply the combined filter to both count and find operations
 
 ### 3. Query Validator
+
 Add validation rules for new optional parameters:
 
 ```csharp
@@ -89,10 +96,12 @@ RuleFor(x => x.AuthorName)
 ```
 
 **Key principles:**
+
 - Use `.When()` for conditional validation (only when value is provided)
 - Set reasonable max lengths (200 chars is typical for search terms)
 
 ### 4. Minimal API Endpoint
+
 Add query parameters to the endpoint:
 
 ```csharp
@@ -116,11 +125,13 @@ group.MapGet("", async (
 ```
 
 **Key principles:**
+
 - Nullable parameters allow them to be optional in the query string
 - Pass parameters to query object
 - Handler receives the populated query
 
 ### 5. HTTP Client
+
 Build query string with conditional parameters:
 
 ```csharp
@@ -138,12 +149,14 @@ var result = await _httpClient.GetFromJsonAsync<TResponse>(url, cancellationToke
 ```
 
 **Key principles:**
+
 - Build base URL with required parameters
 - Conditionally append optional parameters
 - Always use `Uri.EscapeDataString()` to encode parameter values
 - Only include parameters that have values
 
 ### 6. Test Mocks
+
 Update test mocks to match new interface signature:
 
 ```csharp
@@ -152,12 +165,15 @@ _repository.GetAllAsync(1, 20, null, null, Arg.Any<CancellationToken>())
 ```
 
 **Key principles:**
+
 - Pass `null` for new optional parameters in existing tests
 - This keeps existing tests focused on their original scenarios
 - Add new tests specifically for filter scenarios (Gimli's responsibility)
 
 ## MongoDB Regex Options
+
 Common regex flags for `BsonRegularExpression`:
+
 - `"i"` - Case-insensitive matching
 - `"m"` - Multi-line mode
 - `"s"` - Dot matches newlines
@@ -168,16 +184,19 @@ Combine flags: `"im"` for case-insensitive multi-line
 ## Common Filter Patterns
 
 ### Exact match
+
 ```csharp
 filterBuilder.Eq(x => x.Status, "Active")
 ```
 
 ### Text search (case-insensitive)
+
 ```csharp
 filterBuilder.Regex(x => x.Title, new BsonRegularExpression(searchTerm, "i"))
 ```
 
 ### Multi-field search (OR)
+
 ```csharp
 filterBuilder.Or(
     filterBuilder.Regex(x => x.Title, new BsonRegularExpression(term, "i")),
@@ -186,11 +205,13 @@ filterBuilder.Or(
 ```
 
 ### Nested field search
+
 ```csharp
 filterBuilder.Regex(x => x.Author.Name, new BsonRegularExpression(name, "i"))
 ```
 
 ### Date range
+
 ```csharp
 filterBuilder.And(
     filterBuilder.Gte(x => x.CreatedAt, startDate),
@@ -199,11 +220,13 @@ filterBuilder.And(
 ```
 
 ### Array contains
+
 ```csharp
 filterBuilder.AnyEq(x => x.Tags, tagValue)
 ```
 
 ## Gotchas
+
 1. **Always update interface first** - The interface is the contract; implementations conform to it
 2. **Update ALL implementations** - Repository implementations and test mocks must match the interface
 3. **Use null for optional params in tests** - Existing tests should pass `null` for new parameters
@@ -212,6 +235,7 @@ filterBuilder.AnyEq(x => x.Tags, tagValue)
 6. **Combine with And** - When you have multiple filters, use `Filter.And(filters)` not `&` operator
 
 ## Files Modified (typical)
+
 1. `src/Shared/Validators/[Query].cs` - Add filter properties
 2. `src/Shared/Validators/[Query]Validator.cs` - Add validation rules
 3. `src/Api/Data/I[Resource]Repository.cs` - Update interface signature
@@ -222,12 +246,14 @@ filterBuilder.AnyEq(x => x.Tags, tagValue)
 8. `tests/Unit.Tests/Handlers/[Resource]/List[Resource]HandlerTests.cs` - Update mocks
 
 ## Related Patterns
+
 - **Result<T> Pattern**: Repository methods return `Result<T>` for error handling
 - **CQRS**: Queries are separate from commands
 - **Pagination**: Filters apply before skip/limit operations
 - **Validation**: FluentValidation rules for all query parameters
 
 ## See Also
+
 - Sam's history: `.squad/agents/sam/history.md` (Search/Filter implementation section)
 - Team decision: `.squad/decisions/inbox/sam-search-filter.md`
-- MongoDB Filter Builders: https://www.mongodb.com/docs/drivers/csharp/current/fundamentals/builders/
+- MongoDB Filter Builders: <https://www.mongodb.com/docs/drivers/csharp/current/fundamentals/builders/>

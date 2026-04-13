@@ -2,6 +2,8 @@
   "config": {
     "MD013": { "line_length": 400 },
     "MD033": false,
-    "MD041": false
+    "MD036": false,
+    "MD041": false,
+    "MD060": false
   }
 }

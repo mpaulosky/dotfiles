@@ -37,6 +37,7 @@ mongosh --eval 'rs.add("host2:27017")'
 ```
 
 **Key principles:**
+
 - IssueManager uses `MongoDB.EntityFrameworkCore`, which requires a replica set for multi-document transactions
 - Always run `rs.status()` after topology changes before starting the application
 - Use Aspire's MongoDB resource for local development; configure replica set in `AppHost`
@@ -55,6 +56,7 @@ await database.CreateCollectionAsync("Issues", new CreateCollectionOptions
 ```
 
 **Key principles:**
+
 - Prefer letting EF Core create collections on first use during development
 - Add schema validators in staging/production to enforce document shape
 - Collection names in IssueManager: `Issues`, `Categories`, `Statuses`, `Comments`
@@ -73,6 +75,7 @@ mongodump --uri="mongodb://localhost:27017" --db=IssueManagerDb --collection=Iss
 ```
 
 **Key principles:**
+
 - Schedule `mongodump` via cron; store backups off-host (Azure Blob, S3)
 - Test restores on a non-production instance before relying on backups
 - For Atlas clusters, use Atlas Backup (continuous) instead of `mongodump`
@@ -95,6 +98,7 @@ db.Issues.find({ "Archived": false }).sort({ "CreatedAt": -1 }).explain("executi
 ```
 
 **Key principles:**
+
 - Every repository filter field should have a supporting index
 - Use partial indexes for the `Archived: false` base filter — dramatically reduces index size
 - Run `explain("executionStats")` on any query with `COLLSCAN` stage and add an index
@@ -120,6 +124,7 @@ db.createUser({
 ```
 
 **Key principles:**
+
 - Use SCRAM-SHA-256 (default in MongoDB 4.0+); never use SCRAM-SHA-1 for new installations
 - Store the connection string with credentials in User Secrets (`dotnet user-secrets`) or Azure Key Vault — never in `appsettings.json`
 - Enable TLS on all non-localhost connections; set `tls=true` in the connection URI
@@ -137,6 +142,7 @@ mongosh --eval 'db.adminCommand({ setFeatureCompatibilityVersion: "7.0", confirm
 ```
 
 **Key principles:**
+
 - Always upgrade one major version at a time (e.g., 6.0 → 7.0, not 5.0 → 7.0)
 - Set FCV to current version before upgrading to next
 - Verify application compatibility with `MongoDB.Driver` and `MongoDB.EntityFrameworkCore` release notes
@@ -166,6 +172,7 @@ only when automation or scripting is required.
 | `$where` with JavaScript | `$expr` with aggregation expressions |
 
 **MongoDB.EntityFrameworkCore compatibility:**
+
 - Requires MongoDB 5.0+ (replica set or Atlas)
 - MongoDB 7.0 is the recommended minimum for IssueManager production deployments
 - Check [MongoDB EF Core Provider releases](https://github.com/mongodb/mongo-efcore-provider/releases) for driver version matrix

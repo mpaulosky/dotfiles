@@ -12,7 +12,8 @@ tools:
 
 ## Context
 
-Many developers use GitHub through an Enterprise Managed User (EMU) account at work while maintaining a personal GitHub account for open-source contributions. AI agents spawned by Squad inherit the shell's default `gh` authentication — which is usually the EMU account. This causes failures when agents try to push to personal repos, create PRs on forks, or interact with resources outside the enterprise org.
+Many developers use GitHub through an Enterprise Managed User (EMU) account at work while maintaining a personal GitHub account for open-source contributions. AI agents spawned by Squad inherit the shell's default `gh` authentication — which is usually the EMU account. This causes failures when agents try to push to personal repos, create PRs on forks, or interact with resources outside
+the enterprise org.
 
 This skill teaches agents how to detect the active identity, switch contexts safely, and avoid mixing credentials across operations.
 
@@ -27,6 +28,7 @@ gh auth status
 ```
 
 Look for:
+
 - `Logged in to github.com as USERNAME` — the active account
 - `Token scopes: ...` — what permissions are available
 - Multiple accounts will show separate entries
@@ -89,6 +91,7 @@ gh auth status  # Back to EMU account
 ```
 
 **Setup (one-time):**
+
 ```bash
 # Create isolated config for personal account
 mkdir ~/.config/gh-public

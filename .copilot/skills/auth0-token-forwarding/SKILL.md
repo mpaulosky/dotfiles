@@ -107,12 +107,14 @@ builder.Services.AddAuth0WebAppAuthentication(options =>
 ## When to Use
 
 ✅ **Use this pattern when:**
+
 - Frontend uses OIDC (Auth0, Azure AD, IdentityServer) for user login
 - Backend API uses JWT Bearer authentication
 - Frontend and backend are separate projects/processes
 - User identity must propagate from frontend to backend
 
 ❌ **Don't use when:**
+
 - Frontend and backend use the same authentication mechanism (e.g., both use cookie auth)
 - Using Client Credentials flow (no user context — use named HttpClient with auth header instead)
 - Token is obtained differently (e.g., from a secure cache or vault)
@@ -168,18 +170,22 @@ public async Task TokenForwardingHandler_AttachesTokenWhenPresent()
 ## Common Pitfalls
 
 ### ❌ SaveTokens = false (default)
+
 **Symptom:** `GetTokenAsync("access_token")` returns null  
 **Fix:** Set `SaveTokens = true` in Auth0 configuration
 
 ### ❌ Forgot to register IHttpContextAccessor
+
 **Symptom:** NullReferenceException in TokenForwardingHandler constructor  
 **Fix:** Add `builder.Services.AddHttpContextAccessor();`
 
 ### ❌ Handler not attached to HttpClient
+
 **Symptom:** API calls return 401 even when user is logged in  
 **Fix:** Chain `.AddHttpMessageHandler<TokenForwardingHandler>()` to HttpClient registration
 
 ### ❌ Circular dependency (handler depends on HttpClient)
+
 **Symptom:** InvalidOperationException at runtime  
 **Fix:** Handler must **not** inject or depend on any HttpClient — use `IHttpContextAccessor` only
 

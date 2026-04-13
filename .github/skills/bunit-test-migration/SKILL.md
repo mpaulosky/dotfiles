@@ -10,6 +10,7 @@ This skill provides guidance for migrating test files from the deprecated bUnit 
 ## When to Apply
 
 Apply this skill when a `.razor` test file contains any of these patterns:
+
 - `@inherits TestComponentBase`
 - `<Fixture Test="...">`
 - `<ComponentUnderTest>`

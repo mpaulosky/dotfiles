@@ -1,23 +1,28 @@
 # GitHub Copilot SDK for C# Skill
 
 ## Overview
+
 Guidance for integrating the GitHub Copilot SDK into .NET 10+ applications. Covers client initialization, session management, event handling, tool definitions, and BYOK (Bring Your Own Key) provider configuration.
 
 ## When to Use
+
 - Integrating GitHub Copilot capabilities into IssueManager or companion tools
 - Building AI-assisted features that require real-time streaming responses
 - Implementing custom tools (AIFunctionFactory) that extend Copilot's capabilities
 - Using custom LLM providers (OpenAI, etc.) instead of GitHub-hosted Copilot
 
 ## Confidence
+
 `low` — SDK is in technical preview; expect potential breaking changes
 
 ## Installation
-```
+
+```bash
 dotnet add package GitHub.Copilot.SDK
 ```
 
 **Requirements:**
+
 - .NET 10.0 or later
 - GitHub Copilot CLI installed and in PATH
 - Uses async/await patterns throughout
@@ -25,12 +30,14 @@ dotnet add package GitHub.Copilot.SDK
 ## Key Patterns
 
 ### 1. Client Initialization
+
 ```csharp
 await using var client = new CopilotClient();
 await client.StartAsync();
 ```
 
 **CopilotClientOptions:**
+
 - `CliPath` — Path to GitHub Copilot CLI executable
 - `CliArgs` — Command-line arguments for CLI
 - `CliUrl`, `Port`, `UseStdio` — Connection configuration
@@ -40,6 +47,7 @@ await client.StartAsync();
 - `Logger` — Custom logger implementation
 
 ### 2. Session Management
+
 Create and manage Copilot sessions with `SessionConfig`:
 
 ```csharp
@@ -53,6 +61,7 @@ await using var session = await client.CreateSessionAsync(new SessionConfig
 ```
 
 **SessionConfig properties:**
+
 - `SessionId` — Unique session identifier
 - `Model` — LLM model (e.g., "gpt-5")
 - `Tools` — Available tools for this session
@@ -61,6 +70,7 @@ await using var session = await client.CreateSessionAsync(new SessionConfig
 - `Streaming` — Enable streaming responses
 
 **Session operations:**
+
 ```csharp
 // Send messages
 var response = await session.SendAsync(new MessageOptions { Prompt = "..." });
@@ -76,6 +86,7 @@ await using var resumedSession = await client.ResumeSessionAsync(sessionId, conf
 ```
 
 ### 3. Event Handling — Use TaskCompletionSource
+
 **Always use TaskCompletionSource to wait for SessionIdleEvent:**
 
 ```csharp
@@ -102,11 +113,13 @@ await done.Task;
 ```
 
 **Common events:**
+
 - `AssistantMessageEvent` — Response content (including delta chunks if streaming)
 - `SessionIdleEvent` — Session ready for new requests
 - `SessionErrorEvent` — Runtime error occurred
 
 ### 4. Tool Definitions with AIFunctionFactory
+
 Type-safe tool definitions:
 
 ```csharp
@@ -140,12 +153,14 @@ var session = await client.CreateSessionAsync(new SessionConfig
 ```
 
 **Best practices for tool definitions:**
+
 - Use `[Description(...)]` for all parameters
 - Provide descriptive tool names and descriptions
 - Return serializable results
 - Keep tool logic focused and side-effect aware
 
 ### 5. BYOK (Bring Your Own Key) / Custom Provider
+
 Use custom LLM providers:
 
 ```csharp
@@ -165,11 +180,13 @@ var session = await client.CreateSessionAsync(new SessionConfig
 ```
 
 **Supported provider types:**
+
 - `"copilot"` — GitHub-hosted Copilot (default)
 - `"openai"` — OpenAI API
 - Custom provider types as configured
 
 ### 6. Client State & Connectivity
+
 ```csharp
 // Check connection state
 if (client.State == ClientState.Connected)
@@ -182,6 +199,7 @@ var pong = await client.PingAsync("test");
 ```
 
 ### 7. Session Lifecycle
+
 ```csharp
 // List all sessions
 var sessions = await client.ListSessionsAsync();

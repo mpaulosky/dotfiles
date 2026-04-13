@@ -117,7 +117,7 @@ You **MUST** follow this exact structure for the output:
 
 ## Example: Intelligent Search System
 
-### 1. Executive Summary
+### 1. Executive Summary (Example)
 
 **Problem**: Users struggle to find specific documentation snippets in massive repositories.
 **Solution**: An intelligent search system that provides direct answers with source citations.

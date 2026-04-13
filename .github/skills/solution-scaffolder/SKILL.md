@@ -7,7 +7,8 @@ description: 'Create new .NET solutions with complete project structure, configu
 
 ## Overview
 
-This skill automates the creation of new .NET solutions that follow **Vertical Slice Architecture** along with the conventions and best practices of the ArticlesSite repository. Vertical Slice Architecture organizes code by business features rather than technical layers, resulting in simpler, more maintainable, and feature-focused projects. This skill provides an interactive guided experience that ensures consistency across projects while respecting custom requirements and project-specific needs.
+This skill automates the creation of new .NET solutions that follow **Vertical Slice Architecture** along with the conventions and best practices of the ArticlesSite repository. Vertical Slice Architecture organizes code by business features rather than technical layers, resulting in simpler, more maintainable, and feature-focused projects. This skill provides an interactive guided
+experience that ensures consistency across projects while respecting custom requirements and project-specific needs.
 
 ## When to Use
 
@@ -39,11 +40,13 @@ Use this skill when:
 Before generating any files, conduct a guided discovery to understand the project. **Ask these questions in order**:
 
 #### Question 1: Solution Name
+
 - **Prompt**: "What is the name of your new solution? (e.g., `MyWebApp`, `DataProcessor`, `ApiService`)"
 - **Validation**: Must be PascalCase, no spaces or special characters except hyphens
 - **Impact**: Used for folder structure, project names, namespace roots, and solution file
 
 #### Question 2: Destination Folder
+
 - **Prompt**: "Where should the solution folder be created? (provide absolute or relative path, default: current directory)"
 - **Validation**: Path must be valid and writable; create parent directories if needed
 - **Impact**: Solution will be created at `{path}/{SolutionName}/`
@@ -55,6 +58,7 @@ Before generating any files, conduct a guided discovery to understand the projec
   - `/home/user/repos` (Linux/Mac)
 
 #### Question 3: Solution Type
+
 - **Prompt**: "What type of solution are you building?"
 - **Choices**:
   - "Web Application (Blazor Server + API)" - Default. Includes Web, API, Domain, Persistence projects
@@ -65,6 +69,7 @@ Before generating any files, conduct a guided discovery to understand the projec
   - "Custom (Manual selection)" - Pick individual components
 
 #### Question 4: Additional Features (Multi-Select)
+
 - **Prompt**: "Which features should be included? (Select all that apply)"
 - **Options**:
   - "Authentication & Authorization (Auth0)" - Default if Web Application
@@ -81,6 +86,7 @@ Before generating any files, conduct a guided discovery to understand the projec
   - "GitHub Actions CI/CD" - Optional
 
 #### Question 5: Database Selection (If applicable)
+
 - **Prompt**: "Which database will you use?"
 - **Choices**:
   - "MongoDB" - Default. Enterprise-ready document store
@@ -90,6 +96,7 @@ Before generating any files, conduct a guided discovery to understand the projec
   - "Multiple (add later)" - Defer database selection
 
 #### Question 6: Target Environment
+
 - **Prompt**: "Where will this solution primarily run?"
 - **Choices**:
   - "Local Development Only" - Minimal cloud configuration
@@ -98,6 +105,7 @@ Before generating any files, conduct a guided discovery to understand the projec
   - "Multiple Environments (Dev/Staging/Prod)" - Full environment configuration
 
 #### Question 7: Team & Compliance
+
 - **Prompt**: "Are there any special requirements?"
 - **Options**:
   - "Code Coverage Requirements (minimum %)" - Input number if selected
@@ -136,7 +144,7 @@ Create the **Vertical Slice Architecture** structure with complete .github folde
 
 The `.github` folder ensures all workflows, standards, procedures, agents, prompts, and skills are included from the start, enabling consistent AI-assisted development immediately.
 
-```
+```text
 MyWebApp/                                    (Solution Root)
 ├── .github/
 │   ├── workflows/
@@ -211,6 +219,7 @@ MyWebApp/                                    (Solution Root)
 ```
 
 **Vertical Slice Organization:**
+
 - Each feature lives in its own folder under `Features/`
 - Each endpoint/operation (Command/Query) is self-contained within the feature
 - Shared abstractions go in `Common/`
@@ -282,36 +291,43 @@ global using Microsoft.Extensions.DependencyInjection;
 Use ArticlesSite `Directory.Packages.props` as the baseline. Include only what's selected:
 
 ### Core (Always)
+
 - `Microsoft.Extensions.Configuration.*`
 - `Microsoft.Extensions.DependencyInjection`
 - `Microsoft.Extensions.Logging`
 
 ### Web/API
+
 - `MediatR`
 - `FluentValidation`
 - `Scalar.AspNetCore` (API docs)
 
 ### Database
+
 - `MongoDB.Driver`
 - `MongoDB.EntityFrameworkCore`
 - OR `Microsoft.EntityFrameworkCore.SqlServer`
 - OR `Npgsql.EntityFrameworkCore.PostgreSQL`
 
 ### Testing
+
 - `xUnit`
 - `FluentAssertions`
 - `NSubstitute`
 - `Microsoft.NET.Test.Sdk`
 
 ### Blazor UI
+
 - `bunit`
 - `bunit.web`
 
 ### Observability
+
 - `OpenTelemetry.Exporter.ApplicationInsights`
 - `OpenTelemetry.Instrumentation.AspNetCore`
 
 ### Authentication
+
 - `Auth0.AspNetCore.Authentication`
 
 ---
@@ -332,7 +348,7 @@ While this skill follows ArticlesSite conventions, allow customization in:
 
 ### Interview Flow
 
-```
+```csharp
 Q1: Solution name? → "BlogEngine"
 Q2: Destination folder? → "~/Projects"
 Q3: Solution type? → "Web Application (Blazor Server + API)"
@@ -345,7 +361,7 @@ Q7: Special requirements? → "None"
 
 ### Generated Structure (Vertical Slice Architecture)
 
-```
+```text
 BlogEngine/
 ├── .github/
 │   ├── workflows/
@@ -425,7 +441,7 @@ BlogEngine/
 
 ### Next Steps Provided
 
-```
+```csharp
 ✅ Solution created successfully!
 
 📦 Vertical Slice Architecture structure:
@@ -466,16 +482,19 @@ Happy coding! 🎉
 When scaffolding a new solution, the skill will automatically copy these folders from the source repository if they exist:
 
 **agents/** - Custom AI agents that extend Copilot's capabilities
+
 - These agents automate complex workflows and analysis tasks
 - Copied so new solutions inherit the same AI automation
 - Examples: code reviewer, architecture analyzer, test generator
 
 **prompts/** - Pre-built prompt templates for consistent results
+
 - Standardized prompts for common development tasks
 - Ensures consistent AI-assisted workflows across projects
 - Examples: code review checklists, test generation patterns, documentation templates
 
 **skills/** - Specialized Copilot skill modules
+
 - Custom skills that solve project-specific problems
 - Enable guided workflows for complex operations
 - Examples: solution scaffolder (this skill), nuget manager, refactoring assistance
@@ -499,14 +518,16 @@ When scaffolding a new solution, the skill will automatically copy these folders
 ### Example Copy Result
 
 If the source repository has:
-```
+
+```text
 .github/agents/             (3 agents)
 .github/prompts/            (5 prompts)
 .github/skills/             (6 skills)
 ```
 
 The new BlogEngine solution will have:
-```
+
+```text
 BlogEngine/.github/agents/   (Same 3 agents)
 BlogEngine/.github/prompts/  (Same 5 prompts)
 BlogEngine/.github/skills/   (Same 6 skills)
@@ -555,7 +576,7 @@ The `.github` folder contains all repository-level configuration, documentation,
 
 ### Folder Organization
 
-```
+```text
 .github/
 ├── workflows/              CI/CD pipelines and automated workflows
 ├── ISSUE_TEMPLATE/         Issue templates for bug reports and feature requests
@@ -573,6 +594,7 @@ The `.github` folder contains all repository-level configuration, documentation,
 #### **workflows/** - Continuous Integration & Deployment
 
 **ci-cd.yml** (If GitHub Actions selected)
+
 - Builds the solution on push/PR
 - Runs unit and integration tests
 - Generates coverage reports
@@ -595,12 +617,14 @@ jobs:
 ```
 
 **code-quality.yml** (If testing selected)
+
 - Runs linters (.editorconfig validation)
 - Performs static code analysis
 - Checks code coverage thresholds
 - Enforces style compliance
 
 **security-scan.yml** (Optional)
+
 - OWASP dependency scanning
 - Secret detection
 - Vulnerability scanning in NuGet packages
@@ -608,6 +632,7 @@ jobs:
 #### **ISSUE_TEMPLATE/** - Issue & PR Templates
 
 **bug.md**
+
 ```markdown
 ---
 name: Bug Report
@@ -633,6 +658,7 @@ What actually happens.
 ```
 
 **feature.md**
+
 ```markdown
 ---
 name: Feature Request
@@ -651,6 +677,7 @@ Why this is needed.
 ```
 
 **config.yml**
+
 ```yaml
 blank_issues_enabled: false
 contact_links:
@@ -706,7 +733,7 @@ updates:
 
 Routes PRs to appropriate reviewers:
 
-```
+```markdown
 # Global
 * @maintainer
 
@@ -722,6 +749,7 @@ Routes PRs to appropriate reviewers:
 Customized versions of ArticlesSite guidelines:
 
 **copilot-instructions.md**
+
 - Technology stack requirements
 - Architecture rules
 - SOLID principles enforcement
@@ -730,18 +758,21 @@ Customized versions of ArticlesSite guidelines:
 - Testing requirements
 
 **blazor.instructions.md** (If Blazor UI selected)
+
 - Blazor component structure
 - State management patterns
 - Performance optimization guidelines
 - Event handling best practices
 
 **git-commit-instructions.md**
+
 - Commit message format
 - Branch naming conventions
 - Conventional commits (feat:, fix:, etc.)
 - Squash/rebase policies
 
 **markdown.instructions.md**
+
 - Documentation formatting standards
 - README structure
 - Code example formatting
@@ -752,11 +783,13 @@ Customized versions of ArticlesSite guidelines:
 Contains custom AI agents for specialized tasks (copied from source repository if available):
 
 **Example agents:**
+
 - `solution-scaffolder.agent.md` - This agent for creating new solutions
 - `code-reviewer.agent.md` - AI-powered code review assistant
 - `architecture-analyzer.agent.md` - Architecture validation and analysis
 
 Each agent file defines:
+
 - Purpose and scope
 - Available tools and capabilities
 - Decision-making rules
@@ -767,6 +800,7 @@ Each agent file defines:
 Pre-built prompt templates for common development tasks (copied from source repository if available):
 
 **Example prompts:**
+
 - `code-review-checklist.md` - Code review guidelines
 - `test-generation.md` - Unit test generation patterns
 - `documentation-template.md` - API documentation template
@@ -779,6 +813,7 @@ Prompts can be invoked via Copilot CLI for consistent results.
 Specialized skill modules extending Copilot capabilities (copied from source repository if available):
 
 **Example skills:**
+
 - `solution-scaffolder/` - Create new solutions (this skill)
 - `nuget-manager/` - Manage NuGet packages
 - `test-migrator/` - Migrate tests to new frameworks
@@ -786,6 +821,7 @@ Specialized skill modules extending Copilot capabilities (copied from source rep
 - `prd/` - Generate Product Requirements Documents
 
 Each skill folder contains:
+
 - `SKILL.md` - Skill definition, capabilities, and usage examples
 - Optional supporting files or templates
 
@@ -807,7 +843,8 @@ Instead of organizing code by technical layers (Controllers, Services, Repositor
 ### Project Organization
 
 **BlogEngine.Features/ Structure:**
-```
+
+```text
 Features/
 ├── Articles/
 │   ├── CreateArticle/              Command operation
@@ -830,12 +867,14 @@ Features/
 ```
 
 **BlogEngine.Common/ (Shared Code):**
+
 - Interfaces: `IRepository<T>`, `IUnitOfWork`, `ICommand<T>`, `IQuery<T>`
 - Exceptions: Custom exceptions used across features
 - Extensions: Utility methods, DI registration helpers
 - Models: Shared enums, constants, validation rules
 
 **BlogEngine.Persistence/ (Data Layer):**
+
 - `BlogEngineDbContext` - Entity Framework DbContext
 - Repository implementations
 - Migration files
@@ -844,6 +883,7 @@ Features/
 ### Naming Conventions for Features
 
 Each operation folder follows this pattern:
+
 - **Commands** (Write operations): `CreateArticleCommand`, `UpdateArticleCommand`, `DeleteArticleCommand`
 - **Queries** (Read operations): `GetArticlesQuery`, `GetArticleByIdQuery`
 - **Handlers**: `CreateArticleHandler` (implements `ICommandHandler<CreateArticleCommand>`)
@@ -877,7 +917,7 @@ public class CreateArticleHandler : ICommandHandler<CreateArticleCommand, Articl
 
 Tests mirror the feature structure:
 
-```
+```text
 tests/
 ├── BlogEngine.Tests.Unit/
 │   └── Features/
@@ -890,8 +930,6 @@ tests/
 └── BlogEngine.Tests.Bunit/
     └── Features/Articles/CreateArticlePageTests.cs
 ```
-
-
 
 This skill should:
 

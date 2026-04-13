@@ -5,11 +5,13 @@
 ## SCOPE
 
 ✅ THIS SKILL PRODUCES:
+
 - A resolved `model` parameter for every `task` tool call
 - Persistent model preferences in `.squad/config.json`
 - Spawn acknowledgments that include the resolved model
 
 ❌ THIS SKILL DOES NOT PRODUCE:
+
 - Code, tests, or documentation
 - Model performance benchmarks
 - Cost reports or billing artifacts
@@ -80,6 +82,7 @@ Resolution is **first-match-wins** — the highest layer with a value wins.
 ### STOP
 
 After resolving the model and including it in the spawn template, this skill is done. Do NOT:
+
 - Generate model comparison reports
 - Run benchmarks or speed tests
 - Create new config files (only modify existing `.squad/config.json`)
@@ -108,7 +111,7 @@ After resolving the model and including it in the spawn template, this skill is 
 
 If a model is unavailable (rate limit, plan restriction), retry within the same tier:
 
-```
+```text
 Premium:  claude-opus-4.6 → claude-opus-4.6-fast → claude-opus-4.5 → claude-sonnet-4.6
 Standard: claude-sonnet-4.6 → gpt-5.4 → claude-sonnet-4.5 → gpt-5.3-codex → claude-sonnet-4
 Fast:     claude-haiku-4.5 → gpt-5.1-codex-mini → gpt-4.1 → gpt-5-mini

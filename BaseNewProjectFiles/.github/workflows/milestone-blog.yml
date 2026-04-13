@@ -1,0 +1,108 @@
+# Step 1 of the Milestone Review → Release/Blog ceremony.
+# When a milestone closes, Ralph reviews the work and decides:
+#   - label "release-candidate" → full release flow (tag + GitHub Release + Bilbo release blog)
+#   - label "blog-only"         → milestone summary blog post only
+# milestone-release-decision.yml watches for those labels and executes the chosen path.
+name: Milestone Review — Release or Blog
+
+on:
+  milestone:
+    types: [closed]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  create-ralph-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect milestone details
+        id: details
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+          CLOSED_AT: ${{ github.event.milestone.closed_at }}
+        run: |
+          ISSUES=$(gh api \
+            "repos/${{ github.repository }}/issues?milestone=${MILESTONE_NUMBER}&state=closed&per_page=100" \
+            --jq '[.[] | "- #\(.number) \(.title) (@\(.user.login))"] | join("\n")')
+
+          ISSUE_COUNT=$(gh api \
+            "repos/${{ github.repository }}/issues?milestone=${MILESTONE_NUMBER}&state=closed&per_page=100" \
+            --jq 'length')
+
+          # Count user-facing issues (features/enhancements vs infra/docs/tests)
+          FEATURE_COUNT=$(gh api \
+            "repos/${{ github.repository }}/issues?milestone=${MILESTONE_NUMBER}&state=closed&labels=enhancement&per_page=100" \
+            --jq 'length')
+
+          PUBLISH_DATE=$(date -d "${CLOSED_AT}" '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')
+          LAST_TAG=$(gh api "repos/${{ github.repository }}/releases?per_page=1" --jq '.[0].tag_name // "none"')
+
+          echo "issues<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$ISSUES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "count=$ISSUE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "feature_count=$FEATURE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "publish_date=$PUBLISH_DATE" >> "$GITHUB_OUTPUT"
+          echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create Ralph review issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MILESTONE_TITLE: ${{ github.event.milestone.title }}
+          MILESTONE_NUMBER: ${{ github.event.milestone.number }}
+          MILESTONE_DESCRIPTION: ${{ github.event.milestone.description }}
+          ISSUE_COUNT: ${{ steps.details.outputs.count }}
+          FEATURE_COUNT: ${{ steps.details.outputs.feature_count }}
+          ISSUES_LIST: ${{ steps.details.outputs.issues }}
+          PUBLISH_DATE: ${{ steps.details.outputs.publish_date }}
+          LAST_TAG: ${{ steps.details.outputs.last_tag }}
+        run: |
+          BODY="## Milestone Review: ${MILESTONE_TITLE}
+
+Ralph, **${MILESTONE_TITLE}** has been closed with **${ISSUE_COUNT} issues** completed.
+Current latest release: \`${LAST_TAG}\`
+
+### Closed Issues (${ISSUE_COUNT} total)
+${ISSUES_LIST}
+
+---
+
+## 🔍 Release Candidate Checklist
+
+Review these criteria to decide between a full release or a blog-only post:
+
+| Criteria | Check |
+|----------|-------|
+| Contains user-facing features or enhancements? | (${FEATURE_COUNT} enhancement-labeled issues) |
+| Contains breaking changes or schema migrations? | Review issues above |
+| Significant enough to warrant a version bump? | Your call |
+| All CI gates green on \`main\`? | Check GitHub Actions |
+| Blog post needed either way? | **Yes — always** |
+
+---
+
+## ✅ Your Decision
+
+**Option A — Release Candidate** (tag + GitHub Release + release blog post):
+> Add the label **\`release-candidate\`** to this issue.
+> Then choose the version bump type in the comment below (major / minor / patch).
+
+**Option B — Blog Only** (milestone summary blog post, no release):
+> Add the label **\`blog-only\`** to this issue.
+
+Either choice will automatically:
+- Trigger Bilbo to write the blog post
+- Update \`docs/blog/index.md\` (the blog page)
+- Sync \`README.md\` via the blog-readme-sync workflow
+
+---
+
+*Triggered by milestone close at ${PUBLISH_DATE}. Workflow: \`milestone-blog.yml\`*"
+
+          gh issue create \
+            --title "📋 Milestone Review: ${MILESTONE_TITLE} — release or blog?" \
+            --body "$BODY" \
+            --label "squad:ralph,pending-review"

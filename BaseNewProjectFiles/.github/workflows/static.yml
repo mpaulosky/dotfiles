@@ -1,0 +1,39 @@
+# Deploys docs/blog/ to GitHub Pages on every push to main that changes blog content
+name: Deploy static content to Pages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'docs/blog/**'
+      - '.github/workflows/static.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Pages
+        uses: actions/configure-pages@v6
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          # Upload docs/blog/ only — keeps SECRETS.md and other internal docs off the web
+          path: 'docs/blog'
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

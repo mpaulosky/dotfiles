@@ -1,0 +1,8 @@
+# Squad merge drivers for auto-union
+.squad/decisions.md merge=union
+.squad/decisions/inbox/*.md merge=union
+.squad/agents/*/history.md merge=union
+.squad/log/*.md merge=union
+.squad/orchestration-log/*.md merge=union
+.squad/log/** merge=union
+.squad/orchestration-log/** merge=union

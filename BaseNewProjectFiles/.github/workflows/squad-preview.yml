@@ -1,0 +1,29 @@
+name: Squad Preview Validation
+# Validates the dev branch on push — ensures integration branch stays green.
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore IssueTrackerApp.slnx
+
+      - name: Build
+        run: dotnet build IssueTrackerApp.slnx --configuration Release --no-restore -p:TreatWarningsAsErrors=true
+
+      - name: Run unit tests
+        run: dotnet test IssueTrackerApp.slnx --configuration Release --no-build --verbosity normal

@@ -1,0 +1,111 @@
+name: Squad Promote
+
+# Opens a PR from dev → main for release promotion.
+# After the PR is merged, use squad-milestone-release.yml to tag and publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — show what would happen without creating a PR'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote-dev-to-main:
+    name: Promote dev → main (open PR)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: dev
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4.5.0
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4.5.0
+        with:
+          useConfigFile: true
+          configFilePath: GitVersion.yml
+
+      - name: Show current state
+        run: |
+          echo "=== dev HEAD ===" && git log origin/dev -1 --oneline
+          echo "=== main HEAD ===" && git log origin/main -1 --oneline
+          echo "=== Commits dev has ahead of main ==="
+          git log origin/main..origin/dev --oneline
+          echo "=== GitVersion: ${{ steps.gitversion.outputs.semVer }} ==="
+
+      - name: Check for changes
+        id: diff
+        run: |
+          AHEAD=$(git rev-list origin/main..origin/dev --count)
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "ℹ️ dev is already up to date with main — nothing to promote"
+          else
+            echo "📦 dev is $AHEAD commit(s) ahead of main"
+          fi
+
+      - name: Create release PR
+        if: ${{ inputs.dry_run == 'false' && steps.diff.outputs.ahead != '0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.gitversion.outputs.semVer }}"
+
+          # Build PR body in a temp file to avoid shell-escaping issues
+          BODY_FILE="$(mktemp)"
+          cat > "$BODY_FILE" <<EOF
+          ## Release Promotion
+
+          Merging \`dev\` into \`main\` for release **v${VERSION}**.
+
+          ### Commits included
+          $(git log origin/main..origin/dev --oneline | head -50)
+
+          ---
+          _After merging, run **squad-milestone-release** to tag and publish the GitHub Release._
+          EOF
+
+          # Check if a promote PR already exists
+          EXISTING=$(gh pr list --base main --head dev --state open --json number --jq '.[0].number // empty' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "ℹ️ Promote PR #$EXISTING already exists — updating description"
+            gh pr edit "$EXISTING" \
+              --title "chore: promote dev → main (v${VERSION})" \
+              --body-file "$BODY_FILE"
+            echo "✅ Updated existing PR #$EXISTING"
+          else
+            gh pr create \
+              --base main \
+              --head dev \
+              --title "chore: promote dev → main (v${VERSION})" \
+              --body-file "$BODY_FILE"
+            echo "✅ Created promote PR dev → main"
+          fi
+
+          rm -f "$BODY_FILE"
+
+      - name: Dry run complete
+        if: ${{ inputs.dry_run == 'true' }}
+        run: |
+          echo "🔍 Dry run complete — no PR created."
+          echo "Would promote ${{ steps.diff.outputs.ahead }} commit(s) as v${{ steps.gitversion.outputs.semVer }}"

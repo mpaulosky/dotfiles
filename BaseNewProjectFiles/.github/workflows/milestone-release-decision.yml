@@ -1,0 +1,150 @@
+# Step 2 of the Milestone Review → Release/Blog ceremony.
+# Fires when Ralph labels a "Milestone Review" issue with:
+#   - "release-candidate" → triggers squad-milestone-release.yml + Bilbo release brief
+#   - "blog-only"         → creates Bilbo milestone blog brief directly
+#
+# Ralph creates the review issue (milestone-blog.yml step 1).
+# Bilbo writes the post (triggered by this workflow or release-blog.yml).
+# blog-readme-sync.yml updates README when index.md is pushed to main.
+name: Milestone Release Decision
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+  contents: write
+  actions: write
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PATH A: Release Candidate
+  # ─────────────────────────────────────────────────────────────────────────────
+  handle-release-candidate:
+    if: |
+      github.event.label.name == 'release-candidate' &&
+      contains(github.event.issue.labels.*.name, 'squad:ralph')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract milestone info from issue title
+        id: info
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Parse milestone title from "📋 Milestone Review: {title} — release or blog?"
+          MILESTONE_TITLE=$(echo "$ISSUE_TITLE" | sed 's/.*Milestone Review: //' | sed 's/ — release or blog?//')
+
+          # Check issue body for bump type comment (major/minor/patch), default to minor
+          BUMP=$(echo "$ISSUE_BODY" | grep -oE 'bump[: ]+(major|minor|patch)' | grep -oE '(major|minor|patch)' | head -1)
+          BUMP=${BUMP:-minor}
+
+          echo "milestone_title=$MILESTONE_TITLE" >> "$GITHUB_OUTPUT"
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "issue_number=${{ github.event.issue.number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP: ${{ steps.info.outputs.bump }}
+        run: |
+          gh workflow run squad-milestone-release.yml \
+            --field bump="${BUMP}" \
+            --field milestone_number="${{ github.event.issue.number }}"
+          echo "✅ Triggered squad-milestone-release.yml (bump: ${BUMP})"
+
+      - name: Add release-triggered comment and close review issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          BUMP: ${{ steps.info.outputs.bump }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --body "✅ **Release flow triggered.**
+
+- Version bump: \`${BUMP}\`
+- \`squad-milestone-release.yml\` dispatched — this will create the tag, push it, and publish a GitHub Release.
+- \`release-blog.yml\` will fire automatically on release publish and create a \`squad:bilbo\` blog brief.
+- Once Bilbo's PR merges, \`blog-readme-sync.yml\` will update \`README.md\` (the Page).
+
+Closing this review issue."
+
+          gh issue close "$ISSUE_NUMBER" --reason completed
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PATH B: Blog Only
+  # ─────────────────────────────────────────────────────────────────────────────
+  handle-blog-only:
+    if: |
+      github.event.label.name == 'blog-only' &&
+      contains(github.event.issue.labels.*.name, 'squad:ralph')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract milestone info from issue title
+        id: info
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MILESTONE_TITLE=$(echo "$ISSUE_TITLE" | sed 's/.*Milestone Review: //' | sed 's/ — release or blog?//')
+          PUBLISH_DATE=$(date '+%Y-%m-%d')
+          SLUG=$(echo "$MILESTONE_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g')
+
+          # Pull closed issues list from the review issue body
+          ISSUES_BLOCK=$(echo "${{ github.event.issue.body }}" | sed -n '/### Closed Issues/,/---/p' | head -50)
+
+          echo "milestone_title=$MILESTONE_TITLE" >> "$GITHUB_OUTPUT"
+          echo "publish_date=$PUBLISH_DATE" >> "$GITHUB_OUTPUT"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Create Bilbo blog brief issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MILESTONE_TITLE: ${{ steps.info.outputs.milestone_title }}
+          PUBLISH_DATE: ${{ steps.info.outputs.publish_date }}
+          SLUG: ${{ steps.info.outputs.slug }}
+          REVIEW_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REVIEW_ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: |
+          BODY="## Blog Post Brief: ${MILESTONE_TITLE}
+
+Bilbo, Ralph has reviewed the **${MILESTONE_TITLE}** milestone and decided: **blog post only** (no release).
+
+### Post metadata
+- **Suggested filename:** \`docs/blog/${PUBLISH_DATE}-${SLUG}.md\`
+- **Suggested publish date:** ${PUBLISH_DATE}
+- **Review issue:** ${REVIEW_ISSUE_URL} (see for full issue list)
+
+### Suggested post structure
+1. **Summary** — what this milestone accomplished (2–3 sentences)
+2. **What was built** — key features, fixes, or improvements with context
+3. **Technical highlights** — architecture decisions, tricky problems solved, patterns introduced
+4. **What's next** — follow-up work planned
+
+### Instructions
+- Write the post to \`docs/blog/${PUBLISH_DATE}-${SLUG}.md\`
+- Update \`docs/blog/index.md\` to add the new post at the top of the Recent Posts table
+- Follow existing post style (see \`docs/blog/2026-04-04-release-v0-7-0.md\`)
+- Open a PR targeting \`main\` when complete
+- Close both this issue and the review issue (#${REVIEW_ISSUE_NUMBER}) in the PR description"
+
+          gh issue create \
+            --title "Blog post: ${MILESTONE_TITLE} — milestone recap" \
+            --body "$BODY" \
+            --label "squad:bilbo"
+
+      - name: Comment on review issue and close it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --body "📝 **Blog-only path selected.**
+
+A \`squad:bilbo\` blog brief issue has been created. Once Bilbo's PR merges:
+- \`docs/blog/index.md\` will be updated (the blog page)
+- \`blog-readme-sync.yml\` will update \`README.md\` (the Page)
+
+Closing this review issue."
+
+          gh issue close "$ISSUE_NUMBER" --reason completed

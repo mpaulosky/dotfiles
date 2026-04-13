@@ -1,0 +1,48 @@
+assembly-versioning-scheme: MajorMinorPatch
+assembly-file-versioning-scheme: MajorMinorPatch
+mode: ContinuousDelivery
+tag-prefix: '[vV]'
+
+major-version-bump-message: '\+semver:\s?(breaking|major)'
+minor-version-bump-message: '\+semver:\s?(feature|minor)'
+patch-version-bump-message: '\+semver:\s?(fix|patch)'
+no-bump-message: '\+semver:\s?(none|skip)'
+
+branches:
+  main:
+    regex: ^main$
+    label: ''
+    increment: Patch
+    is-main-branch: true
+    prevent-increment:
+      of-merged-branch: true
+    source-branches: [ dev ]
+
+  dev:
+    regex: ^dev$
+    mode: ContinuousDelivery
+    label: alpha
+    increment: Minor
+    is-main-branch: false
+    source-branches: [ main ]
+
+  feature:
+    regex: '^(squad|feature)/(?<BranchName>.+)'
+    mode: ContinuousDelivery
+    label: '{BranchName}'
+    increment: Inherit
+    source-branches: [ dev, main, insider ]
+
+  insider:
+    regex: ^insider$
+    mode: ContinuousDelivery
+    label: insider
+    increment: Minor
+    source-branches: [ main ]
+
+  pull-request:
+    regex: ^(pull|pull\-requests|pr)[/-]
+    mode: ContinuousDelivery
+    label: PR{Number}
+    increment: Inherit
+    source-branches: [ dev, main, feature, insider ]

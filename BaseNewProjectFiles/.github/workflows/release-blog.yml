@@ -1,0 +1,78 @@
+# Creates a blog brief issue for Bilbo whenever a GitHub Release is published.
+# Mirrors milestone-blog.yml but fires on release events instead of milestone close.
+name: Release Blog Brief
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  create-blog-brief:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect release details
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          PUBLISHED_AT: ${{ github.event.release.published_at }}
+        run: |
+          PUBLISH_DATE=$(date -d "${PUBLISHED_AT}" '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')
+          SLUG=$(echo "${TAG}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g')
+
+          # Find previous release tag for the changelog range
+          PREV_TAG=$(gh api "repos/${{ github.repository }}/releases" \
+            --jq '[.[] | select(.tag_name != "'"${TAG}"'")] | sort_by(.published_at) | reverse | .[0].tag_name // "HEAD~50"')
+
+          echo "publish_date=$PUBLISH_DATE" >> "$GITHUB_OUTPUT"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create Bilbo blog brief issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_NAME: ${{ github.event.release.name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          PUBLISH_DATE: ${{ steps.release.outputs.publish_date }}
+          SLUG: ${{ steps.release.outputs.slug }}
+          PREV_TAG: ${{ steps.release.outputs.prev_tag }}
+        run: |
+          BODY="## Blog Post Brief: ${RELEASE_NAME}
+
+Bilbo, a new GitHub Release has been published. Please write a dev blog post for **${RELEASE_NAME}**.
+
+### Post metadata
+- **Suggested filename:** \`docs/blog/${PUBLISH_DATE}-release-${SLUG}.md\`
+- **Suggested publish date:** ${PUBLISH_DATE}
+- **Release:** [${TAG}](${RELEASE_URL})
+- **Changelog range:** [\`${PREV_TAG}...${TAG}\`](https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG})
+
+### Release notes
+$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq '.body // "No release notes provided."')
+
+### Suggested post structure
+1. **Summary** — what this release delivers in 2–3 sentences
+2. **What's New** — feature sections with code snippets and context
+3. **Bug Fixes / Improvements** — notable fixes
+4. **How to Upgrade** — any steps required (migrations, config changes)
+5. **Stats** — test counts, coverage numbers, PR count
+6. **What's Next** — upcoming work
+
+### Instructions
+- Write the post to \`docs/blog/${PUBLISH_DATE}-release-${SLUG}.md\`
+- Update \`docs/blog/index.md\` to add the new post at the top of the Recent Posts table
+- Follow existing post style (see \`docs/blog/2026-04-04-release-v0-7-0.md\`)
+- Open a PR targeting \`main\` when complete
+- Close this issue in the PR description with \`Closes #<this-issue>\`"
+
+          gh issue create \
+            --title "Blog post: ${RELEASE_NAME} — release recap" \
+            --body "$BODY" \
+            --label "squad:bilbo"

@@ -1,0 +1,39 @@
+# CODEOWNERS — auto-request review from @mpaulosky on all changes
+# As the team grows with human reviewers, update these entries by file path
+
+# Lead (Aragorn) reviews architecture, squad config, and all core decisions
+AGENTS.md @mpaulosky
+.squad/ @mpaulosky
+
+# DevOps (Boromir) reviews CI/CD and infrastructure
+.github/workflows/ @mpaulosky
+.github/CODEOWNERS @mpaulosky
+Directory.Build.props @mpaulosky
+Directory.Packages.props @mpaulosky
+global.json @mpaulosky
+
+# Backend (Sam) reviews domain, persistence, and API layers
+src/Domain/ @mpaulosky
+src/Persistence.MongoDb/ @mpaulosky
+src/Persistence.AzureStorage/ @mpaulosky
+src/Web/Services/ @mpaulosky
+src/Web/Endpoints/ @mpaulosky
+src/Web/Features/ @mpaulosky
+src/Web/Data/ @mpaulosky
+src/Web/Hubs/ @mpaulosky
+
+# Frontend (Legolas) reviews Blazor components and UI
+src/Web/Components/ @mpaulosky
+src/Web/wwwroot/ @mpaulosky
+src/Web/Program.cs @mpaulosky
+
+# Testing (Gimli + Pippin) reviews test projects
+tests/ @mpaulosky
+
+# Security (Gandalf) reviews auth and security-sensitive paths
+src/Web/Auth/ @mpaulosky
+
+# Docs (Frodo) reviews documentation
+README.md @mpaulosky
+docs/ @mpaulosky
+*.md @mpaulosky

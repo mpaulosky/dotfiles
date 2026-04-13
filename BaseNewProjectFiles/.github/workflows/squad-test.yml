@@ -1,0 +1,809 @@
+name: Test Suite
+
+# NOTE: All test projects now use 'dotnet test' consistently.
+# This was updated to fix issues with direct executable execution that was
+# causing "No such file or directory" errors in CI.
+
+permissions:
+  issues: write
+  checks: write
+  contents: read
+  pull-requests: write
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - dev
+      - main
+  pull_request:
+    branches:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "The reason for running the workflow"
+        required: true
+        default: "Manual test run"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  Auth0__Domain: ${{ secrets.AUTH0_DOMAIN }}
+  Auth0__ClientId: ${{ secrets.AUTH0_CLIENT_ID }}
+  Auth0__ClientSecret: ${{ secrets.AUTH0_CLIENT_SECRET }}
+  Auth0Management__ClientId: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_ID }}
+  Auth0Management__ClientSecret: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_SECRET }}
+  Auth0Management__Domain: ${{ secrets.AUTH0_DOMAIN }}
+  Auth0Management__Audience: https://${{ secrets.AUTH0_DOMAIN }}/api/v2/
+  MongoDB__ConnectionString: ${{ secrets.MONGODB_CONNECTION_STRING }}
+  # Aspire parameter bindings for AppHost.Tests (Parameters:auth0MgmtClientId/Secret)
+  Parameters__auth0MgmtClientId: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_ID }}
+  Parameters__auth0MgmtClientSecret: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_SECRET }}
+
+jobs:
+  build:
+    name: Build Solution
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build solution
+        run: dotnet build IssueTrackerApp.slnx --configuration Release --no-restore
+
+      - name: Cache build artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            **/bin/Release/
+            **/obj/
+          key: ${{ runner.os }}-build-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', 'global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-build-
+
+  test-domain:
+    name: "Domain.Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run Domain Tests
+        run: |
+          dotnet test tests/Domain.Tests \
+            --configuration Release \
+            --collect:"XPlat Code Coverage" \
+            --logger "trx;LogFileName=domain.trx" \
+            --results-directory test-results \
+            --verbosity minimal
+
+      - name: Upload Domain Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: domain-test-results
+          path: test-results
+
+  test-web:
+    name: "Web.Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run Web Tests
+        run: |
+          dotnet test tests/Web.Tests \
+            --configuration Release \
+            --collect:"XPlat Code Coverage" \
+            --logger "trx;LogFileName=web.trx" \
+            --results-directory test-results \
+            --verbosity minimal
+
+      - name: Upload Web Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: web-test-results
+          path: test-results
+
+  test-architecture:
+    name: "Architecture.Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build Architecture Tests
+        run: dotnet build tests/Architecture.Tests --configuration Release --no-restore
+
+      - name: Run Architecture Tests
+        id: arch-tests
+        run: |
+          mkdir -p test-results
+          if [ ! -d "tests/Architecture.Tests" ]; then
+            echo "::notice::Architecture test project not found at tests/Architecture.Tests - skipping"
+            exit 0
+          fi
+
+          # Run tests using dotnet test
+          dotnet test tests/Architecture.Tests \
+            --configuration Release \
+            --no-build \
+            --logger "trx;LogFileName=architecture.trx" \
+            --results-directory "$GITHUB_WORKSPACE/test-results" \
+            --collect:"XPlat Code Coverage" \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+          exit_code=$?
+
+          if [ $exit_code -ne 0 ]; then
+            echo "::error::Architecture tests failed"
+          fi
+          exit $exit_code
+
+      - name: Upload Architecture Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: architecture-test-results
+          path: test-results
+
+  test-bunit:
+    name: "Web.Tests.Bunit"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build Blazor Tests
+        run: dotnet build tests/Web.Tests.Bunit --configuration Release --no-restore
+
+      - name: Run bUnit Tests
+        id: bunit-tests
+        run: |
+          mkdir -p test-results
+          if [ ! -d "tests/Web.Tests.Bunit" ]; then
+            echo "::notice::Blazor/bUnit test project not found at tests/Web.Tests.Bunit - skipping"
+            exit 0
+          fi
+
+          # Run tests using dotnet test
+          dotnet test tests/Web.Tests.Bunit \
+            --configuration Release \
+            --no-build \
+            --logger "trx;LogFileName=bunit.trx" \
+            --results-directory "$GITHUB_WORKSPACE/test-results" \
+            --collect:"XPlat Code Coverage" \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+          exit_code=$?
+
+          if [ $exit_code -ne 0 ]; then
+            echo "::error::Blazor component tests failed"
+          fi
+          exit $exit_code
+
+      - name: Upload bUnit Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bunit-test-results
+          path: test-results
+
+  test-integration:
+    name: "Web.Tests.Integration"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+
+    env:
+      MONGODB_CONNECTION_STRING: "mongodb://localhost:27017/issuemanager-test?directConnection=true"
+
+    steps:
+      - name: Start MongoDB Replica Set
+        run: |
+          docker run -d --name mongodb -p 27017:27017 mongo:7.0 mongod --replSet rs0
+          # Wait for MongoDB to be ready
+          for i in {1..30}; do
+            if docker exec mongodb mongosh --quiet --eval "db.runCommand({ ping: 1 })" 2>/dev/null; then
+              echo "MongoDB is accepting connections"
+              break
+            fi
+            echo "Waiting for MongoDB... attempt $i"
+            sleep 2
+          done
+          # Initialize single-node replica set (required for EF Core MongoDB transactions)
+          docker exec mongodb mongosh --quiet --eval "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})"
+          # Wait for replica set to elect primary
+          for i in {1..30}; do
+            if docker exec mongodb mongosh --quiet --eval "rs.isMaster().ismaster" 2>/dev/null | grep -q true; then
+              echo "Replica set primary is ready"
+              break
+            fi
+            echo "Waiting for primary... attempt $i"
+            sleep 2
+          done
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build Integration Tests
+        run: dotnet build tests/Web.Tests.Integration --configuration Release --no-restore
+
+      - name: Run Integration Tests
+        id: integration-tests
+        run: |
+          mkdir -p test-results
+          if [ ! -d "tests/Web.Tests.Integration" ]; then
+            echo "::notice::Integration test project not found at tests/Web.Tests.Integration - skipping"
+            exit 0
+          fi
+
+          # Run tests using dotnet test
+          dotnet test tests/Web.Tests.Integration \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger "console;verbosity=detailed" \
+            --logger "trx;LogFileName=integration.trx" \
+            --results-directory "$GITHUB_WORKSPACE/test-results" \
+            --collect:"XPlat Code Coverage" \
+            -- DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Format=cobertura
+          exit_code=$?
+
+          if [ $exit_code -ne 0 ]; then
+            echo "::error::Integration tests failed"
+          fi
+          exit $exit_code
+
+      - name: Upload Integration Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: integration-test-results
+          path: test-results
+
+  test-persistence-mongodb:
+    name: "Persistence.MongoDb.Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run MongoDB Persistence Tests
+        run: |
+          dotnet test tests/Persistence.MongoDb.Tests \
+            --configuration Release \
+            --collect:"XPlat Code Coverage" \
+            --logger "trx;LogFileName=persistence-mongodb.trx" \
+            --results-directory test-results \
+            --verbosity minimal
+
+      - name: Upload MongoDB Persistence Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: persistence-mongodb-test-results
+          path: test-results
+
+  test-persistence-mongodb-integration:
+    name: "Persistence.MongoDb.Tests.Integration"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+
+    env:
+      MONGODB_CONNECTION_STRING: "mongodb://localhost:27017/?directConnection=true"
+
+    steps:
+      - name: Start MongoDB Replica Set
+        run: |
+          docker run -d --name mongodb -p 27017:27017 mongo:7.0 mongod --replSet rs0
+          # Wait for MongoDB to be ready
+          for i in {1..30}; do
+            if docker exec mongodb mongosh --quiet --eval "db.runCommand({ ping: 1 })" 2>/dev/null; then
+              echo "MongoDB is accepting connections"
+              break
+            fi
+            echo "Waiting for MongoDB... attempt $i"
+            sleep 2
+          done
+          # Initialize single-node replica set (required for EF Core MongoDB transactions)
+          docker exec mongodb mongosh --quiet --eval "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})"
+          # Wait for replica set to elect primary
+          for i in {1..30}; do
+            if docker exec mongodb mongosh --quiet --eval "rs.isMaster().ismaster" 2>/dev/null | grep -q true; then
+              echo "Replica set primary is ready"
+              break
+            fi
+            echo "Waiting for primary... attempt $i"
+            sleep 2
+          done
+
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build MongoDB Integration Tests
+        run: dotnet build tests/Persistence.MongoDb.Tests.Integration --configuration Release --no-restore
+
+      - name: Run MongoDB Persistence Integration Tests
+        run: |
+          mkdir -p test-results
+          dotnet test tests/Persistence.MongoDb.Tests.Integration \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger "trx;LogFileName=persistence-mongodb-integration.trx" \
+            --results-directory "$GITHUB_WORKSPACE/test-results" \
+            --collect:"XPlat Code Coverage"
+
+      - name: Upload MongoDB Persistence Integration Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: persistence-mongodb-integration-test-results
+          path: test-results
+
+  test-persistence-azure:
+    name: "Persistence.AzureStorage.Tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Run Azure Storage Persistence Tests
+        run: |
+          dotnet test tests/Persistence.AzureStorage.Tests \
+            --configuration Release \
+            --collect:"XPlat Code Coverage" \
+            --logger "trx;LogFileName=persistence-azure.trx" \
+            --results-directory test-results \
+            --verbosity minimal
+
+      - name: Upload Azure Storage Persistence Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: persistence-azure-test-results
+          path: test-results
+
+  test-persistence-azure-integration:
+    name: "Persistence.AzureStorage.Tests.Integration"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+
+    # Let Testcontainers manage Azurite - no manual env vars needed
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build Azure Storage Integration Tests
+        run: dotnet build tests/Persistence.AzureStorage.Tests.Integration --configuration Release --no-restore
+
+      - name: Run Azure Storage Persistence Integration Tests
+        run: |
+          mkdir -p test-results
+          # Testcontainers automatically starts Azurite container
+          dotnet test tests/Persistence.AzureStorage.Tests.Integration \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger "trx;LogFileName=persistence-azure-integration.trx" \
+            --results-directory "$GITHUB_WORKSPACE/test-results" \
+            --collect:"XPlat Code Coverage"
+
+      - name: Upload Azure Storage Persistence Integration Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: persistence-azure-integration-test-results
+          path: test-results
+
+  test-apphost:
+    name: "AppHost.Tests (Aspire + Playwright E2E)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: build
+
+    env:
+      ASPIRE_ALLOW_UNSECURED_TRANSPORT: "true"
+      # Required by AppHost builder.AddConnectionString("mongodb") even though
+      # the web app ignores it in Testing mode (no real DB connection is made).
+      ConnectionStrings__mongodb: "mongodb://localhost:27017"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build AppHost.Tests
+        run: dotnet build tests/AppHost.Tests --configuration Release --no-restore
+
+      - name: Install Playwright browsers
+        run: |
+          pwsh tests/AppHost.Tests/bin/Release/net10.0/playwright.ps1 install chromium --with-deps
+
+      - name: Run AppHost.Tests
+        id: apphost-tests
+        run: |
+          mkdir -p test-results
+          dotnet test tests/AppHost.Tests \
+            --configuration Release \
+            --no-build \
+            --verbosity normal \
+            --logger "trx;LogFileName=apphost.trx" \
+            --results-directory "$GITHUB_WORKSPACE/test-results" \
+            --collect:"XPlat Code Coverage"
+          exit_code=$?
+          if [ $exit_code -ne 0 ]; then
+            echo "::error::AppHost.Tests failed"
+          fi
+          exit $exit_code
+
+      - name: Upload AppHost Test Results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: apphost-test-results
+          path: test-results
+
+  coverage:
+    name: Coverage Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - test-domain
+      - test-web
+      - test-architecture
+      - test-bunit
+      - test-integration
+      - test-persistence-mongodb
+      - test-persistence-mongodb-integration
+      - test-persistence-azure
+      - test-persistence-azure-integration
+      - test-apphost
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Download coverage reports
+        uses: actions/download-artifact@v8
+        with:
+          path: coverage-reports
+
+      - name: Install ReportGenerator
+        run: dotnet tool install -g dotnet-reportgenerator-globaltool
+
+      - name: Generate coverage report
+        run: |
+          reportgenerator \
+            -reports:"coverage-reports/**/**/coverage.cobertura.xml" \
+            -targetdir:"./coverage-output" \
+            -reporttypes:"Html;Cobertura;JsonSummary" \
+            -filefilters:"-**/obj/**/*.cs;-**/*.generated.cs" \
+            -verbosity:verbose || echo "::warning::No coverage files found"
+
+      - name: Check coverage threshold
+        run: |
+          if [ -f "./coverage-output/Summary.json" ]; then
+            echo "=== Summary.json raw ===" && cat ./coverage-output/Summary.json | jq . || true
+            coverage=$(jq -r '.summary.linecoverage // .lineCoverage // 0' ./coverage-output/Summary.json 2>/dev/null || echo "0")
+            echo "Line Coverage: $coverage%"
+            if (( $(echo "$coverage < 80" | bc -l) )); then
+              echo "::error::Code coverage is below 80% threshold: $coverage% (required: 80%)"
+              exit 1
+            else
+              echo "::notice::Coverage gate passed: $coverage% >= 80%"
+            fi
+          else
+            echo "::warning::Coverage report not available — skipping threshold check"
+          fi
+
+      - name: Upload coverage reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-reports
+          path: coverage-output
+
+      - name: Publish to Codecov
+        uses: codecov/codecov-action@v6
+        if: always()
+        with:
+          fail_ci_if_error: false
+          files: ./coverage-output/Cobertura.xml
+          verbose: false
+
+  report:
+    name: Test Report Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - build
+      - test-domain
+      - test-web
+      - test-architecture
+      - test-bunit
+      - test-integration
+      - test-persistence-mongodb
+      - test-persistence-mongodb-integration
+      - test-persistence-azure
+      - test-persistence-azure-integration
+      - test-apphost
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download all test results
+        uses: actions/download-artifact@v8
+        with:
+          path: all-test-results
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action@v2.23.0
+        if: always()
+        with:
+          files: |
+            all-test-results/**/*.trx
+            all-test-results/**/*-nunit.xml
+          check_name: Test Results Summary
+          compare_to_earlier_commit: true
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Test Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Job Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build:** ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Domain.Tests:** ${{ needs.test-domain.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Web.Tests:** ${{ needs.test-web.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture.Tests:** ${{ needs.test-architecture.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Web.Tests.Bunit:** ${{ needs.test-bunit.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Web.Tests.Integration:** ${{ needs.test-integration.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Persistence.MongoDb.Tests:** ${{ needs.test-persistence-mongodb.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Persistence.MongoDb.Tests.Integration:** ${{ needs.test-persistence-mongodb-integration.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Persistence.AzureStorage.Tests:** ${{ needs.test-persistence-azure.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Persistence.AzureStorage.Tests.Integration:** ${{ needs.test-persistence-azure-integration.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **AppHost.Tests (Aspire + Playwright E2E):** ${{ needs.test-apphost.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- Test results and coverage reports available in Actions artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- Coverage report: \`coverage-reports\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Set overall status
+          build_status="${{ needs.build.result }}"
+          domain_status="${{ needs.test-domain.result }}"
+          web_status="${{ needs.test-web.result }}"
+          arch_status="${{ needs.test-architecture.result }}"
+          bunit_status="${{ needs.test-bunit.result }}"
+          integration_status="${{ needs.test-integration.result }}"
+          mongodb_status="${{ needs.test-persistence-mongodb.result }}"
+          mongodb_int_status="${{ needs.test-persistence-mongodb-integration.result }}"
+          azure_status="${{ needs.test-persistence-azure.result }}"
+          azure_int_status="${{ needs.test-persistence-azure-integration.result }}"
+          apphost_status="${{ needs.test-apphost.result }}"
+
+          if [[ "$build_status" == "failure" || "$domain_status" == "failure" || "$web_status" == "failure" || \
+                "$arch_status" == "failure" || "$bunit_status" == "failure" || \
+                "$integration_status" == "failure" || "$mongodb_status" == "failure" || \
+                "$mongodb_int_status" == "failure" || "$azure_status" == "failure" || \
+                "$azure_int_status" == "failure" || "$apphost_status" == "failure" ]]; then
+            echo "❌ **Overall Status:** FAILED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ **Overall Status:** PASSED" >> $GITHUB_STEP_SUMMARY
+          fi

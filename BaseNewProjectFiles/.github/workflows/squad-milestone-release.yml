@@ -1,0 +1,101 @@
+name: Squad Milestone Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        default: minor
+        type: choice
+        options: [minor, patch, major]
+      milestone_number:
+        description: 'Milestone number (optional, for reference in tag message)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cut-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4.5.0
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine current version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4.5.0
+        with:
+          useConfigFile: true
+          configFilePath: GitVersion.yml
+
+      - name: Compute next version
+        id: next
+        env:
+          BUMP: ${{ inputs.bump }}
+          MAJOR: ${{ steps.gitversion.outputs.major }}
+          MINOR: ${{ steps.gitversion.outputs.minor }}
+          PATCH: ${{ steps.gitversion.outputs.patch }}
+        run: |
+          # Base off last tag to avoid double-counting GitVersion's auto-increment
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          BASE=${LAST_TAG#v}
+          BMAJ=$(echo "$BASE" | cut -d. -f1)
+          BMIN=$(echo "$BASE" | cut -d. -f2)
+          BPAT=$(echo "$BASE" | cut -d. -f3)
+
+          if [ "$BUMP" = "major" ]; then
+            NEXT_VERSION="$((BMAJ+1)).0.0"
+          elif [ "$BUMP" = "minor" ]; then
+            NEXT_VERSION="${BMAJ}.$((BMIN+1)).0"
+          else
+            NEXT_VERSION="${BMAJ}.${BMIN}.$((BPAT+1))"
+          fi
+
+          echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEXT_VERSION"         >> "$GITHUB_OUTPUT"
+          echo "Bumping $BUMP: $BASE → $NEXT_VERSION"
+
+      - name: Create and push release tag
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+          NEXT_VERSION: ${{ steps.next.outputs.next_version }}
+          MILESTONE: ${{ inputs.milestone_number }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          MSG="Release ${TAG}"
+          if [ -n "$MILESTONE" ]; then
+            MSG="$MSG (milestone #${MILESTONE})"
+          fi
+
+          git tag -a "$TAG" -m "$MSG"
+          git push origin "$TAG"
+          echo "✅ Tagged $TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --generate-notes \
+            --title "Release $TAG" \
+            --verify-tag
+          echo "✅ GitHub Release $TAG created"

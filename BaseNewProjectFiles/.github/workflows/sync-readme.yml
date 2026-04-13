@@ -1,0 +1,40 @@
+# Syncs README.md (root) → docs/README.md on every push to main that changes README.md.
+# Keeps the docs folder reference copy in sync with the project README.
+name: Sync README to docs
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - 'README.md'
+  workflow_dispatch:
+
+concurrency:
+  group: "sync-readme"
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy README.md to docs/
+        run: cp README.md docs/README.md
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet docs/README.md || (
+            git add docs/README.md &&
+            git commit -m "docs: sync README.md → docs/README.md [skip ci]" &&
+            git push
+          )

@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "universeAllowlist": "see .squad/templates/casting-reference.md",
+  "maxAgentsPerUniverse": 25,
+  "exemptions": ["Scribe", "Ralph", "@copilot"],
+  "overflowStrategy": ["diegetic_expansion", "thematic_promotion", "structural_mirroring"],
+  "mixingProhibited": true
+}

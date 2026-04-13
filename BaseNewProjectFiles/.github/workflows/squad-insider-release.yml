@@ -1,0 +1,66 @@
+name: Squad Insider Release
+
+on:
+  push:
+    branches: [insider]
+
+permissions:
+  contents: write
+
+jobs:
+  insider-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v4.5.0
+        with:
+          versionSpec: '6.x'
+
+      - name: Determine version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4.5.0
+        with:
+          useConfigFile: true
+          configFilePath: GitVersion.yml
+
+      - name: Restore dependencies
+        run: dotnet restore IssueTrackerApp.slnx
+
+      - name: Build
+        run: |
+          dotnet build IssueTrackerApp.slnx --configuration Release --no-restore \
+            -p:Version=${{ steps.gitversion.outputs.semVer }} \
+            -p:AssemblyVersion=${{ steps.gitversion.outputs.assemblySemVer }} \
+            -p:FileVersion=${{ steps.gitversion.outputs.assemblySemFileVer }}
+
+      - name: Run unit tests
+        run: |
+          dotnet test tests/Domain.Tests --configuration Release --no-build --no-restore
+          dotnet test tests/Web.Tests --configuration Release --no-build --no-restore
+          dotnet test tests/Architecture.Tests --configuration Release --no-build --no-restore
+          dotnet test tests/Web.Tests.Bunit --configuration Release --no-build --no-restore
+
+      - name: Create pre-release tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEMVER: ${{ steps.gitversion.outputs.semVer }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          TAG="v${SEMVER}.insider.${RUN_NUMBER}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Insider release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --generate-notes \
+            --prerelease \
+            --title "Insider $TAG"

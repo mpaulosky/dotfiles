@@ -1,0 +1,82 @@
+name: Blog → README Sync
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/blog/index.md']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update README Dev Blog section
+        run: |
+          python3 - <<'PYEOF'
+          import re
+
+          with open('docs/blog/index.md', 'r') as f:
+              index = f.read()
+
+          # Extract table rows after the header and separator
+          table_match = re.search(
+              r'\| Date \| Title \| Tags \|\s*\n\|[-| ]+\|\s*\n((?:\|.+\|\s*\n?)*)',
+              index
+          )
+          if not table_match:
+              print("No table found in docs/blog/index.md — skipping")
+              exit(0)
+
+          rows = []
+          for line in table_match.group(1).splitlines():
+              line = line.strip()
+              if line.startswith('|') and line.endswith('|') and '---' not in line:
+                  # Rewrite relative links to docs/blog/ prefix
+                  line = re.sub(r'\]\((?!https?://)(?!docs/)([^)]+\.md)\)', r'](docs/blog/\1)', line)
+                  rows.append(line)
+
+          recent = rows[:5]
+          if not recent:
+              print("No posts found — skipping")
+              exit(0)
+
+          header = '| Date | Title | Tags |\n|------|-------|------|'
+          new_section = header + '\n' + '\n'.join(recent)
+
+          with open('README.md', 'r') as f:
+              readme = f.read()
+
+          updated = re.sub(
+              r'<!-- BLOG_START -->.*?<!-- BLOG_END -->',
+              f'<!-- BLOG_START -->\n{new_section}\n<!-- BLOG_END -->',
+              readme,
+              flags=re.DOTALL
+          )
+
+          if updated == readme:
+              print("README Dev Blog section is already up to date")
+              exit(0)
+
+          with open('README.md', 'w') as f:
+              f.write(updated)
+
+          print("README Dev Blog section updated")
+          PYEOF
+
+      - name: Commit updated README
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet README.md || (
+            git add README.md &&
+            git commit -m "docs: sync Dev Blog section from docs/blog/index.md [skip ci]" &&
+            git push
+          )

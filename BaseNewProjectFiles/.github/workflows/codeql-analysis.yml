@@ -1,0 +1,78 @@
+# For most projects, this workflow file will not need changing; you simply need
+# to commit it to your repository.
+#
+# You may wish to alter this file to override the set of languages analyzed,
+# or to provide custom queries or build logic.
+#
+# ******** NOTE ********
+# We have attempted to detect the languages in your repository. Please check
+# the `language` matrix defined below to confirm you have the correct set of
+# supported CodeQL languages.
+#
+---
+name: "CodeQL"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**.cs"
+      - "**.csproj"
+
+  pull_request:
+    branches:
+      - "**"
+
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "The reason for running the workflow"
+        required: true
+        default: "Manual run"
+
+  schedule:
+    - cron: "31 0 * * 5"
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    env:
+      Auth0__Domain: ${{ secrets.AUTH0_DOMAIN }}
+      Auth0__ClientId: ${{ secrets.AUTH0_CLIENT_ID }}
+      Auth0__ClientSecret: ${{ secrets.AUTH0_CLIENT_SECRET }}
+      Auth0Management__ClientId: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_ID }}
+      Auth0Management__ClientSecret: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_SECRET }}
+      Auth0Management__Domain: ${{ secrets.AUTH0_DOMAIN }}
+      Auth0Management__Audience: https://${{ secrets.AUTH0_DOMAIN }}/api/v2/
+      MongoDB__ConnectionString: ${{ secrets.MONGODB_CONNECTION_STRING }}
+      # Aspire parameter bindings for AppHost build (Parameters:auth0MgmtClientId/Secret)
+      Parameters__auth0MgmtClientId: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_ID }}
+      Parameters__auth0MgmtClientSecret: ${{ secrets.AUTH0_MANAGEMENT_CLIENT_SECRET }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["csharp"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # Initializes the CodeQL tools for scanning.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4

@@ -1,0 +1,101 @@
+{
+  "version": "1.0",
+  "agents": [
+    {
+      "persistent_name": "Aragorn",
+      "role": "Lead",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": true,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Legolas",
+      "role": "Frontend Dev",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": true,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Sam",
+      "role": "Backend Dev",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": true,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Gimli",
+      "role": "Tester",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": true,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Boromir",
+      "role": "DevOps",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": true,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Frodo",
+      "role": "Tech Writer",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": true,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Gandalf",
+      "role": "Security Officer",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-02-27T14:05:32Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Scribe",
+      "role": "Scribe",
+      "universe": "exempt",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Ralph",
+      "role": "Work Monitor",
+      "universe": "exempt",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    {
+      "persistent_name": "@copilot",
+      "role": "Coding Agent",
+      "universe": "exempt",
+      "created_at": "2026-02-24T00:00:00Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Bilbo",
+      "role": "Tech Blogger",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-03-27T21:19:42Z",
+      "legacy_named": false,
+      "status": "active"
+    },
+    {
+      "persistent_name": "Pippin",
+      "role": "Tester (E2E & Aspire)",
+      "universe": "Lord of the Rings",
+      "created_at": "2026-03-27T21:19:42Z",
+      "legacy_named": false,
+      "status": "active"
+    }
+  ]
+}

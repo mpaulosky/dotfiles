@@ -1,0 +1,14 @@
+{
+	"marketplaces": [
+		{
+			"name": "squad-plugins",
+			"url": "https://github.com/bradygaster/squad-plugins",
+			"description": "Official Squad plugin registry"
+		},
+		{
+			"name": "anthropic-skills",
+			"url": "https://github.com/anthropic/skills",
+			"description": "Anthropic Skills plugin registry"
+		}
+	]
+}

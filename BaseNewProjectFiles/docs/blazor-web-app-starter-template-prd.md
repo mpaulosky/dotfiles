@@ -25,14 +25,18 @@ authentication, Redis distributed caching, Aspire orchestration, and full Squad 
 
 ### Prerequisites
 
-| Prerequisite  | Version                                                            | Purpose                                                                                                                                                 |
-| ------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| .NET SDK      | Pinned in `global.json` (currently `10.0.100-preview.4.25258.110`) | Build and run all projects.                                                                                                                             |
-| Node.js + npm | v20+ LTS                                                           | TailwindCSS v4 build (triggered by `dotnet build` via MSBuild targets).                                                                                 |
-| Docker        | Latest                                                             | Required for MongoDB TestContainers in integration tests, Redis container in Aspire, and Playwright browser.                                            |
-| Auth0 Tenant  | N/A                                                                | A configured Auth0 Web Application (callback URLs, logout URLs, allowed origins) and an Auth0 Machine-to-Machine application for Management API access. |
-| Git           | 2.x+                                                               | Version control.                                                                                                                                        |
-| Squad CLI     | Latest                                                             | AI team collaboration framework.                                                                                                                        |
+| Prerequisite    | Version                                                            | Purpose                                                                                                                                                 |
+| --------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| .NET SDK        | Pinned in `global.json` (currently `10.0.100`) | Build and run all projects.                                                                                                                             |
+| Node.js + npm   | v20+ LTS                                                           | TailwindCSS v4 build (triggered by `dotnet build` via MSBuild targets).                                                                                 |
+| Docker          | Latest                                                             | Required for MongoDB TestContainers in integration tests, Redis container in Aspire, and Playwright browser.                                            |
+| Auth0 Tenant    | N/A                                                                | A configured Auth0 Web Application (callback URLs, logout URLs, allowed origins) and an Auth0 Machine-to-Machine application for Management API access. |
+| Git             | 2.x+                                                               | Version control.                                                                                                                                        |
+| PowerShell 7    | 7.x+                                                               | Terminal for manual setup steps (Phase 0).                                                                                                              |
+| Copilot CLI     | Latest                                                             | GitHub Copilot CLI with Squad agent for automated scaffolding. Launched with `copilot --agent squad --yolo --experimental`.                          |
+| Squad CLI       | Latest                                                             | AI team collaboration framework.                                                                                                                        |
+| Dotfiles Repo   | Latest                                                             | Local clone of `https://github.com/{owner}/dotfiles.git` at `~/Repos/dotfiles/`. Contains `BaseNewProjectFiles/` with starter configuration.           |
+| GitHub CLI (gh) | Latest                                                             | Creates the remote GitHub repository during Phase 0 setup. Install: <https://cli.github.com/>                                                          |
 
 ---
 
@@ -49,15 +53,15 @@ authentication, Redis distributed caching, Aspire orchestration, and full Squad 
 
 #### US-1: Project Initialization
 
-**As a** developer, **I want to** run the scaffolding process inside an existing project folder with git and Squad initialized and a solution file created, **so that** I have version control, AI team collaboration, and a solution file ready to receive projects from the start.
+**As a** developer, **I want to** manually prepare a new project folder with git initialized and base configuration files copied, then launch GitHub Copilot Squad to automate the remaining scaffolding, **so that** I have version control, AI team collaboration, and a solution file ready to receive projects from the start.
 
 **Acceptance Criteria:**
 
-- The scaffolder runs inside an existing folder (the folder name becomes the project name, e.g., `MyBlazorApp/` → project name `MyBlazorApp`).
-- `git init` is executed (the initial commit happens in Phase 6 after all scaffolding is complete).
-- `squad init` is executed and the team is imported from `squad-export.json` (cloned from the dotfiles repository: `https://github.com/{owner}/dotfiles.git`, or copied from a local clone at `~/Repos/dotfiles/`).
-- A `{FolderName}.slnx` solution file is created in the project root (e.g., `MyBlazorApp.slnx`). This is the solution file that all source and test projects will be added to in subsequent phases.
-- The folder contains `.gitignore`, `.editorconfig`, and `LICENSE` imported from the dotfiles project.
+- The developer manually creates a new project folder (the folder name becomes the project name, e.g., `MyBlazorApp/` → `{ProjectName}` = `MyBlazorApp`).
+- `git init` is executed manually by the developer before automation begins.
+- The contents of the `BaseNewProjectFiles/` folder from the dotfiles repository are copied into the new project folder manually by the developer. This provides the starter configuration files (`.editorconfig`, `.gitignore`, `.gitattributes`, `LICENSE`, `global.json`, `GitVersion.yml`, `README.md`, `.aspire/`, `.copilot/`, `docs/`, `squad.config.ts`).
+- GitHub Copilot is launched manually by the developer with `copilot --agent squad --yolo --experimental` to begin automated scaffolding.
+- The automated process then executes `squad init`, imports the team roster, and creates the `{FolderName}.slnx` solution file. All source and test projects created in subsequent phases will be added to this solution.
 
 #### US-2: Folder Structure Creation
 
@@ -114,16 +118,20 @@ authentication, Redis distributed caching, Aspire orchestration, and full Squad 
 
 **Acceptance Criteria:**
 
-- The dotfiles repository is available either as a local clone (`~/Repos/dotfiles/`) or freshly cloned from `https://github.com/{owner}/dotfiles.git`.
-- The following files are copied **verbatim** (no modifications needed):
+- The dotfiles repository is available as a local clone (`~/Repos/dotfiles/`).
+- The following base files are copied **verbatim** by the developer during Phase 0 (manual setup) via `Copy-Item` from `BaseNewProjectFiles/`:
   - `.editorconfig` → project root
   - `.gitignore` → project root
+  - `.gitattributes` → project root
   - `LICENSE` → project root
-  - `docs/CODE_OF_CONDUCT.md` → `docs/`
-  - `docs/CONTRIBUTING.md` → `docs/`
-  - `docs/REFERENCES.md` → `docs/`
-  - `docs/SECURITY.md` → `docs/`
-- The following are copied from dotfiles `.github/` and **require token replacement** (see Appendix B):
+  - `global.json` → project root
+  - `GitVersion.yml` → project root
+  - `README.md` → project root
+  - `docs/` → `docs/` (includes `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `REFERENCES.md`, `SECURITY.md`, and this PRD)
+  - `.aspire/` → `.aspire/`
+  - `.copilot/` → `.copilot/`
+  - `squad.config.ts` → project root
+- The following are copied by the automated process (Phase 3) from dotfiles `.github/` and **require token replacement** (see Appendix B):
   - `instructions/` → `.github/instructions/`
   - `workflows/` → `.github/workflows/`
   - `skills/` → `.github/skills/`
@@ -135,7 +143,7 @@ authentication, Redis distributed caching, Aspire orchestration, and full Squad 
 - Files requiring **regeneration** (not copied):
   - `CODEOWNERS` — generated fresh for the new team
   - `UserSecretsId` values — new GUIDs per project
-  - `README.md` — generated with new project name and badges
+  - `README.md` — update with new project name and badges (base file exists from Phase 0)
 
 #### US-7: CI/CD Workflows
 
@@ -261,7 +269,7 @@ AppHost ──► Web ──► Domain
 
 | Component          | Technology                  | Version                                       |
 | ------------------ | --------------------------- | --------------------------------------------- |
-| Runtime            | .NET                        | Pinned in `global.json` (currently `10.0.100-preview.4`) |
+| Runtime            | .NET                        | Pinned in `global.json` (currently `10.0.100`) |
 | Language           | C#                          | 14                                            |
 | UI Framework       | Blazor Web App              | Interactive Server render mode                |
 | Orchestration      | .NET Aspire                 | 13.x                                          |
@@ -302,44 +310,155 @@ AppHost ──► Web ──► Domain
 
 ## 4. Phased Scaffolding Process
 
-### Phase 1: Project Initialization
+### Phase 0: Manual Environment Setup (User Action Required)
+
+> **⚠️ IMPORTANT:** The following steps **must be completed manually** by the developer before the automated scaffolding process can begin. These steps establish the project folder, initialize version control, copy base configuration files, and launch the GitHub Copilot agent that drives the remaining phases.
+
+#### Option A: Automated Setup (Recommended)
+
+Open a PowerShell 7 terminal and run the setup script from your dotfiles clone. Copy and paste the following command, replacing `MyBlazorApp` with your desired project name:
+
+```pwsh
+~/Repos/dotfiles/New-ProjectFromTemplate.ps1 -ProjectName MyBlazorApp
+```
+
+This script will:
+
+- Create the project folder under `~/Repos/`
+- Initialize a Git repository with `main` as the default branch
+- Copy all contents from `BaseNewProjectFiles/` (including hidden files like `.aspire/`, `.copilot/`, `.squad/`)
+- Create a private GitHub repository and push the initial commit
+- Run `squad init` to initialize the Squad configuration
+- Launch GitHub Copilot with Squad agent
+
+To use a different parent directory:
+
+```pwsh
+~/Repos/dotfiles/New-ProjectFromTemplate.ps1 -ProjectName MyBlazorApp -ParentDirectory ~/Projects
+```
+
+To skip auto-launching Copilot:
+
+```pwsh
+~/Repos/dotfiles/New-ProjectFromTemplate.ps1 -ProjectName MyBlazorApp -SkipCopilotLaunch
+```
+
+> **Note:** If you don't have a local clone of the dotfiles repository, clone it first:
+>
+> ```pwsh
+> git clone https://github.com/{owner}/dotfiles.git ~/Repos/dotfiles
+> ```
+
+Once Copilot is running, provide this PRD as context and instruct it to begin Phase 1.
+
+#### Option B: Manual Setup (Fallback)
+
+If you prefer to run the steps individually, or if the script is not available, follow these steps in a PowerShell 7 terminal:
+
+1. **Navigate to your projects directory**
+
+   ```pwsh
+   cd ~/Repos  # or wherever you keep your projects
+   ```
+
+2. **Create the project folder**
+
+   ```pwsh
+   mkdir MyBlazorApp  # Replace with your desired project name
+   ```
+
+3. **Navigate into the project folder**
+
+   ```pwsh
+   cd MyBlazorApp
+   ```
+
+4. **Initialize a Git repository**
+
+   ```pwsh
+   git init -b main
+   ```
+
+5. **Copy base configuration files from dotfiles**
+
+   Copy the entire contents of the `BaseNewProjectFiles/` folder. Use `-Force` to include hidden items:
+
+   ```pwsh
+   Get-ChildItem -Path ~/Repos/dotfiles/BaseNewProjectFiles -Force | Copy-Item -Destination . -Recurse -Force
+   ```
+
+   This copies: `.aspire/`, `.copilot/`, `.squad/`, `.editorconfig`, `.gitattributes`, `.gitignore`, `GitVersion.yml`, `LICENSE`, `README.md`, `docs/`, `global.json`, `squad.config.ts`.
+
+6. **Create a GitHub repository and push the initial commit**
+
+   ```pwsh
+   git add .
+   git commit -m "Initial commit from Blazor template"
+   gh repo create MyBlazorApp --public --source . --push
+   ```
+
+   Replace `MyBlazorApp` with your project name. This creates a public remote repository and pushes the initial commit.
+
+7. **Initialize Squad**
+
+   ```pwsh
+   squad init
+   ```
+
+8. **Launch GitHub Copilot with Squad agent**
+
+   ```pwsh
+   copilot --agent squad --yolo --experimental
+   ```
+
+   Once Copilot is running, provide this PRD as context and instruct it to begin Phase 1.
+
+> **✅ Phase 0 Complete:** You now have a project folder with Git initialized, a private GitHub remote repository, base configuration files in place, and GitHub Copilot Squad ready to automate the remaining phases. Continue with Phase 1 below (driven by the Copilot agent).
+
+---
+
+### Phase 1: Project Initialization (Automated — Copilot Agent)
+
+> **Note:** Phase 0 (manual setup) must be completed before this phase. The project folder already contains Git, a GitHub remote repository, base configuration files from `BaseNewProjectFiles/`, Squad initialized, and the Copilot agent is running.
 
 | Step | Command / Action                           | Details                                                                                                                                                   |
 | ---- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.1  | `cd {ExistingFolder}`                      | Navigate into the existing project folder. The folder name becomes the project name (e.g., `MyBlazorApp/` → `{ProjectName}` = `MyBlazorApp`).             |
-| 1.2  | `git init`                                 | Initialize git repository.                                                                                                                                |
-| 1.3  | `squad init`                               | Initialize Squad AI team framework.                                                                                                                       |
-| 1.4  | Clone or locate dotfiles                   | `git clone https://github.com/{owner}/dotfiles.git /tmp/dotfiles` or use existing `~/Repos/dotfiles/`. The `DOTFILES` variable below refers to this path. |
-| 1.5  | `squad import $DOTFILES/squad-export.json` | Import the team roster from dotfiles.                                                                                                                     |
-| 1.6  | `dotnet new slnx -n {FolderName}`          | Create the `{FolderName}.slnx` solution file. All source and test projects created in subsequent phases will be added to this solution.                   |
+| 1.1  | Verify folder and Git are ready            | Confirm the current folder is the project root and `git status` succeeds. The folder name becomes the project name (e.g., `MyBlazorApp/` → `{ProjectName}` = `MyBlazorApp`). Verify remote exists with `git remote -v`. |
+| 1.2  | Verify Squad is initialized                | Confirm `squad init` was completed in Phase 0 (`.squad/` folder exists).                                                                                  |
+| 1.3  | Clone or locate dotfiles                   | `git clone https://github.com/{owner}/dotfiles.git /tmp/dotfiles` or use existing `~/Repos/dotfiles/`. The `DOTFILES` variable below refers to this path. |
+| 1.4  | `squad import $DOTFILES/squad-export.json` | Import the team roster from dotfiles.                                                                                                                     |
+| 1.5  | `dotnet new slnx -n {FolderName}`          | Create the `{FolderName}.slnx` solution file. All source and test projects created in subsequent phases will be added to this solution.                   |
 
 ### Phase 2: Root Configuration Files
+
+> **Note:** Some root configuration files (`global.json`, `GitVersion.yml`, `README.md`, `.editorconfig`, `.gitignore`, `.gitattributes`, `LICENSE`) were already copied from `BaseNewProjectFiles/` during Phase 0. This phase creates the remaining files and updates any existing files that need project-specific customization.
 
 Create these **before** any projects, so `dotnet new` picks up the correct SDK and framework settings.
 
 | Step | File                       | Content                                                                                                                                                   |
 | ---- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2.1  | `global.json`              | Pin SDK version (e.g., `10.0.100-preview.4...`) with `rollForward: latestMinor`.                                                                       |
+| 2.1  | `global.json`              | Already present from Phase 0. Verify SDK version is correct (e.g., `10.0.100...`) with `rollForward: latestMinor`. Update if needed.         |
 | 2.2  | `Directory.Build.props`    | Set `TargetFramework`, `LangVersion`, `Nullable`, `ImplicitUsings`, `TreatWarningsAsErrors`, `EnforceCodeStyleInBuild`, `ManagePackageVersionsCentrally`. |
 | 2.3  | `Directory.Packages.props` | Centralized NuGet package versions. Remove Azure Blob Storage packages from IssueTrackerApp source.                                                       |
-| 2.4  | `GitVersion.yml`           | ContinuousDelivery mode with main/dev/feature/insider/PR branch configs.                                                                                  |
-| 2.5  | `README.md`                | Project overview with build/run instructions (use `{ProjectName}` throughout).                                                                            |
+| 2.4  | `GitVersion.yml`           | Already present from Phase 0. Verify ContinuousDelivery mode with main/dev/feature/insider/PR branch configs.                                            |
+| 2.5  | `README.md`                | Already present from Phase 0. Update with project-specific overview, build/run instructions (use `{ProjectName}` throughout).                             |
 | 2.6  | `AGENTS.md`                | AI agent instructions with architecture map.                                                                                                              |
 
 ### Phase 3: Import Dotfiles
 
+> **Note:** The base configuration files (`.editorconfig`, `.gitignore`, `.gitattributes`, `LICENSE`, `docs/` community health files) were already copied from `BaseNewProjectFiles/` during Phase 0. This phase focuses on copying `.github/` contents that require token replacement and generating project-specific files.
+
 | Step | Command / Action                                                                         | Details                                                                                                                     |
 | ---- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| 3.1  | Copy `.editorconfig` from `$DOTFILES/`                                                   | UTF-8, LF line endings, tab-based for web/razor, space-based for markdown/yaml.                                             |
-| 3.2  | Copy `.gitignore` from `$DOTFILES/`                                                      | Visual Studio + .NET comprehensive ignore patterns.                                                                         |
-| 3.3  | Copy `LICENSE` from `$DOTFILES/`                                                         | MIT license.                                                                                                                |
-| 3.4  | `mkdir docs`                                                                             | Create docs directory.                                                                                                      |
-| 3.5  | Copy `docs/{CODE_OF_CONDUCT,CONTRIBUTING,REFERENCES,SECURITY}.md` from `$DOTFILES/docs/` | Standard community health files.                                                                                            |
-| 3.6  | `mkdir -p .github/{instructions,workflows,hooks,skills,agents,prompts}`                  | Create GitHub configuration structure.                                                                                      |
-| 3.7  | Copy `.github/` contents from `$DOTFILES/.github/`                                       | Instructions, workflows, skills, agents, prompts, copilot-instructions, dependabot, codecov.                                |
-| 3.8  | Copy `pull_request_template.md` from IssueTrackerApp `.github/`                          | Not in dotfiles; source from IssueTrackerApp or generate fresh for the new project.                                         |
-| 3.9  | Generate `.github/CODEOWNERS`                                                            | Generate fresh with the new project's owner/team entries (not copied from dotfiles or IssueTrackerApp).                     |
-| 3.10 | Run token replacement (see Appendix B)                                                   | Replace `{OldProjectName}`, solution file refs, test project paths, Codecov slug, repo name in all copied `.github/` files. |
+| 3.1  | Verify `.editorconfig` is present                                                        | Already copied in Phase 0. UTF-8, LF line endings, tab-based for web/razor, space-based for markdown/yaml.                 |
+| 3.2  | Verify `.gitignore` is present                                                           | Already copied in Phase 0. Visual Studio + .NET comprehensive ignore patterns.                                              |
+| 3.3  | Verify `LICENSE` is present                                                              | Already copied in Phase 0. MIT license.                                                                                    |
+| 3.4  | Verify `docs/` directory and contents                                                    | Already copied in Phase 0. Confirm `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `REFERENCES.md`, `SECURITY.md` are present.    |
+| 3.5  | `mkdir -p .github/{instructions,workflows,hooks,skills,agents,prompts}`                  | Create GitHub configuration structure.                                                                                      |
+| 3.6  | Copy `.github/` contents from `$DOTFILES/.github/`                                       | Instructions, workflows, skills, agents, prompts, copilot-instructions, dependabot, codecov.                                |
+| 3.7  | Copy `pull_request_template.md` from IssueTrackerApp `.github/`                          | Not in dotfiles; source from IssueTrackerApp or generate fresh for the new project.                                         |
+| 3.8  | Generate `.github/CODEOWNERS`                                                            | Generate fresh with the new project's owner/team entries (not copied from dotfiles or IssueTrackerApp).                     |
+| 3.9  | Run token replacement (see Appendix B)                                                   | Replace `{OldProjectName}`, solution file refs, test project paths, Codecov slug, repo name in all copied `.github/` files. |
 
 ### Phase 4: Create Source Projects
 

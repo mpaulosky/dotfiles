@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Pre-push gate: mirrors CI checks to catch failures before they reach GitHub
+# Runs: untracked-file check → Release build → unit tests (loop until pass or abort)
+# NOTE: git provides refspecs on stdin; interactive prompts must use /dev/tty.
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
+
+echo -e "${CYAN}━━━ Pre-Push Gate ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+# ── Gate 0: Block pushes directly to main or dev ───────────────────────────
+CURRENT_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo "")"
+if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "dev" ]]; then
+  echo -e "${RED}❌  Direct pushes to '${CURRENT_BRANCH}' are not allowed.${RESET}"
+  echo -e "    Create a feature branch: ${YELLOW}squad/{issue}-{slug}${RESET}"
+  exit 1
+fi
+
+# ── Gate 1: Warn about untracked .razor/.cs source files ───────────────────
+UNTRACKED_SRC=$(git ls-files --others --exclude-standard -- '*.razor' '*.cs' 2>/dev/null)
+if [[ -n "$UNTRACKED_SRC" ]]; then
+  echo -e "${RED}❌  Untracked source files detected (invisible to CI):${RESET}"
+  echo "$UNTRACKED_SRC" | sed 's/^/    /'
+  echo -e "${YELLOW}    Add them with 'git add' or confirm they are intentionally excluded.${RESET}"
+  echo ""
+  printf "Push anyway? These files will be missing from CI. [y/N] " >/dev/tty
+  read -r CONFIRM </dev/tty
+  if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+    echo -e "${RED}Push aborted. Stage or gitignore the listed files.${RESET}"
+    exit 1
+  fi
+fi
+
+# ── Gate 2: Release build (mirrors CI exactly) ─────────────────────────────
+MAX_ATTEMPTS=3
+BUILD_ATTEMPT=0
+BUILD_OK=false
+
+while [[ $BUILD_ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+  BUILD_ATTEMPT=$((BUILD_ATTEMPT + 1))
+  echo -e "\n${CYAN}🔨 Release build (attempt $BUILD_ATTEMPT/$MAX_ATTEMPTS)...${RESET}"
+
+  dotnet build IssueTrackerApp.slnx --configuration Release
+  BUILD_EXIT=$?
+
+  if [[ $BUILD_EXIT -ne 0 ]]; then
+    echo -e "  ↻ Auto-retrying build once (clearing incremental state)..."
+    dotnet build IssueTrackerApp.slnx --configuration Release
+    BUILD_EXIT=$?
+  fi
+
+  if [[ $BUILD_EXIT -eq 0 ]]; then
+    BUILD_OK=true
+    echo -e "${GREEN}✅ Build passed.${RESET}"
+    break
+  else
+    echo -e "${RED}❌ Release build FAILED (attempt $BUILD_ATTEMPT).${RESET}"
+    if [[ $BUILD_ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+      printf "Fix the errors and press Enter to retry, or Ctrl+C to abort: " >/dev/tty
+      read -r _ </dev/tty
+    fi
+  fi
+done
+
+if [[ "$BUILD_OK" != true ]]; then
+  echo -e "${RED}Push blocked: Release build could not be fixed in $MAX_ATTEMPTS attempts.${RESET}"
+  exit 1
+fi
+
+# ── Gate 3: Unit + bUnit + Architecture tests ──────────────────────────────
+TEST_PROJECTS=(
+  "tests/Architecture.Tests/Architecture.Tests.csproj"
+  "tests/Domain.Tests/Domain.Tests.csproj"
+  "tests/Web.Tests.Bunit/Web.Tests.Bunit.csproj"
+  "tests/Persistence.MongoDb.Tests/Persistence.MongoDb.Tests.csproj"
+  "tests/Web.Tests/Web.Tests.csproj"
+  "tests/Persistence.AzureStorage.Tests/Persistence.AzureStorage.Tests.csproj"
+)
+TEST_ATTEMPT=0
+TESTS_OK=false
+
+while [[ $TEST_ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+  TEST_ATTEMPT=$((TEST_ATTEMPT + 1))
+  echo -e "\n${CYAN}🧪 Running tests (attempt $TEST_ATTEMPT/$MAX_ATTEMPTS)...${RESET}"
+  ALL_PASSED=true
+  for PROJ in "${TEST_PROJECTS[@]}"; do
+    echo -e "  → $PROJ"
+    dotnet test "$PROJ" --configuration Release --no-build || ALL_PASSED=false
+  done
+  if [[ "$ALL_PASSED" == true ]]; then
+    TESTS_OK=true
+    echo -e "${GREEN}✅ All tests passed.${RESET}"
+    break
+  else
+    echo -e "${RED}❌ One or more test suites FAILED (attempt $TEST_ATTEMPT).${RESET}"
+    if [[ $TEST_ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+      printf "Fix failures and press Enter to retry, or Ctrl+C to abort: " >/dev/tty
+      read -r _ </dev/tty
+    fi
+  fi
+done
+
+if [[ "$TESTS_OK" != true ]]; then
+  echo -e "${RED}Push blocked: Tests could not be fixed in $MAX_ATTEMPTS attempts.${RESET}"
+  exit 1
+fi
+
+# ── Gate 4: Docker integration tests + Playwright E2E ─────────────────────
+# Requires Docker daemon. Uses Testcontainers (mongo:7.0, Azurite) and Aspire DCP.
+# AppHost.Tests runs here — Aspire boots internally via DistributedApplicationTestingBuilder.
+INTEGRATION_PROJECTS=(
+  "tests/Persistence.MongoDb.Tests.Integration/Persistence.MongoDb.Tests.Integration.csproj"
+  "tests/Web.Tests.Integration/Web.Tests.Integration.csproj"
+  "tests/Persistence.AzureStorage.Tests.Integration/Persistence.AzureStorage.Tests.Integration.csproj"
+  "tests/AppHost.Tests/AppHost.Tests.csproj"
+)
+
+echo -e "\n${CYAN}🐋 Checking Docker availability for integration tests...${RESET}"
+if ! docker info &>/dev/null; then
+  echo -e "${RED}❌ Docker daemon is not running.${RESET}"
+  echo -e "${YELLOW}   Integration tests require Docker (Testcontainers: mongo:7.0, Azurite).${RESET}"
+  echo -e "${RED}   Start Docker and re-push. Skipping integration tests is not allowed.${RESET}"
+  exit 1
+else
+  echo -e "${GREEN}  Docker is running.${RESET}"
+  INT_ATTEMPT=0
+  INT_OK=false
+
+  while [[ $INT_ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+    INT_ATTEMPT=$((INT_ATTEMPT + 1))
+    echo -e "\n${CYAN}🐋 Running integration tests (attempt $INT_ATTEMPT/$MAX_ATTEMPTS)...${RESET}"
+    INT_ALL_PASSED=true
+    for PROJ in "${INTEGRATION_PROJECTS[@]}"; do
+      echo -e "  → $PROJ"
+      dotnet test "$PROJ" --configuration Release --no-build || INT_ALL_PASSED=false
+    done
+    if [[ "$INT_ALL_PASSED" == true ]]; then
+      INT_OK=true
+      echo -e "${GREEN}✅ All integration tests passed.${RESET}"
+      break
+    else
+      echo -e "${RED}❌ One or more integration test suites FAILED (attempt $INT_ATTEMPT).${RESET}"
+      if [[ $INT_ATTEMPT -lt $MAX_ATTEMPTS ]]; then
+        printf "Fix failures and press Enter to retry, or Ctrl+C to abort: " >/dev/tty
+        read -r _ </dev/tty
+      fi
+    fi
+  done
+
+  if [[ "$INT_OK" != true ]]; then
+    echo -e "${RED}Push blocked: Integration tests could not be fixed in $MAX_ATTEMPTS attempts.${RESET}"
+    exit 1
+  fi
+fi
+
+echo -e "\n${GREEN}━━━ All gates passed — pushing ✅ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"
+exit 0

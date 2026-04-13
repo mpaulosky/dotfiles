@@ -1,0 +1,13 @@
+# Auto-generated Squad/Copilot directories
+.squad/
+.copilot/skills/
+
+# GitHub agents, prompts, skills, instructions (templates)
+.github/agents/
+.github/prompts/
+.github/skills/
+.github/instructions/
+.github/copilot-instructions.md
+
+# Documentation templates (not project content)
+docs/

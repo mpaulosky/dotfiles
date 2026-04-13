@@ -32,9 +32,9 @@ Analyze the user's request and break it down into commits:
 
 1. Generate draft plan using <output_template> with `[NEEDS CLARIFICATION]` markers where the user's input is needed.
 2. Save the plan to "plans/{feature-name}/plan.md"
-4. Ask clarifying questions for any `[NEEDS CLARIFICATION]` sections
-5. MANDATORY: Pause for feedback
-6. If feedback received, revise plan and go back to Step 1 for any research needed
+3. Ask clarifying questions for any `[NEEDS CLARIFICATION]` sections
+4. MANDATORY: Pause for feedback
+5. If feedback received, revise plan and go back to Step 1 for any research needed
 
 </workflow>
 
@@ -65,6 +65,7 @@ Analyze the user's request and break it down into commits:
 ### Step 3: {Step Name}
 ...
 ```
+
 </output_template>
 
 <research_guide>

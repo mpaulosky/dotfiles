@@ -1,0 +1,28 @@
+---
+name: Lint YAML
+
+on:
+  push:
+    branches: [main]
+    paths: ['**.yml', '**.yaml']
+  pull_request:
+    branches: [main]
+    paths: ['**.yml', '**.yaml']
+
+jobs:
+  yamllint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          file_or_dir: .
+          config_data: |
+            extends: default
+            rules:
+              line-length:
+                max: 200
+                allow-non-breakable-inline-mappings: true
+              truthy:
+                allowed-values: ['true', 'false', 'on']

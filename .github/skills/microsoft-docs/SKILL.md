@@ -26,7 +26,7 @@ compatibility: Requires Microsoft Learn MCP Server (https://learn.microsoft.com/
 
 Good queries are specific:
 
-```
+```markdown
 # ❌ Too broad
 "Azure Functions"
 
@@ -37,6 +37,7 @@ Good queries are specific:
 ```
 
 Include context:
+
 - **Version** when relevant (`.NET 8`, `EF Core 8`)
 - **Task intent** (`quickstart`, `tutorial`, `overview`, `limits`)
 - **Platform** for multi-platform docs (`Linux`, `Windows`)
@@ -44,6 +45,7 @@ Include context:
 ## When to Fetch Full Page
 
 Fetch after search when:
+
 - **Tutorials** — need complete step-by-step instructions
 - **Configuration guides** — need all options listed
 - **Deep dives** — user wants comprehensive coverage

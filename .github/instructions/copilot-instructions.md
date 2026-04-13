@@ -2,7 +2,7 @@
 
 **Last updated:** June 12, 2025
 
-These instructions define the required coding, architecture, and project rules for all .NET code in this repository. They are based on the actual practices and conventions in the TailwindBlogApp solution. For more details, see [CONTRIBUTING.md](../docs/CONTRIBUTING.md).
+These instructions define the required coding, architecture, and project rules for .NET projects using this template. They can be copied into any .NET solution and adjusted as needed. For more details, see [CONTRIBUTING.md](../docs/CONTRIBUTING.md).
 
 ---
 
@@ -36,9 +36,11 @@ These instructions define the required coding, architecture, and project rules f
 - **Use .editorconfig:** `true`
 - **Preferred Modifier Order:** `public`, `private`, `protected`, `internal`, `static`, `readonly`, `const`
   - _Example:_
+
     ```csharp
     public static readonly int MY_CONST = 42;
     ```
+
 - **Use Explicit Type:** `true` (except where `var` improves clarity)
 - **Use Var:** `true` (when the type is obvious)
 - **Prefer Null Check:**
@@ -131,10 +133,10 @@ These instructions define the required coding, architecture, and project rules f
 - **Use Migrations:** `false` (for SQL Server)
 - **Use PostgreSQL:** `false`
 - **Use Migrations:** `false` (for PostgreSQL)
-- **Use MongoDB:** `true` (see `Persistence.MongoDb/`)
+- **Use MongoDB:** `true` (see your MongoDB persistence project/folder)
 - **Use Migrations:** `false` (for MongoDB)
 - **Prefer Async Operations:** `true`
-- **Use TestContainers:** `true` (for Integration testing, see `Tests/TailwindBlog.Persistence.MongoDb.Tests.Integration/`)
+- **Use TestContainers:** `true` (for Integration testing)
 - **Use Change Tracking:** `true`
 - **Use DbContext Pooling:** `true`
 - **Use In-Memory Database:** `false`

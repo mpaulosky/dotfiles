@@ -13,15 +13,15 @@ see [CONTRIBUTING.md](../docs/CONTRIBUTING.md).
 ### Framework and Language Versions
 
 - **.NET Version:** `10.0` (latest stable)
-    - All projects must target .NET 10
-    - Use the latest stable runtime and SDK
+  - All projects must target .NET 10
+  - Use the latest stable runtime and SDK
 - **C# Language Version:** `14.0` (latest stable)
-    - Leverage latest language features when appropriate
-    - Configure via `<LangVersion>14.0</LangVersion>` in project files or Directory.Build.props
+  - Leverage latest language features when appropriate
+  - Configure via `<LangVersion>14.0</LangVersion>` in project files or Directory.Build.props
 - **API Documentation:** `Scalar` with `OpenAPI 3.0+`
-    - Use Scalar for interactive API documentation
-    - All REST APIs must expose OpenAPI specifications
-    - See Documentation section for additional requirements
+  - Use Scalar for interactive API documentation
+  - All REST APIs must expose OpenAPI specifications
+  - See Documentation section for additional requirements
 
 ### Platform Requirements
 
@@ -38,15 +38,17 @@ see [CONTRIBUTING.md](../docs/CONTRIBUTING.md).
 - **Use .editorconfig:** `true`
 - **Use Tailwindcss:** `true`
 - **Preferred Modifier Order:** `public`, `private`, `protected`, `internal`, `static`, `readonly`, `const`
-    - _Example:_
+  - _Example:_
+
       ```csharp
       public static readonly int MY_CONST = 42;
       ```
+
 - **Use Explicit Type:** `true` (except where `var` improves clarity)
 - **Use Var:** `true` (when the type is obvious)
 - **Prefer Null Check:**
-    - Use `is null`: `true`
-    - Use `is not null`: `true`
+  - Use `is null`: `true`
+  - Use `is not null`: `true`
 - **Prefer Primary Constructors:** `false`
 - **Prefer Records:** `true`
 - **Prefer Minimal APIs:** `true`

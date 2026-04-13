@@ -47,7 +47,7 @@ If you discover a security vulnerability in AINotesApp, please report it respons
 
 ### How to Report
 
-**Email:** matthew.paulosky@outlook.com  
+**Email:** <matthew.paulosky@outlook.com>  
 **Subject:** [SECURITY] AINotesApp Vulnerability Report
 
 **Please do NOT open a public GitHub issue for security vulnerabilities.**

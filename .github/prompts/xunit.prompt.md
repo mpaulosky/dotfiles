@@ -56,18 +56,18 @@ public class ArticleTests
     // Arrange & Act
     article = new Article();
 
-    	// Assert
-    	article.Title.Should().Be("");
-    	article.Introduction.Should().Be("");
-    	article.Content.Should().Be("");
-    	article.CoverImageUrl.Should().Be("");
-    	article.UrlSlug.Should().Be("");
-    	article.Author.Should().Be(ApplicationUserDto.Empty);
-    	article.Category.Should().Be(CategoryDto.Empty);
-    	article.IsPublished.Should().BeFalse();
-    	article.PublishedOn.Should().BeNull();
-    	article.IsArchived.Should().BeFalse();
-    	article.Tags.Should().BeEmpty();
+     // Assert
+     article.Title.Should().Be("");
+     article.Introduction.Should().Be("");
+     article.Content.Should().Be("");
+     article.CoverImageUrl.Should().Be("");
+     article.UrlSlug.Should().Be("");
+     article.Author.Should().Be(ApplicationUserDto.Empty);
+     article.Category.Should().Be(CategoryDto.Empty);
+     article.IsPublished.Should().BeFalse();
+     article.PublishedOn.Should().BeNull();
+     article.IsArchived.Should().BeFalse();
+     article.Tags.Should().BeEmpty();
 
   }
 ```
@@ -101,7 +101,7 @@ public class ArticleTests
 
 ```
 
-# Blazor Component and Page Testing with bUnit
+## Blazor Component and Page Testing with bUnit
 
 bUnit is the recommended library for unit testing Blazor components and pages. It integrates seamlessly with xUnit, NUnit, and MSTest, and runs tests in milliseconds. Key practices:
 
@@ -121,7 +121,7 @@ bUnit is the recommended library for unit testing Blazor components and pages. I
 
 - Use FluentAssertions for expressive assertions.
 
-### Example: Advanced bUnit Mocking
+## Example: Advanced bUnit Mocking
 
 ```csharp
 

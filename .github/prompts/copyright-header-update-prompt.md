@@ -28,7 +28,6 @@ This plan details how to review and update copyright headers in C# files, suppor
 
 ```
 
-
 **Steps:**
 
 1. Identify all target `.cs` files, excluding those in `bin/` and `obj/` folders.

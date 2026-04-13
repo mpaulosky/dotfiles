@@ -8,7 +8,12 @@ Starting a new .NET Blazor Web App project from scratch requires manually assemb
 
 ### Proposed Solution
 
-A step-by-step scaffolding guide (and future automation target) that creates a production-ready Blazor Web App project template replicating the proven architecture of the IssueTrackerApp. The template uses Blazor Web App with Interactive Server rendering, consolidates MongoDB persistence into the Web project (eliminating separate persistence layers), retains the TailwindCSS v4 theming system with 4-color × 2-brightness themes, and includes Auth0 authentication, Redis distributed caching, Aspire orchestration, and full Squad CI/CD workflows.
+A step-by-step scaffolding guide (and future automation target) that creates a production-ready
+Blazor Web App project template replicating the proven architecture of the IssueTrackerApp.
+The template uses Blazor Web App with Interactive Server rendering, consolidates MongoDB
+persistence into the Web project (eliminating separate persistence layers), retains the
+TailwindCSS v4 theming system with 4-color × 2-brightness themes, and includes Auth0
+authentication, Redis distributed caching, Aspire orchestration, and full Squad CI/CD workflows.
 
 ### Success Criteria
 
@@ -196,7 +201,7 @@ The following table documents deliberate differences between the template and Is
 
 ### Architecture Overview
 
-```
+```text
 ┌──────────────────────────────────────────────────────┐
 │                    AppHost (Aspire)                   │
 │  Orchestrates: MongoDB (connection string),          │

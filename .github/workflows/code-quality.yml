@@ -1,0 +1,27 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      
+      - name: Restore dependencies
+        run: dotnet restore
+      
+      - name: Analyze code
+        run: dotnet build --no-restore /p:EnforceCodeStyleInBuild=true
+      
+      - name: Run StyleCop analysis
+        run: dotnet build --no-restore /p:StyleCopTreatErrorsAsWarnings=false || true

@@ -1,3 +1,4 @@
+---
 name: Lint Markdown
 
 on:
@@ -17,9 +18,3 @@ jobs:
         uses: DavidAnson/markdownlint-cli2-action@v19
         with:
           globs: '**/*.md'
-          config: |
-            {
-              "MD013": { "line_length": 400 },
-              "MD033": false,
-              "MD041": false
-            }

@@ -1,3 +1,4 @@
+---
 name: Squad Issue Assign
 
 on:
@@ -41,7 +42,7 @@ jobs:
             const lines = content.split('\n');
 
             // Check if this is a coding agent assignment
-            const isCopilotAssignment = memberName === 'copilot';
+            const isCopilotAssignment = memberName === 'copilot' || memberName === '@copilot';
 
             let assignedMember = null;
             if (isCopilotAssignment) {

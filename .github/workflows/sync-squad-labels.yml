@@ -1,3 +1,4 @@
+---
 name: Sync Squad Labels
 
 on:
@@ -48,7 +49,7 @@ jobs:
               }
               if (inMembersTable && line.startsWith('|') && !line.includes('---') && !line.includes('Name')) {
                 const cells = line.split('|').map(c => c.trim()).filter(Boolean);
-                if (cells.length >= 2 && cells[0] !== 'Scribe') {
+                if (cells.length >= 2 && cells[0] !== 'Scribe' && cells[0] !== '@copilot') {
                   members.push({
                     name: cells[0],
                     role: cells[1]
@@ -60,7 +61,7 @@ jobs:
             core.info(`Found ${members.length} squad members: ${members.map(m => m.name).join(', ')}`);
 
             // Check if @copilot is on the team
-            const hasCopilot = content.includes('🤖 Coding Agent');
+            const hasCopilot = content.includes('| @copilot |');
 
             // Define label color palette for squad labels
             const SQUAD_COLOR = '9B8FCC';

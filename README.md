@@ -30,7 +30,7 @@ docs/                    Documentation templates (CONTRIBUTING, SECURITY, etc.)
 
 ### Using a Starter Template
 
-1. Copy the `BaseNewProject/` folder into your new repository
+1. Copy the `BaseNewProject/` folder contents into your new repository
 2. Copy relevant files from `docs/` for project documentation
 3. Copy `.github/instructions/copilot-instructions.md` for Copilot guidance
 4. Adjust to your project's specifics

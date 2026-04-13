@@ -131,7 +131,7 @@ These instructions define the required coding, architecture, and project rules f
 - **Use Migrations:** `false` (for SQL Server)
 - **Use PostgreSQL:** `false`
 - **Use Migrations:** `false` (for PostgreSQL)
-- **Use MongoDB:** `true` (see `Persistence.MongoDb/`)
+- **Use MongoDB:** `true` (see your MongoDB persistence project/folder)
 - **Use Migrations:** `false` (for MongoDB)
 - **Prefer Async Operations:** `true`
 - **Use TestContainers:** `true` (for Integration testing)

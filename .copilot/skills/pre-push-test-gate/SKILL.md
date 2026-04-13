@@ -1,5 +1,6 @@
 ---
 name: "pre-push-test-gate"
+confidence: high
 description: "Before any push, the agent must run the full local test suite and ensure zero failures. This skill gates pushes to prevent broken builds and maintain code quality."
 ---
 

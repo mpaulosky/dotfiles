@@ -1,3 +1,4 @@
+---
 name: Squad Triage
 
 on:
@@ -36,8 +37,7 @@ jobs:
             const lines = content.split('\n');
 
             // Check if @copilot is on the team
-            const hasCopilot = content.includes('🤖 Coding Agent');
-            const copilotAutoAssign = content.includes('<!-- copilot-auto-assign: true -->');
+            const hasCopilot = content.includes('| @copilot |');            const copilotAutoAssign = content.includes('<!-- copilot-auto-assign: true -->');
 
             // Parse @copilot capability profile
             let goodFitKeywords = [];
@@ -79,7 +79,7 @@ jobs:
               }
               if (inMembersTable && line.startsWith('|') && !line.includes('---') && !line.includes('Name')) {
                 const cells = line.split('|').map(c => c.trim()).filter(Boolean);
-                if (cells.length >= 2 && cells[0] !== 'Scribe') {
+                if (cells.length >= 2 && cells[0] !== 'Scribe' && cells[0] !== '@copilot') {
                   members.push({
                     name: cells[0],
                     role: cells[1]

@@ -30,3 +30,12 @@
 - **Project:** dotfiles
 - **User:** Matthew Paulosky
 - **Created:** 2026-04-13
+
+## Issue Source
+
+- **Repository:** mpaulosky/dotfiles
+- **Connected:** 2026-04-14
+- **Filters:** state: open, label: squad
+
+<!-- copilot-auto-assign: false -->
+| @copilot | 🤖 Coding Agent | squad:copilot | Autonomous |

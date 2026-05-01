@@ -1,0 +1,94 @@
+---
+name: Squad PR Auto-Label
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-label PR for squad system
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const author = pr.user.login;
+
+            // Fetch current labels on the PR
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number
+            });
+
+            const labelNames = currentLabels.map(l => l.name);
+
+            // Check if already has squad labels
+            const hasSquadLabel = labelNames.some(name => 
+              name === 'squad' || name.startsWith('squad:')
+            );
+
+            if (hasSquadLabel) {
+              core.info(`PR #${pr.number} already has squad label(s) — skipping`);
+              return;
+            }
+
+            let labelsToAdd = [];
+            let commentBody = '';
+
+            // Handle known automation bots
+            const knownBots = ['dependabot[bot]', 'renovate[bot]', 'github-actions[bot]'];
+            if (knownBots.includes(author)) {
+              labelsToAdd = ['squad:boromir', 'squad'];
+              commentBody = [
+                `### 🤖 Dependency Update PR`,
+                '',
+                `This PR was opened by **${author}** and has been automatically labeled for **Boromir** (DevOps) to review.`,
+                '',
+                `**Labels applied:**`,
+                `- \`squad:boromir\` — Assigned to DevOps for dependency updates`,
+                `- \`squad\` — In triage queue`,
+                '',
+                `> Dependency and infrastructure updates are owned by the DevOps team.`
+              ].join('\n');
+            } else {
+              // Handle general PRs without squad labels
+              labelsToAdd = ['squad'];
+              commentBody = [
+                `### 🏗️ PR Added to Squad Triage Queue`,
+                '',
+                `This PR has been labeled with \`squad\` and added to the triage queue.`,
+                '',
+                `**Next steps:**`,
+                `- The squad Lead will review and assign to an appropriate team member`,
+                `- A \`squad:member\` label will be added after triage`,
+                '',
+                `> If you know which squad member should handle this, you can add the appropriate \`squad:member\` label yourself.`
+              ].join('\n');
+            }
+
+            // Add labels
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: labelsToAdd
+            });
+
+            core.info(`Added labels to PR #${pr.number}: ${labelsToAdd.join(', ')}`);
+
+            // Post comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: commentBody
+            });
+
+            core.info(`Posted auto-label comment on PR #${pr.number}`);

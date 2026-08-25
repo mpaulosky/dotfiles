@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Keep local hook activation aligned with the distributed hook baseline.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[[ -n "$REPO_ROOT" ]] || exit 0
+
+EXPECTED_HOOKS_PATH=".github/hooks"
+CURRENT_HOOKS_PATH="$(git config --get core.hooksPath || true)"
+NORMALIZED_HOOKS_PATH="${CURRENT_HOOKS_PATH#./}"
+
+if [[ "$NORMALIZED_HOOKS_PATH" != "$EXPECTED_HOOKS_PATH" ]]; then
+  git config core.hooksPath "$EXPECTED_HOOKS_PATH"
+fi
+
+for hook in pre-commit pre-push post-checkout; do
+  hook_path="$REPO_ROOT/.github/hooks/$hook"
+  if [[ -f "$hook_path" ]] && [[ ! -x "$hook_path" ]]; then
+    chmod +x "$hook_path"
+  fi
+done

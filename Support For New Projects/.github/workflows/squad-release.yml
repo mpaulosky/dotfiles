@@ -1,0 +1,557 @@
+# yamllint disable rule:line-length
+---
+name: Squad Release
+
+"on":
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Merged PR number to process"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: squad-release-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          # A PAT (not GITHUB_TOKEN) is required here: it's persisted as the
+          # git credential for this checkout, and later used by `git push` to
+          # publish the release-notes branch and by `gh pr create` to open
+          # the PR. GitHub treats PRs authored by github-actions[bot] (i.e.
+          # opened via GITHUB_TOKEN) as untrusted and gates every
+          # pull_request-triggered workflow behind a manual "Approve and run"
+          # click. Authoring as a real collaborator (via RELEASE_PR_PAT)
+          # avoids that approval requirement entirely. Falls back to
+          # GITHUB_TOKEN if the PAT secret isn't configured, in which case
+          # the approval-gate workaround further down still applies.
+          token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Resolve PR metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_TITLE: ${{ github.event.pull_request.title }}
+          EVENT_BODY: ${{ github.event.pull_request.body }}
+          EVENT_URL: ${{ github.event.pull_request.html_url }}
+          EVENT_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          EVENT_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          EVENT_LABELS_CSV: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -n "$INPUT_PR_NUMBER" ]; then
+            PR_NUMBER="$INPUT_PR_NUMBER"
+            PR_JSON=$(gh api \
+              "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+              --jq '{
+                number: .number,
+                title: .title,
+                body: (.body // ""),
+                html_url: .html_url,
+                merged: .merged,
+                merged_at: (.merged_at // ""),
+                merge_commit_sha: (.merge_commit_sha // ""),
+                labels: [.labels[].name]
+              }')
+
+            MERGED=$(echo "$PR_JSON" | jq -r '.merged')
+            if [ "$MERGED" != "true" ]; then
+              echo "PR #${PR_NUMBER} is not merged; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            TITLE=$(echo "$PR_JSON" | jq -r '.title')
+            BODY=$(echo "$PR_JSON" | jq -r '.body')
+            URL=$(echo "$PR_JSON" | jq -r '.html_url')
+            MERGE_SHA=$(echo "$PR_JSON" | jq -r '.merge_commit_sha')
+            MERGED_AT=$(echo "$PR_JSON" | jq -r '.merged_at')
+            LABELS=$(echo "$PR_JSON" | jq -c '.labels')
+          else
+            PR_NUMBER="$EVENT_PR_NUMBER"
+            TITLE="$EVENT_TITLE"
+            BODY="$EVENT_BODY"
+            URL="$EVENT_URL"
+            MERGE_SHA="$EVENT_MERGE_SHA"
+            MERGED_AT="$EVENT_MERGED_AT"
+            LABELS=$(printf '%s' "$EVENT_LABELS_CSV" | jq -Rc 'if length == 0 then [] else split(",") end')
+          fi
+
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Unable to resolve PR number."
+            exit 1
+          fi
+
+          LABELS=$(echo "${LABELS:-[]}" | jq -c '.' 2>/dev/null || echo '[]')
+
+          MERGED_DATE=$(date -d "${MERGED_AT:-now}" '+%Y-%m-%d' 2>/dev/null || date '+%Y-%m-%d')
+          TITLE_SLUG=$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g')
+
+          {
+            echo "skip=false"
+            echo "number=$PR_NUMBER"
+            echo "title<<EOF"
+            echo "$TITLE"
+            echo "EOF"
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+            echo "url=$URL"
+            echo "merge_sha=$MERGE_SHA"
+            echo "merged_date=$MERGED_DATE"
+            echo "title_slug=$TITLE_SLUG"
+            echo "labels=$LABELS"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mark merged PR as release-eligible
+        if: steps.pr.outputs.skip != 'true'
+        id: files
+        env:
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+        run: |
+          if echo "$PR_TITLE" | grep -q '\[skip-release\]'; then
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+            echo "reason=automated docs PR opted out via [skip-release] marker" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+            echo "reason=merged PR release flow" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check existing release marker
+        if: steps.pr.outputs.skip != 'true' && steps.files.outputs.eligible == 'true'
+        id: idempotency
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          MARKER="Source PR: #${PR_NUMBER}"
+          MATCHES=$(gh api "repos/${REPOSITORY}/releases?per_page=100" --paginate \
+            | jq -rs --arg marker "$MARKER" '[.[][] | select((.body // "") | contains($marker))] | length')
+
+          if [ "${MATCHES:-0}" -gt 0 ]; then
+            echo "already_released=true" >> "$GITHUB_OUTPUT"
+            echo "Release already exists for PR #${PR_NUMBER}."
+          else
+            echo "already_released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup .NET
+        if: steps.files.outputs.eligible == 'true' && steps.idempotency.outputs.already_released != 'true'
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Install GitVersion
+        if: steps.files.outputs.eligible == 'true' && steps.idempotency.outputs.already_released != 'true'
+        continue-on-error: true
+        uses: gittools/actions/gitversion/setup@v4.7.0
+        with:
+          versionSpec: "6.x"
+
+      - name: Get version base from GitVersion
+        if: steps.files.outputs.eligible == 'true' && steps.idempotency.outputs.already_released != 'true'
+        id: gitversion
+        continue-on-error: true
+        uses: gittools/actions/gitversion/execute@v4.7.0
+        with:
+          configFilePath: GitVersion.yml
+
+      - name: Compute next version
+        if: steps.files.outputs.eligible == 'true' && steps.idempotency.outputs.already_released != 'true'
+        id: version
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+          GV_MAJOR: ${{ steps.gitversion.outputs.major }}
+          GV_MINOR: ${{ steps.gitversion.outputs.minor }}
+          GV_PATCH: ${{ steps.gitversion.outputs.patch }}
+          GV_MMP: ${{ steps.gitversion.outputs.majorMinorPatch }}
+          GV_OUTCOME: ${{ steps.gitversion.outcome }}
+        run: |
+          BUMP=patch
+          if echo "$LABELS_JSON" | jq -e '.[] | test("^(semver|release):major$")' >/dev/null; then
+            BUMP=major
+          elif echo "$LABELS_JSON" | jq -e '.[] | test("^(semver|release):minor$")' >/dev/null; then
+            BUMP=minor
+          elif echo "$LABELS_JSON" | jq -e '.[] | test("^(semver|release):patch$")' >/dev/null; then
+            BUMP=patch
+          fi
+
+          BASE_VERSION=""
+          if [ "$GV_OUTCOME" = "success" ] && [ -n "$GV_MMP" ]; then
+            BASE_VERSION="$GV_MMP"
+          elif [ "$GV_OUTCOME" = "success" ] && [ -n "$GV_MAJOR" ] && [ -n "$GV_MINOR" ] && [ -n "$GV_PATCH" ]; then
+            BASE_VERSION="${GV_MAJOR}.${GV_MINOR}.${GV_PATCH}"
+          else
+            LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            BASE_VERSION="${LAST_TAG#v}"
+          fi
+
+          if ! echo "$BASE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            BASE_VERSION="0.0.0"
+          fi
+
+          MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
+
+          case "$BUMP" in
+            major)
+              NEXT_VERSION="$((MAJOR+1)).0.0"
+              ;;
+            minor)
+              NEXT_VERSION="${MAJOR}.$((MINOR+1)).0"
+              ;;
+            *)
+              NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH+1))"
+              ;;
+          esac
+
+          NEXT_TAG="v${NEXT_VERSION}"
+          while git rev-parse "$NEXT_TAG" >/dev/null 2>&1; do
+            NEXT_MAJOR=$(echo "$NEXT_VERSION" | cut -d. -f1)
+            NEXT_MINOR=$(echo "$NEXT_VERSION" | cut -d. -f2)
+            NEXT_PATCH=$(echo "$NEXT_VERSION" | cut -d. -f3)
+            NEXT_PATCH=$((NEXT_PATCH+1))
+            NEXT_VERSION="${NEXT_MAJOR}.${NEXT_MINOR}.${NEXT_PATCH}"
+            NEXT_TAG="v${NEXT_VERSION}"
+          done
+
+          {
+            echo "bump=$BUMP"
+            echo "base_version=$BASE_VERSION"
+            echo "next_version=$NEXT_VERSION"
+            echo "tag=$NEXT_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update release blog and README files
+        if: steps.files.outputs.eligible == 'true' && steps.idempotency.outputs.already_released != 'true'
+        id: docs
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_BODY: ${{ steps.pr.outputs.body }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          MERGED_DATE: ${{ steps.pr.outputs.merged_date }}
+          TITLE_SLUG: ${{ steps.pr.outputs.title_slug }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          python3 - <<'PYEOF'
+          import html
+          import os
+          import re
+          from pathlib import Path
+
+          pr_number = os.environ["PR_NUMBER"].strip()
+          pr_title = (os.environ.get("PR_TITLE") or "").strip()
+          pr_body = (os.environ.get("PR_BODY") or "").strip()
+          pr_url = (os.environ.get("PR_URL") or "").strip()
+          merged_date = (os.environ.get("MERGED_DATE") or "").strip()
+          title_slug = (os.environ.get("TITLE_SLUG") or "pr-update").strip()
+          tag = (os.environ.get("TAG") or "v0.0.0").strip()
+
+          title_slug = re.sub(r"[^a-z0-9-]", "", title_slug)
+          title_slug = re.sub(r"-+", "-", title_slug).strip("-") or "pr-update"
+
+          blog_dir = Path("docs/blogs")
+          blog_dir.mkdir(parents=True, exist_ok=True)
+          blog_file = blog_dir / f"{merged_date}-pr-{pr_number}-{title_slug}.md"
+
+          title_line = pr_title if pr_title else f"PR #{pr_number}"
+          safe_title = title_line.replace('"', '\\"')
+          front_matter = "\n".join(
+              [
+                  "---",
+                  f'post_title: "{safe_title}"',
+                  "author1: team-squad",
+                  f'post_slug: "{tag.lower()}-pr-{pr_number}"',
+                  "microsoft_alias: n/a",
+                  'featured_image: ""',
+                  "categories:",
+                  "  - engineering",
+                  "tags:",
+                  f"  - release:{tag.lower()}",
+                  "  - automation",
+                  "ai_note: \"Generated by release automation using PR title/body\"",
+                  f'summary: "Release notes seed for {tag} from PR #{pr_number}."',
+                  f'post_date: "{merged_date}"',
+                  "---",
+                  "",
+              ]
+          )
+
+          body = (
+              f"## {title_line}\n\n"
+              f"- **Release tag:** `{tag}`\n"
+              f"- **Source PR:** [#{pr_number}]({pr_url})\n\n"
+              "### PR description\n\n"
+              f"{pr_body.strip() or 'No PR description was provided.'}\n"
+          )
+
+          blog_file.write_text(front_matter + body + "\n", encoding="utf-8")
+
+          blog_index = blog_dir / "README.md"
+          existing = blog_index.read_text(encoding="utf-8") if blog_index.exists() else ""
+
+          rows = []
+          for line in existing.splitlines():
+            line = line.strip()
+            if line.startswith("|") and line.endswith("|") and "---" not in line and "Date" not in line:
+              rows.append(line)
+
+          row_title = title_line.replace("|", "\\|")
+          new_row = f"| {merged_date} | [{row_title}]({blog_file.name}) | release,automation |"
+          rows = [r for r in rows if f"({blog_file.name})" not in r]
+          rows.insert(0, new_row)
+
+          def row_date(row: str) -> str:
+            parts = [p.strip() for p in row.strip("|").split("|")]
+            return parts[0] if parts else "0000-00-00"
+
+          rows = sorted(rows, key=row_date, reverse=True)
+
+          index_text = "\n".join(
+              [
+                  "## Release review posts",
+                  "",
+                  "This directory contains concise release-review posts for merged PR releases.",
+                  "",
+                  "| Date | Title | Tags |",
+                  "|------|-------|------|",
+                  *rows,
+                  "",
+              ]
+          )
+          blog_index.write_text(index_text, encoding="utf-8")
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
+
+          top_rows = rows[:5]
+          table = "\n".join([
+              "| Date | Title | Tags |",
+              "|------|-------|------|",
+              *[
+                  re.sub(
+                      r"\]\((?!https?://)([^)]+)\)",
+                      lambda m: f"](docs/blogs/{m.group(1)})",
+                      row,
+                  )
+                  for row in top_rows
+              ],
+          ])
+
+          block = f"<!-- BLOG_START -->\n{table}\n<!-- BLOG_END -->"
+
+          if "<!-- BLOG_START -->" in readme and "<!-- BLOG_END -->" in readme:
+            readme = re.sub(
+                r"<!-- BLOG_START -->.*?<!-- BLOG_END -->",
+                lambda _match: block,
+                readme,
+                flags=re.DOTALL,
+            )
+          else:
+            suffix = "" if readme.endswith("\n") else "\n"
+            readme = (
+                readme
+                + suffix
+                + "\n## Dev Blog\n\n"
+                + block
+                + "\n"
+            )
+
+          readme_path.write_text(readme, encoding="utf-8")
+          docs_readme_path = Path("docs/README.md")
+          docs_readme_path.parent.mkdir(parents=True, exist_ok=True)
+          docs_readme_path.write_text(readme, encoding="utf-8")
+
+          docs_index_path = Path("docs/index.html")
+          if docs_index_path.exists():
+            docs_index = docs_index_path.read_text(encoding="utf-8")
+            html_items = []
+            for row in top_rows:
+              parts = [p.strip() for p in row.strip("|").split("|")]
+              if len(parts) < 3:
+                continue
+              row_date = html.escape(parts[0])
+              title_cell = parts[1]
+              link_match = re.search(r"\[([^\]]+)\]\(([^)]+)\)", title_cell)
+              if link_match:
+                row_title = html.escape(link_match.group(1))
+                row_href = html.escape(f"blogs/{link_match.group(2)}")
+              else:
+                row_title = html.escape(title_cell)
+                row_href = "blogs/README.md"
+              html_items.append(
+                  "  <li>\n"
+                  f'    <span class="mini-meta">{row_date}</span>\n'
+                  f'    <a href="{row_href}">{row_title}</a>\n'
+                  "  </li>"
+              )
+
+            if not html_items:
+              html_items = [
+                  '  <li><a href="blogs/README.md">Blog index</a></li>'
+              ]
+
+            blog_html_block = "\n".join(
+                [
+                    "<!-- BLOG_HTML_START -->",
+                    '<ul class="blog-list">',
+                    *html_items,
+                    "</ul>",
+                    "<!-- BLOG_HTML_END -->",
+                ]
+            )
+
+            if "<!-- BLOG_HTML_START -->" in docs_index and "<!-- BLOG_HTML_END -->" in docs_index:
+              docs_index = re.sub(
+                  r"<!-- BLOG_HTML_START -->.*?<!-- BLOG_HTML_END -->",
+                  lambda _match: blog_html_block,
+                  docs_index,
+                  flags=re.DOTALL,
+              )
+            else:
+              blog_html_indented = blog_html_block.replace("\n", "\n          ")
+              docs_index = re.sub(
+                  r'(<section[^>]*id="blogs"[^>]*>\s*<h2>[^<]*</h2>)',
+                  lambda match: match.group(1) + "\n          " + blog_html_indented,
+                  docs_index,
+                  count=1,
+                  flags=re.DOTALL,
+              )
+
+            docs_index_path.write_text(docs_index, encoding="utf-8")
+          PYEOF
+
+          if git diff --quiet -- docs/blogs README.md docs/README.md docs/index.html; then
+            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "docs_changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push docs updates
+        if: steps.files.outputs.eligible == 'true' && steps.idempotency.outputs.already_released != 'true' && steps.docs.outputs.docs_changed == 'true'
+        id: commit
+        continue-on-error: true
+        env:
+          # Same PAT-with-fallback as the checkout step (see comment there);
+          # gh pr create authors the PR as whichever identity this token
+          # belongs to.
+          GH_TOKEN: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/blogs README.md docs/README.md docs/index.html
+
+          if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # main is rules-protected and requires a pull request, so the docs
+          # update goes out on its own branch/PR rather than a direct push.
+          # The [skip-release] marker keeps this PR's own merge from
+          # triggering another run of this workflow.
+          BRANCH="docs/release-notes-pr-${PR_NUMBER}"
+          git checkout -b "$BRANCH"
+          git commit -m "docs: add release blog for PR #${PR_NUMBER} [skip-release]"
+          git push origin "$BRANCH"
+          git checkout main
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "docs: add release blog for PR #${PR_NUMBER} [skip-release]" \
+            --body "Automated release-notes update generated for #${PR_NUMBER}. Opened by the release workflow; the [skip-release] title marker keeps its own merge from starting another release."
+
+          dispatch_failed=0
+          for workflow in \
+            "squad-lint-markdown.yml" \
+            "squad-lint-yaml.yml" \
+            "codeql-analysis.yml"; do
+            echo "Dispatching validation workflow: $workflow -> $BRANCH"
+            if ! gh workflow run "$workflow" --ref "$BRANCH"; then
+              echo "::warning::Failed to dispatch $workflow for release PR $BRANCH. The PR may still need manual workflow approval."
+              dispatch_failed=1
+            fi
+          done
+
+          if [ "$dispatch_failed" -eq 1 ]; then
+            echo "::warning::One or more validation workflows did not start automatically for $BRANCH. Review the PR and trigger them manually if needed."
+          fi
+
+          gh pr merge "$BRANCH" --auto --squash
+
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and release
+        if: steps.files.outputs.eligible == 'true' && steps.idempotency.outputs.already_released != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          MERGE_SHA: ${{ steps.pr.outputs.merge_sha }}
+          BUMP: ${{ steps.version.outputs.bump }}
+          BASE_VERSION: ${{ steps.version.outputs.base_version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists locally."
+          else
+            git tag -a "$TAG" -m "Release ${TAG} from PR #${PR_NUMBER}"
+            git push origin "$TAG"
+          fi
+
+          EXTRA_NOTES=$(cat <<EOF
+          Source PR: #${PR_NUMBER}
+          Source PR URL: ${PR_URL}
+          Merge commit: ${MERGE_SHA}
+          Bump policy: ${BUMP} (base ${BASE_VERSION})
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists."
+          else
+            gh release create "$TAG" \
+              --title "Release ${TAG}" \
+              --generate-notes \
+              --notes "$EXTRA_NOTES" \
+              --verify-tag
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "PR: #${{ steps.pr.outputs.number || 'n/a' }}"
+          echo "Eligible: ${{ steps.files.outputs.eligible || 'n/a' }}"
+          echo "Already released: ${{ steps.idempotency.outputs.already_released || 'n/a' }}"
+          echo "Tag: ${{ steps.version.outputs.tag || 'n/a' }}"

@@ -1,0 +1,52 @@
+{
+	"mcpServers": {
+		"mongodb": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"mongodb-mcp-server@latest"
+			]
+		},
+		"playwright": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"@playwright/mcp@latest"
+			]
+		},
+		"microsoft-docs": {
+			"type": "http",
+			"url": "https://learn.microsoft.com/api/mcp"
+		},
+		"context7": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"@upstash/context7-mcp@1.0.31"
+			],
+			"env": {
+				"CONTEXT7_API_KEY": "${ctx7sk-6c71628a-1b6d-4e3f-82d9-53ef22794411}"
+			}
+		},
+		"sequential-thinking": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"@modelcontextprotocol/server-sequential-thinking"
+			]
+		},
+		"github": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"@anthropic/github-mcp-server"
+			],
+			"env": {
+				"GITHUB_TOKEN": "${GITHUB_TOKEN}"
+			}
+		}
+	}
+}

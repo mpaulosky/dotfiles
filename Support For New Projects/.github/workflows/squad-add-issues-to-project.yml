@@ -1,0 +1,90 @@
+---
+# yamllint disable rule:line-length
+name: Add Issues to Project
+
+"on":
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: read
+  repository-projects: write
+
+env:
+  PROJECT_ID: PVT_kwHOA5k0b84BXZpa
+  STATUS_FIELD_ID: PVTSSF_lAHOA5k0b84BXZpazhSmuGY
+  BACKLOG_OPTION_ID: f75ad846
+
+jobs:
+  add-to-project:
+    # Only add sprint-stamped delivery issues.
+    if: >
+      contains(github.event.issue.labels.*.name, 'squad') &&
+      startsWith(github.event.issue.title, '[Sprint ') &&
+      github.event.issue.milestone != null
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Add issue to MyBlog project board
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const issue = context.payload.issue;
+
+            core.info(`Adding issue #${issue.number} to project board...`);
+
+            // Add the issue to the project board and set Status → Backlog
+            try {
+              const mutation = await github.graphql(`
+                mutation($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: {
+                    projectId: $projectId
+                    contentId: $contentId
+                  }) {
+                    item {
+                      id
+                    }
+                  }
+                }
+              `, {
+                projectId: process.env.PROJECT_ID,
+                contentId: issue.node_id
+              });
+
+              const itemId = mutation.addProjectV2ItemById.item.id;
+
+              // Set Status to Backlog
+              await github.graphql(`
+                mutation(
+                  $projectId: ID!
+                  $itemId: ID!
+                  $fieldId: ID!
+                  $optionId: String!
+                ) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }
+              `, {
+                projectId: process.env.PROJECT_ID,
+                itemId: itemId,
+                fieldId: process.env.STATUS_FIELD_ID,
+                optionId: process.env.BACKLOG_OPTION_ID
+              });
+
+              core.info(`✅ Issue #${issue.number} added to project → Backlog`);
+            } catch (err) {
+              if (err.message.includes('403')) {
+                const tokenMsg = "Access denied (403). Create a PAT with 'project' scope " +
+                  "and store as secrets.GH_PROJECT_TOKEN";
+                core.warning(tokenMsg);
+              } else {
+                core.warning(`Could not add issue to project: ${err.message}`);
+              }
+            }

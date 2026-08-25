@@ -1,0 +1,110 @@
+---
+name: Squad Branch and Worktree Cleanup
+
+"on":
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Apply cleanup changes (requires apply_signal=APPLY_CLEANUP)
+        required: false
+        default: false
+        type: boolean
+      apply_signal:
+        description: >-
+          Explicit destructive confirmation token
+          (must be APPLY_CLEANUP)
+        required: false
+        default: ""
+        type: string
+      delete_remote:
+        description: Delete eligible remote branches
+        required: false
+        default: true
+        type: boolean
+      orphan_days:
+        description: Minimum age in days before orphan branch cleanup
+        required: false
+        default: "14"
+        type: string
+      force_local:
+        description: Force local branch deletion with -D
+        required: false
+        default: false
+        type: boolean
+      force_worktree:
+        description: Force worktree removal
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "35 3 * * *"
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: read
+
+jobs:
+  cleanup:
+    name: Cleanup stale squad/sprint/hotfix branches and worktrees
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run cleanup (scheduled runs apply automatically; manual apply needs signal)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_APPLY: ${{ inputs.apply }}
+          INPUT_APPLY_SIGNAL: ${{ inputs.apply_signal }}
+          INPUT_DELETE_REMOTE: ${{ inputs.delete_remote }}
+          INPUT_ORPHAN_DAYS: ${{ inputs.orphan_days }}
+          INPUT_FORCE_LOCAL: ${{ inputs.force_local }}
+          INPUT_FORCE_WORKTREE: ${{ inputs.force_worktree }}
+        run: |
+          set -euo pipefail
+
+          APPLY_ARGS=()
+          DELETE_REMOTE_ARGS=()
+          FORCE_LOCAL_ARGS=()
+          FORCE_WORKTREE_ARGS=()
+
+          ORPHAN_DAYS="${INPUT_ORPHAN_DAYS:-14}"
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            echo "Schedule trigger applies cleanup automatically."
+            APPLY_ARGS+=(--apply)
+            DELETE_REMOTE_ARGS+=(--delete-remote)
+          else
+            if [[ "${INPUT_APPLY:-false}" == "true" ]]; then
+              if [[ "${INPUT_APPLY_SIGNAL:-}" != "APPLY_CLEANUP" ]]; then
+                echo "::error::apply_signal must be APPLY_CLEANUP for --apply."
+                exit 1
+              fi
+              APPLY_ARGS+=(--apply)
+
+              if [[ "${INPUT_DELETE_REMOTE:-true}" == "true" ]]; then
+                DELETE_REMOTE_ARGS+=(--delete-remote)
+              fi
+              if [[ "${INPUT_FORCE_LOCAL:-false}" == "true" ]]; then
+                FORCE_LOCAL_ARGS+=(--force-local)
+              fi
+              if [[ "${INPUT_FORCE_WORKTREE:-false}" == "true" ]]; then
+                FORCE_WORKTREE_ARGS+=(--force-worktree)
+              fi
+            elif [[ "${INPUT_DELETE_REMOTE:-false}" == "true" ]]; then
+              echo "Ignoring delete_remote because apply=false (dry-run)."
+            fi
+          fi
+
+          bash scripts/squad/cleanup-squad-branches.sh \
+            --repo "$REPO" \
+            --orphan-days "$ORPHAN_DAYS" \
+            "${APPLY_ARGS[@]}" \
+            "${DELETE_REMOTE_ARGS[@]}" \
+            "${FORCE_LOCAL_ARGS[@]}" \
+            "${FORCE_WORKTREE_ARGS[@]}"

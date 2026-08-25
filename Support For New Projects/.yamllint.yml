@@ -1,0 +1,13 @@
+---
+extends: default
+ignore: |
+  .squad/
+rules:
+  line-length:
+    max: 200
+    allow-non-breakable-inline-mappings: true
+  truthy:
+    allowed-values: ["true", "false", "on"]
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 1

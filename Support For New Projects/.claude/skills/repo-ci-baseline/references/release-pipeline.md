@@ -1,0 +1,98 @@
+# Serialized releases
+
+Reference: IssueTracker PR #172, plus the fixes from atelier-store #90's review (IssueTracker #184). The files are
+`.github/workflows/release.yml`, `.github/scripts/release_queue.py`, `.github/scripts/draft_release.py` and their tests
+under `.github/scripts/tests/`. The workflow also uses the repo's own `release_post.py` and `backfill_blog_posts.py`.
+
+## What it guarantees
+
+- Versions follow merge order, even when PRs merge seconds apart.
+- A release that was cancelled, or failed before its GitHub Release was published, is retried by the next run.
+- One blog PR per run, never one per released PR, so blog PRs can't conflict with each other.
+- A merged blog PR (`[skip-release]`) releases nothing and opens nothing, so there's no loop.
+
+## Design
+
+**Concurrency.** Every run that can release shares the group `release-main` (`cancel-in-progress: false`). GitHub keeps
+only the newest *pending* run in a group and cancels the one it replaces, so a shared group alone would silently drop
+releases. That's why each run releases everything owed, not just its own PR. A run that can't release (an unmerged PR
+closing, a dispatch from a branch) gets `release-ignored-<run id>`, so it can't replace a pending release run and then
+do nothing. The group expression repeats the `plan` job's `if`; keep the two in step.
+
+**`plan` job** (read-only) runs `release_queue.py --repo <repo> --pr <trigger>` and outputs a JSON list:
+
+- **Cutoff:** the newest *published* GitHub Release, meaning a `vX.Y.Z` tag with a `Source PR: #n` line, highest by
+  version. Never the newest git tag: a run that pushed its tag and then failed before creating the Release would
+  otherwise hide its PR for good. Drafts don't count.
+- **Listing:** closed PRs into `main`, sorted by update time, newest first. Page back until a PR's update time is before
+  the cutoff PR's merge time. A PR merged after the cutoff can't have been updated before it, so no fixed page size can
+  miss one.
+- **Owed:** merged after the cutoff, no `[skip-release]` in the title, no Release naming it, and merge commit not inside
+  the cutoff Release's tag. The last rule keeps history from before release automation out. With no Release at all, only
+  the triggering PR is queued.
+- **Order:** by each merge commit's position on `main`'s first-parent history (`git rev-list --first-parent --reverse`),
+  never by `merged_at`, which has one-second resolution and ties. Fetch `main` *after* listing, so every listed merge is
+  on it. If one isn't, fail the run instead of guessing; the next run retries.
+- **Manual runs** (`workflow_dispatch` with `pr_number`) go through the same planner, so a newer PR can't be released
+  ahead of an older owed one. A named PR joins the list only if its base branch is `main`; one merged elsewhere is left
+  out rather than failing the run on a merge commit `main` doesn't have.
+
+**`release` job:** a matrix over the list with `max-parallel: 1` and `fail-fast: false`, using `contents: write` and
+`pull-requests: read`. Per PR it resolves the PR, skips `[skip-release]`, checks for an existing non-draft Release (the
+idempotency check), reserves a tag by pushing it (the push is the lock), and creates the Release. If it finds a draft
+Release for its tag, it publishes it with the body `draft_release.py` returns: the draft's own text, plus the release
+notes unless the draft already has this PR's `Source PR: #n` on a line of its own. The planner and the ordering guard
+recognise a Release only by that marker, so a draft published without it would stay "owed" forever and block every later
+PR. A draft that names a *different* PR fails the job instead, because publishing it would give one Release two sources.
+The helper matches markers anywhere in a line, as `source_pr_of()` does, so a list item like `- Source PR: #5` is
+caught; every parser must agree on which markers count.
+
+- **Ordering guard:** before reserving a tag, every PR ahead of this one in the list must already have a *published
+  Release*. A tag alone isn't enough. If one is missing, fail, and the next run releases both in order.
+
+**`docs` job** (`needs: [plan, release]`, `if: always() && needs.plan.result == 'success'`) runs
+`backfill_blog_posts.py`, which writes a post for every Release that `main` has no post for, then rebuilds the README
+and blog tables once. It then force-pushes the result to a single branch, `docs/release-notes`, and creates or updates
+one PR titled `docs: add release blog for PR #N [skip-release]` (`release blogs for PR #A, #B` when a run covers
+several), with auto-merge enabled. A still-open blog PR gets folded into the next run's PR instead of conflicting with
+it. The PRs covered come from the new file names (`docs/blogs/<date>-pr-<n>-<slug>.md`).
+
+GitHub's release *list* can lag a just-published Release by several seconds. The docs job starts about four seconds
+after the last release, so it passes the plan's queue as `--wait-for-prs`, and the backfill lists again every 2
+seconds, for up to about 30 seconds, until each queued PR has a Release. The posts and the tables then use that one
+listing. Without this, IssueTracker's v0.0.20 (PR #188) got no blog PR: the run logged "Every Release already has its
+post" and succeeded. Recovery was `gh run rerun <run id> --job <docs job id>`. Reference: IssueTracker #190 and #192.
+
+**Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
+checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual
+approval.
+
+## Porting
+
+- Check which Releases lack a post *before* the port merges (`backfill_blog_posts.select_releases` with the repo's
+  releases and `docs/blogs`). The docs job writes every missing one on its first run. If there are old ones, run the
+  repo's "Backfill blog posts" workflow first (`gh workflow run backfill-blog-posts.yml --ref main`), so they arrive in
+  a deliberate PR. atelier-store had 8 from before its blog automation; the backfill PR merged, and the port then
+  started with nothing missing. IssueTracker had none.
+- The planner imports only `GitHub`, `pull`, `releases`, `version_key` and `source_pr_of` from `release_post.py`.
+  Confirm the repo's copy has them; the rest of that script can differ.
+- If the repo's `release.yml` matches the reference's version from before #172, take the new workflow whole. Otherwise
+  port it job by job.
+- Dry-run the planner against the real repo before pushing: `python3 .github/scripts/release_queue.py --repo
+  <owner/name> --pr <last merged PR>`. It must print `[]` and name the newest Release as the cutoff. Any other result
+  means the switch would release something unexpected.
+- Create the `semver:minor` and `semver:major` labels if they're missing.
+
+## Verify live
+
+The port's own merge is the first live run. Check it:
+
+1. `plan` logs `Newest published Release: vX (PR #prev). Queue: [<this PR>]`.
+2. `release (<this PR>)` publishes the next version.
+3. `docs` opens `docs: add release blog for PR #<this PR> [skip-release]` from `docs/release-notes`, and it merges.
+4. The blog PR's own run shows `Queue: empty`, `release` skipped, and `docs` reporting that every Release already has
+   its post.
+
+The `docs` job is idempotent (it rebuilds from `main`, force-pushes, then creates or updates the PR), so a failure on a
+transient API error is fixed with `gh run rerun <run id> --failed`. atelier-store's first live run hit a GitHub 502 on
+`gh pr create`; the rerun opened its blog PR.

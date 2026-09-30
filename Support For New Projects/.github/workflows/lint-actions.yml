@@ -1,0 +1,70 @@
+---
+name: Lint Actions
+# Lints the GitHub Actions workflows and the repo's shell scripts and hooks.
+# scripts/gate.sh runs the same tools, at the same versions, before a push.
+
+"on":
+  push:
+    branches:
+      - "main"
+
+  pull_request:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions: {contents: read}
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Syntax, expressions and contexts, plus shellcheck on every run: block.
+      - name: Run actionlint
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 # 1.7.12
+        with:
+          args: -color
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Security audit: script injection, over-broad permissions, unpinned
+      # actions, dangerous triggers. advanced-security: false makes findings
+      # fail the job instead of only uploading to code scanning.
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: "1.30.1"
+          min-severity: medium
+          advanced-security: false
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Shell scripts, plus extensionless scripts and git hooks. Keep in step
+      # with SHELL_FILES in scripts/gate.sh.
+      - name: Run shellcheck
+        run: |
+          mapfile -t files < <(git ls-files | grep -E '\.sh$|^scripts/[^/.]+$|^\.github/hooks/((pre|post)-[a-z-]+|(prepare-)?commit-msg)$')
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No shell files to check."
+            exit 0
+          fi
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d `# v0.11.0` \
+            "${files[@]}"

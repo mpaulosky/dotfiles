@@ -1,0 +1,29 @@
+---
+name: Lint YAML
+# Validates all workflow and config YAML files
+
+"on":
+  push:
+    branches:
+      - "main"
+
+  pull_request:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions: {contents: read}
+
+jobs:
+  yamllint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Run yamllint
+        uses: ibiqlik/action-yamllint@2576378a8e339169678f9939646ee3ee325e845c # v3.1.1
+        with:
+          file_or_dir: .
+          config_file: .yamllint.yml

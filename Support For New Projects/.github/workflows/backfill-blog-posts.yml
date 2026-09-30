@@ -1,0 +1,121 @@
+# yamllint disable rule:line-length
+---
+name: Backfill blog posts
+
+# Writes release blog posts for past GitHub Releases with
+# .github/scripts/backfill_blog_posts.py and delivers them as one PR.
+# release.yml can't do this: its idempotency check sees the existing
+# Release and skips the docs step. Uses each Release's existing tag and
+# never creates tags or Releases.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      regenerate:
+        description: "Also rewrite posts that already exist"
+        required: false
+        default: false
+        type: boolean
+      pr_numbers:
+        description: "Comma-separated source PR numbers to limit the run to (empty: every release)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  # Model for the AI Summary in the posts (used only when the
+  # ANTHROPIC_API_KEY secret is set). Same as release.yml.
+  ANTHROPIC_MODEL: claude-sonnet-5
+  BRANCH: docs/backfill-blog-posts
+
+concurrency:
+  group: backfill-blog-posts
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    # The job force-pushes, opens a PR and enables auto-merge, so it runs
+    # only when dispatched from main, never from a branch's copy of this file.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        # zizmor: ignore[artipacked] this job pushes with the checkout's credential.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          # A PAT, as in release.yml: a PR opened with GITHUB_TOKEN is
+          # authored by github-actions[bot], and its pull_request workflows
+          # wait for a manual "Approve and run". Falls back to GITHUB_TOKEN
+          # when the RELEASE_PR_PAT secret isn't configured.
+          token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Write blog posts and release tables
+        id: docs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          REGENERATE: ${{ inputs.regenerate }}
+          PR_NUMBERS: ${{ inputs.pr_numbers }}
+          # Optional: without it (or when the API fails) posts are written
+          # without the AI Summary section.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 .github/scripts/backfill_blog_posts.py \
+            --regenerate "$REGENERATE" \
+            --pr-numbers "$PR_NUMBERS"
+
+          # git status (not git diff) so brand-new, still-untracked files count.
+          if [ -z "$(git status --porcelain -- docs/blogs README.md docs/README.md docs/index.html)" ]; then
+            echo "Nothing to backfill; no PR opened." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "docs_changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "docs_changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the backfill PR
+        if: steps.docs.outputs.docs_changed == 'true'
+        env:
+          # Same PAT-with-fallback as the checkout step.
+          GH_TOKEN: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
+          HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # main is rules-protected and requires a pull request. The
+          # [skip-release] marker keeps this PR's merge from starting a
+          # release.
+          TITLE="docs: backfill blog posts [skip-release]"
+          git checkout -b "$BRANCH"
+          for path in docs/blogs README.md docs/README.md docs/index.html; do
+            if [ -e "$path" ]; then
+              git add -- "$path"
+            fi
+          done
+          git commit -m "$TITLE"
+          # The branch is rebuilt from main on every run, so an open backfill
+          # PR is updated in place rather than stacked with a second one.
+          git push --force origin "$BRANCH"
+
+          if [ "$HAS_RELEASE_PR_PAT" != "true" ]; then
+            echo "::notice::RELEASE_PR_PAT is not set, so the backfill PR is pushed with GITHUB_TOKEN. Its pull_request workflow runs (lint, CodeQL) need a manual \"Approve and run\" before they start, and auto-merge waits on them. Set RELEASE_PR_PAT to avoid this."
+          fi
+
+          EXISTING=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Updated the open backfill PR #${EXISTING}." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body "Automated blog post backfill for past releases, opened by the Backfill blog posts workflow. Each post uses its Release's existing tag; no tags or Releases were created. The [skip-release] title marker keeps its merge from starting a release."
+          fi
+
+          gh pr merge "$BRANCH" --auto --squash

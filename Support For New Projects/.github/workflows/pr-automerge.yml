@@ -1,0 +1,207 @@
+---
+name: PR Auto-Merge
+
+# Squash-merges a same-repo PR into main once it is ready: required checks
+# pass, Copilot has reviewed the PR's head commit, and every review thread is
+# resolved. The main ruleset asks Copilot to review each push but doesn't
+# require its review, so merging on green alone would usually land a PR
+# before that review arrives. Each trigger below is a moment one of those
+# conditions can become true; the job re-checks all of them every time.
+# zizmor flags pull_request_target and workflow_run as dangerous because they
+# run with write access on PR events. That is safe here: neither path checks
+# out or executes PR code, as the comments below explain.
+"on":  # zizmor: ignore[dangerous-triggers]
+  # pull_request_target, not pull_request: it runs this file as it is on
+  # main, so a PR can't edit the script that decides whether it merges or
+  # reach the PAT. The job never checks out PR code.
+  pull_request_target:
+    types: [opened, ready_for_review, reopened, edited, synchronize]
+    branches: [main]
+  # GitHub sends no check_suite events for suites created by Actions, and
+  # every required check comes from one of these workflows, so their
+  # completion is the signal that the checks may have gone green.
+  workflow_run:
+    workflows: ["Build and Test Suite", "Lint Markdown", "Lint YAML", "Lint Actions", "CodeQL"]
+    types: [completed]
+  # Resolving a review thread has no Actions trigger, and pull_request_review
+  # would run the PR's own copy of this file with write access, so a PR whose
+  # last blocker was a review or an open thread is picked up by this sweep.
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge-when-ready:
+    name: Merge same-repo PRs when ready
+    # A manual sweep can merge every ready PR, so it runs only from main.
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Squash-merge when ready
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
+        with:
+          # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
+          # (on: pull_request closed) would never run for it. Merge with the
+          # PAT when it's set, the same fallback the release workflow uses.
+          # Every trigger runs main's copy of this file, never a PR's.
+          github-token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+
+            async function mergeIfReady(pullNumber) {
+              const status = await github.graphql(
+                `query MergeReadiness(
+                   $owner: String!,
+                   $repo: String!,
+                   $number: Int!
+                 ) {
+                   repository(owner: $owner, name: $repo) {
+                     pullRequest(number: $number) {
+                       state
+                       isDraft
+                       isCrossRepository
+                       baseRefName
+                       headRefOid
+                       mergeable
+                       mergeStateStatus
+                       autoMergeRequest {
+                         enabledAt
+                       }
+                       # Filtering by author keeps other reviews (each thread
+                       # reply counts as one) from pushing Copilot's off the
+                       # page. The filter takes the "[bot]" login; the nodes
+                       # themselves report it without the suffix.
+                       copilotReviews: reviews(last: 20, author: "copilot-pull-request-reviewer[bot]") {
+                         nodes {
+                           commit { oid }
+                         }
+                       }
+                       reviewThreads(first: 100) {
+                         totalCount
+                         nodes { isResolved }
+                       }
+                     }
+                   }
+                 }`,
+                { owner, repo, number: pullNumber }
+              );
+
+              const pr = status.repository.pullRequest;
+              if (!pr || pr.state !== "OPEN" || pr.isDraft || pr.isCrossRepository || pr.baseRefName !== "main") {
+                core.info(`Skipping PR #${pullNumber}: not an open, non-draft, same-repo PR into main.`);
+                return;
+              }
+
+              // release.yml and backfill-blog-posts.yml turn on auto-merge for
+              // their own docs PRs; GitHub finishes those, so leave them alone.
+              if (pr.autoMergeRequest) {
+                core.info(`Skipping PR #${pullNumber}: auto-merge is already enabled.`);
+                return;
+              }
+
+              // Copilot re-reviews every push, including merge-from-main
+              // commits, so its review has to cover the exact head.
+              const copilotReviewed = pr.copilotReviews.nodes.some((review) => {
+                return review.commit?.oid === pr.headRefOid;
+              });
+              if (!copilotReviewed) {
+                core.info(`Waiting on PR #${pullNumber}: no Copilot review of ${pr.headRefOid} yet.`);
+                return;
+              }
+
+              // Only the first 100 threads are fetched; past that, leave the
+              // merge to a person rather than miss an unresolved one.
+              if (pr.reviewThreads.totalCount > pr.reviewThreads.nodes.length) {
+                core.info(`Skipping PR #${pullNumber}: more review threads than one page; merge it by hand.`);
+                return;
+              }
+
+              const unresolved = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
+              if (unresolved > 0) {
+                core.info(`Waiting on PR #${pullNumber}: ${unresolved} unresolved review thread(s).`);
+                return;
+              }
+
+              // CLEAN means required checks passed and the branch is up to
+              // date with main. Anything else (pending or failing checks,
+              // BEHIND, conflicts, or UNKNOWN while GitHub computes it) waits
+              // for a later event.
+              if (pr.mergeable !== "MERGEABLE" || pr.mergeStateStatus !== "CLEAN") {
+                core.info(
+                  `Waiting on PR #${pullNumber}: mergeable=${String(pr.mergeable)} ` +
+                  `mergeStateStatus=${pr.mergeStateStatus ?? "unknown"}.`
+                );
+                return;
+              }
+
+              if (process.env.HAS_RELEASE_PR_PAT !== "true") {
+                core.warning(
+                  "RELEASE_PR_PAT is not set, so this merge uses GITHUB_TOKEN and release.yml will not run for it."
+                );
+              }
+
+              try {
+                // sha pins the merge to the commit that was checked above, so
+                // a push that lands in between makes the merge fail instead of
+                // merging unreviewed code.
+                await github.rest.pulls.merge({
+                  owner,
+                  repo,
+                  pull_number: pullNumber,
+                  sha: pr.headRefOid,
+                  merge_method: "squash"
+                });
+              } catch (error) {
+                // 405: not mergeable after all (e.g. a parallel run just
+                // merged it); 409: the head moved. A later event re-evaluates.
+                if (error.status === 405 || error.status === 409) {
+                  core.warning(`Not merging PR #${pullNumber}: ${error.message}`);
+                  return;
+                }
+                throw error;
+              }
+
+              core.info(`Squash-merged PR #${pullNumber} at ${pr.headRefOid}.`);
+            }
+
+            // pull_request_target events carry the PR;
+            // workflow_run carries only a commit; schedule and
+            // workflow_dispatch sweep every open PR into main.
+            let pullNumbers = [];
+            const workflowRun = context.payload.workflow_run;
+            if (context.payload.pull_request) {
+              pullNumbers = [context.payload.pull_request.number];
+            } else if (workflowRun) {
+              const associated = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner,
+                repo,
+                commit_sha: workflowRun.head_sha
+              });
+              pullNumbers = associated.data
+                .filter((pr) => pr.state === "open" && pr.head?.sha === workflowRun.head_sha)
+                .map((pr) => pr.number);
+            } else {
+              const open = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: "open",
+                base: "main",
+                per_page: 100
+              });
+              pullNumbers = open.map((pr) => pr.number);
+            }
+
+            if (pullNumbers.length === 0) {
+              core.info("No open pull request to evaluate for this event.");
+              return;
+            }
+
+            for (const pullNumber of pullNumbers) {
+              await mergeIfReady(pullNumber);
+            }

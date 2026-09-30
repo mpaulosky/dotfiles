@@ -1,40 +1,54 @@
 ---
 name: ".NET code metrics"
 
+# Manual runs only, for now. The pinned metrics action does not count the
+# members of classes declared with a primary constructor, so it reports every
+# service and repository in src/ as empty. Restore the push and pull_request
+# triggers once the action handles primary constructors.
 "on":
-  push:
-    branches:
-      - main
-    paths:
-      - "!./CODE_METRICS.md"  # ignore this file
-
-  pull_request:
-    branches:
-      - "**"
-    paths:
-      - "!./CODE_METRICS.md"  # ignore this file
-
   workflow_dispatch:
     inputs:
       reason:
         description: "The reason for running the workflow"
         required: true
         default: "Manual run"
+      # Off by default: the reports undercount primary-constructor classes, so
+      # a run only shows them in the log unless publishing is asked for.
+      publish:
+        description: "Open a pull request with the updated CODE_METRICS.md"
+        required: false
+        type: boolean
+        default: false
+
+# Read-only on purpose: the job runs a third-party action and needs no write
+# access itself. The main-only PR step below pushes and opens the PR with
+# RELEASE_PR_PAT instead.
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
 
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        # zizmor: ignore[artipacked] create-pull-request pushes with the checkout's credential.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: "Print manual run reason"
         if: ${{ github.event_name == 'workflow_dispatch' }}
+        # Free text from the dispatcher: read from env, never interpolated.
+        env:
+          REASON: ${{ github.event.inputs.reason }}
         run: |
-          echo 'Reason: ${{ github.event.inputs.reason }}'
+          echo "Reason: $REASON"
       - name: .NET code metrics
         id: dotnet-code-metrics
-        uses: dotnet/samples/github-actions/DotNet.GitHubAction@main
+        # Pinned to an audited commit, so an upstream change to this external
+        # action can't run here unreviewed.
+        uses: dotnet/samples/github-actions/DotNet.GitHubAction@acb39ceb13f910ae0f8f6298059c59102b749c41  # main as of 2026-09-26
         env:
           GREETINGS: "Hello, .NET developers!"  # ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -43,10 +57,22 @@ jobs:
           branch: ${{ github.ref }}
           dir: ${{ './' }}
 
+      # Only open a metrics PR when asked to, and only from main: a run from
+      # another branch must not publish metrics.
       - name: Create pull request
-        uses: peter-evans/create-pull-request@v8.1.1
-        if: ${{ steps.dotnet-code-metrics.outputs.updated-metrics }} == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        if: ${{ inputs.publish && github.ref == 'refs/heads/main' && steps.dotnet-code-metrics.outputs.updated-metrics == 'true' && env.HAS_RELEASE_PR_PAT == 'true' }}
         with:
-          title: "${{ steps.dotnet-code-metrics.outputs.summary-title }}"
+          # [skip-release]: a metrics refresh isn't a release.
+          title: "${{ steps.dotnet-code-metrics.outputs.summary-title }} [skip-release]"
           body: "${{ steps.dotnet-code-metrics.outputs.summary-details }}"
           commit-message: ".NET code metrics, automated pull request."
+          branch: chore/code-metrics
+          # A PAT, not GITHUB_TOKEN: the workflow token is read-only, Actions
+          # may not create PRs in this repository, and a PR opened with
+          # GITHUB_TOKEN wouldn't trigger the checks main requires.
+          token: ${{ secrets.RELEASE_PR_PAT }}
+
+      - name: Report skipped metrics pull request
+        if: ${{ inputs.publish && github.ref == 'refs/heads/main' && steps.dotnet-code-metrics.outputs.updated-metrics == 'true' && env.HAS_RELEASE_PR_PAT != 'true' }}
+        run: echo "::notice::RELEASE_PR_PAT is not set, so the updated CODE_METRICS.md wasn't opened as a pull request."

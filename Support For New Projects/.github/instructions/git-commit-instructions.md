@@ -28,7 +28,7 @@ All commit messages **must** follow this structure:
 
 ### Scope
 
-The scope should be the name of the affected project, folder, or feature (e.g., `Web`, `Mongo`, `ServiceDefaults`,
+The scope should be the name of the affected project, folder, or feature (e.g., `UI`, `Services`, `PlugIns`, `AppHost`, `ci`,
 `docs`).
 
 ### Short Summary
@@ -47,21 +47,22 @@ The scope should be the name of the affected project, folder, or feature (e.g., 
 ## Examples
 
 ```text
-feat(Web): add user authentication with Auth0
+feat(UI): Let admins archive a category from the grid
 
-Implements login and logout functionality using Auth0.
-Updates navigation bar to show user info when authenticated.
+Adds an Archive button to each row on the Categories page. Archived
+categories drop out of the Create form's category list.
 Fixes #42
 ```
 
 ```text
-fix(Mongo): handle null reference in BlogRepository
+fix(PlugIns): Return an empty list when an issue has no comments
 
-Adds null checks to prevent exceptions when querying missing documents.
+The comment query returned null for issues without comments, which
+the details page then dereferenced.
 ```
 
 ```text
-docs(CONTRIBUTING): update testing section for Playwright
+docs(CONTRIBUTING): Update testing section for Playwright
 
 Adds Playwright usage instructions and links to documentation.
 ```

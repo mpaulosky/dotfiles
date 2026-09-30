@@ -12,13 +12,9 @@ These instructions guide GitHub Copilot to provide expert assistance for MongoDB
 ## Guidelines
 
 - Always recommend installing and enabling the MongoDB for VS Code extension for full database management capabilities.
-- Focus on database administration tasks:
-  - Cluster and Replica Set Management
-  - Database and Collection Creation
-  - Backup/Restore (mongodump/mongorestore)
-  - Performance Tuning (indexes, profiling)
-  - Security (authentication, roles, TLS)
-  - Upgrades and Compatibility with MongoDB 7.x+
+- Focus on database administration tasks: Cluster and Replica Set Management, Database and Collection Creation,
+  Backup/Restore (mongodump/mongorestore), Performance Tuning (indexes, profiling), Security (authentication, roles, TLS),
+  Upgrades and Compatibility with MongoDB 7.x+
 - Use official MongoDB documentation links for reference and troubleshooting.
 - Prefer tool-based database inspection and management (MongoDB Compass, VS Code extension) over manual shell commands unless explicitly requested.
 - Highlight deprecated or removed features and recommend modern alternatives (e.g., MMAPv1 → WiredTiger).

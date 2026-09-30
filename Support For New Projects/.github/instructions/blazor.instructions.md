@@ -3,75 +3,57 @@ description: 'Blazor component and application patterns'
 applyTo: '**/*.razor, **/*.razor.cs, **/*.razor.css'
 ---
 
-## Blazor Code Style and Structure
+# Blazor Instructions
 
-- Write idiomatic and efficient Blazor and C# code.
-- Follow .NET and Blazor conventions.
-- Use Razor Components appropriately for component-based UI development.
-- Prefer inline functions for smaller components but separate complex logic into code-behind or service classes.
-- Async/await should be used where applicable to ensure non-blocking UI operations.
+IssueTracker's UI is a Blazor Server app (`src/UI/IssueTracker.UI`) on .NET 10 and C# 14.
+`CLAUDE.md` at the repository root describes the project; if this file and it disagree, it wins.
 
-## Naming Conventions
+## Structure
 
-- Follow PascalCase for component names, method names, and public members.
-- Use camelCase for private fields and local variables.
-- Prefix interface names with "I" (e.g., IUserService).
+- `Pages/` holds routable pages, `Components/` reusable pieces such as `IssueComponent` and `CommentComponent`,
+  and `Shared/` the layout, login display and authorization redirects.
+- Components keep markup in `.razor` and logic in a `.razor.cs` code-behind partial class. Keep `@code` blocks out of
+  new components.
+- Get services with `@inject` at the top of the `.razor` file, as the existing components do. Never `new` them up.
+- Register new services in the matching `Extensions/Register*.cs` file, not in `Program.cs`.
 
-## Blazor and .NET Specific Guidelines
+## Rendering
 
-- Utilize Blazor's built-in features for component lifecycle (e.g., OnInitializedAsync, OnParametersSetAsync).
-- Use data binding effectively with @bind.
-- Leverage Dependency Injection for services in Blazor.
-- Structure Blazor components and services following Separation of Concerns.
-- Always use the latest version C#, currently C# 13 features like record types, pattern matching, and global usings.
+- `Pages/_Host.cshtml` hosts the app and `MapBlazorHub` serves it, so every component is interactive over the SignalR circuit.
+- Load data in `OnInitializedAsync` or `OnParametersSetAsync`, not in constructors.
+- Don't call JavaScript interop during initialization or prerendering: do first-load interop in `OnAfterRenderAsync`,
+  guarding one-time setup with `if (firstRender)`. Event handlers can call it freely, as `Index.razor.cs` does when it
+  saves the filters to session storage.
+- Implement `IDisposable` or `IAsyncDisposable` to release event subscriptions, timers, and `CancellationTokenSource`s.
 
-## Error Handling and Validation
+## Data
 
-- Implement proper error handling for Blazor pages and API calls.
-- Use logging for error tracking in the backend and consider capturing UI-level errors in Blazor with tools like ErrorBoundary.
-- Implement validation using FluentValidation or DataAnnotations in forms.
+- Components call the services in `IssueTracker.Services` (`IIssueService`, `ICommentService`, and so on).
+  Never inject a repository or anything from MongoDB into a component. No test catches this, so reviews must.
+- Components display the CoreBusiness models (`IssueModel`, `BasicUserModel`, ...). Forms bind to the DTOs in the UI's
+  `Models/` folder (`CreateIssueDto`, `CreateCommentDto`), so UI-only fields and validation stay out of CoreBusiness.
 
-## Blazor API and Performance Optimization
+## Forms and validation
 
-- Utilize Blazor server-side or WebAssembly optimally based on the project requirements.
-- Use asynchronous methods (async/await) for API calls or UI actions that could block the main thread.
-- Optimize Razor components by reducing unnecessary renders and using StateHasChanged() efficiently.
-- Minimize the component render tree by avoiding re-renders unless necessary, using ShouldRender() where appropriate.
-- Use EventCallbacks for handling user interactions efficiently, passing only minimal data when triggering events.
+- Use `EditForm` bound to a DTO, `<DataAnnotationsValidator />`, and Radzen validators (`RadzenRequiredValidator`,
+  `RadzenLengthValidator`) where the form uses Radzen inputs.
+- Validate again in the service before acting on a submission. Never trust client-side validation alone.
 
-## Caching Strategies
+## Security
 
-- Implement in-memory caching for frequently used data, especially for Blazor Server apps. Use IMemoryCache for lightweight caching solutions.
-- For Blazor WebAssembly, utilize localStorage or sessionStorage to cache application state between user sessions.
-- Consider Distributed Cache strategies (like Redis or SQL Server Cache) for larger applications that need shared state across multiple users or clients.
-- Cache API calls by storing responses to avoid redundant calls when data is unlikely to change, thus improving the user experience.
+- Authentication is Azure AD B2C through Microsoft.Identity.Web. `Shared/LoginDisplay.razor` links to the
+  `MicrosoftIdentity/Account/SignIn` and `SignOut` endpoints.
+- Protect pages with `@attribute [Authorize]`, adding `Policy = "Admin"` for admin pages as `Admin.razor` does.
+  `<AuthorizeView>` only shows or hides UI and isn't a security boundary.
+- Get the signed-in user with `AuthenticationStateProviderHelpers.GetUserFromAuth`, which loads the matching `UserModel`.
 
-## State Management Libraries
+## Styling
 
-- Use Blazor's built-in Cascading Parameters and EventCallbacks for basic state sharing across components.
-- Implement advanced state management solutions using libraries like Fluxor or BlazorState when the application grows in complexity.
-- For client-side state persistence in Blazor WebAssembly, consider using Blazored.LocalStorage or Blazored.SessionStorage to maintain state between page reloads.
-- For server-side Blazor, use Scoped Services and the StateContainer pattern to manage state within user sessions while minimizing re-renders.
+- Use Radzen.Blazor components for grids, buttons and inputs, and Bootstrap classes for layout.
+- Put site-wide rules in `wwwroot/css/site.css` and Bootstrap overrides in `wwwroot/css/bootstrap-overrides.css`.
+- Use `.razor.css` isolation for styles that belong to one component. Avoid inline `style` attributes.
 
-## API Design and Integration
+## Testing
 
-- Use HttpClient or other appropriate services to communicate with external APIs or your own backend.
-- Implement error handling for API calls using try-catch and provide proper user feedback in the UI.
-
-## Testing and Debugging in Visual Studio
-
-- All unit testing and integration testing should be done in Visual Studio Enterprise.
-- Test Blazor components and services using xUnit, NUnit, or MSTest.
-- Use Moq or NSubstitute for mocking dependencies during tests.
-- Debug Blazor UI issues using browser developer tools and Visual Studio's debugging tools for backend and server-side issues.
-- For performance profiling and optimization, rely on Visual Studio's diagnostics tools.
-
-## Security and Authentication
-
-- Implement Authentication and Authorization in the Blazor app where necessary using ASP.NET Identity or JWT tokens for API authentication.
-- Use HTTPS for all web communication and ensure proper CORS policies are implemented.
-
-## API Documentation and Swagger
-
-- Use Swagger/OpenAPI for API documentation for your backend API services.
-- Ensure XML documentation for models and API methods for enhancing Swagger documentation.
+- Test components with bUnit in `tests/IssueTracker.UI.Tests.Unit`, following the Tests section of `CLAUDE.md`.
+- Test classes derive from `BunitContext`, not bUnit's obsolete `TestContext`.

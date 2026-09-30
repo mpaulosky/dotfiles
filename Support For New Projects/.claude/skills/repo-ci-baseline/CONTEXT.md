@@ -9,8 +9,8 @@ The standard set of files and settings every repo is expected to carry.
 _Avoid_: Standard files, starter kit
 
 **Template**:
-The skill's copy of the Baseline's files, laid out as a target repo's root and split into Owned and Seed files. The
-single source of truth for the Baseline.
+The skill's copy of the Baseline's files, made up of Owned and Seed files.
+The single source of truth for the Baseline.
 _Avoid_: Copy set, scaffold, reference implementation
 
 **Owned file**:

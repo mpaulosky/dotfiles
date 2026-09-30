@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Keep local hook activation aligned with the distributed hook baseline.
+# Git only runs this once core.hooksPath already points at .github/hooks, so
+# it repairs the setting and permissions after that; it can't bootstrap a
+# fresh clone. The one-time setup is in README.md: git config core.hooksPath .github/hooks
 
 set -euo pipefail
 

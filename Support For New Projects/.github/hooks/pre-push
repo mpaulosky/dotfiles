@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-push gate for squad-workflow-standard
+# Pre-push gate: branch naming, then scripts/gate.sh (lint, build and tests)
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -12,133 +12,80 @@ echo -e "${CYAN}━━━ Pre-Push Gate ━━━━━━━━━━━━━�
 # Read push refs from stdin (provided by git when run as a hook).
 PUSH_REFS="$(cat || true)"
 
-# Allow tag-only pushes.
-if [[ -n "$PUSH_REFS" ]] && echo "$PUSH_REFS" | grep -q "^refs/tags/"; then
-  if ! echo "$PUSH_REFS" | grep -qv "^refs/tags/"; then
-    echo -e "${GREEN}✅ Tag push — skipping branch gates.${RESET}"
+is_protected_branch() {
+  [[ "$1" == "main" || "$1" == "preview" || "$1" == "dev" ]]
+}
+
+check_branch_name() {
+  local branch="$1"
+
+  if is_protected_branch "$branch"; then
+    echo -e "${RED}❌ Direct pushes to '${branch}' are not allowed.${RESET}"
+    exit 1
+  fi
+
+  # The branch standard shared by every repo: feature/, fix/ and hotfix/ name
+  # their issue; chore/ is for work without one, so its slug starts with a
+  # letter and can't pass for an issue number. Slugs are lowercase letters and
+  # digits in words joined by '-'.
+  if ! [[ "$branch" =~ ^(feature|fix|hotfix)/[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] && ! [[ "$branch" =~ ^chore/[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]]; then
+    echo -e "${RED}❌ Branch name '${branch}' does not match naming convention.${RESET}"
+    echo -e "   Expected: ${YELLOW}feature/{issue}-{slug}${RESET}, ${YELLOW}fix/{issue}-{slug}${RESET}, ${YELLOW}hotfix/{issue}-{slug}${RESET}, or ${YELLOW}chore/{slug}${RESET}"
+    exit 1
+  fi
+}
+
+if [[ -n "$PUSH_REFS" ]]; then
+  # Gate the refs being pushed, not the checked-out branch: pushing another
+  # branch or deleting one from a main checkout is not a push to main.
+  # Classify by remote ref: `git push origin v1.0.0:main` has a tag as its
+  # local ref but still updates main.
+  UPDATES_BRANCH=false
+  while read -r _local_ref local_sha remote_ref _remote_sha; do
+    [[ "$remote_ref" == refs/heads/* ]] || continue
+    branch="${remote_ref#refs/heads/}"
+
+    if [[ "$local_sha" =~ ^0+$ ]]; then
+      if is_protected_branch "$branch"; then
+        echo -e "${RED}❌ Deleting '${branch}' is not allowed.${RESET}"
+        exit 1
+      fi
+      continue
+    fi
+
+    check_branch_name "$branch"
+
+    # The gate runs against the working tree, so it only vouches for the
+    # commit that is checked out. Refuse a push of anything else (another
+    # branch, or a tag pushed to a branch) rather than gate the wrong code.
+    pushed_commit="$(git rev-parse --verify --quiet "${local_sha}^{commit}" || echo "$local_sha")"
+    if [[ "$pushed_commit" != "$(git rev-parse HEAD)" ]]; then
+      echo -e "${RED}❌ '${branch}' is not the checked-out commit, so the gate can't test it.${RESET}"
+      echo -e "   Check it out first: ${YELLOW}git switch ${branch}${RESET}, then push again."
+      exit 1
+    fi
+    UPDATES_BRANCH=true
+  done <<< "$PUSH_REFS"
+
+  if [[ "$UPDATES_BRANCH" == false ]]; then
+    echo -e "${GREEN}✅ No branch updates — skipping the gate.${RESET}"
     exit 0
   fi
-fi
-
-CURRENT_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || echo "")"
-if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "preview" || "$CURRENT_BRANCH" == "dev" ]]; then
-  echo -e "${RED}❌ Direct pushes to '${CURRENT_BRANCH}' are not allowed.${RESET}"
-  exit 1
-fi
-
-if ! [[ "$CURRENT_BRANCH" =~ ^(squad|sprint)/[0-9]+-[a-z0-9-]+$ ]] && ! [[ "$CURRENT_BRANCH" =~ ^hotfix/[a-z0-9-]+$ ]] && ! [[ "$CURRENT_BRANCH" =~ ^chore/[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-  echo -e "${RED}❌ Branch name '${CURRENT_BRANCH}' does not match naming convention.${RESET}"
-  echo -e "   Expected: ${YELLOW}squad/{issue-number}-{kebab-slug}${RESET}, ${YELLOW}sprint/{n}-{kebab-slug}${RESET}, ${YELLOW}hotfix/{kebab-slug}${RESET}, or ${YELLOW}chore/{kebab-slug}${RESET}"
-  exit 1
-fi
-
-UPSTREAM=""
-if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-  UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}')"
-fi
-
-if [[ -n "$UPSTREAM" ]]; then
-  mapfile -t CHANGED_YAML < <(git diff --name-only "${UPSTREAM}...HEAD" -- '*.yml' '*.yaml')
-  mapfile -t CHANGED_MD < <(git diff --name-only "${UPSTREAM}...HEAD" -- '*.md')
 else
-  mapfile -t CHANGED_YAML < <(git diff --name-only HEAD~1..HEAD -- '*.yml' '*.yaml' 2>/dev/null || true)
-  mapfile -t CHANGED_MD < <(git diff --name-only HEAD~1..HEAD -- '*.md' 2>/dev/null || true)
+  # Run by hand: there are no refs on stdin, so gate the checked-out branch.
+  check_branch_name "$(git symbolic-ref --short HEAD 2>/dev/null || echo "")"
 fi
 
-if [[ ${#CHANGED_YAML[@]} -gt 0 ]]; then
-  echo -e "\n${CYAN}🧩 YAML lint on changed workflow files...${RESET}"
-
-  EXISTING_CHANGED_YAML=()
-  for yaml_file in "${CHANGED_YAML[@]}"; do
-    if [[ -f "$yaml_file" ]]; then
-      EXISTING_CHANGED_YAML+=("$yaml_file")
-    fi
-  done
-
-  if [[ ${#EXISTING_CHANGED_YAML[@]} -gt 0 ]]; then
-    YAML_CONFIG_FILE="$(mktemp)"
-    cat > "$YAML_CONFIG_FILE" <<'EOF'
-extends: default
-ignore: |
-  .squad/
-rules:
-  line-length:
-    max: 200
-    allow-non-breakable-inline-mappings: true
-  truthy:
-    allowed-values: ['true', 'false', 'on']
-  brackets:
-    min-spaces-inside: 0
-    max-spaces-inside: 1
-EOF
-
-    if command -v yamllint >/dev/null 2>&1; then
-      yamllint -c "$YAML_CONFIG_FILE" "${EXISTING_CHANGED_YAML[@]}"
-    elif command -v docker >/dev/null 2>&1; then
-      docker run --rm \
-        -v "$ROOT:/work" \
-        -v "$YAML_CONFIG_FILE:/tmp/yamllint.yml:ro" \
-        -w /work \
-        cytopia/yamllint:latest \
-        -c /tmp/yamllint.yml "${EXISTING_CHANGED_YAML[@]}"
-    else
-      echo -e "${RED}❌ yamllint is not available.${RESET}"
-      rm -f "$YAML_CONFIG_FILE"
-      exit 1
-    fi
-    rm -f "$YAML_CONFIG_FILE"
-    echo -e "${GREEN}✅ YAML lint OK.${RESET}"
-  else
-    echo -e "${GREEN}✅ No existing YAML files to lint.${RESET}"
-  fi
-else
-  echo -e "\n${GREEN}✅ No changed YAML files to lint.${RESET}"
-fi
-
-if [[ ${#CHANGED_MD[@]} -gt 0 ]]; then
-  echo -e "\n${CYAN}📝 Markdown lint on changed docs...${RESET}"
-  npx --yes markdownlint-cli2 "${CHANGED_MD[@]}"
-  echo -e "${GREEN}✅ Markdown lint OK.${RESET}"
-else
-  echo -e "\n${GREEN}✅ No changed Markdown files to lint.${RESET}"
-fi
-
-echo -e "\n${CYAN}🧪 Running test suite...${RESET}"
-# Discover each test project explicitly. The repo uses Microsoft Testing Platform
-# for .NET 10, and running the solution file directly can report "Zero tests ran"
-# even while the project-level test runs pass.
-mapfile -d '' -t TEST_PROJECTS < <(find "$ROOT/tests" -type f -name '*.csproj' -print0 | sort -z)
-
-if [[ ${#TEST_PROJECTS[@]} -eq 0 ]]; then
-  echo -e "${RED}❌ No test project files were found under '$ROOT/tests'.${RESET}"
+# Every pushed branch is the checked-out commit (checked above). The gate
+# tests the working tree, so it must match that commit exactly: uncommitted
+# or untracked files (an untracked .cs file still compiles) could pass the
+# gate for code that isn't in the push. Ignored files don't count.
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo -e "${RED}❌ The working tree has uncommitted or untracked changes, so the gate can't vouch for the pushed commit.${RESET}"
+  echo -e "   Commit them, or set them aside with ${YELLOW}git stash --include-untracked${RESET}, then push again."
+  git status --short | head -n 20
   exit 1
 fi
-
-for project_file in "${TEST_PROJECTS[@]}"; do
-  project_name="$(basename "${project_file%.*}")"
-  assembly_path="$(dirname "$project_file")/bin/Release/net10.0/${project_name}.dll"
-  echo -e "${CYAN}▶ Testing ${project_file#"$ROOT"/}...${RESET}"
-
-  if env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX \
-    dotnet test "$project_file" --configuration Release --nologo --verbosity minimal \
-    --results-directory "$ROOT/.tmp-test-results" --report-xunit-trx \
-    --report-xunit-trx-filename "${project_name}.trx"; then
-    continue
-  fi
-
-  if [[ -f "$assembly_path" ]]; then
-    echo -e "${YELLOW}⚠️ dotnet test reported a runner issue for ${project_name}; falling back to the built test assembly.${RESET}"
-    if ! env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_PREFIX \
-      dotnet "$assembly_path"; then
-      echo -e "${RED}❌ Tests failed for '${project_file#"$ROOT"/}' using the direct runner fallback.${RESET}"
-      exit 1
-    fi
-    continue
-  fi
-
-  echo -e "${RED}❌ Tests failed for '${project_file#"$ROOT"/}'.${RESET}"
-  exit 1
-done
-echo -e "${GREEN}✅ Test suite OK.${RESET}"
+"$ROOT/scripts/gate.sh"
 
 echo -e "\n${GREEN}━━━ All gates passed — pushing ✅ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"

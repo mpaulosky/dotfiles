@@ -96,6 +96,17 @@ again="$("$apply" "$repo")"
 check "re-apply: worktree untouched" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
 check "re-apply: nothing overwritten" 'grep -q "were overwritten.*(0)" <<< "$again"'
 
+# ── An Owned file that lost its execute bit counts as drift ────────────────
+printf '#!/usr/bin/env bash\n' > "$skill/template/owned/run.sh"
+chmod +x "$skill/template/owned/run.sh"
+command cp -f "$skill/template/owned/run.sh" "$repo/run.sh"
+chmod -x "$repo/run.sh"
+commit_all "$repo" "lose the execute bit"
+mode="$("$apply" "$repo")"
+check "mode drift: reported" 'grep -A1 "were overwritten" <<< "$mode" | grep -q "run.sh"'
+check "mode drift: execute bit restored" '[[ -x "$repo/run.sh" ]]'
+command rm -f "$skill/template/owned/run.sh"
+
 # ── Squad still installed ───────────────────────────────────────────────────
 repo="$work/squad"
 new_repo "$repo"

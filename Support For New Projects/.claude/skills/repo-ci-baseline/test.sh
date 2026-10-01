@@ -20,6 +20,8 @@ export PYTHONDONTWRITEBYTECODE=1
 # machine's own hooks into each of them and block their commits.
 GIT_TEMPLATE_DIR="$(mktemp -d)"
 export GIT_TEMPLATE_DIR
+md_tmp="$(mktemp -d)"
+trap 'command rm -rf "$GIT_TEMPLATE_DIR" "$md_tmp"' EXIT
 
 failures=0
 step() { echo; echo "── $1"; }
@@ -65,8 +67,6 @@ shellcheck "${shell_files[@]}" || fail "shellcheck"
 step "markdownlint"
 # The skill's and the Template's Markdown, linted with the config the Template
 # Applies. --config needs a file name ending in .markdownlint-cli2.jsonc.
-md_tmp="$(mktemp -d)"
-trap 'command rm -rf "$md_tmp"' EXIT
 command cp -f "$owned/.markdownlint-cli2.jsonc" "$md_tmp/template.markdownlint-cli2.jsonc"
 (cd "$skill_dir" && markdownlint-cli2 --config "$md_tmp/template.markdownlint-cli2.jsonc" \
   '*.md' 'references/*.md' 'docs/**/*.md' 'template/**/*.md' 'template/**/.*/**/*.md') || fail "markdownlint"

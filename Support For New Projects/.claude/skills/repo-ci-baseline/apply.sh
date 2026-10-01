@@ -3,7 +3,7 @@
 #
 #   apply.sh [--dry-run] <target-repo>
 #
-# Owned files (template/owned) always overwrite the repo's copy. Seed files
+# Owned files (template/owned) always overwrite the repo's copy, mode included. Seed files
 # (template/seed) are written only where the repo has none, with {{OWNER}},
 # {{REPO}} and {{SOLUTION}} filled in. Then core.hooksPath is pointed at
 # .github/hooks. Nothing is ever deleted.
@@ -91,6 +91,11 @@ list_files() {
     -printf '%P\n' | LC_ALL=C sort)
 }
 
+# Content alone isn't enough: a hook that lost its execute bit never runs.
+same_exec_bit() {
+  if [[ -x "$1" ]]; then [[ -x "$2" ]]; else [[ ! -x "$2" ]]; fi
+}
+
 owned_added=()
 owned_changed=()
 owned_same=0
@@ -104,7 +109,7 @@ while IFS= read -r rel; do
   dst="$target/$rel"
   if [[ ! -e "$dst" ]]; then
     owned_added+=("$rel")
-  elif cmp -s "$src" "$dst"; then
+  elif cmp -s "$src" "$dst" && same_exec_bit "$src" "$dst"; then
     owned_same=$((owned_same + 1))
     continue
   else

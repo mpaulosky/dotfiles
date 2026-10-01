@@ -1,7 +1,7 @@
 # Staged-content pre-commit
 
-Reference: IssueTracker PR #170 (`.github/hooks/pre-commit`, `.github/hooks/tests/pre-commit.test.sh`, the hook-tests
-job in `ci.yml`).
+Template files (Owned): `.github/hooks/pre-commit`, `.github/hooks/tests/pre-commit.test.sh`, the hook-tests job in
+`ci.yml`, and the lint config `.markdownlint-cli2.jsonc`. History: IssueTracker #170.
 
 ## Design
 
@@ -35,10 +35,14 @@ Commit the test repo's setup with `git -c core.hooksPath=/dev/null`, so a global
 doesn't run during setup. Mutation-check the suite: swap the hook to copy the working-copy config and confirm the config
 cases fail, and overwrite the renamed file so git sees an add and confirm the rename case fails.
 
-## Porting
+## Adapting
 
-Keep the repo's own install hint (for example `pnpm add -g` instead of `npm install -g`). Add the suite to CI's
-hook-tests job, and name it in that job's comment.
+**Only `.markdownlint-cli2.jsonc` may configure the rules.** markdownlint-cli2 also reads `.markdownlint.json`, and the
+hook snapshots only the jsonc file. IssueManager's `.markdownlint.json` was `{"default": false}`, which turned every
+rule off in CI, the gate and the hook alike, so Markdown lint passed while checking nothing. The Template carries no
+`.markdownlint.json`, and `apply.sh` reports one as a conflict: delete it, then `markdownlint-cli2 --fix '**/*.md'`.
+To check what the configs enforce, lint a file with obvious violations (`#Bad`, `* bullet`, trailing spaces): it must
+fail.
 
 ## Verify live
 

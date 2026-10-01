@@ -1,8 +1,8 @@
 # Serialized releases
 
-Reference: IssueTracker PR #172, plus the fixes from atelier-store #90's review (IssueTracker #184). The files are
-`.github/workflows/release.yml`, `.github/scripts/release_queue.py`, `.github/scripts/draft_release.py` and their tests
-under `.github/scripts/tests/`. The workflow also uses the repo's own `release_post.py` and `backfill_blog_posts.py`.
+Template files (Owned): `.github/workflows/release.yml`, `backfill-blog-posts.yml`, and `.github/scripts/`
+(`release_queue.py`, `draft_release.py`, `release_post.py`, `backfill_blog_posts.py`) with their tests under
+`.github/scripts/tests/`. History: IssueTracker #172, with the fixes from atelier-store #90's review (IssueTracker #184).
 
 ## What it guarantees
 
@@ -67,25 +67,22 @@ post" and succeeded. Recovery was `gh run rerun <run id> --job <docs job id>`. R
 checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual
 approval.
 
-## Porting
+## Adapting
 
-- Check which Releases lack a post *before* the port merges (`backfill_blog_posts.select_releases` with the repo's
-  releases and `docs/blogs`). The docs job writes every missing one on its first run. If there are old ones, run the
-  repo's "Backfill blog posts" workflow first (`gh workflow run backfill-blog-posts.yml --ref main`), so they arrive in
-  a deliberate PR. atelier-store had 8 from before its blog automation; the backfill PR merged, and the port then
-  started with nothing missing. IssueTracker had none.
-- The planner imports only `GitHub`, `pull`, `releases`, `version_key` and `source_pr_of` from `release_post.py`.
-  Confirm the repo's copy has them; the rest of that script can differ.
-- If the repo's `release.yml` matches the reference's version from before #172, take the new workflow whole. Otherwise
-  port it job by job.
+- Check which Releases lack a post *before* the Standardize PR merges (`backfill_blog_posts.select_releases` with the
+  repo's releases and `docs/blogs`). The docs job writes every missing one on its first run. If there are old ones, run
+  the repo's "Backfill blog posts" workflow first (`gh workflow run backfill-blog-posts.yml --ref main`), so they
+  arrive in a deliberate PR. atelier-store had 8 from before its blog automation.
+- A repo's `release_post.py` is Owned now. A fix it carries that the Template lacks shows up as drift: move it into
+  the Template first.
 - Dry-run the planner against the real repo before pushing: `python3 .github/scripts/release_queue.py --repo
   <owner/name> --pr <last merged PR>`. It must print `[]` and name the newest Release as the cutoff. Any other result
   means the switch would release something unexpected.
-- Create the `semver:minor` and `semver:major` labels if they're missing.
+- Create the `semver:minor` and `semver:major` labels if they're missing ([gotchas.md](gotchas.md#repo-drift)).
 
 ## Verify live
 
-The port's own merge is the first live run. Check it:
+The Standardize PR's own merge is the first live run. Check it:
 
 1. `plan` logs `Newest published Release: vX (PR #prev). Queue: [<this PR>]`.
 2. `release (<this PR>)` publishes the next version.

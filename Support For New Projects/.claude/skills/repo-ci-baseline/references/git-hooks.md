@@ -1,7 +1,7 @@
 # Git hooks and branch names
 
-Reference: IssueTracker's `.github/hooks/` (`pre-commit`, `pre-push`, `post-checkout`), `.github/hooks/tests/`,
-`scripts/gate.sh`, and PR #182 (the branch standard).
+Template files (Owned): `.github/hooks/` (`pre-commit`, `pre-push`, `post-checkout`), `.github/hooks/tests/` and
+`scripts/gate.sh`. History: IssueTracker #182 (the branch standard).
 
 ## Branch-name standard
 
@@ -26,8 +26,8 @@ local push, so the hook never sees them.
 
 ## The hooks
 
-Hooks live in `.github/hooks/` and are switched on once per clone with `git config core.hooksPath .github/hooks`. The
-repo's README or CONTRIBUTING says so.
+Hooks live in `.github/hooks/` and are switched on once per clone with `git config core.hooksPath .github/hooks`.
+`apply.sh` sets it in the clone it Applies to; the repo's README or CONTRIBUTING tells everyone else.
 
 - **`post-checkout`** repairs `core.hooksPath` and the hooks' execute bits after checkouts. Git only runs it once
   `core.hooksPath` already points at `.github/hooks`, so it can't bootstrap a fresh clone: its header comment says this,
@@ -63,15 +63,15 @@ build runs. It needs cases for:
 
 CI's hook-tests job runs this suite and `pre-commit.test.sh`.
 
-## Porting
+## Adapting
 
-- Diff each hook against the reference. When a repo's hook is a close variant, port the changes. When it's far off, take
-  the reference hook and re-apply the repo's genuine local needs: an install hint, extra protected branches, its gate's
-  steps.
-- The branch standard is one regex and one message. Change both, add the prefix cases to the tests, and update every doc
-  that lists branch names (`CLAUDE.md`, `CONTRIBUTING.md`, the README).
-- A branch that ports the new rule is pushed through the new hook, because `core.hooksPath` is relative to the worktree.
-  Name it `chore/...` so it passes both the old rule and the new one.
+- A repo's own gate steps (an extra build tool, a stack that can't run locally) are drift on `gate.sh` until the
+  Template supports them; move the need into the Template first.
+- Update every doc that lists branch names (`CLAUDE.md`, `CONTRIBUTING.md`, the README).
+- The Standardize branch is pushed through the *new* hook, because `core.hooksPath` is relative to the worktree. Its
+  name, `chore/standardize-baseline`, passes both the old rules and the new one.
+- **Run one pre-push gate at a time.** A gate that runs Aspire or Testcontainers tests starts fixed-name containers, so
+  two pushes gated in parallel (one per worktree) collide and fail each other.
 
 ## Verify live
 

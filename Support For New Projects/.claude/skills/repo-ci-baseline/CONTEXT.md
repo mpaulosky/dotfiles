@@ -32,3 +32,11 @@ _Avoid_: Port, fix-up
 **Standardize**:
 Bring a repo onto the Baseline: Apply, then Adapt.
 _Avoid_: Port, migrate, onboard
+
+**Drift**:
+A difference between a repo's copy of an Owned file and the Template's, found when Applying.
+_Avoid_: Divergence, local changes
+
+**Leftover**:
+A file in a directory the Template owns (workflows, hooks, CI scripts) that the Template doesn't carry.
+_Avoid_: Orphan, stale file

@@ -136,6 +136,14 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
+      # Repo-specific setup (a Seed file the repo owns), such as tools the
+      # build runs. Optional: a repo without the script skips this.
+      - name: Prepare build
+        run: |
+          if [ -f .github/ci/prepare.sh ]; then
+            bash .github/ci/prepare.sh build
+          fi
+
       - name: Build solution
         run: >-
           dotnet build "$SOLUTION_FILE" --configuration Release
@@ -273,18 +281,17 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.discover-tests.outputs.matrix) }}
 
-    # Secrets live on this job only, never on the build or lint jobs.
+    # Secrets live on this job only, never on the build or lint jobs, and
+    # each one is optional: unset, it reaches the tests as an empty string.
     # Dependabot runs get none; the fixtures that need them fall back to
-    # fake settings.
+    # fake settings. Other per-repo variables go in .github/ci/prepare.sh,
+    # which can append them to $GITHUB_ENV.
     env:
       ASPIRE_ALLOW_UNSECURED_TRANSPORT: "true"
       # Enable Playwright trace/video/screenshot capture for E2E jobs
       PLAYWRIGHT_ARTIFACTS: >-
         ${{ matrix.requires_playwright && 'true' || 'false' }}
       MongoDB__ConnectionString: ${{ secrets.MONGODB_CONNECTION_STRING }}
-      # Required by AppHost's AddConnectionString("mongodb") even though the
-      # web app ignores it in Testing mode.
-      ConnectionStrings__mongodb: "mongodb://localhost:27017"
 
     steps:
       - name: Checkout code
@@ -310,6 +317,16 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore
 
+      # Repo-specific setup for this test project (a Seed file the repo
+      # owns), such as publishing a project or pulling images it needs.
+      - name: Prepare tests
+        env:
+          TEST_NAME: ${{ matrix.test_name }}
+        run: |
+          if [ -f .github/ci/prepare.sh ]; then
+            bash .github/ci/prepare.sh test "$TEST_NAME"
+          fi
+
       - name: Build test project
         if: ${{ matrix.build_before_test }}
         env:
@@ -332,17 +349,6 @@ jobs:
           fi
           pwsh "$playwright_script" install chromium --with-deps
 
-      # AppHost.Tests starts the whole Aspire app, which serves the UI's
-      # Blazor static assets and pulls the Mongo and Redis containers.
-      - name: Prepare AppHost.Tests
-        if: ${{ matrix.test_name == 'AppHost.Tests' }}
-        run: |
-          dotnet publish src/UI/IssueTracker.UI/IssueTracker.UI.csproj \
-            --configuration Release --no-restore
-          docker pull mongo:8.2 &
-          docker pull redis:8.6 &
-          wait
-
       - name: Run tests
         id: run-tests
         # Matrix values come from PR-controlled file names, so they reach the
@@ -360,15 +366,20 @@ jobs:
             no_build_arg="--no-build"
           fi
 
-          # The test projects run under VSTest (xunit.runner.visualstudio and
-          # coverlet.collector), so this uses the VSTest logger and collector.
+          # global.json runs dotnet test on Microsoft Testing Platform, so the
+          # TRX report comes from xunit.v3 and the Cobertura coverage from
+          # Microsoft.Testing.Extensions.CodeCoverage, not VSTest's logger
+          # and collector.
           dotnet test "$PROJECT_PATH" \
             --configuration Release \
             $no_build_arg \
             --verbosity "$VERBOSITY" \
             --results-directory "$GITHUB_WORKSPACE/test-results" \
-            --logger "trx;LogFileName=${TEST_ID}.trx" \
-            --collect:"XPlat Code Coverage"
+            --report-xunit-trx \
+            --report-xunit-trx-filename "${TEST_ID}.trx" \
+            --coverage \
+            --coverage-output-format cobertura \
+            --coverage-output "${TEST_ID}.cobertura.xml"
           exit_code=$?
           if [ $exit_code -ne 0 ]; then
             echo "::error::Test project failed: $PROJECT_PATH"

@@ -1,54 +1,45 @@
 # Instructions For Setting Up a New Project
 
-## 1. Create the Folder Structure
-
-Create and enter the new project folder:
+## 1. Create the Repository
 
 ```bash
 mkdir [ProjectName]
 cd [ProjectName]
-```
-
-Create the project subfolders:
-
-```bash
 mkdir -p docs/blogs docs/plans src tests
+git init -b main
+git remote add origin https://github.com/mpaulosky/[ProjectName].git
 ```
 
-Initialize the git repository:
+Add the solution file (`[ProjectName].slnx`) at the root before the next step, so `{{SOLUTION}}` gets filled in.
+
+## 2. Apply the Baseline
+
+The CI, release, hook and lint files come from the `repo-ci-baseline` skill's Template. On a repo with no commits,
+`apply.sh` runs on `main`, and its output is the first commit:
 
 ```bash
-git init
+"$HOME/github/dotfiles/Support For New Projects/.claude/skills/repo-ci-baseline/apply.sh" .
+git add -A
+git commit -m "chore: apply repo-ci-baseline Template"
 ```
 
-## 2. Copy Local Folders Into the Project
+It also runs `git config core.hooksPath .github/hooks`. Fill any placeholders the report lists, then work through the
+skill's `references/adapt.md` for the GitHub settings: required checks, the `semver:minor` and `semver:major` labels,
+and the `RELEASE_PR_PAT` secret.
 
-- [ ] `.aspire`
-- [ ] `.copilot`
-- [ ] `.github`
-- [ ] Contents of the `docs` folder into the project's `docs` folder
+## 3. Optional: App-Stack Starting Points
 
-## 3. Copy Files Into the Project Root
+These aren't part of the Baseline. Copy the ones that fit, and rewrite them for the new project; they were written for
+IssueTracker.
 
-- [ ] `.editorconfig`
-- [ ] `.gitignore`
-- [ ] `.markdownlint-cli2.jsonc`
-- [ ] `.markdownlint.json`
-- [ ] `.yamllint.yml`
-- [ ] `GitVersion.yml`
-- [ ] `.directory`
-- [ ] `global.json`
-- [ ] `LICENSE`
+- [ ] `.aspire/` for an Aspire app
+- [ ] `.github/instructions/blazor.instructions.md` for a Blazor UI
+- [ ] `.github/instructions/dotnet-project.instructions.md`
+- [ ] `.github/instructions/mongo-dba.instructions.md` for MongoDB
+- [ ] `.github/skills/code-review/` (a repo skill; see `.claude/skills/README.md` in the new repo)
+- [ ] `.github/agents/beast.agent.md`
 
-## 4. Configure Git Hooks
-
-Point git at the shared hooks so pre-commit, pre-push, and post-checkout enforcement works with your workflow:
-
-```bash
-git config core.hooksPath .github/hooks
-```
-
-## 5. Configure Auth0 for Web Projects
+## 4. Configure Auth0 for Web Projects
 
 In the Web project's `Web.csproj` file, replace the `UserSecretsId` value with:
 

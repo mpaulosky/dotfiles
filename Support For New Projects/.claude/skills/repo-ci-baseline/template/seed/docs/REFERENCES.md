@@ -1,4 +1,4 @@
-# References Used In AINotesApp
+# References Used In {{REPO}}
 
 ## Technologies & Frameworks
 
@@ -19,7 +19,7 @@
 - [NSubstitute](https://nsubstitute.github.io/) – Mocking library for unit tests
 - [BUnit](https://bunit.dev/) – Blazor component testing framework for rendering and interaction tests
 - [AngleSharp](https://anglesharp.github.io/) – HTML parser used by BUnit for DOM assertions
-- [NetArchTest.Rules](https://github.com/BenMorris/NetArchTest) – Architecture testing (`tests/AINotesApp.Tests.Architecture`)
+- [NetArchTest.Rules](https://github.com/BenMorris/NetArchTest) – Architecture testing (`tests/{{REPO}}.Tests.Architecture`)
 
 - [Microsoft.EntityFrameworkCore.InMemory](https://learn.microsoft.com/ef/core/providers/in-memory/) – In-memory database for unit tests
 - [Microsoft.AspNetCore.Mvc.Testing](https://learn.microsoft.com/aspnet/core/test/integration-tests) – Integration testing support

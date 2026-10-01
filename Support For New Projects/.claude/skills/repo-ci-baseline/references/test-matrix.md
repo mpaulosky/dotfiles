@@ -1,11 +1,20 @@
 # Per-project test matrix
 
-Reference: IssueTracker PR #178 (`ci.yml`).
+Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jobs), `global.json`, and the Seed
+`.github/ci/prepare.sh`. History: IssueTracker #178.
 
 ## The rule
 
 Each test project runs in its own matrix job and restores and builds its own project. The build job caches no `bin/` or
 `obj/`: nothing restored that cache, so the step only cost time.
+
+Tests run on **Microsoft Testing Platform** (`global.json` → `"test": {"runner": "Microsoft.Testing.Platform"}`), so
+`ci.yml` passes MTP's options: `--report-xunit-trx` for the TRX report and `--coverage --coverage-output-format
+cobertura` for coverage, not VSTest's `--logger` and `--collect`. A test project on VSTest fails under it; moving it is
+an Adapt step ([adapt.md](adapt.md#test-runner)). The coverage job gates at 60% line coverage.
+
+Per-repo setup (publishing a project, pulling images, a build tool) goes in the Seed `.github/ci/prepare.sh`, which
+`ci.yml` calls as `prepare.sh build` and `prepare.sh test <test-name>` after the restore.
 
 ## Why (measured on IssueTracker, 8 test projects, 3 runs each)
 
@@ -23,16 +32,12 @@ Each test project runs in its own matrix job and restores and builds its own pro
 - **One job** uses 60% fewer runner-minutes but is the slowest. Minutes are free for public repositories, so wall-clock
   time wins. For a private repository on paid minutes, or when concurrent PRs queue for runners, revisit this.
 
-## Porting
+## Adapting
 
-Remove any "Cache build artifacts" step whose cache no job restores. Keep the NuGet package cache. Add a comment on the
-test job that states the measured reason, so a build cache isn't added back without new numbers.
-
-Confirm the cache is dead before removing it: `grep -n "build-" .github/workflows/*.yml` should find only the step
-that saves it. Measure what it costs, for the PR description: the step's time in recent `main` runs
-(`gh api repos/<r>/actions/runs/<id>/jobs`), and its storage (`gh api "repos/<r>/actions/caches?key=Linux-build-"`
-against `actions/cache/usage`). In atelier-store (#99) it restored *after* the build, cost 5 to 8 seconds per run, and
-held 1.1 GB of the repo's 7.9 GB of cache, crowding the NuGet caches under GitHub's 10 GB limit.
+A repo's old "Cache build artifacts" step disappears with Apply. To report what it cost, for the PR description: its
+time in recent `main` runs (`gh api repos/<r>/actions/runs/<id>/jobs`) and its storage (`gh api
+"repos/<r>/actions/caches?key=Linux-build-"` against `actions/cache/usage`). In atelier-store (#99) it restored *after*
+the build, cost 5 to 8 seconds per run, and held 1.1 GB of the repo's 7.9 GB of cache.
 
 ## Measuring a repo
 

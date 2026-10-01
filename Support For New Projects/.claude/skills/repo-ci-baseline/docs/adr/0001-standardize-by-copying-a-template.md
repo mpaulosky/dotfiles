@@ -1,7 +1,6 @@
 # Standardize by copying an Owned/Seed Template instead of porting changes
 
-**Status:** accepted, not implemented yet.
-The Template, `apply.sh` and `test.sh` don't exist, and `SKILL.md` still describes porting until they land.
+**Status:** accepted and implemented: `template/`, `apply.sh` and `test.sh`, with `SKILL.md` describing Standardize.
 
 Repos used to adopt the Baseline by porting each part's *change* from IssueTracker (the reference implementation), one part per PR, because a copied file silently undoes a repo's local fixes.
 That kept every repo slightly different and made each port a survey-and-diff project.

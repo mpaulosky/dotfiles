@@ -2,7 +2,9 @@
 
 Thank you for taking the time to consider contributing to our project.
 
-The following is a set of guidelines for contributing to the project. These are mostly guidelines, not rules, and can be changed in the future. Please submit your suggestions with a pull-request to this document.
+The following is a set of guidelines for contributing to the project.
+These are mostly guidelines, not rules, and can be changed in the future.
+Please submit your suggestions with a pull-request to this document.
 
 ## Table of Contents
 
@@ -50,7 +52,10 @@ This project is a project to build a [describe your solution, e.g., web applicat
 
 ### Project Folder Structure
 
-This project is designed to be built and run primarily with [your preferred IDEs/editors]. The folders are configured so that they will support editing and working in other editors and on other operating systems. We encourage you to develop with these other environments, because we would like to be able to support developers who use those tools as well. The folders are configured as follows:
+This project is designed to be built and run primarily with [your preferred IDEs/editors].
+The folders are configured so that they will support editing and working in other editors and on other operating systems.
+We encourage you to develop with these other environments, because we would like to be able to support developers who use those tools as well.
+The folders are configured as follows:
 
 ```bash
 docs/                                   -- Documentation and guides
@@ -87,7 +92,7 @@ tests/                                  -- Unit and Integration tests
   Web.Tests.Integration/                -- Web integration tests
   Web.Tests.Unit/                       -- Web/UI unit tests
 
- [SolutionName].slnx                    -- Solution file
+ {{SOLUTION}}.slnx                    -- Solution file
 codecov.yml                             -- Code coverage configuration
 Directory.Packages.props                -- Central NuGet package management
 global.json                             -- Global SDK version
@@ -151,7 +156,8 @@ Please provide as much detail as possible, including steps to reproduce, expecte
 **Note:** Pull requests without unit tests will be delayed until tests are added. All new features and bug fixes must
 include appropriate tests.
 
-Any code that is written to support a component or new functionality are required to be accompanied with unit tests at the time the pull request is submitted. Pull requests without unit tests will be delayed and asked for unit tests to prove their functionality.
+Any code that is written to support a component or new functionality are required to be accompanied with unit tests at the time the pull request is submitted.
+Pull requests without unit tests will be delayed and asked for unit tests to prove their functionality.
 
 ### Review Process
 

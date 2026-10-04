@@ -8,8 +8,9 @@ past Release/PR pair:
 
 It writes docs/blogs/{merged-date}-pr-{n}-{slug}.md, updates the
 docs/blogs/README.md index, the RELEASES_START/END table in README.md (copied
-to docs/README.md), and in the GitHub Pages site docs/index.html the
-RELEASES_HTML releases table and the BLOGS_HTML blog post cards.
+to docs/README.md with its relative links rebased), and in the GitHub Pages
+site docs/index.html the RELEASES_HTML releases table and the BLOGS_HTML blog
+post cards.
 
 GitHub data comes from the gh CLI (GH_TOKEN). When ANTHROPIC_API_KEY is set,
 the post opens with a short summary written by Claude (model from
@@ -918,6 +919,143 @@ def update_index_html(path, entries, posts, repository):
     path.write_text(text, encoding="utf-8")
 
 
+# docs/README.md links
+
+
+# README.md links by path from the repository root (docs/blogs/post.md,
+# src/Web); copied verbatim into docs/ they would resolve one directory too
+# deep. From TicketManager #104.
+
+# What follows an inline link's destination: an optional "title", 'title' or
+# (title), then the closing parenthesis.
+LINK_INLINE_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?[ \t]*\)""")
+LINK_ANGLE_DESTINATION = re.compile(r"<((?:[^<>\n\\]|\\.)+)>")
+LINK_REFERENCE = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(<?)(\S+?)(>?)(?=\s|$)", re.MULTILINE)
+# Not preceded by a name character, so data-src is not src, but a tag's
+# continuation line may start with one. ASCII, as for HTML_BLOCKS: "\u017f"
+# must not case-fold into "src".
+LINK_HTML_ATTRIBUTE = re.compile(r"""(?<![\w-])((?:src|href)\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""", re.I | re.A)
+# Any indent, so a fence inside a list item is still skipped.
+LINK_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+def rebase_link(target):
+    """A link target as seen from docs/ rather than the repository root."""
+    if re.match(r"^[a-z][a-z0-9+.-]*:", target, flags=re.IGNORECASE) or target.startswith(("#", "?", "/")):
+        return target
+    path = target[2:] if target.startswith("./") else target
+    if path == "docs" or path.startswith(("docs/", "docs#", "docs?")):
+        return path[len("docs"):].lstrip("/") or "./"
+    return "../" + path
+
+
+def bare_destination_end(line, start):
+    """The end of the bare link destination at line[start], or None if there is none.
+
+    It runs to the first space or control character, or the first ")" that
+    closes no "(" of its own, so docs/a_(b).md is one destination; a
+    backslash escapes the next character.
+    """
+    depth = 0
+    pos = start
+    while pos < len(line):
+        char = line[pos]
+        if char == "\\" and pos + 1 < len(line) and not line[pos + 1].isspace():
+            pos += 2
+            continue
+        if char <= " " or char == "\x7f":
+            break
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if not depth:
+                break
+            depth -= 1
+        pos += 1
+    if depth or pos == start or line[start] == "<":
+        return None
+    return pos
+
+
+def rebase_inline_links(line):
+    """The line with each ](destination) rebased; anything that isn't a whole inline link is left alone."""
+    out = []
+    done = 0
+    opener = line.find("](")
+    while opener >= 0:
+        start = opener + 2
+        while start < len(line) and line[start] in " \t":
+            start += 1
+        angle = LINK_ANGLE_DESTINATION.match(line, start)
+        if angle:
+            target_start, target_end, end = angle.start(1), angle.end(1), angle.end()
+        else:
+            target_start = start
+            target_end = end = bare_destination_end(line, start)
+        tail = LINK_INLINE_TAIL.match(line, end) if end is not None else None
+        if tail:
+            out.append(line[done:target_start] + rebase_link(line[target_start:target_end]))
+            done = target_end
+            opener = line.find("](", tail.end())
+        else:
+            opener = line.find("](", opener + 2)
+    return "".join(out) + line[done:]
+
+
+def rebase_html_attribute(match):
+    """A src= or href= attribute with its value rebased, keeping its spacing and quotes."""
+    for group, quote in ((2, '"'), (3, "'"), (4, "")):
+        if match.group(group) is not None:
+            return match.group(1) + quote + rebase_link(match.group(group)) + quote
+
+
+def quote_prefix(line, depth=None):
+    """(block quote markers at the start of the line, the rest), counting at most `depth` markers."""
+    count = pos = 0
+    while depth is None or count < depth:
+        quote_match = QUOTE_AT.match(line, pos)
+        if not quote_match:
+            break
+        count += 1
+        pos = quote_match.end()
+    return count, line[pos:]
+
+
+def rebase_readme_links(markdown):
+    """The README text with every relative link rebased for docs/README.md; fenced code is left alone.
+
+    A fence belongs to the block quote it opens in: it closes on a line at
+    that quote depth, or ends with the quote when a line lacks its markers.
+    """
+    out = []
+    fence = None
+    for line in markdown.splitlines(keepends=True):
+        if fence is not None:
+            depth, marker = fence
+            line_depth, rest = quote_prefix(line, depth)
+            if line_depth == depth:
+                fence_match = LINK_FENCE.match(rest)
+                # Closed by a run of the same character, at least as long, with no info string.
+                if fence_match:
+                    closer, info = fence_match.groups()
+                    if closer[0] == marker[0] and len(closer) >= len(marker) and not info.strip():
+                        fence = None
+                out.append(line)
+                continue
+            fence = None
+        depth, rest = quote_prefix(line)
+        fence_match = LINK_FENCE.match(rest)
+        if fence_match:
+            fence = (depth, fence_match.group(1))
+            out.append(line)
+            continue
+        line = rebase_inline_links(line)
+        line = LINK_REFERENCE.sub(lambda m: m.group(1) + m.group(2) + rebase_link(m.group(3)) + m.group(4), line)
+        line = LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, line)
+        out.append(line)
+    return "".join(out)
+
+
 def write_post(gh, pr_number, tag, root=Path("."), api_key=None, model=DEFAULT_MODEL, urlopen=urllib.request.urlopen):
     """Write the post for a merged PR and its blog index row; return (merged_date, title_line)."""
     root = Path(root)
@@ -970,7 +1108,7 @@ def update_tables(repository, gh, root=Path("."), current=None):
     # this copy; don't create one in a repo whose docs site has its own.
     docs_readme = root / "docs" / "README.md"
     if docs_readme.exists():
-        docs_readme.write_text(readme, encoding="utf-8")
+        docs_readme.write_text(rebase_readme_links(readme), encoding="utf-8")
 
     update_index_html(root / "docs" / "index.html", entries, read_blog_posts(blog_dir), repository)
 

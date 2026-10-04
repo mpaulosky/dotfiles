@@ -31,12 +31,25 @@ We have adopted a code of conduct from the Contributor Covenant. Contributors to
 ## Quick Start
 
 1. Fork the repository and clone your fork.
-2. Create a branch from `develop` (use a descriptive name, e.g. `feature/123-add-search`).
-3. Make your changes, following the code style and guidelines below.
-4. Add or update tests as needed.
-5. Commit with clear messages (see below).
-6. Push your branch and open a Pull Request to `develop`.
-7. Ensure all checks pass and respond to review feedback.
+2. Switch on the repository's git hooks, once per clone: `git config core.hooksPath .github/hooks`.
+3. Create a branch from `main`, named to the branch-name standard below (e.g. `feature/123-add-search`).
+4. Make your changes, following the code style and guidelines below.
+5. Add or update tests as needed.
+6. Commit with clear messages (see below).
+7. Push your branch and open a Pull Request to `main`.
+8. Ensure all checks pass and respond to review feedback.
+
+The pre-push hook refuses a branch name outside this standard:
+
+| Branch | Use |
+| --- | --- |
+| `feature/{issue}-{slug}` | New behaviour |
+| `fix/{issue}-{slug}` | A bug fix |
+| `hotfix/{issue}-{slug}` | An urgent fix |
+| `chore/{slug}` | Work without an issue |
+
+`{slug}` is lowercase letters and digits in words joined by `-` (`upgrade-net10`, `oauth2-login`).
+A `chore/` slug starts with a letter, so `chore/7-cleanup` is refused.
 
 ## What should I know before I get started
 
@@ -102,7 +115,7 @@ README.md                               -- Project overview
 
 See the main [README.md](../README.md) for more details.
 
-All official versions of the project are built and delivered with [your CI/CD system, e.g., GitHub Actions] and linked in the main README.md and [releases tab in your repository].
+All official versions of the project are built and delivered with GitHub Actions and linked in the main README.md and the [releases tab](https://github.com/{{OWNER}}/{{REPO}}/releases).
 
 ### Design Decisions
 
@@ -135,7 +148,7 @@ This means one of several types of contributions:
 
 ### Create an Issue
 
-Create a [New Issue Here]( [your repository issues URL] ).
+Create a [New Issue Here](https://github.com/{{OWNER}}/{{REPO}}/issues/new/choose).
 
 1. If you are reporting a `Bug` that you have found. Be sure to add the `Bug` label so that we can triage and track it.
 1. If you are reporting an `Enhancement` that you think would improve the project. Be sure to add the `Enhancement`
@@ -145,12 +158,12 @@ Please provide as much detail as possible, including steps to reproduce, expecte
 
 ### Respond to an Issue
 
-[Fork the Repository to your account]( [your repository fork URL] ).
+[Fork the Repository to your account](https://github.com/{{OWNER}}/{{REPO}}/fork).
 
-1. Create a new Branch from the develop branch with a reference to the existing Issue number.
+1. Create a new Branch from the main branch with a reference to the existing Issue number (e.g. `fix/123-null-title`).
 1. Work on the issue.
 1. Create Unit, Integration tests for any code that require them. We use [your test frameworks, e.g., xUnit, bUnit] to test our code and components.
-1. When you are done Create a Pull Request from your branch to the develop branch.
+1. When you are done Create a Pull Request from your branch to the main branch.
 1. Submit the Pull Request.
 
 **Note:** Pull requests without unit tests will be delayed until tests are added. All new features and bug fixes must
@@ -164,7 +177,7 @@ Pull requests without unit tests will be delayed and asked for unit tests to pro
 1. All PRs are reviewed by maintainers and may require changes before merging.
 2. Automated checks (build, tests, lint) must pass before review.
 3. Be responsive to feedback and update your PR as needed.
-4. Once approved, your PR will be merged into `develop`.
+4. Once approved, your PR will be merged into `main`.
 
 ### Write code
 

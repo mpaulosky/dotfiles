@@ -50,5 +50,5 @@ So the settings are a standard kept as JSON in the skill, and `github-settings.s
 
 - Standardize runs `--fix` twice, before and right after the merge; a new repo after its first push and after its first PR.
 - A Template change that adds a required check or label is followed by re-Apply, then `--fix`.
-- `~/github/RuleSet Templates/` (outside dotfiles) is superseded and can be deleted.
+- `~/github/RuleSet Templates/` (outside dotfiles), which this superseded, was deleted on 2026-10-04.
 - A read-only drift check across all repos (settings and files) remains to be built.

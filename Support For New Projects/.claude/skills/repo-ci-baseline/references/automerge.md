@@ -9,7 +9,8 @@ CI's `Auto-merge tests` job and `test.sh` run it.
 It stays inline: a separate module would need a checkout step in the privileged `pull_request_target` job, and a module tested apart from the workflow can drift from what runs.
 TicketManager's module arms native auto-merge without waiting for review, which the Template replaces.
 IssueManager's waits for review as the Template does, without the review cap or the hand-back hold.
-Both also merge an `UNSTABLE` PR (required checks passed, optional ones pending or failing); the Template waits for `CLEAN` on purpose, so a failing optional check such as markdownlint gets fixed rather than merged past.
+Both also merge an `UNSTABLE` PR (required checks passed, optional ones pending or failing).
+The Template waits for `CLEAN` on purpose, so a failing optional check such as markdownlint gets fixed rather than merged past.
 
 ## What it guarantees
 

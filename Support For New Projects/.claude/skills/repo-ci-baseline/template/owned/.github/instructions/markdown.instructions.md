@@ -27,4 +27,5 @@ Its `ignores` list skips build output and the release blog posts in `docs/blogs/
 
 Blog posts under `docs/blogs/` have extra front-matter rules in `blog.instructions.md`.
 The Jekyll pages under `docs/` may carry front matter for the site, instruction files need their `applyTo` header,
-and skill files need their `name` and `description`. Other Markdown files have no front matter.
+skill files need their `name` and `description`, and issue templates under `.github/ISSUE_TEMPLATE/` need theirs for
+GitHub's template picker. Other Markdown files have no front matter.

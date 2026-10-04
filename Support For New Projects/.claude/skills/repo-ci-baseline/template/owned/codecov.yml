@@ -6,20 +6,21 @@ codecov:
 
 comment:
   behavior: default
-  layout: reach,diff,flags,tree,reach
+  layout: reach,diff,flags,tree
   show_carryforward_flags: false
 
 coverage:
   precision: 2
   range: "60...80"
   round: down
-
-status:
-  changes: false
-  default_rules:
-    flag_coverage_not_uploaded_behavior: include
-  patch: true
-  project: true
+  # Codecov reads status checks only from coverage.status; a top-level
+  # status key is rejected as an unknown field.
+  status:
+    changes: false
+    default_rules:
+      flag_coverage_not_uploaded_behavior: include
+    patch: true
+    project: true
 
 github_checks:
   annotations: true

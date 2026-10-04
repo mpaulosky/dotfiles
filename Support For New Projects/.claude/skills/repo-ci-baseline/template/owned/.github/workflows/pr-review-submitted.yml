@@ -1,0 +1,23 @@
+---
+name: PR Review Submitted
+
+# A signal for PR Auto-Merge, which can't listen to pull_request_review itself:
+# that event runs the PR's own copy of a workflow, and the merge job needs
+# write access. This one has no permissions and no secrets and does nothing;
+# its completion fires PR Auto-Merge's workflow_run trigger, which runs main's
+# copy. Without it, a PR whose last blocker is Copilot's review waits for the
+# scheduled sweep.
+"on":
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  signal:
+    name: Signal PR Auto-Merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record the review
+        run: echo "Review submitted; PR Auto-Merge re-checks this PR when this run completes."

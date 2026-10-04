@@ -1,7 +1,8 @@
 # Auto-merge after review
 
-Template files (Owned): `.github/workflows/pr-automerge.yml` and its tests in `.github/scripts/tests/pr-automerge.test.mjs`, with `dependabot-auto-merge.yml` and `release.yml` as the two deliberate exceptions.
-History: IssueTracker #140; Blazor-Server #94 (the hand-back label hold) and #119 (the Copilot review cap).
+Template files (Owned): `.github/workflows/pr-automerge.yml` and its tests in `.github/scripts/tests/pr-automerge.test.mjs`, and `.github/workflows/pr-review-submitted.yml`,
+with `dependabot-auto-merge.yml` and `release.yml` as the two deliberate exceptions.
+History: IssueTracker #140 and #201 (re-check on a submitted review); Blazor-Server #94 (the hand-back label hold) and #119 (the Copilot review cap).
 IssueManager #235 moved the decision into `.github/scripts/automerge-decision.mjs` with `node --test` tests, and TicketManager carries the same shape.
 The Template keeps the script inline in the workflow and tests it there:
 `.github/scripts/tests/pr-automerge.test.mjs` reads the `script: |` block out of the workflow and runs it against a fake GitHub client, so the tests cover exactly what the workflow runs.
@@ -42,16 +43,21 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **The merge** is `pulls.merge` with `sha: headRefOid`, so a push landing between the check and the merge fails the merge instead of merging unreviewed code.
   405 and 409 are warnings; a later event re-evaluates.
 - **Triggers**, each a moment a condition can become true: `pull_request_target` (opened, ready_for_review, reopened, edited, synchronize, and unlabeled for the hand-back label),
-  `workflow_run` completion of every workflow that owns a required check, a 15-minute schedule (resolving a thread has no Actions trigger), and `workflow_dispatch` from `main`.
+  `workflow_run` completion of every workflow that owns a required check and of **PR Review Submitted**, a schedule (resolving a thread has no Actions trigger), and `workflow_dispatch` from `main`.
+- **PR Review Submitted** (`pr-review-submitted.yml`) runs on `pull_request_review: submitted` with no permissions and does nothing.
+  Its completion fires this workflow's `workflow_run`, which runs main's copy.
+  Copilot's review usually arrives after CI has finished, so without it the last blocker clears with no trigger and the PR waits for the sweep (IssueTracker #197 waited, and was swept by hand).
+- **The schedule** is `7,22,37,52 * * * *`, off the round minutes where GitHub drops the most scheduled runs.
+  GitHub still runs it far less often than asked: IssueTracker's sweeps after #201 ran about 70 minutes apart. Treat it as the fallback, never the expected path.
 - **Safety:** `pull_request_target` runs main's copy of the file and never checks out PR code, so a PR can't edit what decides whether it merges.
-  `pull_request_review` is left out on purpose: it would run the PR's own copy with write access.
+  `pull_request_review` is never a trigger here: it would run the PR's own copy with write access. It reaches this workflow only through PR Review Submitted.
 - **Token:** `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`.
   A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip.
 
 ## Adapting
 
 - **Survey whether the repo's auto-merge waits for review.** IssueManager's armed native auto-merge and merged on `CLEAN` alone; its #231 merged with an open Copilot thread.
-- `workflow_run.workflows` lists every workflow that owns a required check, by its `name:`.
+- `workflow_run.workflows` lists every workflow that owns a required check, by its `name:`, plus `PR Review Submitted`.
   A repo whose ruleset requires a check from a workflow outside the Template needs that workflow in the list: Template first.
 - **Land the Standardize PR by hand, held as a draft.** The old workflow on `main` still runs on it and would arm auto-merge the moment its checks pass; drafts are the one state it skips.
   Open the PR as a draft, request Copilot's review with `gh pr edit <n> --add-reviewer @copilot`, and resolve every thread.
@@ -63,5 +69,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 
 The next PR after the Standardize must sit green but unmerged until Copilot's review of its head arrives, and again while any thread is open.
 The workflow's log names what it waits on (`Waiting on PR #n: no Copilot review of <sha> yet.`, or `<k> unresolved review thread(s).`).
-Once the last thread is resolved, the next sweep (at most 15 minutes) merges it.
+Once the last thread is resolved, the next sweep merges it; that can take an hour or more, since GitHub thins out scheduled runs.
+
+**A submitted review re-checks the PR** (not yet seen live; IssueTracker #201 merged with no reviewed PR after it).
+On a PR whose CI finishes before Copilot's review, the review must start a **PR Review Submitted** run, and its completion a **PR Auto-Merge** run with event `workflow_run`, within a minute or two:
+`gh run list --workflow pr-review-submitted.yml` and `gh run list --workflow pr-automerge.yml --json event,createdAt`.
+If no PR Review Submitted run appears, `pull_request_review` doesn't fire for Copilot's reviews, and the PR falls back to the sweep: record that here.
 After a third reviewed non-merge commit, the log reads `Copilot review cap (3) reached on PR #n: merging ...` if the cap is what let it through.

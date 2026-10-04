@@ -41,7 +41,8 @@ We have adopted a code of conduct from the Contributor Covenant. Contributors to
 7. Push your branch and open a Pull Request to `main`.
 8. Ensure all checks pass and respond to review feedback.
 
-The pre-push hook refuses a branch name outside this standard:
+The pre-push hook refuses a branch name outside this standard, and so does the required **Branch name** check on
+pull requests:
 
 | Branch | Use |
 | --- | --- |

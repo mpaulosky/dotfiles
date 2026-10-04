@@ -44,12 +44,14 @@ Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
   are reported as LEGACY and deleted only with `--remove-legacy`. Classic protection goes only once `main-rules` is active,
   so the branch is never left unprotected: where `main-rules` is created in the same run, run `--fix --remove-legacy` twice.
   `release:minor` and `release:major` aren't legacy: `release.yml` still reads them.
-- **A required check only once the repo reports it.** The script reads the job names (or job ids) of the workflows on the default branch.
+- **A required check only once the repo reports it on every PR.** The script reads the job names (or job ids) of the workflows on the
+  default branch that run on every pull request: a `pull_request` trigger with no `paths` filter (a scheduled workflow's, or CodeQL's, wouldn't report on every PR).
   A standard check none reports is MANUAL and left out of the ruleset; requiring it would block every PR, since a check that never runs never passes.
   A templated name (a matrix job's) can't be read, so such a check can't be required.
 - **An old required check stays while the repo still reports it.** Before a Standardize, a repo's own test gate (IssueManager's `All Tests Passed`)
   is its only one; dropping it before `Test Suite` exists would leave no required test. It's reported as INFO and dropped by the first `--fix` after it stops being reported.
-- **Pinned actions only once every workflow is pinned.** Until then the unpinned `uses:` are listed as MANUAL.
+- **Pinned actions only once every workflow is pinned.** Until then the unpinned `uses:` are listed as MANUAL, and so they are
+  if pinning is already required, since GitHub then refuses to run them.
 
 ## Exceptions
 

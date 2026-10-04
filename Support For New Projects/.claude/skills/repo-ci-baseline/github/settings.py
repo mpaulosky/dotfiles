@@ -134,6 +134,42 @@ def workflow_facts(text):
     return names, unpinned
 
 
+ON_KEY = re.compile(r"""^(?:"on"|'on'|on):(.*)$""")
+
+
+def runs_on_every_pr(text):
+    """Whether the workflow runs on every pull request: a pull_request trigger with no paths filter.
+
+    Only such a workflow's checks can be required: a check that a PR's
+    workflows never report (a scheduled workflow's, or one skipped by
+    paths-ignore, like CodeQL's on docs PRs) would hold that PR forever.
+    A branches filter is fine, since main-rules only gates PRs into main.
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = ON_KEY.match(line)
+        if not match:
+            continue
+        inline = match.group(1).split("#")[0].strip()
+        if inline:  # on: pull_request / on: [push, pull_request]
+            return re.search(r"\bpull_request\b(?!_)", inline) is not None
+        block = []
+        for following in lines[index + 1:]:
+            if following.strip() and not following.startswith((" ", "#")):
+                break
+            block.append(following)
+        for position, entry in enumerate(block):
+            if re.match(r"^  (?:pull_request|- pull_request)\s*:?\s*(?:#.*)?$", entry):
+                trigger = []
+                for nested in block[position + 1:]:
+                    if nested.strip() and not nested.startswith("    ") and not nested.lstrip().startswith("#"):
+                        break
+                    trigger.append(nested)
+                return not any(re.match(r"^\s+paths(-ignore)?:", nested) for nested in trigger)
+        return False
+    return False
+
+
 def read_workflows(gh, repo, branch):
     """{path: text} for the workflows on branch; {} when the repo has none."""
     try:
@@ -230,11 +266,12 @@ def check_actions(gh, repo, std, workflows):
     if std["settings"].get("sha_pinning_required"):
         permissions = gh.api("GET", f"repos/{repo}/actions/permissions")
         unpinned = sorted({ref for text in workflows.values() for ref in workflow_facts(text)[1]})
-        if permissions.get("sha_pinning_required"):
+        if unpinned:
+            # Whether or not it's required yet: once it is, GitHub refuses these.
+            state = "required, but GitHub refuses" if permissions.get("sha_pinning_required") else "not required yet;"
+            findings.append(Finding("pinned actions", MANUAL, f"{state} pin these first: " + ", ".join(unpinned)))
+        elif permissions.get("sha_pinning_required"):
             findings.append(Finding("pinned actions", OK, "required"))
-        elif unpinned:
-            findings.append(Finding("pinned actions", MANUAL,
-                                    "not required yet; pin these first: " + ", ".join(unpinned)))
         else:
             body = {"enabled": True, "allowed_actions": permissions.get("allowed_actions", "all"),
                     "sha_pinning_required": True}
@@ -305,7 +342,7 @@ def check_rulesets(gh, repo, std, workflows, default_branch, remove_legacy):
         if error.status not in (403, 404):
             raise
         return [Finding("ruleset main-rules", UNAVAILABLE, "rulesets need GitHub Pro (or a public repo)")], None
-    available = {name for text in workflows.values() for name in workflow_facts(text)[0]}
+    available = {name for text in workflows.values() if runs_on_every_pr(text) for name in workflow_facts(text)[0]}
     findings, main = [], None
     for summary in summaries:
         if summary["name"] == std["ruleset"]["name"]:

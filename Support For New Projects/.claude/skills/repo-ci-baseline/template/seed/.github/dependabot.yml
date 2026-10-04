@@ -1,5 +1,7 @@
 # Dependabot version updates. Every label used below must exist in the repo:
 # Dependabot doesn't create them, and silently leaves them off the PR.
+# This file is Seed, so it belongs to the repo: add its other ecosystems (such
+# as npm for a pnpm project) and its own ignores here.
 # https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
 ---
 
@@ -43,15 +45,6 @@ updates:
     labels:
       - "nuget"
       - "dependencies"
-    ignore:
-      # A Radzen major changes components and themes, so it gets its own
-      # upgrade PR with a manual UI check instead of riding in the group.
-      - dependency-name: "Radzen.Blazor"
-        update-types: ["version-update:semver-major"]
-      # MessagePack is pinned only to force a patched transitive version.
-      # Aspire's StreamJsonRpc is built against 2.5.x, so stay on 2.x.
-      - dependency-name: "MessagePack"
-        update-types: ["version-update:semver-major"]
     groups:
       # Testcontainers modules only work with the matching core version,
       # so they always move together. A dependency joins the first group

@@ -21,7 +21,9 @@ PR that took about 4 minutes and 17 runner-minutes merges in about 1 minute.
   suite. A **Dependabot GitHub Actions bump** also outputs `code=false`, so its build and tests are skipped while every
   other check runs: it only moves pinned action SHAs. All three must hold (`--author dependabot[bot]`, a
   `dependabot/github_actions/` branch, and only `.github/workflows/` or `.github/actions/` paths), so neither a person
-  nor a mixed change can skip the build that way. NuGet and SDK bumps change what's built, so they always build. The rule decides whether required checks run, so it lives in a script with tests
+  nor a mixed change can skip the build that way. NuGet and SDK bumps change what's built, so they always build.
+  The script also writes `skip_reason` (`docs-only`, `actions-bump`, or empty), so the Test Suite summary names which
+  skip it was rather than calling an Actions bump docs-only (Copilot on TicketManager #113). The rule decides whether required checks run, so it lives in a script with tests
   (`test_detect_changes.py`, built on real git repos), not inline shell: Copilot asks for this every time.
 - **`docs-only` label:** the `docs-label` job (`Docs-only label`) mirrors `code` as the `docs-only` label on every
   same-repo PR, adding it for docs-only and removing it otherwise. Nothing reads it: the diff decides what runs, and the

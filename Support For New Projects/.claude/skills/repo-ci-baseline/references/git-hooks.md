@@ -55,7 +55,8 @@ git worktree add -b fix/42-null-children ../<Repo>-worktrees/fix-42-null-childre
 
 Remove it once the PR merges: `git worktree remove ../<Repo>-worktrees/fix-42-null-children`. `pre-commit` enforces
 the rule. Claude Code's own `.claude/worktrees/` (ignored by the Template's `.gitignore`) also passes the check, since
-any linked worktree does, but people use `../<Repo>-worktrees/`.
+any linked worktree does, but people use `../<Repo>-worktrees/`. A **bare** clone (TicketManager's `~/github/TicketManager`)
+has no primary checkout at all: every checkout is a linked worktree, so it already follows the rule.
 
 ## The hooks
 

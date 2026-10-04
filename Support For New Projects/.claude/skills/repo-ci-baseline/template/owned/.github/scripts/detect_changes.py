@@ -6,7 +6,8 @@ request, from a full-history checkout of the PR merged into its base:
 
     python3 .github/scripts/detect_changes.py --base <base sha> --output "$GITHUB_OUTPUT"
 
-It appends "code=true" or "code=false" to the output file. A PR is docs-only
+It appends "code=true" or "code=false" to the output file, and skip_reason:
+"docs-only", "actions-bump", or empty when the build runs. A PR is docs-only
 when every changed path is under docs/ or ends in .md; the build, test matrix
 and coverage are then skipped. Everything else counts as code, including
 workflows, scripts and an empty diff, so an unexpected path runs the suite.
@@ -84,8 +85,9 @@ def main(argv=None):
 
     paths = changed_paths(args.base, args.head)
     code = is_code_change(paths)
+    skip_reason = "" if code else "docs-only"
     if code and is_actions_bump(paths, args.author, args.head_ref):
-        code = False
+        code, skip_reason = False, "actions-bump"
         print(f"::notice::Dependabot GitHub Actions bump ({len(paths)} files); the build, tests and coverage are skipped.")
     elif code and paths:
         print(f"Code change: {for_log(first_code_path(paths))}")
@@ -94,8 +96,9 @@ def main(argv=None):
     else:
         print(f"::notice::Docs-only change ({len(paths)} files); the build, tests and coverage are skipped.")
 
+    # skip_reason tells the summary which skip it was; code alone can't.
     with open(args.output, "a", encoding="utf-8") as output:
-        output.write(f"code={'true' if code else 'false'}\n")
+        output.write(f"code={'true' if code else 'false'}\nskip_reason={skip_reason}\n")
     return 0
 
 

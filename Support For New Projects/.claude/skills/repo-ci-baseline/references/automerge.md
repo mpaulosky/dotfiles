@@ -71,8 +71,11 @@ The next PR after the Standardize must sit green but unmerged until Copilot's re
 The workflow's log names what it waits on (`Waiting on PR #n: no Copilot review of <sha> yet.`, or `<k> unresolved review thread(s).`).
 Once the last thread is resolved, the next sweep merges it; that can take an hour or more, since GitHub thins out scheduled runs.
 
-**A submitted review re-checks the PR** (not yet seen live; IssueTracker #201 merged with no reviewed PR after it).
-On a PR whose CI finishes before Copilot's review, the review must start a **PR Review Submitted** run, and its completion a **PR Auto-Merge** run with event `workflow_run`, within a minute or two:
-`gh run list --workflow pr-review-submitted.yml` and `gh run list --workflow pr-automerge.yml --json event,createdAt`.
-If no PR Review Submitted run appears, `pull_request_review` doesn't fire for Copilot's reviews, and the PR falls back to the sweep: record that here.
+**A submitted review re-checks the PR, but not Copilot's** (seen live on TicketManager #113, 2026-10-04).
+Copilot's review did start **PR Review Submitted**, but GitHub held that run at `action_required`, waiting for someone to approve it,
+so it never completed and PR Auto-Merge wasn't re-checked. A review the owner submitted (a reply to Copilot's thread) ran at once.
+So the trigger helps only with reviews people submit; a PR whose last blocker is Copilot's review still waits for the sweep.
+Copilot's review workflow itself ("Copilot", `dynamic/agents/copilot-pull-request-reviewer`) can't take its place: a probe on dotfiles (#38)
+showed its completion does fire `workflow_run`, but GitHub holds that run at `action_required` too, because Copilot is the actor.
+Any workflow a Copilot review starts waits for approval, so the scheduled sweep stays the way Copilot's review gets a PR merged.
 After a third reviewed non-merge commit, the log reads `Copilot review cap (3) reached on PR #n: merging ...` if the cap is what let it through.

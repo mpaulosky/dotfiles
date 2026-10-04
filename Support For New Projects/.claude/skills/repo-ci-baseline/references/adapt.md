@@ -44,7 +44,7 @@ Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.
 
 - **Required checks.** The ruleset must require checks that exist: `Build Solution` and `Test Suite` (atelier-store's was `Test Report Summary`).
   Read them with `gh api repos/<r>/rulesets`, and update them in the same sitting as the merge, or the PR can't merge (old name missing) or merges unchecked (new name not required).
-- **Labels.** `semver:minor` and `semver:major`; see [gotchas.md](gotchas.md#repo-drift).
+- **Labels.** `semver:minor` and `semver:major`, and `docs-only` for its color and description; see [gotchas.md](gotchas.md#repo-drift).
 - **Secrets.** `RELEASE_PR_PAT` (releases, blog PRs and auto-merge start workflows only with it), and any test secret.
 - **Missing blog posts.** Before merging, check which Releases lack a post, as [release-pipeline.md](release-pipeline.md#adapting) describes.
 

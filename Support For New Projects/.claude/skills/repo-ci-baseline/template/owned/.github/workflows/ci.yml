@@ -89,6 +89,39 @@ jobs:
           # changed files against the base and appends code=true|false.
           python3 .github/scripts/detect_changes.py --base "$BASE_SHA" --output "$GITHUB_OUTPUT"
 
+  # Mirrors Detect Changes' result as the docs-only label, so docs PRs are
+  # easy to filter. Nothing reads the label: the diff decides what runs, and
+  # the label is reset on every push, so it can't be wrong for long. Dependabot
+  # and fork PRs get a read-only token and are skipped. Not a required check.
+  docs-label:
+    name: Docs-only label
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Set or clear the docs-only label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CODE: ${{ needs.changes.outputs.code }}
+        run: |
+          has_label=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" --jq 'any(.[]; .name == "docs-only")')
+          if [ "$CODE" = "false" ] && [ "$has_label" != "true" ]; then
+            # GitHub creates the label if the repo lacks it, in a default color.
+            gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/labels" -f "labels[]=docs-only" > /dev/null
+            echo "Added docs-only." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$CODE" != "false" ] && [ "$has_label" = "true" ]; then
+            gh api -X DELETE "repos/${REPO}/issues/${PR_NUMBER}/labels/docs-only" > /dev/null
+            echo "Removed docs-only: this PR changes code." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
     name: Build Solution
     needs: changes

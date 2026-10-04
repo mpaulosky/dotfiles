@@ -20,6 +20,13 @@ PR that took about 4 minutes and 17 runner-minutes merges in about 1 minute.
   output `code=true`. `--no-renames` lists a rename under both its paths, so moving code into `docs/` still runs the
   suite. The rule decides whether required checks run, so it lives in a script with tests
   (`test_detect_changes.py`, built on real git repos), not inline shell: Copilot asks for this every time.
+- **`docs-only` label:** the `docs-label` job (`Docs-only label`) mirrors `code` as the `docs-only` label on every
+  same-repo PR, adding it for docs-only and removing it otherwise. Nothing reads it: the diff decides what runs, and the
+  label is only for filtering PRs. A label would be the wrong input, because anyone with triage access can set one, and
+  a label change doesn't re-run CI. The job is skipped for Dependabot and fork PRs, whose token is read-only.
+  `release.yml` and `backfill-blog-posts.yml` also label the blog PRs they open, best-effort, so it shows before CI
+  runs. Adding a label the repo lacks creates it in a default color; create it once for a color and description
+  ([gotchas.md](gotchas.md#repo-drift)).
 - `build` gets `needs: changes` and `if: needs.changes.outputs.code == 'true'`. Test discovery, the matrix and coverage
   then skip through their `needs` chains.
 - **`Test Suite`** (the `report` job, `if: always()`) needs `changes` too, and fails when `changes` didn't succeed.
@@ -42,7 +49,7 @@ allowlist of code paths, which also skipped the build for `.github/` changes); A
 
 1. **Before merging,** open a throwaway **draft** PR that changes one doc and targets the Standardize branch (not `main`).
    Its CI runs the new `ci.yml` against a docs-only diff: `Detect Changes` passes, the build, tests and coverage are
-   skipped, and the report job (`Test Suite`) passes. Close it without
+   skipped, the report job (`Test Suite`) passes, and `Docs-only label` adds `docs-only`. Close it without
    merging. Keep the Standardize PR a draft until then, or it can auto-merge first. Lint workflows that only trigger
    for PRs into `main` don't run on the probe; that's expected.
 2. **After merging,** the Standardize PR's release-blog PR is docs-only. It must merge under `main`'s ruleset with `Build

@@ -14,7 +14,9 @@ set -euo pipefail
 title="${1:-}"
 types="feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
 
-if ! [[ "$title" =~ ^($types)(\([^\)]+\))?!?:\ (.+)$ ]]; then
+# Exactly one space after the colon, and none at the end, so extra spaces
+# can't slip a lowercase summary past the check below.
+if ! [[ "$title" =~ ^($types)(\([^\)]+\))?!?:\ ([^[:space:]](.*[^[:space:]])?)$ ]]; then
   echo "PR title '${title}' doesn't follow the commit format."
   echo "Expected: <type>(<scope>): <Summary>, with <type> one of ${types//|/, }; the scope is optional."
   exit 1

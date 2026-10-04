@@ -63,10 +63,16 @@ jobs:
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         if: ${{ inputs.publish && github.ref == 'refs/heads/main' && steps.dotnet-code-metrics.outputs.updated-metrics == 'true' && env.HAS_RELEASE_PR_PAT == 'true' }}
         with:
-          # [skip-release]: a metrics refresh isn't a release.
-          title: "${{ steps.dotnet-code-metrics.outputs.summary-title }} [skip-release]"
-          body: "${{ steps.dotnet-code-metrics.outputs.summary-details }}"
-          commit-message: ".NET code metrics, automated pull request."
+          # [skip-release]: a metrics refresh isn't a release. A fixed title in
+          # the commit format, which the required PR title check enforces; the
+          # action's summary title ("Updated CODE_METRICS.md file, ...") opens
+          # the body instead.
+          title: "docs: Update code metrics [skip-release]"
+          body: |
+            ${{ steps.dotnet-code-metrics.outputs.summary-title }}
+
+            ${{ steps.dotnet-code-metrics.outputs.summary-details }}
+          commit-message: "docs: Update code metrics"
           branch: chore/code-metrics
           # A PAT, not GITHUB_TOKEN: the workflow token is read-only, Actions
           # may not create PRs in this repository, and a PR opened with

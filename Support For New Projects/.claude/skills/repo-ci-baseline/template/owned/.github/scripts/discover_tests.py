@@ -10,11 +10,19 @@ has_tests=true|false to the output file.
 
 A project is a test project when IsTestProject resolves to true, read the way
 MSBuild imports it: the .csproj's own value wins, then the nearest
-Directory.Build.props above it (atelier-store and Blazor-Server set it once in
+Directory.Build.props above it (atelier-store sets it once in
 tests/Directory.Build.props). MSBuild imports only that nearest file, so a
 parent one counts only when the nearest imports it (the usual
 GetPathOfFileAbove('Directory.Build.props', ...) line). Helper libraries such
 as IssueTracker's TestingSupport.Library set neither, so they're skipped.
+
+A Condition on IsTestProject or its PropertyGroup is evaluated against the
+project's name when it has one of the shapes the repos use, optionally negated
+with !: $(MSBuildProjectName.Contains('x')), .StartsWith('x'), .EndsWith('x'),
+or '$(MSBuildProjectName)' == 'x' (or !=). Blazor-Server sets it in its root
+Directory.Build.props only where $(MSBuildProjectName.Contains('.Tests')), so
+a helper library under tests/ stays out. Any other Condition is logged and
+counts as holding.
 
 A repo with no projects under tests/ gets has_tests=false, so the test matrix
 is skipped while it's bootstrapped. Projects that are all skipped fail the
@@ -28,18 +36,61 @@ import argparse
 import json
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-IS_TEST_PROJECT = re.compile(r"<IsTestProject>\s*(true|false)\s*</IsTestProject>", re.IGNORECASE)
 # An Import of the next Directory.Build.props up, such as
 # $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../')).
 IMPORTS_PARENT_PROPS = re.compile(r"<Import\b[^>]*Directory\.Build\.props", re.IGNORECASE)
+NAME_METHOD = re.compile(r"(!?)\$\(MSBuildProjectName\.(Contains|StartsWith|EndsWith)\('([^']*)'\)\)")
+NAME_COMPARISON = re.compile(r"'\$\(MSBuildProjectName\)'\s*(==|!=)\s*'([^']*)'")
 
 
-def declared_is_test_project(path):
-    """The IsTestProject value a file sets (its last one), or None if it sets none."""
-    values = IS_TEST_PROJECT.findall(path.read_text(encoding="utf-8", errors="replace"))
-    return values[-1].lower() == "true" if values else None
+def condition_holds(condition, name):
+    """Whether an MSBuild Condition holds for project name, or None for a shape this doesn't evaluate."""
+    condition = condition.strip()
+    if match := NAME_METHOD.fullmatch(condition):
+        negate, method, text = match.groups()
+        holds = {"Contains": text in name, "StartsWith": name.startswith(text), "EndsWith": name.endswith(text)}
+        return holds[method] != bool(negate)
+    if match := NAME_COMPARISON.fullmatch(condition):
+        # MSBuild's == and != compare strings case-insensitively.
+        operator, text = match.groups()
+        return (name.lower() == text.lower()) == (operator == "==")
+    return None
+
+
+def local_name(element):
+    """The element's tag without its namespace, lowercased: MSBuild property names ignore case."""
+    return element.tag.rpartition("}")[2].lower()
+
+
+def applies(element, name, path):
+    """Whether element's Condition, if any, holds for project name; one this can't evaluate counts as holding."""
+    condition = element.get("Condition")
+    if condition is None:
+        return True
+    holds = condition_holds(condition, name)
+    if holds is None:
+        print(f"::notice::{name}: can't evaluate Condition \"{condition}\" on IsTestProject in {path}; counting it as holding")
+        return True
+    return holds
+
+
+def declared_is_test_project(path, name):
+    """The IsTestProject value a file sets for project name (its last one that applies), or None if it sets none."""
+    project = ET.fromstring(path.read_text(encoding="utf-8-sig", errors="replace"))
+    value = None
+    for group in project:
+        if local_name(group) != "propertygroup":
+            continue
+        for element in group:
+            text = (element.text or "").strip().lower()
+            if local_name(element) != "istestproject" or text not in ("true", "false"):
+                continue
+            if all(applies(owner, name, path) for owner in (group, element)):
+                value = text == "true"
+    return value
 
 
 def nearest_props(folder, root):
@@ -55,12 +106,13 @@ def nearest_props(folder, root):
 
 def is_test_project(csproj, root):
     """Whether IsTestProject resolves to true for this project, as described above."""
-    own = declared_is_test_project(csproj)
+    name = csproj.stem
+    own = declared_is_test_project(csproj, name)
     if own is not None:
         return own
     props = nearest_props(csproj.parent, root)
     while props is not None:
-        value = declared_is_test_project(props)
+        value = declared_is_test_project(props, name)
         if value is not None:
             return value
         text = props.read_text(encoding="utf-8", errors="replace")

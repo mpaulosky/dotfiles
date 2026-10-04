@@ -162,6 +162,11 @@ conflicts=()
 for f in .markdownlint.json .markdownlint.jsonc .markdownlint.yaml .markdownlint.yml .markdownlintrc; do
   [[ -e "$target/$f" ]] && conflicts+=("$f overrides the rules in .markdownlint-cli2.jsonc; delete it, then run markdownlint-cli2 --fix")
 done
+# A second copy of the commit rules drifts from the Owned one (IssueManager's and
+# Articles' weren't even conventional commits); CLAUDE.md links docs/PROCESS.md instead.
+for f in .copilot-commit-message-instructions.md .claude/rules/git-commit.md; do
+  [[ -e "$target/$f" ]] && conflicts+=("$f duplicates .github/instructions/git-commit-instructions.md; delete it, and point CLAUDE.md at docs/PROCESS.md")
+done
 if [[ -d "$target/.squad" ]] || compgen -G "$target/.github/workflows/squad-*" >/dev/null; then
   conflicts+=("squad is still installed (.squad/ or squad-* workflows); run the remove-squad skill before Applying")
 fi

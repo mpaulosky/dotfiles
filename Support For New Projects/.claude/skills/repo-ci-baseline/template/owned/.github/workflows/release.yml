@@ -449,11 +449,11 @@ jobs:
             # No new post: only the tables or the docs/README.md copy of the
             # README changed (e.g. after a README-only [skip-release] merge).
             0)
-              TITLE="docs: refresh release tables and docs/README.md [skip-release]"
+              TITLE="docs: Refresh release tables and docs/README.md [skip-release]"
               BODY="Automated refresh of the release tables and the docs/README.md copy of the README, opened by the release workflow. Every Release already has its post on main. The [skip-release] title marker keeps its merge from starting another release."
               ;;
-            1) TITLE="docs: add release blog for PR ${LIST} [skip-release]" ;;
-            *) TITLE="docs: add release blogs for PR ${LIST} [skip-release]" ;;
+            1) TITLE="docs: Add release blog for PR ${LIST} [skip-release]" ;;
+            *) TITLE="docs: Add release blogs for PR ${LIST} [skip-release]" ;;
           esac
 
           git checkout -B "$BRANCH"

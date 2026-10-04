@@ -10,6 +10,11 @@ Template files (Owned): `.github/workflows/release.yml`, `backfill-blog-posts.ym
 - A release that was cancelled, or failed before its GitHub Release was published, is retried by the next run.
 - One blog PR per run, never one per released PR, so blog PRs can't conflict with each other.
 - A merged blog PR (`[skip-release]`) releases nothing and opens nothing, so there's no loop.
+- A Dependabot PR ships with the next release. Its auto-merge is armed with `GITHUB_TOKEN`, whose merge starts no
+  workflows, so it never gets a run of its own; the next merged PR's run finds it owed and releases it first, in merge
+  order (IssueTracker #198 went out with #197). That's by design: a dependency bump doesn't merit its own Release and
+  blog post. `test_release_queue.py` covers it. TicketManager #107, merged before the queue existed, shipped inside
+  v0.0.48's tag without a Release of its own.
 
 ## Design
 
@@ -53,7 +58,7 @@ caught; every parser must agree on which markers count.
 **`docs` job** (`needs: [plan, release]`, `if: always() && needs.plan.result == 'success'`) runs
 `backfill_blog_posts.py`, which writes a post for every Release that `main` has no post for, then rebuilds the README
 and blog tables once. It then force-pushes the result to a single branch, `docs/release-notes`, and creates or updates
-one PR titled `docs: add release blog for PR #N [skip-release]` (`release blogs for PR #A, #B` when a run covers
+one PR titled `docs: Add release blog for PR #N [skip-release]` (`release blogs for PR #A, #B` when a run covers
 several), with auto-merge enabled. A still-open blog PR gets folded into the next run's PR instead of conflicting with
 it. The PRs covered come from the new file names (`docs/blogs/<date>-pr-<n>-<slug>.md`).
 
@@ -68,7 +73,7 @@ there too, with relative links rebased for `docs/` by `rebase_readme_links`: `do
 any other path (`../up.md` too) gets `../`. URLs, `#anchors`, `?query` references, root-relative paths and fenced
 code, in block quotes too, are left alone. Origin: TicketManager #104. The backfill rebuilds the tables (and so this
 copy) even when it writes no post, because a README-only PR merged with `[skip-release]` releases nothing and nothing
-else syncs it. The docs job then opens `docs: refresh release tables and docs/README.md [skip-release]`. A run with
+else syncs it. The docs job then opens `docs: Refresh release tables and docs/README.md [skip-release]`. A run with
 nothing to change leaves the tree clean, so no PR.
 
 **Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
@@ -100,7 +105,7 @@ The Standardize PR's own merge is the first live run. Check it:
 
 1. `plan` logs `Newest published Release: vX (PR #prev). Queue: [<this PR>]`.
 2. `release (<this PR>)` publishes the next version.
-3. `docs` opens `docs: add release blog for PR #<this PR> [skip-release]` from `docs/release-notes`, and it merges.
+3. `docs` opens `docs: Add release blog for PR #<this PR> [skip-release]` from `docs/release-notes`, and it merges.
 4. The blog PR's own run shows `Queue: empty`, `release` skipped, and `docs` reporting that every Release already has
    its post.
 

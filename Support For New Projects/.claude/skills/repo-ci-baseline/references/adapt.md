@@ -54,8 +54,7 @@ Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.
 
 ## Repo docs
 
-Point `README.md` or `CONTRIBUTING.md` at the one-time `git config core.hooksPath .github/hooks`,
-and list the branch standard from [git-hooks.md](git-hooks.md) wherever the repo lists branch names (`CLAUDE.md`, `CONTRIBUTING.md`).
-State the [worktree standard](git-hooks.md#worktree-standard) there too, with its `../<Repo>-worktrees/` folder,
-replacing any other worktree convention the repo documents, and move existing worktrees as
-[git-hooks.md](git-hooks.md#adapting) says.
+The process (hooks, branches, worktrees, commits, PR titles and descriptions, merging, releases) is written once, in the
+Owned `docs/PROCESS.md`. Replace the repo's own copies of it in `CLAUDE.md`, `CONTRIBUTING.md` and the README with a link
+there, as [pr-process.md](pr-process.md#adapting) lists; that also drops any other worktree convention or branch list.
+Move existing worktrees as [git-hooks.md](git-hooks.md#adapting) says.

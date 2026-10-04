@@ -40,7 +40,7 @@ name: PR Auto-Merge
   # no-op workflow whose completion lands here. Copilot's review usually
   # arrives after CI, so without it the PR waits for the sweep.
   workflow_run:
-    workflows: ["Build and Test Suite", "Lint Markdown", "Lint YAML", "Lint Actions", "CodeQL", "PR Review Submitted"]
+    workflows: ["Build and Test Suite", "Lint Markdown", "Lint YAML", "Lint Actions", "CodeQL", "PR Title", "PR Review Submitted"]
     types: [completed]
   # Resolving a review thread has no Actions trigger, so a PR whose last
   # blocker was an open thread is picked up by this sweep. Off the round

@@ -56,8 +56,9 @@ env:
 
 jobs:
   # Whether the PR changes anything the build or tests depend on. A PR that
-  # changes only Markdown and files under docs/ (such as a release blog PR)
-  # skips the build, the test matrix and coverage. Everything else counts as
+  # changes only Markdown and files under docs/ (such as a release blog PR),
+  # or a Dependabot GitHub Actions bump, skips the build, the test matrix and
+  # coverage. Everything else counts as
   # code, including workflows and scripts, so an unexpected path runs the full
   # suite. Pushes and manual runs always run it.
   changes:
@@ -79,6 +80,8 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           if [ "$EVENT_NAME" != "pull_request" ]; then
             echo "code=true" >> "$GITHUB_OUTPUT"
@@ -87,7 +90,9 @@ jobs:
 
           # detect_changes.py (tested in .github/scripts/tests) lists the
           # changed files against the base and appends code=true|false.
-          python3 .github/scripts/detect_changes.py --base "$BASE_SHA" --output "$GITHUB_OUTPUT"
+          # A Dependabot GitHub Actions bump skips them too (see the script).
+          python3 .github/scripts/detect_changes.py --base "$BASE_SHA" --output "$GITHUB_OUTPUT" \
+            --author "$AUTHOR" --head-ref "$HEAD_REF"
 
   # Mirrors Detect Changes' result as the docs-only label, so docs PRs are
   # easy to filter. Nothing reads the label: the diff decides what runs, and
@@ -256,6 +261,9 @@ jobs:
 
       - name: Run branch-name script tests
         run: bash scripts/tests/check-branch-name.test.sh
+
+      - name: Run PR-title script tests
+        run: bash scripts/tests/check-pr-title.test.sh
 
   # Tests for the inline script in .github/workflows/pr-automerge.yml, run
   # against a fake GitHub client. Also not a required status check.

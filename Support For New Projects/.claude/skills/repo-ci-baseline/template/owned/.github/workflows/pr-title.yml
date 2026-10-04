@@ -1,0 +1,37 @@
+---
+name: PR Title
+
+# The PR title becomes the squash commit's subject on main and the Release's
+# name, so it follows the commit format in
+# .github/instructions/git-commit-instructions.md. "PR title" is a required
+# status check. Its own workflow, not a ci.yml job, so fixing a title reruns
+# only this. Dependabot's titles can't be edited to the format, so its PRs
+# skip the job, which a required check counts as passing.
+"on":
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: PR title
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check the PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: bash scripts/check-pr-title.sh "$TITLE"

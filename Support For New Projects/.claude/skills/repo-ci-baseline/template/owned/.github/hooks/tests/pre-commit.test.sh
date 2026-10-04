@@ -265,6 +265,29 @@ git -C "$FRESH" add .
 run_hook "$FRESH"
 expect "a repo's first commit is allowed in the primary checkout" allowed linted
 
+# On a branch of its own in the primary checkout, the refusal's commands move
+# that branch, with its staged, unstaged and untracked changes, into a worktree.
+git -C "$PRIMARY" switch -q -c fix/2-moved
+echo 'Staged.' >> "$PRIMARY/README.md"
+git -C "$PRIMARY" add README.md
+echo 'Untracked.' > "$PRIMARY/new.md"
+run_hook "$PRIMARY"
+expect "a commit on its own branch in the primary checkout is refused" refused not-linted
+RECOVERY="$(sed 's/\x1b\[[0-9;]*m//g' <<< "$OUTPUT" | sed -n 's/^      \(git .*\|cd .*\)$/\1/p')"
+MOVED="$(cd "$WORK" && pwd -P)/repo-worktrees/fix-2-moved"
+if [[ "$RECOVERY" != *"git switch main"* ]]; then
+  fail "the refusal's commands move the branch into a worktree" "no git switch main in the message"
+elif ! (cd "$PRIMARY" && set -e && eval "$RECOVERY") &>/dev/null; then
+  fail "the refusal's commands move the branch into a worktree" "the commands failed"
+elif [[ "$(git -C "$MOVED" branch --show-current)" != fix/2-moved ]] \
+  || ! grep -q Staged "$MOVED/README.md" || [[ ! -f "$MOVED/new.md" ]] \
+  || [[ "$(git -C "$PRIMARY" branch --show-current)" != main ]] \
+  || [[ -n "$(git -C "$PRIMARY" status --porcelain)" ]]; then
+  fail "the refusal's commands move the branch into a worktree" "the worktree or primary checkout isn't as expected"
+else
+  pass "the refusal's commands move the branch into a worktree"
+fi
+
 # An orphan branch has no HEAD commit, but the repo has history.
 git -C "$PRIMARY" checkout -q --orphan fresh-start
 run_hook "$PRIMARY"

@@ -25,13 +25,25 @@ if [[ "$GIT_DIR_ABS" == "$COMMON_DIR_ABS" ]] \
   && [[ "$(git config --bool baseline.allowPrimaryCommits)" != true ]]; then
   # Absolute paths: the hook's cd doesn't move the shell that ran git commit.
   WORKTREES="$(dirname "$ROOT")/$(basename "$ROOT")-worktrees"
+  BRANCH="$(git symbolic-ref -q --short HEAD || true)"
   echo -e "${RED}❌  Commit in a worktree, not in the primary checkout ($ROOT).${RESET}"
-  echo -e "    Start the branch in its own worktree, and carry your changes over with a stash."
-  echo -e "    <branch> is feature|fix|hotfix/<issue>-<slug> or chore/<slug>; <folder> is <branch> with / as -."
-  echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
-  echo -e "      ${CYAN}git fetch origin${RESET}"
-  echo -e "      ${CYAN}git worktree add -b <branch> \"$WORKTREES/<folder>\" origin/main${RESET}"
-  echo -e "      ${CYAN}cd \"$WORKTREES/<folder>\" && git stash pop${RESET}"
+  if [[ -n "$BRANCH" && "$BRANCH" != main ]] && git rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; then
+    # The branch already exists and is checked out here, so it can't also be
+    # checked out in a worktree until the primary checkout is back on main.
+    FOLDER="${BRANCH//\//-}"
+    echo -e "    Move $BRANCH into its own worktree, and carry your changes over with a stash:"
+    echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
+    echo -e "      ${CYAN}git switch main${RESET}"
+    echo -e "      ${CYAN}git worktree add \"$WORKTREES/$FOLDER\" $BRANCH${RESET}"
+    echo -e "      ${CYAN}cd \"$WORKTREES/$FOLDER\" && git stash pop${RESET}"
+  else
+    echo -e "    Start the branch in its own worktree, and carry your changes over with a stash."
+    echo -e "    <branch> is feature|fix|hotfix/<issue>-<slug> or chore/<slug>; <folder> is <branch> with / as -."
+    echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
+    echo -e "      ${CYAN}git fetch origin${RESET}"
+    echo -e "      ${CYAN}git worktree add -b <branch> \"$WORKTREES/<folder>\" origin/main${RESET}"
+    echo -e "      ${CYAN}cd \"$WORKTREES/<folder>\" && git stash pop${RESET}"
+  fi
   echo -e "    For a clone that can't use worktrees: ${YELLOW}git config baseline.allowPrimaryCommits true${RESET}"
   exit 1
 fi

@@ -273,7 +273,8 @@ git -C "$PRIMARY" add README.md
 echo 'Untracked.' > "$PRIMARY/new.md"
 run_hook "$PRIMARY"
 expect "a commit on its own branch in the primary checkout is refused" refused not-linted
-RECOVERY="$(sed 's/\x1b\[[0-9;]*m//g' <<< "$OUTPUT" | sed -n 's/^      \(git .*\|cd .*\)$/\1/p')"
+# The command lines, without their colour codes.
+RECOVERY="$(sed -e 's/\x1b\[[0-9;]*m//g' -n -e 's/^      \(git .*\|cd .*\)$/\1/p' <<< "$OUTPUT")"
 MOVED="$(cd "$WORK" && pwd -P)/repo-worktrees/fix-2-moved"
 if [[ "$RECOVERY" != *"git switch main"* ]]; then
   fail "the refusal's commands move the branch into a worktree" "no git switch main in the message"

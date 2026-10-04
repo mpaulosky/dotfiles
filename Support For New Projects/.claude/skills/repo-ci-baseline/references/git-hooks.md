@@ -49,7 +49,8 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
   and names the one-time command.
 - **`pre-commit`** first refuses a commit made in the primary checkout (its git dir is the common one), naming the
   commands to use instead: `git worktree add -b` for a new branch, or, when the primary checkout is already on its
-  own branch, `git switch main` and `git worktree add` to move that branch into a worktree. Two cases are exempt: a repo with no commits on any branch (an orphan branch in a repo with history is not), so a new repo's Apply can be
+  own branch, `git switch main` and `git worktree add` to move that branch into a worktree. Two cases are exempt: a
+  repo with no commits on any branch (an orphan branch in a repo with history is not), so a new repo's Apply can be
   its first commit on `main`, and a clone with `git config baseline.allowPrimaryCommits true`, for a clone that can't
   use worktrees (a sandbox or a one-off). Hooks don't run in Actions, so the release workflow's commits are unaffected.
   Then it lints the staged content of Markdown files; see [pre-commit.md](pre-commit.md).

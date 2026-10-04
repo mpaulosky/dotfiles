@@ -17,9 +17,15 @@ anything. See references/github-settings.md.
 
 It changes only what it manages. Other rulesets, labels and classic branch
 protection are reported; --remove-legacy deletes only those legacy.json names,
-and classic protection only once main-rules is active. A required check is
-added only once a workflow on the default branch has the job that reports it,
-so requiring a check can't block every PR before the repo produces it.
+and classic protection only once main-rules is active. Squad is retired, so
+its labels (settings.json's removed_label_prefixes) go on every --fix. A
+required check is added only once a workflow on the default branch has the job
+that reports it, so requiring a check can't block every PR before the repo
+produces it.
+
+Review threads hold a merge for at most three Copilot rounds. A ruleset can't
+express a cap, so main-rules leaves thread resolution off and the Template's
+pr-automerge.yml enforces it; this checks every repo runs that cap.
 
 Standard library only; GitHub is reached through `gh api`.
 """
@@ -282,8 +288,9 @@ def ruleset_differences(live, want):
         for key, value in params.items():
             current = live_rules[rule_type].get(key)
             if key == "required_status_checks":
-                current = sorted(check["context"] for check in current or [])
-                value = sorted(check["context"] for check in value)
+                # The app matters too: a check any app can report isn't a gate.
+                current = sorted([check["context"], check.get("integration_id")] for check in current or [])
+                value = sorted([check["context"], check.get("integration_id")] for check in value)
             elif key == "allowed_merge_methods":
                 current, value = sorted(current or []), sorted(value)
             if current != value:
@@ -349,8 +356,19 @@ def check_rulesets(gh, repo, std, workflows, default_branch, remove_legacy):
     return findings, main
 
 
-def check_labels(gh, repo, std, remove_legacy):
-    live = {label["name"]: label for label in gh.api("GET", f"repos/{repo}/labels?per_page=100")}
+def live_labels(gh, repo):
+    return {label["name"]: label for label in gh.api("GET", f"repos/{repo}/labels?per_page=100")}
+
+
+def check_retired_labels(gh, repo, std, live):
+    """Squad is retired everywhere, so its labels go on every --fix, whatever the repo's scope."""
+    return [Finding(f"label {name}", DRIFT, "retired label → deleted",
+                    lambda name=name: gh.api("DELETE", f"repos/{repo}/labels/{_quote(name)}"))
+            for name in sorted(live)
+            if any(name.startswith(prefix) for prefix in std["settings"]["removed_label_prefixes"])]
+
+
+def check_labels(gh, repo, std, live):
     findings = []
     for want in std["labels"]:
         current = live.get(want["name"])
@@ -365,16 +383,30 @@ def check_labels(gh, repo, std, remove_legacy):
                                         "PATCH", f"repos/{repo}/labels/{_quote(name)}", body)))
         else:
             findings.append(Finding(f"label {name}", OK, "present"))
-    for name in sorted(live):
-        if any(name.startswith(prefix) for prefix in std["legacy"]["label_prefixes"]):
-            findings.append(Finding(f"label {name}", LEGACY, "legacy label; --remove-legacy deletes it",
-                                    (lambda name=name: gh.api("DELETE", f"repos/{repo}/labels/{_quote(name)}"))
-                                    if remove_legacy else None))
     return findings
 
 
 def _quote(name):
     return quote(name, safe="")
+
+
+COPILOT_REVIEW_CAP = re.compile(r"const COPILOT_REVIEW_CAP = (\d+);")
+
+
+def check_review_cap(std, workflows):
+    """Review threads hold the merge for at most review_cap Copilot rounds (ADR 0002).
+
+    A ruleset can only require every thread resolved, with no cap, so the
+    ruleset leaves it off and pr-automerge.yml enforces the cap. This checks
+    the repo runs the Template's pr-automerge.yml with that cap.
+    """
+    want = std["settings"]["review_cap"]
+    text = next((text for path, text in workflows.items() if Path(path).name == "pr-automerge.yml"), None)
+    match = COPILOT_REVIEW_CAP.search(text or "")
+    if match and int(match.group(1)) == want:
+        return [Finding("review cap", OK, f"pr-automerge.yml resolves threads for up to {want} Copilot rounds")]
+    found = f"cap {match.group(1)}" if match else "no review cap" if text else "no pr-automerge.yml"
+    return [Finding("review cap", MANUAL, f"{found}; re-Apply the Template for the {want}-round cap")]
 
 
 def check_secrets(gh, repo, std):
@@ -399,24 +431,34 @@ def check(gh, repo, remove_legacy=False, scope="full"):
     std = load_standard(repo)
     info = gh.api("GET", f"repos/{repo}")
     findings = check_repo_flags(gh, repo, info, std)
+    labels = live_labels(gh, repo)
     if scope == "repo-settings-only":
-        return findings + [Finding("scope", INFO, "repo settings only (repos.txt); the rest isn't managed here")]
+        return findings + check_retired_labels(gh, repo, std, labels) + [
+            Finding("scope", INFO, "repo settings and retired labels only (repos.txt); the rest isn't managed here")]
     branch = info["default_branch"]
     workflows = read_workflows(gh, repo, branch)
     findings += check_security(gh, repo, info, std, workflows)
     findings += check_actions(gh, repo, std, workflows)
     ruleset_findings, _ = check_rulesets(gh, repo, std, workflows, branch, remove_legacy)
     findings += ruleset_findings
-    findings += check_labels(gh, repo, std, remove_legacy)
+    findings += check_review_cap(std, workflows)
+    findings += check_labels(gh, repo, std, labels)
+    findings += check_retired_labels(gh, repo, std, labels)
     findings += check_secrets(gh, repo, std)
     return findings
 
 
 def suspend(gh, repo):
-    """Set main-rules to disabled, the emergency exit; --fix restores it."""
+    """Set main-rules to disabled, the emergency exit; --fix restores it.
+
+    The update carries the whole ruleset as it is, changing only enforcement.
+    """
     for summary in gh.api("GET", f"repos/{repo}/rulesets?includes_parents=false"):
         if summary["name"] == "main-rules":
-            gh.api("PUT", f"repos/{repo}/rulesets/{summary['id']}", {"enforcement": "disabled"})
+            live = gh.api("GET", f"repos/{repo}/rulesets/{summary['id']}")
+            body = {key: live[key] for key in ("name", "target", "conditions", "bypass_actors", "rules") if key in live}
+            body["enforcement"] = "disabled"
+            gh.api("PUT", f"repos/{repo}/rulesets/{summary['id']}", body)
             return True
     return False
 

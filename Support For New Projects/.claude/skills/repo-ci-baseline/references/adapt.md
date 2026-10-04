@@ -46,7 +46,7 @@ Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.
   It sets the merge settings, security features, Actions permissions, the `main-rules` ruleset and its required checks, and the labels.
   The first run can't require the checks `main` doesn't report yet (`Branch name`, `PR title`, and `Test Suite` where it's new), and keeps the repo's
   old test gate required meanwhile; the second requires them and drops the old one. Done when `github-settings.sh mpaulosky/<repo>` reports no DRIFT, MANUAL or LEGACY.
-  Add `--remove-legacy` once its LEGACY list (squad-era rulesets and labels, classic protection) is understood.
+  It deletes `squad*` labels itself; add `--remove-legacy` once its LEGACY list (squad-era rulesets, classic protection) is understood.
 - **Secrets.** The script checks `RELEASE_PR_PAT` exists (releases, blog PRs and auto-merge start workflows only with it); add it, and any test secret, by hand.
   The PAT needs **Workflows: Read and write** (fine-grained) or the `workflow` scope (classic), as well as contents and
   pull requests: the Standardize itself changes the workflows, so the next release that tags an older commit (a missed

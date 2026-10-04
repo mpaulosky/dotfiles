@@ -102,8 +102,8 @@ Run each part's live check from its reference; a part counts only once that pass
 matching reference, and any fix to an Owned file into the Template (a dotfiles PR with `test.sh` green), so the next
 Standardize doesn't hit the same surprise.
 
-Order across repos: TicketManager first, then IssueTracker, atelier-store, Blazor-Server, IssueManager and Articles;
-TinyTicket gets its GitHub settings now and a Standardize when work on it starts.
+Order across repos: TicketManager first, then IssueTracker, atelier-store, Blazor-Server, IssueManager and Articles.
+TinyTicket is retired and not Standardized.
 
 ## Part C: Optional App-Stack Starting Points
 

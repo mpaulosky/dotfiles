@@ -11,7 +11,7 @@ labels, Actions permissions and security features. Before this script, each repo
 github-settings.sh mpaulosky/<repo>          # report; exit 1 on any DRIFT, MANUAL or LEGACY
 github-settings.sh --fix mpaulosky/<repo>    # report, apply, report again
 github-settings.sh --all                     # every repo in github/repos.txt
-github-settings.sh --fix --remove-legacy …   # also delete the legacy items it lists
+github-settings.sh --fix --remove-legacy …   # also delete the legacy rulesets and protection
 github-settings.sh --suspend mpaulosky/<repo> # emergency: main-rules disabled until the next --fix
 github-settings.sh --json …                  # the same report, machine-readable
 ```
@@ -31,15 +31,18 @@ would let a repo's own PRs change the rules that gate them.
 | Labels | `semver:minor`, `semver:major`, `docs-only`, `sandcastle:needs-human`, `dependencies`, `github-actions`, with the colors and descriptions in `labels.json`. Dependabot drops a label that doesn't exist, and `release.yml` releases a PR without its semver label as a patch. |
 | Secret | `RELEASE_PR_PAT` must exist; the script reads secret names, never values, so a missing one is MANUAL. |
 
-Review threads aren't required because ADR 0002's review cap merges past Copilot's threads after three rounds;
-a ruleset that requires resolution blocks that merge (IssueTracker's did). Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
+**Review threads hold the merge for at most three Copilot rounds**, in every repo. A ruleset can only require *every* thread resolved,
+with no cap, which blocks ADR 0002's cap (IssueTracker's did); so `main-rules` leaves it off and `pr-automerge.yml` enforces the cap.
+The script checks each repo's `pr-automerge.yml` sets `COPILOT_REVIEW_CAP` to `review_cap` (3); without it, the finding is MANUAL until the re-Apply.
+Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
 
 ## What `--fix` may change
 
 - **Only what it manages.** Other rulesets and labels are reported as INFO and left alone.
-- **Legacy items** (`legacy.json`: the squad-era `dev-rules` and `protect-preview` rulesets, `squad*` labels, and classic branch protection)
+- **Squad labels** (`removed_label_prefixes`: `squad`, `squad:*`) are deleted on every `--fix`: squad is retired everywhere.
+- **Legacy items** (`legacy.json`: the squad-era `dev-rules` and `protect-preview` rulesets, and classic branch protection)
   are reported as LEGACY and deleted only with `--remove-legacy`. Classic protection goes only once `main-rules` is active,
-  so the branch is never left unprotected: where `main-rules` is created in the same run (TinyTicket), run `--fix --remove-legacy` twice.
+  so the branch is never left unprotected: where `main-rules` is created in the same run, run `--fix --remove-legacy` twice.
   `release:minor` and `release:major` aren't legacy: `release.yml` still reads them.
 - **A required check only once the repo reports it.** The script reads the job names (or job ids) of the workflows on the default branch.
   A standard check none reports is MANUAL and left out of the ruleset; requiring it would block every PR, since a check that never runs never passes.
@@ -52,7 +55,7 @@ a ruleset that requires resolution blocks that merge (IssueTracker's did). Repo 
 
 - **`github/repos/<repo>.json`** may add `required_checks` or `labels` for one repo, never remove or loosen anything; any other key is an error.
   A repo's own required check (a Sandcastle check, say) goes there, and in its workflow.
-- **`repos.txt` scope.** `repo-settings-only` manages just the merge settings. dotfiles carries it: it isn't a Baseline repo,
+- **`repos.txt` scope.** `repo-settings-only` manages just the merge settings, and deletes the retired squad labels. dotfiles carries it: it isn't a Baseline repo,
   and rulesets need GitHub Pro on a private repo, where the API answers 403 (reported as UNAVAILABLE, which doesn't fail the run).
 
 ## When to run it
@@ -68,10 +71,11 @@ a ruleset that requires resolution blocks that merge (IssueTracker's did). Repo 
 
 `github/tests/test_settings.py` runs the script against an in-memory GitHub that keeps state, so a case can run `--fix` and then show that a
 second run writes nothing. Cases cover each area's drift and fix, a check-only run writing nothing, required checks limited to what workflows report,
-an old check kept while reported, the suspend/restore cycle, 403s, legacy deletion only on request (and classic protection only with `main-rules` active),
+an old check kept while reported, a required check from another app, the suspend/restore cycle (keeping every rule), 403s,
+squad labels deleted, legacy rulesets deleted only on request (and classic protection only with `main-rules` active), the review cap,
 pinning only when all workflows are pinned, scope and per-repo additions, a per-repo file that tries to loosen the standard, and `--json`.
-Mutation-check the safety rules: breaking each one (kept checks, unreported checks, the active guard, the pinning guard, the legacy flag,
-the suspended check, the additive-only rule) must fail a test.
+The fake rejects a partial ruleset update, as GitHub may. Mutation-check the safety rules: breaking each one (kept checks, unreported checks,
+the app comparison, the active guard, the pinning guard, the legacy flag, the suspended check, the additive-only rule) must fail a test.
 
 ## Verify live
 

@@ -1,4 +1,6 @@
 {
-  "rulesets": ["dev-rules", "protect-preview"],
-  "label_prefixes": ["squad"]
+  "rulesets": [
+    "dev-rules",
+    "protect-preview"
+  ]
 }

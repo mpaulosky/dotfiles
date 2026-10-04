@@ -7,5 +7,4 @@ mpaulosky/atelier-store
 mpaulosky/Blazor-Server
 mpaulosky/IssueManager
 mpaulosky/Articles
-mpaulosky/TinyTicket
 mpaulosky/dotfiles repo-settings-only

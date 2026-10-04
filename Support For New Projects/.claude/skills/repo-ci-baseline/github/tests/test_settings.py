@@ -60,6 +60,13 @@ PR_TITLE = """jobs:
   title:
     name: PR title
 """
+AUTOMERGE = """jobs:
+  merge-when-ready:
+    steps:
+      - with:
+          script: |
+            const COPILOT_REVIEW_CAP = 3;
+"""
 
 
 def matching_ruleset(checks):
@@ -81,7 +88,8 @@ class FakeGitHub:
         self.workflow_permissions = dict(STANDARD["actions_workflow"])
         self.actions = {"enabled": True, "allowed_actions": "all", "sha_pinning_required": True}
         self.workflows = {".github/workflows/ci.yml": CI, ".github/workflows/lint.yml": LINTS,
-                          ".github/workflows/pr-title.yml": PR_TITLE}
+                          ".github/workflows/pr-title.yml": PR_TITLE,
+                          ".github/workflows/pr-automerge.yml": AUTOMERGE}
         self.rulesets = {7: matching_ruleset(STANDARD["required_checks"])}
         self.labels = {label["name"]: dict(label) for label in LABELS}
         self.secrets = list(STANDARD["required_secrets"])
@@ -149,6 +157,10 @@ class FakeGitHub:
         if route.startswith("/rulesets/"):
             ruleset_id = int(route.rsplit("/", 1)[1])
             if method == "PUT":
+                # Like GitHub's, an update must carry the whole ruleset.
+                missing = {"name", "target", "enforcement", "conditions", "rules"} - set(body)
+                if missing:
+                    raise gs.ApiError(422, f"Invalid request: missing {sorted(missing)}")
                 self.rulesets[ruleset_id].update(body)
                 return self.rulesets[ruleset_id]
             if method == "DELETE":
@@ -299,11 +311,25 @@ def test_a_required_check_outside_the_standard_stays_while_a_workflow_reports_it
     assert [c["context"] for c in checks_rule["parameters"]["required_status_checks"]] == ["All Tests Passed"]
 
 
+def test_a_required_check_from_another_app_is_drift():
+    live = matching_ruleset(STANDARD["required_checks"])
+    for rule in live["rules"]:
+        if rule["type"] == "required_status_checks":
+            rule["parameters"]["required_status_checks"][0].pop("integration_id")
+    fake = FakeGitHub(rulesets={7: live})
+
+    assert statuses(fake)["ruleset main-rules"] == gs.DRIFT
+    run(fake, "--fix")
+    assert statuses(fake)["ruleset main-rules"] == gs.OK
+
+
 def test_a_suspended_ruleset_fails_the_check_and_fix_restores_it():
     fake = FakeGitHub()
+    rules_before = json.loads(json.dumps(fake.rulesets[7]["rules"]))
 
     assert run(fake, "--suspend")[0] == 0
     assert fake.rulesets[7]["enforcement"] == "disabled"
+    assert fake.rulesets[7]["rules"] == rules_before, "suspending keeps every rule"
     status, output = run(fake)
     assert status == 1 and "SUSPENDED" in output
 
@@ -370,24 +396,40 @@ def test_codeql_default_setup_is_turned_off_where_the_workflow_runs_codeql():
 
 # ── Labels and secrets ──────────────────────────────────────────────────────
 
-def test_labels_are_created_and_corrected_and_legacy_ones_deleted_only_on_request():
+def test_labels_are_created_and_corrected_and_squad_labels_deleted():
     labels = {label["name"]: dict(label) for label in LABELS[1:]}
     labels["docs-only"]["color"] = "ededed"
+    labels["squad"] = {"name": "squad", "color": "000000", "description": ""}
     labels["squad:mal"] = {"name": "squad:mal", "color": "000000", "description": ""}
     labels["bug"] = {"name": "bug", "color": "d73a4a", "description": ""}
     fake = FakeGitHub(labels=labels)
 
-    run(fake, "--fix")
+    assert statuses(fake)["label squad:mal"] == gs.DRIFT
+    status, output = run(fake, "--fix")
+
+    assert status == 0, output
     assert fake.labels[LABELS[0]["name"]]["color"] == LABELS[0]["color"]
     assert fake.labels["docs-only"]["color"] == "0075CA"
     assert ("PATCH", f"repos/{REPO}/labels/docs-only", {"color": "0075CA", "description": LABELS[2]["description"]}) \
         in fake.writes
-    assert "squad:mal" in fake.labels
-
-    run(fake, "--fix", "--remove-legacy")
-    assert "squad:mal" not in fake.labels
-    assert "bug" in fake.labels
+    assert "squad" not in fake.labels and "squad:mal" not in fake.labels
     assert ("DELETE", f"repos/{REPO}/labels/squad%3Amal", None) in fake.writes
+    assert "bug" in fake.labels, "labels outside the standard and not retired are left alone"
+
+
+def test_the_review_cap_is_checked_in_pr_automerge():
+    assert statuses(FakeGitHub())["review cap"] == gs.OK
+
+    for text, expected in ((AUTOMERGE.replace("= 3;", "= 5;"), "cap 5"),
+                           ("jobs:\n  merge:\n    name: Merge\n", "no review cap"),
+                           (None, "no pr-automerge.yml")):
+        fake = FakeGitHub()
+        if text is None:
+            del fake.workflows[".github/workflows/pr-automerge.yml"]
+        else:
+            fake.workflows[".github/workflows/pr-automerge.yml"] = text
+        finding = next(f for f in gs.check(fake, REPO) if f.area == "review cap")
+        assert finding.status == gs.MANUAL and expected in finding.detail, finding.detail
 
 
 def test_a_missing_secret_needs_a_person():
@@ -405,12 +447,14 @@ def test_a_repo_settings_only_repo_gets_just_its_merge_settings(monkeypatch, tmp
     shutil.copytree(gs.HERE, tmp_path / "github", ignore=shutil.ignore_patterns("tests", "__pycache__"))
     (tmp_path / "github" / "repos.txt").write_text(f"{REPO} repo-settings-only\n")
     monkeypatch.setattr(gs, "HERE", tmp_path / "github")
-    fake = FakeGitHub(rulesets_forbidden=True, secrets=[], labels={})
+    fake = FakeGitHub(rulesets_forbidden=True, secrets=[],
+                      labels={"squad:frodo": {"name": "squad:frodo", "color": "000000", "description": ""}})
 
     status, output = run(fake, "--fix")
 
     assert status == 0, output
-    assert fake.writes == []
+    assert fake.writes == [("DELETE", f"repos/{REPO}/labels/squad%3Afrodo", None)], \
+        "only the retired label goes; nothing else outside the merge settings is touched"
 
 
 def test_a_per_repo_file_can_add_a_required_check(monkeypatch, tmp_path):

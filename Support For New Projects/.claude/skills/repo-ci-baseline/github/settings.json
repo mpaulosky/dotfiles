@@ -32,5 +32,11 @@
     "markdownlint",
     "yamllint"
   ],
-  "required_secrets": ["RELEASE_PR_PAT"]
+  "required_secrets": [
+    "RELEASE_PR_PAT"
+  ],
+  "review_cap": 3,
+  "removed_label_prefixes": [
+    "squad"
+  ]
 }

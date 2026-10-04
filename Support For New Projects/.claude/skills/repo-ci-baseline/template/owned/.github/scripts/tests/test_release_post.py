@@ -541,6 +541,55 @@ def test_run_writes_readme_and_index_tables(tmp_path):
     assert f'<p class="post-source"><a href="https://github.com/{REPO}/pull/42">PR #42</a></p>' in index
 
 
+# docs/README.md links (from TicketManager #104)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A docs/ prefix is dropped; the docs folder itself becomes ./
+        ("| [Post](docs/blogs/2026-09-28-pr-1-x.md) |\n", "| [Post](blogs/2026-09-28-pr-1-x.md) |\n"),
+        ("[docs](docs/) and [docs](docs)\n", "[docs](./) and [docs](./)\n"),
+        # Anything else relative goes up one level.
+        ("[License](LICENSE) and [web](./src/Web)\n", "[License](../LICENSE) and [web](../src/Web)\n"),
+        ("[props](Directory.Packages.props)\n", "[props](../Directory.Packages.props)\n"),
+        # Images, titles and angle-bracketed targets keep their form.
+        ('![logo](docs/logo.png "Logo")\n', '![logo](logo.png "Logo")\n'),
+        ("[x](<docs/a b.md>)\n", "[x](<a b.md>)\n"),
+        # Reference definitions and HTML src/href attributes.
+        ("[post]: docs/blogs/README.md\n", "[post]: blogs/README.md\n"),
+        ('<img src="docs/banner.png" alt="">\n', '<img src="banner.png" alt="">\n'),
+        ("<a href='CONTRIBUTING.md'>c</a>\n", "<a href='../CONTRIBUTING.md'>c</a>\n"),
+    ],
+)
+def test_rebase_readme_links(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+def test_rebase_readme_links_keeps_absolute_anchor_and_root_relative_links():
+    text = "[a](https://example.com/docs/x.md) [b](#usage) [c](/docs/x) [d](mailto:me@example.com) [e](../up.md)\n"
+    assert rp.rebase_readme_links(text) == text
+
+
+def test_rebase_readme_links_leaves_fenced_code_alone():
+    text = "```md\n[x](docs/a.md)\n```\n[y](docs/b.md)\n````\n```\n[z](docs/c.md)\n````\n"
+    assert rp.rebase_readme_links(text) == "```md\n[x](docs/a.md)\n```\n[y](b.md)\n````\n```\n[z](docs/c.md)\n````\n"
+
+
+def test_run_rebases_links_in_docs_readme_only(tmp_path):
+    make_repo(tmp_path)
+    links = "[Architecture](docs/ARCHITECTURE.md), [props](Directory.Packages.props) and [docs](docs).\n"
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(readme_path.read_text(encoding="utf-8") + "\n" + links, encoding="utf-8")
+    run(tmp_path)
+
+    readme = readme_path.read_text(encoding="utf-8")
+    assert links in readme
+    docs_readme = (tmp_path / "docs" / "README.md").read_text(encoding="utf-8")
+    assert "[Architecture](ARCHITECTURE.md), [props](../Directory.Packages.props) and [docs](./).\n" in docs_readme
+    assert docs_readme == rp.rebase_readme_links(readme)
+
+
 def test_blog_post_cards_are_newest_first_and_capped_at_ten(tmp_path):
     blog_dir = make_repo(tmp_path) / "docs" / "blogs"
     for n in range(1, 13):

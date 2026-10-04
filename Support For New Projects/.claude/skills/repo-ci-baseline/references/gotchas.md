@@ -7,6 +7,10 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
 - **Branch names differ until a repo is Standardized.** Until then its pre-push hook enforces its old pattern:
   atelier-store refused `squad/86-...` because it allowed only `feature/`, `hotfix/` and `chore/`.
   `chore/standardize-baseline` passes every pattern seen so far ([git-hooks.md](git-hooks.md) has the standard).
+- **README links inside `docs/`.** A README copied into `docs/README.md` verbatim has every relative link one directory
+  too deep. `release_post.py` now rebases them ([release-pipeline.md](release-pipeline.md)); TicketManager #104 fixed it
+  first with its own `.github/scripts/docs_readme.py`, a Leftover after Apply: delete it, its test and
+  `docs-readme-tests.yml`.
 - **Labels.** `release.yml` reads `semver:minor` and `semver:major` (and `release:*`). A repo without them silently
   releases every PR as a patch. Create them; `docs-only` takes `--force`, because CI may already have created it with
   the default color and no description:

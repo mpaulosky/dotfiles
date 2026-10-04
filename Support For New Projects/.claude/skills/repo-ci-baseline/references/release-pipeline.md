@@ -63,6 +63,10 @@ seconds, for up to about 30 seconds, until each queued PR has a Release. The pos
 listing. Without this, IssueTracker's v0.0.20 (PR #188) got no blog PR: the run logged "Every Release already has its
 post" and succeeded. Recovery was `gh run rerun <run id> --job <docs job id>`. Reference: IssueTracker #190 and #192.
 
+**`docs/README.md`.** A repo that keeps a `docs/README.md` (its README as the Pages landing page) gets the README's text
+there too, with relative links rebased for `docs/` by `rebase_readme_links`: `docs/x` becomes `x`, `docs` becomes `./`,
+any other path gets `../`. URLs, anchors, root-relative paths and fenced code are left alone. Origin: TicketManager #104.
+
 **Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
 checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual
 approval.

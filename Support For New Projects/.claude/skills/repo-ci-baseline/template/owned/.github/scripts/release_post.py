@@ -8,8 +8,9 @@ past Release/PR pair:
 
 It writes docs/blogs/{merged-date}-pr-{n}-{slug}.md, updates the
 docs/blogs/README.md index, the RELEASES_START/END table in README.md (copied
-to docs/README.md), and in the GitHub Pages site docs/index.html the
-RELEASES_HTML releases table and the BLOGS_HTML blog post cards.
+to docs/README.md with its relative links rebased), and in the GitHub Pages
+site docs/index.html the RELEASES_HTML releases table and the BLOGS_HTML blog
+post cards.
 
 GitHub data comes from the gh CLI (GH_TOKEN). When ANTHROPIC_API_KEY is set,
 the post opens with a short summary written by Claude (model from
@@ -918,6 +919,61 @@ def update_index_html(path, entries, posts, repository):
     path.write_text(text, encoding="utf-8")
 
 
+# docs/README.md links
+
+
+# README.md links by path from the repository root (docs/blogs/post.md,
+# src/Web); copied verbatim into docs/ they would resolve one directory too
+# deep. From TicketManager #104.
+
+# ](target) or ](<target with spaces>), optionally followed by a "title".
+LINK_INLINE = re.compile(r"(\]\()(?:(<)([^>\n]+)(>)|()([^)\s<>]+)())((?:\s+\"[^\"]*\")?\))")
+LINK_REFERENCE = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(<?)(\S+?)(>?)(?=\s|$)", re.MULTILINE)
+LINK_HTML_ATTRIBUTE = re.compile(r"""(\b(?:src|href)=)(["'])([^"']+)\2""")
+# Any indent, so a fence inside a list item is still skipped.
+LINK_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+def rebase_link(target):
+    """A link target as seen from docs/ rather than the repository root."""
+    if re.match(r"^[a-z][a-z0-9+.-]*:", target, flags=re.IGNORECASE) or target.startswith(("#", "/", "../")):
+        return target
+    path = target[2:] if target.startswith("./") else target
+    if path == "docs" or path.startswith(("docs/", "docs#", "docs?")):
+        return path[len("docs"):].lstrip("/") or "./"
+    return "../" + path
+
+
+def rebase_readme_links(markdown):
+    """The README text with every relative link rebased for docs/README.md; fenced code is left alone."""
+    out = []
+    fence = None
+    for line in markdown.splitlines(keepends=True):
+        fence_match = LINK_FENCE.match(line)
+        if fence is not None or fence_match:
+            if fence is None:
+                fence = fence_match.group(1)
+            elif fence_match:
+                # Closed by a run of the same character, at least as long, with no info string.
+                marker, info = fence_match.groups()
+                if marker[0] == fence[0] and len(marker) >= len(fence) and not info.strip():
+                    fence = None
+            out.append(line)
+            continue
+        line = LINK_INLINE.sub(
+            lambda m: m.group(1)
+            + (m.group(2) or m.group(5))
+            + rebase_link(m.group(3) or m.group(6))
+            + (m.group(4) or m.group(7))
+            + m.group(8),
+            line,
+        )
+        line = LINK_REFERENCE.sub(lambda m: m.group(1) + m.group(2) + rebase_link(m.group(3)) + m.group(4), line)
+        line = LINK_HTML_ATTRIBUTE.sub(lambda m: m.group(1) + m.group(2) + rebase_link(m.group(3)) + m.group(2), line)
+        out.append(line)
+    return "".join(out)
+
+
 def write_post(gh, pr_number, tag, root=Path("."), api_key=None, model=DEFAULT_MODEL, urlopen=urllib.request.urlopen):
     """Write the post for a merged PR and its blog index row; return (merged_date, title_line)."""
     root = Path(root)
@@ -970,7 +1026,7 @@ def update_tables(repository, gh, root=Path("."), current=None):
     # this copy; don't create one in a repo whose docs site has its own.
     docs_readme = root / "docs" / "README.md"
     if docs_readme.exists():
-        docs_readme.write_text(readme, encoding="utf-8")
+        docs_readme.write_text(rebase_readme_links(readme), encoding="utf-8")
 
     update_index_html(root / "docs" / "index.html", entries, read_blog_posts(blog_dir), repository)
 

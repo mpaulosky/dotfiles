@@ -47,7 +47,8 @@ name: PR Auto-Merge
 
 permissions:
   contents: write
-  # issues: read lists a PR's label events.
+  # issues: read lets GITHUB_TOKEN list a PR's label events. The script reads
+  # them with GITHUB_TOKEN, not the PAT, so the PAT needs no Issues access.
   issues: read
   pull-requests: write
 
@@ -62,6 +63,8 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
+          # Scoped by the permissions above; used only to read label events.
+          EVENTS_TOKEN: ${{ github.token }}
         with:
           # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
           # (on: pull_request closed) would never run for it. Merge with the
@@ -70,6 +73,9 @@ jobs:
           github-token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
+            // github authenticates with the PAT when it's set, which may lack
+            // Issues access; label events are read with GITHUB_TOKEN instead.
+            const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
             // back to a person, who removes it once the PR may merge again.
@@ -159,7 +165,7 @@ jobs:
               // removal only from the repository owner. Events come newest
               // first, and every page is read so that other label changes
               // can't hide the latest removal.
-              const events = await github.paginate(github.rest.issues.listEvents, {
+              const events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
                 owner,
                 repo,
                 issue_number: pullNumber,
@@ -181,22 +187,27 @@ jobs:
               return true;
             }
 
-            async function mergeIfReady(pullNumber) {
-              const pr = await getPullRequestStatus(pullNumber);
+            function isOpenSameRepoPr(pullNumber, pr) {
               if (!pr || pr.state !== "OPEN" || pr.isDraft || pr.isCrossRepository || pr.baseRefName !== "main") {
                 core.info(`Skipping PR #${pullNumber}: not an open, non-draft, same-repo PR into main.`);
+                return false;
+              }
+              return true;
+            }
+
+            async function mergeIfReady(pullNumber) {
+              let pr = await getPullRequestStatus(pullNumber);
+              if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
                 return;
               }
 
-              if (!(await isHandBackReadyToMerge(pullNumber, pr))) {
-                return;
-              }
-
-              // Re-check the current hand-back state immediately before the
-              // merge call so a freshly added label, or a new non-owner
-              // removal, cannot slip through after the initial readiness check.
-              const latestPr = await getPullRequestStatus(pullNumber);
-              if (!(await isHandBackReadyToMerge(pullNumber, latestPr))) {
+              // Reading the label events takes a while, so take a fresh
+              // snapshot and check the hand-back state again on it. Every
+              // check below reads this snapshot, so anything that changed
+              // meanwhile (a new label or thread, a new head, a failing
+              // check) counts, and the merge is pinned to its head.
+              pr = await getPullRequestStatus(pullNumber);
+              if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
                 return;
               }
 

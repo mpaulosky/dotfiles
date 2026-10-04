@@ -27,4 +27,5 @@ The hold is in the Template, not a per-repo file, because Applying the old Templ
 - Everything else still holds the merge at the cap: threads anyone else opens (including other bots, and threads whose author no longer exists), required checks, conflicts and the hand-back label.
 - Copilot comments from round three on can merge unaddressed. They stay on the merged PR, and the run log says when the cap let a PR through.
 - The cap is one constant, `COPILOT_REVIEW_CAP`. `.github/scripts/tests/pr-automerge.test.mjs` covers the cap and the hold, and CI and `test.sh` run it.
-- The workflow needs `issues: read` to list a PR's label events, and `pull_request_target` gains the `unlabeled` type so the owner removing the label re-evaluates the PR at once.
+- The workflow reads a PR's label events with `GITHUB_TOKEN` and `issues: read`, so `RELEASE_PR_PAT` needs no Issues access,
+  and `pull_request_target` gains the `unlabeled` type so the owner removing the label re-evaluates the PR at once.

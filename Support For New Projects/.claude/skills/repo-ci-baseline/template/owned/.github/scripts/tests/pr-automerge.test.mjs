@@ -29,7 +29,7 @@ function inlineScript() {
 }
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
-const run = new AsyncFunction("github", "context", "core", inlineScript());
+const run = new AsyncFunction("github", "context", "core", "getOctokit", inlineScript());
 
 // A same-repo PR into main that is ready to merge unless a test changes it.
 function readyPr(overrides = {}) {
@@ -89,6 +89,7 @@ async function evaluate(pr, events = []) {
   const logs = [];
   const eventRequests = [];
   const queries = [];
+  const eventTokens = [];
   let graphqlRequests = 0;
   const pullRequests = Array.isArray(pr) ? [...pr] : [pr];
   const eventSets = Array.isArray(events[0]) ? [...events] : [events];
@@ -110,13 +111,23 @@ async function evaluate(pr, events = []) {
       queries.push(query);
       return { repository: { pullRequest: pullRequests[Math.min(graphqlRequests++, pullRequests.length - 1)] } };
     },
-    paginate: async (method, params) => {
-      if (method === rest.issues.listEvents) {
-        eventRequests.push(params);
-        return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
-      }
-      throw new Error("unexpected paginate call");
+    paginate: async () => {
+      throw new Error("the PAT client must not read label events");
     }
+  };
+  // The GITHUB_TOKEN client: it only reads label events.
+  const getOctokit = (token) => {
+    eventTokens.push(token);
+    return {
+      rest,
+      paginate: async (method, params) => {
+        if (method === rest.issues.listEvents) {
+          eventRequests.push(params);
+          return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
+        }
+        throw new Error("unexpected paginate call");
+      }
+    };
   };
   const core = {
     info: (message) => logs.push(message),
@@ -128,8 +139,9 @@ async function evaluate(pr, events = []) {
   };
 
   process.env.HAS_RELEASE_PR_PAT = "true";
-  await run(github, context, core);
-  return { merges, logs, eventRequests, queries };
+  process.env.EVENTS_TOKEN = "github-token";
+  await run(github, context, core, getOctokit);
+  return { merges, logs, eventRequests, queries, eventTokens };
 }
 
 test("merges a ready PR at the head it checked", async () => {
@@ -223,6 +235,30 @@ test("re-checks the latest sandcastle:needs-human removal before merging", async
     logs.some((line) => line.includes("PR #7") && line.includes(NEEDS_HUMAN) && line.includes("triager")),
     logs.join("\n")
   );
+});
+
+test("reads label events with GITHUB_TOKEN, not the PAT", async () => {
+  const { merges, eventRequests, eventTokens } = await evaluate(readyPr());
+
+  assert.equal(merges.length, 1);
+  assert.ok(eventRequests.length > 0);
+  assert.deepEqual(eventTokens, ["github-token"]);
+});
+
+test("judges the rest of readiness on the snapshot taken after the label re-check", async () => {
+  const latestPr = readyPr({ reviewThreads: threadsBy("reviewer") });
+  const { merges, logs } = await evaluate([readyPr(), latestPr]);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("1 unresolved review thread")), logs.join("\n"));
+});
+
+test("merges at the head of the snapshot taken after the label re-check", async () => {
+  const latestPr = readyPr({ headRefOid: "def456", copilotReviews: copilotReviewsOf("def456") });
+  const { merges } = await evaluate([readyPr(), latestPr]);
+
+  assert.equal(merges.length, 1);
+  assert.equal(merges[0].sha, "def456");
 });
 
 test("waits for a Copilot review of the head below the review cap", async () => {

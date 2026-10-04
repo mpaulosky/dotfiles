@@ -32,7 +32,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Everything else still holds at the cap, and the log says when the cap let a PR through and past how many Copilot threads.
 - **Hand-back hold.** A PR labelled `sandcastle:needs-human` (Sandcastle giving up and handing it to a person) is skipped while it carries the label,
   and also when someone other than the repository owner last removed it, since anyone with triage access can remove a label.
-  The removal comes from the PR's paginated issue events (`issues: read`), and both checks run again right before the merge.
+  The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues access.
+  Both checks run again on a fresh snapshot, and every later check reads that snapshot, so a thread, head or check that changed meanwhile counts.
   More labels than one page is left to a person. A repo that never applies the label is unaffected.
 - **The merge** is `pulls.merge` with `sha: headRefOid`, so a push landing between the check and the merge fails the merge instead of merging unreviewed code.
   405 and 409 are warnings; a later event re-evaluates.

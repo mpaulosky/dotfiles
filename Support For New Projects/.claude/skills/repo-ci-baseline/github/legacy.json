@@ -1,0 +1,4 @@
+{
+  "rulesets": ["dev-rules", "protect-preview"],
+  "label_prefixes": ["squad"]
+}

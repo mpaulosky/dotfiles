@@ -9,6 +9,11 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
+# Under a hook git sets GIT_DIR (and GIT_INDEX_FILE in a linked worktree); a
+# test that runs git in a temp folder would inherit them and read this repo.
+# From the root, git finds the repo without them.
+# shellcheck disable=SC2046 # one variable name per word, on purpose
+unset $(git rev-parse --local-env-vars)
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
 

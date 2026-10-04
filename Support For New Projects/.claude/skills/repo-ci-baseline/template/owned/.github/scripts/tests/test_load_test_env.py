@@ -32,10 +32,16 @@ def test_parse_rejects_a_line_that_isnt_name_value(line):
         lte.parse(f"OK=1\n{line}\n")
 
 
-@pytest.mark.parametrize("name", ["GITHUB_TOKEN", "RUNNER_TEMP"])
+@pytest.mark.parametrize("name", ["GITHUB_TOKEN", "RUNNER_TEMP", "github_token", "Runner_Temp"])
 def test_parse_rejects_reserved_names(name):
     with pytest.raises(ValueError, match="reserved"):
         lte.parse(f"{name}=x")
+
+
+@pytest.mark.parametrize("name", ["NODE_OPTIONS", "node_options"])
+def test_parse_rejects_node_options_the_runner_wont_export(name):
+    with pytest.raises(ValueError, match="line 1 sets NODE_OPTIONS"):
+        lte.parse(f"{name}=--max-old-space-size=4096")
 
 
 def test_main_masks_each_value_before_exporting_it(tmp_path):

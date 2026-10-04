@@ -43,8 +43,13 @@ def parse(text):
         name = name.strip()
         if not separator or not NAME.fullmatch(name):
             raise ValueError(f"line {number} isn't NAME=value")
-        if name.startswith("GITHUB_") or name.startswith("RUNNER_"):
-            raise ValueError(f"line {number} sets a reserved {name.split('_')[0]}_ variable")
+        # The runner compares these without case and drops them from
+        # $GITHUB_ENV with only an error in the log, so refuse them here.
+        upper = name.upper()
+        if upper.startswith("GITHUB_") or upper.startswith("RUNNER_"):
+            raise ValueError(f"line {number} sets a reserved {upper.split('_')[0]}_ variable")
+        if upper == "NODE_OPTIONS":
+            raise ValueError(f"line {number} sets NODE_OPTIONS, which the runner won't export; set it in a step's env instead")
         pairs.append((name, value.strip()))
     return pairs
 

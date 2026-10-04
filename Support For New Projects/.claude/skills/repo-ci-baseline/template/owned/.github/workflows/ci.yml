@@ -213,56 +213,11 @@ jobs:
 
       - name: Discover test projects
         id: discover
-        run: |
-          matrix_json=$(python - <<'PY'
-          import json
-          from pathlib import Path
-
-          projects = []
-          for csproj in sorted(Path("tests").glob("**/*.csproj")):
-              csproj_text = csproj.read_text()
-              # Skip helper libraries such as TestingSupport.Library.
-              if "<IsTestProject>true</IsTestProject>" not in csproj_text:
-                  continue
-              folder = csproj.parent.name
-              lowered = folder.lower()
-              test_id = lowered.replace(".", "-").replace("_", "-")
-              is_e2e = "e2e" in lowered
-              uses_playwright = "Microsoft.Playwright" in csproj_text
-              # Playwright projects must be built before browsers can be installed.
-              prebuild = is_e2e or uses_playwright
-              projects.append(
-                  {
-                      "project_path": csproj.as_posix(),
-                      "test_name": folder,
-                      "test_id": test_id,
-                      "build_before_test": prebuild,
-                      "no_build": prebuild,
-                      "requires_playwright": uses_playwright,
-                      "verbosity": "normal" if is_e2e else "minimal",
-                  }
-              )
-
-          print(json.dumps({"include": projects}))
-          PY
-          )
-
-          {
-            echo "matrix<<EOF"
-            echo "$matrix_json"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-          project_count=$(echo "$matrix_json" | jq '.include | length')
-          if [ "$project_count" -eq 0 ]; then
-            # Expected while the repo is being bootstrapped: skip the test
-            # matrix instead of failing CI.
-            echo "has_tests=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No test projects found under tests/ — skipping tests."
-          else
-            echo "has_tests=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Discovered ${project_count} test projects under tests/"
-          fi
+        # discover_tests.py (tested in .github/scripts/tests) resolves
+        # IsTestProject for each project under tests/ and appends the matrix
+        # and has_tests. It fails when projects exist but none is a test
+        # project, since a skipped matrix would pass "Test Suite".
+        run: python3 .github/scripts/discover_tests.py --output "$GITHUB_OUTPUT"
 
   # Each matrix job restores and builds its own test project. Measured on
   # #144: sharing the build job's output (with --no-build) saved nothing,

@@ -76,6 +76,19 @@ if grep -rnE '\{\{[A-Z_]+\}\}' "$owned"; then
   fail "Owned files must not carry {{PLACEHOLDER}}s; per-repo values belong in Seed files"
 fi
 
+step ".gitignore keeps secrets out"
+# Repos keep Auth0 and other secrets in .env, and the Template's .gitignore
+# replaces theirs on every Apply.
+ignore_repo="$md_tmp/ignore-repo"
+git init -q "$ignore_repo"
+command cp -f "$owned/.gitignore" "$ignore_repo/.gitignore"
+for path in .env .env.local; do
+  git -C "$ignore_repo" check-ignore -q "$path" || fail ".gitignore must ignore $path"
+done
+if git -C "$ignore_repo" check-ignore -q .env.example; then
+  fail ".gitignore must not ignore .env.example"
+fi
+
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
 

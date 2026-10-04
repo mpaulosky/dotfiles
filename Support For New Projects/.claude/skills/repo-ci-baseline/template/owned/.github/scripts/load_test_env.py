@@ -49,6 +49,15 @@ def parse(text):
     return pairs
 
 
+def escape_data(value):
+    """A value escaped for a workflow command's data, as the runner decodes it.
+
+    The runner percent-decodes the data of "::add-mask::", so a literal "%25"
+    in a secret would otherwise register "%" and leave the real value unmasked.
+    """
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def main(argv=None, environ=os.environ, out=sys.stdout):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--output", required=True, help="the file to append NAME=value lines to ($GITHUB_ENV)")
@@ -65,7 +74,7 @@ def main(argv=None, environ=os.environ, out=sys.stdout):
 
     for _, value in pairs:
         if value:
-            print(f"::add-mask::{value}", file=out)
+            print(f"::add-mask::{escape_data(value)}", file=out)
     with open(args.output, "a", encoding="utf-8") as output:
         for name, value in pairs:
             output.write(f"{name}={value}\n")

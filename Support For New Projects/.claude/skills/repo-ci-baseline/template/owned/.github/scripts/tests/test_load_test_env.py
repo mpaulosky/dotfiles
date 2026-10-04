@@ -48,6 +48,19 @@ def test_main_masks_each_value_before_exporting_it(tmp_path):
     assert "Exported 2 test secrets: A, B" in log
 
 
+def test_escape_data_encodes_what_the_runner_decodes():
+    assert lte.escape_data("a%25b%c\rd\ne") == "a%2525b%25c%0Dd%0Ae"
+
+
+def test_main_escapes_a_value_before_masking_it(tmp_path):
+    # The runner percent-decodes "::add-mask::" data, so "%25" must reach it as "%2525".
+    status, output, log = run(tmp_path, "TOKEN=abc%25def\n")
+
+    assert status == 0
+    assert "::add-mask::abc%2525def" in log
+    assert output == "TOKEN=abc%25def\n"
+
+
 def test_main_doesnt_mask_an_empty_value(tmp_path):
     # "::add-mask::" with nothing after it would be a malformed command.
     status, output, log = run(tmp_path, "EMPTY=\n")

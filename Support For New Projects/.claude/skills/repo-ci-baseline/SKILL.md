@@ -14,6 +14,8 @@ Why it works this way is in [ADR 0001](docs/adr/0001-standardize-by-copying-a-te
   They carry no per-repo values.
 - **Seed files** (`template/seed/`) are written only where the repo has none, with `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}` filled in.
   Per-repo CI setup goes in the Seed `.github/ci/prepare.sh`, which `ci.yml` calls.
+- **Claude Code permissions** live at the user level (`~/.claude/settings.json`), so the Template carries no `.claude/settings.json`:
+  a committed one would grant every contributor and cloud session the same auto-approvals.
 
 **Template first.**
 A fix to an Owned file is made in `template/`, then Applied to the repo that needed it.

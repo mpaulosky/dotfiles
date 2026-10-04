@@ -470,11 +470,21 @@ jobs:
             echo "::error::No coverable lines found in Summary.json"
             exit 1
           fi
-          if (( $(echo "$coverage < 60" | bc -l) )); then
-            echo "::error::Code coverage $coverage% is below the 60% threshold"
+          # The threshold is per repo: the Seed .github/ci/coverage-threshold
+          # holds a whole percentage, 80 when the file is missing.
+          threshold=80
+          if [ -f .github/ci/coverage-threshold ]; then
+            threshold=$(tr -d '[:space:]' < .github/ci/coverage-threshold)
+          fi
+          if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold > 100 )); then
+            echo "::error::.github/ci/coverage-threshold must hold a whole percentage, not '$threshold'"
             exit 1
           fi
-          echo "::notice::Coverage gate passed: $coverage% >= 60%"
+          if (( $(echo "$coverage < $threshold" | bc -l) )); then
+            echo "::error::Code coverage $coverage% is below the $threshold% threshold"
+            exit 1
+          fi
+          echo "::notice::Coverage gate passed: $coverage% >= $threshold%"
 
       - name: Upload coverage reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -562,7 +572,7 @@ jobs:
             echo "- **Build:** ${BUILD_STATUS}"
             echo "- **Discovered Tests:** ${DISCOVER_STATUS}"
             echo "- **Test Matrix:** ${TEST_STATUS}"
-            echo "- **Coverage (60% gate):** ${COVERAGE_STATUS}"
+            echo "- **Coverage gate:** ${COVERAGE_STATUS}"
             echo ""
             echo "### Artifacts"
             echo "- Test and coverage reports are in Actions artifacts"
@@ -575,7 +585,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           # This job is the required status check that stands in for the
-          # dynamically named "Tests: …" matrix jobs and the 60% coverage
+          # dynamically named "Tests: …" matrix jobs and the coverage
           # gate, so it must fail when any of them does. A skipped test
           # matrix (no test projects, or a docs-only change) still passes, but
           # only when the changes job itself succeeded: if it failed, the build

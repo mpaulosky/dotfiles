@@ -1,7 +1,7 @@
 # Per-project test matrix
 
-Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jobs), `global.json`, and the Seed
-`.github/ci/prepare.sh`. History: IssueTracker #178.
+Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jobs), `global.json`, and the Seeds
+`.github/ci/prepare.sh` and `.github/ci/coverage-threshold`. History: IssueTracker #178.
 
 ## The rule
 
@@ -11,7 +11,8 @@ Each test project runs in its own matrix job and restores and builds its own pro
 Tests run on **Microsoft Testing Platform** (`global.json` → `"test": {"runner": "Microsoft.Testing.Platform"}`), so
 `ci.yml` passes MTP's options: `--report-xunit-trx` for the TRX report and `--coverage --coverage-output-format
 cobertura` for coverage, not VSTest's `--logger` and `--collect`. A test project on VSTest fails under it; moving it is
-an Adapt step ([adapt.md](adapt.md#test-runner)). The coverage job gates at 60% line coverage.
+an Adapt step ([adapt.md](adapt.md#test-runner)). The coverage job gates on line coverage at the percentage in the Seed
+`.github/ci/coverage-threshold` (80 when the file is missing).
 
 Per-repo setup (publishing a project, pulling images, a build tool) goes in the Seed `.github/ci/prepare.sh`, which
 `ci.yml` calls as `prepare.sh build` and `prepare.sh test <test-name>` after the restore.

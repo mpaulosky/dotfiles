@@ -17,6 +17,10 @@ updates:
       day: "sunday"
       time: "16:00"
     open-pull-requests-limit: 10
+    # Conventional commits, like the repo's own: "chore(deps): bump ...".
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     # Wait a week before proposing a new release, so a compromised or broken
     # one is usually caught upstream before it reaches a PR here.
     cooldown:
@@ -38,6 +42,10 @@ updates:
       day: "sunday"
       time: "16:00"
     open-pull-requests-limit: 10
+    # Conventional commits, like the repo's own: "chore(deps): bump ...".
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     # Wait a week before proposing a new release, so a compromised or broken
     # one is usually caught upstream before it reaches a PR here.
     cooldown:
@@ -65,6 +73,10 @@ updates:
       day: "sunday"
       time: "16:00"
     open-pull-requests-limit: 10
+    # Conventional commits, like the repo's own: "chore(deps): bump ...".
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     # Wait a week before proposing a new release, so a compromised or broken
     # one is usually caught upstream before it reaches a PR here.
     cooldown:

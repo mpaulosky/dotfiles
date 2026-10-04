@@ -60,6 +60,9 @@ printf 'name: old CI\n' > "$repo/.github/workflows/ci.yml"
 printf 'name: sync\n' > "$repo/.github/workflows/sync-readme.yml"
 printf '# our own security policy\n' > "$repo/docs/SECURITY.md"
 printf '{"default": false}\n' > "$repo/.markdownlint.json"
+mkdir -p "$repo/.claude/rules"
+printf 'Add user authentication\n' > "$repo/.copilot-commit-message-instructions.md"
+printf '# commit rules\n' > "$repo/.claude/rules/git-commit.md"
 commit_all "$repo" "init"
 
 check "guard: refuses main" '! "$apply" "$repo" >/dev/null 2>&1'
@@ -88,6 +91,8 @@ check "apply: kept Seed file reported" 'grep -A1 "Seed files skipped" <<< "$out"
 check "apply: leftover kept and reported" \
   '[[ -f "$repo/.github/workflows/sync-readme.yml" ]] && grep -q "sync-readme.yml" <<< "$out"'
 check "apply: .markdownlint.json conflict reported" 'grep -q ".markdownlint.json overrides" <<< "$out"'
+check "apply: duplicate commit rules reported" \
+  'grep -q ".copilot-commit-message-instructions.md duplicates" <<< "$out" && grep -q ".claude/rules/git-commit.md duplicates" <<< "$out"'
 check "apply: unfilled placeholders none" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 
 # ── Applying again changes nothing ──────────────────────────────────────────

@@ -91,7 +91,7 @@ jobs:
           # main is rules-protected and requires a pull request. The
           # [skip-release] marker keeps this PR's merge from starting a
           # release.
-          TITLE="docs: backfill blog posts [skip-release]"
+          TITLE="docs: Backfill blog posts [skip-release]"
           git checkout -b "$BRANCH"
           for path in docs/blogs README.md docs/README.md docs/index.html; do
             if [ -e "$path" ]; then

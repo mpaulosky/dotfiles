@@ -31,28 +31,10 @@ We have adopted a code of conduct from the Contributor Covenant. Contributors to
 ## Quick Start
 
 1. Fork the repository and clone your fork.
-2. Switch on the repository's git hooks, once per clone: `git config core.hooksPath .github/hooks`.
-3. Create each branch in its own worktree beside the clone, named to the branch-name standard below. The pre-commit
-   hook refuses commits in the main checkout:
-   `git worktree add -b feature/123-add-search ../{{REPO}}-worktrees/feature-123-add-search origin/main`.
-4. Make your changes, following the code style and guidelines below.
-5. Add or update tests as needed.
-6. Commit with clear messages (see below).
-7. Push your branch and open a Pull Request to `main`.
-8. Ensure all checks pass and respond to review feedback.
-
-The pre-push hook refuses a branch name outside this standard, and so does the required **Branch name** check on
-pull requests:
-
-| Branch | Use |
-| --- | --- |
-| `feature/{issue}-{slug}` | New behaviour |
-| `fix/{issue}-{slug}` | A bug fix |
-| `hotfix/{issue}-{slug}` | An urgent fix |
-| `chore/{slug}` | Work without an issue |
-
-`{slug}` is lowercase letters and digits in words joined by `-` (`upgrade-net10`, `oauth2-login`).
-A `chore/` slug starts with a letter, so `chore/7-cleanup` is refused.
+2. Follow [PROCESS.md](PROCESS.md): the one-time hook setup, a branch named to the standard in its own worktree,
+   commit and PR title format, the PR description, and how checks, review, merging and releases work.
+3. Make your changes, following the code style and guidelines below, with tests.
+4. Push your branch and open a Pull Request to `main` using the template.
 
 ## What should I know before I get started
 
@@ -61,9 +43,8 @@ This project is a project to build a [describe your solution, e.g., web applicat
 ### Code Style & Commit Messages
 
 - Use consistent formatting (C# conventions, .editorconfig if present).
-- Write clear, descriptive commit messages:
-  - Use present tense (e.g., "Add search feature")
-  - Reference issues (e.g., `Fixes #123`)
+- Commits and PR titles follow [git-commit-instructions.md](../.github/instructions/git-commit-instructions.md)
+  (`<type>(<scope>): <Summary>`); see [PROCESS.md](PROCESS.md#commits-and-pr-titles).
 - Add comments to explain complex logic.
 
 ### Project Folder Structure
@@ -163,7 +144,7 @@ Please provide as much detail as possible, including steps to reproduce, expecte
 
 [Fork the Repository to your account](https://github.com/{{OWNER}}/{{REPO}}/fork).
 
-1. Create a new Branch from the main branch with a reference to the existing Issue number (e.g. `fix/123-null-title`).
+1. Create a branch in its own worktree, named for the existing Issue number (e.g. `fix/123-null-title`); see [PROCESS.md](PROCESS.md#branches-and-worktrees).
 1. Work on the issue.
 1. Create Unit, Integration tests for any code that require them. We use [your test frameworks, e.g., xUnit, bUnit] to test our code and components.
 1. When you are done Create a Pull Request from your branch to the main branch.
@@ -177,10 +158,9 @@ Pull requests without unit tests will be delayed and asked for unit tests to pro
 
 ### Review Process
 
-1. All PRs are reviewed by maintainers and may require changes before merging.
-2. Automated checks (build, tests, lint) must pass before review.
-3. Be responsive to feedback and update your PR as needed.
-4. Once approved, your PR will be merged into `main`.
+Every PR is reviewed by Copilot on each push, and merges once its required checks pass and every review thread is
+resolved: a same-repo PR merges on its own, and the maintainer merges a fork's. The details are in
+[PROCESS.md](PROCESS.md#checks-review-and-merging).
 
 ### Write code
 

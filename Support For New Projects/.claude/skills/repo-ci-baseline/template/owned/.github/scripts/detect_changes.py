@@ -11,6 +11,12 @@ when every changed path is under docs/ or ends in .md; the build, test matrix
 and coverage are then skipped. Everything else counts as code, including
 workflows, scripts and an empty diff, so an unexpected path runs the suite.
 
+A Dependabot GitHub Actions bump skips them too: it only moves pinned action
+SHAs, which the build and tests never read, while every other check still
+runs. All three must hold: the PR's author is dependabot[bot], its branch is
+dependabot/github_actions/..., and every changed path is a workflow or a local
+action. A NuGet or SDK bump changes what's built, so it always builds.
+
 Diffing HEAD against the base the event names can also pick up commits that
 reached main since, which only ever adds paths, so it errs toward building.
 --no-renames lists a renamed file under both its paths, so moving code into
@@ -59,16 +65,29 @@ def is_code_change(paths):
     return not paths or first_code_path(paths) is not None
 
 
+def is_actions_bump(paths, author, head_ref):
+    """Whether this is a Dependabot GitHub Actions bump that changes only workflows and actions."""
+    return (author == "dependabot[bot]"
+            and head_ref.startswith("dependabot/github_actions/")
+            and bool(paths)
+            and all(path.startswith((".github/workflows/", ".github/actions/")) for path in paths))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", required=True, help="the PR's base commit")
     parser.add_argument("--head", default="HEAD", help="the PR merged into its base")
     parser.add_argument("--output", required=True, help="the file to append code=true|false to")
+    parser.add_argument("--author", default="", help="the PR author's login")
+    parser.add_argument("--head-ref", default="", help="the PR's head branch")
     args = parser.parse_args(argv)
 
     paths = changed_paths(args.base, args.head)
     code = is_code_change(paths)
-    if code and paths:
+    if code and is_actions_bump(paths, args.author, args.head_ref):
+        code = False
+        print(f"::notice::Dependabot GitHub Actions bump ({len(paths)} files); the build, tests and coverage are skipped.")
+    elif code and paths:
         print(f"Code change: {for_log(first_code_path(paths))}")
     elif not paths:
         print("No changed files; running the build and tests.")

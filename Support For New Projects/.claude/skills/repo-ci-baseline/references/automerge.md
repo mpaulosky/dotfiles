@@ -57,7 +57,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 ## Adapting
 
 - **Survey whether the repo's auto-merge waits for review.** IssueManager's armed native auto-merge and merged on `CLEAN` alone; its #231 merged with an open Copilot thread.
-- `workflow_run.workflows` lists every workflow that owns a required check, by its `name:`, plus `PR Review Submitted`.
+- `workflow_run.workflows` lists every workflow that owns a required check, by its `name:` (including `PR Title`), plus `PR Review Submitted`.
   A repo whose ruleset requires a check from a workflow outside the Template needs that workflow in the list: Template first.
 - **Land the Standardize PR by hand, held as a draft.** The old workflow on `main` still runs on it and would arm auto-merge the moment its checks pass; drafts are the one state it skips.
   Open the PR as a draft, request Copilot's review with `gh pr edit <n> --add-reviewer @copilot`, and resolve every thread.

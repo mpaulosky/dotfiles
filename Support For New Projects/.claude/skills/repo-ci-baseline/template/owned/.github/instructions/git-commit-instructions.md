@@ -44,6 +44,12 @@ The scope should be the name of the affected project, folder, or feature (e.g., 
 - Wrap lines at 72 characters.
 - Reference issues using `Fixes #123` or `Refs #456`.
 
+## PR Titles
+
+A pull request's title follows the same format as a commit's short summary: `<type>(<scope>): <Summary>`, with a capital
+and no closing period. The title becomes the squash commit's subject on `main` and the Release's name, and the required
+**PR title** check (`.github/workflows/pr-title.yml`) enforces it. Dependabot's PRs are exempt.
+
 ## Examples
 
 ```text

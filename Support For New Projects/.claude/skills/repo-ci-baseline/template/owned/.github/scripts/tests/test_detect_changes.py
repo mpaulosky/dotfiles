@@ -178,3 +178,49 @@ def test_an_unknown_base_fails(repo, tmp_path_factory, monkeypatch):
 
     with pytest.raises(subprocess.CalledProcessError):
         dc.main(["--base", "0" * 40, "--output", str(tmp_path_factory.mktemp("out") / "o")])
+
+
+ACTIONS_BRANCH = "dependabot/github_actions/all-actions-1a2b3c"
+
+
+@pytest.mark.parametrize(
+    "paths, author, head_ref, bump",
+    [
+        ([".github/workflows/ci.yml", ".github/actions/setup/action.yml"], "dependabot[bot]", ACTIONS_BRANCH, True),
+        # Every condition must hold.
+        ([".github/workflows/ci.yml"], "mpaulosky", ACTIONS_BRANCH, False),
+        ([".github/workflows/ci.yml"], "dependabot[bot]", "dependabot/nuget/all-nuget-1a2b3c", False),
+        ([".github/workflows/ci.yml", "src/App.cs"], "dependabot[bot]", ACTIONS_BRANCH, False),
+        ([".github/workflows/ci.yml", "global.json"], "dependabot[bot]", ACTIONS_BRANCH, False),
+        ([], "dependabot[bot]", ACTIONS_BRANCH, False),
+    ],
+)
+def test_is_actions_bump(paths, author, head_ref, bump):
+    assert dc.is_actions_bump(paths, author, head_ref) is bump
+
+
+def test_a_dependabot_actions_bump_skips_the_build(repo, tmp_path_factory, monkeypatch, capsys):
+    path, base = repo
+    (path / ".github" / "workflows").mkdir(parents=True)
+    (path / ".github" / "workflows" / "ci.yml").write_text("uses: actions/checkout@" + "b" * 40 + "\n")
+    commit(path)
+    output = tmp_path_factory.mktemp("out") / "github_output"
+    monkeypatch.chdir(path)
+
+    dc.main(["--base", base, "--output", str(output), "--author", "dependabot[bot]", "--head-ref", ACTIONS_BRANCH])
+
+    assert output.read_text() == "code=false\n"
+    assert "::notice::Dependabot GitHub Actions bump (1 files)" in capsys.readouterr().out
+
+
+def test_the_same_change_by_anyone_else_runs_the_build(repo, tmp_path_factory, monkeypatch):
+    path, base = repo
+    (path / ".github" / "workflows").mkdir(parents=True)
+    (path / ".github" / "workflows" / "ci.yml").write_text("uses: actions/checkout@" + "b" * 40 + "\n")
+    commit(path)
+    output = tmp_path_factory.mktemp("out") / "github_output"
+    monkeypatch.chdir(path)
+
+    dc.main(["--base", base, "--output", str(output), "--author", "mpaulosky", "--head-ref", ACTIONS_BRANCH])
+
+    assert output.read_text() == "code=true\n"

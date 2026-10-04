@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Tests for .github/hooks/pre-push.
-# Each case runs the hook in a throwaway repo, holding a copy of
-# scripts/gate.sh, with the refs git would pass on stdin. Stub `dotnet`, `npx`,
-# `markdownlint-cli2`, `yamllint`, `actionlint`, `zizmor` and `shellcheck`
-# binaries log each call, and fail when the call matches the FAIL glob, so no
+# Each case runs the hook in a throwaway repo, holding copies of
+# scripts/gate.sh and scripts/check-branch-name.sh, with the refs git would
+# pass on stdin. Stub `dotnet`, `npx`, `markdownlint-cli2`, `yamllint`,
+# `actionlint`, `zizmor` and `shellcheck` binaries log each call, and fail when the call matches the FAIL glob, so no
 # real build or network access is needed.
 # Usage: .github/hooks/tests/pre-push.test.sh
 set -uo pipefail
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pre-push"
-GATE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts/gate.sh"
+SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts"
 ZERO="0000000000000000000000000000000000000000"
 SHA="1111111111111111111111111111111111111111"
 
@@ -40,7 +40,7 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 git init -q -b main "$REPO"
 mkdir -p "$REPO/tests/Fake.Tests" "$REPO/scripts"
 echo '<Project />' > "$REPO/tests/Fake.Tests/Fake.Tests.csproj"
-cp "$GATE" "$REPO/scripts/gate.sh"
+cp "$SCRIPTS/gate.sh" "$SCRIPTS/check-branch-name.sh" "$REPO/scripts/"
 git -C "$REPO" add .
 git -C "$REPO" commit -q -m init
 git -C "$REPO" update-ref refs/remotes/origin/main main

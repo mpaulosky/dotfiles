@@ -24,13 +24,11 @@ check_branch_name() {
     exit 1
   fi
 
-  # The branch standard shared by every repo: feature/, fix/ and hotfix/ name
-  # their issue; chore/ is for work without one, so its slug starts with a
-  # letter and can't pass for an issue number. Slugs are lowercase letters and
-  # digits in words joined by '-'.
-  if ! [[ "$branch" =~ ^(feature|fix|hotfix)/[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] && ! [[ "$branch" =~ ^chore/[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]]; then
-    echo -e "${RED}❌ Branch name '${branch}' does not match naming convention.${RESET}"
-    echo -e "   Expected: ${YELLOW}feature/{issue}-{slug}${RESET}, ${YELLOW}fix/{issue}-{slug}${RESET}, ${YELLOW}hotfix/{issue}-{slug}${RESET}, or ${YELLOW}chore/{slug}${RESET}"
+  # The branch standard, shared with ci.yml's "Branch name" job.
+  local reason
+  if ! reason="$(bash "$ROOT/scripts/check-branch-name.sh" "$branch")"; then
+    echo -e "${RED}❌ ${reason%%$'\n'*}${RESET}"
+    echo -e "   ${YELLOW}${reason#*$'\n'}${RESET}"
     exit 1
   fi
 }

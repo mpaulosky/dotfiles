@@ -124,6 +124,32 @@ jobs:
             echo "Removed docs-only: this PR changes code." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+  # The branch standard, checked on the PR's head branch. The pre-push hook
+  # checks it too, but a push can skip the hook (a Claude cloud session's
+  # claude/... branch, GitHub's web editor, a clone without core.hooksPath),
+  # so this is the gate: a required status check. Rename a refused branch on
+  # GitHub (Branches → rename, or the branches/<name>/rename API) and the PR
+  # follows it, then close and reopen the PR: a rename is no new commit, and a
+  # re-run reuses the old name, so only the reopened run checks the new one.
+  # Fork PRs are skipped, which a required check counts as passing.
+  branch-name:
+    name: Branch name
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check the branch name
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: bash scripts/check-branch-name.sh --pr "$HEAD_REF"
+
   build:
     name: Build Solution
     needs: changes
@@ -227,6 +253,9 @@ jobs:
 
       - name: Run pre-commit hook tests
         run: bash .github/hooks/tests/pre-commit.test.sh
+
+      - name: Run branch-name script tests
+        run: bash scripts/tests/check-branch-name.test.sh
 
   # Tests for the inline script in .github/workflows/pr-automerge.yml, run
   # against a fake GitHub client. Also not a required status check.

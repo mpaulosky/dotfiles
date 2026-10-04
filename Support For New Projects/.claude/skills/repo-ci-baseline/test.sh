@@ -35,6 +35,7 @@ for tool in actionlint zizmor yamllint shellcheck markdownlint-cli2 git; do need
 step "Hook tests"
 bash "$owned/.github/hooks/tests/pre-push.test.sh" || fail "pre-push.test.sh"
 bash "$owned/.github/hooks/tests/pre-commit.test.sh" || fail "pre-commit.test.sh"
+bash "$owned/scripts/tests/check-branch-name.test.sh" || fail "check-branch-name.test.sh"
 
 step "Auto-merge script tests"
 need node
@@ -63,7 +64,8 @@ yamllint -c "$owned/.yamllint.yml" "${yaml_files[@]}" || fail "yamllint"
 step "shellcheck"
 shell_files=(
   "$skill_dir/apply.sh" "$skill_dir/test.sh"
-  "$owned/scripts/gate.sh" "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"
+  "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
+  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )

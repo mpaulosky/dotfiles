@@ -1,11 +1,12 @@
 # Git hooks and branch names
 
-Template files (Owned): `.github/hooks/` (`pre-commit`, `pre-push`, `post-checkout`), `.github/hooks/tests/` and
-`scripts/gate.sh`. History: IssueTracker #182 (the branch standard).
+Template files (Owned): `.github/hooks/` (`pre-commit`, `pre-push`, `post-checkout`), `.github/hooks/tests/`,
+`scripts/gate.sh`, `scripts/check-branch-name.sh` with its test, and the `branch-name` job in `ci.yml`. History: IssueTracker #182 (the branch standard).
 
 ## Branch-name standard
 
-Every repo's pre-push hook enforces the same rule:
+Every repo enforces the same rule twice, with one script, `scripts/check-branch-name.sh`: the pre-push hook checks
+each pushed branch, and `ci.yml`'s **Branch name** job, a required status check, checks a PR's head branch.
 
 | Branch | Use |
 | --- | --- |
@@ -21,8 +22,25 @@ starts with a letter, so it can't pass for an issue-linked name (`chore/7-cleanu
 [[ "$branch" =~ ^(feature|fix|hotfix)/[0-9]+-[a-z0-9]+(-[a-z0-9]+)*$ ]] || [[ "$branch" =~ ^chore/[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]]
 ```
 
-`squad/` and `sprint/` are retired. Branches the release workflow pushes (`docs/release-notes`) come from Actions, not a
-local push, so the hook never sees them.
+`squad/` and `sprint/` are retired.
+
+**CI is the gate; the hook is the early warning.** A push can skip the hook: a Claude cloud session (claude.ai/code)
+pushes `claude/...` branches from a sandbox where `core.hooksPath` was never set, and so do GitHub's web editor and any
+clone without the one-time setup. Before the CI check, such branches reached PRs in four repos (Blazor-Server #113,
+TicketManager #95, IssueManager #222, Articles #272, all `claude/project-thread-ot9sjt`). The CI job refuses them
+until the branch is renamed. Rename it on GitHub (the repo's Branches page, or
+`gh api -X POST repos/<owner>/<repo>/branches/<branch>/rename -f new_name=fix/42-null-children`, with `/` in the old
+name written as `%2F`) and the open PR follows the new name. Then close and reopen the PR (`gh pr close <n>` and
+`gh pr reopen <n>`): a rename makes no new commit, so no check runs, and re-running the failed check reuses the old
+name. The reopened run checks the new one. A repo's `CLAUDE.md` can ask cloud sessions to name the branch to the
+standard in the first place.
+
+The check guards the process, not against a hostile PR. Under `pull_request` the job runs the PR's own copy of the
+script and of `ci.yml`, so a PR can change either, as it can for `Build Solution`; such an edit shows in its review.
+
+The CI job also accepts the branches that only Actions and Dependabot create, which no hook sees:
+`docs/release-notes` (`release.yml`), `docs/backfill-blog-posts` (`backfill-blog-posts.yml`) and `dependabot/*`.
+Fork PRs skip the job, which a required check counts as passing.
 
 ## Worktree standard
 
@@ -54,7 +72,7 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
   its first commit on `main`, and a clone with `git config baseline.allowPrimaryCommits true`, for a clone that can't
   use worktrees (a sandbox or a one-off). Hooks don't run in Actions, so the release workflow's commits are unaffected.
   Then it lints the staged content of Markdown files; see [pre-commit.md](pre-commit.md).
-- **`pre-push`**, in order:
+- **`pre-push`**, in order (step 3 runs `scripts/check-branch-name.sh`):
   1. Read the refs from stdin, and gate the refs being pushed, not the checked-out branch. Classify by the *remote* ref,
      so a tag pushed onto a branch still counts as a branch push.
   2. Refuse pushes to, and deletions of, the protected branches (`main`, `preview`, `dev`).
@@ -95,7 +113,10 @@ build runs. It needs cases for:
 checkout and from a subfolder of it (refused, before the lint), the opt-out, a linked worktree, a repo's first commit,
 and `git commit` end to end, which runs the hook with `GIT_DIR` set.
 
-CI's hook-tests job runs this suite and `pre-commit.test.sh`.
+`scripts/tests/check-branch-name.test.sh` covers the script's `--pr` form, which the CI job uses: the Actions and
+Dependabot branches allowed only there, a `claude/...` branch refused, and other `docs/` names refused.
+
+CI's hook-tests job runs this suite, `pre-commit.test.sh` and `check-branch-name.test.sh`.
 
 ## Adapting
 
@@ -113,5 +134,6 @@ CI's hook-tests job runs this suite and `pre-commit.test.sh`.
 ## Verify live
 
 Push a branch named under a retired prefix (`git push --dry-run` still runs the hook): it's refused with the standard's
-message. Push a `fix/{issue}-{slug}` branch: the gate runs. Stage a change in the primary checkout and commit: it's
+message. Push a `fix/{issue}-{slug}` branch: the gate runs. Open a PR from a branch outside the standard (pushed with
+`--no-verify`): the **Branch name** check fails. Rename the branch, close and reopen the PR: it passes. Stage a change in the primary checkout and commit: it's
 refused with the `git worktree add` command.

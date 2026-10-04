@@ -243,3 +243,55 @@ def test_main_fails_when_projects_exist_but_none_is_a_test_project(tmp_path, cap
     assert status == 1
     assert output == ""
     assert "::error::" in capsys.readouterr().out
+
+
+
+def test_list_prints_each_test_project_path(tmp_path, capsys):
+    # scripts/gate.sh reads these, so it tests what CI tests, at any depth under tests/.
+    root = tmp_path / "repo"
+    project(root, "App.Tests", "<IsTestProject>true</IsTestProject>")
+    project(root, "TestingSupport.Library")
+    nested = root / "tests" / "Integration" / "Api.Tests" / "Api.Tests.csproj"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>\n")
+
+    status = dt.main(["--root", str(root), "--list"])
+
+    assert status == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "tests/App.Tests/App.Tests.csproj",
+        "tests/Integration/Api.Tests/Api.Tests.csproj",
+    ]
+
+
+def test_list_keeps_messages_off_stdout(tmp_path, capsys):
+    root = tmp_path / "repo"
+    props_file(root, "", when("'$(Configuration)' == 'Debug'", "<IsTestProject>true</IsTestProject>"))
+    project(root, "App.Tests")
+
+    status = dt.main(["--root", str(root), "--list"])
+
+    assert status == 0
+    captured = capsys.readouterr()
+    assert captured.out == "tests/App.Tests/App.Tests.csproj\n"
+    assert "can't evaluate Condition" in captured.err
+
+
+def test_list_prints_nothing_when_there_are_no_projects(tmp_path, capsys):
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    assert dt.main(["--root", str(root), "--list"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_list_fails_when_projects_exist_but_none_is_a_test_project(tmp_path, capsys):
+    root = tmp_path / "repo"
+    project(root, "Web.Tests.Unit")
+
+    status = dt.main(["--root", str(root), "--list"])
+
+    assert status == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "resolves IsTestProject to true" in captured.err

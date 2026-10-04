@@ -6,7 +6,9 @@ Called by the "Discover Test Projects" job in .github/workflows/ci.yml:
     python3 .github/scripts/discover_tests.py --output "$GITHUB_OUTPUT"
 
 It appends the matrix ({"include": [...]}, one entry per test project) and
-has_tests=true|false to the output file.
+has_tests=true|false to the output file. scripts/gate.sh runs it with --list
+instead, which prints each test project's path, so the pre-push gate tests the
+same projects CI does.
 
 A project is a test project when IsTestProject resolves to true, read the way
 MSBuild imports it: the .csproj's own value wins, then the nearest
@@ -33,6 +35,7 @@ Standard library only.
 """
 
 import argparse
+import contextlib
 import json
 import re
 import sys
@@ -151,8 +154,22 @@ def discover(root):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", default=".", help="the repo root")
-    parser.add_argument("--output", required=True, help="the file to append matrix and has_tests to")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--output", help="the file to append matrix and has_tests to")
+    mode.add_argument("--list", action="store_true", help="print each test project's path, one per line")
     args = parser.parse_args(argv)
+
+    if args.list:
+        # Only the paths go to stdout, so the gate can read them; messages go to stderr.
+        with contextlib.redirect_stdout(sys.stderr):
+            projects, entries = discover(Path(args.root))
+            if projects and not entries:
+                print(f"None of the {len(projects)} projects under tests/ resolves IsTestProject to true. "
+                      "Set it in each test .csproj or in a Directory.Build.props above them.")
+                return 1
+        for entry in entries:
+            print(entry["project_path"])
+        return 0
 
     projects, entries = discover(Path(args.root))
     if projects and not entries:

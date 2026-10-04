@@ -3,7 +3,7 @@
 # Lints the Markdown, YAML, workflow and shell files changed since origin/main
 # (every unpushed commit, with the same configs as CI), runs the repo's own
 # checks in .github/ci/gate-checks.sh, builds the solution, then runs each test
-# project under tests/. Exits non-zero on the first
+# project CI's discover_tests.py finds under tests/. Exits non-zero on the first
 # failing gate.
 set -euo pipefail
 
@@ -136,7 +136,12 @@ mapfile -t SOLUTIONS < <(find . -maxdepth 1 -name '*.slnx')
 dotnet build "${SOLUTIONS[@]}" --configuration Release -warnaserror
 
 step "Tests"
-mapfile -t TEST_PROJECTS < <(find tests -mindepth 2 -maxdepth 2 -name '*.csproj' 2>/dev/null | sort)
+# CI's discovery (ci.yml's discover-tests job): a project is a test project when
+# IsTestProject resolves to true for it, at any depth under tests/. Helper
+# libraries such as TestingSupport.Library don't set it, and dotnet test on
+# Microsoft Testing Platform fails on them ("No test projects were found").
+TEST_LIST="$(python3 .github/scripts/discover_tests.py --list)"
+mapfile -t TEST_PROJECTS < <(grep . <<< "$TEST_LIST" || true)
 if [[ ${#TEST_PROJECTS[@]} -eq 0 ]]; then
   echo -e "${YELLOW}No test projects under tests/ — skipping.${RESET}"
 fi

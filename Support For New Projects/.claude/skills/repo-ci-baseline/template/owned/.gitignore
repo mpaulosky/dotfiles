@@ -406,3 +406,12 @@ test-output.txt
 .claude/worktrees/
 .pytest_cache/
 .directory
+
+# Local environment files hold secrets; commit a .env.example instead.
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db

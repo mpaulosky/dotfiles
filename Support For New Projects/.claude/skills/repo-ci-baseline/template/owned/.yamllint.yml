@@ -6,6 +6,7 @@ ignore: |
   node_modules/
   **/node_modules/
   team-docs/
+  pnpm-lock.yaml
 
 rules:
   line-length:

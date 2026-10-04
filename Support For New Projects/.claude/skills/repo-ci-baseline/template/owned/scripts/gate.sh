@@ -22,7 +22,8 @@ else
 fi
 
 mapfile -t MD_FILES < <(grep -E '\.md$' <<< "$CHANGED" | grep -Ev '^docs/blogs/' || true)
-mapfile -t YAML_FILES < <(grep -E '\.ya?ml$' <<< "$CHANGED" || true)
+# pnpm writes its lockfile in its own YAML style; it isn't hand-edited.
+mapfile -t YAML_FILES < <(grep -E '\.ya?ml$' <<< "$CHANGED" | grep -Ev '(^|/)pnpm-lock\.yaml$' || true)
 mapfile -t WORKFLOW_FILES < <(grep -E '^\.github/(workflows/[^/]+\.ya?ml|dependabot\.ya?ml|actionlint\.ya?ml|zizmor\.ya?ml)$' <<< "$CHANGED" || true)
 # Shell scripts, plus extensionless scripts and git hooks.
 mapfile -t SHELL_FILES < <(grep -E '\.sh$|^scripts/[^/.]+$|^\.github/hooks/((pre|post)-[a-z-]+|(prepare-)?commit-msg)$' <<< "$CHANGED" || true)
@@ -70,6 +71,9 @@ if [[ ${#MD_FILES[@]} -gt 0 ]]; then
     "$ROOT/node_modules/.bin/markdownlint-cli2" "${MD_FILES[@]}"
   elif command -v markdownlint-cli2 &>/dev/null; then
     markdownlint-cli2 "${MD_FILES[@]}"
+  elif command -v pnpm &>/dev/null; then
+    # A repo whose Node project uses pnpm forbids npx.
+    pnpm dlx "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}" "${MD_FILES[@]}"
   else
     npx --yes "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}" "${MD_FILES[@]}"
   fi

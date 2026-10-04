@@ -24,9 +24,12 @@ STANDARD = json.loads((Path(gs.HERE) / "settings.json").read_text())
 LABELS = json.loads((Path(gs.HERE) / "labels.json").read_text())
 
 PINNED = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+# Only a workflow that runs on every PR can report a required check.
+ON_PR = '"on":\n  pull_request:\n    types: [opened, synchronize]\n'
+
 # Every standard required check, reported by workflows the way the Template's do.
 CI = f"""name: Build and Test Suite
-jobs:
+{ON_PR}jobs:
   branch-name:
     name: Branch name
     steps:
@@ -40,7 +43,7 @@ jobs:
   report:
     name: Test Suite
 """
-LINTS = f"""jobs:
+LINTS = f"""{ON_PR}jobs:
   actionlint:
     name: actionlint
     steps:
@@ -56,7 +59,7 @@ LINTS = f"""jobs:
     steps:
       - uses: ./.github/actions/local
 """
-PR_TITLE = """jobs:
+PR_TITLE = ON_PR + """jobs:
   title:
     name: PR title
 """
@@ -301,7 +304,7 @@ def test_ruleset_drift_is_replaced_with_the_standard():
 
 def test_a_required_check_outside_the_standard_stays_while_a_workflow_reports_it():
     # Before a Standardize, the repo's old test gate is its only one.
-    old_ci = "jobs:\n  gate:\n    name: All Tests Passed\n"
+    old_ci = ON_PR + "jobs:\n  gate:\n    name: All Tests Passed\n"
     live = matching_ruleset(["All Tests Passed", "Gone Check"])
     fake = FakeGitHub(rulesets={7: live}, workflows={".github/workflows/old.yml": old_ci})
 
@@ -385,6 +388,93 @@ def test_pinning_is_required_only_once_every_workflow_is_pinned():
     assert not fake.actions["sha_pinning_required"]
 
 
+def test_unpinned_actions_are_reported_even_once_pinning_is_required():
+    fake = FakeGitHub()
+    fake.workflows[".github/workflows/extra.yml"] = ON_PR + "jobs:\n  node:\n    steps:\n      - uses: actions/setup-node@v4\n"
+
+    finding = next(f for f in gs.check(fake, REPO) if f.area == "pinned actions")
+
+    assert finding.status == gs.MANUAL
+    assert finding.detail == ("required, so GitHub refuses to run these until they're pinned to a commit SHA: "
+                              "actions/setup-node@v4")
+
+
+def test_only_workflows_that_run_on_every_pr_can_report_a_required_check():
+    # A scheduled workflow, or one a PR can skip by its paths, never reports on some PRs.
+    fake = FakeGitHub(workflows={
+        ".github/workflows/ci.yml": CI.replace(ON_PR, '"on":\n  schedule:\n    - cron: "0 0 * * *"\n'),
+        ".github/workflows/lint.yml": LINTS.replace(ON_PR, '"on":\n  pull_request:\n    paths-ignore:\n      - "docs/**"\n'),
+        ".github/workflows/pr-title.yml": PR_TITLE,
+    }, rulesets={})
+
+    run(fake, "--fix")
+
+    [checks_rule] = [r for r in fake.rulesets[99]["rules"] if r["type"] == "required_status_checks"]
+    assert [c["context"] for c in checks_rule["parameters"]["required_status_checks"]] == ["PR title"]
+
+
+@pytest.mark.parametrize("text, runs", [
+    ('"on":\n  pull_request:\n    types: [opened, synchronize]\n  push:\n    branches: [main]\n', True),
+    ("on:\n  pull_request:\n    types:\n      - opened\n      - edited\n      - synchronize\n", True),
+    ("on:\n  pull_request:\n    types: [opened]\n", False),  # a pushed head gets no check
+    ("on:\n  pull_request:\n    types: [closed]\n", False),  # release.yml
+    ("on:\n  pull_request:\n    branches: [main]\n", True),
+    ("on:\n  pull_request:\n    branches:\n      - 'release/**'\n      - main\n", True),
+    ("on:\n  pull_request:\n    branches: ['**']\n", True),
+    ("on:\n  pull_request:\n    branches: [develop]\n", False),
+    ("on:\n  pull_request:\n    branches: ['m*', '!main']\n", False),
+    ("on:\n  pull_request:\n    branches-ignore: [main]\n", False),
+    ("on:\n  pull_request:\n    branches-ignore: ['release/*']\n", True),
+    ("on:\n  pull_request:\n    branches: ['[m]ain']\n", True),
+    ("on: {pull_request: {paths-ignore: ['docs/**']}}\n", False),  # flow mappings aren't parsed
+    ("on: {pull_request: {}}\n", False),
+    ("on:\n  pull_request:\n  # a comment between triggers\n  push:\n", True),
+    ("on: pull_request\n", True),
+    ("on: [push, pull_request]\n", True),
+    ("on:\n  pull_request:\n    paths-ignore:\n      - docs/**\n", False),
+    ("on:\n  pull_request:\n    paths:\n      - src/**\n", False),
+    ("on:\n  pull_request_target:\n    types: [opened]\n", False),
+    ("on: [push, pull_request_target]\n", False),
+    ('on:\n  schedule:\n    - cron: "0 0 * * *"\n', False),
+    ("jobs:\n  a:\n    name: A\n", False),
+])
+def test_runs_on_every_pr(text, runs):
+    assert gs.runs_on_every_pr(text) is runs
+
+
+@pytest.mark.parametrize("pattern, branch, matches", [
+    ("main", "main", True),
+    ("mai", "main", False),
+    ("m*", "main", True),
+    ("*", "release/1", False),  # * stops at /
+    ("**", "release/1", True),
+    ("release/**", "release/1/hotfix", True),
+    ("mains?", "main", True),  # ? is zero or one of the character before it
+    ("mains?", "mains", True),
+    ("ma?in", "main", True),
+    ("mai?n", "man", True),
+    ("mai?n", "maxn", False),  # ? isn't any one character
+    ("ma+in", "maaain", True),  # + is one or more of the character before it
+    ("ma+in", "min", False),
+    ("[m]ain", "main", True),
+    ("[a-z]ain", "main", True),
+    ("[0-9]ain", "main", False),
+    ("v1.0", "v1x0", False),  # . is literal
+    ("feature\\*", "feature*", True),  # \ escapes
+    ("feature\\*", "feature-x", False),
+    ("?main", "main", False),  # nothing before ?: a literal ?
+])
+def test_branch_patterns_follow_github_filter_syntax(pattern, branch, matches):
+    assert gs.branch_matches(pattern, branch) is matches
+
+
+def test_a_branch_filter_is_read_against_the_default_branch():
+    text = "on:\n  pull_request:\n    branches: [develop]\n"
+
+    assert gs.runs_on_every_pr(text, "develop")
+    assert not gs.runs_on_every_pr(text, "main")
+
+
 def test_codeql_default_setup_is_turned_off_where_the_workflow_runs_codeql():
     fake = FakeGitHub(default_setup="configured")
     fake.workflows[".github/workflows/codeql-analysis.yml"] = "jobs:\n  analyze:\n    name: Analyze\n"
@@ -462,7 +552,7 @@ def test_a_per_repo_file_can_add_a_required_check(monkeypatch, tmp_path):
     (tmp_path / "github" / "repos" / "app.json").write_text('{"required_checks": ["Sandcastle"]}')
     monkeypatch.setattr(gs, "HERE", tmp_path / "github")
     fake = FakeGitHub()
-    fake.workflows[".github/workflows/sandcastle.yml"] = "jobs:\n  sandcastle:\n    name: Sandcastle\n"
+    fake.workflows[".github/workflows/sandcastle.yml"] = ON_PR + "jobs:\n  sandcastle:\n    name: Sandcastle\n"
 
     run(fake, "--fix")
 
@@ -498,7 +588,7 @@ def test_json_output_lists_each_finding():
 # ── Reading workflows ───────────────────────────────────────────────────────
 
 def test_workflow_facts_reads_job_names_and_unpinned_actions():
-    names, unpinned = gs.workflow_facts(CI + LINTS.replace("jobs:\n", "") +
+    names, unpinned = gs.workflow_facts(CI + LINTS.replace(ON_PR + "jobs:\n", "") +
                                         "  node:\n    steps:\n      - uses: actions/setup-node@v4\n")
 
     assert names == ["Branch name", "Build Solution", "Test Suite", "actionlint", "zizmor", "shellcheck",

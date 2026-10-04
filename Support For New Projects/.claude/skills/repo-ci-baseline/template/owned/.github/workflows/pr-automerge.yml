@@ -35,14 +35,19 @@ name: PR Auto-Merge
   # GitHub sends no check_suite events for suites created by Actions, and
   # every required check comes from one of these workflows, so their
   # completion is the signal that the checks may have gone green.
+  # pull_request_review would run the PR's own copy of this file with write
+  # access, so a submitted review arrives through PR Review Submitted, a
+  # no-op workflow whose completion lands here. Copilot's review usually
+  # arrives after CI, so without it the PR waits for the sweep.
   workflow_run:
-    workflows: ["Build and Test Suite", "Lint Markdown", "Lint YAML", "Lint Actions", "CodeQL"]
+    workflows: ["Build and Test Suite", "Lint Markdown", "Lint YAML", "Lint Actions", "CodeQL", "PR Review Submitted"]
     types: [completed]
-  # Resolving a review thread has no Actions trigger, and pull_request_review
-  # would run the PR's own copy of this file with write access, so a PR whose
-  # last blocker was a review or an open thread is picked up by this sweep.
+  # Resolving a review thread has no Actions trigger, so a PR whose last
+  # blocker was an open thread is picked up by this sweep. Off the round
+  # minutes, where GitHub drops the most scheduled runs; it still runs far
+  # less often than asked, often an hour or more apart.
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 permissions:

@@ -5,6 +5,8 @@
     "default": true,
     // Lines up to 200 characters; tables and code blocks can't wrap.
     "MD013": { "line_length": 200, "tables": false, "code_blocks": false },
+    // Code samples keep the tabs .editorconfig requires for C#.
+    "MD010": { "code_blocks": false },
     // Instruction files carry an applyTo front matter title as well as an H1.
     "MD025": { "front_matter_title": "" }
   },

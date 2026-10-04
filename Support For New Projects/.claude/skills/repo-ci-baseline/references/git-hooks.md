@@ -41,11 +41,17 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
   4. Refuse a pushed commit that isn't the checked-out `HEAD`, because the gate only tests the working tree.
   5. Refuse a working tree with uncommitted or untracked changes, for the same reason. Ignored files don't count.
   6. A push with no branch updates (tags only, or deletions only) skips the gate.
-  7. Run `scripts/gate.sh`.
+  7. Skip the gate when `HEAD` is the commit recorded in `git config sandcastle.gatedHead`: Sandcastle runs the gate in
+     its sandbox, records the commit it passed, then pushes it, so a second run on the host only repeats it. Steps 4
+     and 5 still apply first. Unset outside a Sandcastle repo (Blazor-Server #93).
+  8. Run `scripts/gate.sh`.
 - **`scripts/gate.sh`**, also safe to run by hand: lint the Markdown, YAML, workflow and shell files changed since
   `origin/main`, using CI's configs, and prefer installed tools with pinned fallbacks. Then build and run each test
   project, where the stack allows it locally. Which steps it runs depends on the repo; what's standard is that
   everything it checks, CI checks too.
+  Between the lints and the build it runs the Seed `.github/ci/gate-checks.sh <merge-base>` when the repo has one:
+  checks only that repo needs, such as Blazor-Server's Sandcastle TypeScript check and Copilot review sync. The merge
+  base is empty without an `origin/main`.
 
 ## Tests
 
@@ -56,6 +62,9 @@ build runs. It needs cases for:
 - the tag and mixed pushes
 - a push that isn't the checked-out commit
 - an untracked or unstaged file
+- `.github/ci/gate-checks.sh` running with the merge base, and failing the push before the build
+- a Sandcastle-gated `HEAD` skipping the gate (pushed and by hand), an ungated `HEAD` running it, and a gated `HEAD`
+  with a dirty tree still refused
 - **each accepted branch prefix** (including slugs with digits), and each retired or malformed name (`squad/`,
   `sprint/`, a prefix missing its issue number, a `chore/` slug starting with a digit, and an uppercase letter in an
   otherwise valid name such as `chore/tidy-Up`). Each bad name must break exactly one rule, or it can't catch a
@@ -65,8 +74,8 @@ CI's hook-tests job runs this suite and `pre-commit.test.sh`.
 
 ## Adapting
 
-- A repo's own gate steps (an extra build tool, a stack that can't run locally) are drift on `gate.sh` until the
-  Template supports them; move the need into the Template first.
+- A repo's own gate steps go in the Seed `.github/ci/gate-checks.sh`, each guarded by the paths it covers. A step
+  added to `gate.sh` itself is drift, reverted by the next Apply.
 - Update every doc that lists branch names (`CLAUDE.md`, `CONTRIBUTING.md`, the README).
 - The Standardize branch is pushed through the *new* hook, because `core.hooksPath` is relative to the worktree. Its
   name, `chore/standardize-baseline`, passes both the old rules and the new one.

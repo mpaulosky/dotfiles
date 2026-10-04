@@ -3,7 +3,8 @@
 #
 #   test.sh
 #
-# Runs the Template's own tests (hook suites, release-script pytest), lints its
+# Runs the Template's own tests (hook suites, auto-merge script tests,
+# release-script pytest), lints its
 # workflows, YAML, shell and Markdown with the Template's configs, checks that
 # Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh against
 # throwaway repos. dotfiles CI runs this on every change under the skill, and
@@ -35,6 +36,10 @@ step "Hook tests"
 bash "$owned/.github/hooks/tests/pre-push.test.sh" || fail "pre-push.test.sh"
 bash "$owned/.github/hooks/tests/pre-commit.test.sh" || fail "pre-commit.test.sh"
 
+step "Auto-merge script tests"
+need node
+node --test "$owned/.github/scripts/tests/pr-automerge.test.mjs" || fail "pr-automerge.test.mjs"
+
 step "Release script tests"
 if python3 -c 'import pytest' &>/dev/null; then
   pytest_cmd=(python3 -m pytest)
@@ -58,7 +63,7 @@ yamllint -c "$owned/.yamllint.yml" "${yaml_files[@]}" || fail "yamllint"
 step "shellcheck"
 shell_files=(
   "$skill_dir/apply.sh" "$skill_dir/test.sh"
-  "$owned/scripts/gate.sh" "$seed/.github/ci/prepare.sh"
+  "$owned/scripts/gate.sh" "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )

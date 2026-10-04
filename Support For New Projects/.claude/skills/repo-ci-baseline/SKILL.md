@@ -13,7 +13,7 @@ Why it works this way is in [ADR 0001](docs/adr/0001-standardize-by-copying-a-te
 - **Owned files** (`template/owned/`) are overwritten on every Apply, mode included.
   They carry no per-repo values.
 - **Seed files** (`template/seed/`) are written only where the repo has none, with `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}` filled in.
-  Per-repo CI setup goes in the Seed `.github/ci/prepare.sh`, which `ci.yml` calls.
+  Per-repo CI setup goes in the Seed `.github/ci/prepare.sh`, which `ci.yml` calls; per-repo gate checks go in the Seed `.github/ci/gate-checks.sh`, which `scripts/gate.sh` calls.
 
 **Template first.**
 A fix to an Owned file is made in `template/`, then Applied to the repo that needed it.
@@ -25,7 +25,7 @@ A fix made only in a repo is reverted by its next Apply.
 | --- | --- | --- |
 | Git hooks and branch names | One branch-name standard; pushes are gated on the pushed commit | [git-hooks.md](references/git-hooks.md) |
 | Staged-content pre-commit | Commits are linted as they'll be committed | [pre-commit.md](references/pre-commit.md) |
-| Auto-merge after review | A PR merges on its own only once checks pass, Copilot reviewed its head and every thread is resolved | [automerge.md](references/automerge.md) |
+| Auto-merge after review | A PR merges on its own only once checks pass, Copilot reviewed its head and every thread is resolved, until Copilot's three-round cap; never while handed back with `sandcastle:needs-human` | [automerge.md](references/automerge.md) |
 | Serialized releases | Versions follow merge order, a missed release is retried, one blog PR per run | [release-pipeline.md](references/release-pipeline.md) |
 | Docs-only CI skip | Docs PRs skip the build and tests while required checks still pass | [docs-only-ci.md](references/docs-only-ci.md) |
 | Per-project test matrix | Each test project runs in its own job on Microsoft Testing Platform | [test-matrix.md](references/test-matrix.md) |
@@ -59,7 +59,8 @@ Order across repos: IssueTracker, atelier-store, Blazor-Server, TicketManager, I
 ## Change the Baseline
 
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
-2. Run `test.sh`: the hook suites, the release-script tests, actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned check and the `apply.sh` tests.
+2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests,
+   actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned check and the `apply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.

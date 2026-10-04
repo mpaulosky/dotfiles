@@ -274,6 +274,35 @@ run_hook feature/1-x "refs/heads/feature/1-x @HEAD@ refs/heads/feature/1-x $ZERO
 expect "an unstaged edit refuses the push before the gates" refused tests-skipped "uncommitted or untracked changes"
 git -C "$REPO" checkout -q -- tests/Fake.Tests/Fake.Tests.csproj
 
+# The repo's own checks in .github/ci/gate-checks.sh run before the build, get
+# the merge base, and fail the gate when they fail.
+commit_on feature/9-repo-checks .github/ci/gate-checks.sh "echo \"repo-check base=\$1\" >> '$LOG'; [[ -z \"\${FAIL_REPO_CHECK:-}\" ]]"
+run_hook feature/9-repo-checks "$(push_stdin feature/9-repo-checks)"
+expect "the gate runs .github/ci/gate-checks.sh" allowed tests-ran
+expect_log "gate-checks.sh gets the merge base" ran "repo-check base=$(git -C "$REPO" rev-parse origin/main)"
+FAIL_REPO_CHECK=1 run_hook feature/9-repo-checks "$(push_stdin feature/9-repo-checks)"
+expect "a failing gate-checks.sh refuses the push" refused any
+expect_log "a failing gate-checks.sh stops the gate before the build" not-ran 'dotnet build*'
+git -C "$REPO" switch -q feature/1-x
+
+# Sandcastle records the commit its sandbox gate passed; pushing exactly that
+# commit skips the second run, and anything else still runs the gate.
+switch_to feature/1-x
+git -C "$REPO" config --local sandcastle.gatedHead "$(git -C "$REPO" rev-parse HEAD)"
+run_hook feature/1-x "$(push_stdin feature/1-x)"
+expect "a Sandcastle-gated HEAD skips the gate" allowed tests-skipped "Sandcastle already gated"
+run_hook_without_stdin feature/1-x
+expect "a Sandcastle-gated HEAD skips the gate when run by hand" allowed tests-skipped "Sandcastle already gated"
+git -C "$REPO" config --local sandcastle.gatedHead "$SHA"
+run_hook feature/1-x "$(push_stdin feature/1-x)"
+expect "a HEAD Sandcastle didn't gate runs the gate" allowed tests-ran
+git -C "$REPO" config --local sandcastle.gatedHead "$(git -C "$REPO" rev-parse HEAD)"
+touch "$REPO/untracked.cs"
+run_hook feature/1-x "$(push_stdin feature/1-x)"
+expect "a Sandcastle-gated HEAD with a dirty tree is still refused" refused tests-skipped "uncommitted or untracked changes"
+rm "$REPO/untracked.cs"
+git -C "$REPO" config --local --unset sandcastle.gatedHead
+
 echo
 echo "$PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

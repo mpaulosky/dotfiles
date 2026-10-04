@@ -47,18 +47,17 @@ if [[ -z "$MARKDOWNLINT_BIN" ]]; then
 fi
 
 # ── Snapshot the staged content ───────────────────────────────────────────
-# Write each staged file, and the config as it will be committed, into a
+# Write each staged file, and the configs as they will be committed, into a
 # temporary tree with the same layout, then lint that tree. The working copy
 # can differ from what's staged, and only the staged version gets committed.
 SNAPSHOT="$(mktemp -d)"
 trap 'rm -rf "$SNAPSHOT"' EXIT
 
-# Only a staged config is used; one that exists only in the working copy
-# won't be in the commit.
-CONFIG=".markdownlint-cli2.jsonc"
-if git cat-file -e ":$CONFIG" 2>/dev/null; then
-  git checkout-index --prefix="$SNAPSHOT/" -- "$CONFIG"
-fi
+# Only staged configs are used; one that exists only in the working copy won't
+# be in the commit. Nested ones count too: markdownlint-cli2 applies a
+# directory's .markdownlint-cli2.jsonc to the files under it, as CI does.
+git ls-files -z --cached -- ':(glob)**/.markdownlint-cli2.jsonc' \
+  | git checkout-index --prefix="$SNAPSHOT/" -z --stdin
 printf '%s\0' "${MD_FILES[@]}" | git checkout-index --prefix="$SNAPSHOT/" -z --stdin
 
 # ── Run markdownlint on staged files ──────────────────────────────────────

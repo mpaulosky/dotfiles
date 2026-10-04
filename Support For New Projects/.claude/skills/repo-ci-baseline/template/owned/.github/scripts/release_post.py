@@ -926,17 +926,21 @@ def update_index_html(path, entries, posts, repository):
 # src/Web); copied verbatim into docs/ they would resolve one directory too
 # deep. From TicketManager #104.
 
-# ](target) or ](<target with spaces>), optionally followed by a "title".
-LINK_INLINE = re.compile(r"(\]\()(?:(<)([^>\n]+)(>)|()([^)\s<>]+)())((?:\s+\"[^\"]*\")?\))")
+# What follows an inline link's destination: an optional "title", 'title' or
+# (title), then the closing parenthesis.
+LINK_INLINE_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?[ \t]*\)""")
+LINK_ANGLE_DESTINATION = re.compile(r"<((?:[^<>\n\\]|\\.)+)>")
 LINK_REFERENCE = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(<?)(\S+?)(>?)(?=\s|$)", re.MULTILINE)
-LINK_HTML_ATTRIBUTE = re.compile(r"""(\b(?:src|href)=)(["'])([^"']+)\2""")
+# An attribute follows whitespace inside its tag, so data-src is not src. ASCII,
+# as for HTML_BLOCKS: "\u017f" must not case-fold into "src".
+LINK_HTML_ATTRIBUTE = re.compile(r"""(?<=\s)((?:src|href)\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""", re.I | re.A)
 # Any indent, so a fence inside a list item is still skipped.
 LINK_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
 def rebase_link(target):
     """A link target as seen from docs/ rather than the repository root."""
-    if re.match(r"^[a-z][a-z0-9+.-]*:", target, flags=re.IGNORECASE) or target.startswith(("#", "/", "../")):
+    if re.match(r"^[a-z][a-z0-9+.-]*:", target, flags=re.IGNORECASE) or target.startswith(("#", "?", "/")):
         return target
     path = target[2:] if target.startswith("./") else target
     if path == "docs" or path.startswith(("docs/", "docs#", "docs?")):
@@ -944,32 +948,109 @@ def rebase_link(target):
     return "../" + path
 
 
+def bare_destination_end(line, start):
+    """The end of the bare link destination at line[start], or None if there is none.
+
+    It runs to the first space or control character, or the first ")" that
+    closes no "(" of its own, so docs/a_(b).md is one destination; a
+    backslash escapes the next character.
+    """
+    depth = 0
+    pos = start
+    while pos < len(line):
+        char = line[pos]
+        if char == "\\" and pos + 1 < len(line) and not line[pos + 1].isspace():
+            pos += 2
+            continue
+        if char <= " " or char == "\x7f":
+            break
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            if not depth:
+                break
+            depth -= 1
+        pos += 1
+    if depth or pos == start or line[start] == "<":
+        return None
+    return pos
+
+
+def rebase_inline_links(line):
+    """The line with each ](destination) rebased; anything that isn't a whole inline link is left alone."""
+    out = []
+    done = 0
+    opener = line.find("](")
+    while opener >= 0:
+        start = opener + 2
+        while start < len(line) and line[start] in " \t":
+            start += 1
+        angle = LINK_ANGLE_DESTINATION.match(line, start)
+        if angle:
+            target_start, target_end, end = angle.start(1), angle.end(1), angle.end()
+        else:
+            target_start = start
+            target_end = end = bare_destination_end(line, start)
+        tail = LINK_INLINE_TAIL.match(line, end) if end is not None else None
+        if tail:
+            out.append(line[done:target_start] + rebase_link(line[target_start:target_end]))
+            done = target_end
+            opener = line.find("](", tail.end())
+        else:
+            opener = line.find("](", opener + 2)
+    return "".join(out) + line[done:]
+
+
+def rebase_html_attribute(match):
+    """A src= or href= attribute with its value rebased, keeping its spacing and quotes."""
+    for group, quote in ((2, '"'), (3, "'"), (4, "")):
+        if match.group(group) is not None:
+            return match.group(1) + quote + rebase_link(match.group(group)) + quote
+
+
+def quote_prefix(line, depth=None):
+    """(block quote markers at the start of the line, the rest), counting at most `depth` markers."""
+    count = pos = 0
+    while depth is None or count < depth:
+        quote_match = QUOTE_AT.match(line, pos)
+        if not quote_match:
+            break
+        count += 1
+        pos = quote_match.end()
+    return count, line[pos:]
+
+
 def rebase_readme_links(markdown):
-    """The README text with every relative link rebased for docs/README.md; fenced code is left alone."""
+    """The README text with every relative link rebased for docs/README.md; fenced code is left alone.
+
+    A fence belongs to the block quote it opens in: it closes on a line at
+    that quote depth, or ends with the quote when a line lacks its markers.
+    """
     out = []
     fence = None
     for line in markdown.splitlines(keepends=True):
-        fence_match = LINK_FENCE.match(line)
-        if fence is not None or fence_match:
-            if fence is None:
-                fence = fence_match.group(1)
-            elif fence_match:
+        if fence is not None:
+            depth, marker = fence
+            line_depth, rest = quote_prefix(line, depth)
+            if line_depth == depth:
+                fence_match = LINK_FENCE.match(rest)
                 # Closed by a run of the same character, at least as long, with no info string.
-                marker, info = fence_match.groups()
-                if marker[0] == fence[0] and len(marker) >= len(fence) and not info.strip():
-                    fence = None
+                if fence_match:
+                    closer, info = fence_match.groups()
+                    if closer[0] == marker[0] and len(closer) >= len(marker) and not info.strip():
+                        fence = None
+                out.append(line)
+                continue
+            fence = None
+        depth, rest = quote_prefix(line)
+        fence_match = LINK_FENCE.match(rest)
+        if fence_match:
+            fence = (depth, fence_match.group(1))
             out.append(line)
             continue
-        line = LINK_INLINE.sub(
-            lambda m: m.group(1)
-            + (m.group(2) or m.group(5))
-            + rebase_link(m.group(3) or m.group(6))
-            + (m.group(4) or m.group(7))
-            + m.group(8),
-            line,
-        )
+        line = rebase_inline_links(line)
         line = LINK_REFERENCE.sub(lambda m: m.group(1) + m.group(2) + rebase_link(m.group(3)) + m.group(4), line)
-        line = LINK_HTML_ATTRIBUTE.sub(lambda m: m.group(1) + m.group(2) + rebase_link(m.group(3)) + m.group(2), line)
+        line = LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, line)
         out.append(line)
     return "".join(out)
 

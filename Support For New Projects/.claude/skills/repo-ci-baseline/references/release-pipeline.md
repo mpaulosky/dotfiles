@@ -65,7 +65,8 @@ post" and succeeded. Recovery was `gh run rerun <run id> --job <docs job id>`. R
 
 **`docs/README.md`.** A repo that keeps a `docs/README.md` (its README as the Pages landing page) gets the README's text
 there too, with relative links rebased for `docs/` by `rebase_readme_links`: `docs/x` becomes `x`, `docs` becomes `./`,
-any other path gets `../`. URLs, anchors, root-relative paths and fenced code are left alone. Origin: TicketManager #104.
+any other path (`../up.md` too) gets `../`. URLs, `#anchors`, `?query` references, root-relative paths and fenced
+code, in block quotes too, are left alone. Origin: TicketManager #104.
 
 **Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
 checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual

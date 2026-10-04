@@ -560,20 +560,42 @@ def test_run_writes_readme_and_index_tables(tmp_path):
         ("[post]: docs/blogs/README.md\n", "[post]: blogs/README.md\n"),
         ('<img src="docs/banner.png" alt="">\n', '<img src="banner.png" alt="">\n'),
         ("<a href='CONTRIBUTING.md'>c</a>\n", "<a href='../CONTRIBUTING.md'>c</a>\n"),
+        # Balanced parentheses belong to the destination; every title form is kept.
+        ("[x](docs/a_(b).md) [y](a_(b)_(c).md)\n", "[x](a_(b).md) [y](../a_(b)_(c).md)\n"),
+        ("[a](docs/a.md 'A') [b](b.md (B)) [c](docs/c.md \"C\")\n", "[a](a.md 'A') [b](../b.md (B)) [c](c.md \"C\")\n"),
+        # Attribute names in any case, spaced "=", unquoted values.
+        ("<img SRC=docs/banner.png>\n", "<img SRC=banner.png>\n"),
+        ('<a href = "docs/x.md">x</a>\n', '<a href = "x.md">x</a>\n'),
+        # ../ is relative too, so it goes up one more level.
+        ("[up](../up.md)\n", "[up](../../up.md)\n"),
     ],
 )
 def test_rebase_readme_links(text, expected):
     assert rp.rebase_readme_links(text) == expected
 
 
-def test_rebase_readme_links_keeps_absolute_anchor_and_root_relative_links():
-    text = "[a](https://example.com/docs/x.md) [b](#usage) [c](/docs/x) [d](mailto:me@example.com) [e](../up.md)\n"
+def test_rebase_readme_links_keeps_absolute_anchor_query_and_root_relative_links():
+    text = "[a](https://example.com/docs/x.md) [b](#usage) [c](/docs/x) [d](mailto:me@example.com) [e](?tab=all)\n"
     assert rp.rebase_readme_links(text) == text
 
 
 def test_rebase_readme_links_leaves_fenced_code_alone():
     text = "```md\n[x](docs/a.md)\n```\n[y](docs/b.md)\n````\n```\n[z](docs/c.md)\n````\n"
     assert rp.rebase_readme_links(text) == "```md\n[x](docs/a.md)\n```\n[y](b.md)\n````\n```\n[z](docs/c.md)\n````\n"
+
+
+def test_rebase_readme_links_leaves_fenced_code_in_block_quotes_alone():
+    # A fence closes at its own quote depth, or ends with its quote.
+    text = (
+        "> ```md\n> [a](docs/a.md)\n> ```\n> [b](docs/b.md)\n"
+        ">  > ~~~\n> > [c](docs/c.md)\n> > ~~~\n"
+        "> ```\n> [d](docs/d.md)\n[e](docs/e.md)\n"
+    )
+    assert rp.rebase_readme_links(text) == (
+        "> ```md\n> [a](docs/a.md)\n> ```\n> [b](b.md)\n"
+        ">  > ~~~\n> > [c](docs/c.md)\n> > ~~~\n"
+        "> ```\n> [d](docs/d.md)\n[e](e.md)\n"
+    )
 
 
 def test_run_rebases_links_in_docs_readme_only(tmp_path):

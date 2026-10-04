@@ -271,12 +271,29 @@ jobs:
             esac
 
             git tag -a "$CANDIDATE" "$TARGET" -m "Release ${CANDIDATE} from PR #${PR_NUMBER}"
-            if git push origin "refs/tags/${CANDIDATE}"; then
+            if PUSH_OUTPUT=$(git push origin "refs/tags/${CANDIDATE}" 2>&1); then
               NEXT_TAG="$CANDIDATE"
               break
             fi
-            echo "::notice::${CANDIDATE} was taken by a concurrent release; retrying (attempt ${attempt})."
             git tag -d "$CANDIDATE"
+
+            # Retry only when another release took the tag first. Any other
+            # rejection (a token without the workflow permission, a ruleset)
+            # fails the same way every time, so stop with GitHub's message.
+            # ls-remote --exit-code returns 2 when the tag doesn't exist.
+            TAKEN=0
+            git ls-remote --exit-code --tags origin "refs/tags/${CANDIDATE}" > /dev/null || TAKEN=$?
+            if [ "$TAKEN" -eq 2 ]; then
+              echo "$PUSH_OUTPUT"
+              echo "::error::Pushing ${CANDIDATE} was rejected, and no other release has it, so retrying can't help. If the message says the token lacks the workflow scope, give RELEASE_PR_PAT Workflows: Read and write (fine-grained) or the workflow scope (classic)."
+              exit 1
+            fi
+            if [ "$TAKEN" -eq 0 ]; then
+              echo "::notice::${CANDIDATE} was taken by a concurrent release; retrying (attempt ${attempt})."
+            else
+              echo "$PUSH_OUTPUT"
+              echo "::notice::Pushing ${CANDIDATE} failed and the tag couldn't be checked; retrying (attempt ${attempt})."
+            fi
             sleep $((attempt * 3))
           done
 

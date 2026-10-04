@@ -67,6 +67,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      skip_reason: ${{ steps.diff.outputs.skip_reason }}
     steps:
       - name: Checkout code
         if: github.event_name == 'pull_request'
@@ -613,6 +614,7 @@ jobs:
           TEST_MATRIX: ${{ needs.discover-tests.outputs.matrix }}
           CHANGES_STATUS: ${{ needs.changes.result }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
+          SKIP_REASON: ${{ needs.changes.outputs.skip_reason }}
           BUILD_STATUS: ${{ needs.build.result }}
           DISCOVER_STATUS: ${{ needs.discover-tests.result }}
           TEST_STATUS: ${{ needs.test.result }}
@@ -623,7 +625,11 @@ jobs:
             echo ""
             echo "### Job Status"
             if [ "$CHANGES_STATUS" = "success" ] && [ "$CODE_CHANGED" = "false" ]; then
-              echo "- **Docs-only change:** the build, tests and coverage were skipped."
+              if [ "$SKIP_REASON" = "actions-bump" ]; then
+                echo "- **Dependabot GitHub Actions bump:** the build, tests and coverage were skipped."
+              else
+                echo "- **Docs-only change:** the build, tests and coverage were skipped."
+              fi
             fi
             echo "- **Build:** ${BUILD_STATUS}"
             echo "- **Discovered Tests:** ${DISCOVER_STATUS}"

@@ -141,7 +141,7 @@ def test_main_writes_the_output_and_a_notice(repo, tmp_path_factory, monkeypatch
 
     assert dc.main(["--base", base, "--output", str(output)]) == 0
 
-    assert output.read_text() == "earlier=1\ncode=false\n"
+    assert output.read_text() == "earlier=1\ncode=false\nskip_reason=docs-only\n"
     assert "::notice::Docs-only change (1 files)" in capsys.readouterr().out
 
 
@@ -154,7 +154,7 @@ def test_main_names_the_first_code_path(repo, tmp_path_factory, monkeypatch, cap
 
     dc.main(["--base", base, "--output", str(output)])
 
-    assert output.read_text() == "code=true\n"
+    assert output.read_text() == "code=true\nskip_reason=\n"
     assert "Code change: src/App.cs" in capsys.readouterr().out
 
 
@@ -169,7 +169,7 @@ def test_a_code_path_with_line_breaks_cant_start_a_workflow_command(repo, tmp_pa
 
     lines = capsys.readouterr().out.splitlines()
     assert lines == ["Code change: src/x\\n::error::forged\\r::warning::also"]
-    assert output.read_text() == "code=true\n"
+    assert output.read_text() == "code=true\nskip_reason=\n"
 
 
 def test_an_unknown_base_fails(repo, tmp_path_factory, monkeypatch):
@@ -209,7 +209,7 @@ def test_a_dependabot_actions_bump_skips_the_build(repo, tmp_path_factory, monke
 
     dc.main(["--base", base, "--output", str(output), "--author", "dependabot[bot]", "--head-ref", ACTIONS_BRANCH])
 
-    assert output.read_text() == "code=false\n"
+    assert output.read_text() == "code=false\nskip_reason=actions-bump\n"
     assert "::notice::Dependabot GitHub Actions bump (1 files)" in capsys.readouterr().out
 
 
@@ -223,4 +223,4 @@ def test_the_same_change_by_anyone_else_runs_the_build(repo, tmp_path_factory, m
 
     dc.main(["--base", base, "--output", str(output), "--author", "mpaulosky", "--head-ref", ACTIONS_BRANCH])
 
-    assert output.read_text() == "code=true\n"
+    assert output.read_text() == "code=true\nskip_reason=\n"

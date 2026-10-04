@@ -135,15 +135,65 @@ def workflow_facts(text):
 
 
 ON_KEY = re.compile(r"""^(?:"on"|'on'|on):(.*)$""")
+# A pull_request trigger without these activity types misses a PR's first head
+# (opened) or its later ones (synchronize). The default types include both.
+PR_HEAD_TYPES = {"opened", "synchronize"}
 
 
-def runs_on_every_pr(text):
-    """Whether the workflow runs on every pull request: a pull_request trigger with no paths filter.
+def trigger_list(trigger, key):
+    """The values of key (types, branches, ...) under a trigger's lines, or None when it isn't set.
+
+    Reads the flow form (key: [a, b]), a single value (key: a) and the block form (key: then - a lines).
+    """
+    for position, line in enumerate(trigger):
+        match = re.match(rf"^\s+{re.escape(key)}:(.*)$", line)
+        if not match:
+            continue
+        inline = match.group(1).split("#")[0].strip()
+        if inline:
+            return [value.strip().strip("'\"") for value in inline.strip("[]").split(",") if value.strip()]
+        values = []
+        for nested in trigger[position + 1:]:
+            if item := re.match(r"^\s+-\s*(.+?)\s*(?:#.*)?$", nested):
+                values.append(item.group(1).strip("'\""))
+            elif nested.strip() and not nested.lstrip().startswith("#"):
+                break
+        return values
+    return None
+
+
+def branch_matches(pattern, branch):
+    """Whether a workflow branch filter pattern matches branch: * stops at /, ** doesn't."""
+    regex = re.escape(pattern).replace(r"\*\*", "\0").replace(r"\*", "[^/]*").replace("\0", ".*")
+    regex = regex.replace(r"\?", ".")
+    return re.fullmatch(regex, branch) is not None
+
+
+def filters_include(trigger, branch):
+    """Whether the trigger's branches / branches-ignore filters let it run for PRs into branch."""
+    if (ignored := trigger_list(trigger, "branches-ignore")) is not None:
+        return not any(branch_matches(pattern, branch) for pattern in ignored)
+    patterns = trigger_list(trigger, "branches")
+    if patterns is None:
+        return True
+    included = False
+    for pattern in patterns:  # Later patterns win, so a !pattern can exclude an earlier match.
+        if pattern.startswith("!"):
+            included = included and not branch_matches(pattern[1:], branch)
+        elif branch_matches(pattern, branch):
+            included = True
+    return included
+
+
+def runs_on_every_pr(text, branch="main"):
+    """Whether the workflow reports on every head of every pull request into branch.
 
     Only such a workflow's checks can be required: a check that a PR's
-    workflows never report (a scheduled workflow's, or one skipped by
-    paths-ignore, like CodeQL's on docs PRs) would hold that PR forever.
-    A branches filter is fine, since main-rules only gates PRs into main.
+    workflows never report would hold that PR forever. So it needs a
+    pull_request trigger whose types (if set) include opened and
+    synchronize, whose branch filters include branch, and with no paths
+    filter. That leaves out a scheduled workflow, a types: [closed] one
+    (release.yml), and one skipped by paths-ignore, like CodeQL's on docs PRs.
     """
     lines = text.splitlines()
     for index, line in enumerate(lines):
@@ -165,7 +215,12 @@ def runs_on_every_pr(text):
                     if nested.strip() and not nested.startswith("    ") and not nested.lstrip().startswith("#"):
                         break
                     trigger.append(nested)
-                return not any(re.match(r"^\s+paths(-ignore)?:", nested) for nested in trigger)
+                if any(re.match(r"^\s+paths(-ignore)?:", nested) for nested in trigger):
+                    return False
+                types = trigger_list(trigger, "types")
+                if types is not None and not PR_HEAD_TYPES <= set(types):
+                    return False
+                return filters_include(trigger, branch)
         return False
     return False
 
@@ -268,8 +323,11 @@ def check_actions(gh, repo, std, workflows):
         unpinned = sorted({ref for text in workflows.values() for ref in workflow_facts(text)[1]})
         if unpinned:
             # Whether or not it's required yet: once it is, GitHub refuses these.
-            state = "required, but GitHub refuses" if permissions.get("sha_pinning_required") else "not required yet;"
-            findings.append(Finding("pinned actions", MANUAL, f"{state} pin these first: " + ", ".join(unpinned)))
+            if permissions.get("sha_pinning_required"):
+                detail = "required, so GitHub refuses to run these until they're pinned to a commit SHA: "
+            else:
+                detail = "not required yet; pin these to a commit SHA first: "
+            findings.append(Finding("pinned actions", MANUAL, detail + ", ".join(unpinned)))
         elif permissions.get("sha_pinning_required"):
             findings.append(Finding("pinned actions", OK, "required"))
         else:
@@ -342,7 +400,7 @@ def check_rulesets(gh, repo, std, workflows, default_branch, remove_legacy):
         if error.status not in (403, 404):
             raise
         return [Finding("ruleset main-rules", UNAVAILABLE, "rulesets need GitHub Pro (or a public repo)")], None
-    available = {name for text in workflows.values() if runs_on_every_pr(text) for name in workflow_facts(text)[0]}
+    available = {name for text in workflows.values() if runs_on_every_pr(text, default_branch) for name in workflow_facts(text)[0]}
     findings, main = [], None
     for summary in summaries:
         if summary["name"] == std["ruleset"]["name"]:

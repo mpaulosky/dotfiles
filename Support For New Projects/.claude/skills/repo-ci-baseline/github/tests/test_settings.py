@@ -395,7 +395,8 @@ def test_unpinned_actions_are_reported_even_once_pinning_is_required():
     finding = next(f for f in gs.check(fake, REPO) if f.area == "pinned actions")
 
     assert finding.status == gs.MANUAL
-    assert "actions/setup-node@v4" in finding.detail
+    assert finding.detail == ("required, so GitHub refuses to run these until they're pinned to a commit SHA: "
+                              "actions/setup-node@v4")
 
 
 def test_only_workflows_that_run_on_every_pr_can_report_a_required_check():
@@ -413,8 +414,17 @@ def test_only_workflows_that_run_on_every_pr_can_report_a_required_check():
 
 
 @pytest.mark.parametrize("text, runs", [
-    ('"on":\n  pull_request:\n    types: [opened]\n  push:\n    branches: [main]\n', True),
+    ('"on":\n  pull_request:\n    types: [opened, synchronize]\n  push:\n    branches: [main]\n', True),
+    ("on:\n  pull_request:\n    types:\n      - opened\n      - edited\n      - synchronize\n", True),
+    ("on:\n  pull_request:\n    types: [opened]\n", False),  # a pushed head gets no check
+    ("on:\n  pull_request:\n    types: [closed]\n", False),  # release.yml
     ("on:\n  pull_request:\n    branches: [main]\n", True),
+    ("on:\n  pull_request:\n    branches:\n      - 'release/**'\n      - main\n", True),
+    ("on:\n  pull_request:\n    branches: ['**']\n", True),
+    ("on:\n  pull_request:\n    branches: [develop]\n", False),
+    ("on:\n  pull_request:\n    branches: ['m*', '!main']\n", False),
+    ("on:\n  pull_request:\n    branches-ignore: [main]\n", False),
+    ("on:\n  pull_request:\n    branches-ignore: ['release/*']\n", True),
     ("on:\n  pull_request:\n  # a comment between triggers\n  push:\n", True),
     ("on: pull_request\n", True),
     ("on: [push, pull_request]\n", True),
@@ -427,6 +437,13 @@ def test_only_workflows_that_run_on_every_pr_can_report_a_required_check():
 ])
 def test_runs_on_every_pr(text, runs):
     assert gs.runs_on_every_pr(text) is runs
+
+
+def test_a_branch_filter_is_read_against_the_default_branch():
+    text = "on:\n  pull_request:\n    branches: [develop]\n"
+
+    assert gs.runs_on_every_pr(text, "develop")
+    assert not gs.runs_on_every_pr(text, "main")
 
 
 def test_codeql_default_setup_is_turned_off_where_the_workflow_runs_codeql():

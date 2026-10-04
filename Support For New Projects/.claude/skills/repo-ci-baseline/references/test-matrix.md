@@ -1,11 +1,15 @@
 # Per-project test matrix
 
-Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jobs), `global.json`, and the Seeds
+Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jobs), `.github/scripts/discover_tests.py`, `global.json`, and the Seeds
 `.github/ci/prepare.sh` and `.github/ci/coverage-threshold`. History: IssueTracker #178.
 
 ## The rule
 
-Each test project runs in its own matrix job and restores and builds its own project. The build job caches no `bin/` or
+Each test project runs in its own matrix job and restores and builds its own project.
+A test project is one whose `IsTestProject` resolves to true, from its `.csproj` or the nearest `Directory.Build.props`
+that sets it (atelier-store and Blazor-Server set it once in `tests/Directory.Build.props`). `discover_tests.py` fails
+the job when `tests/` has projects but none of them is a test project: `Test Suite` passes a skipped matrix, so a
+discovery miss would otherwise pass every PR with no tests run (atelier-store's first Standardize run did). The build job caches no `bin/` or
 `obj/`: nothing restored that cache, so the step only cost time.
 
 Tests run on **Microsoft Testing Platform** (`global.json` → `"test": {"runner": "Microsoft.Testing.Platform"}`), so

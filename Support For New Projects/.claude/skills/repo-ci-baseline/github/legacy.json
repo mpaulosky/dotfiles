@@ -1,0 +1,6 @@
+{
+  "rulesets": [
+    "dev-rules",
+    "protect-preview"
+  ]
+}

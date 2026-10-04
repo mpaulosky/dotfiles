@@ -1,0 +1,10 @@
+# The repos github-settings.sh --all checks, in rollout order. A second word
+# narrows the scope: repo-settings-only manages just the merge settings
+# (dotfiles isn't a Baseline repo, and rulesets need GitHub Pro there).
+mpaulosky/TicketManager
+mpaulosky/IssueTracker
+mpaulosky/atelier-store
+mpaulosky/Blazor-Server
+mpaulosky/IssueManager
+mpaulosky/Articles
+mpaulosky/dotfiles repo-settings-only

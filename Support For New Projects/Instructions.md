@@ -37,9 +37,16 @@ git commit -m "chore: apply repo-ci-baseline Template"
 
 It also runs `git config core.hooksPath .github/hooks`. From here on, `pre-commit` refuses commits in this primary
 checkout: every later change, including filling the placeholders, is made in a worktree under
-`../[ProjectName]-worktrees/` (see the skill's `references/git-hooks.md`). Fill any placeholders the report lists, then work through the
-skill's `references/adapt.md` for the GitHub settings: required checks, the `semver:minor` and `semver:major` labels,
-and the `RELEASE_PR_PAT` secret.
+`../[ProjectName]-worktrees/` (see the skill's `references/git-hooks.md`). Fill any placeholders the report lists.
+
+Push `main`, add the `RELEASE_PR_PAT` secret, then apply the GitHub settings (merge settings, ruleset, required checks,
+labels, Actions and security):
+
+```bash
+"$BASELINE/github-settings.sh" --fix mpaulosky/[ProjectName]
+```
+
+Run it again after the first PR merges: required checks are added only once `main` reports them.
 
 ## Part B: Standardize an Existing Repo
 
@@ -83,11 +90,11 @@ Push once and open the PR **as a draft**, because the repo's old auto-merge work
 its checks pass. While it's a draft:
 
 - run the docs-only probe from `references/docs-only-ci.md`,
-- update the ruleset's required checks and create the `semver:minor` and `semver:major` labels,
-- check the `RELEASE_PR_PAT` secret exists.
+- run `"$BASELINE/github-settings.sh" --fix mpaulosky/[Repo]` (it also checks the `RELEASE_PR_PAT` secret exists).
 
 Then land it by hand as `references/automerge.md` describes, while nothing else is in flight: the merge is the new
-`release.yml`'s first live run. Done when the PR **and** its release-blog PR have merged.
+`release.yml`'s first live run. Run `github-settings.sh --fix` again right after the merge, so the new required checks
+are added. Done when the PR **and** its release-blog PR have merged, and `github-settings.sh` reports the repo clean.
 
 ### B5. Verify and Record
 
@@ -95,7 +102,8 @@ Run each part's live check from its reference; a part counts only once that pass
 matching reference, and any fix to an Owned file into the Template (a dotfiles PR with `test.sh` green), so the next
 Standardize doesn't hit the same surprise.
 
-Order across repos: IssueTracker, atelier-store, Blazor-Server, TicketManager, IssueManager, TinyTicket, Articles.
+Order across repos: TicketManager first, then IssueTracker, atelier-store, Blazor-Server, IssueManager and Articles.
+TinyTicket is retired and not Standardized.
 
 ## Part C: Optional App-Stack Starting Points
 

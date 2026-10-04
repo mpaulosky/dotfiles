@@ -26,6 +26,7 @@ for tool in dotnet npx markdownlint-cli2 yamllint actionlint zizmor shellcheck; 
 #!/usr/bin/env bash
 call="$tool \$*"
 echo "\$call" >> "$LOG"
+[[ -z "\${GIT_DIR:-}" ]] || echo "GIT_DIR=\$GIT_DIR" >> "$LOG"
 [[ -z "\${FAIL:-}" || "\$call" != \$FAIL ]]
 EOF
   chmod +x "$STUBS/$tool"
@@ -208,6 +209,18 @@ expect "without stdin, a main checkout is refused" refused tests-skipped "Direct
 
 run_hook_without_stdin feature/1-x
 expect "without stdin, a feature checkout runs the gates" allowed tests-ran
+
+# git runs hooks with GIT_DIR set (and GIT_INDEX_FILE in a linked worktree).
+# The build and tests must not inherit it, or a test that runs git in a temp
+# folder reads this repo instead.
+switch_to feature/1-x
+: > "$LOG"
+stdin="$(push_stdin feature/1-x)"
+stdin="${stdin//@HEAD@/$(git -C "$REPO" rev-parse HEAD)}"
+OUTPUT="$(cd "$REPO" && GIT_DIR="$REPO/.git" PATH="$STUBS:$PATH" bash "$HOOK" <<< "$stdin" 2>&1)"
+STATUS=$?
+expect "with the hook's GIT_DIR set, a feature push runs the gates" allowed tests-ran
+expect_log "the build and tests don't inherit the hook's GIT_DIR" not-ran 'GIT_DIR=*'
 
 git -C "$REPO" switch -q -c feature/2-two-commits origin/main
 echo '# First' > "$REPO/first.md"

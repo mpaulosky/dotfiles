@@ -401,9 +401,10 @@ build-output.txt
 build-log.txt
 test-output.txt
 
-# Local Claude Code settings and worktrees, and Python test caches
+# Local Claude Code settings, worktrees and session lock, and Python test caches
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 .pytest_cache/
 .directory
 

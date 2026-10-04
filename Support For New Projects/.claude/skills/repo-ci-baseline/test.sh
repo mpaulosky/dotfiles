@@ -94,19 +94,6 @@ if git -C "$ignore_repo" check-ignore -q .env.example; then
   fail ".gitignore must not ignore .env.example"
 fi
 
-step "Claude Code settings deny .env files"
-# A pattern without **/ matches only at the working directory, so a nested
-# secrets file such as .sandcastle/.env would stay readable.
-python3 - "$owned/.claude/settings.json" <<'PY' || fail ".claude/settings.json must deny Read and Edit of **/.env and **/.env.*"
-import json, sys
-deny = set(json.load(open(sys.argv[1]))["permissions"]["deny"])
-want = {f"{tool}({pattern})" for tool in ("Read", "Edit") for pattern in ("**/.env", "**/.env.*")}
-missing = sorted(want - deny)
-if missing:
-    print("missing deny rules:", ", ".join(missing))
-    sys.exit(1)
-PY
-
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
 

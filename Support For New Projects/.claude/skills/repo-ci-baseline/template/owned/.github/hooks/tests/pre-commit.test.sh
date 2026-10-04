@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for .github/hooks/pre-commit.
-# Each case stages Markdown in a throwaway repo and runs the hook. A stub
+# Each lint case stages Markdown in a linked worktree of a throwaway repo and
+# runs the hook; the worktree cases also run it in the primary checkout. A stub
 # `markdownlint-cli2` logs the files it is given and applies two rules from the
 # .markdownlint-cli2.jsonc it finds in its working directory: "forbid" names a
 # word that fails a file, and "ignores" lists "prefix/**" paths it skips. A
@@ -15,7 +16,9 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pre-commit"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-REPO="$WORK/repo"
+PRIMARY="$WORK/repo"
+# The lint cases run in a linked worktree, where commits are allowed.
+REPO="$WORK/repo-worktrees/fix-1-lint"
 STUBS="$WORK/bin"
 LOG="$WORK/lint.log"
 
@@ -53,21 +56,23 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
-git init -q -b main "$REPO"
-echo '{ "forbid": "BAD", "ignores": ["docs/blogs/**"] }' > "$REPO/.markdownlint-cli2.jsonc"
-echo '# Readme' > "$REPO/README.md"
-git -C "$REPO" add .
+git init -q -b main "$PRIMARY"
+echo '{ "forbid": "BAD", "ignores": ["docs/blogs/**"] }' > "$PRIMARY/.markdownlint-cli2.jsonc"
+echo '# Readme' > "$PRIMARY/README.md"
+git -C "$PRIMARY" add .
 # No hooks here: this is setup, and a global hooksPath would otherwise run.
-git -C "$REPO" -c core.hooksPath=/dev/null commit -q -m init
+git -C "$PRIMARY" -c core.hooksPath=/dev/null commit -q -m init
+git -C "$PRIMARY" worktree add -q -b fix/1-lint "$REPO"
 
 PASSED=0
 FAILED=0
 OUTPUT=""
 STATUS=0
 
+# run_hook [dir]: run the hook in dir, the lint worktree by default.
 run_hook() {
   : > "$LOG"
-  OUTPUT="$(cd "$REPO" && PATH="$STUBS:$PATH" bash "$HOOK" 2>&1)"
+  OUTPUT="$(cd "${1:-$REPO}" && PATH="$STUBS:$PATH" bash "$HOOK" 2>&1)"
   STATUS=$?
 }
 
@@ -214,6 +219,61 @@ git -C "$REPO" add vendor/notes.md
 run_hook
 expect "a nested config that isn't staged isn't used" refused linted
 reset_repo
+
+# ── Commits only in a linked worktree ──
+
+echo 'Some text.' >> "$PRIMARY/README.md"
+git -C "$PRIMARY" add README.md
+run_hook "$PRIMARY"
+expect "a commit in the primary checkout is refused before the lint" refused not-linted
+if [[ $STATUS -ne 0 && "$OUTPUT" != *"../repo-worktrees/"* ]]; then
+  fail "the refusal names the worktree folder" "expected ../repo-worktrees/ in the message"
+else
+  pass "the refusal names the worktree folder"
+fi
+
+# A subfolder of the primary checkout is still the primary checkout.
+mkdir -p "$PRIMARY/docs"
+run_hook "$PRIMARY/docs"
+expect "a commit from a subfolder of the primary checkout is refused" refused not-linted
+
+git -C "$PRIMARY" config baseline.allowPrimaryCommits true
+run_hook "$PRIMARY"
+expect "baseline.allowPrimaryCommits allows a commit in the primary checkout" allowed linted
+git -C "$PRIMARY" config --unset baseline.allowPrimaryCommits
+git -C "$PRIMARY" reset -q --hard
+
+echo 'Some text.' >> "$REPO/README.md"
+git -C "$REPO" add README.md
+run_hook
+expect "a commit in a linked worktree is allowed" allowed linted
+reset_repo
+
+FRESH="$WORK/fresh"
+git init -q -b main "$FRESH"
+echo '{ "forbid": "BAD" }' > "$FRESH/.markdownlint-cli2.jsonc"
+echo '# Readme' > "$FRESH/README.md"
+git -C "$FRESH" add .
+run_hook "$FRESH"
+expect "a repo's first commit is allowed in the primary checkout" allowed linted
+
+# End to end through git commit, which runs the hook with GIT_DIR and
+# GIT_INDEX_FILE set, and in a worktree points GIT_DIR at .git/worktrees/<name>.
+HOOKS_DIR="$(dirname "$HOOK")"
+echo 'Some text.' >> "$PRIMARY/README.md"
+if PATH="$STUBS:$PATH" git -C "$PRIMARY" -c core.hooksPath="$HOOKS_DIR" commit -q -am primary &>/dev/null; then
+  fail "git commit in the primary checkout is refused" "the commit was made"
+  git -C "$PRIMARY" reset -q --hard HEAD~1
+else
+  pass "git commit in the primary checkout is refused"
+fi
+git -C "$PRIMARY" reset -q --hard
+echo 'Some text.' >> "$REPO/README.md"
+if OUTPUT="$(PATH="$STUBS:$PATH" git -C "$REPO" -c core.hooksPath="$HOOKS_DIR" commit -q -am worktree 2>&1)"; then
+  pass "git commit in a linked worktree is allowed"
+else
+  fail "git commit in a linked worktree is allowed" "the commit was refused"
+fi
 
 echo
 echo "$PASSED passed, $FAILED failed"

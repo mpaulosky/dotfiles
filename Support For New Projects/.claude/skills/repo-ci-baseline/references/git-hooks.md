@@ -24,6 +24,21 @@ starts with a letter, so it can't pass for an issue-linked name (`chore/7-cleanu
 `squad/` and `sprint/` are retired. Branches the release workflow pushes (`docs/release-notes`) come from Actions, not a
 local push, so the hook never sees them.
 
+## Worktree standard
+
+Every change is made in its own linked worktree, never in the primary checkout. The primary checkout stays on `main`
+for pulls and dry-run surveys. A branch's worktree lives beside the repo, in `../<Repo>-worktrees/`, named after the
+branch with `/` turned into `-`:
+
+```bash
+git fetch origin
+git worktree add -b fix/42-null-children ../<Repo>-worktrees/fix-42-null-children origin/main
+```
+
+Remove it once the PR merges: `git worktree remove ../<Repo>-worktrees/fix-42-null-children`. `pre-commit` enforces
+the rule. Claude Code's own `.claude/worktrees/` (ignored by the Template's `.gitignore`) also passes the check, since
+any linked worktree does, but people use `../<Repo>-worktrees/`.
+
 ## The hooks
 
 Hooks live in `.github/hooks/` and are switched on once per clone with `git config core.hooksPath .github/hooks`.
@@ -32,7 +47,11 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
 - **`post-checkout`** repairs `core.hooksPath` and the hooks' execute bits after checkouts. Git only runs it once
   `core.hooksPath` already points at `.github/hooks`, so it can't bootstrap a fresh clone: its header comment says this,
   and names the one-time command.
-- **`pre-commit`** lints the staged content of Markdown files; see [pre-commit.md](pre-commit.md).
+- **`pre-commit`** first refuses a commit made in the primary checkout (its git dir is the common one), naming the
+  `git worktree add` command to use instead. Two cases are exempt: a repo with no commits, so a new repo's Apply can be
+  its first commit on `main`, and a clone with `git config baseline.allowPrimaryCommits true`, for a clone that can't
+  use worktrees (a sandbox or a one-off). Hooks don't run in Actions, so the release workflow's commits are unaffected.
+  Then it lints the staged content of Markdown files; see [pre-commit.md](pre-commit.md).
 - **`pre-push`**, in order:
   1. Read the refs from stdin, and gate the refs being pushed, not the checked-out branch. Classify by the *remote* ref,
      so a tag pushed onto a branch still counts as a branch push.
@@ -70,6 +89,10 @@ build runs. It needs cases for:
   otherwise valid name such as `chore/tidy-Up`). Each bad name must break exactly one rule, or it can't catch a
   regression in that rule.
 
+`pre-commit.test.sh` runs its lint cases in a linked worktree. Its worktree cases cover a commit in the primary
+checkout and from a subfolder of it (refused, before the lint), the opt-out, a linked worktree, a repo's first commit,
+and `git commit` end to end, which runs the hook with `GIT_DIR` set.
+
 CI's hook-tests job runs this suite and `pre-commit.test.sh`.
 
 ## Adapting
@@ -79,10 +102,14 @@ CI's hook-tests job runs this suite and `pre-commit.test.sh`.
 - Update every doc that lists branch names (`CLAUDE.md`, `CONTRIBUTING.md`, the README).
 - The Standardize branch is pushed through the *new* hook, because `core.hooksPath` is relative to the worktree. Its
   name, `chore/standardize-baseline`, passes both the old rules and the new one.
+- **Move existing worktrees** into `../<Repo>-worktrees/` with `git worktree move`, and update any doc that names
+  another folder (IssueManager used `../IssueManager.worktrees/`). Once the Apply is merged, anything still
+  uncommitted in the primary checkout moves to a worktree through a stash, as the hook's message shows.
 - **Run one pre-push gate at a time.** A gate that runs Aspire or Testcontainers tests starts fixed-name containers, so
   two pushes gated in parallel (one per worktree) collide and fail each other.
 
 ## Verify live
 
 Push a branch named under a retired prefix (`git push --dry-run` still runs the hook): it's refused with the standard's
-message. Push a `fix/{issue}-{slug}` branch: the gate runs.
+message. Push a `fix/{issue}-{slug}` branch: the gate runs. Stage a change in the primary checkout and commit: it's
+refused with the `git worktree add` command.

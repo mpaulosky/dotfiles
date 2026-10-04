@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Pre-commit gate: runs markdownlint-cli2 on staged .md files, with the same
+# Pre-commit gate. First it refuses a commit made in the primary checkout:
+# every change is made in a linked worktree under ../<Repo>-worktrees/.
+# Then it runs markdownlint-cli2 on staged .md files, with the same
 # .markdownlint-cli2.jsonc config as CI. It lints the staged content, not the
 # working copy, so a partly staged file is checked as it will be committed.
 # Blocks the commit if any markdownlint violations are found.
@@ -10,6 +12,27 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT" || exit 1
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
+
+# ── Commit only in a linked worktree ───────────────────────────────────────
+# In the primary checkout the git dir is the common one. A repo with no
+# commits yet is exempt, so a new repo's first commit (the Apply) goes on
+# main. A clone that can't use worktrees opts out with
+# baseline.allowPrimaryCommits.
+GIT_DIR_ABS="$(git rev-parse --absolute-git-dir)"
+COMMON_DIR_ABS="$(git rev-parse --path-format=absolute --git-common-dir)"
+if [[ "$GIT_DIR_ABS" == "$COMMON_DIR_ABS" ]] \
+  && git rev-parse -q --verify HEAD >/dev/null \
+  && [[ "$(git config --bool baseline.allowPrimaryCommits)" != true ]]; then
+  REPO_NAME="$(basename "$ROOT")"
+  echo -e "${RED}❌  Commit in a worktree, not in the primary checkout ($ROOT).${RESET}"
+  echo -e "    Start the branch in its own worktree, and carry your changes over with a stash:"
+  echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
+  echo -e "      ${CYAN}git fetch origin${RESET}"
+  echo -e "      ${CYAN}git worktree add -b <type>/<issue>-<slug> ../$REPO_NAME-worktrees/<type>-<issue>-<slug> origin/main${RESET}"
+  echo -e "      ${CYAN}cd ../$REPO_NAME-worktrees/<type>-<issue>-<slug> && git stash pop${RESET}"
+  echo -e "    For a clone that can't use worktrees: ${YELLOW}git config baseline.allowPrimaryCommits true${RESET}"
+  exit 1
+fi
 
 # ── Collect staged .md files ───────────────────────────────────────────────
 # NUL-separated, so paths with spaces or other odd characters survive.

@@ -35,7 +35,9 @@ git add -A
 git commit -m "chore: apply repo-ci-baseline Template"
 ```
 
-It also runs `git config core.hooksPath .github/hooks`. Fill any placeholders the report lists, then work through the
+It also runs `git config core.hooksPath .github/hooks`. From here on, `pre-commit` refuses commits in this primary
+checkout: every later change, including filling the placeholders, is made in a worktree under
+`../[ProjectName]-worktrees/` (see the skill's `references/git-hooks.md`). Fill any placeholders the report lists, then work through the
 skill's `references/adapt.md` for the GitHub settings: required checks, the `semver:minor` and `semver:major` labels,
 and the `RELEASE_PR_PAT` secret.
 

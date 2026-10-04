@@ -277,22 +277,23 @@ jobs:
             fi
             git tag -d "$CANDIDATE"
 
-            # Retry only when another release took the tag first. Any other
-            # rejection (a token without the workflow permission, a ruleset)
-            # fails the same way every time, so stop with GitHub's message.
-            # ls-remote --exit-code returns 2 when the tag doesn't exist.
+            # Stop only when GitHub refused the push itself ("[remote
+            # rejected]": a token without the workflow permission, a ruleset)
+            # and no other release has the tag: that fails the same way every
+            # time. A taken tag, or a transport failure that leaves it absent,
+            # retries. ls-remote --exit-code returns 2 when the tag is absent.
             TAKEN=0
             git ls-remote --exit-code --tags origin "refs/tags/${CANDIDATE}" > /dev/null || TAKEN=$?
-            if [ "$TAKEN" -eq 2 ]; then
+            if [ "$TAKEN" -eq 2 ] && grep -qF '[remote rejected]' <<< "$PUSH_OUTPUT"; then
               echo "$PUSH_OUTPUT"
-              echo "::error::Pushing ${CANDIDATE} was rejected, and no other release has it, so retrying can't help. If the message says the token lacks the workflow scope, give RELEASE_PR_PAT Workflows: Read and write (fine-grained) or the workflow scope (classic)."
+              echo "::error::GitHub rejected the push of ${CANDIDATE}, and no other release has it, so retrying can't help. If the message says the token lacks the workflow scope, give RELEASE_PR_PAT Workflows: Read and write (fine-grained) or the workflow scope (classic)."
               exit 1
             fi
             if [ "$TAKEN" -eq 0 ]; then
               echo "::notice::${CANDIDATE} was taken by a concurrent release; retrying (attempt ${attempt})."
             else
               echo "$PUSH_OUTPUT"
-              echo "::notice::Pushing ${CANDIDATE} failed and the tag couldn't be checked; retrying (attempt ${attempt})."
+              echo "::notice::Pushing ${CANDIDATE} failed; retrying (attempt ${attempt})."
             fi
             sleep $((attempt * 3))
           done

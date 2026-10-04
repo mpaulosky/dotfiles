@@ -8,7 +8,6 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
 - **Drift.** For each overwritten Owned file, read what the Apply commit removed (`git show HEAD -- <file>`).
   Drift goes.
   A real local fix stops the Standardize: move it into the Template first (a dotfiles PR, `test.sh` green), then re-Apply.
-  Known in advance: TicketManager's and IssueManager's `pr-automerge.yml` call a tested `automerge-decision.mjs` the Template lacks; move that into the Template before TicketManager's turn.
 - **Seed files skipped.** Diff each against `template/seed/` and bring over what the repo lacks.
   The repo's version wins on content.
 - **Seed files written.** Check each against what the repo had before: `.github/ci/coverage-threshold` defaults to 80, so set it to the gate the old `ci.yml` enforced (IssueTracker's was 60).
@@ -16,6 +15,7 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
   The root `.gitignore` is Owned, so a line added there is reverted by the next Apply.
 - **Unfilled placeholders.** Fill each `{{...}}` by hand.
 - **Leftovers.** Delete `sync-readme.yml` (`release_post.py` already maintains `docs/README.md`) and `label-enforce.yml` (squad's triage labels).
+  Delete `automerge-decision.mjs`, its test and `automerge-tests.yml` (TicketManager, IssueManager): the Template's `pr-automerge.yml` keeps its decision inline, see [automerge.md](automerge.md).
   Keep repo features such as `generate-blog-posts-json.yml`, and check each kept workflow still passes actionlint and zizmor.
 - **Conflicts.** Delete any `.markdownlint.json`; its `{"default": false}` turned Markdown lint off.
   Run `markdownlint-cli2 --fix '**/*.md'`, then fix the rest by hand.

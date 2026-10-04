@@ -12,14 +12,9 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   first with its own `.github/scripts/docs_readme.py`, a Leftover after Apply: delete it, its test and
   `docs-readme-tests.yml`.
 - **Labels.** `release.yml` reads `semver:minor` and `semver:major` (and `release:*`). A repo without them silently
-  releases every PR as a patch. Create them; `docs-only` takes `--force`, because CI may already have created it with
-  the default color and no description:
-
-  ```bash
-  gh label create "semver:minor" -R <repo> --color 1D76DB --description "Release a minor version when this PR merges"
-  gh label create "semver:major" -R <repo> --color B60205 --description "Release a major version when this PR merges"
-  gh label create "docs-only" -R <repo> --force --color 0075CA --description "Changes only docs; CI skips the build and tests"
-  ```
+  releases every PR as a patch, and Dependabot silently drops a label that doesn't exist. `github-settings.sh --fix`
+  creates or corrects all the standard labels ([github-settings.md](github-settings.md)); `docs-only` may already exist with
+  the default color, since CI creates it on first use.
 
 ## Reviews and descriptions
 

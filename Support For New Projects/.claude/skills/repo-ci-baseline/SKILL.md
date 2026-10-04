@@ -30,6 +30,7 @@ A fix made only in a repo is reverted by its next Apply.
 | Docs-only CI skip | Docs PRs skip the build and tests while required checks still pass | [docs-only-ci.md](references/docs-only-ci.md) |
 | Per-project test matrix | Each test project runs in its own job on Microsoft Testing Platform | [test-matrix.md](references/test-matrix.md) |
 | Release labels | `semver:minor` and `semver:major` exist, because `release.yml` reads them | [release-pipeline.md](references/release-pipeline.md) |
+| GitHub settings | One standard for merge settings, the `main-rules` ruleset and required checks, labels, Actions and security, checked and applied by `github-settings.sh` | [github-settings.md](references/github-settings.md) |
 
 Read a part's reference before changing it: each holds the design, the review findings behind it, and its live check.
 Lessons that cut across parts are in [gotchas.md](references/gotchas.md).
@@ -49,24 +50,28 @@ With squad still installed (`.squad/` or `squad-*` workflows), run the `remove-s
    Done when every item there is resolved and the repo's local gate (`scripts/gate.sh`) passes.
 4. **Land.** Push once and open the PR **as a draft**: the repo's old auto-merge workflow would otherwise merge it the moment its checks pass.
    While it's a draft, run the docs-only probe from [docs-only-ci.md](references/docs-only-ci.md#verify-live), then land it by hand as [automerge.md](references/automerge.md#adapting) describes.
-   Update the ruleset and labels in the same sitting, and merge while nothing else is in flight: the merge is the new `release.yml`'s first live run.
+   Run `github-settings.sh --fix` on the repo while it's a draft and again right after the merge ([github-settings.md](references/github-settings.md#when-to-run-it)),
+   and merge while nothing else is in flight: the merge is the new `release.yml`'s first live run.
    Done when the PR *and* its release-blog PR have merged.
 5. **Verify live**, each part as its reference describes.
    A part counts only once its live check passes on the repo.
 6. **Record.** A lesson goes into the matching reference; a fix to an Owned file goes into `template/` (Template first).
    Done when the next Standardize wouldn't hit the same surprise.
 
-Order across repos: IssueTracker, atelier-store, Blazor-Server, TicketManager, IssueManager, TinyTicket, Articles.
+Order across repos (`github/repos.txt`): TicketManager first, as the live check of each Template change, then IssueTracker, atelier-store, Blazor-Server,
+IssueManager and Articles. TinyTicket is retired and not Standardized.
 
 ## Change the Baseline
 
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
-2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests,
+2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the GitHub settings script's tests,
    actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned check and the `apply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.
+   A change to `github/` (a new required check or label) is applied with `github-settings.sh --fix` once the repo reports the check.
 
 ## Start a new repo
 
-Follow `Support For New Projects/Instructions.md`: `git init`, then `apply.sh` on the empty repo, whose output is the first commit on `main`.
+Follow `Support For New Projects/Instructions.md`: `git init`, then `apply.sh` on the empty repo, whose output is the first commit on `main`,
+then `github-settings.sh --fix` once it's pushed.

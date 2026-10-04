@@ -42,10 +42,12 @@ Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.
 
 ## GitHub settings
 
-- **Required checks.** The ruleset must require checks that exist: `Build Solution`, `Test Suite` and `Branch name` (atelier-store's was `Test Report Summary`).
-  Read them with `gh api repos/<r>/rulesets`, and update them in the same sitting as the merge, or the PR can't merge (old name missing) or merges unchecked (new name not required).
-- **Labels.** `semver:minor` and `semver:major`, and `docs-only` for its color and description; see [gotchas.md](gotchas.md#repo-drift).
-- **Secrets.** `RELEASE_PR_PAT` (releases, blog PRs and auto-merge start workflows only with it), and any test secret.
+- **`github-settings.sh --fix mpaulosky/<repo>`, twice**: while the PR is a draft, and right after it merges ([github-settings.md](github-settings.md)).
+  It sets the merge settings, security features, Actions permissions, the `main-rules` ruleset and its required checks, and the labels.
+  The first run can't require the checks `main` doesn't report yet (`Branch name`, `PR title`, and `Test Suite` where it's new), and keeps the repo's
+  old test gate required meanwhile; the second requires them and drops the old one. Done when `github-settings.sh mpaulosky/<repo>` reports no DRIFT, MANUAL or LEGACY.
+  It deletes `squad*` labels itself; add `--remove-legacy` once its LEGACY list (squad-era rulesets, classic protection) is understood.
+- **Secrets.** The script checks `RELEASE_PR_PAT` exists (releases, blog PRs and auto-merge start workflows only with it); add it, and any test secret, by hand.
   The PAT needs **Workflows: Read and write** (fine-grained) or the `workflow` scope (classic), as well as contents and
   pull requests: the Standardize itself changes the workflows, so the next release that tags an older commit (a missed
   release the queue retries, such as a Dependabot PR merged just before) is refused without it. Blazor-Server's first

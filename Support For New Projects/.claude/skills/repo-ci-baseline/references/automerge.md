@@ -75,6 +75,7 @@ Once the last thread is resolved, the next sweep merges it; that can take an hou
 Copilot's review did start **PR Review Submitted**, but GitHub held that run at `action_required`, waiting for someone to approve it,
 so it never completed and PR Auto-Merge wasn't re-checked. A review the owner submitted (a reply to Copilot's thread) ran at once.
 So the trigger helps only with reviews people submit; a PR whose last blocker is Copilot's review still waits for the sweep.
-Whether a Copilot review's own workflow ("Copilot", `dynamic/agents/copilot-pull-request-reviewer`) can trigger PR Auto-Merge through
-`workflow_run` instead is being probed on dotfiles (#38's `copilot-review-probe.yml`).
+Copilot's review workflow itself ("Copilot", `dynamic/agents/copilot-pull-request-reviewer`) can't take its place: a probe on dotfiles (#38)
+showed its completion does fire `workflow_run`, but GitHub holds that run at `action_required` too, because Copilot is the actor.
+Any workflow a Copilot review starts waits for approval, so the scheduled sweep stays the way Copilot's review gets a PR merged.
 After a third reviewed non-merge commit, the log reads `Copilot review cap (3) reached on PR #n: merging ...` if the cap is what let it through.

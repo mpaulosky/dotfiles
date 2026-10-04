@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import discover_tests as dt
 
 
@@ -116,28 +118,24 @@ def test_a_conditional_is_test_project_applies_only_where_the_condition_holds(tm
     assert names(tmp_path) == ["Domain.Tests.Unit"]
 
 
-def test_ends_with_starts_with_and_equality_conditions_are_evaluated(tmp_path):
-    props_file(
-        tmp_path / "tests",
-        "",
-        when("$(MSBuildProjectName.EndsWith('.Unit'))", "<IsTestProject>true</IsTestProject>")
-        + when("$(MSBuildProjectName.StartsWith('Arch'))", "<IsTestProject>true</IsTestProject>")
-        + when("'$(MSBuildProjectName)' == 'web.e2e'", "<IsTestProject>true</IsTestProject>")
-        + when("'$(MSBuildProjectName)' != 'Web.Unit'", "<IsTestProject>false</IsTestProject>"),
-    )
-    for folder in ["Web.Unit", "Architecture", "Web.E2E", "Helpers"]:
-        project(tmp_path, folder)
-
-    # MSBuild compares with == case-insensitively; != turns every project but Web.Unit back off.
-    assert names(tmp_path) == ["Web.Unit"]
-
-
-def test_a_negated_condition_is_evaluated(tmp_path):
-    props_file(tmp_path, "", when("!$(MSBuildProjectName.Contains('Support'))", "<IsTestProject>true</IsTestProject>"))
-    project(tmp_path, "App.Tests")
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("$(MSBuildProjectName.Contains('.Tests'))", ["Web.Tests.Unit"]),
+        ("$(MSBuildProjectName.StartsWith('Web.'))", ["Web.Tests.Unit"]),
+        ("$(MSBuildProjectName.EndsWith('.Unit'))", ["Web.Tests.Unit"]),
+        # MSBuild compares with == and != case-insensitively.
+        ("'$(MSBuildProjectName)' == 'web.tests.unit'", ["Web.Tests.Unit"]),
+        ("'$(MSBuildProjectName)' != 'TestingSupport.Library'", ["Web.Tests.Unit"]),
+        ("!$(MSBuildProjectName.Contains('Support'))", ["Web.Tests.Unit"]),
+    ],
+)
+def test_each_condition_shape_is_evaluated(tmp_path, condition, expected):
+    props_file(tmp_path / "tests", "", when(condition, "<IsTestProject>true</IsTestProject>"))
+    project(tmp_path, "Web.Tests.Unit")
     project(tmp_path, "TestingSupport.Library")
 
-    assert names(tmp_path) == ["App.Tests"]
+    assert names(tmp_path) == expected
 
 
 def test_a_condition_on_the_property_itself_is_evaluated(tmp_path):
@@ -180,6 +178,12 @@ def test_a_project_with_the_msbuild_namespace_is_read(tmp_path):
         "<PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>\n",
         encoding="utf-8",
     )
+
+    assert names(tmp_path) == ["App.Tests"]
+
+
+def test_property_names_ignore_case(tmp_path):
+    project(tmp_path, "App.Tests", "<isTestProject>true</isTestProject>")
 
     assert names(tmp_path) == ["App.Tests"]
 

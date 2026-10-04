@@ -61,7 +61,8 @@ def condition_holds(condition, name):
 
 
 def local_name(element):
-    return element.tag.rpartition("}")[2]
+    """The element's tag without its namespace, lowercased: MSBuild property names ignore case."""
+    return element.tag.rpartition("}")[2].lower()
 
 
 def applies(element, name, path):
@@ -81,11 +82,11 @@ def declared_is_test_project(path, name):
     project = ET.fromstring(path.read_text(encoding="utf-8-sig", errors="replace"))
     value = None
     for group in project:
-        if local_name(group) != "PropertyGroup":
+        if local_name(group) != "propertygroup":
             continue
         for element in group:
             text = (element.text or "").strip().lower()
-            if local_name(element) != "IsTestProject" or text not in ("true", "false"):
+            if local_name(element) != "istestproject" or text not in ("true", "false"):
                 continue
             if all(applies(owner, name, path) for owner in (group, element)):
                 value = text == "true"

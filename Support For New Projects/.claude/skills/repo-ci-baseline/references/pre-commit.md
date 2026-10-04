@@ -5,6 +5,9 @@ Template files (Owned): `.github/hooks/pre-commit`, `.github/hooks/tests/pre-com
 
 ## Design
 
+Before the lint, the hook refuses a commit made in the primary checkout; that rule is in
+[git-hooks.md](git-hooks.md#worktree-standard). Everything below is the lint.
+
 The hook lints what the commit will contain. It writes each staged Markdown file's **index** content, plus every
 **staged** `.markdownlint-cli2.jsonc` (the root one and any nested one), into a temporary tree with the same layout (`git checkout-index
 --prefix=<tmp>/`), then runs `markdownlint-cli2` from inside that tree. The config's `ignores` still apply there because

@@ -56,3 +56,6 @@ Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.
 
 Point `README.md` or `CONTRIBUTING.md` at the one-time `git config core.hooksPath .github/hooks`,
 and list the branch standard from [git-hooks.md](git-hooks.md) wherever the repo lists branch names (`CLAUDE.md`, `CONTRIBUTING.md`).
+State the [worktree standard](git-hooks.md#worktree-standard) there too, with its `../<Repo>-worktrees/` folder,
+replacing any other worktree convention the repo documents, and move existing worktrees as
+[git-hooks.md](git-hooks.md#adapting) says.

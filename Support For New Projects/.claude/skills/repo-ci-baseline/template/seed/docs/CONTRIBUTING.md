@@ -32,7 +32,9 @@ We have adopted a code of conduct from the Contributor Covenant. Contributors to
 
 1. Fork the repository and clone your fork.
 2. Switch on the repository's git hooks, once per clone: `git config core.hooksPath .github/hooks`.
-3. Create a branch from `main`, named to the branch-name standard below (e.g. `feature/123-add-search`).
+3. Create each branch in its own worktree beside the clone, named to the branch-name standard below. The pre-commit
+   hook refuses commits in the main checkout:
+   `git worktree add -b feature/123-add-search ../{{REPO}}-worktrees/feature-123-add-search origin/main`.
 4. Make your changes, following the code style and guidelines below.
 5. Add or update tests as needed.
 6. Commit with clear messages (see below).

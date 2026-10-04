@@ -32,10 +32,15 @@ def test_parse_rejects_a_line_that_isnt_name_value(line):
         lte.parse(f"OK=1\n{line}\n")
 
 
-@pytest.mark.parametrize("name", ["GITHUB_TOKEN", "RUNNER_TEMP", "github_token", "Runner_Temp"])
+@pytest.mark.parametrize("name", ["GITHUB_TOKEN", "RUNNER_TEMP"])
 def test_parse_rejects_reserved_names(name):
     with pytest.raises(ValueError, match="reserved"):
         lte.parse(f"{name}=x")
+
+
+def test_parse_accepts_lowercase_names_that_only_look_reserved():
+    # Linux names are distinct by case, and the runner blocks no prefix.
+    assert lte.parse("github_client_id=x\nrunner_name=y") == [("github_client_id", "x"), ("runner_name", "y")]
 
 
 @pytest.mark.parametrize("name", ["NODE_OPTIONS", "node_options"])

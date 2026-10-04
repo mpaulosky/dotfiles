@@ -166,7 +166,7 @@ test("skips a PR with more labels than one page", async () => {
 });
 
 test("merges once the owner removes sandcastle:needs-human", async () => {
-  const events = [unlabeledEvent(NEEDS_HUMAN, OWNER), labeledEvent(NEEDS_HUMAN, OWNER)];
+  const events = [labeledEvent(NEEDS_HUMAN, OWNER), unlabeledEvent(NEEDS_HUMAN, OWNER)];
   const { merges, eventRequests } = await evaluate(readyPr(), events);
 
   assert.equal(merges.length, 1);
@@ -177,7 +177,7 @@ test("merges once the owner removes sandcastle:needs-human", async () => {
 });
 
 test("skips a PR whose sandcastle:needs-human someone else removed and says who", async () => {
-  const events = [unlabeledEvent(NEEDS_HUMAN, "triager"), labeledEvent(NEEDS_HUMAN, OWNER)];
+  const events = [labeledEvent(NEEDS_HUMAN, OWNER), unlabeledEvent(NEEDS_HUMAN, "triager")];
   const { merges, logs } = await evaluate(readyPr(), events);
 
   assert.deepEqual(merges, []);
@@ -188,17 +188,18 @@ test("skips a PR whose sandcastle:needs-human someone else removed and says who"
 });
 
 test("judges only the most recent sandcastle:needs-human removal", async () => {
+  // Oldest first, as the issue events API returns them.
   const ownerLast = [
-    unlabeledEvent(NEEDS_HUMAN, OWNER),
     labeledEvent(NEEDS_HUMAN, OWNER),
     unlabeledEvent(NEEDS_HUMAN, "triager"),
-    labeledEvent(NEEDS_HUMAN, OWNER)
+    labeledEvent(NEEDS_HUMAN, OWNER),
+    unlabeledEvent(NEEDS_HUMAN, OWNER)
   ];
   const triagerLast = [
-    unlabeledEvent(NEEDS_HUMAN, "triager"),
     labeledEvent(NEEDS_HUMAN, OWNER),
     unlabeledEvent(NEEDS_HUMAN, OWNER),
-    labeledEvent(NEEDS_HUMAN, OWNER)
+    labeledEvent(NEEDS_HUMAN, OWNER),
+    unlabeledEvent(NEEDS_HUMAN, "triager")
   ];
 
   assert.equal((await evaluate(readyPr(), ownerLast)).merges.length, 1);
@@ -207,14 +208,22 @@ test("judges only the most recent sandcastle:needs-human removal", async () => {
 
 test("ignores other labels' removals", async () => {
   const events = [
-    unlabeledEvent("enhancement", "triager"),
-    labeledEvent("enhancement", "triager"),
+    labeledEvent(NEEDS_HUMAN, OWNER),
     unlabeledEvent(NEEDS_HUMAN, OWNER),
-    labeledEvent(NEEDS_HUMAN, OWNER)
+    labeledEvent("enhancement", "triager"),
+    unlabeledEvent("enhancement", "triager")
   ];
   const { merges } = await evaluate(readyPr(), events);
 
   assert.equal(merges.length, 1);
+});
+
+test("skips a PR whose latest sandcastle:needs-human change added it, even if the snapshot predates it", async () => {
+  const events = [labeledEvent(NEEDS_HUMAN, OWNER), unlabeledEvent(NEEDS_HUMAN, OWNER), labeledEvent(NEEDS_HUMAN, "sandcastle")];
+  const { merges, logs } = await evaluate(readyPr(), events);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("PR #7") && line.includes("was just added")), logs.join("\n"));
 });
 
 test("re-checks sandcastle:needs-human immediately before merging", async () => {

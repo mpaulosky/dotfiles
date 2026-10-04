@@ -162,20 +162,25 @@ jobs:
 
               // Someone with only triage access can remove the label too, and
               // would get a merge in before Sandcastle puts it back. Trust a
-              // removal only from the repository owner. Events come newest
-              // first, and every page is read so that other label changes
-              // can't hide the latest removal.
+              // removal only from the repository owner. Events come oldest
+              // first, and every page is read, so the last change to this
+              // label is the latest one.
               const events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
                 owner,
                 repo,
                 issue_number: pullNumber,
                 per_page: 100
               });
-              const lastRemoval = events.find((event) => {
-                return event.event === "unlabeled" && event.label?.name === NEEDS_HUMAN;
+              const lastChange = events.findLast((event) => {
+                return (event.event === "labeled" || event.event === "unlabeled") && event.label?.name === NEEDS_HUMAN;
               });
-              const remover = lastRemoval?.actor?.login;
-              if (lastRemoval && remover !== owner) {
+              // Added after the snapshot was taken: it holds the merge too.
+              if (lastChange?.event === "labeled") {
+                core.info(`Skipping PR #${pullNumber}: ${NEEDS_HUMAN} was just added, so it waits for a person to remove the label.`);
+                return false;
+              }
+              const remover = lastChange?.actor?.login;
+              if (lastChange && remover !== owner) {
                 core.info(
                   `Skipping PR #${pullNumber}: ${NEEDS_HUMAN} was last removed by ` +
                   `@${remover ?? "unknown"}, not the repository owner @${owner}; ` +

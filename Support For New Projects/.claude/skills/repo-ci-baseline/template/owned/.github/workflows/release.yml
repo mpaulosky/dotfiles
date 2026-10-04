@@ -478,7 +478,8 @@ jobs:
 
           # For visibility only (CI's Docs-only label job sets it too), so a
           # missing label never fails the release.
-          NUMBER=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          # || keeps a failed lookup from ending the step under bash -e.
+          NUMBER=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty') || NUMBER=""
           if [ -z "$NUMBER" ] || ! gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/labels" -f "labels[]=docs-only" > /dev/null; then
             echo "::warning::Couldn't add the docs-only label to the blog PR."
           fi

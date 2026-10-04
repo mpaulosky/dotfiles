@@ -193,6 +193,27 @@ jobs:
       - name: Run pre-commit hook tests
         run: bash .github/hooks/tests/pre-commit.test.sh
 
+  # Tests for the inline script in .github/workflows/pr-automerge.yml, run
+  # against a fake GitHub client. Also not a required status check.
+  automerge-tests:
+    name: Auto-merge tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+
+      - name: Run pr-automerge tests
+        run: node --test .github/scripts/tests/pr-automerge.test.mjs
+
   # Dependabot PRs run the full test suite: a dependency bump is exactly the
   # change the tests must vet, and none of these jobs needs a secret.
   discover-tests:

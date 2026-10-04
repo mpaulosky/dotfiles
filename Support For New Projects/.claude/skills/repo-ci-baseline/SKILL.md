@@ -33,6 +33,8 @@ A fix made only in a repo is reverted by its next Apply.
 
 Read a part's reference before changing it: each holds the design, the review findings behind it, and its live check.
 Lessons that cut across parts are in [gotchas.md](references/gotchas.md).
+Claude Code settings (`.claude/settings.json`) are not part of the Template: permissions are set per user, so don't add the file back.
+A repo that got it from an earlier Apply deletes it by hand, since `apply.sh` never deletes.
 
 ## Standardize a repo
 

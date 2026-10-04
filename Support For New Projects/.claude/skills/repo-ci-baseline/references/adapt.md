@@ -46,6 +46,10 @@ Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.
   Read them with `gh api repos/<r>/rulesets`, and update them in the same sitting as the merge, or the PR can't merge (old name missing) or merges unchecked (new name not required).
 - **Labels.** `semver:minor` and `semver:major`, and `docs-only` for its color and description; see [gotchas.md](gotchas.md#repo-drift).
 - **Secrets.** `RELEASE_PR_PAT` (releases, blog PRs and auto-merge start workflows only with it), and any test secret.
+  The PAT needs **Workflows: Read and write** (fine-grained) or the `workflow` scope (classic), as well as contents and
+  pull requests: the Standardize itself changes the workflows, so the next release that tags an older commit (a missed
+  release the queue retries, such as a Dependabot PR merged just before) is refused without it. Blazor-Server's first
+  release after #127 failed this way.
 - **Missing blog posts.** Before merging, check which Releases lack a post, as [release-pipeline.md](release-pipeline.md#adapting) describes.
 
 ## Repo docs

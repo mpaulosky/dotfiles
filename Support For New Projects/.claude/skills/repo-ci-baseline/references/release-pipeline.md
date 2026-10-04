@@ -79,6 +79,12 @@ approval.
   <owner/name> --pr <last merged PR>`. It must print `[]` and name the newest Release as the cutoff. Any other result
   means the switch would release something unexpected.
 - Create the `semver:minor` and `semver:major` labels if they're missing ([gotchas.md](gotchas.md#repo-drift)).
+- Check that `RELEASE_PR_PAT` has **Workflows: Read and write** (fine-grained) or the `workflow` scope (classic).
+  The release job pushes its tag with `git push`, and GitHub refuses a new tag on a commit whose workflow files differ
+  from `main`'s unless the token may change workflows. The Standardize changes every workflow, so the first release that
+  tags an older commit hits this. Blazor-Server's first run after #127 queued #126, merged just before it, and was
+  refused five times. The tag step now stops at a rejection like that with GitHub's message; it retries only when
+  another release took the tag.
 
 ## Verify live
 

@@ -39,8 +39,8 @@ PR that took about 4 minutes and 17 runner-minutes merges in about 1 minute.
   job, and its summary notes a docs-only skip.
 - **CodeQL:** add `paths-ignore: ["docs/**", "**/*.md"]` to its `pull_request` trigger. It isn't a required check, and
   its push and scheduled runs still cover `main`. Where a ruleset *does* require it (IssueManager required `Analyze
-  (csharp)`), `paths-ignore` leaves the check unreported and blocks every docs PR: drop it from the required checks, or
-  move the Template's CodeQL to the `needs: changes` gate first.
+  (csharp)`), `paths-ignore` leaves the check unreported and blocks every docs PR. The standard never requires CodeQL,
+  so `github-settings.sh --fix` drops it from the required checks ([github-settings.md](github-settings.md)).
 - Lint, Python and hook tests keep running on every PR; they take seconds.
 
 ## Adapting

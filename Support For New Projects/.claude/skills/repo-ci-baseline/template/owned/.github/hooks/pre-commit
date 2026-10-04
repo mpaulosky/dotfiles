@@ -15,13 +15,13 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RE
 
 # ── Commit only in a linked worktree ───────────────────────────────────────
 # In the primary checkout the git dir is the common one. A repo with no
-# commits yet is exempt, so a new repo's first commit (the Apply) goes on
-# main. A clone that can't use worktrees opts out with
-# baseline.allowPrimaryCommits.
+# commits on any ref is exempt, so a new repo's first commit (the Apply) goes
+# on main; an orphan branch in a repo with history is not. A clone that can't
+# use worktrees opts out with baseline.allowPrimaryCommits.
 GIT_DIR_ABS="$(git rev-parse --absolute-git-dir)"
 COMMON_DIR_ABS="$(git rev-parse --path-format=absolute --git-common-dir)"
 if [[ "$GIT_DIR_ABS" == "$COMMON_DIR_ABS" ]] \
-  && git rev-parse -q --verify HEAD >/dev/null \
+  && [[ -n "$(git rev-list -n 1 --all)" ]] \
   && [[ "$(git config --bool baseline.allowPrimaryCommits)" != true ]]; then
   # Absolute paths: the hook's cd doesn't move the shell that ran git commit.
   WORKTREES="$(dirname "$ROOT")/$(basename "$ROOT")-worktrees"

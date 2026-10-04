@@ -265,6 +265,12 @@ git -C "$FRESH" add .
 run_hook "$FRESH"
 expect "a repo's first commit is allowed in the primary checkout" allowed linted
 
+# An orphan branch has no HEAD commit, but the repo has history.
+git -C "$PRIMARY" checkout -q --orphan fresh-start
+run_hook "$PRIMARY"
+expect "a commit on an orphan branch in the primary checkout is refused" refused not-linted
+git -C "$PRIMARY" checkout -q -f main
+
 # End to end through git commit, which runs the hook with GIT_DIR and
 # GIT_INDEX_FILE set, and in a worktree points GIT_DIR at .git/worktrees/<name>.
 HOOKS_DIR="$(dirname "$HOOK")"

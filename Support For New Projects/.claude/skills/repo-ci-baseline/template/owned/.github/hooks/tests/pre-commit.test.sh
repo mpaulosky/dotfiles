@@ -226,16 +226,24 @@ echo 'Some text.' >> "$PRIMARY/README.md"
 git -C "$PRIMARY" add README.md
 run_hook "$PRIMARY"
 expect "a commit in the primary checkout is refused before the lint" refused not-linted
-if [[ $STATUS -ne 0 && "$OUTPUT" != *"../repo-worktrees/"* ]]; then
-  fail "the refusal names the worktree folder" "expected ../repo-worktrees/ in the message"
-else
-  pass "the refusal names the worktree folder"
-fi
+
+# The message's paths are absolute, so they work from wherever git commit ran.
+# pwd -P, as git resolves symlinks in the top level (macOS's /var).
+WORKTREES_ABS="$(cd "$WORK" && pwd -P)/repo-worktrees/<folder>"
+expect_folder() {
+  if [[ "$OUTPUT" == *"git worktree add -b <branch> \"$WORKTREES_ABS\" origin/main"* ]]; then
+    pass "$1"
+  else
+    fail "$1" "expected the absolute folder \"$WORKTREES_ABS\""
+  fi
+}
+expect_folder "the refusal gives the absolute worktree folder"
 
 # A subfolder of the primary checkout is still the primary checkout.
 mkdir -p "$PRIMARY/docs"
 run_hook "$PRIMARY/docs"
 expect "a commit from a subfolder of the primary checkout is refused" refused not-linted
+expect_folder "the refusal from a subfolder gives the same absolute worktree folder"
 
 git -C "$PRIMARY" config baseline.allowPrimaryCommits true
 run_hook "$PRIMARY"

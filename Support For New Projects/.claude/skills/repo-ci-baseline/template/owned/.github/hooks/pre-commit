@@ -23,13 +23,15 @@ COMMON_DIR_ABS="$(git rev-parse --path-format=absolute --git-common-dir)"
 if [[ "$GIT_DIR_ABS" == "$COMMON_DIR_ABS" ]] \
   && git rev-parse -q --verify HEAD >/dev/null \
   && [[ "$(git config --bool baseline.allowPrimaryCommits)" != true ]]; then
-  REPO_NAME="$(basename "$ROOT")"
+  # Absolute paths: the hook's cd doesn't move the shell that ran git commit.
+  WORKTREES="$(dirname "$ROOT")/$(basename "$ROOT")-worktrees"
   echo -e "${RED}❌  Commit in a worktree, not in the primary checkout ($ROOT).${RESET}"
-  echo -e "    Start the branch in its own worktree, and carry your changes over with a stash:"
+  echo -e "    Start the branch in its own worktree, and carry your changes over with a stash."
+  echo -e "    <branch> is feature|fix|hotfix/<issue>-<slug> or chore/<slug>; <folder> is <branch> with / as -."
   echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
   echo -e "      ${CYAN}git fetch origin${RESET}"
-  echo -e "      ${CYAN}git worktree add -b <type>/<issue>-<slug> ../$REPO_NAME-worktrees/<type>-<issue>-<slug> origin/main${RESET}"
-  echo -e "      ${CYAN}cd ../$REPO_NAME-worktrees/<type>-<issue>-<slug> && git stash pop${RESET}"
+  echo -e "      ${CYAN}git worktree add -b <branch> \"$WORKTREES/<folder>\" origin/main${RESET}"
+  echo -e "      ${CYAN}cd \"$WORKTREES/<folder>\" && git stash pop${RESET}"
   echo -e "    For a clone that can't use worktrees: ${YELLOW}git config baseline.allowPrimaryCommits true${RESET}"
   exit 1
 fi

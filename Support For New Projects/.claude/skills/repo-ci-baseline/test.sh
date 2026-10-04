@@ -71,6 +71,23 @@ command cp -f "$owned/.markdownlint-cli2.jsonc" "$md_tmp/template.markdownlint-c
 (cd "$skill_dir" && markdownlint-cli2 --config "$md_tmp/template.markdownlint-cli2.jsonc" \
   '*.md' 'references/*.md' 'docs/**/*.md' 'template/**/*.md' 'template/**/.*/**/*.md') || fail "markdownlint"
 
+step "GitVersion bump messages"
+# Each bump regex must match the commit marker it documents; YAML escaping
+# mistakes (a doubled backslash in single quotes) silently break them.
+python3 - "$owned/GitVersion.yml" <<'PYCHECK' || fail "GitVersion.yml bump messages"
+import re, sys, yaml
+config = yaml.safe_load(open(sys.argv[1]))
+cases = {
+    "major-version-bump-message": "+semver: major",
+    "minor-version-bump-message": "+semver: minor",
+    "patch-version-bump-message": "+semver: patch",
+    "no-bump-message": "+semver: skip",
+}
+bad = [key for key, marker in cases.items() if not re.search(config[key], "fix: x\n\n" + marker)]
+print("\n".join(f"{key} doesn't match its marker" for key in bad) or "all bump messages match")
+sys.exit(1 if bad else 0)
+PYCHECK
+
 step "No placeholders in Owned files"
 if grep -rnE '\{\{[A-Z_]+\}\}' "$owned"; then
   fail "Owned files must not carry {{PLACEHOLDER}}s; per-repo values belong in Seed files"

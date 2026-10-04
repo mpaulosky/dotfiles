@@ -425,6 +425,9 @@ def test_only_workflows_that_run_on_every_pr_can_report_a_required_check():
     ("on:\n  pull_request:\n    branches: ['m*', '!main']\n", False),
     ("on:\n  pull_request:\n    branches-ignore: [main]\n", False),
     ("on:\n  pull_request:\n    branches-ignore: ['release/*']\n", True),
+    ("on:\n  pull_request:\n    branches: ['[m]ain']\n", True),
+    ("on: {pull_request: {paths-ignore: ['docs/**']}}\n", False),  # flow mappings aren't parsed
+    ("on: {pull_request: {}}\n", False),
     ("on:\n  pull_request:\n  # a comment between triggers\n  push:\n", True),
     ("on: pull_request\n", True),
     ("on: [push, pull_request]\n", True),
@@ -437,6 +440,32 @@ def test_only_workflows_that_run_on_every_pr_can_report_a_required_check():
 ])
 def test_runs_on_every_pr(text, runs):
     assert gs.runs_on_every_pr(text) is runs
+
+
+@pytest.mark.parametrize("pattern, branch, matches", [
+    ("main", "main", True),
+    ("mai", "main", False),
+    ("m*", "main", True),
+    ("*", "release/1", False),  # * stops at /
+    ("**", "release/1", True),
+    ("release/**", "release/1/hotfix", True),
+    ("mains?", "main", True),  # ? is zero or one of the character before it
+    ("mains?", "mains", True),
+    ("ma?in", "main", True),
+    ("mai?n", "man", True),
+    ("mai?n", "maxn", False),  # ? isn't any one character
+    ("ma+in", "maaain", True),  # + is one or more of the character before it
+    ("ma+in", "min", False),
+    ("[m]ain", "main", True),
+    ("[a-z]ain", "main", True),
+    ("[0-9]ain", "main", False),
+    ("v1.0", "v1x0", False),  # . is literal
+    ("feature\\*", "feature*", True),  # \ escapes
+    ("feature\\*", "feature-x", False),
+    ("?main", "main", False),  # nothing before ?: a literal ?
+])
+def test_branch_patterns_follow_github_filter_syntax(pattern, branch, matches):
+    assert gs.branch_matches(pattern, branch) is matches
 
 
 def test_a_branch_filter_is_read_against_the_default_branch():

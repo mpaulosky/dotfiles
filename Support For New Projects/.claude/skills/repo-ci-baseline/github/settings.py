@@ -162,11 +162,44 @@ def trigger_list(trigger, key):
     return None
 
 
+def branch_regex(pattern):
+    """A workflow branch filter pattern as a regex, with GitHub's filter syntax.
+
+    * is any characters but /, ** any characters, ? zero or one of the
+    character before it, + one or more of it, [a-z0-9] one listed
+    alphanumeric, and \\ escapes the next character.
+    """
+    parts, index = [], 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            parts.append(re.escape(pattern[index + 1]))
+            index += 2
+            continue
+        if pattern.startswith("**", index):
+            parts.append(".*")
+            index += 2
+            continue
+        if char == "*":
+            parts.append("[^/]*")
+        elif char in "?+" and parts and not parts[-1].endswith(("*", "?", "+")):
+            parts.append(char)
+        elif char == "[" and (match := re.match(r"\[([A-Za-z0-9-]+)\]", pattern[index:])):
+            parts.append(match.group(0))
+            index += len(match.group(0))
+            continue
+        else:
+            parts.append(re.escape(char))
+        index += 1
+    return "".join(parts)
+
+
 def branch_matches(pattern, branch):
-    """Whether a workflow branch filter pattern matches branch: * stops at /, ** doesn't."""
-    regex = re.escape(pattern).replace(r"\*\*", "\0").replace(r"\*", "[^/]*").replace("\0", ".*")
-    regex = regex.replace(r"\?", ".")
-    return re.fullmatch(regex, branch) is not None
+    """Whether a workflow branch filter pattern matches branch."""
+    try:
+        return re.fullmatch(branch_regex(pattern), branch) is not None
+    except re.error:  # A pattern GitHub wouldn't accept either matches nothing.
+        return False
 
 
 def filters_include(trigger, branch):
@@ -201,6 +234,10 @@ def runs_on_every_pr(text, branch="main"):
         if not match:
             continue
         inline = match.group(1).split("#")[0].strip()
+        if inline.startswith("{"):
+            # A flow mapping (on: {pull_request: {paths: [...]}}) could hide any
+            # filter, and its filters aren't parsed, so it doesn't count.
+            return False
         if inline:  # on: pull_request / on: [push, pull_request]
             return re.search(r"\bpull_request\b(?!_)", inline) is not None
         block = []

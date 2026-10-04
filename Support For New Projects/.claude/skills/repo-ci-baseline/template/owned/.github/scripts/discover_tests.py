@@ -8,11 +8,13 @@ Called by the "Discover Test Projects" job in .github/workflows/ci.yml:
 It appends the matrix ({"include": [...]}, one entry per test project) and
 has_tests=true|false to the output file.
 
-A project is a test project when IsTestProject resolves to true: its .csproj's
-own value wins, then the nearest Directory.Build.props between its folder and
-the repo root that sets one (atelier-store and Blazor-Server set it once in
-tests/Directory.Build.props). Helper libraries such as IssueTracker's
-TestingSupport.Library set neither, so they're skipped.
+A project is a test project when IsTestProject resolves to true, read the way
+MSBuild imports it: the .csproj's own value wins, then the nearest
+Directory.Build.props above it (atelier-store and Blazor-Server set it once in
+tests/Directory.Build.props). MSBuild imports only that nearest file, so a
+parent one counts only when the nearest imports it (the usual
+GetPathOfFileAbove('Directory.Build.props', ...) line). Helper libraries such
+as IssueTracker's TestingSupport.Library set neither, so they're skipped.
 
 A repo with no projects under tests/ gets has_tests=false, so the test matrix
 is skipped while it's bootstrapped. Projects that are all skipped fail the
@@ -29,6 +31,9 @@ import sys
 from pathlib import Path
 
 IS_TEST_PROJECT = re.compile(r"<IsTestProject>\s*(true|false)\s*</IsTestProject>", re.IGNORECASE)
+# An Import of the next Directory.Build.props up, such as
+# $([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../')).
+IMPORTS_PARENT_PROPS = re.compile(r"<Import\b[^>]*Directory\.Build\.props", re.IGNORECASE)
 
 
 def declared_is_test_project(path):
@@ -37,21 +42,32 @@ def declared_is_test_project(path):
     return values[-1].lower() == "true" if values else None
 
 
+def nearest_props(folder, root):
+    """The nearest Directory.Build.props in folder or above it, up to root, or None."""
+    while True:
+        props = folder / "Directory.Build.props"
+        if props.is_file():
+            return props
+        if folder == root or folder.parent == folder:
+            return None
+        folder = folder.parent
+
+
 def is_test_project(csproj, root):
     """Whether IsTestProject resolves to true for this project, as described above."""
     own = declared_is_test_project(csproj)
     if own is not None:
         return own
-    folder = csproj.parent
-    while True:
-        props = folder / "Directory.Build.props"
-        if props.is_file():
-            value = declared_is_test_project(props)
-            if value is not None:
-                return value
-        if folder == root or folder.parent == folder:
+    props = nearest_props(csproj.parent, root)
+    while props is not None:
+        value = declared_is_test_project(props)
+        if value is not None:
+            return value
+        text = props.read_text(encoding="utf-8", errors="replace")
+        if props.parent == root or not IMPORTS_PARENT_PROPS.search(text):
             return False
-        folder = folder.parent
+        props = nearest_props(props.parent.parent, root)
+    return False
 
 
 def matrix_entry(csproj, root):

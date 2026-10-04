@@ -56,10 +56,48 @@ def test_the_csproj_overrides_directory_build_props(tmp_path):
     assert names(tmp_path) == ["Web.Tests.Unit"]
 
 
-def test_the_nearest_directory_build_props_that_sets_it_wins(tmp_path):
-    props(tmp_path, "<IsTestProject>false</IsTestProject>")
+IMPORT_PARENT = (
+    "<Import Project=\"$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', "
+    "'$(MSBuildThisFileDirectory)../'))\" />"
+)
+
+
+def props_file(directory, body, outside=""):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "Directory.Build.props").write_text(
+        f"<Project>\n  {outside}\n  <PropertyGroup>{body}</PropertyGroup>\n</Project>\n"
+    )
+
+
+def test_only_the_nearest_directory_build_props_is_read(tmp_path):
+    # MSBuild imports just the nearest one, so it hides tests/Directory.Build.props.
     props(tmp_path / "tests", "<IsTestProject>true</IsTestProject>")
     props(tmp_path / "tests" / "Web.Tests.Unit", "<Nullable>enable</Nullable>")
+    project(tmp_path, "Web.Tests.Unit")
+    project(tmp_path, "Web.Tests.Bunit")
+
+    assert names(tmp_path) == ["Web.Tests.Bunit"]
+
+
+def test_a_nearer_directory_build_props_that_imports_its_parent_inherits_it(tmp_path):
+    props(tmp_path / "tests", "<IsTestProject>true</IsTestProject>")
+    props_file(tmp_path / "tests" / "Web.Tests.Unit", "<Nullable>enable</Nullable>", IMPORT_PARENT)
+    project(tmp_path, "Web.Tests.Unit")
+
+    assert names(tmp_path) == ["Web.Tests.Unit"]
+
+
+def test_the_nearer_directory_build_props_value_wins_over_its_parent(tmp_path):
+    props(tmp_path / "tests", "<IsTestProject>true</IsTestProject>")
+    props_file(tmp_path / "tests" / "Helpers", "<IsTestProject>false</IsTestProject>", IMPORT_PARENT)
+    project(tmp_path, "Helpers")
+    project(tmp_path, "Web.Tests.Unit")
+
+    assert names(tmp_path) == ["Web.Tests.Unit"]
+
+
+def test_a_root_directory_build_props_counts(tmp_path):
+    props(tmp_path, "<IsTestProject>true</IsTestProject>")
     project(tmp_path, "Web.Tests.Unit")
 
     assert names(tmp_path) == ["Web.Tests.Unit"]

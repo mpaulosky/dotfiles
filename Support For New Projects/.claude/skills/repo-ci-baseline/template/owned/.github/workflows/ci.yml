@@ -92,7 +92,8 @@ jobs:
   # Mirrors Detect Changes' result as the docs-only label, so docs PRs are
   # easy to filter. Nothing reads the label: the diff decides what runs, and
   # the label is reset on every push, so it can't be wrong for long. Dependabot
-  # and fork PRs get a read-only token and are skipped. Not a required check.
+  # and fork PRs can get a read-only token, so they're skipped, Dependabot's by
+  # actor and by author (they're never docs-only). Not a required check.
   docs-label:
     name: Docs-only label
     needs: changes
@@ -100,6 +101,7 @@ jobs:
       github.event_name == 'pull_request'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.actor != 'dependabot[bot]'
+      && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -8,12 +8,13 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   atelier-store refused `squad/86-...` because it allowed only `feature/`, `hotfix/` and `chore/`.
   `chore/standardize-baseline` passes every pattern seen so far ([git-hooks.md](git-hooks.md) has the standard).
 - **Labels.** `release.yml` reads `semver:minor` and `semver:major` (and `release:*`). A repo without them silently
-  releases every PR as a patch. Create them:
+  releases every PR as a patch. Create them; `docs-only` takes `--force`, because CI may already have created it with
+  the default color and no description:
 
   ```bash
   gh label create "semver:minor" -R <repo> --color 1D76DB --description "Release a minor version when this PR merges"
   gh label create "semver:major" -R <repo> --color B60205 --description "Release a major version when this PR merges"
-  gh label create "docs-only" -R <repo> --color 0075CA --description "Changes only docs; CI skips the build and tests"
+  gh label create "docs-only" -R <repo> --force --color 0075CA --description "Changes only docs; CI skips the build and tests"
   ```
 
 ## Reviews and descriptions

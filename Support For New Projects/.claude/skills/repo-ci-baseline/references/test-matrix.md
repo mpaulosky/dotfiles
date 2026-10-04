@@ -7,8 +7,12 @@ Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jo
 
 Each test project runs in its own matrix job and restores and builds its own project.
 A test project is one whose `IsTestProject` resolves to true, from its `.csproj` or, as MSBuild reads it, the nearest
-`Directory.Build.props` above it (atelier-store and Blazor-Server set it once in `tests/Directory.Build.props`). A
-parent props file counts only when the nearest one imports it. `discover_tests.py` fails
+`Directory.Build.props` above it (atelier-store sets it once in `tests/Directory.Build.props`). A
+parent props file counts only when the nearest one imports it. A `Condition` on the property or its `PropertyGroup` is
+evaluated against the project name when it tests `$(MSBuildProjectName)` with `.Contains`, `.StartsWith`, `.EndsWith`,
+`==` or `!=`: Blazor-Server sets `IsTestProject` in its root `Directory.Build.props` only where
+`$(MSBuildProjectName.Contains('.Tests'))`, so a helper library under `tests/` stays out of the matrix. Any other
+`Condition` is logged and counts as holding. `discover_tests.py` fails
 the job when `tests/` has projects but none of them is a test project: `Test Suite` passes a skipped matrix, so a
 discovery miss would otherwise pass every PR with no tests run (atelier-store's first Standardize run did). The build job caches no `bin/` or
 `obj/`: nothing restored that cache, so the step only cost time.

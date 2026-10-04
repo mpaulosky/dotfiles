@@ -40,7 +40,7 @@ def test_a_project_setting_nothing_is_a_helper_library(tmp_path):
 
 
 def test_is_test_project_set_in_tests_directory_build_props_counts(tmp_path):
-    # atelier-store and Blazor-Server set it once for every test project.
+    # atelier-store sets it once for every test project.
     props(tmp_path / "tests", "<IsTestProject>true</IsTestProject>")
     project(tmp_path, "Web.Tests.Unit")
     project(tmp_path, "Web.Tests.Bunit")
@@ -101,6 +101,87 @@ def test_a_root_directory_build_props_counts(tmp_path):
     project(tmp_path, "Web.Tests.Unit")
 
     assert names(tmp_path) == ["Web.Tests.Unit"]
+
+
+def when(condition, body):
+    return f'<PropertyGroup Condition="{condition}">{body}</PropertyGroup>'
+
+
+def test_a_conditional_is_test_project_applies_only_where_the_condition_holds(tmp_path):
+    # Blazor-Server's root Directory.Build.props.
+    props_file(tmp_path, "", when("$(MSBuildProjectName.Contains('.Tests'))", "<IsTestProject>true</IsTestProject>"))
+    project(tmp_path, "Domain.Tests.Unit")
+    project(tmp_path, "TestingSupport.Library")
+
+    assert names(tmp_path) == ["Domain.Tests.Unit"]
+
+
+def test_ends_with_starts_with_and_equality_conditions_are_evaluated(tmp_path):
+    props_file(
+        tmp_path / "tests",
+        "",
+        when("$(MSBuildProjectName.EndsWith('.Unit'))", "<IsTestProject>true</IsTestProject>")
+        + when("$(MSBuildProjectName.StartsWith('Arch'))", "<IsTestProject>true</IsTestProject>")
+        + when("'$(MSBuildProjectName)' == 'web.e2e'", "<IsTestProject>true</IsTestProject>")
+        + when("'$(MSBuildProjectName)' != 'Web.Unit'", "<IsTestProject>false</IsTestProject>"),
+    )
+    for folder in ["Web.Unit", "Architecture", "Web.E2E", "Helpers"]:
+        project(tmp_path, folder)
+
+    # MSBuild compares with == case-insensitively; != turns every project but Web.Unit back off.
+    assert names(tmp_path) == ["Web.Unit"]
+
+
+def test_a_negated_condition_is_evaluated(tmp_path):
+    props_file(tmp_path, "", when("!$(MSBuildProjectName.Contains('Support'))", "<IsTestProject>true</IsTestProject>"))
+    project(tmp_path, "App.Tests")
+    project(tmp_path, "TestingSupport.Library")
+
+    assert names(tmp_path) == ["App.Tests"]
+
+
+def test_a_condition_on_the_property_itself_is_evaluated(tmp_path):
+    props(tmp_path / "tests", "<IsTestProject Condition=\"$(MSBuildProjectName.Contains('.Tests'))\">true</IsTestProject>")
+    project(tmp_path, "App.Tests")
+    project(tmp_path, "TestingSupport.Library")
+
+    assert names(tmp_path) == ["App.Tests"]
+
+
+def test_a_condition_that_does_not_hold_leaves_the_earlier_value(tmp_path):
+    props_file(
+        tmp_path / "tests",
+        "<IsTestProject>true</IsTestProject></PropertyGroup>\n  "
+        + when("'$(MSBuildProjectName)' == 'Helpers'", "<IsTestProject>false</IsTestProject>")
+        + "\n  <PropertyGroup>",
+    )
+    project(tmp_path, "Helpers")
+    project(tmp_path, "Web.Tests.Unit")
+
+    assert names(tmp_path) == ["Web.Tests.Unit"]
+
+
+def test_an_unknown_condition_counts_as_holding_and_is_logged(tmp_path, capsys):
+    props_file(tmp_path, "", when("'$(Configuration)' == 'Debug'", "<IsTestProject>true</IsTestProject>"))
+    project(tmp_path, "App.Tests")
+
+    assert names(tmp_path) == ["App.Tests"]
+    out = capsys.readouterr().out
+    assert "::notice::" in out
+    assert "'$(Configuration)' == 'Debug'" in out
+
+
+def test_a_project_with_the_msbuild_namespace_is_read(tmp_path):
+    path = tmp_path / "tests" / "App.Tests" / "App.Tests.csproj"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '\ufeff<?xml version="1.0" encoding="utf-8"?>\n'
+        '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">'
+        "<PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>\n",
+        encoding="utf-8",
+    )
+
+    assert names(tmp_path) == ["App.Tests"]
 
 
 def test_value_matching_ignores_case_and_whitespace(tmp_path):

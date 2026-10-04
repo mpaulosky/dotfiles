@@ -37,7 +37,12 @@ fi
 
 if [[ -z "$MARKDOWNLINT_BIN" ]]; then
   echo -e "${YELLOW}⚠️   markdownlint-cli2 not found — skipping markdown lint check.${RESET}"
-  echo -e "    To enable: ${CYAN}pnpm add -g markdownlint-cli2${RESET} (or npm install -g)"
+  # A repo whose Node project uses pnpm forbids npm, so only suggest pnpm there.
+  if [[ -n "$(git ls-files '*pnpm-lock.yaml' 'pnpm-lock.yaml')" ]]; then
+    echo -e "    To enable: ${CYAN}pnpm add -g markdownlint-cli2${RESET}"
+  else
+    echo -e "    To enable: ${CYAN}pnpm add -g markdownlint-cli2${RESET} (or npm install -g)"
+  fi
   exit 0
 fi
 

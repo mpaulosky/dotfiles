@@ -13,9 +13,10 @@ run just released:
 Every non-draft GitHub Release names its source PR in a "Source PR: #n"
 line. For each release whose PR has no docs/blogs/*-pr-{n}-*.md post (or
 every release with --regenerate), it writes the post with release_post.py
-under the release's existing tag. It never creates tags or Releases. When
-any post was written, the README, docs/README.md and docs/index.html tables
-are rebuilt once at the end. When none was, no file changes.
+under the release's existing tag. It never creates tags or Releases. Then
+the README, docs/README.md and docs/index.html tables are rebuilt once, even
+when no post was written, so docs/README.md follows a README-only
+[skip-release] merge. When main is already up to date, no file changes.
 
 GitHub's release list can lag a just-published Release by several seconds,
 so with --wait-for-prs it lists again until every named PR has a Release,
@@ -104,11 +105,12 @@ def run(repository, gh, root=Path("."), regenerate=False, only=None, api_key=Non
     gh = ListedReleases(gh, listed_releases(gh, wait_for, sleep=sleep))
     selected = select_releases(gh.releases(), blog_dir, regenerate, only)
     if not selected:
-        rp.log("Every selected release already has a blog post; nothing to do.")
-        return []
+        rp.log("Every selected release already has a blog post; refreshing the tables only.")
 
     for pr_number, tag in selected:
         rp.write_post(gh, pr_number, tag, root, api_key, model, urlopen)
+    # Even with no post to write: a README-only PR merged with [skip-release]
+    # releases nothing, and this is what copies its README to docs/README.md.
     rp.update_tables(repository, gh, root)
     return [pr_number for pr_number, _ in selected]
 

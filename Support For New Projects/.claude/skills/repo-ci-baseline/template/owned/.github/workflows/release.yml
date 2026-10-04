@@ -415,7 +415,7 @@ jobs:
 
           # git status (not git diff) so brand-new, still-untracked files count.
           if [ -z "$(git status --porcelain -- docs/blogs README.md docs/README.md docs/index.html)" ]; then
-            echo "Every Release already has its post on main; no blog PR needed."
+            echo "main already has every post, table and the docs/README.md copy; no blog PR needed."
             echo "docs_changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -444,11 +444,17 @@ jobs:
 
           BRANCH="docs/release-notes"
           LIST=$(for n in $PRS; do printf '#%s, ' "$n"; done | sed 's/, $//')
-          if [ "$(wc -w <<< "$PRS")" -eq 1 ]; then
-            TITLE="docs: add release blog for PR ${LIST} [skip-release]"
-          else
-            TITLE="docs: add release blogs for PR ${LIST} [skip-release]"
-          fi
+          BODY="Automated release blog posts for ${LIST}, opened by the release workflow. It holds every Release whose post isn't on main yet, rebuilt from main on each run. The [skip-release] title marker keeps its merge from starting another release."
+          case "$(wc -w <<< "$PRS")" in
+            # No new post: only the tables or the docs/README.md copy of the
+            # README changed (e.g. after a README-only [skip-release] merge).
+            0)
+              TITLE="docs: refresh release tables and docs/README.md [skip-release]"
+              BODY="Automated refresh of the release tables and the docs/README.md copy of the README, opened by the release workflow. Every Release already has its post on main. The [skip-release] title marker keeps its merge from starting another release."
+              ;;
+            1) TITLE="docs: add release blog for PR ${LIST} [skip-release]" ;;
+            *) TITLE="docs: add release blogs for PR ${LIST} [skip-release]" ;;
+          esac
 
           git checkout -B "$BRANCH"
           # Stage only paths that exist; git add fails on a missing pathspec
@@ -467,7 +473,6 @@ jobs:
             echo "::notice::RELEASE_PR_PAT is not set, so $BRANCH is pushed and opened with GITHUB_TOKEN. Its pull_request workflow runs (lint, CodeQL) need a manual \"Approve and run\" before they start, and auto-merge waits on them. Set RELEASE_PR_PAT to avoid this."
           fi
 
-          BODY="Automated release blog posts for ${LIST}, opened by the release workflow. It holds every Release whose post isn't on main yet, rebuilt from main on each run. The [skip-release] title marker keeps its merge from starting another release."
           EXISTING=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
             gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"

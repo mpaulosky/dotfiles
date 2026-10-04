@@ -182,6 +182,25 @@ def test_second_run_without_regenerate_changes_nothing(tmp_path):
     assert read_all(tmp_path) == first
 
 
+def test_run_without_missing_posts_still_copies_an_edited_readme_to_docs(tmp_path):
+    # A README-only PR merged with [skip-release] releases nothing, so every
+    # Release already has its post; docs/README.md must still follow README.md.
+    make_repo(tmp_path)
+    bf.run(REPO, FakeGitHub(), root=tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\n## Usage\n\nSee [the guide](docs/guide.md).\n", encoding="utf-8")
+
+    gh = FakeGitHub()
+    assert bf.run(REPO, gh, root=tmp_path) == []
+    assert gh.pulled == []
+    assert "See [the guide](guide.md)." in (tmp_path / "docs" / "README.md").read_text(encoding="utf-8")
+
+    # A repeated run changes nothing, so the docs job opens no PR.
+    first = read_all(tmp_path)
+    bf.run(REPO, FakeGitHub(), root=tmp_path)
+    assert read_all(tmp_path) == first
+
+
 def test_regenerate_replaces_old_format_posts(tmp_path):
     blog_dir = make_repo(tmp_path) / "docs" / "blogs"
     old = "2026-09-17-pr-1-chore-first.md"

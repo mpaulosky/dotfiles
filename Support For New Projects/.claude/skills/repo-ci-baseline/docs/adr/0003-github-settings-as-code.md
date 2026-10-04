@@ -31,8 +31,9 @@ So the settings are a standard kept as JSON in the skill, and `github-settings.s
 - **dotfiles gets the merge settings only:** it isn't a Baseline repo, and rulesets need GitHub Pro there.
 - **TinyTicket is retired**: it isn't in `repos.txt` and isn't Standardized.
 - **Squad is retired**, so `--fix` deletes `squad*` labels with no flag; the squad-era rulesets still need `--remove-legacy`.
-- **Dependabot bumps ship with the next release.** A Dependabot merge starts no workflows, and the release queue releases it, in merge order, with the next merged PR.
-  That's the intended behaviour, not a gap: a dependency bump doesn't merit its own Release and blog post.
+- **Dependabot bumps are folded into the next Release.** The release queue never counts a Dependabot PR as owed, so a bump gets no Release
+  or blog post of its own; the next Release's tag contains it and its generated notes list it. (Without the rule, each bump got its own Release,
+  made late by the next merged PR's run.)
 
 ## Considered Options
 
@@ -42,7 +43,8 @@ So the settings are a standard kept as JSON in the skill, and `github-settings.s
 - **Full per-repo overrides**: rejected; the drift this replaces came from per-repo choices.
 - **A repository-admin bypass**: rejected; it lets a merge skip the rules by accident, where `--suspend` is deliberate and visible.
 - **Deleting everything outside the standard on `--fix`**: rejected; deletion stays an explicit `--remove-legacy`.
-- **A release for every Dependabot merge** (auto-merge armed with the PAT, copied into each repo's Dependabot secrets): rejected as noise.
+- **A release for every Dependabot merge**, late (the queue's behaviour before) or at once (auto-merge armed with the PAT,
+  copied into each repo's Dependabot secrets): rejected as noise.
 
 ## Consequences
 

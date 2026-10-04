@@ -17,10 +17,16 @@ The cutoff is the newest published GitHub Release (a vMAJOR.MINOR.PATCH tag
 whose body names its "Source PR: #n"), never just the newest git tag: a run
 that pushed its tag but failed before the Release was published hasn't
 released that PR. A PR is owed a release when it merged into main after the
-cutoff PR, its title has no [skip-release] marker, no Release names it, and
-its merge commit isn't already inside the cutoff Release's tag. The last rule
-keeps PRs merged before release automation existed out of the list. With no
-Release at all, only the triggering PR is queued.
+cutoff PR, its title has no [skip-release] marker, Dependabot didn't open it,
+no Release names it, and its merge commit isn't already inside the cutoff
+Release's tag. The last rule keeps PRs merged before release automation
+existed out of the list. With no Release at all, only the triggering PR is
+queued.
+
+A Dependabot PR never gets a Release of its own: a dependency bump isn't worth
+a Release and blog post. It's folded into the next one instead. The next
+Release's tag is on a later commit, so it contains the bump, and its generated
+notes list the bump's PR among the changes since the previous Release.
 
 Standard library only, like release_post.py; git and the gh CLI do the rest.
 """
@@ -36,6 +42,7 @@ import release_post as rp
 PAGE_SIZE = 100
 
 SKIP_MARKER = "[skip-release]"
+DEPENDABOT = "dependabot[bot]"
 
 
 class GitHub(rp.GitHub):
@@ -64,7 +71,9 @@ class GitHub(rp.GitHub):
                 return pulls
             for pr in batch:
                 if pr.get("merged_at") and pr["merged_at"] >= since:
-                    pulls.append({key: pr.get(key) for key in ("number", "title", "merged_at", "merge_commit_sha")})
+                    pulled = {key: pr.get(key) for key in ("number", "title", "merged_at", "merge_commit_sha")}
+                    pulled["author"] = (pr.get("user") or {}).get("login")
+                    pulls.append(pulled)
             if any((pr.get("updated_at") or "") < since for pr in batch):
                 return pulls
             page += 1
@@ -104,10 +113,16 @@ def tag_contains(tag, sha):
     return result.returncode == 0
 
 
+def author_of(pr):
+    """The PR author's login: listed PRs carry "author", a PR fetched on its own carries "user"."""
+    return pr.get("author") or (pr.get("user") or {}).get("login")
+
+
 def owed(pr, released, in_cutoff):
     return (
         bool(pr.get("merged_at"))
         and SKIP_MARKER not in (pr.get("title") or "")
+        and author_of(pr) != DEPENDABOT
         and pr["number"] not in released
         and not in_cutoff(pr.get("merge_commit_sha") or "")
     )

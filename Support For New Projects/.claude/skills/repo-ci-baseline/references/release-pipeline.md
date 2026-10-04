@@ -10,11 +10,11 @@ Template files (Owned): `.github/workflows/release.yml`, `backfill-blog-posts.ym
 - A release that was cancelled, or failed before its GitHub Release was published, is retried by the next run.
 - One blog PR per run, never one per released PR, so blog PRs can't conflict with each other.
 - A merged blog PR (`[skip-release]`) releases nothing and opens nothing, so there's no loop.
-- A Dependabot PR is released late. Its auto-merge is armed with `GITHUB_TOKEN`, whose merge starts no workflows, so
-  it never gets a run of its own; the next merged PR's run finds it owed and releases it first, in merge order, with its
-  own Release and blog post (IssueTracker #198 became v0.0.24 when #197 merged). `test_release_queue.py` covers it.
-  Whether a bump should get a Release of its own at all is an open decision. TicketManager #107, merged before the
-  queue existed, shipped inside v0.0.48's tag without one.
+- A Dependabot PR gets no Release of its own: it's folded into the next one. A dependency bump isn't worth a Release
+  and blog post, so the queue never counts a PR Dependabot opened as owed. The next Release's tag sits on a later
+  commit, so it contains the bump, and `--generate-notes` lists the bump's PR among the changes since the previous
+  Release. Before this rule, the next run released each bump first with a Release and post of its own (IssueTracker
+  #198 became v0.0.24 when #197 merged); Dependabot's merges start no workflow, so it was never released on time.
 
 ## Design
 
@@ -32,7 +32,7 @@ do nothing. The group expression repeats the `plan` job's `if`; keep the two in 
 - **Listing:** closed PRs into `main`, sorted by update time, newest first. Page back until a PR's update time is before
   the cutoff PR's merge time. A PR merged after the cutoff can't have been updated before it, so no fixed page size can
   miss one.
-- **Owed:** merged after the cutoff, no `[skip-release]` in the title, no Release naming it, and merge commit not inside
+- **Owed:** merged after the cutoff, no `[skip-release]` in the title, not opened by Dependabot, no Release naming it, and merge commit not inside
   the cutoff Release's tag. The last rule keeps history from before release automation out. With no Release at all, only
   the triggering PR is queued.
 - **Order:** by each merge commit's position on `main`'s first-parent history (`git rev-list --first-parent --reverse`),

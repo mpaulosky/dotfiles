@@ -266,7 +266,8 @@ run_hook "$FRESH"
 expect "a repo's first commit is allowed in the primary checkout" allowed linted
 
 # On a branch of its own in the primary checkout, the refusal's commands move
-# that branch, with its staged, unstaged and untracked changes, into a worktree.
+# that branch, with its staged and untracked changes, into a worktree, and
+# what was staged is still staged there (README.md), the rest still not (new.md).
 git -C "$PRIMARY" switch -q -c fix/2-moved
 echo 'Staged.' >> "$PRIMARY/README.md"
 git -C "$PRIMARY" add README.md
@@ -282,6 +283,9 @@ elif ! (cd "$PRIMARY" && set -e && eval "$RECOVERY") &>/dev/null; then
   fail "the refusal's commands move the branch into a worktree" "the commands failed"
 elif [[ "$(git -C "$MOVED" branch --show-current)" != fix/2-moved ]] \
   || ! grep -q Staged "$MOVED/README.md" || [[ ! -f "$MOVED/new.md" ]] \
+  || ! git -C "$MOVED" diff --cached --quiet --exit-code -- new.md \
+  || git -C "$MOVED" diff --cached --quiet -- README.md \
+  || ! git -C "$MOVED" diff --quiet -- README.md \
   || [[ "$(git -C "$PRIMARY" branch --show-current)" != main ]] \
   || [[ -n "$(git -C "$PRIMARY" status --porcelain)" ]]; then
   fail "the refusal's commands move the branch into a worktree" "the worktree or primary checkout isn't as expected"

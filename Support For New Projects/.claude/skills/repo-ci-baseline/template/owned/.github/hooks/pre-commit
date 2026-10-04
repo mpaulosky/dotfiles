@@ -35,14 +35,14 @@ if [[ "$GIT_DIR_ABS" == "$COMMON_DIR_ABS" ]] \
     echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
     echo -e "      ${CYAN}git switch main${RESET}"
     echo -e "      ${CYAN}git worktree add \"$WORKTREES/$FOLDER\" $BRANCH${RESET}"
-    echo -e "      ${CYAN}cd \"$WORKTREES/$FOLDER\" && git stash pop${RESET}"
+    echo -e "      ${CYAN}cd \"$WORKTREES/$FOLDER\" && git stash pop --index${RESET}"
   else
     echo -e "    Start the branch in its own worktree, and carry your changes over with a stash."
     echo -e "    <branch> is feature|fix|hotfix/<issue>-<slug> or chore/<slug>; <folder> is <branch> with / as -."
     echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
     echo -e "      ${CYAN}git fetch origin${RESET}"
     echo -e "      ${CYAN}git worktree add -b <branch> \"$WORKTREES/<folder>\" origin/main${RESET}"
-    echo -e "      ${CYAN}cd \"$WORKTREES/<folder>\" && git stash pop${RESET}"
+    echo -e "      ${CYAN}cd \"$WORKTREES/<folder>\" && git stash pop --index${RESET}"
   fi
   echo -e "    For a clone that can't use worktrees: ${YELLOW}git config baseline.allowPrimaryCommits true${RESET}"
   exit 1

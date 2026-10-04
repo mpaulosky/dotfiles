@@ -566,6 +566,7 @@ def test_run_writes_readme_and_index_tables(tmp_path):
         # Attribute names in any case, spaced "=", unquoted values.
         ("<img SRC=docs/banner.png>\n", "<img SRC=banner.png>\n"),
         ('<a href = "docs/x.md">x</a>\n', '<a href = "x.md">x</a>\n'),
+        ('<img\nsrc="docs/a.png" data-src="docs/b.png">\n', '<img\nsrc="a.png" data-src="docs/b.png">\n'),
         # ../ is relative too, so it goes up one more level.
         ("[up](../up.md)\n", "[up](../../up.md)\n"),
     ],

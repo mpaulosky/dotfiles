@@ -931,9 +931,10 @@ def update_index_html(path, entries, posts, repository):
 LINK_INLINE_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?[ \t]*\)""")
 LINK_ANGLE_DESTINATION = re.compile(r"<((?:[^<>\n\\]|\\.)+)>")
 LINK_REFERENCE = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(<?)(\S+?)(>?)(?=\s|$)", re.MULTILINE)
-# An attribute follows whitespace inside its tag, so data-src is not src. ASCII,
-# as for HTML_BLOCKS: "\u017f" must not case-fold into "src".
-LINK_HTML_ATTRIBUTE = re.compile(r"""(?<=\s)((?:src|href)\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""", re.I | re.A)
+# Not preceded by a name character, so data-src is not src, but a tag's
+# continuation line may start with one. ASCII, as for HTML_BLOCKS: "\u017f"
+# must not case-fold into "src".
+LINK_HTML_ATTRIBUTE = re.compile(r"""(?<![\w-])((?:src|href)\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""", re.I | re.A)
 # Any indent, so a fence inside a list item is still skipped.
 LINK_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 

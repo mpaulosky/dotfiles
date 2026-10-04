@@ -118,4 +118,11 @@ jobs:
               --body "Automated blog post backfill for past releases, opened by the Backfill blog posts workflow. Each post uses its Release's existing tag; no tags or Releases were created. The [skip-release] title marker keeps its merge from starting a release."
           fi
 
+          # For visibility only (CI's Docs-only label job sets it too), so a
+          # missing label never fails the backfill.
+          NUMBER=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -z "$NUMBER" ] || ! gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/labels" -f "labels[]=docs-only" > /dev/null; then
+            echo "::warning::Couldn't add the docs-only label to the backfill PR."
+          fi
+
           gh pr merge "$BRANCH" --auto --squash

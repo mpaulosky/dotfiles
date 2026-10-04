@@ -13,6 +13,7 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   ```bash
   gh label create "semver:minor" -R <repo> --color 1D76DB --description "Release a minor version when this PR merges"
   gh label create "semver:major" -R <repo> --color B60205 --description "Release a major version when this PR merges"
+  gh label create "docs-only" -R <repo> --color 0075CA --description "Changes only docs; CI skips the build and tests"
   ```
 
 ## Reviews and descriptions

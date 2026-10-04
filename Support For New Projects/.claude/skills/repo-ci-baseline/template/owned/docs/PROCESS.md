@@ -74,5 +74,5 @@ from its description.
 
 - **Version:** a patch by default; label the PR `semver:minor` or `semver:major` before it merges for more.
 - **`[skip-release]`** in the title merges a PR without a release (the release-blog PRs carry it).
-- **Dependabot bumps** merge on their own and ship with the next release: they get no Release or blog post of their own.
-  NuGet and SDK bumps are built and tested like any PR.
+- **Dependabot bumps** merge on their own. Their merge starts no workflow, so each is released by the next merged
+  PR's run, just before that PR, with its own Release and blog post. NuGet and SDK bumps are built and tested like any PR.

@@ -10,11 +10,11 @@ Template files (Owned): `.github/workflows/release.yml`, `backfill-blog-posts.ym
 - A release that was cancelled, or failed before its GitHub Release was published, is retried by the next run.
 - One blog PR per run, never one per released PR, so blog PRs can't conflict with each other.
 - A merged blog PR (`[skip-release]`) releases nothing and opens nothing, so there's no loop.
-- A Dependabot PR ships with the next release. Its auto-merge is armed with `GITHUB_TOKEN`, whose merge starts no
-  workflows, so it never gets a run of its own; the next merged PR's run finds it owed and releases it first, in merge
-  order (IssueTracker #198 went out with #197). That's by design: a dependency bump doesn't merit its own Release and
-  blog post. `test_release_queue.py` covers it. TicketManager #107, merged before the queue existed, shipped inside
-  v0.0.48's tag without a Release of its own.
+- A Dependabot PR is released late. Its auto-merge is armed with `GITHUB_TOKEN`, whose merge starts no workflows, so
+  it never gets a run of its own; the next merged PR's run finds it owed and releases it first, in merge order, with its
+  own Release and blog post (IssueTracker #198 became v0.0.24 when #197 merged). `test_release_queue.py` covers it.
+  Whether a bump should get a Release of its own at all is an open decision. TicketManager #107, merged before the
+  queue existed, shipped inside v0.0.48's tag without one.
 
 ## Design
 

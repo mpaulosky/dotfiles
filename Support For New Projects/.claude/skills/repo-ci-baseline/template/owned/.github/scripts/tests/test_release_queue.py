@@ -52,11 +52,11 @@ def test_released_and_skip_release_prs_are_left_out():
     assert rq.queue(pulls, released={10}, in_cutoff=never_contained, has_cutoff=True, main_order=order_of(pulls)) == [12]
 
 
-def test_a_dependabot_merge_is_released_by_the_next_merged_prs_run():
+def test_a_dependabot_merge_is_released_ahead_of_the_next_merged_pr():
     # A Dependabot PR is auto-merged with GITHUB_TOKEN, which starts no
     # workflows, so it never gets a release run of its own. The next merged
-    # PR's run must release it first, in merge order: dependency bumps ship
-    # with the next release by design (release-pipeline.md).
+    # PR's run must still release it, first, in merge order, so it isn't lost
+    # (release-pipeline.md).
     bump = pull(30, "2026-09-29T09:00:00Z", title="chore(deps): bump the all-nuget group with 3 updates")
     trigger = pull(31, "2026-09-29T10:00:00Z")
     pulls = [trigger, bump]

@@ -66,7 +66,10 @@ post" and succeeded. Recovery was `gh run rerun <run id> --job <docs job id>`. R
 **`docs/README.md`.** A repo that keeps a `docs/README.md` (its README as the Pages landing page) gets the README's text
 there too, with relative links rebased for `docs/` by `rebase_readme_links`: `docs/x` becomes `x`, `docs` becomes `./`,
 any other path (`../up.md` too) gets `../`. URLs, `#anchors`, `?query` references, root-relative paths and fenced
-code, in block quotes too, are left alone. Origin: TicketManager #104.
+code, in block quotes too, are left alone. Origin: TicketManager #104. The backfill rebuilds the tables (and so this
+copy) even when it writes no post, because a README-only PR merged with `[skip-release]` releases nothing and nothing
+else syncs it. The docs job then opens `docs: refresh release tables and docs/README.md [skip-release]`. A run with
+nothing to change leaves the tree clean, so no PR.
 
 **Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
 checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual

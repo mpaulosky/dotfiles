@@ -29,9 +29,25 @@ Move whatever the old `ci.yml` did for this repo alone into `.github/ci/prepare.
 
 ## Test runner
 
-`global.json` puts `dotnet test` on Microsoft Testing Platform.
-Every test project must run on it, as atelier-store's and TicketManager's do: `xunit.v3.mtp-v2` plus `Microsoft.Testing.Extensions.CodeCoverage` (for `--coverage`),
-in place of the VSTest pieces `xunit.runner.visualstudio` and `coverlet.collector`.
+`global.json` puts `dotnet test` on Microsoft Testing Platform, and the SDK then refuses to run a VSTest project at all.
+Every test project must run on it: `xunit.v3` (atelier-store, IssueTracker) or `xunit.v3.mtp-v2` (TicketManager),
+plus `Microsoft.Testing.Extensions.CodeCoverage` for `--coverage`,
+in place of `xunit`, `xunit.runner.visualstudio`, `coverlet.collector` and `Microsoft.NET.Test.Sdk`.
+Moving from xUnit v2, as IssueTracker's Standardize PR did:
+
+- `IAsyncLifetime` returns `ValueTask` and extends `IAsyncDisposable`.
+  `InitializeAsync` and `DisposeAsync` change type, and an explicit `Task IAsyncLifetime.DisposeAsync()` bridge goes.
+- The v3 analyzer's xUnit1051 is an error under `-warnaserror`: pass `TestContext.Current.CancellationToken` to every call that takes a token.
+  Use a named argument where an optional parameter comes first (`InsertOneAsync(doc, cancellationToken: ...)`),
+  and `Xunit.TestContext` in bUnit projects, whose own `TestContext` makes the short name ambiguous.
+  An incremental build can miss these, so check with `--no-incremental`.
+- Remove the VSTest-bridge properties `TestingPlatformDotnetTestSupport` and `TestingPlatformShowTestsFailure`, and any `dotnet.config` or `runsettings.xml`.
+- Compare test counts per project with `main` before and after: they must match.
+
+**Test discovery.** `ci.yml` and `gate.sh` test a project only when its own `.csproj` contains `<IsTestProject>true</IsTestProject>`.
+A repo that sets it in `tests/Directory.Build.props` instead (atelier-store) would have every test project skipped while `Test Suite` still passes.
+Move the property into each test `.csproj`, or teach the Template's discovery about `Directory.Build.props` first.
+
 Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.csproj' --include='*.props' .` finds nothing and `dotnet test` passes under the new `global.json`.
 
 ## GitHub settings

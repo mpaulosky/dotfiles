@@ -44,7 +44,9 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
 
 - **Stale build servers break the pre-push gate.** With several IDEs running their own .NET builds, the gate can fail
   with bogus Razor errors (pages parsed as C#) on files the branch never touched. Run `dotnet build-server shutdown` and
-  delete the UI project's `obj/` and `bin/`, then push again.
+  delete the UI project's `obj/` and `bin/`, then push again. On IssueTracker these RZ1021 errors had been taken for an SDK
+  10.0.4xx limitation and written into its CLAUDE.md as the reason to stay on 10.0.3xx; after a shutdown, 10.0.401 built
+  the UI cleanly every time.
 - **Run one pre-push gate at a time** when the gate starts containers (Aspire, Testcontainers): parallel gates in two
   worktrees collide on fixed container names.
 - **A global `init.templateDir` reaches throwaway repos.** Hooks under `~/.git-templates/hooks` are installed into every

@@ -37,7 +37,11 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
 git init -q -b main "$REPO"
 mkdir -p "$REPO/tests/Fake.Tests" "$REPO/scripts"
-echo '<Project />' > "$REPO/tests/Fake.Tests/Fake.Tests.csproj"
+echo '<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>' \
+  > "$REPO/tests/Fake.Tests/Fake.Tests.csproj"
+# A helper library under tests/: not a test project, so the gate never tests it.
+mkdir -p "$REPO/tests/Fake.Support"
+echo '<Project />' > "$REPO/tests/Fake.Support/Fake.Support.csproj"
 cp "$GATE" "$REPO/scripts/gate.sh"
 git -C "$REPO" add .
 git -C "$REPO" commit -q -m init
@@ -159,6 +163,8 @@ expect "pushing main is refused" refused tests-skipped "Direct pushes to 'main' 
 
 run_hook feature/1-x "refs/heads/feature/1-x @HEAD@ refs/heads/feature/1-x $ZERO"
 expect "pushing a feature branch runs the gates" allowed tests-ran
+expect_log "the gate tests a project marked IsTestProject" ran 'dotnet test tests/Fake.Tests/Fake.Tests.csproj*'
+expect_log "the gate skips a helper library under tests/" not-ran 'dotnet test tests/Fake.Support/*'
 
 run_hook main "refs/heads/feature/1-x $SHA refs/heads/feature/1-x $ZERO"
 expect "pushing a branch that isn't checked out is refused" refused tests-skipped "is not the checked-out commit"

@@ -115,7 +115,12 @@ mapfile -t SOLUTIONS < <(find . -maxdepth 1 -name '*.slnx')
 dotnet build "${SOLUTIONS[@]}" --configuration Release -warnaserror
 
 step "Tests"
-mapfile -t TEST_PROJECTS < <(find tests -mindepth 2 -maxdepth 2 -name '*.csproj' 2>/dev/null | sort)
+# The rule ci.yml's discover-tests job uses: a project is a test project when
+# its .csproj says <IsTestProject>true</IsTestProject>. Helper libraries such as
+# TestingSupport.Library don't, and dotnet test on Microsoft Testing Platform
+# fails on them ("No test projects were found").
+mapfile -t TEST_PROJECTS < <(find tests -mindepth 2 -maxdepth 2 -name '*.csproj' -print0 2>/dev/null \
+  | xargs -0 -r grep -l '<IsTestProject>true</IsTestProject>' | sort)
 if [[ ${#TEST_PROJECTS[@]} -eq 0 ]]; then
   echo -e "${YELLOW}No test projects under tests/ — skipping.${RESET}"
 fi

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Local quality gate, run by .github/hooks/pre-push and safe to run by hand.
 # Lints the Markdown, YAML, workflow and shell files changed since origin/main
-# (every unpushed commit, with the same configs as CI), builds the solution,
-# then runs each test project under tests/. Exits non-zero on the first
+# (every unpushed commit, with the same configs as CI), runs the repo's own
+# checks in .github/ci/gate-checks.sh, builds the solution, then runs each test
+# project under tests/. Exits non-zero on the first
 # failing gate.
 set -euo pipefail
 
@@ -18,6 +19,7 @@ step() { echo -e "\n${CYAN}▶ $1${RESET}"; }
 if BASE="$(git merge-base HEAD origin/main 2>/dev/null)"; then
   CHANGED="$(git diff --name-only --diff-filter=ACMR "$BASE" HEAD)"
 else
+  BASE=""
   CHANGED="$(git ls-files)"
 fi
 
@@ -115,6 +117,13 @@ if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
   run_tool shellcheck "install shellcheck, or Docker" have_docker \
     docker run --rm -v "$ROOT:/mnt" -w /mnt "koalaman/shellcheck:${SHELLCHECK_VERSION}" \
     -- "${SHELL_FILES[@]}"
+fi
+
+# Checks only this repo needs (Seed, so Apply never overwrites them). It gets
+# the merge base, empty without an origin/main, to find its own changed files.
+if [[ -f .github/ci/gate-checks.sh ]]; then
+  step "Repo checks (.github/ci/gate-checks.sh)"
+  bash .github/ci/gate-checks.sh "$BASE"
 fi
 
 step "Build"

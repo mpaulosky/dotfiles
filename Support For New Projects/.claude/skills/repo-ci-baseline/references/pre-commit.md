@@ -5,8 +5,8 @@ Template files (Owned): `.github/hooks/pre-commit`, `.github/hooks/tests/pre-com
 
 ## Design
 
-The hook lints what the commit will contain. It writes each staged Markdown file's **index** content, plus the
-**staged** `.markdownlint-cli2.jsonc`, into a temporary tree with the same layout (`git checkout-index
+The hook lints what the commit will contain. It writes each staged Markdown file's **index** content, plus every
+**staged** `.markdownlint-cli2.jsonc` (the root one and any nested one), into a temporary tree with the same layout (`git checkout-index
 --prefix=<tmp>/`), then runs `markdownlint-cli2` from inside that tree. The config's `ignores` still apply there because
 the paths are unchanged.
 
@@ -14,6 +14,9 @@ the paths are unchanged.
   is there because a rename is listed under its new path, so dropping it lets a renamed file skip the lint.
 - Only a config that is in the index is used. A config that exists only in the working copy won't be in the commit, so
   it must not decide the result.
+- Nested configs count, because markdownlint-cli2 applies a directory's config to the files under it, in CI and the gate
+  alike. Snapshotting only the root config made vendored skills and Blazor-Server's `.sandcastle` prompts fail at commit
+  time while passing in CI.
 
 ## Tests
 
@@ -29,6 +32,7 @@ can't tell which config the hook used. Cases that must exist:
 - a staged config that differs from the working copy's → the staged rules apply
 - a config that isn't staged → not used
 - a staged file under an ignored path → allowed
+- a staged nested config → its rules apply under its directory; a nested config that isn't staged → not used
 - a path with spaces, a deletion (skips the lint), and no staged Markdown (skips the lint)
 
 Commit the test repo's setup with `git -c core.hooksPath=/dev/null`, so a global hooks path on the developer's machine
@@ -37,7 +41,7 @@ cases fail, and overwrite the renamed file so git sees an add and confirm the re
 
 ## Adapting
 
-**Only `.markdownlint-cli2.jsonc` may configure the rules.** markdownlint-cli2 also reads `.markdownlint.json`, and the
+**Only `.markdownlint-cli2.jsonc` files may configure the rules.** markdownlint-cli2 also reads `.markdownlint.json`, and the
 hook snapshots only the jsonc file. IssueManager's `.markdownlint.json` was `{"default": false}`, which turned every
 rule off in CI, the gate and the hook alike, so Markdown lint passed while checking nothing. The Template carries no
 `.markdownlint.json`, and `apply.sh` reports one as a conflict: delete it, then `markdownlint-cli2 --fix '**/*.md'`.

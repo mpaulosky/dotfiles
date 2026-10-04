@@ -23,6 +23,8 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
 
 ## Per-repo CI setup
 
+Move whatever the old `scripts/gate.sh` checked for this repo alone into `.github/ci/gate-checks.sh`, guarded by the paths each check covers.
+
 Move whatever the old `ci.yml` did for this repo alone into `.github/ci/prepare.sh` (`build`, or `test <name>`):
 
 - Tools the build runs: atelier-store's Tailwind build needs pnpm, so `corepack enable` (pnpm's version comes from `packageManager` in `package.json`).

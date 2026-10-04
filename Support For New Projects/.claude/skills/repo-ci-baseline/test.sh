@@ -63,7 +63,7 @@ yamllint -c "$owned/.yamllint.yml" "${yaml_files[@]}" || fail "yamllint"
 step "shellcheck"
 shell_files=(
   "$skill_dir/apply.sh" "$skill_dir/test.sh"
-  "$owned/scripts/gate.sh" "$seed/.github/ci/prepare.sh"
+  "$owned/scripts/gate.sh" "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )

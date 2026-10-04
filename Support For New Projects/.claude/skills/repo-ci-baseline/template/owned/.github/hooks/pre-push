@@ -86,6 +86,17 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   git status --short | head -n 20
   exit 1
 fi
+
+# Sandcastle runs this gate in its sandbox and records the commit it passed as
+# sandcastle.gatedHead before pushing it. Every pushed branch is HEAD and the
+# tree is clean (both checked above), so a HEAD Sandcastle already gated needs
+# no second run. Unset everywhere but a Sandcastle repo.
+GATED_HEAD="$(git config --local --get sandcastle.gatedHead 2>/dev/null || true)"
+if [[ -n "$GATED_HEAD" && "$GATED_HEAD" == "$(git rev-parse HEAD)" ]]; then
+  echo -e "${GREEN}✅ Sandcastle already gated ${GATED_HEAD:0:12} — skipping the gate.${RESET}"
+  exit 0
+fi
+
 "$ROOT/scripts/gate.sh"
 
 echo -e "\n${GREEN}━━━ All gates passed — pushing ✅ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"

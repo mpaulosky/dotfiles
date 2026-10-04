@@ -3,7 +3,8 @@
 # Each case stages Markdown in a throwaway repo and runs the hook. A stub
 # `markdownlint-cli2` logs the files it is given and applies two rules from the
 # .markdownlint-cli2.jsonc it finds in its working directory: "forbid" names a
-# word that fails a file, and "ignores" lists "prefix/**" paths it skips. So a
+# word that fails a file, and "ignores" lists "prefix/**" paths it skips. A
+# nested config's "forbid" replaces the root's for the files under it. So a
 # case can tell whether the hook linted the staged content or the working
 # copy, and under which config, without needing the real linter.
 # Usage: .github/hooks/tests/pre-commit.test.sh
@@ -30,8 +31,17 @@ for file in "\$@"; do
   if [[ -n "\$ignored" && "\$file" == "\$ignored"* ]]; then
     continue
   fi
-  if grep -q "\$word" "\$file"; then
-    echo "\$file: \$word found"
+  # A nested config's "forbid" replaces the root's for the files under it.
+  file_word="\$word" dir=\$(dirname "\$file")
+  while [[ "\$dir" != "." ]]; do
+    if [[ -f "\$dir/.markdownlint-cli2.jsonc" ]]; then
+      file_word=\$(sed -n 's/.*"forbid": *"\\([^"]*\\)".*/\\1/p' "\$dir/.markdownlint-cli2.jsonc")
+      break
+    fi
+    dir=\$(dirname "\$dir")
+  done
+  if grep -q "\$file_word" "\$file"; then
+    echo "\$file: \$file_word found"
     status=1
   fi
 done
@@ -185,6 +195,24 @@ echo 'BAD text.' > "$REPO/docs/blogs/post.md"
 git -C "$REPO" add docs/blogs/post.md
 run_hook
 expect "a staged file under an ignored path passes" allowed linted
+reset_repo
+
+# A nested config (here allowing BAD under vendor/) applies to its directory,
+# as it does in CI, but only once it's staged.
+mkdir -p "$REPO/vendor"
+echo '{ "forbid": "NESTED" }' > "$REPO/vendor/.markdownlint-cli2.jsonc"
+echo 'BAD text.' > "$REPO/vendor/notes.md"
+git -C "$REPO" add vendor
+run_hook
+expect "a staged nested config's rules apply under its directory" allowed linted
+reset_repo
+
+mkdir -p "$REPO/vendor"
+echo '{ "forbid": "NESTED" }' > "$REPO/vendor/.markdownlint-cli2.jsonc"
+echo 'BAD text.' > "$REPO/vendor/notes.md"
+git -C "$REPO" add vendor/notes.md
+run_hook
+expect "a nested config that isn't staged isn't used" refused linted
 reset_repo
 
 echo

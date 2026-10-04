@@ -87,12 +87,25 @@ step ".gitignore keeps secrets out"
 ignore_repo="$md_tmp/ignore-repo"
 git init -q "$ignore_repo"
 command cp -f "$owned/.gitignore" "$ignore_repo/.gitignore"
-for path in .env .env.local; do
+for path in .env .env.local .sandcastle/.env src/App/.env.local; do
   git -C "$ignore_repo" check-ignore -q "$path" || fail ".gitignore must ignore $path"
 done
 if git -C "$ignore_repo" check-ignore -q .env.example; then
   fail ".gitignore must not ignore .env.example"
 fi
+
+step "Claude Code settings deny .env files"
+# A pattern without **/ matches only at the working directory, so a nested
+# secrets file such as .sandcastle/.env would stay readable.
+python3 - "$owned/.claude/settings.json" <<'PY' || fail ".claude/settings.json must deny Read and Edit of **/.env and **/.env.*"
+import json, sys
+deny = set(json.load(open(sys.argv[1]))["permissions"]["deny"])
+want = {f"{tool}({pattern})" for tool in ("Read", "Edit") for pattern in ("**/.env", "**/.env.*")}
+missing = sorted(want - deny)
+if missing:
+    print("missing deny rules:", ", ".join(missing))
+    sys.exit(1)
+PY
 
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"

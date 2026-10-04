@@ -30,8 +30,13 @@ clone without the one-time setup. Before the CI check, such branches reached PRs
 TicketManager #95, IssueManager #222, Articles #272, all `claude/project-thread-ot9sjt`). The CI job refuses them
 until the branch is renamed. Rename it on GitHub (the repo's Branches page, or
 `gh api -X POST repos/<owner>/<repo>/branches/<branch>/rename -f new_name=fix/42-null-children`, with `/` in the old
-name written as `%2F`) and the open PR follows the new name. A repo's `CLAUDE.md` can ask cloud sessions to name the
-branch to the standard in the first place.
+name written as `%2F`) and the open PR follows the new name. Then close and reopen the PR (`gh pr close <n>` and
+`gh pr reopen <n>`): a rename makes no new commit, so no check runs, and re-running the failed check reuses the old
+name. The reopened run checks the new one. A repo's `CLAUDE.md` can ask cloud sessions to name the branch to the
+standard in the first place.
+
+The check guards the process, not against a hostile PR. Under `pull_request` the job runs the PR's own copy of the
+script and of `ci.yml`, so a PR can change either, as it can for `Build Solution`; such an edit shows in its review.
 
 The CI job also accepts the branches that only Actions and Dependabot create, which no hook sees:
 `docs/release-notes` (`release.yml`), `docs/backfill-blog-posts` (`backfill-blog-posts.yml`) and `dependabot/*`.
@@ -130,5 +135,5 @@ CI's hook-tests job runs this suite, `pre-commit.test.sh` and `check-branch-name
 
 Push a branch named under a retired prefix (`git push --dry-run` still runs the hook): it's refused with the standard's
 message. Push a `fix/{issue}-{slug}` branch: the gate runs. Open a PR from a branch outside the standard (pushed with
-`--no-verify`): the **Branch name** check fails, and passes once the branch is renamed. Stage a change in the primary checkout and commit: it's
+`--no-verify`): the **Branch name** check fails. Rename the branch, close and reopen the PR: it passes. Stage a change in the primary checkout and commit: it's
 refused with the `git worktree add` command.

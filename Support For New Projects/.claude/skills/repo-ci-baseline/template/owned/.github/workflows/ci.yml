@@ -129,7 +129,9 @@ jobs:
   # claude/... branch, GitHub's web editor, a clone without core.hooksPath),
   # so this is the gate: a required status check. Rename a refused branch on
   # GitHub (Branches → rename, or the branches/<name>/rename API) and the PR
-  # follows it. Fork PRs are skipped, which a required check counts as passing.
+  # follows it, then close and reopen the PR: a rename is no new commit, and a
+  # re-run reuses the old name, so only the reopened run checks the new one.
+  # Fork PRs are skipped, which a required check counts as passing.
   branch-name:
     name: Branch name
     if: >-

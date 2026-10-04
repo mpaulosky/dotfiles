@@ -6,7 +6,11 @@ IssueManager #235 moved the decision into `.github/scripts/automerge-decision.mj
 The Template keeps the script inline in the workflow and tests it there:
 `.github/scripts/tests/pr-automerge.test.mjs` reads the `script: |` block out of the workflow and runs it against a fake GitHub client, so the tests cover exactly what the workflow runs.
 CI's `Auto-merge tests` job and `test.sh` run it.
-Whether to move to IssueManager's separate module is still open, due before TicketManager is Standardized.
+It stays inline: a separate module would need a checkout step in the privileged `pull_request_target` job, and a module tested apart from the workflow can drift from what runs.
+TicketManager's module arms native auto-merge without waiting for review, which the Template replaces.
+IssueManager's waits for review as the Template does, without the review cap or the hand-back hold.
+Both also merge an `UNSTABLE` PR (required checks passed, optional ones pending or failing).
+The Template waits for `CLEAN` on purpose, so a failing optional check such as markdownlint gets fixed rather than merged past.
 
 ## What it guarantees
 

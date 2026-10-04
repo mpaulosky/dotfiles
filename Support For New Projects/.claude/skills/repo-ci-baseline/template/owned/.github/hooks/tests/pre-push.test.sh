@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for .github/hooks/pre-push.
 # Each case runs the hook in a throwaway repo, holding copies of
-# scripts/gate.sh and scripts/check-branch-name.sh, with the refs git would
+# scripts/gate.sh, scripts/check-branch-name.sh and
+# .github/scripts/discover_tests.py, with the refs git would
 # pass on stdin. Stub `dotnet`, `npx`, `markdownlint-cli2`, `yamllint`,
 # `actionlint`, `zizmor` and `shellcheck` binaries log each call, and fail when the call matches the FAIL glob, so no
 # real build or network access is needed.
@@ -10,6 +11,7 @@ set -uo pipefail
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pre-push"
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts"
+DISCOVER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/discover_tests.py"
 ZERO="0000000000000000000000000000000000000000"
 SHA="1111111111111111111111111111111111111111"
 
@@ -38,9 +40,14 @@ export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
 git init -q -b main "$REPO"
-mkdir -p "$REPO/tests/Fake.Tests" "$REPO/scripts"
-echo '<Project />' > "$REPO/tests/Fake.Tests/Fake.Tests.csproj"
+mkdir -p "$REPO/tests/Fake.Tests" "$REPO/scripts" "$REPO/.github/scripts"
+echo '<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>' \
+  > "$REPO/tests/Fake.Tests/Fake.Tests.csproj"
+# A helper library under tests/: not a test project, so the gate never tests it.
+mkdir -p "$REPO/tests/Fake.Support"
+echo '<Project />' > "$REPO/tests/Fake.Support/Fake.Support.csproj"
 cp "$SCRIPTS/gate.sh" "$SCRIPTS/check-branch-name.sh" "$REPO/scripts/"
+cp "$DISCOVER" "$REPO/.github/scripts/"
 git -C "$REPO" add .
 git -C "$REPO" commit -q -m init
 git -C "$REPO" update-ref refs/remotes/origin/main main
@@ -161,6 +168,8 @@ expect "pushing main is refused" refused tests-skipped "Direct pushes to 'main' 
 
 run_hook feature/1-x "refs/heads/feature/1-x @HEAD@ refs/heads/feature/1-x $ZERO"
 expect "pushing a feature branch runs the gates" allowed tests-ran
+expect_log "the gate tests a project marked IsTestProject" ran 'dotnet test tests/Fake.Tests/Fake.Tests.csproj*'
+expect_log "the gate skips a helper library under tests/" not-ran 'dotnet test tests/Fake.Support/*'
 
 run_hook main "refs/heads/feature/1-x $SHA refs/heads/feature/1-x $ZERO"
 expect "pushing a branch that isn't checked out is refused" refused tests-skipped "is not the checked-out commit"

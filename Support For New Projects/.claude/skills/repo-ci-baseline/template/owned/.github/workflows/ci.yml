@@ -236,17 +236,14 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.discover-tests.outputs.matrix) }}
 
-    # Secrets live on this job only, never on the build or lint jobs, and
-    # each one is optional: unset, it reaches the tests as an empty string.
-    # Dependabot runs get none; the fixtures that need them fall back to
-    # fake settings. Other per-repo variables go in .github/ci/prepare.sh,
-    # which can append them to $GITHUB_ENV.
+    # Test secrets reach this job only, never the build or lint jobs, through
+    # the "Load test secrets" step below. Other per-repo variables go in
+    # .github/ci/prepare.sh, which can append them to $GITHUB_ENV.
     env:
       ASPIRE_ALLOW_UNSECURED_TRANSPORT: "true"
       # Enable Playwright trace/video/screenshot capture for E2E jobs
       PLAYWRIGHT_ARTIFACTS: >-
         ${{ matrix.requires_playwright && 'true' || 'false' }}
-      MongoDB__ConnectionString: ${{ secrets.MONGODB_CONNECTION_STRING }}
 
     steps:
       - name: Checkout code
@@ -271,6 +268,17 @@ jobs:
 
       - name: Restore dependencies
         run: dotnet restore
+
+      # The repo's optional TEST_ENV secret holds NAME=value lines, such as
+      # MongoDB__ConnectionString=...; load_test_env.py (tested in
+      # .github/scripts/tests) masks each value and exports it to the later
+      # steps. One fixed secret keeps repo values out of this Owned file.
+      # Unset, as on every Dependabot run, it exports nothing, and the
+      # fixtures that need a secret fall back to fake settings.
+      - name: Load test secrets
+        env:
+          TEST_ENV: ${{ secrets.TEST_ENV }}
+        run: python3 .github/scripts/load_test_env.py --output "$GITHUB_ENV"
 
       # Repo-specific setup for this test project (a Seed file the repo
       # owns), such as publishing a project or pulling images it needs.

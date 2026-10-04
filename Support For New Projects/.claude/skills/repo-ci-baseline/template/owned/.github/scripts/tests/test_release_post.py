@@ -263,7 +263,8 @@ def test_setext_headings_follow_commonmark_paragraphs(text, expected):
         # Tabs expand to 4-column stops, so a tab-indented line continues the list item.
         ("-\t# First\n\t# Second", "-   ### First\n    ### Second"),
         # A line that fails to continue a quote or list item may open any list item
-        # (CommonMark's reference parser agrees); inside the item, only "1." interrupts.
+        # (GitHub's renderer and CommonMark's reference parser agree); inside the
+        # item, only "1." interrupts.
         ("> paragraph\n2. # Context", "> paragraph\n2. ### Context"),
         ("- a\n2. # b", "- a\n2. ### b"),
         ("- a\n  2. # b", "- a\n  2. # b"),
@@ -313,6 +314,78 @@ def test_scanning_stays_linear_in_nesting_depth_and_length(shape):
 
     small, large = best(2_000), best(8_000)
     assert large < max(small, 0.001) * 10
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A "#" line inside a raw HTML block is text: GitHub renders it literally.
+        ("<details>\n# x\n</details>", "<details>\n# x\n</details>"),
+        ("<div>\n## y\n</div>\n\n# z", "<div>\n## y\n</div>\n\n### z"),
+        ("<pre>\n# code\n</pre>\n# after", "<pre>\n# code\n</pre>\n### after"),
+        ("- <div>\n  # x\n# root", "- <div>\n  # x\n### root"),
+        # Block-tag blocks end at a blank line, so Markdown after one is Markdown again.
+        (
+            "<details>\n<summary>S</summary>\n\n# x\n\n</details>",
+            "<details>\n<summary>S</summary>\n\n### x\n\n</details>",
+        ),
+        ("<span>\n# inside\n\n# after", "<span>\n# inside\n\n### after"),
+        # A block tag interrupts a paragraph; any other tag doesn't...
+        ("text\n<details>\n# w\n</details>", "text\n<details>\n# w\n</details>"),
+        ("text\n<span>\n# v", "text\n<span>\n### v"),
+        # ...unless the line fails to continue its quote, when any HTML block can open.
+        ("> quote\n<span>\n# after", "> quote\n<span>\n# after"),
+        # A comment can close on the line that opens it.
+        ("<!-->\n# after", "<!-->\n### after"),
+        # Processing instructions, declarations and CDATA stay opaque until their own marker.
+        ("<?php\n# x\n?>\n# after", "<?php\n# x\n?>\n### after"),
+        ("<!DOCTYPE html\n# x\n>\n# after", "<!DOCTYPE html\n# x\n>\n### after"),
+        ("<![CDATA[\n# x\n]]>\n# after", "<![CDATA[\n# x\n]]>\n### after"),
+        # A declaration needs an uppercase letter: GitHub reads "<!doctype" as text.
+        ("<!doctype html\n# x", "<!doctype html\n### x"),
+        # The tag grammar is ASCII: a non-breaking space or a long s ("\u017f", which
+        # Unicode case-folds to "s") makes the line text, so GitHub reads the "#" after it
+        # as a heading. ASCII case-insensitivity still applies.
+        ("<div\u00a0>\n# x", "<div\u00a0>\n### x"),
+        ("<\u017ftyle>\n# x", "<\u017ftyle>\n### x"),
+        ('<a\u00a0href="x">\n# y', '<a\u00a0href="x">\n### y'),
+        ("<DIV>\n# x", "<DIV>\n# x"),
+        # Only spaces and tabs make a blank line: a non-breaking space doesn't end the block.
+        ("<div>\n\u00a0\n# x", "<div>\n\u00a0\n# x"),
+        ("<div>\n \t\n# x", "<div>\n \t\n### x"),
+    ],
+)
+def test_nest_headings_leaves_raw_html_blocks_alone(text, expected):
+    assert rp.nest_headings(text) == expected
+
+
+def test_an_html_block_never_becomes_the_excerpt():
+    body = "<details>\n<summary>Notes</summary>\n\nThe real description.\n\n</details>"
+    post = rp.render_post({"number": 7, "body": body}, "T", "v1.2.3", "2026-09-26", [], [], None, "m")
+    assert rp.post_excerpt(post) == "The real description."
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # PR bodies from the GitHub API often use CRLF; GitHub reads these as two H1s.
+        ("Title\r\n===\r\n\r\n# x", "### Title\n\n### x"),
+        ("- item\r\n  ---\r\n", "- ### item\n"),
+        ("<div>\r\n\r\n# x", "<div>\n\n### x"),
+        ("Title\r===", "### Title"),  # a lone CR is a line ending too
+        # A non-breaking space is text: this line continues the paragraph instead of ending it.
+        ("para\n\u00a0\n# y", "para\n\u00a0\n### y"),
+        # List numbers are ASCII digits: GitHub reads these lines as paragraph text.
+        ("\u0661. # x", "\u0661. # x"),
+        ("\uff11. # x", "\uff11. # x"),
+    ],
+)
+def test_nest_headings_reads_line_endings_and_blank_lines_as_commonmark_does(text, expected):
+    assert rp.nest_headings(text) == expected
+
+
+def test_code_lines_treats_a_trailing_cr_as_part_of_the_line_ending():
+    assert rp.code_lines(["<div>\r", "\r", "# x"]) == {0}
 
 
 def test_a_fence_line_with_an_info_string_does_not_close_the_fence():

@@ -38,6 +38,17 @@ def test_parse_rejects_reserved_names(name):
         lte.parse(f"{name}=x")
 
 
+def test_parse_accepts_lowercase_names_that_only_look_reserved():
+    # Linux names are distinct by case, and the runner blocks no prefix.
+    assert lte.parse("github_client_id=x\nrunner_name=y") == [("github_client_id", "x"), ("runner_name", "y")]
+
+
+@pytest.mark.parametrize("name", ["NODE_OPTIONS", "node_options"])
+def test_parse_rejects_node_options_the_runner_wont_export(name):
+    with pytest.raises(ValueError, match="line 1 sets NODE_OPTIONS"):
+        lte.parse(f"{name}=--max-old-space-size=4096")
+
+
 def test_main_masks_each_value_before_exporting_it(tmp_path):
     status, output, log = run(tmp_path, "A=secret-one\nB=secret-two\n")
 

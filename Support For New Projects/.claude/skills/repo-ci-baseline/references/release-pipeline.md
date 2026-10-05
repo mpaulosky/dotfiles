@@ -108,7 +108,7 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
 - **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages
   build. The post body sits between `<!-- {% raw %} -->` and `<!-- {% endraw %} -->` (comments, so neither GitHub nor
   Pages shows them), and a `{%` that would read as `endraw` is printed by Liquid instead. The README and blog index
-  tables aren't in a raw block, so their titles have every `{` as `&#123;`, or `%7B` in an autolink, where an entity
+  tables aren't in a raw block, so their titles have every `{` as `&#123;`, or `%7B` (and `}` as `%7D`) in an autolink, where an entity
   isn't decoded: the link still works and Liquid can't read it (mpaulosky/dotfiles#69).
   In the blog index a title is a link label, so its `[` outside code and every `]` become entities: `fix: ](https://…)`
   can't close the label and link the row elsewhere, however a parser pairs the backticks.

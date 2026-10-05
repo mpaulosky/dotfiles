@@ -1054,14 +1054,14 @@ def test_the_pr_title_is_escaped_in_the_post_and_both_tables(tmp_path):
 @pytest.mark.parametrize(
     ("title", "encoded"),
     [
-        ("fix: <https://example.test/{{site.title}}>", "<https://example.test/%7B%7Bsite.title}}>"),
-        ("fix: <https://example.test/{%include%}>", "<https://example.test/%7B%include%}>"),
-        ("fix: <mailto:a{{x}}@b.c>", "<mailto:a%7B%7Bx}}@b.c>"),
+        ("fix: <https://example.test/{{site.title}}>", "<https://example.test/%7B%7Bsite.title%7D%7D>"),
+        ("fix: <https://example.test/{%include%}>", "<https://example.test/%7B%include%%7D>"),
+        ("fix: <mailto:a{{x}}@b.c>", "<mailto:a%7B%7Bx%7D%7D@b.c>"),
     ],
 )
 def test_liquid_in_a_title_autolink_is_encoded_in_both_tables(tmp_path, title, encoded):
     # The tables have no {% raw %} wrapper, so an autolink can't keep its braces (mpaulosky/dotfiles#69).
-    # %7B is the URL's own encoding of "{", so the link still works.
+    # %7B and %7D are the URL's own encoding of the braces, so the link still works.
     rp.update_blog_index(tmp_path, "2026-10-05", title, "p.md")
     [row] = [line for line in (tmp_path / "README.md").read_text().splitlines() if "p.md" in line]
     assert encoded in row

@@ -56,7 +56,7 @@ any gate you did not actually run as not run.
    ```
 
    **b. Markdown lint**, if `.md` changed:
-   `npx --yes markdownlint-cli2 <changed files>` (picks up the repo's
+   `pnpm dlx markdownlint-cli2 <changed files>` (picks up the repo's
    `.markdownlint*` config when present).
 
    **c. Build repair loop.** `dotnet restore <solution>`, then

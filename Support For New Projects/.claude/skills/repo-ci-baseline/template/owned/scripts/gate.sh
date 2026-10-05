@@ -80,12 +80,10 @@ if [[ ${#MD_FILES[@]} -gt 0 ]]; then
     markdownlint-cli2 "${MD_FILES[@]}"
   elif command -v pnpm &>/dev/null; then
     pnpm dlx "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}" "${MD_FILES[@]}"
-  elif [[ -n "$(git ls-files '*pnpm-lock.yaml' 'pnpm-lock.yaml')" ]]; then
-    # A repo whose Node project uses pnpm forbids npm and npx.
-    echo "Markdown lint needs pnpm in this repo: corepack enable, or pnpm add -g markdownlint-cli2." >&2
-    exit 1
   else
-    npx --yes "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}" "${MD_FILES[@]}"
+    # Every repo uses pnpm, never npm or npx, so without pnpm there is no way to lint.
+    echo "Markdown lint needs pnpm: corepack enable pnpm, or pnpm add -g markdownlint-cli2." >&2
+    exit 1
   fi
 fi
 

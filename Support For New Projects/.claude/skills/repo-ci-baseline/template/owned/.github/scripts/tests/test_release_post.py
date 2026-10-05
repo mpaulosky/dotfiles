@@ -1502,6 +1502,12 @@ def test_a_backtick_line_with_backticks_after_it_is_a_code_span(body, expected):
         ("[x](<docs/a.md>)", "[x](docs/a.md)"),
         ('[x](<docs/a b(1).md> "t")', '[x](docs/a%20b%281%29.md "t")'),
         ("[x](<a\\>b.md>)", "[x](a%3Eb.md)"),
+        # An escaped punctuation character stays escaped, which a bare destination reads the same way.
+        ("[x](<a\\_b.md>)", "[x](a\\_b.md)"),
+        # A backslash that escapes nothing is part of the URL, so it is encoded rather than left to escape what follows.
+        ("[x](<a\\ b.md>)", "[x](a%5C%20b.md)"),
+        ("[x](<a\\\tb.md>)", "[x](a%5C%09b.md)"),
+        ("[x](<a\\b.md>)", "[x](a%5Cb.md)"),
         # Its scheme is still checked.
         ("[x](<javascript:alert(1)>)", "[x](#javascript:alert%281%29)"),
         # Without a label, it is text.

@@ -595,6 +595,8 @@ CODE_SPAN_RISK = re.compile(r"[<{\]]")
 ANGLE_DESTINATION = object()
 # How a <destination>'s characters that a bare one can't hold are written in it.
 BARE_DESTINATION_ESCAPES = {" ": "%20", "\t": "%09", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E"}
+# The characters a backslash escapes in CommonMark: ASCII punctuation.
+ESCAPABLE = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 
 
 DECIMAL_ZEROS = re.compile(r"&#0+(?=[0-9])")
@@ -668,19 +670,23 @@ def bare_destination(angle):
 
     The sanitizer escapes every "<" that isn't an autolink, which would put
     "&lt;" into the URL, so the brackets go and what they allowed is
-    percent-encoded, as CommonMark encodes it in the URL anyway.
+    percent-encoded, as CommonMark's reference renderer writes it in the href.
+    A backslash that escapes nothing is part of the URL; left bare, it could
+    escape what follows, so it is percent-encoded too.
     """
     out = []
     pos = 0
     while pos < len(angle):
         char = angle[pos]
-        if char == "\\" and pos + 1 < len(angle) and angle[pos + 1] in BARE_DESTINATION_ESCAPES:
+        if char == "\\" and pos + 1 < len(angle) and angle[pos + 1] in ESCAPABLE:
+            if angle[pos + 1] not in BARE_DESTINATION_ESCAPES:
+                out.append(angle[pos:pos + 2])
+                pos += 2
+                continue
             pos += 1
             char = angle[pos]
-        elif char == "\\" and pos + 1 < len(angle):
-            out.append(angle[pos:pos + 2])
-            pos += 2
-            continue
+        elif char == "\\":
+            char = "%5C"
         out.append(BARE_DESTINATION_ESCAPES.get(char, char))
         pos += 1
     return "".join(out)

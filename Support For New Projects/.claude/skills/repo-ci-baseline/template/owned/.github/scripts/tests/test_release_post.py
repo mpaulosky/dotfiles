@@ -606,6 +606,9 @@ def test_rebase_readme_links_leaves_fenced_code_in_block_quotes_alone():
         'Use `<a href="docs/a.md">` or ``<img src="docs/b.png">``.\n',
         "``[x](docs/a.md) with ` inside``\n",
         "> - `[x](docs/a.md)`\n",
+        # A span may cross a line break inside a paragraph.
+        "See `[x](docs/a.md)\nand [y](docs/b.md)` here.\n",
+        "Use `<a\nhref=\"docs/a.md\">` there.\n",
         # Indented code, at the top level, after a blank line in a list item, and in a quote.
         "Example:\n\n    [x](docs/a.md)\n    [y]: docs/b.md\n    <img src=\"docs/c.png\">\n",
         "- item\n\n      [x](docs/a.md)\n",
@@ -624,6 +627,12 @@ def test_rebase_readme_links_leaves_code_spans_and_indented_code_alone(text):
         # Links around and after code spans are still rebased, and so is one whose text is code.
         ("`docs/a.md` is [here](docs/a.md)\n", "`docs/a.md` is [here](a.md)\n"),
         ("[`a.md`](docs/a.md) and `x` <img src=\"docs/b.png\">\n", "[`a.md`](a.md) and `x` <img src=\"b.png\">\n"),
+        # A blank line ends the paragraph, so these backticks pair with nothing across it.
+        ("a `[x](docs/a.md)\n\n[y](docs/b.md)` b\n", "a `[x](a.md)\n\n[y](b.md)` b\n"),
+        # So does a blank line with a CRLF ending, which keeps its "\r" in the README's lines.
+        ("a `[x](docs/a.md)\r\n\r\n[y](docs/b.md)` b\r\n", "a `[x](a.md)\r\n\r\n[y](b.md)` b\r\n"),
+        # After a span that crossed lines, the rest of its last line is text again.
+        ("`x\ny` [z](docs/a.md)\n", "`x\ny` [z](a.md)\n"),
         # Backtick runs of different lengths don't pair, so this holds no code span.
         ("``[x](docs/a.md)`\n", "``[x](a.md)`\n"),
         # An escaped backtick opens no span.
@@ -1154,3 +1163,41 @@ def test_the_post_is_liquid_raw_and_its_text_cannot_end_the_raw_block():
 def test_excerpts_read_escaped_text_as_the_text_it_stands_for():
     post = rp.render_post({"number": 7, "body": "Returns `List<T>` for <id> & {: x}."}, "T", "v1", "2026-09-26", [], [], None, "m")
     assert rp.post_excerpt(post) == "Returns List<T> for <id> & {: x}."
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("&#9; &#x9; &#0009; &#x0000a;", "\t \t \t \n"),
+        ("&#" + "0" * 5000 + "9;", "\t"),  # leading zeros past Python's 4300-digit limit
+        ("&#x" + "0" * 5000 + "41;", "A"),
+        ("&#" + "9" * 5000 + ";", "\ufffd"),  # no character has a number that long
+        ("&#; &#x; a &amp; b", "&#; &#x; a & b"),
+    ],
+)
+def test_safe_unescape_never_raises(text, expected):
+    assert rp.safe_unescape(text) == expected
+
+
+def test_an_oversized_character_reference_is_sanitized_not_fatal():
+    # html.unescape raises on it, which would stop the release before its post was written.
+    padded = "&#" + "0" * 5000 + "9;"
+    assert rp.neutralize_links(f"[a](java{padded}script:x)") == f"[a](#java{padded}script:x)"
+    post = rp.render_post({"number": 7, "body": f"Text {padded} [a](java{padded}script:x)"}, "T", "v1", "2026-09-26", [], [], None, "m")
+    assert "](#java" in post
+    assert rp.post_excerpt(post).startswith("Text")
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A code span may cross a line break; its text stays code, and a risky one becomes <code>
+        # with the break as the space CommonMark renders.
+        ("Use `List<T>\nand Map<K>` here", "Use <code>List&#60;T&#62; and Map&#60;K&#62;</code> here"),
+        ("Use `plain\ntext` and <b>", "Use `plain\ntext` and &lt;b>"),
+        # A blank line ends the paragraph, so these backticks open no span and <T> is escaped.
+        ("Use `a <T>\n\nb` c", "Use `a &lt;T>\n\nb` c"),
+    ],
+)
+def test_code_spans_may_cross_line_breaks(body, expected):
+    assert rp.sanitize_markdown(body) == expected

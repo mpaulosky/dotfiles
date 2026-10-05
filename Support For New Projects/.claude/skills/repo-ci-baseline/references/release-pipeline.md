@@ -82,7 +82,7 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
 (mpaulosky/dotfiles#48, from Copilot's review of Articles#280):
 
 - **HTML:** every `<` outside code becomes `&lt;`, except `<https://…>`, `<http://…>` and `<mailto:…>` autolinks. HTML
-  comments are dropped. A description's `<details>` therefore shows as text.
+  comments outside code are dropped. A description's `<details>` therefore shows as text.
 - **Links:** a destination after `](` or `]:` whose scheme isn't `http`, `https` or `mailto` gets a `#` in front, so it
   becomes a fragment link. Entities and control characters are read the way browsers read them, so `java&#9;script:` counts,
   however much padding pushes the scheme along. An entity's leading zeros are dropped before decoding: Python refuses
@@ -98,12 +98,19 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   safe however a parser pairs the backticks. A span may cross a line break, but not the end of its paragraph, as in
   CommonMark: a blank line, or a line that opens a heading, list item, quote, thematic break, fence or setext underline
   (#57). The README's `docs/` copy pairs spans the same way when it rebases links. File names with risky characters are written the same way.
+- **Code is found first, on the raw text** (#58), and every other change (dropping comments, neutralizing links,
+  escaping, collapsing blank lines, rebasing links) is made only outside it. So `` `<!-- TODO -->` `` stays code, a code
+  block keeps its tabs and blank lines, and so does the README's code. Spans and comments are read left to right, as
+  CommonMark reads them: whichever starts first wins, so a comment hides its backticks. A complete inline link's
+  destination and title are read before spans, so `` [x](docs/a.md "Use `code`") `` stays one link. Where this scanner and
+  a renderer could pair backticks differently, the result is still safe: a span left between backticks holds no `<`,
+  `{` or `]`, and the text outside it is escaped either way.
 - **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages
   build. The post body sits between `<!-- {% raw %} -->` and `<!-- {% endraw %} -->` (comments, so neither GitHub nor
   Pages shows them), and a `{%` that would read as `endraw` is printed by Liquid instead. The README and blog index
   tables aren't in a raw block, so their titles have every `{` as `&#123;`.
-  In the blog index a title is a link label, so its `[` and `]` outside code become entities: `fix: ](https://…)` can't
-  close the label and link the row elsewhere.
+  In the blog index a title is a link label, so its `[` outside code and every `]` become entities: `fix: ](https://…)`
+  can't close the label and link the row elsewhere, however a parser pairs the backticks.
 - **The front matter's `post_title`** stays as written: it's a YAML string, never rendered as Markdown.
 - **Excerpts** read the escaped text back as plain text.
 

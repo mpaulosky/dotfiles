@@ -599,6 +599,47 @@ def test_rebase_readme_links_leaves_fenced_code_in_block_quotes_alone():
     )
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Write `[x](docs/a.md)` for a link.\n",
+        'Use `<a href="docs/a.md">` or ``<img src="docs/b.png">``.\n',
+        "``[x](docs/a.md) with ` inside``\n",
+        "> - `[x](docs/a.md)`\n",
+        # Indented code, at the top level, after a blank line in a list item, and in a quote.
+        "Example:\n\n    [x](docs/a.md)\n    [y]: docs/b.md\n    <img src=\"docs/c.png\">\n",
+        "- item\n\n      [x](docs/a.md)\n",
+        ">     [x](docs/a.md)\n",
+        # A fence in a list item, indented past the item's content column.
+        "1. item\n\n   ```\n   [x](docs/a.md)\n   ```\n",
+    ],
+)
+def test_rebase_readme_links_leaves_code_spans_and_indented_code_alone(text):
+    assert rp.rebase_readme_links(text) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Links around and after code spans are still rebased, and so is one whose text is code.
+        ("`docs/a.md` is [here](docs/a.md)\n", "`docs/a.md` is [here](a.md)\n"),
+        ("[`a.md`](docs/a.md) and `x` <img src=\"docs/b.png\">\n", "[`a.md`](a.md) and `x` <img src=\"b.png\">\n"),
+        # Backtick runs of different lengths don't pair, so this holds no code span.
+        ("``[x](docs/a.md)`\n", "``[x](a.md)`\n"),
+        # An escaped backtick opens no span.
+        ("\\`[x](docs/a.md)`\n", "\\`[x](a.md)`\n"),
+        # A reference definition is read before code spans, so code in its label doesn't hide it.
+        ("[`a`]: docs/a.md\n", "[`a`]: a.md\n"),
+        # Four spaces continuing a paragraph are text, not indented code.
+        ("Text\n    [x](docs/a.md)\n", "Text\n    [x](a.md)\n"),
+        # Backticks in a raw HTML block are text, not code spans.
+        ('<div>\n`<img src="docs/a.png">`\n</div>\n', '<div>\n`<img src="a.png">`\n</div>\n'),
+    ],
+)
+def test_rebase_readme_links_still_rebases_text_beside_code(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
 def test_run_rebases_links_in_docs_readme_only(tmp_path):
     make_repo(tmp_path)
     links = "[Architecture](docs/ARCHITECTURE.md), [props](Directory.Packages.props) and [docs](docs).\n"

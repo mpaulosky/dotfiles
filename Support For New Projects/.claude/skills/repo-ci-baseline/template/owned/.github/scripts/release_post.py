@@ -657,11 +657,26 @@ def sanitize_line(line, liquid=False):
 
     out = []
     done = 0
+    for start, end, content in code_spans(line):
+        out.append(escape_text(line[done:start], liquid))
+        out.append(code_html(content) if CODE_SPAN_RISK.search(content) else line[start:end])
+        done = end
+    out.append(escape_text(line[done:], liquid))
+    return "".join(out)
+
+
+def code_spans(line):
+    """Each code span in a line, as (start, end, content), with backtick runs paired as CommonMark pairs them.
+
+    A run opens a span only where a later run of the same length closes it; a
+    backslash escapes a run's first backtick. A span that crosses a line
+    break isn't seen.
+    """
     search = 0
     while True:
         opener = BACKTICKS.search(line, search)
         if not opener:
-            break
+            return
         start, run = opener.start(), opener.group()
         if odd_backslashes_before(line, start):
             start += 1
@@ -677,12 +692,8 @@ def sanitize_line(line, liquid=False):
         if not closer:
             search = start + len(run)
             continue
-        content = line[start + len(run):closer.start()]
-        out.append(escape_text(line[done:start], liquid))
-        out.append(code_html(content) if CODE_SPAN_RISK.search(content) else line[start:closer.end()])
-        done = search = closer.end()
-    out.append(escape_text(line[done:], liquid))
-    return "".join(out)
+        yield start, closer.end(), line[start + len(run):closer.start()]
+        search = closer.end()
 
 
 def sanitize_inline(text, liquid=False):
@@ -1216,8 +1227,6 @@ LINK_REFERENCE = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(<?)(\S+?)(>?)(?=\s|$)", r
 # continuation line may start with one. ASCII, as for HTML_BLOCKS: "\u017f"
 # must not case-fold into "src".
 LINK_HTML_ATTRIBUTE = re.compile(r"""(?<![\w-])((?:src|href)\s*=\s*)(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))""", re.I | re.A)
-# Any indent, so a fence inside a list item is still skipped.
-LINK_FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
 def rebase_link(target):
@@ -1290,51 +1299,45 @@ def rebase_html_attribute(match):
             return match.group(1) + quote + rebase_link(match.group(group)) + quote
 
 
-def quote_prefix(line, depth=None):
-    """(block quote markers at the start of the line, the rest), counting at most `depth` markers."""
-    count = pos = 0
-    while depth is None or count < depth:
-        quote_match = QUOTE_AT.match(line, pos)
-        if not quote_match:
-            break
-        count += 1
-        pos = quote_match.end()
-    return count, line[pos:]
+def rebase_text_links(line):
+    """A line of Markdown text with its links rebased; code spans are left alone.
+
+    A reference definition is read before any code span, so code in its label
+    doesn't hide its destination.
+    """
+    reference = LINK_REFERENCE.match(line)
+    if reference:
+        return line[:reference.start(3)] + rebase_link(reference.group(3)) + line[reference.end(3):]
+    out = []
+    done = 0
+    for start, end, _ in [*code_spans(line), (len(line), len(line), "")]:
+        text = rebase_inline_links(line[done:start])
+        out.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, text) + line[start:end])
+        done = end
+    return "".join(out)
 
 
 def rebase_readme_links(markdown):
-    """The README text with every relative link rebased for docs/README.md; fenced code is left alone.
+    """The README text with every relative link rebased for docs/README.md; code is left alone.
 
-    A fence belongs to the block quote it opens in: it closes on a line at
-    that quote depth, or ends with the quote when a line lacks its markers.
+    Fenced and indented code blocks, at any depth, are copied as they are, and
+    so are code spans. In a raw HTML block backticks are text, so its whole
+    line is rebased.
     """
+    lines = markdown.split("\n")
+    raw = set()
+    blocks = []
+    scan_blocks(list(lines), [], raw, blocks)
+    code = {index for block in blocks for index in block["lines"]}
     out = []
-    fence = None
-    for line in markdown.splitlines(keepends=True):
-        if fence is not None:
-            depth, marker = fence
-            line_depth, rest = quote_prefix(line, depth)
-            if line_depth == depth:
-                fence_match = LINK_FENCE.match(rest)
-                # Closed by a run of the same character, at least as long, with no info string.
-                if fence_match:
-                    closer, info = fence_match.groups()
-                    if closer[0] == marker[0] and len(closer) >= len(marker) and not info.strip():
-                        fence = None
-                out.append(line)
-                continue
-            fence = None
-        depth, rest = quote_prefix(line)
-        fence_match = LINK_FENCE.match(rest)
-        if fence_match:
-            fence = (depth, fence_match.group(1))
+    for index, line in enumerate(lines):
+        if index in code:
             out.append(line)
-            continue
-        line = rebase_inline_links(line)
-        line = LINK_REFERENCE.sub(lambda m: m.group(1) + m.group(2) + rebase_link(m.group(3)) + m.group(4), line)
-        line = LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, line)
-        out.append(line)
-    return "".join(out)
+        elif index in raw:
+            out.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, rebase_inline_links(line)))
+        else:
+            out.append(rebase_text_links(line))
+    return "\n".join(out)
 
 
 def write_post(gh, pr_number, tag, root=Path("."), api_key=None, model=DEFAULT_MODEL, urlopen=urllib.request.urlopen):

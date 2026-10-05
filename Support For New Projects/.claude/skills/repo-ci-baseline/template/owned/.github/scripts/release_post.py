@@ -105,8 +105,13 @@ def render_commits(commits):
     if not commits:
         lines.append("No commits were found.")
     for commit in commits:
-        lines.append(f"- {commit_subject(commit)} (`{commit.get('sha', '')[:7]}`)")
+        lines.append(f"- {sanitize_inline(commit_subject(commit))} (`{commit.get('sha', '')[:7]}`)")
     return "\n".join(lines) + "\n"
+
+
+def code_name(name):
+    """A file name as inline code; one with a backtick or a risky character is written as <code> instead."""
+    return f"`{name}`" if re.fullmatch(r"[A-Za-z0-9 ._/@+=,~()-]+", name) else code_html(name)
 
 
 def area_of(path):
@@ -126,7 +131,7 @@ def render_files(files):
             continue
         lines += [f"### {area}", ""]
         for file in sorted(groups[area], key=lambda f: f["filename"]):
-            lines.append(f"- `{file['filename']}` (+{file.get('additions', 0)} / -{file.get('deletions', 0)})")
+            lines.append(f"- {code_name(file['filename'])} (+{file.get('additions', 0)} / -{file.get('deletions', 0)})")
         lines.append("")
     return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -340,7 +345,18 @@ def interrupts_paragraph(line):
     )
 
 
-def scan_blocks(lines, headings, code=None):
+def fence_content(raw, rest, block):
+    """A fenced code line's text with the opener's indent removed, as CommonMark does.
+
+    A top-level fence keeps the raw line, tabs and all; a nested one has its
+    container markers stripped, from the tab-expanded line.
+    """
+    text = rest if block["nested"] else raw.removesuffix("\r")
+    spaces = len(text) - len(text.lstrip(" "))
+    return text[min(spaces, block["indent"]):]
+
+
+def scan_blocks(lines, headings, code=None, blocks=None):
     """Finds the headings in Markdown lines, including those inside block quotes and list items.
 
     Appends (line index, prefix, level, rest of line) to `headings` for each
@@ -348,6 +364,10 @@ def scan_blocks(lines, headings, code=None):
     (container markers and indent). The later lines of a setext heading,
     including its underline, are set to None in `lines`. When `code` is a set,
     the indexes of fenced code and raw HTML block lines are added to it.
+    When `blocks` is a list, each fenced code block is appended to it as
+    {"kind": "fence", "lines", "content", "info", "nested"}, and each indented
+    code line as {"kind": "indented", "lines", "content", "nested"}, where
+    "nested" says whether a quote or list item holds it.
 
     This follows CommonMark's block parsing in one pass: each line first
     matches the open quotes and list items, may lazily continue an open
@@ -364,6 +384,7 @@ def scan_blocks(lines, headings, code=None):
     quote_levels = []
     paragraph = None  # [(line index, container prefix, text)] of the open paragraph
     fence = None
+    fence_block = None  # the open fence's entry in `blocks`
     html_end = None  # end condition of the open HTML block, see html_block_end()
 
     def mark_content():
@@ -408,14 +429,20 @@ def scan_blocks(lines, headings, code=None):
             del stack[matched:]
             while quote_levels and quote_levels[-1] >= matched:
                 quote_levels.pop()
-            paragraph = fence = html_end = None
+            paragraph = fence = fence_block = html_end = None
 
         if html_end is HTML_ENDS_AT_BLANK and not rest.strip(" "):
             html_end = None  # the blank line ends the block and is read as usual
         if fence is not None or html_end is not None:
             code.add(index)
             if fence is not None:
-                fence = None if closes_fence(fence, rest) else fence
+                closed = closes_fence(fence, rest)
+                if fence_block is not None:
+                    fence_block["lines"].append(index)
+                    if not closed:
+                        fence_block["content"].append(fence_content(raw, rest, fence_block))
+                fence = None if closed else fence
+                fence_block = None if closed else fence_block
             elif html_block_ends(html_end, rest):
                 html_end = None
             continue
@@ -454,6 +481,16 @@ def scan_blocks(lines, headings, code=None):
             code.add(index)
             if fence_match:
                 fence = fence_match.group(1)
+                if blocks is not None:
+                    fence_block = {
+                        "kind": "fence",
+                        "lines": [index],
+                        "content": [],
+                        "info": fence_match.group(2),
+                        "indent": len(rest) - len(rest.lstrip(" ")),
+                        "nested": bool(stack),
+                    }
+                    blocks.append(fence_block)
             elif not html_block_ends(html_start, rest):
                 html_end = html_start
             paragraph = None
@@ -478,9 +515,232 @@ def scan_blocks(lines, headings, code=None):
             else:
                 paragraph.append((index, line[:offset], rest))
             continue
-        if INDENTED_CODE.match(rest) or THEMATIC_BREAK.match(rest):
+        if INDENTED_CODE.match(rest):
+            if blocks is not None:
+                blocks.append({"kind": "indented", "lines": [index], "content": [rest[4:]], "nested": bool(stack)})
+            continue
+        if THEMATIC_BREAK.match(rest):
             continue
         paragraph = [(index, line[:offset], rest)]
+
+
+# Untrusted Markdown. A PR's title, description and commits, and the AI
+# summary of them, are written into docs/blogs and published by GitHub Pages
+# (Jekyll, with kramdown), so none of them may carry live HTML, a script link,
+# a kramdown attribute list or Liquid. Code keeps its text: a code block is
+# re-emitted as a fence both parsers read the same way, and a code span holding
+# anything that's escaped elsewhere becomes <code> with every symbol as an
+# entity. From mpaulosky/dotfiles#48.
+
+SAFE_SCHEMES = {"http", "https", "mailto"}
+SCHEME = re.compile(r"([a-z][a-z0-9+.\-]*):")
+# Only these autolinks keep their angle brackets; any other "<" is escaped.
+AUTOLINK = re.compile(r"<(?:https?://|mailto:)[^\s<>\"'`\\]*>", re.I)
+LINK_DESTINATION_START = re.compile(r"\]\(|\]:")
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+CONTAINER_MARKER = re.compile(r"[ \t]*(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|$))")
+BACKTICKS = re.compile(r"`+")
+# Characters that make a code span unsafe to leave between backticks: a parser
+# that pairs the backticks differently would read them as HTML, an attribute
+# list, Liquid or a link.
+CODE_SPAN_RISK = re.compile(r"[<{\]]")
+
+
+def safe_destination(text, start):
+    """Whether the link destination starting at text[start] has no scheme, or one in SAFE_SCHEMES.
+
+    Browsers drop control characters and whitespace from a URL and decode
+    entities, so "java&#9;script:" is still a javascript: link.
+    """
+    end = start
+    while end < len(text) and end - start < 200 and not text[end].isspace() and text[end] not in ")>\"'":
+        end += 1
+    candidate = html.unescape(text[start:end]).replace("\\", "")
+    candidate = "".join(char for char in candidate if char > " " and char != "\x7f").lower()
+    scheme = SCHEME.match(candidate)
+    return not scheme or scheme.group(1) in SAFE_SCHEMES
+
+
+def neutralize_links(text):
+    """The text with a "#" in front of each link destination whose scheme isn't safe.
+
+    Any "](" or "]:" counts, wherever it is, since a parser may read a link or
+    reference definition where this one wouldn't; the destination may follow
+    on the next line, after its quote markers. A "#" makes it a harmless
+    fragment link. Footnotes ("[^1]: text") aren't links.
+    """
+    out = []
+    done = 0
+    for match in LINK_DESTINATION_START.finditer(text):
+        if match.group() == "]:":
+            opener = text.rfind("[", 0, match.start())
+            if opener >= 0 and text.startswith("[^", opener):
+                continue
+        start = match.end()
+        while start < len(text) and text[start] in " \t\n>":
+            start += 1
+        if start < len(text) and text[start] == "<":
+            start += 1
+        if start >= done and not safe_destination(text, start):
+            out.append(text[done:start] + "#")
+            done = start
+    return "".join(out) + text[done:]
+
+
+def odd_backslashes_before(text, pos):
+    count = 0
+    while pos - count > 0 and text[pos - count - 1] == "\\":
+        count += 1
+    return count % 2 == 1
+
+
+def code_html(content):
+    """A code span's text as <code>, every character but letters, digits and spaces as an entity."""
+    if len(content) > 1 and content.startswith(" ") and content.endswith(" ") and content.strip(" "):
+        content = content[1:-1]  # CommonMark strips one space from each side
+    return "<code>" + "".join(char if char.isalnum() or char == " " else f"&#{ord(char)};" for char in content) + "</code>"
+
+
+def escape_text(text, liquid):
+    """Escape the HTML, attribute lists and (with liquid) Liquid in text outside code spans."""
+    out = []
+    pos = 0
+    while pos < len(text):
+        char = text[pos]
+        if char == "<" and not odd_backslashes_before(text, pos):
+            autolink = AUTOLINK.match(text, pos)
+            if autolink:
+                out.append(autolink.group())
+                pos = autolink.end()
+                continue
+            out.append("&lt;")
+        elif char == "{" and (liquid or text.startswith("{:", pos)):  # even after a backslash: parsers differ
+            out.append("&#123;")
+        else:
+            out.append(char)
+        pos += 1
+    return "".join(out)
+
+
+def sanitize_line(line, liquid=False):
+    """One line of untrusted Markdown text (no code blocks) made safe to publish.
+
+    A line that could open a fence gets its first backtick or tilde escaped:
+    a real fence was re-emitted already, so this one only looked like one
+    where it sat (in an HTML block, say). Code spans pair as CommonMark pairs
+    backtick runs; a span holding anything risky becomes <code>.
+    """
+    pos = 0
+    while True:
+        marker = CONTAINER_MARKER.match(line, pos)
+        if not marker or marker.end() == pos:
+            break
+        pos = marker.end()
+    rest = line[pos:].lstrip(" \t")
+    if rest.startswith(("```", "~~~")):
+        cut = len(line) - len(rest)
+        line = line[:cut] + "\\" + line[cut:]
+
+    out = []
+    done = 0
+    search = 0
+    while True:
+        opener = BACKTICKS.search(line, search)
+        if not opener:
+            break
+        start, run = opener.start(), opener.group()
+        if odd_backslashes_before(line, start):
+            start += 1
+            run = run[1:]
+            if not run:
+                search = opener.end()
+                continue
+        closer = None
+        for candidate in BACKTICKS.finditer(line, start + len(run)):
+            if candidate.group() == run:
+                closer = candidate
+                break
+        if not closer:
+            search = start + len(run)
+            continue
+        content = line[start + len(run):closer.start()]
+        out.append(escape_text(line[done:start], liquid))
+        out.append(code_html(content) if CODE_SPAN_RISK.search(content) else line[start:closer.end()])
+        done = search = closer.end()
+    out.append(escape_text(line[done:], liquid))
+    return "".join(out)
+
+
+def sanitize_inline(text, liquid=False):
+    """A single line of untrusted text, such as a PR title or commit subject, made safe to publish."""
+    return sanitize_line(neutralize_links(HTML_COMMENT.sub("", text)), liquid)
+
+
+def sanitize_text(lines):
+    """Untrusted Markdown text lines (no code blocks), made safe; HTML comments are dropped."""
+    text = neutralize_links(HTML_COMMENT.sub("", "\n".join(lines)))
+    return [sanitize_line(line) for line in text.split("\n")]
+
+
+def code_fence(content, info):
+    """A fenced code block both CommonMark and kramdown read the same way, with blank lines around it.
+
+    The fence is longer than any backtick run in the code, so no line inside
+    closes it, and it always has an info string, so it can't close a fence
+    left open before it.
+    """
+    longest = max((len(run) for line in content for run in BACKTICKS.findall(line)), default=0)
+    fence = "`" * max(3, longest + 1)
+    word = re.match(r"[A-Za-z0-9_+#.-]+", info.strip())
+    return ["", fence + (word.group() if word else "text"), *content, fence, ""]
+
+
+def sanitize_markdown(markdown):
+    """Untrusted Markdown, such as a PR description, made safe to publish on GitHub Pages.
+
+    Every code block, nested or not, becomes a top-level fence (a block in a
+    list or quote moves out of it); everything else is text for sanitize_text.
+    """
+    lines = re.split(r"\r\n|\r|\n", markdown)
+    blocks = []
+    scan_blocks(list(lines), [], blocks=blocks)
+    # Indented code lines separated only by blank lines are one block.
+    merged = []
+    for block in blocks:
+        last = merged[-1] if merged else None
+        if (
+            block["kind"] == "indented"
+            and last is not None
+            and last["kind"] == "indented"
+            and all(not lines[i].strip(" \t") for i in range(last["lines"][-1] + 1, block["lines"][0]))
+        ):
+            gap = block["lines"][0] - last["lines"][-1] - 1
+            last["content"] += [""] * gap + block["content"]
+            last["lines"].append(block["lines"][-1])
+        else:
+            merged.append(dict(block, info=block.get("info", "")))
+    starts = {block["lines"][0]: block for block in merged}
+
+    out = []
+    text = []
+    index = 0
+    while index < len(lines):
+        block = starts.get(index)
+        if block is None:
+            text.append(lines[index])
+            index += 1
+            continue
+        out += sanitize_text(text)
+        text = []
+        out += code_fence(block["content"], block["info"])
+        index = block["lines"][-1] + 1
+    out += sanitize_text(text)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
+
+
+def break_liquid_raw(text):
+    """Text that can sit inside {% raw %}: each "{%" that would read as {% endraw %} is printed by Liquid instead."""
+    return re.sub(r"\{%(?=-?\s*endraw)", "{% endraw %}{{ '{%' }}{% raw %}", text)
 
 
 def nest_headings(markdown):
@@ -535,17 +795,20 @@ def render_post(pr, title_line, tag, merged_date, commits, files, summary, model
         ]
     )
     sections = [
-        f"# {title_line}\n\n"
+        f"# {sanitize_inline(title_line)}\n\n"
         f"- **Release tag:** `{tag}`\n"
         f"- **Source PR:** [#{number}]({pr.get('html_url') or ''})\n"
     ]
     if summary:
-        sections.append(f"## Summary\n\n{nest_headings(summary)}\n")
+        sections.append(f"## Summary\n\n{nest_headings(sanitize_markdown(summary))}\n")
     body = (pr.get("body") or "").strip() or "No PR description was provided."
-    sections.append(f"## PR description\n\n{nest_headings(body)}\n")
+    sections.append(f"## PR description\n\n{nest_headings(sanitize_markdown(body))}\n")
     sections.append(render_commits(commits))
     sections.append(render_files(files))
-    return front_matter + "\n".join(sections)
+    # Jekyll runs Liquid over the page first, even inside code; raw keeps the
+    # text as written. The tags sit in HTML comments, so neither GitHub's view
+    # of the file nor the Pages site shows them.
+    return front_matter + "<!-- {% raw %} -->\n" + break_liquid_raw("\n".join(sections)) + "\n<!-- {% endraw %} -->\n"
 
 
 def update_blog_index(blog_dir, merged_date, title_line, post_name):
@@ -570,7 +833,7 @@ def update_blog_index(blog_dir, merged_date, title_line, post_name):
         linked = re.search(r"\]\(([^)]+\.md)\)", row)
         return not linked or (blog_dir / linked.group(1)).exists()
 
-    row_title = title_line.replace("|", "\\|")
+    row_title = sanitize_inline(title_line, liquid=True).replace("|", "\\|")
     rows = [r for r in rows if f"({post_name})" not in r and linked_post_exists(r)]
     rows.insert(0, f"| {merged_date} | [{row_title}]({post_name}) | release,automation |")
 
@@ -675,10 +938,11 @@ def first_paragraph(markdown):
     """The first paragraph of prose or list text, as plain text."""
     for block in re.split(r"\n\s*\n", blank_code(markdown)):
         lines = [line.strip() for line in block.strip().splitlines()]
-        if not lines or lines[0].startswith(("#", "|", "<!--", ">")):
+        # "&lt;" opens what was an HTML block before the post escaped it.
+        if not lines or lines[0].startswith(("#", "|", "<!--", ">", "&lt;")):
             continue
         # Join list items and wrapped lines into one line of text.
-        plain = plain_text(" ".join(re.sub(r"^(?:[-*+]|\d+[.)])\s+", "", line) for line in lines))
+        plain = plain_text(" ".join(re.sub(r"^(?:[-*+]|\d+[.)])(?:\s+|$)", "", line) for line in lines))
         if plain and not ISSUE_REFERENCE.match(plain):
             return plain
     return ""
@@ -698,6 +962,9 @@ def plain_text(markdown):
     text = re.sub(r"(\*\*|\*)(\S(?:.*?\S)?)\1", r"\2", text)
     # Underscores only mark emphasis at word edges, so snake_case names keep theirs.
     text = re.sub(r"(?<!\w)(__|_)(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
+    # What sanitize_markdown escaped reads as the text it stands for.
+    text = re.sub(r"</?code>", "", text)
+    text = html.unescape(re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", text))
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -777,7 +1044,7 @@ def render_releases_markdown(entries):
     rows = []
     for entry in entries:
         blog_cell = f"[Post]({entry['post_url']})" if entry["post_url"] else "—"
-        title = entry["title"].replace("|", "\\|")
+        title = sanitize_inline(entry["title"], liquid=True).replace("|", "\\|")
         rows.append(f"| [{entry['tag']}]({entry['url']}) | {entry['date']} | {title} | {blog_cell} |")
     return "\n".join(
         [

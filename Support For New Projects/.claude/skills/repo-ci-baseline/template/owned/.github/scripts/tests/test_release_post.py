@@ -949,3 +949,163 @@ def test_update_tables_without_a_new_release_lists_existing_releases(tmp_path):
     assert "v0.0.3" not in readme
     assert f"| [v0.0.2](https://github.com/{REPO}/releases/tag/v0.0.2) | 2026-09-20 | fix: Older change | — |" in readme
     assert "v0.0.2" in (tmp_path / "docs" / "index.html").read_text(encoding="utf-8")
+
+
+# Untrusted Markdown (mpaulosky/dotfiles#48)
+
+HOSTILE = [
+    "<script>alert(1)</script>",
+    "Text <img src=x onerror=alert(1)> more",
+    "<div>\n# x\n</div>",
+    # Escaping the HTML block's lines must not bring its fence line to life and expose the later code.
+    "<div>\n```\n</div>\n\n```\n<script>alert(1)</script>\n```",
+    "```js title\n<script>alert(1)</script>",  # unclosed, and kramdown reads no fence with a two-word info
+    "- item\n  ```\n  <script>alert(1)</script>\n  ```",
+    "> ```\n> <script>alert(1)</script>",
+    "x `y\n`<script>alert(1)</script>`",
+    "<!-- a --><script>alert(1)</script>",
+]
+
+
+def outside_code(post):
+    """The post's lines, after its front matter, that CommonMark reads as neither fenced nor indented code.
+
+    Raw HTML blocks count as outside: they are what must not get through.
+    """
+    lines = post.split("---\n", 2)[2].split("\n")
+    blocks = []
+    rp.scan_blocks(list(lines), [], blocks=blocks)
+    code = {index for block in blocks for index in range(block["lines"][0], block["lines"][-1] + 1)}
+    return [line for index, line in enumerate(lines) if index not in code]
+
+
+@pytest.mark.parametrize("body", HOSTILE)
+def test_no_raw_html_reaches_the_post_outside_code(body):
+    post = rp.render_post({"number": 7, "body": body}, "T", "v1.2.3", "2026-09-26", [], [], body, "m")
+    for line in outside_code(post):
+        # Only the raw-tag comments, the <code> spans the sanitizer writes, and safe autolinks.
+        assert not re.search(r"<(?!code>|/code>|https?://|mailto:|!-- \{% (?:end)?raw %\} -->)", line), line
+
+
+def test_the_pr_title_is_escaped_in_the_post_and_both_tables(tmp_path):
+    title = "feat: Add <b>bold</b> and {{ site.x }}"
+    post = rp.render_post({"number": 7}, title, "v1.2.3", "2026-09-26", [], [], None, "m")
+    assert "# feat: Add &lt;b>bold&lt;/b> and {{ site.x }}\n" in post  # inside {% raw %}
+    assert 'post_title: "feat: Add <b>bold</b> and {{ site.x }}"' in post  # YAML, never rendered as Markdown
+
+    rp.update_blog_index(tmp_path, "2026-09-26", title, "2026-09-26-pr-7-x.md")
+    row = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert "[feat: Add &lt;b>bold&lt;/b> and &#123;&#123; site.x }}](2026-09-26-pr-7-x.md)" in row
+
+    entry = {"tag": "v1.2.3", "url": "u", "date": "2026-09-26", "title": title, "post_url": ""}
+    assert "| feat: Add &lt;b>bold&lt;/b> and &#123;&#123; site.x }} |" in rp.render_releases_markdown([entry])
+
+
+def test_the_pr_body_is_escaped():
+    post = rp.render_post({"number": 7, "body": "Why <img src=x onerror=alert(1)>"}, "T", "v1", "2026-09-26", [], [], None, "m")
+    assert "Why &lt;img src=x onerror=alert(1)>" in rp.section(post, "PR description")
+
+
+def test_the_ai_summary_is_escaped():
+    post = rp.render_post({"number": 7}, "T", "v1", "2026-09-26", [], [], "Adds <iframe src=x></iframe>.", "m")
+    assert "Adds &lt;iframe src=x>&lt;/iframe>." in rp.section(post, "Summary")
+
+
+def test_commit_subjects_are_escaped():
+    commits = [{"sha": "abc1234def", "commit": {"message": "fix: Drop <script> {: .x}\n\nbody"}}]
+    assert "- fix: Drop &lt;script> &#123;: .x} (`abc1234`)" in rp.render_commits(commits)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("src/Web/Theme.cs", "`src/Web/Theme.cs`"),
+        ("docs/a b (1).md", "`docs/a b (1).md`"),
+        ("src/a`b.cs", "<code>src&#47;a&#96;b&#46;cs</code>"),  # a backtick can't close the span early
+        ("src/<x>.cs", "<code>src&#47;&#60;x&#62;&#46;cs</code>"),
+    ],
+)
+def test_file_names_are_code_that_cannot_break_out(name, expected):
+    assert rp.render_files([{"filename": name, "additions": 1, "deletions": 0}]).splitlines()[-1] == f"- {expected} (+1 / -0)"
+
+
+def test_code_keeps_its_text():
+    body = "```cs\nList<T> x = new();\n```\n\nUse `List<T>`, or `plain`.\n\n    indented <b>"
+    assert rp.sanitize_markdown(body) == (
+        "```cs\nList<T> x = new();\n```\n\n"
+        "Use <code>List&#60;T&#62;</code>, or `plain`.\n\n"
+        "```text\nindented <b>\n```"
+    )
+
+
+def test_a_code_block_is_rewritten_as_a_fence_both_parsers_agree_on():
+    # Unclosed, a two-word info string (kramdown reads no fence there), and backticks inside.
+    assert rp.sanitize_markdown("~~~js title\n````\n<b>") == "`````js\n````\n<b>\n`````"
+
+
+def test_a_code_block_in_a_list_moves_out_of_it():
+    body = "1. Run:\n   ```bash\n   cat <file>\n   ```\n2. Next"
+    assert rp.sanitize_markdown(body) == "1. Run:\n\n```bash\ncat <file>\n```\n\n2. Next"
+
+
+def test_a_fence_line_that_was_not_a_fence_is_escaped():
+    assert rp.sanitize_markdown("<div>\n```\n</div>") == "&lt;div>\n\\```\n&lt;/div>"
+
+
+def test_html_comments_are_dropped():
+    assert rp.sanitize_markdown("a <!-- hidden --> b\n<!--\nmulti\n-->\nc") == "a  b\n\nc"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[a](javascript:alert(1))", "[a](#javascript:alert(1))"),
+        ("[a](JaVa&#115;cript:x)", "[a](#JaVa&#115;cript:x)"),  # entities decode in a destination
+        ("[a](java&#9;script:x)", "[a](#java&#9;script:x)"),  # browsers drop the tab
+        ("![a](data:text/html,x)", "![a](#data:text/html,x)"),
+        ("[a](<vbscript:x>)", "[a](&lt;#vbscript:x>)"),
+        ("[a]: javascript:x", "[a]: #javascript:x"),
+        ("> [a]:\n> javascript:x", "> [a]:\n> #javascript:x"),
+        ("[a](https://example.com) [b](mailto:a@b.c) [c](#top) [d](docs/x.md)",
+         "[a](https://example.com) [b](mailto:a@b.c) [c](#top) [d](docs/x.md)"),
+        ("[^1]: Note: a footnote", "[^1]: Note: a footnote"),
+    ],
+)
+def test_link_destinations_with_unsafe_schemes_are_neutralized(text, expected):
+    assert rp.sanitize_markdown(text) == expected
+
+
+def test_autolinks_keep_working():
+    assert rp.sanitize_markdown("See <https://example.com/a?b=1> or <mailto:a@b.c>, not <a@b.c>.") == (
+        "See <https://example.com/a?b=1> or <mailto:a@b.c>, not &lt;a@b.c>."
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('para\n{: onclick="alert(1)"}', 'para\n&#123;: onclick="alert(1)"}'),
+        ("*a*{: .x}", "*a*&#123;: .x}"),
+        ("{::nomarkdown}x{:/}", "&#123;::nomarkdown}x&#123;:/}"),
+        ("\\{: .x}", "\\&#123;: .x}"),
+        ("`{:x}`", "<code>&#123;&#58;x&#125;</code>"),
+    ],
+)
+def test_kramdown_attribute_lists_and_extensions_are_neutralized(text, expected):
+    assert rp.sanitize_markdown(text) == expected
+
+
+def test_the_post_is_liquid_raw_and_its_text_cannot_end_the_raw_block():
+    body = "Jinja: {{ x }} {% if y %}\n\n```\n{% endraw %}{%- endraw -%}\n```"
+    post = rp.render_post({"number": 7, "body": body}, "T", "v1", "2026-09-26", [], [], None, "m")
+    after_front_matter = post.split("---\n", 2)[2]
+    assert after_front_matter.startswith("<!-- {% raw %} -->\n# T\n")
+    assert post.endswith("\n<!-- {% endraw %} -->\n")
+    assert post.count("{% endraw %}") == 3  # the closing tag and one per broken {%
+    assert "{% endraw %}{{ '{%' }}{% raw %} endraw %}" in post
+    assert "{% endraw %}{{ '{%' }}{% raw %}- endraw -%}" in post
+
+
+def test_excerpts_read_escaped_text_as_the_text_it_stands_for():
+    post = rp.render_post({"number": 7, "body": "Returns `List<T>` for <id> & {: x}."}, "T", "v1", "2026-09-26", [], [], None, "m")
+    assert rp.post_excerpt(post) == "Returns List<T> for <id> & {: x}."

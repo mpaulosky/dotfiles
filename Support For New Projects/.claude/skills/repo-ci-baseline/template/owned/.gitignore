@@ -67,6 +67,10 @@ Generated\ Files/
 [Tt]est[Rr]esult*/
 [Bb]uild[Ll]og.*
 
+# Test results from a pre-Baseline scripts/gate.sh. A leftover folder would
+# otherwise trip the gate's clean-tree check on the first push after Apply.
+.tmp-test-results/
+
 # NUnit
 *.VisualState.xml
 TestResult.xml

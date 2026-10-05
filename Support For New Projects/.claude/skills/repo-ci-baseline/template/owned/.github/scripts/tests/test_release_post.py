@@ -1429,3 +1429,45 @@ def test_finding_code_stays_linear(shape):
 
     small, large = best(2_000), best(8_000)
     assert large < max(small, 0.001) * 10
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # No "[" opens a label, so "](" starts no link and the backticks pair as a code span.
+        ('Text ](x "`<T>`")', 'Text ](x "<code>&#60;T&#62;</code>")'),
+        # An escaped "[" opens no label either.
+        ('\\[x](docs/x.md "Use `List<T>`")', '\\[x](docs/x.md "Use <code>List&#60;T&#62;</code>")'),
+        # A "]" before the "](" closes the only label, so it is text too.
+        ('[a] ](x "`<T>`")', '[a] ](x "<code>&#60;T&#62;</code>")'),
+        # A "[" inside a code span opens no label.
+        ('`[` ](x "`<T>`")', '`[` ](x "<code>&#60;T&#62;</code>")'),
+    ],
+)
+def test_a_close_bracket_without_a_label_starts_no_link(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A ">" line is blank inside the quote, so the code on both sides of it is one block.
+        ("> intro\n>\n>     a\n>\n>     b\n", "> intro\n>\n\n```text\na\n\nb\n```"),
+        ("> - x\n>\n>       a\n>\n>       b", "> - x\n>\n\n```text\na\n\nb\n```"),
+    ],
+)
+def test_quoted_indented_code_keeps_its_blank_lines(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A blank line ends the quote, so the code after it is a second block.
+        ">     a\n\n    b",
+        # A blank line in the outer quote ends the inner one.
+        "> >     a\n>\n> >     b",
+    ],
+)
+def test_indented_code_in_different_containers_stays_apart(body):
+    assert rp.sanitize_markdown(body).count("```text") == 2

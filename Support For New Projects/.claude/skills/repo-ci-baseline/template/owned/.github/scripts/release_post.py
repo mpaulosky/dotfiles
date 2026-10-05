@@ -384,10 +384,13 @@ def scan_blocks(lines, headings, code=None, blocks=None, continued=None):
     the indexes of fenced code and raw HTML block lines are added to it.
     When `blocks` is a list, each fenced code block is appended to it as
     {"kind": "fence", "lines", "content", "info", "nested"}, and each indented
-    code line as {"kind": "indented", "lines", "content", "nested"}, where
-    "nested" says whether a quote or list item holds it. When `continued` is
-    a set, the indexes of the lines that continue an open paragraph, lazily or
-    not, are added to it; every other line starts a block or is blank.
+    code line as {"kind": "indented", "lines", "content", "nested", "joins"},
+    where "nested" says whether a quote or list item holds it, and "joins"
+    whether only blank lines in the same quotes and list items separate it
+    from the indented code line before it (a ">" line is blank inside its
+    quote). When `continued` is a set, the indexes of the lines that
+    continue an open paragraph, lazily or not, are added to it; every other
+    line starts a block or is blank.
 
     This follows CommonMark's block parsing in one pass: each line first
     matches the open quotes and list items, may lazily continue an open
@@ -408,6 +411,7 @@ def scan_blocks(lines, headings, code=None, blocks=None, continued=None):
     fence = None
     fence_block = None  # the open fence's entry in `blocks`
     html_end = None  # end condition of the open HTML block, see html_block_end()
+    code_run = False  # whether indented code, then only blank lines, came last in these containers
 
     def mark_content():
         if stack and stack[-1]["kind"] == "list":
@@ -436,6 +440,8 @@ def scan_blocks(lines, headings, code=None, blocks=None, continued=None):
                     offset += container["width"]
                 matched += 1
         rest = line[offset:]
+        follows_code, code_run = code_run, False
+        closed = matched < len(stack)
 
         if matched < len(stack):
             # A line that opens no new block lazily continues the open paragraph.
@@ -492,6 +498,7 @@ def scan_blocks(lines, headings, code=None, blocks=None, continued=None):
 
         if not rest.strip(" "):
             paragraph = None
+            code_run = follows_code and not closed and len(stack) == opened
             # An item that starts empty ends at its first blank line (not at its own marker line).
             if len(stack) == opened and stack and stack[-1]["kind"] == "list" and not stack[-1]["has_content"]:
                 stack.pop()
@@ -542,7 +549,11 @@ def scan_blocks(lines, headings, code=None, blocks=None, continued=None):
         if INDENTED_CODE.match(rest):
             if blocks is not None:
                 content = from_column(raw, offset + 4)
-                blocks.append({"kind": "indented", "lines": [index], "content": [content], "nested": bool(stack)})
+                joins = follows_code and not closed and len(stack) == opened
+                blocks.append(
+                    {"kind": "indented", "lines": [index], "content": [content], "nested": bool(stack), "joins": joins}
+                )
+            code_run = True
             continue
         if THEMATIC_BREAK.match(rest):
             continue
@@ -569,8 +580,9 @@ LINK_DESTINATION_START = re.compile(r"\]\(|\]:")
 # A footnote definition's start, with kramdown's footnote ID (\w[\w-]*, and Ruby's \w is
 # ASCII): GitHub Pages reads any other "[^...]:" as a reference definition, a link.
 FOOTNOTE_DEFINITION = re.compile(r"[ \t>]*\[\^[A-Za-z0-9_][A-Za-z0-9_-]*\]:")
-# What inline_code() stops at: a backtick run, a comment's opener, and the "](" before a link destination.
-INLINE_MARK = re.compile(r"`+|<!--|\]\(")
+# What inline_code() stops at: a backtick run, a comment's opener, the "](" before a link
+# destination, and the brackets that open and close a link's label.
+INLINE_MARK = re.compile(r"`+|<!--|\]\(|\[|\]")
 CONTAINER_MARKER = re.compile(r"[ \t]*(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|$))")
 BACKTICKS = re.compile(r"`+")
 # Characters that make a code span unsafe to leave between backticks: a parser
@@ -750,7 +762,9 @@ def inline_code(text, continues=None):
     within its paragraph (#57); `continues` is as for paragraph_breaks(). A
     comment ends at the first "-->", wherever it is, as the sanitizer has
     always dropped it. A complete inline link's destination and title are
-    skipped, so their backticks open no span (#58).
+    skipped, so their backticks open no span (#58). A "](" is a link's only
+    where an unescaped "[" earlier in the paragraph, outside code and
+    comments, is still open; otherwise it is text and its backticks pair.
 
     Runs and paragraph ends are indexed once, and bare_destination_end() caps
     how far a link is read, so the scan stays linear.
@@ -760,22 +774,34 @@ def inline_code(text, continues=None):
     for match in BACKTICKS.finditer(text):
         starts_by_length.setdefault(len(match.group()), []).append(match.start())
     comments_can_close = True  # False once a "<!--" found no "-->" after it
+    labels = 0  # the "["s still open in labels_paragraph
+    labels_paragraph = 0
     pos = 0
     while mark := INLINE_MARK.search(text, pos):
         start, token = mark.start(), mark.group()
         pos = mark.end()
         paragraph = bisect.bisect_right(breaks, start)
         paragraph_end = breaks[paragraph] if paragraph < len(breaks) else len(text)
-        if token == "<!--":
+        if paragraph != labels_paragraph:
+            labels, labels_paragraph = 0, paragraph
+        if token in ("[", "]", "]("):
+            escaped = odd_backslashes_before(text, start)
+            if token == "[":
+                labels += not escaped
+                continue
+            if escaped or not labels:
+                continue
+            labels -= 1
+            if token == "](":
+                end = link_end(text, pos, paragraph_end)
+                pos = pos if end is None else end
+        elif token == "<!--":
             close = text.find("-->", pos) if comments_can_close else -1
             if close < 0:
                 comments_can_close = False
                 continue
             yield start, close + 3, None
             pos = close + 3
-        elif token == "](":
-            end = None if odd_backslashes_before(text, start) else link_end(text, pos, paragraph_end)
-            pos = pos if end is None else end
         else:
             length = len(token)
             if odd_backslashes_before(text, start):
@@ -863,20 +889,16 @@ def code_fence(content, info):
 def code_blocks(lines, continued=None):
     """The fenced and indented code blocks in Markdown lines, as scan_blocks() lists them, each with an "info".
 
-    Indented code lines separated only by blank lines are one block, the
-    blank lines included. `continued` is passed on to scan_blocks().
+    Indented code lines separated only by blank lines in their quotes and
+    list items are one block, the blank lines included. `continued` is passed
+    on to scan_blocks().
     """
     blocks = []
     scan_blocks(list(lines), [], blocks=blocks, continued=continued)
     merged = []
     for block in blocks:
         last = merged[-1] if merged else None
-        if (
-            block["kind"] == "indented"
-            and last is not None
-            and last["kind"] == "indented"
-            and all(not lines[i].strip(" \t") for i in range(last["lines"][-1] + 1, block["lines"][0]))
-        ):
+        if block["kind"] == "indented" and block["joins"] and last is not None and last["kind"] == "indented":
             gap = block["lines"][0] - last["lines"][-1] - 1
             last["content"] += [""] * gap + block["content"]
             last["lines"].append(block["lines"][-1])

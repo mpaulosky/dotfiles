@@ -31,6 +31,9 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   released, published or skipped (a draft Release's body, whether required checks run) draws a Copilot request for
   automated tests. Write it as a standard-library script under `.github/scripts/` with pytest tests, and keep the
   workflow step to the call. Manual simulations in the PR description don't count.
+- **A check stuck at pending holds auto-merge.** On Articles #280 the `Hook tests` job finished every step successfully,
+  but GitHub left its check `in_progress` for over 30 minutes, so the PR never auto-merged. Its run already showed
+  `completed`, so `gh run cancel` refuses; re-run the one job (`gh run rerun <run> --job <job>`) and the check reports.
 - **A PR left `BEHIND` never auto-merges.** When the ruleset requires branches to be up to date, a PR that went green
   while another PR merged sits at `mergeStateStatus: BEHIND`: every check passes and nothing happens. Run `gh pr
   update-branch <n>`, then `gh pr edit <n> --add-reviewer @copilot`: the auto-merge workflow wants Copilot's review on
@@ -51,8 +54,9 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
 - **A global `init.templateDir` reaches throwaway repos.** Hooks under `~/.git-templates/hooks` are installed into every
   `git init`, so a test that builds repos runs this machine's hooks on its commits and checkouts. `test.sh` points
   `GIT_TEMPLATE_DIR` at an empty directory; do the same in any new test.
-- **Interactive aliases:** `rm` may be aliased (for example to a `trash` command that isn't installed), and `cp` to `cp
-  -i`, which waits silently on an overwrite prompt. Use `command rm` and `command cp -f` in scripts.
+- **Interactive aliases:** `rm` may be aliased (for example to a `trash` command that isn't installed), and `cp` and `mv`
+  to `cp -i` and `mv -i`, which wait silently on an overwrite prompt. Use `command rm`, `command cp -f` and `command mv -f`
+  in scripts. A `mv` over the README hung an Articles Adapt step until the command was killed.
 
 ## Shell in workflows and scripts
 

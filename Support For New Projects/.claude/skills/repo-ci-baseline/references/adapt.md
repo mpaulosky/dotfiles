@@ -37,6 +37,9 @@ Move whatever the old `ci.yml` did for this repo alone into `.github/ci/prepare.
 - Secrets: the test jobs get only the repo's optional `TEST_ENV` secret, one `NAME=value` line per variable
   (`MongoDB__ConnectionString=...`), masked and exported by `load_test_env.py`.
   Move any secret the old `ci.yml` passed to the tests into it (`gh secret set TEST_ENV < file`), and delete the old secret once CI passes.
+  Check the names as well as the values: the old `ci.yml` may have mapped a secret to a different variable name. Articles' old CI
+  exported `AUTH0_ADMIN_USERNAME` as `Auth0__E2E__Admin__Username`, while `TEST_ENV` held `Auth0__Admin__Username`, so 9 of 10 E2E tests
+  skipped, which still passes. Compare each test job's skipped count with the old CI's, not just its result.
 
 ## Test runner
 
@@ -65,6 +68,9 @@ IssueTracker and IssueManager do.
   Between the two, the Standardize PR can't merge while the old gate is required, since the new `ci.yml` never reports it: remove it by hand first
   ([github-settings.md](github-settings.md)).
   It deletes `squad*` labels itself; add `--remove-legacy` once its LEGACY list (squad-era rulesets, classic protection) is understood.
+  Squad's other labels (Articles' `go:yes`, `go:no`, `go:needs-research`) are left alone: delete them by hand after the merge.
+  Until the merge, the old `squad-pr-auto-label` workflow on `main` re-creates `squad` on every PR, the docs-only probe included;
+  the second run deletes it again.
 - **Secrets.** The script checks `RELEASE_PR_PAT` exists (releases, blog PRs and auto-merge start workflows only with it); add it, and any test secret, by hand.
   The PAT needs **Workflows: Read and write** (fine-grained) or the `workflow` scope (classic), as well as contents and
   pull requests: the Standardize itself changes the workflows, so the next release that tags an older commit (a missed

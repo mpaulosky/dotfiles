@@ -250,18 +250,24 @@ FAIL='markdownlint-cli2*first.md*' run_hook feature/2-two-commits \
 expect "a lint error in the first of two unpushed commits refuses the push" refused any
 
 # Without markdownlint-cli2 installed, the gate lints through pnpm dlx, and never
-# falls back to npx. The machine's own pnpm, npx and markdownlint-cli2 are taken
-# off PATH, and npx is a stub that only records it was called.
+# falls back to npx. SYSTEM_BIN links every command on PATH except the machine's
+# own pnpm, npx and markdownlint-cli2, and npx is a stub that only records it was
+# called.
 NO_LINT_STUBS="$WORK/bin-no-markdownlint"
 mkdir -p "$NO_LINT_STUBS"
 for tool in dotnet pnpm yamllint actionlint zizmor shellcheck npx; do
   make_stub "$NO_LINT_STUBS" "$tool"
 done
-SYSTEM_PATH=""
+SYSTEM_BIN="$WORK/system-bin"
+mkdir -p "$SYSTEM_BIN"
 IFS=: read -ra path_dirs <<< "$PATH"
 for dir in "${path_dirs[@]}"; do
-  [[ -x "$dir/markdownlint-cli2" || -x "$dir/pnpm" || -x "$dir/npx" ]] && continue
-  SYSTEM_PATH="${SYSTEM_PATH:+$SYSTEM_PATH:}$dir"
+  for cmd in "$dir"/*; do
+    name="${cmd##*/}"
+    case "$name" in markdownlint-cli2 | pnpm | npx) continue ;; esac
+    # The first match on PATH wins, as it would for the shell.
+    [[ -x "$cmd" && ! -d "$cmd" && ! -e "$SYSTEM_BIN/$name" ]] && ln -s "$cmd" "$SYSTEM_BIN/$name"
+  done
 done
 
 # run_hook_with_path <stub dir> <checked-out branch> <stdin>
@@ -269,7 +275,7 @@ run_hook_with_path() {
   switch_to "$2"
   : > "$LOG"
   local stdin="${3//@HEAD@/$(git -C "$REPO" rev-parse HEAD)}"
-  OUTPUT="$(cd "$REPO" && PATH="$1:$SYSTEM_PATH" bash "$HOOK" <<< "$stdin" 2>&1)"
+  OUTPUT="$(cd "$REPO" && PATH="$1:$SYSTEM_BIN" bash "$HOOK" <<< "$stdin" 2>&1)"
   STATUS=$?
 }
 

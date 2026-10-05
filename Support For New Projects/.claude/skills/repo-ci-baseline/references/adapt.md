@@ -15,6 +15,9 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
   described another project, and the Seed `docs/SECURITY.md` was that same policy until it was made generic.
 - **Ignores only this repo needs**, such as atelier-store's generated `wwwroot/app.css`, go in a `.gitignore` beside them (`src/AtelierStore.Web/.gitignore`).
   The root `.gitignore` is Owned, so a line added there is reverted by the next Apply.
+- **Analyzer settings only this repo needs** go in an `.editorconfig` beside the code they cover, for the same reason: the root one is Owned.
+  IssueManager's root file turned off xUnit1030 and xUnit1051 for `tests/**` and IDE0044 for Razor code-behind; Apply dropped them and
+  the build failed, so they moved to `tests/.editorconfig` (`[*.cs]`) and `src/.editorconfig` (`[*.razor.cs]`).
 - **Unfilled placeholders.** Fill each `{{...}}` by hand.
 - **Leftovers.** Delete `sync-readme.yml` (`release_post.py` already maintains `docs/README.md`) and `label-enforce.yml` (squad's triage labels).
   Delete `automerge-decision.mjs`, its test and `automerge-tests.yml` (TicketManager, IssueManager): the Template's `pr-automerge.yml` keeps its decision inline, see [automerge.md](automerge.md).
@@ -41,6 +44,17 @@ Move whatever the old `ci.yml` did for this repo alone into `.github/ci/prepare.
 Every test project must run on it, as atelier-store's and TicketManager's do: `xunit.v3.mtp-v2` plus `Microsoft.Testing.Extensions.CodeCoverage` (for `--coverage`),
 in place of the VSTest pieces `xunit.runner.visualstudio` and `coverlet.collector`.
 Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.csproj' --include='*.props' .` finds nothing and `dotnet test` passes under the new `global.json`.
+Under central package management with transitive pinning, raise any `Microsoft.Testing.*` pin below what `xunit.v3.mtp-v2` needs, or restore fails with NU1109 (IssueManager went from 2.3.3 to 2.4.0).
+
+## Warnings as errors
+
+`scripts/gate.sh` and `ci.yml` build with MSBuild's `-warnaserror` switch, which promotes every warning, analyzer warnings included.
+`CodeAnalysisTreatWarningsAsErrors=false` keeps CA warnings out of the `TreatWarningsAsErrors` property's reach, not out of the switch's:
+with it set, IssueManager's `AnalysisMode=all` still turned 1,488 CA warnings (CA1707, CA2007, …) into a failed build.
+Before Apply, build with `-warnaserror` to count them. Then fix them, or drop to the default `AnalysisMode` and raise it again in a follow-up.
+An Aspire AppHost may also report ASPIRE010 (`AspireUseCliBundle=false`). Set `AspireUseCliBundle` to `true` where the AppHost uses the
+Aspire CLI bundle's features; where it doesn't, suppress the warning with `<NoWarn>$(NoWarn);ASPIRE010</NoWarn>`, as TicketManager,
+IssueTracker and IssueManager do.
 
 ## GitHub settings
 
@@ -48,6 +62,8 @@ Done when `grep -rE 'xunit.runner.visualstudio|coverlet.collector' --include='*.
   It sets the merge settings, security features, Actions permissions, the `main-rules` ruleset and its required checks, and the labels.
   The first run can't require the checks `main` doesn't report yet (`Branch name`, `PR title`, and `Test Suite` where it's new), and keeps the repo's
   old test gate required meanwhile; the second requires them and drops the old one. Done when `github-settings.sh mpaulosky/<repo>` reports no DRIFT, MANUAL or LEGACY.
+  Between the two, the Standardize PR can't merge while the old gate is required, since the new `ci.yml` never reports it: remove it by hand first
+  ([github-settings.md](github-settings.md)).
   It deletes `squad*` labels itself; add `--remove-legacy` once its LEGACY list (squad-era rulesets, classic protection) is understood.
 - **Secrets.** The script checks `RELEASE_PR_PAT` exists (releases, blog PRs and auto-merge start workflows only with it); add it, and any test secret, by hand.
   The PAT needs **Workflows: Read and write** (fine-grained) or the `workflow` scope (classic), as well as contents and

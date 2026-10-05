@@ -87,7 +87,8 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   becomes a fragment link. Entities and control characters are read the way browsers read them, so `java&#9;script:` counts,
   however much padding pushes the scheme along. An entity's leading zeros are dropped before decoding: Python refuses
   numbers over 4300 digits, so `&#000…9;` would otherwise stop the release before its post was written.
-  Only a footnote definition alone at the start of its line (`[^1]: …`) is exempt; a label holding an escaped `\[^` isn't one.
+  Only a footnote definition alone at the start of its line, with kramdown's footnote ID (`[^note-1]: …`), is exempt;
+  any other `[^…]:`, such as `[^!]:` or a label holding an escaped `\[^`, is a reference definition to kramdown.
 - **kramdown:** `{:` (attribute lists, `{::extensions}`) becomes `&#123;:`.
 - **Code keeps its text.** kramdown and CommonMark disagree about some fences (unclosed, a two-word info string, nested
   in a list), and escaping an HTML block can bring a fence line inside it to life. So every code block is re-emitted as a

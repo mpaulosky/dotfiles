@@ -1128,6 +1128,12 @@ def test_html_comments_are_dropped():
         ("[open][label \\[^x]\n[label \\[^x]: javascript:x", "[open][label \\[^x]\n[label \\[^x]: #javascript:x"),
         ("[a [^x]: javascript:x", "[a [^x]: #javascript:x"),
         ("x [^1]: javascript:x", "x [^1]: #javascript:x"),
+        # kramdown's footnote IDs are \w[\w-]*; any other "[^...]:" is a reference definition.
+        ("[^!]: javascript:x", "[^!]: #javascript:x"),
+        ("[^a:b]: javascript:x", "[^a:b]: #javascript:x"),
+        ("[^-x]: javascript:x", "[^-x]: #javascript:x"),
+        ("[^é]: javascript:x", "[^é]: #javascript:x"),
+        ("[^note-2_b]: javascript: is how it starts", "[^note-2_b]: javascript: is how it starts"),
     ],
 )
 def test_link_destinations_with_unsafe_schemes_are_neutralized(text, expected):

@@ -544,8 +544,9 @@ SCHEME_TEXT = set("+.-:&#;\\")
 # Only these autolinks keep their angle brackets; any other "<" is escaped.
 AUTOLINK = re.compile(r"<(?:https?://|mailto:)[^\s<>\"'`\\]*>", re.I)
 LINK_DESTINATION_START = re.compile(r"\]\(|\]:")
-# A footnote definition's start: its label has no brackets, backslashes or spaces.
-FOOTNOTE_DEFINITION = re.compile(r"[ \t>]*\[\^[^\[\]\\\s]+\]:")
+# A footnote definition's start, with kramdown's footnote ID (\w[\w-]*, and Ruby's \w is
+# ASCII): GitHub Pages reads any other "[^...]:" as a reference definition, a link.
+FOOTNOTE_DEFINITION = re.compile(r"[ \t>]*\[\^[A-Za-z0-9_][A-Za-z0-9_-]*\]:")
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 CONTAINER_MARKER = re.compile(r"[ \t]*(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|$))")
 BACKTICKS = re.compile(r"`+")

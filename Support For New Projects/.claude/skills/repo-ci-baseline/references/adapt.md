@@ -48,10 +48,13 @@ Under central package management with transitive pinning, raise any `Microsoft.T
 
 ## Warnings as errors
 
-`scripts/gate.sh` and `ci.yml` build with `-warnaserror`, which overrides `CodeAnalysisTreatWarningsAsErrors=false`.
-Analyzer warnings a repo tolerated become errors: IssueManager's `AnalysisMode=all` turned 1,488 warnings into a failed build.
+`scripts/gate.sh` and `ci.yml` build with MSBuild's `-warnaserror` switch, which promotes every warning, analyzer warnings included.
+`CodeAnalysisTreatWarningsAsErrors=false` keeps CA warnings out of the `TreatWarningsAsErrors` property's reach, not out of the switch's:
+with it set, IssueManager's `AnalysisMode=all` still turned 1,488 CA warnings (CA1707, CA2007, …) into a failed build.
 Before Apply, build with `-warnaserror` to count them. Then fix them, or drop to the default `AnalysisMode` and raise it again in a follow-up.
-An Aspire AppHost also needs `<NoWarn>$(NoWarn);ASPIRE010</NoWarn>`, as TicketManager's and IssueTracker's have.
+An Aspire AppHost may also report ASPIRE010 (`AspireUseCliBundle=false`). Set `AspireUseCliBundle` to `true` where the AppHost uses the
+Aspire CLI bundle's features; where it doesn't, suppress the warning with `<NoWarn>$(NoWarn);ASPIRE010</NoWarn>`, as TicketManager,
+IssueTracker and IssueManager do.
 
 ## GitHub settings
 

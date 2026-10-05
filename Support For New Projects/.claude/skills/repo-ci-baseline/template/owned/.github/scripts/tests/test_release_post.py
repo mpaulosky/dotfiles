@@ -1394,9 +1394,9 @@ def test_a_link_title_keeps_its_code_in_the_docs_readme(text, expected):
 
 
 def test_a_title_cannot_close_its_blog_index_link_when_its_backticks_pair_differently(tmp_path):
-    # The sanitizer reads the first "](" as a link, so it pairs no backticks. Read again, the
-    # escaped "<" ends that link early and two backticks pair around "](https://...)". Every
-    # "]" is an entity, so neither reading can link the row elsewhere.
+    # A parser that reads the first "](" as a link pairs no backticks; one that doesn't pairs
+    # two of them around "](https://...)". Every "]" is an entity, so neither reading can link
+    # the row elsewhere.
     rp.update_blog_index(tmp_path, "2026-10-05", "a](<a b`>)](https://evil.example) `", "p.md")
     [row] = [line for line in (tmp_path / "README.md").read_text().splitlines() if "p.md" in line]
     assert "](https://evil" not in row
@@ -1413,6 +1413,7 @@ def test_a_title_cannot_close_its_blog_index_link_when_its_backticks_pair_differ
         lambda n: "<!--`" * n,
         lambda n: "](((" * n,
         lambda n: "](" + "(a)" * n + "](" * n,
+        lambda n: "[" * n + "[a](x)" * n,
     ],
 )
 def test_finding_code_stays_linear(shape):
@@ -1442,6 +1443,10 @@ def test_finding_code_stays_linear(shape):
         ('[a] ](x "`<T>`")', '[a] ](x "<code>&#60;T&#62;</code>")'),
         # A "[" inside a code span opens no label.
         ('`[` ](x "`<T>`")', '`[` ](x "<code>&#60;T&#62;</code>")'),
+        # A link can't hold a link, so once the inner one closes, the outer "[" opens nothing.
+        ('[outer [inner](x)](y "`<T>`")', '[outer [inner](x)](y "<code>&#60;T&#62;</code>")'),
+        # An image can, so its "](" still starts a destination, and its title holds no code span.
+        ('![a [b](x)](y "`<T>`")', '![a [b](x)](y "`&lt;T>`")'),
     ],
 )
 def test_a_close_bracket_without_a_label_starts_no_link(body, expected):
@@ -1454,6 +1459,8 @@ def test_a_close_bracket_without_a_label_starts_no_link(body, expected):
         # A ">" line is blank inside the quote, so the code on both sides of it is one block.
         ("> intro\n>\n>     a\n>\n>     b\n", "> intro\n>\n\n```text\na\n\nb\n```"),
         ("> - x\n>\n>       a\n>\n>       b", "> - x\n>\n\n```text\na\n\nb\n```"),
+        # A ">" line inside a quoted list item keeps the item open too.
+        ("> -     a\n>\n>       b", "```text\na\n\nb\n```"),
     ],
 )
 def test_quoted_indented_code_keeps_its_blank_lines(body, expected):

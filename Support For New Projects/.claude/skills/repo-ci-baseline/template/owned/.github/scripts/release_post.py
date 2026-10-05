@@ -795,7 +795,9 @@ def inline_code(text, continues=None):
     always dropped it. A complete inline link's destination and title are
     skipped, so their backticks open no span (#58). A "](" is a link's only
     where an unescaped "[" earlier in the paragraph, outside code and
-    comments, is still open; otherwise it is text and its backticks pair.
+    comments, is still open and active; otherwise it is text and its
+    backticks pair. As in CommonMark, a link deactivates the link (not image)
+    openers before it, since a link can't hold a link.
 
     Runs and paragraph ends are indexed once, and bare_destination_end() caps
     how far a link is read, so the scan stays linear.
@@ -805,7 +807,8 @@ def inline_code(text, continues=None):
     for match in BACKTICKS.finditer(text):
         starts_by_length.setdefault(len(match.group()), []).append(match.start())
     comments_can_close = True  # False once a "<!--" found no "-->" after it
-    labels = 0  # the "["s still open in labels_paragraph
+    labels = []  # the "["s still open in labels_paragraph: whether each is an image's ("![")
+    inactive_below = 0  # labels[:inactive_below] that aren't images' can't make a link any more
     labels_paragraph = 0
     pos = 0
     while mark := INLINE_MARK.search(text, pos):
@@ -814,18 +817,24 @@ def inline_code(text, continues=None):
         paragraph = bisect.bisect_right(breaks, start)
         paragraph_end = breaks[paragraph] if paragraph < len(breaks) else len(text)
         if paragraph != labels_paragraph:
-            labels, labels_paragraph = 0, paragraph
+            labels, labels_paragraph, inactive_below = [], paragraph, 0
         if token in ("[", "]", "]("):
             escaped = odd_backslashes_before(text, start)
             if token == "[":
-                labels += not escaped
+                if not escaped:
+                    image = start > 0 and text[start - 1] == "!" and not odd_backslashes_before(text, start - 1)
+                    labels.append(image)
                 continue
             if escaped or not labels:
                 continue
-            labels -= 1
-            if token == "](":
+            image = labels.pop()
+            active = image or len(labels) >= inactive_below
+            inactive_below = min(inactive_below, len(labels))
+            if token == "](" and active:
                 end = link_end(text, pos, paragraph_end)
                 if end is not None:
+                    if not image:
+                        inactive_below = len(labels)
                     angle = LINK_ANGLE_DESTINATION.match(text, BLANKS_AT.match(text, pos).end())
                     if angle:
                         yield angle.start(), angle.end(), ANGLE_DESTINATION

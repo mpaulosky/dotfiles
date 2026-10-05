@@ -50,6 +50,9 @@ Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
   A templated name (a matrix job's) can't be read, so such a check can't be required.
 - **An old required check stays while the repo still reports it.** Before a Standardize, a repo's own test gate (IssueManager's `All Tests Passed`)
   is its only one; dropping it before `Test Suite` exists would leave no required test. It's reported as INFO and dropped by the first `--fix` after it stops being reported.
+  That is after the Standardize merges, but the Standardize PR itself never reports the old check, so it can't merge while the check is required.
+  `--admin` doesn't get past a ruleset, and the first `--fix` empties `bypass_actors`. Remove the old check from `main-rules` by hand just
+  before merging, once `Test Suite` has passed on the PR's head, then run the second `--fix` straight after the merge (IssueManager #241).
 - **Pinned actions only once every workflow is pinned.** Until then the unpinned `uses:` are listed as MANUAL, and so they are
   if pinning is already required, since GitHub then refuses to run them.
 

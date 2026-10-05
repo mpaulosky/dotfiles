@@ -1117,7 +1117,7 @@ def test_html_comments_are_dropped():
         ("[a](j" + "&#9;" * 60 + "avascript:x)", "[a](#j" + "&#9;" * 60 + "avascript:x)"),
         ("[a](java&#" + "0" * 250 + "9;script:x)", "[a](#java&#" + "0" * 250 + "9;script:x)"),
         ("![a](data:text/html,x)", "![a](#data:text/html,x)"),
-        ("[a](<vbscript:x>)", "[a](&lt;#vbscript:x>)"),
+        ("[a](<vbscript:x>)", "[a](#vbscript:x)"),
         ("[a]: javascript:x", "[a]: #javascript:x"),
         ("> [a]:\n> javascript:x", "> [a]:\n> #javascript:x"),
         ("[a](https://example.com) [b](mailto:a@b.c) [c](#top) [d](docs/x.md)",
@@ -1471,3 +1471,68 @@ def test_quoted_indented_code_keeps_its_blank_lines(body, expected):
 )
 def test_indented_code_in_different_containers_stays_apart(body):
     assert rp.sanitize_markdown(body).count("```text") == 2
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A backtick fence's info string can't hold a backtick, so this line is a code span, not a fence.
+        ("```List<T>```", "<code>List&#60;T&#62;</code>"),
+        ("```a``` b", "```a``` b"),
+        ("Text\n\n```Map<K>``` here", "Text\n\n<code>Map&#60;K&#62;</code> here"),
+        # A tilde fence's info string may hold one.
+        ("~~~a`b\nx\n~~~", "```a\nx\n```"),
+    ],
+)
+def test_a_backtick_line_with_backticks_after_it_is_a_code_span(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # An angle-bracket destination becomes the same destination written bare, so no "<" is escaped into it.
+        ("[x](<docs/a.md>)", "[x](docs/a.md)"),
+        ('[x](<docs/a b(1).md> "t")', '[x](docs/a%20b%281%29.md "t")'),
+        ("[x](<a\\>b.md>)", "[x](a%3Eb.md)"),
+        # Its scheme is still checked.
+        ("[x](<javascript:alert(1)>)", "[x](#javascript:alert%281%29)"),
+        # Without a label, it is text.
+        ("Text ](<a.md>)", "Text ](&lt;a.md>)"),
+    ],
+)
+def test_an_angle_bracket_link_destination_keeps_working(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # Quote markers on a span's later lines aren't part of its code.
+        ("> Use `List<T>\n> and Map<K>` here", "> Use <code>List&#60;T&#62; and Map&#60;K&#62;</code> here"),
+        ("> > Use `List<T>\n> and Map<K>` here", "> > Use <code>List&#60;T&#62; and Map&#60;K&#62;</code> here"),
+        ("- Use `List<T>\n  and Map<K>` here", "- Use <code>List&#60;T&#62; and Map&#60;K&#62;</code> here"),
+    ],
+)
+def test_a_code_span_drops_the_container_markers_of_its_later_lines(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+def test_a_reference_definition_with_backticks_in_its_label_and_title_is_rebased():
+    assert rp.rebase_readme_links('[`a]: docs/a.md "`"\n') == '[`a]: a.md "`"\n'
+
+
+def test_a_reference_definition_inside_a_code_span_is_left_alone():
+    assert rp.rebase_readme_links("Text `a\n[b]: docs/b.md` c\n") == "Text `a\n[b]: docs/b.md` c\n"
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        # A tag that only starts a line of prose opens no HTML block, so the paragraph is the excerpt.
+        ("<T> is the generic return type.", "<T> is the generic return type."),
+        ("<div>\nhidden\n</div>\n\nShown.", "Shown."),
+    ],
+)
+def test_the_excerpt_skips_only_real_html_blocks(summary, expected):
+    assert rp.first_paragraph(rp.sanitize_markdown(summary)) == expected

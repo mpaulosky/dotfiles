@@ -423,3 +423,14 @@ test-output.txt
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local .NET SDK state and NuGet package cache (set by DOTNET_CLI_HOME / NUGET_PACKAGES)
+.dotnet/
+.nuget/
+
+# Local dotCover reports
+docs/coverage/
+
+# Personal screenshots and JetBrains Junie agent files
+.images/
+.junie/

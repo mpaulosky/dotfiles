@@ -1023,6 +1023,7 @@ def test_commit_subjects_are_escaped():
         ("docs/a b (1).md", "`docs/a b (1).md`"),
         ("src/a`b.cs", "<code>src&#47;a&#96;b&#46;cs</code>"),  # a backtick can't close the span early
         ("src/<x>.cs", "<code>src&#47;&#60;x&#62;&#46;cs</code>"),
+        (" a.md ", "<code> a&#46;md </code>"),  # a code span would trim one space from each end
     ],
 )
 def test_file_names_are_code_that_cannot_break_out(name, expected):
@@ -1062,6 +1063,9 @@ def test_html_comments_are_dropped():
         ("[a](javascript:alert(1))", "[a](#javascript:alert(1))"),
         ("[a](JaVa&#115;cript:x)", "[a](#JaVa&#115;cript:x)"),  # entities decode in a destination
         ("[a](java&#9;script:x)", "[a](#java&#9;script:x)"),  # browsers drop the tab
+        # Padding can push the scheme any distance from the start: the whole destination is read.
+        ("[a](j" + "&#9;" * 60 + "avascript:x)", "[a](#j" + "&#9;" * 60 + "avascript:x)"),
+        ("[a](java&#" + "0" * 250 + "9;script:x)", "[a](#java&#" + "0" * 250 + "9;script:x)"),
         ("![a](data:text/html,x)", "![a](#data:text/html,x)"),
         ("[a](<vbscript:x>)", "[a](&lt;#vbscript:x>)"),
         ("[a]: javascript:x", "[a]: #javascript:x"),

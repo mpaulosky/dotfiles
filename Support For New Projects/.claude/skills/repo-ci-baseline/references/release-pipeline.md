@@ -84,14 +84,17 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
 - **HTML:** every `<` outside code becomes `&lt;`, except `<https://…>`, `<http://…>` and `<mailto:…>` autolinks. HTML
   comments are dropped. A description's `<details>` therefore shows as text.
 - **Links:** a destination after `](` or `]:` whose scheme isn't `http`, `https` or `mailto` gets a `#` in front, so it
-  becomes a fragment link. Entities and control characters are read the way browsers read them, so `java&#9;script:` counts.
+  becomes a fragment link. Entities and control characters are read the way browsers read them, so `java&#9;script:` counts,
+  however much padding pushes the scheme along. An entity's leading zeros are dropped before decoding: Python refuses
+  numbers over 4300 digits, so `&#000…9;` would otherwise stop the release before its post was written.
 - **kramdown:** `{:` (attribute lists, `{::extensions}`) becomes `&#123;:`.
 - **Code keeps its text.** kramdown and CommonMark disagree about some fences (unclosed, a two-word info string, nested
   in a list), and escaping an HTML block can bring a fence line inside it to life. So every code block is re-emitted as a
   top-level fence, longer than any backtick run inside it and always with an info string, with blank lines around it.
   A block in a list or quote moves out of it. Any other line that looks like a fence gets its first fence marker escaped.
   A code span holding `<`, `{` or `]` becomes `<code>` with its symbols as entities. It looks the same, and it stays
-  safe however a parser pairs the backticks. File names with risky characters are written the same way.
+  safe however a parser pairs the backticks. A span may cross a line break, but not a blank line, as in CommonMark;
+  the README's `docs/` copy pairs spans the same way when it rebases links. File names with risky characters are written the same way.
 - **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages
   build. The post body sits between `<!-- {% raw %} -->` and `<!-- {% endraw %} -->` (comments, so neither GitHub nor
   Pages shows them), and a `{%` that would read as `endraw` is printed by Liquid instead. The README and blog index

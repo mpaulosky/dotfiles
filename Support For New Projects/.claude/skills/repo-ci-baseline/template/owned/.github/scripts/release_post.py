@@ -19,6 +19,7 @@ release. Standard library only, so no pip install is needed to run it.
 """
 
 import argparse
+import bisect
 import datetime
 import html
 import json
@@ -552,6 +553,24 @@ BACKTICKS = re.compile(r"`+")
 CODE_SPAN_RISK = re.compile(r"[<{\]]")
 
 
+DECIMAL_ZEROS = re.compile(r"&#0+(?=[0-9])")
+HEX_ZEROS = re.compile(r"&#([xX])0+(?=[0-9a-fA-F])")
+# Past 8 digits no reference names a character: the largest is &#1114111; (&#x10FFFF;).
+OVERSIZED_REFERENCE = re.compile(r"&#(?:[xX][0-9a-fA-F]{9,}|[0-9]{9,});?")
+
+
+def safe_unescape(text):
+    """html.unescape that can't raise on untrusted text.
+
+    Python refuses to convert more than 4300 digits, so html.unescape raises
+    on "&#000...9;". Leading zeros don't change a reference's value, so they
+    go first, and a reference still too long for any character becomes
+    U+FFFD, as html.unescape makes any out-of-range one.
+    """
+    text = HEX_ZEROS.sub(r"&#\1", DECIMAL_ZEROS.sub("&#", text))
+    return html.unescape(OVERSIZED_REFERENCE.sub("\ufffd", text))
+
+
 def safe_destination(text, start):
     """Whether the link destination starting at text[start] has no scheme, or one in SAFE_SCHEMES.
 
@@ -565,7 +584,7 @@ def safe_destination(text, start):
     end = start
     while end < len(text) and (text[end].isalnum() or text[end] in SCHEME_TEXT):
         end += 1
-    candidate = html.unescape(text[start:end]).replace("\\", "")
+    candidate = safe_unescape(text[start:end]).replace("\\", "")
     candidate = "".join(char for char in candidate if char > " " and char != "\x7f").lower()
     scheme = SCHEME.match(candidate)
     return not scheme or scheme.group(1) in SAFE_SCHEMES
@@ -636,13 +655,11 @@ def escape_text(text, liquid):
     return "".join(out)
 
 
-def sanitize_line(line, liquid=False):
-    """One line of untrusted Markdown text (no code blocks) made safe to publish.
+def escape_fence_marker(line):
+    """The line with its first backtick or tilde escaped when it could open a fence.
 
-    A line that could open a fence gets its first backtick or tilde escaped:
-    a real fence was re-emitted already, so this one only looked like one
-    where it sat (in an HTML block, say). Code spans pair as CommonMark pairs
-    backtick runs; a span holding anything risky becomes <code>.
+    A real fence was re-emitted already, so this one only looked like one
+    where it sat (in an HTML block, say).
     """
     pos = 0
     while True:
@@ -654,57 +671,68 @@ def sanitize_line(line, liquid=False):
     if rest.startswith(("```", "~~~")):
         cut = len(line) - len(rest)
         line = line[:cut] + "\\" + line[cut:]
+    return line
 
+
+def sanitize_spans(text, liquid=False):
+    """Untrusted Markdown text (no code blocks) made safe, with code spans paired as CommonMark pairs them.
+
+    A span holding anything risky becomes <code>; one that crossed a line
+    break has it as a space, as CommonMark renders it.
+    """
     out = []
     done = 0
-    for start, end, content in code_spans(line):
-        out.append(escape_text(line[done:start], liquid))
-        out.append(code_html(content) if CODE_SPAN_RISK.search(content) else line[start:end])
+    for start, end, content in code_spans(text):
+        out.append(escape_text(text[done:start], liquid))
+        out.append(code_html(content.replace("\n", " ")) if CODE_SPAN_RISK.search(content) else text[start:end])
         done = end
-    out.append(escape_text(line[done:], liquid))
+    out.append(escape_text(text[done:], liquid))
     return "".join(out)
 
 
-def code_spans(line):
-    """Each code span in a line, as (start, end, content), with backtick runs paired as CommonMark pairs them.
+BLANK_LINE = re.compile(r"\n[ \t]*(?:\n|$)")
+
+
+def code_spans(text):
+    """Each code span in text, as (start, end, content), with backtick runs paired as CommonMark pairs them.
 
     A run opens a span only where a later run of the same length closes it; a
-    backslash escapes a run's first backtick. A span that crosses a line
-    break isn't seen.
+    backslash escapes a run's first backtick. A span may cross line breaks,
+    but not a blank line, which ends the paragraph. Runs and blank lines are
+    indexed once, so a text full of unmatched runs still takes linear time.
     """
+    runs = [(match.start(), len(match.group())) for match in BACKTICKS.finditer(text)]
+    starts_by_length = {}
+    for start, length in runs:
+        starts_by_length.setdefault(length, []).append(start)
+    blanks = [match.start() for match in BLANK_LINE.finditer(text)]
     search = 0
-    while True:
-        opener = BACKTICKS.search(line, search)
-        if not opener:
-            return
-        start, run = opener.start(), opener.group()
-        if odd_backslashes_before(line, start):
-            start += 1
-            run = run[1:]
-            if not run:
-                search = opener.end()
-                continue
-        closer = None
-        for candidate in BACKTICKS.finditer(line, start + len(run)):
-            if candidate.group() == run:
-                closer = candidate
-                break
-        if not closer:
-            search = start + len(run)
+    for start, length in runs:
+        if start < search:
             continue
-        yield start, closer.end(), line[start + len(run):closer.start()]
-        search = closer.end()
+        if odd_backslashes_before(text, start):
+            start, length = start + 1, length - 1
+            if not length:
+                continue
+        after = start + length
+        paragraph_end = next(iter(blanks[bisect.bisect_left(blanks, after):]), len(text))
+        candidates = starts_by_length.get(length, [])
+        index = bisect.bisect_left(candidates, after)
+        if index < len(candidates) and candidates[index] < paragraph_end:
+            closer = candidates[index]
+            yield start, closer + length, text[after:closer]
+            search = closer + length
 
 
 def sanitize_inline(text, liquid=False):
     """A single line of untrusted text, such as a PR title or commit subject, made safe to publish."""
-    return sanitize_line(neutralize_links(HTML_COMMENT.sub("", text)), liquid)
+    return sanitize_spans(escape_fence_marker(neutralize_links(HTML_COMMENT.sub("", text))), liquid)
 
 
 def sanitize_text(lines):
     """Untrusted Markdown text lines (no code blocks), made safe; HTML comments are dropped."""
     text = neutralize_links(HTML_COMMENT.sub("", "\n".join(lines)))
-    return [sanitize_line(line) for line in text.split("\n")]
+    return sanitize_spans("\n".join(escape_fence_marker(line) for line in text.split("\n"))).split("\n")
 
 
 def code_fence(content, info):
@@ -989,7 +1017,7 @@ def plain_text(markdown):
     text = re.sub(r"(?<!\w)(__|_)(\S(?:.*?\S)?)\1(?!\w)", r"\2", text)
     # What sanitize_markdown escaped reads as the text it stands for.
     text = re.sub(r"</?code>", "", text)
-    text = html.unescape(re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", text))
+    text = safe_unescape(re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", text))
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -1299,22 +1327,34 @@ def rebase_html_attribute(match):
             return match.group(1) + quote + rebase_link(match.group(group)) + quote
 
 
-def rebase_text_links(line):
-    """A line of Markdown text with its links rebased; code spans are left alone.
+def rebase_text_links(lines):
+    """Lines of Markdown text with their links rebased; code spans, which may cross lines, are left alone.
 
     A reference definition is read before any code span, so code in its label
     doesn't hide its destination.
     """
-    reference = LINK_REFERENCE.match(line)
-    if reference:
-        return line[:reference.start(3)] + rebase_link(reference.group(3)) + line[reference.end(3):]
+    text = "\n".join(lines)
+    spans = list(code_spans(text))
     out = []
-    done = 0
-    for start, end, _ in [*code_spans(line), (len(line), len(line), "")]:
-        text = rebase_inline_links(line[done:start])
-        out.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, text) + line[start:end])
-        done = end
-    return "".join(out)
+    offset = 0
+    for line in lines:
+        end_of_line = offset + len(line)
+        # The parts of this line inside a span, relative to the line.
+        inside = [(max(start, offset) - offset, min(end, end_of_line) - offset)
+                  for start, end, _ in spans if start < end_of_line and end > offset]
+        reference = LINK_REFERENCE.match(line)
+        if reference and not any(start <= reference.start(3) < end for start, end in inside):
+            out.append(line[:reference.start(3)] + rebase_link(reference.group(3)) + line[reference.end(3):])
+        else:
+            parts = []
+            done = 0
+            for start, end in [*inside, (len(line), len(line))]:
+                prose = rebase_inline_links(line[done:start])
+                parts.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, prose) + line[start:end])
+                done = end
+            out.append("".join(parts))
+        offset = end_of_line + 1
+    return out
 
 
 def rebase_readme_links(markdown):
@@ -1330,13 +1370,15 @@ def rebase_readme_links(markdown):
     scan_blocks(list(lines), [], raw, blocks)
     code = {index for block in blocks for index in block["lines"]}
     out = []
+    text = []  # the run of text lines since the last code or HTML line
     for index, line in enumerate(lines):
-        if index in code:
-            out.append(line)
-        elif index in raw:
-            out.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, rebase_inline_links(line)))
+        if index in code or index in raw:
+            out += rebase_text_links(text)
+            text = []
+            out.append(line if index in code else LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, rebase_inline_links(line)))
         else:
-            out.append(rebase_text_links(line))
+            text.append(line)
+    out += rebase_text_links(text)
     return "\n".join(out)
 
 

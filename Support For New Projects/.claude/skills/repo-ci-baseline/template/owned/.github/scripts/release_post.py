@@ -690,7 +690,8 @@ def sanitize_spans(text, liquid=False):
     return "".join(out)
 
 
-BLANK_LINE = re.compile(r"\n[ \t]*(?:\n|$)")
+# A line holding only spaces, tabs or a CR (the README is split on "\n" alone, so a CRLF line keeps its "\r").
+BLANK_LINE = re.compile(r"\n[ \t\r]*(?:\n|$)")
 
 
 def code_spans(text):
@@ -715,7 +716,8 @@ def code_spans(text):
             if not length:
                 continue
         after = start + length
-        paragraph_end = next(iter(blanks[bisect.bisect_left(blanks, after):]), len(text))
+        blank = bisect.bisect_left(blanks, after)
+        paragraph_end = blanks[blank] if blank < len(blanks) else len(text)
         candidates = starts_by_length.get(length, [])
         index = bisect.bisect_left(candidates, after)
         if index < len(candidates) and candidates[index] < paragraph_end:
@@ -1334,14 +1336,21 @@ def rebase_text_links(lines):
     doesn't hide its destination.
     """
     text = "\n".join(lines)
-    spans = list(code_spans(text))
+    spans = [(start, end) for start, end, _ in code_spans(text)]  # in order, never overlapping
+    first = 0  # the first span that may still reach this line or a later one
     out = []
     offset = 0
     for line in lines:
         end_of_line = offset + len(line)
+        while first < len(spans) and spans[first][1] <= offset:
+            first += 1
         # The parts of this line inside a span, relative to the line.
-        inside = [(max(start, offset) - offset, min(end, end_of_line) - offset)
-                  for start, end, _ in spans if start < end_of_line and end > offset]
+        inside = []
+        index = first
+        while index < len(spans) and spans[index][0] < end_of_line:
+            start, end = spans[index]
+            inside.append((max(start, offset) - offset, min(end, end_of_line) - offset))
+            index += 1
         reference = LINK_REFERENCE.match(line)
         if reference and not any(start <= reference.start(3) < end for start, end in inside):
             out.append(line[:reference.start(3)] + rebase_link(reference.group(3)) + line[reference.end(3):])

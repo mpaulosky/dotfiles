@@ -629,6 +629,8 @@ def test_rebase_readme_links_leaves_code_spans_and_indented_code_alone(text):
         ("[`a.md`](docs/a.md) and `x` <img src=\"docs/b.png\">\n", "[`a.md`](a.md) and `x` <img src=\"b.png\">\n"),
         # A blank line ends the paragraph, so these backticks pair with nothing across it.
         ("a `[x](docs/a.md)\n\n[y](docs/b.md)` b\n", "a `[x](a.md)\n\n[y](b.md)` b\n"),
+        # So does a blank line with a CRLF ending, which keeps its "\r" in the README's lines.
+        ("a `[x](docs/a.md)\r\n\r\n[y](docs/b.md)` b\r\n", "a `[x](a.md)\r\n\r\n[y](b.md)` b\r\n"),
         # After a span that crossed lines, the rest of its last line is text again.
         ("`x\ny` [z](docs/a.md)\n", "`x\ny` [z](a.md)\n"),
         # Backtick runs of different lengths don't pair, so this holds no code span.

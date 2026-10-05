@@ -59,12 +59,15 @@ any gate you did not actually run as not run.
    `npx --yes markdownlint-cli2 <changed files>` (picks up the repo's
    `.markdownlint*` config when present).
 
-   **c. Build repair loop.** `dotnet restore`, then
-   `dotnet build <solution> --no-restore`, where `<solution>` is the
+   **c. Build repair loop.** `dotnet restore <solution>`, then
+   `dotnet build <solution> --no-restore --configuration Release` (the
+   configuration the tests run in), where `<solution>` is the
    `.sln`/`.slnx` at the repo root (affected projects are fine for the inner
-   loop; finish on a full solution build). For each error or warning: locate
-   it, understand the rule, fix, rebuild. Done when the full build shows zero
-   errors and every new warning is fixed or explicitly triaged. Read which
+   loop; finish on a full solution build with `--no-incremental`, since an
+   incremental build hides up-to-date projects' warnings). For each error or
+   warning: locate it, understand the rule, fix, rebuild. Done when the full
+   build shows zero errors and every new warning is fixed or explicitly
+   triaged. Read which
    warnings are errors and which are already suppressed, and why, from
    `Directory.Build.props` (`TreatWarningsAsErrors`, `NoWarn`) and
    `.editorconfig`. Log findings and fixes to `build-log.txt` at the repo
@@ -79,10 +82,16 @@ any gate you did not actually run as not run.
    ```
 
    If a project reports a runner-level error rather than a pass/fail count,
-   run its assembly directly:
-   `dotnet <project dir>/bin/Release/<tfm>/<Project>.dll`, reading `<tfm>`
-   from the project's `TargetFramework`. Green only when every project
-   reports its tests passed.
+   run its assembly directly, once per target framework in the project's
+   `TargetFramework` or `TargetFrameworks`, asking MSBuild for the path:
+
+   ```bash
+   dotnet msbuild <test project>.csproj -getProperty:TargetPath \
+     -p:Configuration=Release -p:TargetFramework=<tfm>
+   dotnet <TargetPath>
+   ```
+
+   Green only when every project reports its tests passed.
 
 6. **Loop** until all four gates are green on the same final state.
 7. **Stage the in-scope files by explicit path**, then re-read

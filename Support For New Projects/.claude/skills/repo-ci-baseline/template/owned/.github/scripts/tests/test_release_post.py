@@ -1270,3 +1270,162 @@ def test_a_title_cannot_close_its_blog_index_link_early(tmp_path):
 def test_a_reference_label_with_an_escaped_footnote_opener_is_neutralized():
     body = "[open][label \\[^x]\n\n[label \\[^x]: javascript:alert(1)"
     assert "]: #javascript:" in rp.sanitize_markdown(body)
+
+
+# Code is published as written: it's found once, on the raw text, and every prose
+# transformation runs only outside it (#58).
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A comment or link inside a span is code: it's kept, as entities, not dropped or neutralized.
+        ("Write `<!-- TODO -->` here", "Write <code>&#60;&#33;&#45;&#45; TODO &#45;&#45;&#62;</code> here"),
+        ("Write `[x](javascript:x)`", "Write <code>&#91;x&#93;&#40;javascript&#58;x&#41;</code>"),
+        # A comment that starts first hides the backticks inside it, as in CommonMark.
+        ("a <!-- ` --> b ` c", "a  b ` c"),
+        ("a <!-- `x` --> b", "a  b"),
+        # A span that starts first holds the comment's opener, so the rest is text.
+        ("`a <!--` b -->", "<code>a &#60;&#33;&#45;&#45;</code> b -->"),
+        # An unclosed backtick is text, and the comment after it is still dropped.
+        ("`a <!-- b --> c", "`a  c"),
+    ],
+)
+def test_code_spans_are_found_before_comments_are_dropped(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+def test_a_title_keeps_comments_and_links_in_its_code_spans():
+    assert rp.sanitize_inline("fix: Drop `<!-- x -->` and `[a](javascript:x)`") == (
+        "fix: Drop <code>&#60;&#33;&#45;&#45; x &#45;&#45;&#62;</code>"
+        " and <code>&#91;a&#93;&#40;javascript&#58;x&#41;</code>"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "`<!-- x -->` and `<script>alert(1)</script>`",
+        "`<!-- x -->`<script>alert(1)</script>",
+        "<!-- ` --> `<script>alert(1)</script>`",
+        "`x <!-- `<script>alert(1)</script>-->",
+        "<!-- `x -->`<script>alert(1)</script>",
+        "[a](x `<script>alert(1)</script>`)",
+        '[a](x "`<script>alert(1)</script>`")',
+        "`a\n<!-- b`\n<script>alert(1)</script>\n-->",
+        "`a\nb <!-- c`\n<script>alert(1)</script>\n-->",
+    ],
+)
+def test_code_spans_around_comments_and_links_render_inert(body):
+    # However the scanner and the renderer pair the backticks, every "<" is an entity or in <code>.
+    post = rp.render_post({"number": 7, "body": body}, "T", "v1.2.3", "2026-09-26", [], [], body, "m")
+    for line in outside_code(post):
+        assert not re.search(r"<(?!code>|/code>|!-- \{% (?:end)?raw %\} -->)", line), line
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A comment between "](" and the destination is dropped, so the destination is still read.
+        ("[a](<!-- x -->javascript:alert(1))", "[a](#javascript:alert(1))"),
+        # A backtick in the destination makes it one link, read whole.
+        ("[a](javascript:`x`)", "[a](#javascript:`x`)"),
+        # A "[^1]:" after a code span isn't at the start of its line, so it's no footnote.
+        ("`x` [^1]: javascript:x", "`x` [^1]: #javascript:x"),
+    ],
+)
+def test_link_destinations_beside_code_are_still_neutralized(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A fence in a list item, indented code, and indented code in a quote keep their tabs.
+        ("- item\n\n  ```\n  a\tb\n  ```", "- item\n\n```text\na\tb\n```"),
+        ("Text:\n\n    a\tb\n\tc\td", "Text:\n\n```text\na\tb\nc\td\n```"),
+        (">     a\tb", "```text\na\tb\n```"),
+        # A tab that spans the indentation keeps the columns past it, as spaces.
+        ("- item\n\n\t\tcode", "- item\n\n```text\n  code\n```"),
+    ],
+)
+def test_code_keeps_its_tabs(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("```py\ns = '''a\n\n\nb'''\n```", "```py\ns = '''a\n\n\nb'''\n```"),
+        ("Text:\n\n    a\n\n\n\n    b", "Text:\n\n```text\na\n\n\n\nb\n```"),
+        ("- x\n\n  ```\n  a\n\n\n  b\n  ```\n\n\n\nafter", "- x\n\n```text\na\n\n\nb\n```\n\nafter"),
+    ],
+)
+def test_code_keeps_its_blank_lines(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+def test_the_readme_keeps_blank_lines_in_its_code():
+    readme = "# T\n\n```py\na\n\n\nb\n```\n\n\n\nText\n\n    c\n\n\n\n    d\n"
+    updated = rp.update_readme(readme, "<!-- RELEASES_START -->\n<!-- RELEASES_END -->", REPO)
+    assert updated.startswith("# T\n\n```py\na\n\n\nb\n```\n\nText\n\n    c\n\n\n\n    d\n")
+
+
+def test_a_link_title_keeps_its_code_in_a_post():
+    # The title is part of the link, so its backticks open no span and its "<" is escaped as text.
+    assert rp.sanitize_markdown('[x](https://a.example "Use `<b>`")') == '[x](https://a.example "Use `&lt;b>`")'
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('[x](docs/a.md "Use `code`")\n', '[x](a.md "Use `code`")\n'),
+        ("[x](docs/a.md 'Use `code`') and [y](docs/b.md (`b`))\n", "[x](a.md 'Use `code`') and [y](b.md (`b`))\n"),
+        # A title's backtick would otherwise pair with a later one and hide the next link.
+        ('[x](a.md "`") [y](docs/b.md) `\n', '[x](../a.md "`") [y](b.md) `\n'),
+        # So would a backtick in the destination.
+        ("[x](docs/a`b.md) [y](docs/b.md) `\n", "[x](a`b.md) [y](b.md) `\n"),
+        # A comment hides its backticks, so the link after it is text.
+        ("Text <!-- ` --> [x](docs/a.md) `\n", "Text <!-- ` --> [x](a.md) `\n"),
+    ],
+)
+def test_a_link_title_keeps_its_code_in_the_docs_readme(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+def test_a_title_cannot_close_its_blog_index_link_when_its_backticks_pair_differently(tmp_path):
+    # The sanitizer reads the first "](" as a link, so it pairs no backticks. Read again, the
+    # escaped "<" ends that link early and two backticks pair around "](https://...)". Every
+    # "]" is an entity, so neither reading can link the row elsewhere.
+    rp.update_blog_index(tmp_path, "2026-10-05", "a](<a b`>)](https://evil.example) `", "p.md")
+    [row] = [line for line in (tmp_path / "README.md").read_text().splitlines() if "p.md" in line]
+    assert "](https://evil" not in row
+    assert row.endswith("](p.md) | release,automation |")
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        lambda n: "[a](" * n,
+        lambda n: "](" * n + "`",
+        lambda n: "](x " * n,
+        lambda n: '](x "' * n,
+        lambda n: "<!--`" * n,
+        lambda n: "](((" * n,
+        lambda n: "](" + "(a)" * n + "](" * n,
+    ],
+)
+def test_finding_code_stays_linear(shape):
+    # As in test_scanning_stays_linear_in_nesting_depth_and_length: 4x the size, well under 16x the time.
+    def best(n):
+        text = shape(n)
+        runs = []
+        for _ in range(3):
+            start = time.perf_counter()
+            rp.sanitize_markdown(text)
+            rp.rebase_readme_links(text)
+            runs.append(time.perf_counter() - start)
+        return min(runs)
+
+    small, large = best(2_000), best(8_000)
+    assert large < max(small, 0.001) * 10

@@ -1117,7 +1117,7 @@ def test_html_comments_are_dropped():
         ("[a](j" + "&#9;" * 60 + "avascript:x)", "[a](#j" + "&#9;" * 60 + "avascript:x)"),
         ("[a](java&#" + "0" * 250 + "9;script:x)", "[a](#java&#" + "0" * 250 + "9;script:x)"),
         ("![a](data:text/html,x)", "![a](#data:text/html,x)"),
-        ("[a](<vbscript:x>)", "[a](&lt;#vbscript:x>)"),
+        ("[a](<vbscript:x>)", "[a](#vbscript:x)"),
         ("[a]: javascript:x", "[a]: #javascript:x"),
         ("> [a]:\n> javascript:x", "> [a]:\n> #javascript:x"),
         ("[a](https://example.com) [b](mailto:a@b.c) [c](#top) [d](docs/x.md)",
@@ -1394,9 +1394,9 @@ def test_a_link_title_keeps_its_code_in_the_docs_readme(text, expected):
 
 
 def test_a_title_cannot_close_its_blog_index_link_when_its_backticks_pair_differently(tmp_path):
-    # The sanitizer reads the first "](" as a link, so it pairs no backticks. Read again, the
-    # escaped "<" ends that link early and two backticks pair around "](https://...)". Every
-    # "]" is an entity, so neither reading can link the row elsewhere.
+    # A parser that reads the first "](" as a link pairs no backticks; one that doesn't pairs
+    # two of them around "](https://...)". Every "]" is an entity, so neither reading can link
+    # the row elsewhere.
     rp.update_blog_index(tmp_path, "2026-10-05", "a](<a b`>)](https://evil.example) `", "p.md")
     [row] = [line for line in (tmp_path / "README.md").read_text().splitlines() if "p.md" in line]
     assert "](https://evil" not in row
@@ -1413,6 +1413,7 @@ def test_a_title_cannot_close_its_blog_index_link_when_its_backticks_pair_differ
         lambda n: "<!--`" * n,
         lambda n: "](((" * n,
         lambda n: "](" + "(a)" * n + "](" * n,
+        lambda n: "[" * n + "[a](x)" * n,
     ],
 )
 def test_finding_code_stays_linear(shape):
@@ -1429,3 +1430,116 @@ def test_finding_code_stays_linear(shape):
 
     small, large = best(2_000), best(8_000)
     assert large < max(small, 0.001) * 10
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # No "[" opens a label, so "](" starts no link and the backticks pair as a code span.
+        ('Text ](x "`<T>`")', 'Text ](x "<code>&#60;T&#62;</code>")'),
+        # An escaped "[" opens no label either.
+        ('\\[x](docs/x.md "Use `List<T>`")', '\\[x](docs/x.md "Use <code>List&#60;T&#62;</code>")'),
+        # A "]" before the "](" closes the only label, so it is text too.
+        ('[a] ](x "`<T>`")', '[a] ](x "<code>&#60;T&#62;</code>")'),
+        # A "[" inside a code span opens no label.
+        ('`[` ](x "`<T>`")', '`[` ](x "<code>&#60;T&#62;</code>")'),
+        # A link can't hold a link, so once the inner one closes, the outer "[" opens nothing.
+        ('[outer [inner](x)](y "`<T>`")', '[outer [inner](x)](y "<code>&#60;T&#62;</code>")'),
+        # An image can, so its "](" still starts a destination, and its title holds no code span.
+        ('![a [b](x)](y "`<T>`")', '![a [b](x)](y "`&lt;T>`")'),
+    ],
+)
+def test_a_close_bracket_without_a_label_starts_no_link(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A ">" line is blank inside the quote, so the code on both sides of it is one block.
+        ("> intro\n>\n>     a\n>\n>     b\n", "> intro\n>\n\n```text\na\n\nb\n```"),
+        ("> - x\n>\n>       a\n>\n>       b", "> - x\n>\n\n```text\na\n\nb\n```"),
+        # A ">" line inside a quoted list item keeps the item open too.
+        ("> -     a\n>\n>       b", "```text\na\n\nb\n```"),
+    ],
+)
+def test_quoted_indented_code_keeps_its_blank_lines(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A blank line ends the quote, so the code after it is a second block.
+        ">     a\n\n    b",
+        # A blank line in the outer quote ends the inner one.
+        "> >     a\n>\n> >     b",
+    ],
+)
+def test_indented_code_in_different_containers_stays_apart(body):
+    assert rp.sanitize_markdown(body).count("```text") == 2
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # A backtick fence's info string can't hold a backtick, so this line is a code span, not a fence.
+        ("```List<T>```", "<code>List&#60;T&#62;</code>"),
+        ("```a``` b", "```a``` b"),
+        ("Text\n\n```Map<K>``` here", "Text\n\n<code>Map&#60;K&#62;</code> here"),
+        # A tilde fence's info string may hold one.
+        ("~~~a`b\nx\n~~~", "```a\nx\n```"),
+    ],
+)
+def test_a_backtick_line_with_backticks_after_it_is_a_code_span(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # An angle-bracket destination becomes the same destination written bare, so no "<" is escaped into it.
+        ("[x](<docs/a.md>)", "[x](docs/a.md)"),
+        ('[x](<docs/a b(1).md> "t")', '[x](docs/a%20b%281%29.md "t")'),
+        ("[x](<a\\>b.md>)", "[x](a%3Eb.md)"),
+        # Its scheme is still checked.
+        ("[x](<javascript:alert(1)>)", "[x](#javascript:alert%281%29)"),
+        # Without a label, it is text.
+        ("Text ](<a.md>)", "Text ](&lt;a.md>)"),
+    ],
+)
+def test_an_angle_bracket_link_destination_keeps_working(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # Quote markers on a span's later lines aren't part of its code.
+        ("> Use `List<T>\n> and Map<K>` here", "> Use <code>List&#60;T&#62; and Map&#60;K&#62;</code> here"),
+        ("> > Use `List<T>\n> and Map<K>` here", "> > Use <code>List&#60;T&#62; and Map&#60;K&#62;</code> here"),
+        ("- Use `List<T>\n  and Map<K>` here", "- Use <code>List&#60;T&#62; and Map&#60;K&#62;</code> here"),
+    ],
+)
+def test_a_code_span_drops_the_container_markers_of_its_later_lines(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
+def test_a_reference_definition_with_backticks_in_its_label_and_title_is_rebased():
+    assert rp.rebase_readme_links('[`a]: docs/a.md "`"\n') == '[`a]: a.md "`"\n'
+
+
+def test_a_reference_definition_inside_a_code_span_is_left_alone():
+    assert rp.rebase_readme_links("Text `a\n[b]: docs/b.md` c\n") == "Text `a\n[b]: docs/b.md` c\n"
+
+
+@pytest.mark.parametrize(
+    ("summary", "expected"),
+    [
+        # A tag that only starts a line of prose opens no HTML block, so the paragraph is the excerpt.
+        ("<T> is the generic return type.", "<T> is the generic return type."),
+        ("<div>\nhidden\n</div>\n\nShown.", "Shown."),
+    ],
+)
+def test_the_excerpt_skips_only_real_html_blocks(summary, expected):
+    assert rp.first_paragraph(rp.sanitize_markdown(summary)) == expected

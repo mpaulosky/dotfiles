@@ -1051,6 +1051,32 @@ def test_the_pr_title_is_escaped_in_the_post_and_both_tables(tmp_path):
     assert "| feat: Add &lt;b>bold&lt;/b> and &#123;&#123; site.x }} |" in rp.render_releases_markdown([entry])
 
 
+@pytest.mark.parametrize(
+    ("title", "encoded"),
+    [
+        ("fix: <https://example.test/{{site.title}}>", "<https://example.test/%7B%7Bsite.title%7D%7D>"),
+        ("fix: <https://example.test/{%include%}>", "<https://example.test/%7B%include%%7D>"),
+        ("fix: <mailto:a{{x}}@b.c>", "<mailto:a%7B%7Bx%7D%7D@b.c>"),
+    ],
+)
+def test_liquid_in_a_title_autolink_is_encoded_in_both_tables(tmp_path, title, encoded):
+    # The tables have no {% raw %} wrapper, so an autolink can't keep its braces (mpaulosky/dotfiles#69).
+    # %7B and %7D are the URL's own encoding of the braces, so the link still works.
+    rp.update_blog_index(tmp_path, "2026-10-05", title, "p.md")
+    [row] = [line for line in (tmp_path / "README.md").read_text().splitlines() if "p.md" in line]
+    assert encoded in row
+    assert "{{" not in row and "{%" not in row
+
+    entry = {"tag": "v1.2.3", "url": "u", "date": "2026-10-05", "title": title, "post_url": ""}
+    table = rp.render_releases_markdown([entry])
+    assert encoded in table
+    assert "{{" not in table and "{%" not in table
+
+    # The post is inside {% raw %}, so its autolink keeps its text.
+    post = rp.render_post({"number": 7}, title, "v1.2.3", "2026-10-05", [], [], None, "m")
+    assert f"# {title}\n" in post
+
+
 def test_the_pr_body_is_escaped():
     post = rp.render_post({"number": 7, "body": "Why <img src=x onerror=alert(1)>"}, "T", "v1", "2026-09-26", [], [], None, "m")
     assert "Why &lt;img src=x onerror=alert(1)>" in rp.section(post, "PR description")

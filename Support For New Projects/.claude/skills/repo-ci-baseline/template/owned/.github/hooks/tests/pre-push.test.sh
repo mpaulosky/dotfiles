@@ -3,7 +3,7 @@
 # Each case runs the hook in a throwaway repo, holding copies of
 # scripts/gate.sh, scripts/check-branch-name.sh and
 # .github/scripts/discover_tests.py, with the refs git would
-# pass on stdin. Stub `dotnet`, `npx`, `markdownlint-cli2`, `yamllint`,
+# pass on stdin. Stub `dotnet`, `pnpm`, `markdownlint-cli2`, `yamllint`,
 # `actionlint`, `zizmor` and `shellcheck` binaries log each call, and fail when the call matches the FAIL glob, so no
 # real build or network access is needed.
 # Usage: .github/hooks/tests/pre-push.test.sh
@@ -22,17 +22,22 @@ REPO="$WORK/repo"
 STUBS="$WORK/bin"
 LOG="$WORK/gates.log"
 
-mkdir -p "$STUBS"
-for tool in dotnet npx markdownlint-cli2 yamllint actionlint zizmor shellcheck; do
-  cat > "$STUBS/$tool" <<EOF
+# make_stub <dir> <tool>: a stub that logs its call and fails on a FAIL match.
+make_stub() {
+  cat > "$1/$2" <<EOF
 #!/usr/bin/env bash
-call="$tool \$*"
+call="$2 \$*"
 echo "\$call" >> "$LOG"
 [[ -z "\${GIT_DIR:-}" ]] || echo "GIT_DIR=\$GIT_DIR" >> "$LOG"
 [[ -z "\${GIT_INDEX_FILE:-}" ]] || echo "GIT_INDEX_FILE=\$GIT_INDEX_FILE" >> "$LOG"
 [[ -z "\${FAIL:-}" || "\$call" != \$FAIL ]]
 EOF
-  chmod +x "$STUBS/$tool"
+  chmod +x "$1/$2"
+}
+
+mkdir -p "$STUBS"
+for tool in dotnet pnpm markdownlint-cli2 yamllint actionlint zizmor shellcheck; do
+  make_stub "$STUBS" "$tool"
 done
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
@@ -243,6 +248,42 @@ git -C "$REPO" commit -q -m second
 FAIL='markdownlint-cli2*first.md*' run_hook feature/2-two-commits \
   "refs/heads/feature/2-two-commits @HEAD@ refs/heads/feature/2-two-commits $ZERO"
 expect "a lint error in the first of two unpushed commits refuses the push" refused any
+
+# Without markdownlint-cli2 installed, the gate lints through pnpm dlx, and never
+# falls back to npx. The machine's own pnpm, npx and markdownlint-cli2 are taken
+# off PATH, and npx is a stub that only records it was called.
+NO_LINT_STUBS="$WORK/bin-no-markdownlint"
+mkdir -p "$NO_LINT_STUBS"
+for tool in dotnet pnpm yamllint actionlint zizmor shellcheck npx; do
+  make_stub "$NO_LINT_STUBS" "$tool"
+done
+SYSTEM_PATH=""
+IFS=: read -ra path_dirs <<< "$PATH"
+for dir in "${path_dirs[@]}"; do
+  [[ -x "$dir/markdownlint-cli2" || -x "$dir/pnpm" || -x "$dir/npx" ]] && continue
+  SYSTEM_PATH="${SYSTEM_PATH:+$SYSTEM_PATH:}$dir"
+done
+
+# run_hook_with_path <stub dir> <checked-out branch> <stdin>
+run_hook_with_path() {
+  switch_to "$2"
+  : > "$LOG"
+  local stdin="${3//@HEAD@/$(git -C "$REPO" rev-parse HEAD)}"
+  OUTPUT="$(cd "$REPO" && PATH="$1:$SYSTEM_PATH" bash "$HOOK" <<< "$stdin" 2>&1)"
+  STATUS=$?
+}
+
+run_hook_with_path "$NO_LINT_STUBS" feature/2-two-commits \
+  "refs/heads/feature/2-two-commits @HEAD@ refs/heads/feature/2-two-commits $ZERO"
+expect "without markdownlint-cli2, the gate lints through pnpm" allowed tests-ran
+expect_log "without markdownlint-cli2, the gate runs pnpm dlx markdownlint-cli2" ran 'pnpm dlx markdownlint-cli2@* first.md'
+expect_log "without markdownlint-cli2, the gate never runs npx" not-ran 'npx*'
+
+rm "$NO_LINT_STUBS/pnpm"
+run_hook_with_path "$NO_LINT_STUBS" feature/2-two-commits \
+  "refs/heads/feature/2-two-commits @HEAD@ refs/heads/feature/2-two-commits $ZERO"
+expect "without markdownlint-cli2 or pnpm, a Markdown change refuses the push" refused any "Markdown lint needs pnpm"
+expect_log "without markdownlint-cli2 or pnpm, the gate never runs npx" not-ran 'npx*'
 
 FAIL='dotnet build*' run_hook feature/1-x "refs/heads/feature/1-x @HEAD@ refs/heads/feature/1-x $ZERO"
 expect "a failing build refuses the push" refused any

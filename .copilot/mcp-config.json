@@ -2,18 +2,18 @@
 	"mcpServers": {
 		"mongodb": {
 			"type": "stdio",
-			"command": "npx",
+			"command": "pnpm",
 			"args": [
-				"-y",
+				"dlx",
 				"mongodb-mcp-server@latest"
 			],
 			"gallery": true
 		},
 		"azure": {
 			"type": "stdio",
-			"command": "npx",
+			"command": "pnpm",
 			"args": [
-				"-y",
+				"dlx",
 				"@azure/mcp@latest",
 				"server",
 				"start"
@@ -27,8 +27,9 @@
 		},
 		"microsoft/playwright-mcp": {
 			"type": "stdio",
-			"command": "npx",
+			"command": "pnpm",
 			"args": [
+				"dlx",
 				"@playwright/mcp@latest"
 			],
 			"gallery": "https://api.mcp.github.com/2025-09-15",
@@ -42,8 +43,9 @@
 		},
 		"io.github.upstash/context7": {
 			"type": "stdio",
-			"command": "npx",
+			"command": "pnpm",
 			"args": [
+				"dlx",
 				"@upstash/context7-mcp@1.0.31"
 			],
 			"env": {
@@ -53,9 +55,9 @@
 			"version": "1.0.31"
 		},
 		"sequentialthinking": {
-			"command": "npx",
+			"command": "pnpm",
 			"args": [
-				"-y",
+				"dlx",
 				"@modelcontextprotocol/server-sequential-thinking"
 			],
 			"type": "stdio"

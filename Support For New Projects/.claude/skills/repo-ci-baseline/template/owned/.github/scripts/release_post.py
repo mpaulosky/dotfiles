@@ -111,7 +111,10 @@ def render_commits(commits):
 
 def code_name(name):
     """A file name as inline code; one with a backtick or a risky character is written as <code> instead."""
-    return f"`{name}`" if re.fullmatch(r"[A-Za-z0-9 ._/@+=,~()-]+", name) else code_html(name)
+    if re.fullmatch(r"[A-Za-z0-9._/@+=,~()-]+(?: [A-Za-z0-9._/@+=,~()-]+)*", name):
+        return f"`{name}`"
+    # A space at either end would be trimmed by a code span, so the name keeps it as <code>.
+    return code_html(name, trim=False)
 
 
 def area_of(path):
@@ -534,6 +537,9 @@ def scan_blocks(lines, headings, code=None, blocks=None):
 
 SAFE_SCHEMES = {"http", "https", "mailto"}
 SCHEME = re.compile(r"([a-z][a-z0-9+.\-]*):")
+# Besides letters and digits, what a scheme can be written with: its own
+# symbols, the colon, entities (&#9; &colon;) and backslash escapes.
+SCHEME_TEXT = set("+.-:&#;\\")
 # Only these autolinks keep their angle brackets; any other "<" is escaped.
 AUTOLINK = re.compile(r"<(?:https?://|mailto:)[^\s<>\"'`\\]*>", re.I)
 LINK_DESTINATION_START = re.compile(r"\]\(|\]:")
@@ -550,10 +556,14 @@ def safe_destination(text, start):
     """Whether the link destination starting at text[start] has no scheme, or one in SAFE_SCHEMES.
 
     Browsers drop control characters and whitespace from a URL and decode
-    entities, so "java&#9;script:" is still a javascript: link.
+    entities, so "java&#9;script:" is still a javascript: link. The whole
+    destination's scheme is read however long it is: padding ("j&#9;&#9;...
+    avascript:", or an entity's leading zeros) can push it arbitrarily far
+    from the start. The read stops at the first character that can't be part
+    of a scheme, an entity or an escape, so it never runs into the next "](".
     """
     end = start
-    while end < len(text) and end - start < 200 and not text[end].isspace() and text[end] not in ")>\"'":
+    while end < len(text) and (text[end].isalnum() or text[end] in SCHEME_TEXT):
         end += 1
     candidate = html.unescape(text[start:end]).replace("\\", "")
     candidate = "".join(char for char in candidate if char > " " and char != "\x7f").lower()
@@ -594,9 +604,13 @@ def odd_backslashes_before(text, pos):
     return count % 2 == 1
 
 
-def code_html(content):
-    """A code span's text as <code>, every character but letters, digits and spaces as an entity."""
-    if len(content) > 1 and content.startswith(" ") and content.endswith(" ") and content.strip(" "):
+def code_html(content, trim=True):
+    """A code span's text as <code>, every character but letters, digits and spaces as an entity.
+
+    trim strips one space from each end, as CommonMark does for a code span;
+    a file name, which isn't one, keeps them.
+    """
+    if trim and len(content) > 1 and content.startswith(" ") and content.endswith(" ") and content.strip(" "):
         content = content[1:-1]  # CommonMark strips one space from each side
     return "<code>" + "".join(char if char.isalnum() or char == " " else f"&#{ord(char)};" for char in content) + "</code>"
 

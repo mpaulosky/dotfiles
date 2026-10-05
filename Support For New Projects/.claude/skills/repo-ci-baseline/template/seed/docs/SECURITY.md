@@ -32,5 +32,5 @@ Fixed vulnerabilities are published in the repository's
 
 ## Contributors
 
-- Never commit secrets, API keys or passwords; use user secrets locally and repository or environment secrets in CI.
-- Dependabot keeps dependencies current; `dotnet list package --vulnerable` checks for known vulnerabilities locally.
+- Never commit secrets, API keys or passwords; keep them in untracked local configuration and in repository or environment secrets for CI.
+- Keep dependencies current, act on Dependabot security alerts, and check for known vulnerabilities with the ecosystem's audit tool before a release.

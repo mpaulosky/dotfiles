@@ -327,6 +327,52 @@ expect "a Sandcastle-gated HEAD with a dirty tree is still refused" refused test
 rm "$REPO/untracked.cs"
 git -C "$REPO" config --local --unset sandcastle.gatedHead
 
+# The ruleset makes a PR be up to date with main before it merges, so a branch
+# behind origin/main is refused before the gate: its PR couldn't merge as pushed.
+# The harness repo has no origin remote, so the hook's fetch fails and it checks
+# against the existing origin/main, as it does offline.
+MAIN_BEFORE="$(git -C "$REPO" rev-parse origin/main)"
+# advance_main: a new commit on origin/main, as if another PR had merged.
+advance_main() {
+  local tree commit
+  tree="$(git -C "$REPO" rev-parse "origin/main^{tree}")"
+  commit="$(git -C "$REPO" commit-tree -p origin/main -m "landed on main" "$tree")"
+  git -C "$REPO" update-ref refs/remotes/origin/main "$commit"
+}
+switch_to feature/10-behind
+advance_main
+run_hook feature/10-behind "$(push_stdin feature/10-behind)"
+expect "a branch behind origin/main is refused before the gates" refused tests-skipped "1 commit(s) behind origin/main"
+expect "the refusal says how to bring main in" refused tests-skipped "git merge origin/main"
+run_hook_without_stdin feature/10-behind
+expect "a branch behind origin/main is refused when run by hand" refused tests-skipped "behind origin/main"
+git -C "$REPO" merge -q --no-edit origin/main
+run_hook feature/10-behind "$(push_stdin feature/10-behind)"
+expect "a branch that merged origin/main runs the gate" allowed tests-ran
+git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN_BEFORE"
+git -C "$REPO" switch -q feature/1-x
+
+# Without an origin/main (a fork's first push, say) there is nothing to compare,
+# so the check is skipped and the gate still runs.
+git -C "$REPO" update-ref -d refs/remotes/origin/main
+run_hook feature/1-x "$(push_stdin feature/1-x)"
+expect "without an origin/main the check is skipped and the gate runs" allowed tests-ran "No origin/main"
+git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN_BEFORE"
+
+# The hook fetches main first, so it sees what merged since the last fetch.
+git init -q --bare "$WORK/origin.git"
+git -C "$REPO" push -q "$WORK/origin.git" "$MAIN_BEFORE:refs/heads/main"
+git -C "$REPO" remote add origin "$WORK/origin.git"
+switch_to feature/11-stale-fetch
+advance_main
+git -C "$REPO" push -q origin "origin/main:refs/heads/main"
+git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN_BEFORE"
+run_hook feature/11-stale-fetch "$(push_stdin feature/11-stale-fetch)"
+expect "a branch behind main is refused even before origin/main was fetched" refused tests-skipped "behind origin/main"
+git -C "$REPO" remote remove origin
+git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN_BEFORE"
+git -C "$REPO" switch -q feature/1-x
+
 echo
 echo "$PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

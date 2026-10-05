@@ -55,7 +55,9 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 
 ## Checks, review and merging
 
-- **Before a push**, the pre-push hook runs `scripts/gate.sh`: the lints, the build and the tests CI runs.
+- **Before a push**, the pre-push hook refuses a branch that is behind `origin/main` (it fetches main first), because
+  the PR couldn't merge until it's up to date: bring main in with `git merge origin/main`. Then it runs
+  `scripts/gate.sh`: the lints, the build and the tests CI runs.
 - **Required checks:** Build Solution, Test Suite, Branch name, PR title, actionlint, zizmor, shellcheck, markdownlint
   and yamllint. A docs-only PR skips the build and tests, and so does a Dependabot GitHub Actions bump; a skipped check
   counts as passing.

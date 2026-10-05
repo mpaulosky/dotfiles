@@ -83,7 +83,13 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
   7. Skip the gate when `HEAD` is the commit recorded in `git config sandcastle.gatedHead`: Sandcastle runs the gate in
      its sandbox, records the commit it passed, then pushes it, so a second run on the host only repeats it. Steps 4
      and 5 still apply first. Unset outside a Sandcastle repo (Blazor-Server #93).
-  8. Run `scripts/gate.sh`.
+  8. Refuse a branch behind `origin/main`: `main-rules` requires a PR to be up to date before it merges, so its PR
+     couldn't merge as pushed (it would sit at `BEHIND`), and the gate would test it against an old main. The hook
+     fetches main first; offline it compares with the last fetched copy, and with no `origin/main` it skips the
+     check. The fix it names is `git merge origin/main`, which needs no force push; squash merges drop the merge
+     commit. It comes after step 7, so a Sandcastle-gated push isn't refused here. From Articles' unmerged
+     `chore/pre-push-main-sync-gate`, written after a branch kept being pushed once an earlier push had auto-merged.
+  9. Run `scripts/gate.sh`.
 - **`scripts/gate.sh`**, also safe to run by hand: lint the Markdown, YAML, workflow and shell files changed since
   `origin/main`, using CI's configs, and prefer installed tools with pinned fallbacks. Then build and run each test
   project, where the stack allows it locally. Which steps it runs depends on the repo; what's standard is that
@@ -104,6 +110,9 @@ build runs. It needs cases for:
 - `.github/ci/gate-checks.sh` running with the merge base, and failing the push before the build
 - a Sandcastle-gated `HEAD` skipping the gate (pushed and by hand), an ungated `HEAD` running it, and a gated `HEAD`
   with a dirty tree still refused
+- a branch behind `origin/main` refused before the gate (pushed and by hand) with the `git merge origin/main` fix,
+  the same branch running the gate once it has merged main, no `origin/main` skipping the check, and a stale local
+  `origin/main` refreshed by the hook's fetch
 - **each accepted branch prefix** (including slugs with digits), and each retired or malformed name (`squad/`,
   `sprint/`, a prefix missing its issue number, a `chore/` slug starting with a digit, and an uppercase letter in an
   otherwise valid name such as `chore/tidy-Up`). Each bad name must break exactly one rule, or it can't catch a

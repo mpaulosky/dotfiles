@@ -1214,6 +1214,52 @@ def test_code_spans_may_cross_line_breaks(body, expected):
     assert rp.sanitize_markdown(body) == expected
 
 
+# Each line that starts another block ends the paragraph, so a code span can't cross it (#57).
+PARAGRAPH_BOUNDARIES = [
+    pytest.param("{a}\n# {b}", id="atx-heading"),
+    pytest.param("- {a}\n- {b}", id="list-item-same-level"),
+    pytest.param("- x\n  - {a}\n- {b}", id="list-item-outer-level"),
+    pytest.param("{a}\n***\n{b}", id="thematic-break"),
+    pytest.param("{a}\n```\nx\n```\n{b}", id="fence"),
+    pytest.param("{a}\n---\n{b}", id="setext-underline-dash"),
+    pytest.param("{a}\n===\n{b}", id="setext-underline-equals"),
+    pytest.param("{a}\n> {b}", id="quote-opens"),
+    pytest.param("> {a}\n> > {b}", id="quote-deepens"),
+]
+
+
+@pytest.mark.parametrize("shape", PARAGRAPH_BOUNDARIES)
+def test_a_code_span_ends_with_its_paragraph_in_a_post(shape):
+    # Paired, the span would hold "<T>" and become <code>; unpaired, "<T>" is escaped text.
+    body = shape.format(a="`a <T>", b="b` c")
+    assert rp.sanitize_markdown(body).count("&lt;T>") == 1
+    assert "<code>" not in rp.sanitize_markdown(body)
+
+
+@pytest.mark.parametrize("shape", PARAGRAPH_BOUNDARIES)
+def test_a_code_span_ends_with_its_paragraph_in_the_docs_readme(shape):
+    # Copilot's example, from mpaulosky/TicketManager#118: both links are prose, so both are rebased.
+    text = shape.format(a="`[a](docs/a.md)", b="`[b](docs/b.md)") + "\n"
+    assert rp.rebase_readme_links(text) == text.replace("docs/", "")
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        pytest.param("> {a}\n{b}", id="lazy-continuation"),
+        pytest.param("> > {a}\n> {b}", id="lazy-continuation-at-an-outer-quote"),
+        pytest.param("{a}\n    {b}", id="indented-continuation"),
+        pytest.param("- {a}\n  {b}", id="list-item-continuation"),
+    ],
+)
+def test_a_code_span_still_crosses_a_paragraph_continuation_line(shape):
+    post = rp.sanitize_markdown(shape.format(a="`a <T>", b="b` c"))
+    assert "<code>a &#60;T&#62;" in post
+    assert "&lt;" not in post
+    text = shape.format(a="`[a](docs/a.md)", b="`[b](docs/b.md)") + "\n"
+    assert rp.rebase_readme_links(text) == text.replace("docs/b.md", "b.md")
+
+
 def test_a_title_cannot_close_its_blog_index_link_early(tmp_path):
     # "]" would end the label, so the row would link to the title's URL instead of the post.
     rp.update_blog_index(tmp_path, "2026-10-05", "fix: ](https://evil.example) `a[b` x", "p.md")

@@ -95,8 +95,9 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   top-level fence, longer than any backtick run inside it and always with an info string, with blank lines around it.
   A block in a list or quote moves out of it. Any other line that looks like a fence gets its first fence marker escaped.
   A code span holding `<`, `{` or `]` becomes `<code>` with its symbols as entities. It looks the same, and it stays
-  safe however a parser pairs the backticks. A span may cross a line break, but not a blank line, as in CommonMark;
-  the README's `docs/` copy pairs spans the same way when it rebases links. File names with risky characters are written the same way.
+  safe however a parser pairs the backticks. A span may cross a line break, but not the end of its paragraph, as in
+  CommonMark: a blank line, or a line that opens a heading, list item, quote, thematic break, fence or setext underline
+  (#57). The README's `docs/` copy pairs spans the same way when it rebases links. File names with risky characters are written the same way.
 - **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages
   build. The post body sits between `<!-- {% raw %} -->` and `<!-- {% endraw %} -->` (comments, so neither GitHub nor
   Pages shows them), and a `{%` that would read as `endraw` is printed by Liquid instead. The README and blog index

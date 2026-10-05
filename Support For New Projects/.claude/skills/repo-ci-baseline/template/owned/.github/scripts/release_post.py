@@ -360,7 +360,7 @@ def fence_content(raw, rest, block):
     return text[min(spaces, block["indent"]):]
 
 
-def scan_blocks(lines, headings, code=None, blocks=None):
+def scan_blocks(lines, headings, code=None, blocks=None, continued=None):
     """Finds the headings in Markdown lines, including those inside block quotes and list items.
 
     Appends (line index, prefix, level, rest of line) to `headings` for each
@@ -371,7 +371,9 @@ def scan_blocks(lines, headings, code=None, blocks=None):
     When `blocks` is a list, each fenced code block is appended to it as
     {"kind": "fence", "lines", "content", "info", "nested"}, and each indented
     code line as {"kind": "indented", "lines", "content", "nested"}, where
-    "nested" says whether a quote or list item holds it.
+    "nested" says whether a quote or list item holds it. When `continued` is
+    a set, the indexes of the lines that continue an open paragraph, lazily or
+    not, are added to it; every other line starts a block or is blank.
 
     This follows CommonMark's block parsing in one pass: each line first
     matches the open quotes and list items, may lazily continue an open
@@ -380,6 +382,7 @@ def scan_blocks(lines, headings, code=None, blocks=None):
     blank line holds only spaces and tabs (a non-breaking space is text).
     """
     code = set() if code is None else code
+    continued = set() if continued is None else continued
     # Open containers, outermost first: {"kind": "quote"}, or
     # {"kind": "list", "width": content column, "has_content": bool}.
     # quote_levels holds the stack positions of the quotes, so a blank line,
@@ -429,6 +432,7 @@ def scan_blocks(lines, headings, code=None, blocks=None):
             )
             if paragraph is not None and rest.strip(" ") and not opens_block:
                 paragraph.append((index, line[:offset], rest))
+                continued.add(index)
                 continue
             del stack[matched:]
             while quote_levels and quote_levels[-1] >= matched:
@@ -518,6 +522,7 @@ def scan_blocks(lines, headings, code=None, blocks=None):
                 paragraph = None
             else:
                 paragraph.append((index, line[:offset], rest))
+                continued.add(index)
             continue
         if INDENTED_CODE.match(rest):
             if blocks is not None:
@@ -695,23 +700,31 @@ def sanitize_spans(text, liquid=False):
     return "".join(out)
 
 
-# A line holding only spaces, tabs or a CR (the README is split on "\n" alone, so a CRLF line keeps its "\r").
-BLANK_LINE = re.compile(r"\n[ \t\r]*(?:\n|$)")
-
-
 def code_spans(text):
     """Each code span in text, as (start, end, content), with backtick runs paired as CommonMark pairs them.
 
     A run opens a span only where a later run of the same length closes it; a
     backslash escapes a run's first backtick. A span may cross line breaks,
-    but not a blank line, which ends the paragraph. Runs and blank lines are
-    indexed once, so a text full of unmatched runs still takes linear time.
+    but only within its paragraph: scan_blocks() says which lines continue
+    one, and any other line (blank, or opening a heading, list item, quote,
+    thematic break, fence or setext underline) ends it (#57). Runs and
+    paragraph ends are indexed once, so a text full of unmatched runs still
+    takes linear time.
     """
     runs = [(match.start(), len(match.group())) for match in BACKTICKS.finditer(text)]
     starts_by_length = {}
     for start, length in runs:
         starts_by_length.setdefault(length, []).append(start)
-    blanks = [match.start() for match in BLANK_LINE.finditer(text)]
+    lines = text.split("\n")
+    continued = set()
+    scan_blocks(list(lines), [], continued=continued)
+    # The offset of each line that doesn't continue the paragraph before it.
+    breaks = []
+    offset = 0
+    for index, line in enumerate(lines):
+        if index and index not in continued:
+            breaks.append(offset)
+        offset += len(line) + 1
     search = 0
     for start, length in runs:
         if start < search:
@@ -721,8 +734,8 @@ def code_spans(text):
             if not length:
                 continue
         after = start + length
-        blank = bisect.bisect_left(blanks, after)
-        paragraph_end = blanks[blank] if blank < len(blanks) else len(text)
+        paragraph = bisect.bisect_right(breaks, start)
+        paragraph_end = breaks[paragraph] if paragraph < len(breaks) else len(text)
         candidates = starts_by_length.get(length, [])
         index = bisect.bisect_left(candidates, after)
         if index < len(candidates) and candidates[index] < paragraph_end:

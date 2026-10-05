@@ -60,7 +60,8 @@ any gate you did not actually run as not run.
    `.markdownlint*` config when present).
 
    **c. Build repair loop.** `dotnet restore`, then
-   `dotnet build <solution> --no-restore`, where `<solution>` is the
+   `dotnet build <solution> --no-restore --configuration Release` (the
+   configuration the tests run in), where `<solution>` is the
    `.sln`/`.slnx` at the repo root (affected projects are fine for the inner
    loop; finish on a full solution build). For each error or warning: locate
    it, understand the rule, fix, rebuild. Done when the full build shows zero

@@ -109,7 +109,9 @@ The stock image has Node, git, curl, jq and `gh` only. Add what the agents and t
 
 - `libicu72` (needed by .NET), plus `yamllint` and anything else `scripts/gate.sh` calls.
 - `RUN corepack enable pnpm` and `ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0`, before switching to the agent user.
-- The .NET SDK through `dotnet-install.sh --channel 10.0 --install-dir /home/agent/.dotnet`, symlinked into
+- The .NET SDK through `dotnet-install.sh --version <sdk.version> --install-dir /home/agent/.dotnet`, with the
+  exact version from the repo's `global.json`, which satisfies any `rollForward` policy. Blazor-Server uses
+  `--channel 10.0`, which works only because its `rollForward` is `latestMinor`. Symlink it into
   `/home/agent/.local/bin`, with `DOTNET_ROOT`, `DOTNET_CLI_TELEMETRY_OPTOUT=1` and `DOTNET_NOLOGO=1` set.
 - `/home/agent/.dotnet` and `/home/agent/.dotnet/tools` on `PATH`, so `dotnet` works in login and non-login shells.
 
@@ -122,6 +124,9 @@ pnpm exec sandcastle docker build-image
 Rebuild it whenever the Dockerfile changes.
 
 ### 5. Set up the secrets
+
+`init` writes a blank `GH_TOKEN=` into `.env.example`. Replace the file with Blazor-Server's `.env.example` (Claude
+token only) before copying it:
 
 ```bash
 cp .sandcastle/.env.example .sandcastle/.env
@@ -146,15 +151,17 @@ Edit `.sandcastle/plan-prompt.md`, `implement-prompt.md` and `review-prompt.md` 
 ### 7. Adapt the orchestration
 
 The stock template merges into your checked-out branch and closes the issue with no pull request. Replace that
-with Blazor-Server's `main.mts` and `lib/` (gate, plan, critique, build, branches, GitHub, config), which:
+with Blazor-Server's `main.mts` and `lib/` (gate, plan, critique, build, branches, GitHub, config), plus the
+`critique-prompt.md` and `roles/` that `lib/` loads. Adapt those two as in step 6: `roles/shared-rules.md` goes
+into every role's prompt and names Blazor-Server's solution, gate and commit rules. The orchestration:
 
 - Hold back issues whose blockers haven't landed or that already have an open pull request.
 - Run `scripts/gate.sh` in the sandbox after the implementer and again after the reviewer, with a gate-fixer
   role for a red gate, and comment on the issue when it still fails.
 - Record the commit that passed in `git config sandcastle.gatedHead`, so the pre-push hook doesn't run the gate a
   second time.
-- Push each branch from its own worktree (the pre-push hook checks the checked-out branch, so pushing from the
-  main checkout is rejected as a push to `main`) and open a pull request that says `Closes #<id>`.
+- Push each branch from its own worktree (the pre-push hook refuses a commit other than the checkout's `HEAD`,
+  since its gate tests the working tree) and open a pull request that says `Closes #<id>`.
 
 Set each role's model, effort and budget in `lib/config.mts` (`ROLE_AGENTS`), and keep the
 `onSandboxReady` hook (`pnpm install --frozen-lockfile --config.confirm-modules-purge=false`) and
@@ -193,8 +200,10 @@ pnpm exec tsx .sandcastle/main.mts
 ```
 
 Label the issues you want worked `Sandcastle`. Each round prints the issues it holds back, the branches it works
-and the pull requests it opens, and stops when a round opens no pull request. A pull request labelled
-`sandcastle:needs-human` is one Sandcastle gave up on; it won't auto-merge until the owner removes the label.
+and the pull requests it opens, and stops when a round opens no pull request. A red gate gets a comment on the
+issue and no pull request. A failed review still opens one, flagged as unreviewed in its body, if the second
+gate passes. Sandcastle doesn't label anything `sandcastle:needs-human`: add it to hand a pull request to a
+person, and it won't auto-merge until the owner removes it.
 
 Finally, mention `.sandcastle/` and the `check:sandcastle` command in the repo's `README.md` and `CLAUDE.md`.
 

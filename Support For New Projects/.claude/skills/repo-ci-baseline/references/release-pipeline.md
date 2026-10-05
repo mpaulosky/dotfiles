@@ -89,9 +89,10 @@ approval.
 - A post counts only when its file name has `-pr-<n>-` (`posts_for_pr`). Posts named another way (IssueManager's `<date>-release-vX.md`)
   look missing, and the first run writes a second post for each. Rename them to `<date>-pr-<n>-release-vX.md`, taking `<n>` from each
   Release's `Source PR` line, and update the links to them.
-- A `docs/index.html` Pages site needs the `RELEASES_HTML_START`/`END` and `BLOGS_HTML_START`/`END` markers that `update_tables` fills,
-  with styles for the generated post cards (`post-grid`, `post-card`, …); without them `test_release_post.py` fails on the repo's own page.
-  Fill them once with `update_index_html`, and drop any script that rebuilt the tables in the browser.
+- A `docs/index.html` Pages site needs the `RELEASES_HTML_START`/`END` and `BLOGS_HTML_START`/`END` markers that `update_tables` fills;
+  without them `test_release_post.py` fails on the repo's own page. `update_index_html` only replaces what's between existing markers, so
+  add both pairs by hand (empty), with styles for the generated post cards (`post-grid`, `post-card`, …), then fill them once with
+  `update_index_html`. Drop any script that rebuilt the tables in the browser.
 - A repo's `release_post.py` is Owned now. A fix it carries that the Template lacks shows up as drift: move it into
   the Template first.
 - Dry-run the planner against the real repo before pushing: `python3 .github/scripts/release_queue.py --repo

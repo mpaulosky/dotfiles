@@ -412,6 +412,9 @@ test-output.txt
 .pytest_cache/
 .directory
 
+# Aspire CLI local settings; the shared settings live in aspire.config.json
+.aspire/
+
 # Local environment files hold secrets; commit a .env.example instead.
 .env
 .env.*

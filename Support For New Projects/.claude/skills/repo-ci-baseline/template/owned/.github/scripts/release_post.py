@@ -713,7 +713,9 @@ def escape_text(text, liquid):
         if char == "<" and not odd_backslashes_before(text, pos):
             autolink = AUTOLINK.match(text, pos)
             if autolink:
-                out.append(autolink.group())
+                # An entity isn't decoded in an autolink, so "{" is percent-encoded
+                # instead: the link still works and Liquid can't read it (#69).
+                out.append(autolink.group().replace("{", "%7B") if liquid else autolink.group())
                 pos = autolink.end()
                 continue
             out.append("&lt;")

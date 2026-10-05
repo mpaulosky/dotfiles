@@ -76,6 +76,28 @@ copy) even when it writes no post, because a README-only PR merged with `[skip-r
 else syncs it. The docs job then opens `docs: Refresh release tables and docs/README.md [skip-release]`. A run with
 nothing to change leaves the tree clean, so no PR.
 
+**Untrusted text.** A post is built from the PR title, description and commit subjects, the AI summary and file names,
+and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` makes each one safe first
+(mpaulosky/dotfiles#48, from Copilot's review of Articles#280):
+
+- **HTML:** every `<` outside code becomes `&lt;`, except `<https://…>`, `<http://…>` and `<mailto:…>` autolinks. HTML
+  comments are dropped. A description's `<details>` therefore shows as text.
+- **Links:** a destination after `](` or `]:` whose scheme isn't `http`, `https` or `mailto` gets a `#` in front, so it
+  becomes a fragment link. Entities and control characters are read the way browsers read them, so `java&#9;script:` counts.
+- **kramdown:** `{:` (attribute lists, `{::extensions}`) becomes `&#123;:`.
+- **Code keeps its text.** kramdown and CommonMark disagree about some fences (unclosed, a two-word info string, nested
+  in a list), and escaping an HTML block can bring a fence line inside it to life. So every code block is re-emitted as a
+  top-level fence, longer than any backtick run inside it and always with an info string, with blank lines around it.
+  A block in a list or quote moves out of it. Any other line that looks like a fence gets its first backtick escaped.
+  A code span holding `<`, `{` or `]` becomes `<code>` with its symbols as entities. It looks the same, and it stays
+  safe however a parser pairs the backticks. File names with risky characters are written the same way.
+- **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages
+  build. The post body sits between `<!-- {% raw %} -->` and `<!-- {% endraw %} -->` (comments, so neither GitHub nor
+  Pages shows them), and a `{%` that would read as `endraw` is printed by Liquid instead. The README and blog index
+  tables aren't in a raw block, so their titles have every `{` as `&#123;`.
+- **The front matter's `post_title`** stays as written: it's a YAML string, never rendered as Markdown.
+- **Excerpts** read the escaped text back as plain text.
+
 **Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
 checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual
 approval.

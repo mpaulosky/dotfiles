@@ -87,6 +87,7 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   becomes a fragment link. Entities and control characters are read the way browsers read them, so `java&#9;script:` counts,
   however much padding pushes the scheme along. An entity's leading zeros are dropped before decoding: Python refuses
   numbers over 4300 digits, so `&#000…9;` would otherwise stop the release before its post was written.
+  Only a footnote definition alone at the start of its line (`[^1]: …`) is exempt; a label holding an escaped `\[^` isn't one.
 - **kramdown:** `{:` (attribute lists, `{::extensions}`) becomes `&#123;:`.
 - **Code keeps its text.** kramdown and CommonMark disagree about some fences (unclosed, a two-word info string, nested
   in a list), and escaping an HTML block can bring a fence line inside it to life. So every code block is re-emitted as a
@@ -99,6 +100,8 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   build. The post body sits between `<!-- {% raw %} -->` and `<!-- {% endraw %} -->` (comments, so neither GitHub nor
   Pages shows them), and a `{%` that would read as `endraw` is printed by Liquid instead. The README and blog index
   tables aren't in a raw block, so their titles have every `{` as `&#123;`.
+  In the blog index a title is a link label, so its `[` and `]` outside code become entities: `fix: ](https://…)` can't
+  close the label and link the row elsewhere.
 - **The front matter's `post_title`** stays as written: it's a YAML string, never rendered as Markdown.
 - **Excerpts** read the escaped text back as plain text.
 

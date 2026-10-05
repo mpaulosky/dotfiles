@@ -1123,6 +1123,11 @@ def test_html_comments_are_dropped():
         ("[a](https://example.com) [b](mailto:a@b.c) [c](#top) [d](docs/x.md)",
          "[a](https://example.com) [b](mailto:a@b.c) [c](#top) [d](docs/x.md)"),
         ("[^1]: Note: a footnote", "[^1]: Note: a footnote"),
+        ("> [^note]: javascript: is how it starts", "> [^note]: javascript: is how it starts"),
+        # Only a footnote definition alone at the start of its line is exempt; an escaped "\\[^" is a reference label.
+        ("[open][label \\[^x]\n[label \\[^x]: javascript:x", "[open][label \\[^x]\n[label \\[^x]: #javascript:x"),
+        ("[a [^x]: javascript:x", "[a [^x]: #javascript:x"),
+        ("x [^1]: javascript:x", "x [^1]: #javascript:x"),
     ],
 )
 def test_link_destinations_with_unsafe_schemes_are_neutralized(text, expected):
@@ -1201,3 +1206,15 @@ def test_an_oversized_character_reference_is_sanitized_not_fatal():
 )
 def test_code_spans_may_cross_line_breaks(body, expected):
     assert rp.sanitize_markdown(body) == expected
+
+
+def test_a_title_cannot_close_its_blog_index_link_early(tmp_path):
+    # "]" would end the label, so the row would link to the title's URL instead of the post.
+    rp.update_blog_index(tmp_path, "2026-10-05", "fix: ](https://evil.example) `a[b` x", "p.md")
+    [row] = [line for line in (tmp_path / "README.md").read_text().splitlines() if "p.md" in line]
+    assert row == "| 2026-10-05 | [fix: &#93;(https://evil.example) `a[b` x](p.md) | release,automation |"
+
+
+def test_a_reference_label_with_an_escaped_footnote_opener_is_neutralized():
+    body = "[open][label \\[^x]\n\n[label \\[^x]: javascript:alert(1)"
+    assert "]: #javascript:" in rp.sanitize_markdown(body)

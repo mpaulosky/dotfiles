@@ -544,6 +544,8 @@ SCHEME_TEXT = set("+.-:&#;\\")
 # Only these autolinks keep their angle brackets; any other "<" is escaped.
 AUTOLINK = re.compile(r"<(?:https?://|mailto:)[^\s<>\"'`\\]*>", re.I)
 LINK_DESTINATION_START = re.compile(r"\]\(|\]:")
+# A footnote definition's start: its label has no brackets, backslashes or spaces.
+FOOTNOTE_DEFINITION = re.compile(r"[ \t>]*\[\^[^\[\]\\\s]+\]:")
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 CONTAINER_MARKER = re.compile(r"[ \t]*(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|$))")
 BACKTICKS = re.compile(r"`+")
@@ -596,14 +598,16 @@ def neutralize_links(text):
     Any "](" or "]:" counts, wherever it is, since a parser may read a link or
     reference definition where this one wouldn't; the destination may follow
     on the next line, after its quote markers. A "#" makes it a harmless
-    fragment link. Footnotes ("[^1]: text") aren't links.
+    fragment link. A footnote definition ("[^1]: text", alone at the start of
+    its line) isn't a link; anything else ending in "]:", such as a label
+    holding an escaped "\\[^", is read as one.
     """
     out = []
     done = 0
     for match in LINK_DESTINATION_START.finditer(text):
         if match.group() == "]:":
-            opener = text.rfind("[", 0, match.start())
-            if opener >= 0 and text.startswith("[^", opener):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            if FOOTNOTE_DEFINITION.fullmatch(text, line_start, match.end()):
                 continue
         start = match.end()
         while start < len(text) and text[start] in " \t\n>":
@@ -724,6 +728,21 @@ def code_spans(text):
             closer = candidates[index]
             yield start, closer + length, text[after:closer]
             search = closer + length
+
+
+def link_label(markdown):
+    """Sanitized Markdown made safe as a link's text: brackets outside code spans become entities.
+
+    A title's "]" would otherwise close the label early, so "fix: ](https://x)"
+    would make the row link somewhere else. A code span keeps its text: one
+    holding "]" is already <code> with entities.
+    """
+    out = []
+    done = 0
+    for start, end, _ in [*code_spans(markdown), (len(markdown), len(markdown), "")]:
+        out.append(markdown[done:start].replace("[", "&#91;").replace("]", "&#93;") + markdown[start:end])
+        done = end
+    return "".join(out)
 
 
 def sanitize_inline(text, liquid=False):
@@ -888,7 +907,7 @@ def update_blog_index(blog_dir, merged_date, title_line, post_name):
         linked = re.search(r"\]\(([^)]+\.md)\)", row)
         return not linked or (blog_dir / linked.group(1)).exists()
 
-    row_title = sanitize_inline(title_line, liquid=True).replace("|", "\\|")
+    row_title = link_label(sanitize_inline(title_line, liquid=True)).replace("|", "\\|")
     rows = [r for r in rows if f"({post_name})" not in r and linked_post_exists(r)]
     rows.insert(0, f"| {merged_date} | [{row_title}]({post_name}) | release,automation |")
 

@@ -109,9 +109,10 @@ The stock image has Node, git, curl, jq and `gh` only. Add what the agents and t
 
 - `libicu72` (needed by .NET), plus `yamllint` and anything else `scripts/gate.sh` calls.
 - `RUN corepack enable pnpm` and `ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0`, before switching to the agent user.
-- The .NET SDK through `dotnet-install.sh --channel <major.minor> --install-dir /home/agent/.dotnet`, with the
-  channel taken from the repo's `global.json` (`10.0` for Blazor-Server), symlinked into `/home/agent/.local/bin`,
-  with `DOTNET_ROOT`, `DOTNET_CLI_TELEMETRY_OPTOUT=1` and `DOTNET_NOLOGO=1` set.
+- The .NET SDK through `dotnet-install.sh --version <sdk.version> --install-dir /home/agent/.dotnet`, with the
+  exact version from the repo's `global.json`, which satisfies any `rollForward` policy. Blazor-Server uses
+  `--channel 10.0`, which works only because its `rollForward` is `latestMinor`. Symlink it into
+  `/home/agent/.local/bin`, with `DOTNET_ROOT`, `DOTNET_CLI_TELEMETRY_OPTOUT=1` and `DOTNET_NOLOGO=1` set.
 - `/home/agent/.dotnet` and `/home/agent/.dotnet/tools` on `PATH`, so `dotnet` works in login and non-login shells.
 
 Then build the image (it defaults to `sandcastle:<repo-dir-name>` and matches the host's UID/GID):
@@ -200,9 +201,9 @@ pnpm exec tsx .sandcastle/main.mts
 
 Label the issues you want worked `Sandcastle`. Each round prints the issues it holds back, the branches it works
 and the pull requests it opens, and stops when a round opens no pull request. A red gate gets a comment on the
-issue and no pull request; a failed review still opens one, flagged as unreviewed in its body. Sandcastle doesn't
-label anything `sandcastle:needs-human`: add it to hand a pull request to a person, and it won't auto-merge until
-the owner removes it.
+issue and no pull request. A failed review still opens one, flagged as unreviewed in its body, if the second
+gate passes. Sandcastle doesn't label anything `sandcastle:needs-human`: add it to hand a pull request to a
+person, and it won't auto-merge until the owner removes it.
 
 Finally, mention `.sandcastle/` and the `check:sandcastle` command in the repo's `README.md` and `CLAUDE.md`.
 

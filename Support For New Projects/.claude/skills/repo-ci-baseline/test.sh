@@ -4,8 +4,9 @@
 #   test.sh
 #
 # Runs the Template's own tests (hook suites, auto-merge script tests,
-# release-script pytest) and the GitHub settings script's tests, lints its
-# workflows, YAML, shell and Markdown with the Template's configs, checks that
+# release-script pytest), the renderer oracle and the GitHub settings script's
+# tests, lints its workflows, YAML, shell and Markdown with the Template's
+# configs, checks that
 # Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh against
 # throwaway repos. dotfiles CI runs this on every change under the skill, and
 # it's the check to run before committing a Template change.
@@ -50,6 +51,17 @@ else
   pytest_cmd=(uvx pytest)
 fi
 (cd "$owned" && "${pytest_cmd[@]}" -q -p no:cacheprovider .github/scripts/tests) || fail "pytest"
+
+step "Renderer oracle"
+# release_post.py's output rendered by cmark-gfm (GitHub) and kramdown (GitHub
+# Pages); kramdown runs from a local Ruby with its pinned gems, else Docker.
+if python3 -c 'import cmarkgfm, pytest' &>/dev/null; then
+  oracle_cmd=(python3 -m pytest)
+else
+  need uvx
+  oracle_cmd=(uvx --with cmarkgfm==2025.10.22 pytest)
+fi
+(cd "$skill_dir/tests/render_oracle" && "${oracle_cmd[@]}" -q -p no:cacheprovider .) || fail "renderer oracle"
 
 step "GitHub settings script tests"
 (cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider github/tests) || fail "github settings pytest"

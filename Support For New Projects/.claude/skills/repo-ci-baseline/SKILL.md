@@ -65,7 +65,7 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
 ## Change the Baseline
 
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
-2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the GitHub settings script's tests,
+2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the renderer oracle, the GitHub settings script's tests,
    actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned check and the `apply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.

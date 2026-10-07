@@ -1741,11 +1741,29 @@ def test_a_title_that_looks_like_a_reference_definition_keeps_its_code():
     assert rp.sanitize_inline("[Use `List<T>`]: support") == "[Use <code>List&#60;T&#62;</code>]: support"
 
 
-def test_a_commit_subject_that_looks_like_a_reference_definition_is_read_as_one():
-    # It starts a list item, and the SHA after it is a parenthesized title, so GitHub (cmark-gfm) reads the line as
-    # a definition: its label isn't rendered, and is left as written apart from the escaped "<".
-    commit = {"sha": "abc1234def", "commit": {"message": "[Use `List<T>`]: support"}}
-    assert rp.render_commits([commit]).splitlines()[2] == "- [Use `List&lt;T>`]: support (`abc1234`)"
+@pytest.mark.parametrize(
+    ("subject", "expected"),
+    [
+        # A subject that would start a reference definition gets its first character escaped, so the commit isn't
+        # an empty list item: GitHub (cmark-gfm) reads the SHA after it as a parenthesized title, and kramdown takes
+        # anything after "[label]:" as the destination. Its code then pairs as in a title.
+        ("[Use `List<T>`]: support", "\\[Use <code>List&#60;T&#62;</code>]: support"),
+        ("[a]: docs/x.md", "\\[a]: docs/x.md"),
+        ("[a b]: c d", "\\[a b]: c d"),
+        # A label with an escaped "]" is one to cmark-gfm, and its "\]:" ends one to kramdown.
+        ("[a\\]b]: x", "\\[a\\]b]: x"),
+        ("[a\\]: x", "\\[a\\]: x"),
+        # kramdown's footnote and abbreviation definitions.
+        ("[^1]: note", "\\[^1]: note"),
+        ("*[HTML]: Hyper", "\\*[HTML]: Hyper"),
+        # A leading link or bracketed tag starts no definition, so it's left alone.
+        ("[docs](https://x.test) fix", "[docs](https://x.test) fix"),
+        ("[WIP] fix: x", "[WIP] fix: x"),
+    ],
+)
+def test_a_commit_subject_never_starts_a_reference_definition(subject, expected):
+    commit = {"sha": "abc1234def", "commit": {"message": subject}}
+    assert rp.render_commits([commit]).splitlines()[2] == f"- {expected} (`abc1234`)"
 
 
 @pytest.mark.parametrize(

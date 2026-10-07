@@ -23,7 +23,7 @@ would let a repo's own PRs change the rules that gate them.
 
 | Area | Standard |
 | --- | --- |
-| Merging | Squash only (`allow_merge_commit` and `allow_rebase_merge` off); the squash commit is the **PR title and body**, so `main`'s history reads like the PRs and Releases. Delete the branch on merge; auto-merge and update-branch on. Forking stays allowed (CONTRIBUTING starts with a fork). |
+| Merging | Squash only (`allow_merge_commit` and `allow_rebase_merge` off); the squash commit is the **PR title and body**, so `main`'s history reads like the PRs and Releases. Delete the branch on merge; update-branch on; auto-merge allowed, since `release.yml` and `dependabot-auto-merge.yml` arm it on their PRs. Forking stays allowed (CONTRIBUTING starts with a fork). |
 | Security | Secret scanning, push protection, Dependabot alerts and Dependabot security updates on. CodeQL **default setup off** wherever `codeql-analysis.yml` runs CodeQL: GitHub rejects the workflow's results while default setup is on. |
 | Actions | Workflows get a **read** token by default (every Template workflow declares its own `permissions:`), and may create PRs, which `release.yml` and `backfill-blog-posts.yml` need when they fall back to `GITHUB_TOKEN` without `RELEASE_PR_PAT`. Pinned actions are required once every workflow is pinned. |
 | Ruleset `main-rules` | On `~DEFAULT_BRANCH`: no deletion or force-push, linear history, squash only, 0 approvals, review threads **not** required, Copilot reviews every push (drafts too), strict required checks, **no bypass actors**. No `code_quality` rule. |

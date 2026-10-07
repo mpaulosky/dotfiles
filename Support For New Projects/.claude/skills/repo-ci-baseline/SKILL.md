@@ -65,11 +65,12 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
 ## Change the Baseline
 
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
-2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the GitHub settings script's tests,
+2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the renderer oracle, the GitHub settings script's tests,
    actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned check and the `apply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.
+   Open it ready, not as a draft: the repo's own auto-merge lands it ([automerge.md](references/automerge.md#landing)).
    A change to `github/` (a new required check or label) is applied with `github-settings.sh --fix` once the repo reports the check.
    `status.sh` prints one line per open PR across `github/repos.txt` with its next landing action ([automerge.md](references/automerge.md#status-and-the-landing-decision)).
 

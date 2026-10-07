@@ -11,7 +11,9 @@ per repo, read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
 
 A repo whose repos.txt scope is repo-settings-only (dotfiles) has no required
-checks, so the decision waits for its checks to go green before arming.
+checks and no PR Auto-Merge, so the decision waits for its checks to go green
+before arming. Any other repo is a Baseline repo, whose PR Auto-Merge merges a
+reviewed PR itself (see repo_flags()).
 """
 
 import argparse
@@ -19,7 +21,7 @@ import json
 import subprocess
 import sys
 
-from landing import Check, PrState, copilot_reviews, decide, summarize_checks
+from landing import RELEASE_BLOG_BRANCHES, Check, PrState, copilot_reviews, decide, summarize_checks
 from settings import read_repo_list
 
 QUERY = """
@@ -27,7 +29,7 @@ query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 50, orderBy: {field: CREATED_AT, direction: ASC}) {
       nodes {
-        number title state isDraft headRefOid mergeStateStatus
+        number title state isDraft headRefName headRefOid mergeStateStatus
         autoMergeRequest { enabledAt }
         reviews(last: 100) { nodes { author { login } commit { oid } } }
         reviewThreads(first: 100) { nodes { isResolved } }
@@ -63,7 +65,17 @@ def to_check(node):
     return Check(node["name"], node["status"], node.get("conclusion"), node.get("startedAt") or "")
 
 
-def to_state(node, checks_required=True):
+def repo_flags(scope):
+    """to_state()'s per-repo keywords for a repos.txt scope.
+
+    A Baseline repo ("full") requires checks and runs PR Auto-Merge;
+    repo-settings-only (dotfiles) has neither.
+    """
+    baseline = scope != "repo-settings-only"
+    return {"checks_required": baseline, "merged_by_workflow": baseline}
+
+
+def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False):
     """A PrState from one pullRequests node of QUERY."""
     commits = node["commits"]["nodes"]
     rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
@@ -79,6 +91,9 @@ def to_state(node, checks_required=True):
         checks=tuple(to_check(context) for context in contexts if context),
         checks_required=checks_required,
         auto_merge_armed=node["autoMergeRequest"] is not None,
+        want_ready=want_ready,
+        merged_by_workflow=merged_by_workflow,
+        release_blog=node.get("headRefName") in RELEASE_BLOG_BRANCHES,
     )
 
 
@@ -114,9 +129,9 @@ def main(argv=None, fetch=gh_graphql, out=sys.stdout, err=sys.stderr):
             err.write(f"{repo}: {error}\n")
             status = 1
             continue
-        checks_required = listed.get(repo, "full") != "repo-settings-only"
+        flags = repo_flags(listed.get(repo, "full"))
         for node in data["repository"]["pullRequests"]["nodes"]:
-            lines.append(line(repo, node, to_state(node, checks_required)))
+            lines.append(line(repo, node, to_state(node, **flags)))
     if lines:
         out.write("\n".join(lines) + "\n")
     elif status == 0:

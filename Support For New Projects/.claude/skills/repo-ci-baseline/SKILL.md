@@ -66,7 +66,7 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
 
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
 2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the renderer oracle, the GitHub scripts' tests
-   (settings, the landing decision, status), actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned
+   (settings, the landing decision, status, land), actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned
    check and the `apply.sh` and `reapply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.
@@ -78,6 +78,8 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
    Open it ready, not as a draft: the repo's own auto-merge lands it ([automerge.md](references/automerge.md#landing)).
    A change to `github/` (a new required check or label) is applied with `github-settings.sh --fix` once the repo reports the check.
    `status.sh` prints one line per open PR across `github/repos.txt` with its next landing action ([automerge.md](references/automerge.md#status-and-the-landing-decision)).
+   `land.sh <owner/repo#n>...` then watches the round and acts on that action until each PR and its release-blog PR land
+   ([automerge.md](references/automerge.md#landing-a-round)); start with `land.sh --once --dry-run`.
 
 ## Start a new repo
 

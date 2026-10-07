@@ -1,7 +1,7 @@
 """The landing decision: what a PR needs next to land, from its state alone.
 
-Pure: no GitHub calls. `status.py` (and the land command after it) fetch a
-PR's state, build a PrState and call decide(). The rules are the ones the
+Pure: no GitHub calls. `status.py` and `land.py` fetch a PR's state, build a
+PrState and call decide(). The rules are the ones the
 skill lands PRs by (references/automerge.md):
 
 - a merged or closed PR, or one with auto-merge already armed, needs nothing;
@@ -12,7 +12,13 @@ skill lands PRs by (references/automerge.md):
 - auto-merge is armed only once Copilot (an author matching /copilot/i) has
   reviewed the current head and no review thread is unresolved;
 - where the repo requires no checks (dotfiles), auto-merge wouldn't wait for
-  CI, so the checks must finish green first.
+  CI, so the checks must finish green first;
+- in a Baseline repo, its own PR Auto-Merge workflow merges a reviewed PR
+  through the API once its checks pass (and past Copilot's review cap), and it
+  never arms native auto-merge: so the PR is left to it, never armed around it;
+- a release-blog PR (release.yml's or backfill-blog-posts.yml's branch) is
+  armed as soon as it is open and not blocked, without Copilot's review, as
+  those workflows arm it themselves; one they armed needs nothing.
 
 A cancelled check run is superseded when a newer run of the same check name
 on the same head exists: CI's concurrency cancels runs, and the newest counts.
@@ -25,11 +31,15 @@ WAIT = "wait"
 MARK_READY = "mark ready"
 UPDATE_BRANCH = "update branch and request Copilot"
 ARM_AUTO_MERGE = "arm auto-merge"
+HAND_OFF = "leave to PR Auto-Merge"
 BLOCKER = "report blocker"
 NOTHING = "nothing"
-ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, ARM_AUTO_MERGE, BLOCKER, NOTHING)
+ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, ARM_AUTO_MERGE, HAND_OFF, BLOCKER, NOTHING)
 
 COPILOT = re.compile(r"copilot", re.IGNORECASE)
+
+# The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
+RELEASE_BLOG_BRANCHES = frozenset({"docs/release-notes", "docs/backfill-blog-posts"})
 
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 FAILED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR", "STALE"}
@@ -74,6 +84,9 @@ class PrState:
     checks_required: whether the repo requires checks before a merge; without
     them native auto-merge merges at once, so green checks must come first.
     want_ready: the caller's say that a draft should be marked ready.
+    merged_by_workflow: the repo's own PR Auto-Merge workflow merges it (a
+    Baseline repo), so it is left to that workflow rather than armed.
+    release_blog: a release-blog PR (see RELEASE_BLOG_BRANCHES).
     """
 
     state: str = "OPEN"  # OPEN, MERGED or CLOSED
@@ -86,6 +99,8 @@ class PrState:
     checks_required: bool = True
     auto_merge_armed: bool = False
     want_ready: bool = False
+    merged_by_workflow: bool = False
+    release_blog: bool = False
 
     @property
     def copilot_on_head(self):
@@ -149,6 +164,8 @@ def decide(pr):
         if pr.want_ready:
             return Decision(MARK_READY, "draft")
         return Decision(WAIT, "draft")
+    if pr.release_blog:
+        return Decision(ARM_AUTO_MERGE, "release-blog PR, not armed by its workflow")
     if pr.merge_state == "BEHIND":
         return Decision(UPDATE_BRANCH, "behind main")
     if not pr.copilot_on_head:
@@ -157,5 +174,7 @@ def decide(pr):
         return Decision(WAIT, f"{pr.open_threads} open thread(s)")
     if checks.running and not pr.checks_required:
         return Decision(WAIT, "no required checks; waiting for: " + ", ".join(checks.running))
-    return Decision(ARM_AUTO_MERGE, "Copilot reviewed the head, no open threads"
-                    + ("" if checks.green else ", required checks running"))
+    reason = "Copilot reviewed the head, no open threads" + ("" if checks.green else ", required checks running")
+    if pr.merged_by_workflow:
+        return Decision(HAND_OFF, reason)
+    return Decision(ARM_AUTO_MERGE, reason)

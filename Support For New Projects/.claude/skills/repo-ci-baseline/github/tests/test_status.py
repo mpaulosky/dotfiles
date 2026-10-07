@@ -79,3 +79,19 @@ def test_a_repo_settings_only_repo_waits_for_green_checks(monkeypatch):
                               "conclusion": None, "startedAt": "2026-10-07T10:00:00Z"}])
     code, out, _ = run([], {"owner/dots": repo(node)})
     assert "-> wait (no required checks; waiting for: Template tests)" in out
+
+
+def test_a_baseline_repo_leaves_a_reviewed_pr_to_pr_auto_merge_and_dotfiles_arms(monkeypatch):
+    monkeypatch.setattr(st, "read_repo_list", lambda: {"owner/app": "full", "owner/dots": "repo-settings-only"})
+    reviewed = pr_node(reviews=[("Copilot", HEAD)])
+    code, out, _ = run([], {"owner/app": repo(reviewed), "owner/dots": repo(reviewed)})
+    app, dots = out.splitlines()
+    assert "-> leave to PR Auto-Merge" in app and "-> arm auto-merge" in dots
+
+
+def test_a_release_blog_pr_is_told_apart_by_its_branch():
+    blog = st.to_state(dict(pr_node(), headRefName="docs/release-notes"), **st.repo_flags("full"))
+    other = st.to_state(dict(pr_node(), headRefName="feat/x"), **st.repo_flags("full"))
+    assert blog.release_blog and not other.release_blog
+    assert blog.merged_by_workflow and blog.checks_required
+    assert st.repo_flags("repo-settings-only") == {"checks_required": False, "merged_by_workflow": False}

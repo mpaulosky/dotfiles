@@ -1586,6 +1586,16 @@ def test_a_reference_definition_with_backticks_in_its_label_and_title_is_rebased
         ("[^a:b]: docs/x.md\n", "[^a:b]: x.md\n"),
         # A CRLF line ending keeps its "\r" in the README's lines.
         ("[a]: docs/a.md\r\n[b]: docs/b.md 'B'\r\n", "[a]: a.md\r\n[b]: b.md 'B'\r\n"),
+        # A title may start on the next line and hold line endings, LF or CRLF.
+        ('[a]: docs/a.md "first\nsecond"\n', '[a]: a.md "first\nsecond"\n'),
+        ('[a]: docs/a.md "first\r\nsecond"\r\n', '[a]: a.md "first\r\nsecond"\r\n'),
+        ("[a]: docs/a.md\n  'T `'\n[b](docs/b.md) `\n", "[a]: a.md\n  'T `'\n[b](b.md) `\n"),
+        # A blank line ends the title, so this is no definition; nor is a title with text after it.
+        ('[a]: docs/a.md "first\n\nsecond"\n', '[a]: docs/a.md "first\n\nsecond"\n'),
+        ('[a]: docs/a.md\n"t" x\n', '[a]: a.md\n"t" x\n'),
+        # A title can't run into a quote or list item that follows, so their links are still rebased.
+        ('[a]: docs/a.md\n> "see [b](docs/b.md)"\n', '[a]: a.md\n> "see [b](b.md)"\n'),
+        ('[a]: docs/a.md "x\n- [b](docs/b.md) y"\n', '[a]: docs/a.md "x\n- [b](b.md) y"\n'),
     ],
 )
 def test_reference_definitions_are_read_before_code_spans_in_the_docs_readme(text, expected):
@@ -1607,6 +1617,27 @@ def test_a_reference_definition_keeps_its_code_in_a_post():
 )
 def test_a_close_bracket_without_a_label_is_not_rebased(text, expected):
     assert rp.rebase_readme_links(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # An inline HTML tag is read whole, so a "]" or backtick in its attributes ends no label and opens no span.
+        ('[<span title="]">x</span>](docs/a.md)\n', '[<span title="]">x</span>](a.md)\n'),
+        ("[<b title='`'>x</b>](docs/a.md) `\n", "[<b title='`'>x</b>](a.md) `\n"),
+        # Its own src and href are rebased as before.
+        ('[<img src="docs/a.png" alt="]">](docs/b.md)\n', '[<img src="a.png" alt="]">](b.md)\n'),
+        # A "<" that opens no tag is text, and so is an escaped one, so the backticks after it pair.
+        ("[a < b](docs/a.md)\n", "[a < b](a.md)\n"),
+        ('Use \\<span title="`">[x](docs/a.md)`\n', 'Use \\<span title="`">[x](docs/a.md)`\n'),
+    ],
+)
+def test_inline_html_in_a_label_is_read_whole_in_the_docs_readme(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+def test_the_post_sanitizer_still_escapes_inline_html_in_a_label():
+    assert rp.sanitize_markdown('[<span title="]">x</span>](docs/a.md)') == '[&lt;span title="]">x&lt;/span>](docs/a.md)'
 
 
 def test_a_comment_after_a_close_bracket_without_a_label_is_dropped():

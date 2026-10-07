@@ -66,20 +66,25 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
 
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
 2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the renderer oracle, the GitHub scripts' tests
-   (settings, the landing decision, status, land), actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned
+   (settings, the landing decision, status, land, rollout), actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned
    check and the `apply.sh` and `reapply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.
-   `reapply.sh --brings mpaulosky/dotfiles#<n>,#<n> <repo>` does one repo: it prepares the `chore/reapply-baseline` worktree,
-   merges the remote branch and `main`, commits `apply.sh`'s output alone, pushes through the gate, opens the re-Apply PR
-   ready (or adds the commit to the open one) and requests Copilot. Its header comment has the details;
-   name the head it prints in thread replies.
    Open it ready, not as a draft: the repo's own auto-merge lands it ([automerge.md](references/automerge.md#landing)).
+   - **Roll out:** `rollout.sh --brings mpaulosky/dotfiles#<n>,#<n>` runs `reapply.sh` on TicketManager and holds the rest until its re-Apply PR has merged.
+     Land that PR, fix any finding Template first, then run `rollout.sh` again: once it has merged,
+     it re-Applies the other repos in order, one pre-push gate at a time, reports a repo that fails and goes on.
+     Start with `--dry-run`. It ends with the `land.sh` command for the PRs it left open.
+   - **One repo:** `reapply.sh --brings mpaulosky/dotfiles#<n>,#<n> <repo>` (what `rollout.sh` runs, and the way to retry a repo that failed)
+     prepares the `chore/reapply-baseline` worktree, merges the remote branch and `main`, commits `apply.sh`'s output alone,
+     pushes through the gate, opens the re-Apply PR ready (or adds the commit to the open one) and requests Copilot.
+     Its header comment has the details; name the head it prints in thread replies.
+   - **Land:** `land.sh <owner/repo#n>...` watches the PRs and acts on the landing decision until each PR and its release-blog PR land
+     ([automerge.md](references/automerge.md#landing-a-round)); start with `land.sh --once --dry-run`.
+   - **Check:** `status.sh` prints one line per open PR across `github/repos.txt` with its next landing action, for a status update
+     at any point ([automerge.md](references/automerge.md#status-and-the-landing-decision)).
    A change to `github/` (a new required check or label) is applied with `github-settings.sh --fix` once the repo reports the check.
-   `status.sh` prints one line per open PR across `github/repos.txt` with its next landing action ([automerge.md](references/automerge.md#status-and-the-landing-decision)).
-   `land.sh <owner/repo#n>...` then watches the round and acts on that action until each PR and its release-blog PR land
-   ([automerge.md](references/automerge.md#landing-a-round)); start with `land.sh --once --dry-run`.
 
 ## Start a new repo
 

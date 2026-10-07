@@ -39,6 +39,10 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   update-branch <n>`, then `gh pr edit <n> --add-reviewer @copilot`: the auto-merge workflow wants Copilot's review on
   the exact head, and the merge commit `update-branch` makes doesn't get one by itself. The workflow's 15-minute sweep
   merges it once the review lands. Watch for this whenever two PRs are in flight.
+- **A cancelled run's "Test Suite" reads as a failure.** It runs `if: always()`, so a run cancelled by a newer one on
+  the same head (`cancel-in-progress`) leaves a failed check beside the newer run's result; the newer one is what
+  counts. `ci.yml` doesn't run on `ready_for_review`, since drafts already run CI, so marking a PR ready no longer
+  causes one. Keep `always()`: a skipped required check passes, so skipping it on cancel could pass an untested head.
 - **Count claims before writing them.** Recount tests from the test run, not from memory.
 - **A fix found in a repo goes into the Template first.** When a review finds a flaw in an Owned file, fix it in
   `template/` (a dotfiles PR with `test.sh` green), then Apply it to the repo. Fixed only in the repo, it is reverted by

@@ -275,6 +275,28 @@ def test_it_exits_once_every_watched_pr_and_its_release_blog_pr_has_landed(monke
     assert "app#7 merged" in out and "app#8 merged" in out
 
 
+def test_a_release_blog_pr_seen_with_the_merge_and_landed_before_the_next_poll_ends_the_wait(monkeypatch):
+    # TicketManager#131/#132: the blog PR shows up in the same poll as the merge, then lands within 86 s.
+    fake = Fake({"o/app": [node(reviews=COPILOT)]})
+    blog = node(number=8, title="docs: Add release blog for PR #7 [skip-release]", branch="docs/release-notes",
+                armed=True)
+
+    def merge_seven_and_blog_opens():
+        fake.open["o/app"] = [blog]
+        fake.final[("o/app", 7)] = "MERGED"
+
+    def blog_merges():
+        fake.open["o/app"] = []
+        fake.final[("o/app", 8)] = "MERGED"
+
+    code, out = run_main(fake, ["o/app#7", "--interval", "60"], [merge_seven_and_blog_opens, blog_merges],
+                         monkeypatch)
+    assert code == 0
+    assert "no release-blog PR" not in out
+    assert out.splitlines()[-1] == "All 2 watched PR(s) merged or closed."
+    assert fake.now == 120  # the poll after the blog PR merged, not --blog-wait later
+
+
 def test_without_a_release_blog_pr_it_gives_up_waiting_after_blog_wait(monkeypatch):
     fake = Fake({"o/app": [node(reviews=COPILOT)]})
 

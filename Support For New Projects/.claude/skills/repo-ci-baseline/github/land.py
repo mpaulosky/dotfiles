@@ -156,11 +156,12 @@ class Lander:
             self.started.add(repo)
             for number in (open_prs if numbers is None else numbers):
                 self.watched.setdefault((repo, number), Watched())
+        blog_open = False
         for number, node in open_prs.items():
             state = to_state(node, **flags, want_ready=self.want_ready)
             if state.release_blog:
                 self.watched.setdefault((repo, number), Watched())
-                self.blog_due.pop(repo, None)
+                blog_open = True
 
         for (watched_repo, number), pr in sorted(self.watched.items()):
             if watched_repo != repo or pr.final:
@@ -169,6 +170,10 @@ class Lander:
                 self.update_open(repo, number, pr, open_prs[number], flags)
             else:
                 self.update_gone(repo, number, pr, flags)
+        # After the updates, so a release-blog PR that opened in the same poll
+        # as the merge that started the wait still ends it.
+        if blog_open:
+            self.blog_due.pop(repo, None)
 
         due = self.blog_due.get(repo)
         if due is not None and self.clock() >= due:

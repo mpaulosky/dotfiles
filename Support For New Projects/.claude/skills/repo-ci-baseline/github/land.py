@@ -207,11 +207,10 @@ class Lander:
         try:
             if self.copilot_requested(repo, number):
                 return True
-            problem = "didn't register"
+            problem = f"didn't register on #{number} (GitHub drops it once the Copilot code review budget is used up)"
         except Exception as error:  # noqa: BLE001 - reported like a failed call
-            problem = f"couldn't be read back ({error})"
-        self.say(f"  failed: Copilot's review request {problem} on #{number}; "
-                 f"request it at https://github.com/{repo}/pull/{number}")
+            problem = f"couldn't be read back on #{number} ({error})"
+        self.say(f"  failed: Copilot's review request {problem}; request it at https://github.com/{repo}/pull/{number}")
         return False
 
     def update_gone(self, repo, number, pr, flags):

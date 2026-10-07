@@ -217,7 +217,7 @@ printf 'name: CI v5\n' > "$skill/template/owned/.github/workflows/ci.yml"
 out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
 check "dropped: exits non-zero" '[[ $rc -ne 0 ]]'
 check "dropped: says Copilot wasn't requested, with the PR to request it on" \
-  'grep -q "Copilot.s review request didn.t register on #7; request it at https://github.com/acme/Widget/pull/7" <<< "$out"'
+  'grep -q "Copilot.s review request didn.t register on #7 (GitHub drops it once the Copilot code review budget is used up); request it at https://github.com/acme/Widget/pull/7" <<< "$out"'
 check "dropped: does not claim Copilot was requested" '! grep -q "Copilot requested" <<< "$out"'
 check "dropped: the Apply commit is pushed and the PR updated" \
   '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]] && grep -q "^pr edit 7 --body-file" "$stub/gh.log"'

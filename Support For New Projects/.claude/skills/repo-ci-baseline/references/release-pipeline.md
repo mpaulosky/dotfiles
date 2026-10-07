@@ -102,7 +102,11 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   escaping, collapsing blank lines, rebasing links) is made only outside it. So `` `<!-- TODO -->` `` stays code, a code
   block keeps its tabs and blank lines, and so does the README's code. Spans and comments are read left to right, as
   CommonMark reads them: whichever starts first wins, so a comment hides its backticks. A complete inline link's
-  destination and title are read before spans, so `` [x](docs/a.md "Use `code`") `` stays one link. Where this scanner and
+  destination and title are read before spans, so `` [x](docs/a.md "Use `code`") `` stays one link, even with a line
+  ending between its parts. So is a one-line reference definition at the start of a paragraph, so `` [`a]: docs/a.md ``
+  doesn't pair its backtick with later prose; a line with more than a title after the destination is text, as in
+  CommonMark. `rebase_readme_links` rebases only the links this finds, so a `](` with no open `[` stays as written
+  (#68). Where this scanner and
   a renderer could pair backticks differently, the result is still safe: a span left between backticks holds no `<`,
   `{` or `]`, and the text outside it is escaped either way.
 - **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages

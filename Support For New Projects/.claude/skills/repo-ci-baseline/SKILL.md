@@ -71,6 +71,7 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.
    A change to `github/` (a new required check or label) is applied with `github-settings.sh --fix` once the repo reports the check.
+   `status.sh` prints one line per open PR across `github/repos.txt` with its next landing action ([automerge.md](references/automerge.md#status-and-the-landing-decision)).
 
 ## Start a new repo
 

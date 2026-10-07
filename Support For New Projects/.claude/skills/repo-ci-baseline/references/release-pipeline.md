@@ -92,7 +92,8 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
 - **kramdown:** `{:` (attribute lists, `{::extensions}`) becomes `&#123;:`.
 - **Commit subjects stay visible.** A subject that starts like a definition (`[label]:`, `[^note]:`, `*[ABBR]:`), even
   after quote or list markers that nest a block in its item (`> [a]:`, `- [a]:`), gets the definition's first character
-  escaped. Otherwise its list item renders empty: kramdown reads anything after `[label]:` as the
+  escaped. Those markers keep one space around each, so nothing after them is indented code, which kramdown and
+  cmark-gfm read differently. Otherwise its list item renders empty: kramdown reads anything after `[label]:` as the
   destination, and cmark-gfm reads the `` (`sha`) `` after the subject as a title. A subject is then read like a title.
 - **Code keeps its text.** kramdown and CommonMark disagree about some fences (unclosed, a two-word info string, nested
   in a list), and escaping an HTML block can bring a fence line inside it to life. So every code block is re-emitted as a

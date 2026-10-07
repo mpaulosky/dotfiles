@@ -4,9 +4,9 @@
 #   test.sh
 #
 # Runs the Template's own tests (hook suites, auto-merge script tests,
-# release-script pytest), the renderer oracle and the GitHub settings script's
-# tests, lints its workflows, YAML, shell and Markdown with the Template's
-# configs, checks that
+# release-script pytest), the renderer oracle and the GitHub scripts' tests
+# (settings, the landing decision and status), lints its workflows, YAML, shell
+# and Markdown with the Template's configs, checks that
 # Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh against
 # throwaway repos. dotfiles CI runs this on every change under the skill, and
 # it's the check to run before committing a Template change.
@@ -63,8 +63,8 @@ else
 fi
 (cd "$skill_dir/tests/render_oracle" && "${oracle_cmd[@]}" -q -p no:cacheprovider .) || fail "renderer oracle"
 
-step "GitHub settings script tests"
-(cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider github/tests) || fail "github settings pytest"
+step "GitHub scripts tests (settings, landing decision, status)"
+(cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider github/tests) || fail "github scripts pytest"
 
 step "actionlint"
 mapfile -t workflows < <(find "$owned/.github/workflows" -name '*.yml' | sort)
@@ -79,7 +79,7 @@ yamllint -c "$owned/.yamllint.yml" "${yaml_files[@]}" || fail "yamllint"
 
 step "shellcheck"
 shell_files=(
-  "$skill_dir/apply.sh" "$skill_dir/test.sh" "$skill_dir/github-settings.sh"
+  "$skill_dir/apply.sh" "$skill_dir/test.sh" "$skill_dir/github-settings.sh" "$skill_dir/status.sh"
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
   "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"

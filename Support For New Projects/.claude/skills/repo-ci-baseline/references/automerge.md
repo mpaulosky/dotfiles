@@ -60,6 +60,12 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   so it waits for Copilot's review of the head and every thread resolved; answer the threads and let it merge.
 - **A Standardize PR is a draft landed by hand.** The repo's old workflow on `main` would merge it the moment its checks pass: see [Adapting](#adapting).
 - **`land.sh` watches a round** until it lands: see [Landing a round](#landing-a-round).
+- **Copilot's review request is read back.** `gh pr edit --add-reviewer @copilot` exits 0 even when GitHub drops the request,
+  so `reapply.sh` and `land.sh` then read the PR's review requests (and Copilot's reviews of the head) and fail with the PR's URL when Copilot isn't there.
+  Request it from the PR page's Reviewers menu instead. On 2026-10-07 every API route was dropped from about 20:30 UTC (TicketManager#131, dotfiles #95 and #96, #97):
+  `gh pr edit` and GraphQL `requestReviewsByLogin` returned success with no request, and REST `requested_reviewers` returned 422 "not a collaborator".
+  Nothing in the API said why; Copilot had reviewed Blazor-Server#162 at 20:18 UTC, so the cause looks account-side (Copilot code review's allowance or setting),
+  not gh or the token's scopes.
 
 ## Adapting
 

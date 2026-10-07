@@ -127,6 +127,13 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
 - **The front matter's `post_title`** stays as written: it's a YAML string, never rendered as Markdown.
 - **Excerpts** read the escaped text back as plain text.
 
+**Renderer oracle.** The unit tests pin cases someone thought of. `tests/render_oracle/` (in the skill, not the
+Template) renders a grid of container prefixes and tricky bodies with the two renderers that publish the output:
+cmark-gfm (GitHub, the README) and kramdown's GFM parser (GitHub Pages, the posts), at the github-pages gem's versions.
+Every commit must stay visible, with no stray backslash, and every `docs/README.md` link must be the README's, one
+directory up, with the text unchanged. Add a shape to its grid whenever a review finds one. Run against the
+`release_post.py` from before #80 and #79, it fails 110 and 130 cases.
+
 **Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
 checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual
 approval.

@@ -54,6 +54,12 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Token:** `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`.
   A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip.
 
+## Landing
+
+- **A re-Apply PR opens ready, not as a draft, and this workflow lands it.** The copy on `main` is already the Template's,
+  so it waits for Copilot's review of the head and every thread resolved; answer the threads and let it merge.
+- **A Standardize PR is a draft landed by hand.** The repo's old workflow on `main` would merge it the moment its checks pass: see [Adapting](#adapting).
+
 ## Adapting
 
 - **Survey whether the repo's auto-merge waits for review.** IssueManager's armed native auto-merge and merged on `CLEAN` alone; its #231 merged with an open Copilot thread.
@@ -64,6 +70,28 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Before `gh pr ready`, check `mergeStateStatus`: if it's `BEHIND`, keep the draft, run `gh pr update-branch <n>`, request the review again and wait for it on the new head.
   Then `gh pr ready <n>`, which starts CI again, so the PR is `BLOCKED` for one more full run; once it's green, the old workflow may merge it itself, which is fine now.
   Otherwise `gh pr merge <n> --squash --match-head-commit <sha>`.
+
+## Status and the landing decision
+
+Skill files (not copied into repos): `status.sh`, which runs `github/status.py`, and the decision it prints, `github/landing.py`.
+Tests: `github/tests/test_landing.py` and `test_status.py`, run by `test.sh`; none calls GitHub.
+
+```bash
+status.sh                     # one line per open PR in every repo in github/repos.txt
+status.sh mpaulosky/<repo>    # just this repo
+```
+
+Each line shows the PR's head, draft, merge state, whether Copilot reviewed the head, open threads, auto-merge,
+running, failed and cancelled checks, and the next action. It costs one GraphQL query per repo and prints nothing else
+(one line when no PR is open), so it's the status check to run while PRs land, instead of hand-written queries.
+
+`landing.decide(PrState)` returns one action, the rules PRs are landed by:
+nothing for a merged, closed or already-armed PR; **report blocker** for a failed check, a cancelled check nothing newer replaced, or a conflict;
+**mark ready** for a draft only when the caller says it should be (otherwise wait);
+**update branch and request Copilot** when it's `BEHIND`; **wait** until Copilot reviewed the current head and no thread is open;
+then **arm auto-merge**. A repo with no required checks (dotfiles, `repo-settings-only` in `repos.txt`) waits for its checks to finish green first,
+since auto-merge alone wouldn't wait for CI. A cancelled run with a newer run of the same check on the same head is superseded, not a failure:
+CI's concurrency cancels runs, and the newest counts. Commands that act on PRs call the same function, so they can't drift from these rules.
 
 ## Verify live
 

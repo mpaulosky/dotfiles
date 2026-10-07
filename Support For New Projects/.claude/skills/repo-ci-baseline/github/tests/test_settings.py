@@ -257,6 +257,27 @@ def test_repo_settings_drift_patches_only_the_differing_keys():
     assert ("PATCH", f"repos/{REPO}", {"allow_rebase_merge": False, "squash_merge_commit_title": "PR_TITLE"}) in fake.writes
 
 
+@pytest.mark.parametrize("scope", ["full", "repo-settings-only"])
+def test_auto_merge_disallowed_is_drift_and_fix_allows_it(scope, monkeypatch, tmp_path):
+    # Release-blog and Dependabot PRs arm native auto-merge, which fails where the repo disallows it.
+    if scope != "full":
+        shutil.copytree(gs.HERE, tmp_path / "github", ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        (tmp_path / "github" / "repos.txt").write_text(f"{REPO} {scope}\n")
+        monkeypatch.setattr(gs, "HERE", tmp_path / "github")
+    fake = FakeGitHub(repo={**FakeGitHub().repo, "allow_auto_merge": False})
+
+    checked, output = run(fake)
+
+    assert checked == 1
+    assert "allow_auto_merge: False → True" in output
+    assert fake.writes == []
+
+    fixed, output = run(fake, "--fix")
+
+    assert fixed == 0, output
+    assert fake.writes == [("PATCH", f"repos/{REPO}", {"allow_auto_merge": True})]
+
+
 # ── Ruleset ─────────────────────────────────────────────────────────────────
 
 def test_a_missing_ruleset_is_created_requiring_only_checks_a_workflow_reports():

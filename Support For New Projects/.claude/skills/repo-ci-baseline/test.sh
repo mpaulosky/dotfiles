@@ -7,9 +7,10 @@
 # release-script pytest), the renderer oracle and the GitHub scripts' tests
 # (settings, the landing decision and status), lints its workflows, YAML, shell
 # and Markdown with the Template's configs, checks that
-# Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh against
-# throwaway repos. dotfiles CI runs this on every change under the skill, and
-# it's the check to run before committing a Template change.
+# Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh and
+# reapply.sh against throwaway repos. dotfiles CI runs this on every change
+# under the skill, and it's the check to run before committing a Template
+# change.
 set -euo pipefail
 
 skill_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,7 +80,8 @@ yamllint -c "$owned/.yamllint.yml" "${yaml_files[@]}" || fail "yamllint"
 
 step "shellcheck"
 shell_files=(
-  "$skill_dir/apply.sh" "$skill_dir/test.sh" "$skill_dir/github-settings.sh" "$skill_dir/status.sh"
+  "$skill_dir/apply.sh" "$skill_dir/reapply.sh" "$skill_dir/test.sh" "$skill_dir/github-settings.sh" "$skill_dir/status.sh"
+  "$skill_dir/tests/apply.test.sh" "$skill_dir/tests/reapply.test.sh"
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
   "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"
@@ -115,6 +117,9 @@ fi
 
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
+
+step "reapply.sh smoke test"
+"$skill_dir/tests/reapply.test.sh" || fail "reapply.test.sh"
 
 echo
 if [[ $failures -gt 0 ]]; then

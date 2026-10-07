@@ -40,7 +40,9 @@ reapply="$skill/reapply.sh"
 
 # ── A fake gh: answers from files in $stub and logs every call ──────────────
 # $stub/open is the open PR's number (empty for none), $stub/merged the merged
-# PRs' head commits, $stub/body the PR description.
+# PRs' head commits, $stub/body the PR description. Copilot's review request
+# reads back as registered unless $stub/dropped exists (GitHub accepts it and
+# drops it).
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<EOF
 #!/usr/bin/env bash
@@ -54,7 +56,12 @@ case "\$1 \$2" in
       *"--state merged"*) cat "\$stub/merged" 2>/dev/null ;;
     esac ;;
   "pr create") body_from "\$@"; echo "https://github.com/acme/Widget/pull/7" ;;
-  "pr view") cat "\$stub/body" ;;
+  "pr view")
+    if [[ "\$*" == *"--json headRefOid,reviewRequests,reviews,url"* ]]; then
+      if [[ -e "\$stub/dropped" ]]; then echo "0 https://github.com/acme/Widget/pull/7"; else echo "1 https://github.com/acme/Widget/pull/7"; fi
+    else
+      cat "\$stub/body"
+    fi ;;
   "pr edit")
     body_from "\$@"
     if [[ "\$*" == *"--add-reviewer"* && -e "\$stub/already" ]]; then
@@ -68,7 +75,7 @@ export PATH="$work/bin:$PATH"
 
 # Hooks off for the test's own git calls.
 git_q() { git -c core.hooksPath=/dev/null "$@"; }
-reset_gh() { : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; command rm -f "$stub/already"; }
+reset_gh() { : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; command rm -f "$stub/already" "$stub/dropped"; }
 
 # ── The repo: a bare origin, its primary checkout on main, and a helper clone
 # that plays GitHub (squash merges, update-branch) ──────────────────────────
@@ -108,6 +115,7 @@ check "first run: body names the local head" 'grep -q "\`$head\` Apply commit" "
 check "first run: body has its sections and footer" \
   'grep -q "^## Why" "$stub/body" && grep -q "^## What changed" "$stub/body" && grep -q "^## Verification" "$stub/body" && [[ "$(tail -n1 "$stub/body")" == "🤖 Generated with [Claude Code](https://claude.com/claude-code)" ]]'
 check "first run: Copilot requested" 'grep -qx "pr edit 7 --add-reviewer @copilot" "$stub/gh.log"'
+check "first run: Copilot's request read back" 'grep -q "^pr view 7 --json headRefOid,reviewRequests,reviews,url" "$stub/gh.log"'
 check "first run: reports the local head" 'grep -q "head $head" <<< "$out"'
 
 # ── Nothing new in the Template: stops without a commit or a push ───────────
@@ -200,6 +208,19 @@ check "merged: old branch gone from its history" '! git -C "$wt" merge-base --is
 check "merged: Apply commit is apply.sh output alone" \
   '[[ "$(git -C "$wt" show --name-only --format= HEAD)" == .github/workflows/ci.yml ]]'
 check "merged: new PR opened" 'grep -q "^pr create" "$stub/gh.log"'
+
+# ── Copilot's request dropped: the PR is there, the run fails and says so ──
+reset_gh
+echo 7 > "$stub/open"
+touch "$stub/dropped"
+printf 'name: CI v5\n' > "$skill/template/owned/.github/workflows/ci.yml"
+out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
+check "dropped: exits non-zero" '[[ $rc -ne 0 ]]'
+check "dropped: says Copilot wasn't requested, with the PR to request it on" \
+  'grep -q "Copilot.s review request didn.t register on #7; request it at https://github.com/acme/Widget/pull/7" <<< "$out"'
+check "dropped: does not claim Copilot was requested" '! grep -q "Copilot requested" <<< "$out"'
+check "dropped: the Apply commit is pushed and the PR updated" \
+  '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]] && grep -q "^pr edit 7 --body-file" "$stub/gh.log"'
 
 # ── An unmerged branch with no open PR: refused ─────────────────────────────
 reset_gh

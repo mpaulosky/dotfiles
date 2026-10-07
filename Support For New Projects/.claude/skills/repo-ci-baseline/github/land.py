@@ -10,7 +10,8 @@ PR goes through landing.decide(), and the command does what the decision says,
 once per PR head:
 
 - mark ready:       gh pr ready (only with --ready; otherwise a draft waits)
-- update branch:    gh pr update-branch, then gh pr edit --add-reviewer @copilot
+- update branch:    gh pr update-branch, then gh pr edit --add-reviewer @copilot,
+                    read back: gh exits 0 even when GitHub drops the request
 - arm auto-merge:   gh pr merge --auto --squash --match-head-commit <head>
 - leave to PR Auto-Merge, wait, report blocker, nothing: no call
 
@@ -76,6 +77,20 @@ def run_gh(argv):
     return run.returncode == 0, (run.stderr.strip() or run.stdout.strip()).replace("\n", " ")
 
 
+# How many of the PR's review requests and reviews of its head are Copilot's.
+COPILOT_JQ = ('.headRefOid as $h | [(.reviewRequests[] | .login // .name // ""), '
+              '(.reviews[] | select(.commit.oid == $h) | .author.login)] | map(select(test("copilot"; "i"))) | length')
+
+
+def gh_copilot_requested(repo, number):
+    """Whether Copilot's review is requested on the PR, or Copilot has reviewed its head."""
+    ok, message = run_gh(["gh", "pr", "view", str(number), "-R", repo, "--json", "headRefOid,reviewRequests,reviews",
+                          "--jq", COPILOT_JQ])
+    if not ok:
+        raise RuntimeError(message)
+    return int(message) > 0
+
+
 def gh_pr_state(repo, number):
     """MERGED or CLOSED (or OPEN) for a PR that left the open list."""
     ok, message = run_gh(["gh", "pr", "view", str(number), "-R", repo, "--json", "state", "--jq", ".state"])
@@ -102,6 +117,7 @@ class Lander:
     blog_wait: float = 15 * 60
     fetch: object = gh_graphql
     pr_state: object = gh_pr_state
+    copilot_requested: object = gh_copilot_requested
     run: object = run_gh
     clock: object = time.monotonic
     out: object = sys.stdout
@@ -183,6 +199,20 @@ class Lander:
             self.say(("  ran: " if ok else "  failed: ") + " ".join(argv) + (f" ({message})" if message and not ok else ""))
             if not ok:
                 break
+            if "--add-reviewer" in argv and not self.copilot_registered(repo, number):
+                break
+
+    def copilot_registered(self, repo, number):
+        """Read Copilot's review request back, saying so when it didn't register."""
+        try:
+            if self.copilot_requested(repo, number):
+                return True
+            problem = "didn't register"
+        except Exception as error:  # noqa: BLE001 - reported like a failed call
+            problem = f"couldn't be read back ({error})"
+        self.say(f"  failed: Copilot's review request {problem} on #{number}; "
+                 f"request it at https://github.com/{repo}/pull/{number}")
+        return False
 
     def update_gone(self, repo, number, pr, flags):
         try:

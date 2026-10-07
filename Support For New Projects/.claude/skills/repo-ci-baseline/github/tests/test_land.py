@@ -35,11 +35,13 @@ def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=Fa
 class Fake:
     """GitHub as the tests set it: open PRs per repo, final states, and a log of gh calls."""
 
-    def __init__(self, open_prs, final=None, fail=()):
+    def __init__(self, open_prs, final=None, fail=(), dropped=()):
         self.open = open_prs  # {repo: [node, ...]}
         self.final = final or {}  # {(repo, number): "MERGED" | "CLOSED"}
         self.fail = set(fail)  # gh subcommands that fail
+        self.dropped = set(dropped)  # {(repo, number)} whose Copilot request GitHub drops
         self.calls = []
+        self.read_back = []
         self.now = 0.0
 
     def fetch(self, owner, name):
@@ -55,8 +57,13 @@ class Fake:
         self.calls.append(" ".join(argv))
         return (argv[2] not in self.fail), ("boom" if argv[2] in self.fail else "")
 
+    def copilot_requested(self, repo, number):
+        self.read_back.append((repo, number))
+        return (repo, number) not in self.dropped
+
     def lander(self, targets, out, err):
         return land.Lander(targets, SCOPES, fetch=self.fetch, pr_state=self.pr_state, run=self.run,
+                           copilot_requested=self.copilot_requested,
                            clock=lambda: self.now, out=out, err=err)
 
 
@@ -107,11 +114,22 @@ def test_a_behind_branch_is_updated_and_copilot_asked_again_once_per_head():
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
-    assert "  ran: gh pr update-branch 7 -R o/app" in printed(out)
+    assert fake.read_back == [("o/app", 7)]
+    text = printed(out)
+    assert "  ran: gh pr update-branch 7 -R o/app" in text and "  failed:" not in text
     # Still BEHIND on the same head (the API lags) with a new thread: printed, not redone.
     fake.open["o/app"] = [node(merge_state="BEHIND", threads=[False])]
     lander.poll()
     assert "-> update branch" in printed(out) and len(fake.calls) == 2
+
+
+def test_a_copilot_request_github_dropped_is_reported_as_failed():
+    fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
+    assert ("  failed: Copilot's review request didn't register on #7; request it at https://github.com/o/app/pull/7"
+            in printed(out))
 
 
 def test_a_draft_is_marked_ready_only_when_asked():
@@ -167,7 +185,7 @@ def test_dry_run_prints_the_calls_and_makes_none():
     assert "  would run: gh pr update-branch 7 -R o/app" in text
     assert "  would run: gh pr edit 7 -R o/app --add-reviewer @copilot" in text
     assert f"  would run: gh pr merge 7 -R o/dots --auto --squash --match-head-commit {HEAD}" in text
-    assert fake.calls == []
+    assert fake.calls == [] and fake.read_back == []
     lander.poll()
     assert printed(out) == ""
 

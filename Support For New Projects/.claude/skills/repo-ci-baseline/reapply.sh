@@ -23,7 +23,9 @@
 #   4. git push -u origin HEAD, through the repo's pre-push gate. A failed push
 #      prints its log's path and exits 1.
 #   5. Open the re-Apply PR (ready, not a draft), or add a line for this Apply
-#      commit to the open one's description, then request Copilot's review.
+#      commit to the open one's description, then request Copilot's review and
+#      read the request back: gh exits 0 even when GitHub drops it. A request
+#      that didn't register exits 1 with the PR's URL to request it from.
 #
 # The head it prints and writes into the description comes from the local
 # branch after the push, never from the API, which lags behind a push: name
@@ -36,6 +38,9 @@ commit_subject="chore: Apply repo-ci-baseline Template"
 co_author="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 pr_title="chore: Re-apply the repo-ci-baseline Template"
 footer="🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+# "<n> <url>": n counts Copilot's review requests and its reviews of the head.
+# shellcheck disable=SC2016 # jq, not shell, expands $h
+copilot_jq='.headRefOid as $h | "\([(.reviewRequests[] | .login // .name // ""), (.reviews[] | select(.commit.oid == $h) | .author.login)] | map(select(test("copilot"; "i"))) | length) \(.url)"'
 
 usage() {
   echo "usage: reapply.sh --brings <owner/repo#n,#n,...> <repo>" >&2
@@ -239,4 +244,6 @@ fi
 if ! out="$(gh_ pr edit "$pr" --add-reviewer @copilot 2>&1)"; then
   grep -qi 'already' <<< "$out" || die "requesting Copilot's review on #$pr failed: $out"
 fi
+read -r copilot url < <(gh_ pr view "$pr" --json headRefOid,reviewRequests,reviews,url --jq "$copilot_jq")
+[[ "${copilot:-0}" -gt 0 ]] || die "Copilot's review request didn't register on #$pr; request it at $url (head $head)"
 echo "reapply.sh: $repo_name PR #$pr, head $head, Copilot requested"

@@ -25,7 +25,8 @@
 #   5. Open the re-Apply PR (ready, not a draft), or add a line for this Apply
 #      commit to the open one's description, then request Copilot's review and
 #      read the request back: gh exits 0 even when GitHub drops it. A request
-#      that didn't register exits 1 with the PR's URL to request it from.
+#      that didn't register (as when the Copilot code review budget is used up)
+#      exits 1 with the PR's URL to request it from.
 #
 # The head it prints and writes into the description comes from the local
 # branch after the push, never from the API, which lags behind a push: name
@@ -245,5 +246,5 @@ if ! out="$(gh_ pr edit "$pr" --add-reviewer @copilot 2>&1)"; then
   grep -qi 'already' <<< "$out" || die "requesting Copilot's review on #$pr failed: $out"
 fi
 read -r copilot url < <(gh_ pr view "$pr" --json headRefOid,reviewRequests,reviews,url --jq "$copilot_jq")
-[[ "${copilot:-0}" -gt 0 ]] || die "Copilot's review request didn't register on #$pr; request it at $url (head $head)"
+[[ "${copilot:-0}" -gt 0 ]] || die "Copilot's review request didn't register on #$pr (GitHub drops it once the Copilot code review budget is used up); request it at $url (head $head)"
 echo "reapply.sh: $repo_name PR #$pr, head $head, Copilot requested"

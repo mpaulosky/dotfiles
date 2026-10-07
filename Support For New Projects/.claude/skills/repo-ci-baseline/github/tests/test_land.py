@@ -128,7 +128,8 @@ def test_a_copilot_request_github_dropped_is_reported_as_failed():
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
-    assert ("  failed: Copilot's review request didn't register on #7; request it at https://github.com/o/app/pull/7"
+    assert ("  failed: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review "
+            "budget is used up); request it at https://github.com/o/app/pull/7"
             in printed(out))
 
 

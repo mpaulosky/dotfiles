@@ -62,10 +62,12 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **`land.sh` watches a round** until it lands: see [Landing a round](#landing-a-round).
 - **Copilot's review request is read back.** `gh pr edit --add-reviewer @copilot` exits 0 even when GitHub drops the request,
   so `reapply.sh` and `land.sh` then read the PR's review requests (and Copilot's reviews of the head) and fail with the PR's URL when Copilot isn't there.
-  Request it from the PR page's Reviewers menu instead. On 2026-10-07 every API route was dropped from about 20:30 UTC (TicketManager#131, dotfiles #95 and #96, #97):
-  `gh pr edit` and GraphQL `requestReviewsByLogin` returned success with no request, and REST `requested_reviewers` returned 422 "not a collaborator".
-  Nothing in the API said why; Copilot had reviewed Blazor-Server#162 at 20:18 UTC, so the cause looks account-side (Copilot code review's allowance or setting),
-  not gh or the token's scopes.
+- **GitHub drops the request once the account's Copilot code review budget is used up.** Nothing in the API says so:
+  `gh pr edit` and GraphQL `requestReviewsByLogin` return success with no request, and REST `requested_reviewers` returns 422 "not a collaborator".
+  Seen on 2026-10-07 from about 20:30 UTC (#97: TicketManager#131, then every re-Apply PR of the #82 round).
+  Until the budget resets no Copilot review comes, so this workflow never merges: the review cap counts only reviews Copilot made.
+  Either wait for the reset and request Copilot from the PR page's Reviewers menu, or review and merge by hand.
+  Release-blog PRs don't wait for Copilot and still land.
 
 ## Adapting
 

@@ -1723,3 +1723,15 @@ def test_an_autolink_in_a_label_does_not_close_it(text, expected):
 )
 def test_a_reference_definition_keeps_its_label_and_title_as_written(text, expected):
     assert rp.rebase_readme_links(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # The sanitizer escapes this autolink's "<", so in the post it's text: its backtick pairs as the post reads it.
+        ("<https://x.test/a`b> `<i>`", "&lt;https://x.test/a`b> `&lt;i>`"),
+        ("[<https://x.test/a`]b> `<i>`](docs/a.md)", "[&lt;https://x.test/a<code>&#93;b&#62; </code>&lt;i>`](docs/a.md)"),
+    ],
+)
+def test_an_autolink_the_sanitizer_escapes_is_scanned_as_text(body, expected):
+    assert rp.sanitize_markdown(body) == expected

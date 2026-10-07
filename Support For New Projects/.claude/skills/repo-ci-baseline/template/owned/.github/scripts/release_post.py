@@ -884,11 +884,13 @@ def inline_code(text, continues=None, html=False, definitions=True):
     openers before it, since a link can't hold a link. A reference definition
     is read before anything else on its line, as reference_definitions()
     finds it; unset `definitions` for text that can't hold one, such as a
-    title rendered in a heading or table cell. An autolink is skipped whole,
-    as INLINE_AUTOLINK reads it. With `html` set, a complete inline HTML tag
-    is skipped as GitHub reads a README's, so a "]" or backtick in its
-    attributes is neither a label's end nor a span's; the post sanitizer,
-    which escapes every tag, leaves it unset.
+    title rendered in a heading or table cell. An autolink is skipped whole.
+    With `html` set, a complete inline HTML tag is skipped too, as GitHub
+    reads a README's, so a "]" or backtick in its attributes is neither a
+    label's end nor a span's, and an autolink is any INLINE_AUTOLINK. The
+    post sanitizer leaves `html` unset: it escapes every tag, and the "<" of
+    any autolink but an AUTOLINK, so only an AUTOLINK is one in what it
+    publishes, and only that is skipped.
 
     Runs and paragraph ends are indexed once, and bare_destination_end() caps
     how far a link is read, so the scan stays linear.
@@ -945,9 +947,10 @@ def inline_code(text, continues=None, html=False, definitions=True):
                     yield destination, end, ANGLE_DESTINATION if text[destination] == "<" else BARE_DESTINATION
         elif token == "<":
             if not odd_backslashes_before(text, start):
-                whole = (html and INLINE_HTML_TAG.match(text, start, paragraph_end)) or INLINE_AUTOLINK.match(
-                    text, start, paragraph_end
-                )
+                if html:
+                    whole = INLINE_HTML_TAG.match(text, start, paragraph_end) or INLINE_AUTOLINK.match(text, start, paragraph_end)
+                else:
+                    whole = AUTOLINK.match(text, start, paragraph_end)
                 if whole:
                     pos = whole.end()
         elif token == "<!--":

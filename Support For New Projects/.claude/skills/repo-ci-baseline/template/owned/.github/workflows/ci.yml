@@ -397,6 +397,9 @@ jobs:
 
       - name: Install Playwright browsers
         if: ${{ matrix.requires_playwright }}
+        # A hung install held IssueManager #260 for the job's 45 minutes;
+        # it normally takes a minute or two, so fail fast and rerun instead.
+        timeout-minutes: 10
         env:
           PROJECT_PATH: ${{ matrix.project_path }}
         run: |

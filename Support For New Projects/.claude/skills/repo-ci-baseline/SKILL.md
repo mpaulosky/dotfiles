@@ -70,6 +70,7 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
    dotfiles CI runs the same script.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.
+   Open it ready, not as a draft: the repo's own auto-merge lands it ([automerge.md](references/automerge.md#landing)).
    A change to `github/` (a new required check or label) is applied with `github-settings.sh --fix` once the repo reports the check.
 
 ## Start a new repo

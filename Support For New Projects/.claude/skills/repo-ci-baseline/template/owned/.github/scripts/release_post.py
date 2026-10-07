@@ -232,6 +232,10 @@ HTML_BLOCK_TAGS = (
 HTML_ATTRIBUTE = r"""\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?"""
 # A complete open or close tag, as CommonMark reads raw inline HTML.
 INLINE_HTML_TAG = re.compile(rf"<[A-Za-z][A-Za-z0-9-]*(?:{HTML_ATTRIBUTE})*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>", re.A)
+# CommonMark's other raw inline HTML: a processing instruction, CDATA section or
+# declaration, by its opener and the text that closes it.
+INLINE_HTML_CLOSES = (("<?", "?>"), ("<![CDATA[", "]]>"))
+INLINE_HTML_DECLARATION = re.compile(r"<![A-Za-z]")
 HTML_BLOCKS = [
     (re.compile(r" {0,3}<(?:pre|script|style|textarea)(?:\s|>|$)", re.I | re.A), re.compile(r"</(?:pre|script|style|textarea)>", re.I | re.A)),
     (re.compile(r" {0,3}<!--", re.A), re.compile(r"-->", re.A)),
@@ -618,7 +622,8 @@ LINK_SPACE = re.compile(r"[ \t]*(?:\r?\n[ \t>]*)?")
 LINK_DEFINITION_LABEL = re.compile(r"[ \t]*\[(?!\^[A-Za-z0-9_][A-Za-z0-9_-]*\])((?:[^\[\]\\\n]|\\.){1,999})\]:[ \t]*")
 # What may follow a definition's destination: a title, on its line or the next, then
 # nothing on the title's last line. A title may hold line endings, but not a blank line.
-LINK_TITLE_LINE_ENDING = r"\r?\n(?![ \t>]*\r?$)"
+# A backslash before one is a literal backslash.
+LINK_TITLE_LINE_ENDING = r"\\?\r?\n(?![ \t>]*\r?$)"
 LINK_DEFINITION_TAIL = re.compile(
     rf"""(?:(?:[ \t]+|[ \t]*\r?\n[ \t>]*)(?:"(?:[^"\\\r\n]|\\.|{LINK_TITLE_LINE_ENDING})*"|'(?:[^'\\\r\n]|\\.|{LINK_TITLE_LINE_ENDING})*'"""
     rf"""|\((?:[^()\\\r\n]|\\.|{LINK_TITLE_LINE_ENDING})*\)))?[ \t]*\r?$""",
@@ -862,6 +867,89 @@ def reference_definitions(text, breaks):
     return definitions
 
 
+class _End:
+    """A match's end, for a span that isn't one regex match."""
+
+    def __init__(self, end):
+        self._end = end
+
+    def end(self):
+        return self._end
+
+
+def other_inline_html(text, start, limit, closes):
+    """A processing instruction, CDATA section or declaration at text[start], ending before `limit`, or None.
+
+    `closes` caches where each closer next occurs, so text full of unclosed
+    openers is still read in linear time.
+    """
+    if INLINE_HTML_DECLARATION.match(text, start):
+        opener, closer = "<!", ">"
+    else:
+        opener, closer = next(((o, c) for o, c in INLINE_HTML_CLOSES if text.startswith(o, start)), (None, None))
+        if opener is None:
+            return None
+    after = start + len(opener)
+    close = closes.get(closer)
+    if close is None or 0 <= close < after:
+        close = closes[closer] = text.find(closer, after)
+    if close < 0 or close + len(closer) > limit:
+        return None
+    return _End(close + len(closer))
+
+
+class QuotedParagraph:
+    """A quoted paragraph's text with its later lines' quote markers removed, built once per paragraph.
+
+    CommonMark matches raw inline HTML with the quotes' markers removed: in
+    "> [<span\n> title="]">", the second ">" is the quote's, not the tag's
+    end. At most as many markers as the paragraph's first line has are
+    removed from each later line.
+    """
+
+    def __init__(self, text, start, end, depth):
+        pieces = []
+        self.text_starts = []  # where each piece starts in text
+        self.kept_starts = []  # and in self.kept
+        kept = 0
+        pos = start
+        while pos < end:
+            newline = text.find("\n", pos, end)
+            line_end = end if newline < 0 else newline + 1
+            self.text_starts.append(pos)
+            self.kept_starts.append(kept)
+            pieces.append(text[pos:line_end])
+            kept += line_end - pos
+            pos = line_end
+            for _ in range(depth):
+                marker = QUOTE_AT.match(text, pos, end)
+                if not marker:
+                    break
+                pos = marker.end()
+        self.kept = "".join(pieces)
+
+    def tag(self, start):
+        """The end in text of the tag at text[start], or None."""
+        piece = bisect.bisect_right(self.text_starts, start) - 1
+        tag = INLINE_HTML_TAG.match(self.kept, self.kept_starts[piece] + start - self.text_starts[piece])
+        if not tag:
+            return None
+        piece = bisect.bisect_left(self.kept_starts, tag.end()) - 1
+        return _End(self.text_starts[piece] + tag.end() - self.kept_starts[piece])
+
+
+def quoted_inline_tag(text, start, limit, paragraph_start, quoted):
+    """A tag at text[start] whose later lines carry its paragraph's quote markers, as a match-like end, or None.
+
+    `quoted` caches each paragraph's QuotedParagraph, or None outside a quote.
+    """
+    if paragraph_start not in quoted:
+        depth = text[paragraph_start:after_containers(text, paragraph_start)].count(">")
+        quoted[paragraph_start] = QuotedParagraph(text, paragraph_start, limit, depth) if depth else None
+    paragraph = quoted[paragraph_start]
+    return paragraph.tag(start) if paragraph else None
+
+
 def inline_code(text, continues=None, html=False, definitions=True):
     """Each code span, HTML comment and link destination in Markdown text, as (start, end, content).
 
@@ -885,9 +973,11 @@ def inline_code(text, continues=None, html=False, definitions=True):
     is read before anything else on its line, as reference_definitions()
     finds it; unset `definitions` for text that can't hold one, such as a
     title rendered in a heading or table cell. An autolink is skipped whole.
-    With `html` set, a complete inline HTML tag is skipped too, as GitHub
-    reads a README's, so a "]" or backtick in its attributes is neither a
-    label's end nor a span's, and an autolink is any INLINE_AUTOLINK. The
+    With `html` set, complete raw inline HTML is skipped too, as GitHub
+    reads a README's: a tag, even one whose later lines carry quote markers,
+    a processing instruction, CDATA section or declaration. So a "]" or
+    backtick in it is neither a label's end nor a span's, and an autolink is
+    any INLINE_AUTOLINK. The
     post sanitizer leaves `html` unset: it escapes every tag, and the "<" of
     any autolink but an AUTOLINK, so only an AUTOLINK is one in what it
     publishes, and only that is skipped.
@@ -896,6 +986,9 @@ def inline_code(text, continues=None, html=False, definitions=True):
     how far a link is read, so the scan stays linear.
     """
     breaks = paragraph_breaks(text.split("\n"), continues)
+    paragraph_starts = [0, *breaks]
+    html_closes = {}  # each closer of other_inline_html(): where it next occurs, or -1
+    quoted = {}  # each quoted paragraph's QuotedParagraph, by its start
     starts_by_length = {}
     for match in BACKTICKS.finditer(text):
         starts_by_length.setdefault(len(match.group()), []).append(match.start())
@@ -948,7 +1041,13 @@ def inline_code(text, continues=None, html=False, definitions=True):
         elif token == "<":
             if not odd_backslashes_before(text, start):
                 if html:
-                    whole = INLINE_HTML_TAG.match(text, start, paragraph_end) or INLINE_AUTOLINK.match(text, start, paragraph_end)
+                    # In a quote, a later line's ">" is the quote's, so that reading comes first.
+                    whole = (
+                        quoted_inline_tag(text, start, paragraph_end, paragraph_starts[paragraph], quoted)
+                        or INLINE_HTML_TAG.match(text, start, paragraph_end)
+                        or INLINE_AUTOLINK.match(text, start, paragraph_end)
+                        or other_inline_html(text, start, paragraph_end, html_closes)
+                    )
                 else:
                     whole = AUTOLINK.match(text, start, paragraph_end)
                 if whole:
@@ -1588,7 +1687,7 @@ def update_index_html(path, entries, posts, repository):
 # (title), then the closing parenthesis. As in LINK_SPACE, each space between
 # them may hold a line ending and the next line's containers.
 LINK_INLINE_TAIL = re.compile(
-    r"""(?:(?:[ \t]*\r?\n[ \t>]*|[ \t]+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?"""
+    r"""(?:(?:[ \t]*\r?\n[ \t>]*|[ \t]+)(?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|\((?:[^()\\]|\\[\s\S])*\)))?"""
     r"""[ \t]*(?:\r?\n[ \t>]*)?\)"""
 )
 LINK_ANGLE_DESTINATION = re.compile(r"<((?:[^<>\n\\]|\\.)+)>")

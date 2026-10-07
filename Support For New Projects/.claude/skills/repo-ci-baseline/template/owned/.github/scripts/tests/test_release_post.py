@@ -1440,6 +1440,11 @@ def test_a_title_cannot_close_its_blog_index_link_when_its_backticks_pair_differ
         lambda n: "](((" * n,
         lambda n: "](" + "(a)" * n + "](" * n,
         lambda n: "[" * n + "[a](x)" * n,
+        # Raw inline HTML in the README: a tag in a quoted paragraph, and openers that never close.
+        lambda n: "> " + "<a\n> " * n,
+        lambda n: "<? " * n,
+        lambda n: "<!X " * n,
+        lambda n: "<![CDATA[ " * n,
     ],
 )
 def test_finding_code_stays_linear(shape):
@@ -1590,6 +1595,10 @@ def test_a_reference_definition_with_backticks_in_its_label_and_title_is_rebased
         ('[a]: docs/a.md "first\nsecond"\n', '[a]: a.md "first\nsecond"\n'),
         ('[a]: docs/a.md "first\r\nsecond"\r\n', '[a]: a.md "first\r\nsecond"\r\n'),
         ("[a]: docs/a.md\n  'T `'\n[b](docs/b.md) `\n", "[a]: a.md\n  'T `'\n[b](b.md) `\n"),
+        # A backslash before a title's line ending is a literal backslash, in each kind of title.
+        ('[a]: docs/a.md "first\\\nsecond"\n', '[a]: a.md "first\\\nsecond"\n'),
+        ("[a]: docs/a.md 'first\\\nsecond'\n", "[a]: a.md 'first\\\nsecond'\n"),
+        ("[a]: docs/a.md (first\\\r\nsecond)\r\n", "[a]: a.md (first\\\r\nsecond)\r\n"),
         # A blank line ends the title, so this is no definition; nor is a title with text after it.
         ('[a]: docs/a.md "first\n\nsecond"\n', '[a]: docs/a.md "first\n\nsecond"\n'),
         ('[a]: docs/a.md\n"t" x\n', '[a]: a.md\n"t" x\n'),
@@ -1630,6 +1639,18 @@ def test_a_close_bracket_without_a_label_is_not_rebased(text, expected):
         # A "<" that opens no tag is text, and so is an escaped one, so the backticks after it pair.
         ("[a < b](docs/a.md)\n", "[a < b](a.md)\n"),
         ('Use \\<span title="`">[x](docs/a.md)`\n', 'Use \\<span title="`">[x](docs/a.md)`\n'),
+        # So is a processing instruction, a CDATA section and a declaration.
+        ('[<?pi data="]"?>x](docs/a.md)\n', '[<?pi data="]"?>x](a.md)\n'),
+        ("[<![CDATA[a]b]]>x](docs/a.md)\n", "[<![CDATA[a]b]]>x](a.md)\n"),
+        ("[<!X a]b>x](docs/a.md)\n", "[<!X a]b>x](a.md)\n"),
+        # An unclosed one is text.
+        ("[<? x](docs/a.md)\n", "[<? x](a.md)\n"),
+        # In a quote, a tag's later lines carry the quote's markers, which aren't the tag's end.
+        ('> [<span\n> title="]">x</span>](docs/a.md)\n', '> [<span\n> title="]">x</span>](a.md)\n'),
+        ('> > [<span\n> > title="]">x</span>](docs/a.md)\n', '> > [<span\n> > title="]">x</span>](a.md)\n'),
+        ('- > [<span\n  > title="]">x</span>](docs/a.md)\n', '- > [<span\n  > title="]">x</span>](a.md)\n'),
+        # Outside a quote, that ">" starts one, so there's no link.
+        ('[<span\n> title="]">x</span>](docs/a.md)\n', '[<span\n> title="]">x</span>](docs/a.md)\n'),
     ],
 )
 def test_inline_html_in_a_label_is_read_whole_in_the_docs_readme(text, expected):
@@ -1659,6 +1680,8 @@ def test_a_comment_after_a_close_bracket_without_a_label_is_dropped():
         ('[x](docs/a.md\r\n "title")\r\n', '[x](a.md\r\n "title")\r\n'),
         # A blank line ends the paragraph, and the link with it.
         ('[x](docs/a.md\n\n"t")\n', '[x](docs/a.md\n\n"t")\n'),
+        # A backslash before a line ending in a title is a literal backslash.
+        ('[x](docs/a.md "a\\\nb")\n', '[x](a.md "a\\\nb")\n'),
         ('[x](docs/a.md\r\n\r\n"t")\r\n', '[x](docs/a.md\r\n\r\n"t")\r\n'),
     ],
 )

@@ -1442,6 +1442,8 @@ def test_a_title_cannot_close_its_blog_index_link_when_its_backticks_pair_differ
         lambda n: "[" * n + "[a](x)" * n,
         # Raw inline HTML in the README: a tag in a quoted paragraph, and openers that never close.
         lambda n: "> " + "<a\n> " * n,
+        lambda n: "- - > " + "<!X\n    > " * n,
+        lambda n: "> " + "<?\n> " * n,
         lambda n: "<? " * n,
         lambda n: "<!X " * n,
         lambda n: "<![CDATA[ " * n,
@@ -1643,12 +1645,28 @@ def test_a_close_bracket_without_a_label_is_not_rebased(text, expected):
         ('[<?pi data="]"?>x](docs/a.md)\n', '[<?pi data="]"?>x](a.md)\n'),
         ("[<![CDATA[a]b]]>x](docs/a.md)\n", "[<![CDATA[a]b]]>x](a.md)\n"),
         ("[<!X a]b>x](docs/a.md)\n", "[<!X a]b>x](a.md)\n"),
+        ("[<!X\na]b>x](docs/a.md)\n", "[<!X\na]b>x](a.md)\n"),
+        # A declaration's name is uppercase letters then whitespace, as GitHub reads it; any other "<!" is text.
+        ("[<!x a]b>x](docs/a.md)\n", "[<!x a]b>x](docs/a.md)\n"),
+        ("[<!Xa]b>x](docs/a.md)\n", "[<!Xa]b>x](docs/a.md)\n"),
         # An unclosed one is text.
         ("[<? x](docs/a.md)\n", "[<? x](a.md)\n"),
         # In a quote, a tag's later lines carry the quote's markers, which aren't the tag's end.
         ('> [<span\n> title="]">x</span>](docs/a.md)\n', '> [<span\n> title="]">x</span>](a.md)\n'),
         ('> > [<span\n> > title="]">x</span>](docs/a.md)\n', '> > [<span\n> > title="]">x</span>](a.md)\n'),
         ('- > [<span\n  > title="]">x</span>](docs/a.md)\n', '- > [<span\n  > title="]">x</span>](a.md)\n'),
+        # Nested list items can indent a later line's quote marker 4 spaces or more.
+        ('- - > [<span\n    > title="]">x</span>](docs/a.md)\n', '- - > [<span\n    > title="]">x</span>](a.md)\n'),
+        ('1. - > [<span\n     > title="]">x</span>](docs/a.md)\n', '1. - > [<span\n     > title="]">x</span>](a.md)\n'),
+        ('10. > [<span\n    > title="]">x</span>](docs/a.md)\n', '10. > [<span\n    > title="]">x</span>](a.md)\n'),
+        ('>\t[<span\n>\ttitle="]">x</span>](docs/a.md)\n', '>\t[<span\n>\ttitle="]">x</span>](a.md)\n'),
+        # So do the other forms: a declaration, processing instruction and CDATA section.
+        ("> [<!X\n> a]b>x](docs/a.md)\n", "> [<!X\n> a]b>x](a.md)\n"),
+        ('> [<!X\n> data="]">x](docs/a.md)\n', '> [<!X\n> data="]">x](a.md)\n'),
+        ("> [<?pi\n> a]b?>x](docs/a.md)\n", "> [<?pi\n> a]b?>x](a.md)\n"),
+        ("- - > [<![CDATA[\n    > a]b]]>x](docs/a.md)\n", "- - > [<![CDATA[\n    > a]b]]>x](a.md)\n"),
+        # A lazy line has no marker to remove.
+        ('> [<span\ntitle="]">x</span>](docs/a.md)\n', '> [<span\ntitle="]">x</span>](a.md)\n'),
         # Outside a quote, that ">" starts one, so there's no link.
         ('[<span\n> title="]">x</span>](docs/a.md)\n', '[<span\n> title="]">x</span>](docs/a.md)\n'),
     ],
@@ -1721,6 +1739,13 @@ def test_the_excerpt_skips_only_real_html_blocks(summary, expected):
 def test_a_title_that_looks_like_a_reference_definition_keeps_its_code():
     # A title is rendered in a heading or table cell, where no definition can start, so its code span pairs as usual.
     assert rp.sanitize_inline("[Use `List<T>`]: support") == "[Use <code>List&#60;T&#62;</code>]: support"
+
+
+def test_a_commit_subject_that_looks_like_a_reference_definition_is_read_as_one():
+    # It starts a list item, and the SHA after it is a parenthesized title, so GitHub (cmark-gfm) reads the line as
+    # a definition: its label isn't rendered, and is left as written apart from the escaped "<".
+    commit = {"sha": "abc1234def", "commit": {"message": "[Use `List<T>`]: support"}}
+    assert rp.render_commits([commit]).splitlines()[2] == "- [Use `List&lt;T>`]: support (`abc1234`)"
 
 
 @pytest.mark.parametrize(

@@ -107,8 +107,10 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   doesn't pair its backtick with later prose; a line with more than a title after the destination is text, as in
   CommonMark; its title may run onto later lines. `rebase_readme_links` rebases only the links this finds, so a `](`
   with no open `[` stays as written (#68), and it reads raw inline HTML whole, as GitHub does, so a `]` in a tag's
-  attribute, a processing instruction, CDATA or a declaration closes no label; in a quote, a tag's later lines lose
-  their quote markers first (#76). Where this scanner and a renderer could pair backticks differently, the result is still safe: a span left between backticks holds no `<`,
+  attribute, a processing instruction, CDATA or a declaration (uppercase name, then whitespace, as cmark-gfm reads it)
+  closes no label; each is matched with its later lines' container prefixes (quote markers, list item indent) removed
+  first, as `scan_blocks` records them (#76, and Copilot's reviews of this round's re-Apply PRs).
+  Where this scanner and a renderer could pair backticks differently, the result is still safe: a span left between backticks holds no `<`,
   `{` or `]`, and the text outside it is escaped either way.
 - **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages
   build. The post body sits between `<!-- {% raw %} -->` and `<!-- {% endraw %} -->` (comments, so neither GitHub nor

@@ -1763,6 +1763,9 @@ def test_a_title_that_looks_like_a_reference_definition_keeps_its_code():
         ("-\t[a]: x", "-\t\\[a]: x"),
         ("> - [^1]: note", "> - \\[^1]: note"),
         ("* *[HTML]: Hyper", "* \\*[HTML]: Hyper"),
+        # Or once sanitizing drops a comment before it.
+        ("<!--x-->[a]: docs/x.md", "\\[a]: docs/x.md"),
+        ("> <!--x-->[a]: x", "> \\[a]: x"),
         # Without the space after it, "-" is no list marker, and nothing nests.
         ("-[a]: x", "-[a]: x"),
         # A leading link or bracketed tag starts no definition, so it's left alone.

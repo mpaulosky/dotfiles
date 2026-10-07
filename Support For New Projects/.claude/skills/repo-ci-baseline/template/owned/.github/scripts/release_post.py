@@ -114,13 +114,14 @@ def render_commits(commits):
     if not commits:
         lines.append("No commits were found.")
     for commit in commits:
-        subject = commit_subject(commit)
-        # Escaped, it can't start a definition, so it's read like a title.
+        # Checked as it's published, so a comment the sanitizer drops can't hide one.
+        # Escaped, it can't start a definition, so it was rightly sanitized like a title.
+        subject = sanitize_inline(commit_subject(commit))
         after = after_containers(subject, 0)
         start = len(subject) - len(subject[after:].lstrip(" \t"))
         if DEFINITION_LIKE_SUBJECT.match(subject, start):
             subject = subject[:start] + "\\" + subject[start:]
-        lines.append(f"- {sanitize_inline(subject)} (`{commit.get('sha', '')[:7]}`)")
+        lines.append(f"- {subject} (`{commit.get('sha', '')[:7]}`)")
     return "\n".join(lines) + "\n"
 
 

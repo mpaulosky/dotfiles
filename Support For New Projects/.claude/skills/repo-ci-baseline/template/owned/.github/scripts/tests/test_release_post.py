@@ -1581,6 +1581,11 @@ def test_a_reference_definition_with_backticks_in_its_label_and_title_is_rebased
         # A definition can't interrupt a paragraph, and a footnote isn't one.
         ("Text\n[a]: docs/a.md\n", "Text\n[a]: docs/a.md\n"),
         ("[^1]: `docs/x`\n", "[^1]: `docs/x`\n"),
+        # A "[^...]" label without a footnote ID is a link's.
+        ("[^!]: docs/x.md\n", "[^!]: x.md\n"),
+        ("[^a:b]: docs/x.md\n", "[^a:b]: x.md\n"),
+        # A CRLF line ending keeps its "\r" in the README's lines.
+        ("[a]: docs/a.md\r\n[b]: docs/b.md 'B'\r\n", "[a]: a.md\r\n[b]: b.md 'B'\r\n"),
     ],
 )
 def test_reference_definitions_are_read_before_code_spans_in_the_docs_readme(text, expected):
@@ -1618,8 +1623,12 @@ def test_a_comment_after_a_close_bracket_without_a_label_is_dropped():
         ("[x](\ndocs/a.md\n)\n", "[x](\na.md\n)\n"),
         # In a quote, the next line's marker is skipped too.
         ('> [x](docs/a.md\n> "t `") [y](docs/b.md) `\n', '> [x](a.md\n> "t `") [y](b.md) `\n'),
+        # So may a CRLF line ending.
+        ("[x](\r\ndocs/a.md\r\n)\r\n", "[x](\r\na.md\r\n)\r\n"),
+        ('[x](docs/a.md\r\n "title")\r\n', '[x](a.md\r\n "title")\r\n'),
         # A blank line ends the paragraph, and the link with it.
         ('[x](docs/a.md\n\n"t")\n', '[x](docs/a.md\n\n"t")\n'),
+        ('[x](docs/a.md\r\n\r\n"t")\r\n', '[x](docs/a.md\r\n\r\n"t")\r\n'),
     ],
 )
 def test_a_link_may_hold_a_line_ending_in_the_docs_readme(text, expected):

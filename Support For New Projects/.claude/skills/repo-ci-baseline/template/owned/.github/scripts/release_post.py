@@ -595,13 +595,15 @@ CODE_SPAN_RISK = re.compile(r"[<{\]]")
 ANGLE_DESTINATION = object()
 BARE_DESTINATION = object()
 # The space a link may hold between its parts: spaces and tabs, and at most one line
-# ending, after which the next line's quote markers and indentation are skipped too.
-LINK_SPACE = re.compile(r"[ \t]*(?:\n[ \t>]*)?")
+# ending (LF or CRLF, which the README's lines keep), after which the next line's quote
+# markers and indentation are skipped too.
+LINK_SPACE = re.compile(r"[ \t]*(?:\r?\n[ \t>]*)?")
 # A reference definition's label and colon, read once its line's containers are skipped. A
-# "[^" label is a footnote's, which GitHub and kramdown read as one, not as a link.
-LINK_DEFINITION_LABEL = re.compile(r"[ \t]*\[(?!\^)((?:[^\[\]\\\n]|\\.){1,999})\]:[ \t]*")
+# label with a footnote ID, as in FOOTNOTE_DEFINITION, is a footnote's, which GitHub and
+# kramdown read as one, not as a link; any other "[^...]" label is a link's.
+LINK_DEFINITION_LABEL = re.compile(r"[ \t]*\[(?!\^[A-Za-z0-9_][A-Za-z0-9_-]*\])((?:[^\[\]\\\n]|\\.){1,999})\]:[ \t]*")
 # What may follow a definition's destination on its line: a title, then nothing.
-LINK_DEFINITION_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\((?:[^()\\\n]|\\.)*\)))?[ \t]*$""", re.M)
+LINK_DEFINITION_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\((?:[^()\\\n]|\\.)*\)))?[ \t]*\r?$""", re.M)
 # How a <destination>'s characters that a bare one can't hold are written in it.
 BARE_DESTINATION_ESCAPES = {" ": "%20", "\t": "%09", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E"}
 # The characters a backslash escapes in CommonMark: ASCII punctuation.
@@ -1536,8 +1538,8 @@ def update_index_html(path, entries, posts, repository):
 # (title), then the closing parenthesis. As in LINK_SPACE, each space between
 # them may hold a line ending and the next line's containers.
 LINK_INLINE_TAIL = re.compile(
-    r"""(?:(?:[ \t]*\n[ \t>]*|[ \t]+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?"""
-    r"""[ \t]*(?:\n[ \t>]*)?\)"""
+    r"""(?:(?:[ \t]*\r?\n[ \t>]*|[ \t]+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?"""
+    r"""[ \t]*(?:\r?\n[ \t>]*)?\)"""
 )
 LINK_ANGLE_DESTINATION = re.compile(r"<((?:[^<>\n\\]|\\.)+)>")
 # cmark's limit on nested parentheses in a bare destination.

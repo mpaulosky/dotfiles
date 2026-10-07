@@ -1484,6 +1484,7 @@ def test_a_close_bracket_without_a_label_starts_no_link(body, expected):
     [
         # A ">" line is blank inside the quote, so the code on both sides of it is one block.
         ("> intro\n>\n>     a\n>\n>     b\n", "> intro\n>\n\n```text\na\n\nb\n```"),
+        (">     a\n>\n>     b", "```text\na\n\nb\n```"),
         ("> - x\n>\n>       a\n>\n>       b", "> - x\n>\n\n```text\na\n\nb\n```"),
         # A ">" line inside a quoted list item keeps the item open too.
         ("> -     a\n>\n>       b", "```text\na\n\nb\n```"),
@@ -1500,6 +1501,8 @@ def test_quoted_indented_code_keeps_its_blank_lines(body, expected):
         ">     a\n\n    b",
         # A blank line in the outer quote ends the inner one.
         "> >     a\n>\n> >     b",
+        # Each list item holds its own code.
+        "-     a\n-     b",
     ],
 )
 def test_indented_code_in_different_containers_stays_apart(body):
@@ -1513,6 +1516,8 @@ def test_indented_code_in_different_containers_stays_apart(body):
         ("```List<T>```", "<code>List&#60;T&#62;</code>"),
         ("```a``` b", "```a``` b"),
         ("Text\n\n```Map<K>``` here", "Text\n\n<code>Map&#60;K&#62;</code> here"),
+        # So is the opener of a would-be fence, and its next line is prose, escaped; the bare "```" opens a fence.
+        ("```foo`bar\n<b>not code</b>\n```", "```foo`bar\n&lt;b>not code&lt;/b>\n\n```text\n```"),
         # A tilde fence's info string may hold one.
         ("~~~a`b\nx\n~~~", "```a\nx\n```"),
     ],
@@ -1561,6 +1566,77 @@ def test_a_reference_definition_with_backticks_in_its_label_and_title_is_rebased
     assert rp.rebase_readme_links('[`a]: docs/a.md "`"\n') == '[`a]: a.md "`"\n'
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A definition is read before spans are paired, so its label's backtick can't hide the next line's link.
+        ("[`a]: docs/a.md\n[b](docs/b.md) `\n", "[`a]: a.md\n[b](b.md) `\n"),
+        # Nor can a span that crosses from its label into its destination.
+        ("[`a]: docs/a.md`\n", "[`a]: a.md`\n"),
+        ("[a]: docs/a.md\n[b]: <docs/b c.md> 'B'\nText [c](docs/c.md)\n", "[a]: a.md\n[b]: <b c.md> 'B'\nText [c](c.md)\n"),
+        ("> [a]: docs/a.md\n- [b]: docs/b.md \"t\"\n", "> [a]: a.md\n- [b]: b.md \"t\"\n"),
+        # Anything but a title after the destination makes the line text, and its inline link is still rebased.
+        ("[x]: foo [y](docs/b.md)\n", "[x]: foo [y](b.md)\n"),
+        ("[a]: docs/a.md extra\n", "[a]: docs/a.md extra\n"),
+        # A definition can't interrupt a paragraph, and a footnote isn't one.
+        ("Text\n[a]: docs/a.md\n", "Text\n[a]: docs/a.md\n"),
+        ("[^1]: `docs/x`\n", "[^1]: `docs/x`\n"),
+    ],
+)
+def test_reference_definitions_are_read_before_code_spans_in_the_docs_readme(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+def test_a_reference_definition_keeps_its_code_in_a_post():
+    # The label's backtick pairs with nothing, so the next line's link isn't swallowed into <code>.
+    assert rp.sanitize_markdown("[`a]: docs/a.md\n[b](docs/b.md) `") == "[`a]: docs/a.md\n[b](docs/b.md) `"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A "](" with no open label is text, so it isn't rebased.
+        ('Plain ](docs/a.md "x")\n', 'Plain ](docs/a.md "x")\n'),
+        ("\\[x](docs/a.md)\n", "\\[x](docs/a.md)\n"),
+    ],
+)
+def test_a_close_bracket_without_a_label_is_not_rebased(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+def test_a_comment_after_a_close_bracket_without_a_label_is_dropped():
+    # The "](" is text, so the title is no title, and the comment in it is a comment.
+    assert rp.sanitize_markdown('Plain ](https://example.com "<!-- secret -->")') == 'Plain ](https://example.com "")'
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A line ending may separate a link's destination from its title, so the title's backtick pairs with nothing.
+        ('[x](docs/a.md\n "title `") [y](docs/b.md) `\n', '[x](a.md\n "title `") [y](b.md) `\n'),
+        ('[x](docs/a.md\n"t")\n', '[x](a.md\n"t")\n'),
+        ("[x](\ndocs/a.md\n)\n", "[x](\na.md\n)\n"),
+        # In a quote, the next line's marker is skipped too.
+        ('> [x](docs/a.md\n> "t `") [y](docs/b.md) `\n', '> [x](a.md\n> "t `") [y](b.md) `\n'),
+        # A blank line ends the paragraph, and the link with it.
+        ('[x](docs/a.md\n\n"t")\n', '[x](docs/a.md\n\n"t")\n'),
+    ],
+)
+def test_a_link_may_hold_a_line_ending_in_the_docs_readme(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ('[x](docs/a.md\n "title `") [y](docs/b.md) `', '[x](docs/a.md\n "title `") [y](docs/b.md) `'),
+        ('[x](a.md\n "Use `<T>`")', '[x](a.md\n "Use `&lt;T>`")'),
+    ],
+)
+def test_a_link_may_hold_a_line_ending_in_a_post(body, expected):
+    assert rp.sanitize_markdown(body) == expected
+
+
 def test_a_reference_definition_inside_a_code_span_is_left_alone():
     assert rp.rebase_readme_links("Text `a\n[b]: docs/b.md` c\n") == "Text `a\n[b]: docs/b.md` c\n"
 
@@ -1570,6 +1646,8 @@ def test_a_reference_definition_inside_a_code_span_is_left_alone():
     [
         # A tag that only starts a line of prose opens no HTML block, so the paragraph is the excerpt.
         ("<T> is the generic return type.", "<T> is the generic return type."),
+        # Inline HTML is prose too.
+        ("<b>Hello</b> world.", "<b>Hello</b> world."),
         ("<div>\nhidden\n</div>\n\nShown.", "Shown."),
     ],
 )

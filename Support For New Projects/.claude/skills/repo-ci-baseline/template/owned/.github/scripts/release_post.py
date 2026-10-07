@@ -256,7 +256,6 @@ LIST_MARKER = re.compile(r"^ {0,3}([-+*]|[0-9]{1,9}[.)])(?=[ \t]|$)")
 QUOTE_AT = re.compile(r" {0,3}> ?")
 LIST_AT = re.compile(r" {0,3}([-+*]|[0-9]{1,9}[.)])(?=[ \t]|$)")
 SPACES_AT = re.compile(r" *")
-BLANKS_AT = re.compile(r"[ \t]*")
 
 
 def closes_fence(fence, line):
@@ -591,8 +590,18 @@ BACKTICKS = re.compile(r"`+")
 # that pairs the backticks differently would read them as HTML, an attribute
 # list, Liquid or a link.
 CODE_SPAN_RISK = re.compile(r"[<{\]]")
-# What inline_code() yields, in place of a code span's content, for a link's <destination>.
+# What inline_code() yields, in place of a code span's content, for a link's <destination>
+# and for a bare one.
 ANGLE_DESTINATION = object()
+BARE_DESTINATION = object()
+# The space a link may hold between its parts: spaces and tabs, and at most one line
+# ending, after which the next line's quote markers and indentation are skipped too.
+LINK_SPACE = re.compile(r"[ \t]*(?:\n[ \t>]*)?")
+# A reference definition's label and colon, read once its line's containers are skipped. A
+# "[^" label is a footnote's, which GitHub and kramdown read as one, not as a link.
+LINK_DEFINITION_LABEL = re.compile(r"[ \t]*\[(?!\^)((?:[^\[\]\\\n]|\\.){1,999})\]:[ \t]*")
+# What may follow a definition's destination on its line: a title, then nothing.
+LINK_DEFINITION_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\((?:[^()\\\n]|\\.)*\)))?[ \t]*$""", re.M)
 # How a <destination>'s characters that a bare one can't hold are written in it.
 BARE_DESTINATION_ESCAPES = {" ": "%20", "\t": "%09", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E"}
 # The characters a backslash escapes in CommonMark: ASCII punctuation.
@@ -734,19 +743,22 @@ def escape_text(text, liquid):
     return "".join(out)
 
 
+def after_containers(text, pos):
+    """Where the line at text[pos] starts once its quote and list item markers are skipped."""
+    while True:
+        marker = CONTAINER_MARKER.match(text, pos)
+        if not marker or marker.end() == pos:
+            return pos
+        pos = marker.end()
+
+
 def escape_fence_marker(line):
     """The line with its first backtick or tilde escaped when it could open a fence.
 
     A real fence was re-emitted already, so this one only looked like one
     where it sat (in an HTML block, say).
     """
-    pos = 0
-    while True:
-        marker = CONTAINER_MARKER.match(line, pos)
-        if not marker or marker.end() == pos:
-            break
-        pos = marker.end()
-    rest = line[pos:].lstrip(" \t")
+    rest = line[after_containers(line, 0):].lstrip(" \t")
     if FENCE.match(rest):
         cut = len(line) - len(rest)
         line = line[:cut] + "\\" + line[cut:]
@@ -775,24 +787,57 @@ def paragraph_breaks(lines, continues=None):
 
 
 def link_end(text, start, limit):
-    """The end of a complete inline link's destination and title, read from just after its "](", or None.
+    """(destination start, destination end, end) of a complete inline link, read from just after its "](", or None.
 
-    CommonMark reads them when it reaches the "]", before any backtick in them,
-    so they hold no code span: [x](docs/a.md "Use `code`") is one link.
-    The link must end before `limit`, the end of its paragraph.
+    The end is that of its title and ")". CommonMark reads them when it
+    reaches the "]", before any backtick in them, so they hold no code span:
+    [x](docs/a.md "Use `code`") is one link. Each space between its parts may
+    hold a line ending. The link must end before `limit`, the end of its
+    paragraph.
     """
-    while start < limit and text[start] in " \t":
-        start += 1
+    start = LINK_SPACE.match(text, start).end()
     angle = LINK_ANGLE_DESTINATION.match(text, start)
     end = angle.end() if angle else bare_destination_end(text, start)
     tail = LINK_INLINE_TAIL.match(text, end) if end is not None else None
-    return tail.end() if tail and tail.end() <= limit else None
+    return (start, end, tail.end()) if tail and tail.end() <= limit else None
+
+
+def reference_definitions(text, breaks):
+    """Each one-line reference definition in Markdown text, as (start, destination start, destination end, end).
+
+    A definition starts a paragraph, or follows another one, and is a label,
+    a destination, and an optional title with nothing after it on the line;
+    anything else there makes the line paragraph text ([x]: foo [y](b.md)).
+    `breaks` are paragraph_breaks(). A definition is read before any code
+    span, so a backtick in its label or title pairs with nothing.
+    """
+    definitions = []
+    starts = {0, *breaks}
+    follows_definition = False
+    line_start = 0
+    while line_start <= len(text):
+        line_end = text.find("\n", line_start)
+        line_end = len(text) if line_end < 0 else line_end
+        definition = None
+        if line_start in starts or follows_definition:
+            label = LINK_DEFINITION_LABEL.match(text, after_containers(text, line_start), line_end)
+            if label and label.group(1).strip():
+                start = label.end()
+                angle = LINK_ANGLE_DESTINATION.match(text, start, line_end)
+                end = angle.end() if angle else bare_destination_end(text, start)
+                if end is not None and LINK_DEFINITION_TAIL.match(text, end, line_end):
+                    definition = (line_start, start, end, line_end)
+                    definitions.append(definition)
+        follows_definition = definition is not None
+        line_start = line_end + 1
+    return definitions
 
 
 def inline_code(text, continues=None):
-    """Each code span, HTML comment and link <destination> in Markdown text, as (start, end, content).
+    """Each code span, HTML comment and link destination in Markdown text, as (start, end, content).
 
-    content is None for a comment and ANGLE_DESTINATION for a destination.
+    content is None for a comment, and ANGLE_DESTINATION or BARE_DESTINATION
+    for the destination of an inline link or reference definition.
 
     The text is read left to right, as CommonMark reads it, and whatever
     starts first wins: a backtick before "<!--" opens a span that may hold the
@@ -806,7 +851,9 @@ def inline_code(text, continues=None):
     where an unescaped "[" earlier in the paragraph, outside code and
     comments, is still open and active; otherwise it is text and its
     backticks pair. As in CommonMark, a link deactivates the link (not image)
-    openers before it, since a link can't hold a link.
+    openers before it, since a link can't hold a link. A reference definition
+    is read before anything else on its line, as reference_definitions()
+    finds it.
 
     Runs and paragraph ends are indexed once, and bare_destination_end() caps
     how far a link is read, so the scan stays linear.
@@ -819,8 +866,21 @@ def inline_code(text, continues=None):
     labels = []  # the "["s still open in labels_paragraph: whether each is an image's ("![")
     inactive_below = 0  # labels[:inactive_below] that aren't images' can't make a link any more
     labels_paragraph = 0
+    definitions = reference_definitions(text, breaks)
+    next_definition = 0
     pos = 0
-    while mark := INLINE_MARK.search(text, pos):
+    while True:
+        mark = INLINE_MARK.search(text, pos)
+        # A definition a comment hid is text; the next one is read before any mark on its line.
+        while next_definition < len(definitions) and definitions[next_definition][0] < pos:
+            next_definition += 1
+        if next_definition < len(definitions) and (not mark or definitions[next_definition][0] <= mark.start()):
+            _, destination, end, pos = definitions[next_definition]
+            yield destination, end, ANGLE_DESTINATION if text[destination] == "<" else BARE_DESTINATION
+            next_definition += 1
+            continue
+        if not mark:
+            return
         start, token = mark.start(), mark.group()
         pos = mark.end()
         paragraph = bisect.bisect_right(breaks, start)
@@ -840,14 +900,12 @@ def inline_code(text, continues=None):
             active = image or len(labels) >= inactive_below
             inactive_below = min(inactive_below, len(labels))
             if token == "](" and active:
-                end = link_end(text, pos, paragraph_end)
-                if end is not None:
+                link = link_end(text, pos, paragraph_end)
+                if link is not None:
                     if not image:
                         inactive_below = len(labels)
-                    angle = LINK_ANGLE_DESTINATION.match(text, BLANKS_AT.match(text, pos).end())
-                    if angle:
-                        yield angle.start(), angle.end(), ANGLE_DESTINATION
-                    pos = end
+                    destination, end, pos = link
+                    yield destination, end, ANGLE_DESTINATION if text[destination] == "<" else BARE_DESTINATION
         elif token == "<!--":
             close = text.find("-->", pos) if comments_can_close else -1
             if close < 0:
@@ -911,6 +969,9 @@ def sanitize_text(text, continues=None, liquid=False):
         done = end
         if content is ANGLE_DESTINATION:
             prose.append(bare_destination(text[start + 1:end - 1]))
+            continue
+        if content is BARE_DESTINATION:
+            prose.append(text[start:end])
             continue
         if content is None:
             continue
@@ -1472,12 +1533,15 @@ def update_index_html(path, entries, posts, repository):
 # deep. From TicketManager #104.
 
 # What follows an inline link's destination: an optional "title", 'title' or
-# (title), then the closing parenthesis.
-LINK_INLINE_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?[ \t]*\)""")
+# (title), then the closing parenthesis. As in LINK_SPACE, each space between
+# them may hold a line ending and the next line's containers.
+LINK_INLINE_TAIL = re.compile(
+    r"""(?:(?:[ \t]*\n[ \t>]*|[ \t]+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()\\]|\\.)*\)))?"""
+    r"""[ \t]*(?:\n[ \t>]*)?\)"""
+)
 LINK_ANGLE_DESTINATION = re.compile(r"<((?:[^<>\n\\]|\\.)+)>")
 # cmark's limit on nested parentheses in a bare destination.
 LINK_PAREN_DEPTH = 32
-LINK_REFERENCE = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s*)(<?)(\S+?)(>?)(?=\s|$)", re.MULTILINE)
 # Not preceded by a name character, so data-src is not src, but a tag's
 # continuation line may start with one. ASCII, as for HTML_BLOCKS: "\u017f"
 # must not case-fold into "src".
@@ -1562,41 +1626,29 @@ def rebase_html_attribute(match):
 def rebase_text_links(lines, continues=None):
     """Lines of Markdown text with their links rebased; code spans, which may cross lines, are left alone.
 
-    A reference definition is read before any code span, so code in its label
-    doesn't hide its destination, and so is an inline link's destination and
-    title, so code in its title doesn't either (#58). `continues` is as for
+    Links are found as inline_code() finds them: a reference definition is
+    read before any code span, so code in its label doesn't hide its
+    destination, and so is an inline link's destination and title, so code in
+    its title doesn't either (#58). A "](" with no open label is text, and so
+    is a line that only starts like a definition. `continues` is as for
     paragraph_breaks().
     """
+    if not lines:
+        return []
     text = "\n".join(lines)
-    spans = [(start, end) for start, end, _ in code_spans(text, continues)]  # in order, never overlapping
-    first = 0  # the first span that may still reach this line or a later one
     out = []
-    offset = 0
-    for line in lines:
-        end_of_line = offset + len(line)
-        while first < len(spans) and spans[first][1] <= offset:
-            first += 1
-        # The parts of this line inside a span, relative to the line.
-        inside = []
-        index = first
-        while index < len(spans) and spans[index][0] < end_of_line:
-            start, end = spans[index]
-            inside.append((max(start, offset) - offset, min(end, end_of_line) - offset))
-            index += 1
-        reference = LINK_REFERENCE.match(line)
-        # Only a span from an earlier line hides it: one opened in its label is no span once it's read as a definition.
-        if reference and not any(start < offset < end for start, end in spans[first:index]):
-            out.append(line[:reference.start(3)] + rebase_link(reference.group(3)) + line[reference.end(3):])
+    done = 0
+    for start, end, content in inline_code(text, continues):
+        out.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, text[done:start]))
+        if content is ANGLE_DESTINATION:
+            out.append("<" + rebase_link(text[start + 1:end - 1]) + ">")
+        elif content is BARE_DESTINATION:
+            out.append(rebase_link(text[start:end]))
         else:
-            parts = []
-            done = 0
-            for start, end in [*inside, (len(line), len(line))]:
-                prose = rebase_inline_links(line[done:start])
-                parts.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, prose) + line[start:end])
-                done = end
-            out.append("".join(parts))
-        offset = end_of_line + 1
-    return out
+            out.append(text[start:end])
+        done = end
+    out.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, text[done:]))
+    return "".join(out).split("\n")
 
 
 def rebase_readme_links(markdown):

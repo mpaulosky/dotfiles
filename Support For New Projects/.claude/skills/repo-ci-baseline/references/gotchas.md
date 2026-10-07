@@ -75,3 +75,10 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   `node --test '.github/scripts/tests/*.test.mjs'`.
 - **Script tests need pytest,** which the system Python may lack. `uvx pytest -q .github/scripts/tests` runs them
   without installing anything.
+
+## Action pins
+
+- **Comment a hash pin with the exact tag, never the major.** zizmor's `ref-version-mismatch` checks that the tag in
+  the comment still points at the pinned commit. A floating major tag (`# v7`) moves with each release upstream, so a
+  pin that passed yesterday fails every PR in every repo the day `v7` moves, with no change on our side. Find the exact
+  tag with `git ls-remote --tags https://github.com/<owner>/<action> | grep <sha>`.

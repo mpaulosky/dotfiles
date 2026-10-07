@@ -54,6 +54,12 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Token:** `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`.
   A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip.
 
+## Landing
+
+- **A re-Apply PR opens ready, not as a draft, and this workflow lands it.** The copy on `main` is already the Template's,
+  so it waits for Copilot's review of the head and every thread resolved; answer the threads and let it merge.
+- **A Standardize PR is a draft landed by hand.** The repo's old workflow on `main` would merge it the moment its checks pass: see [Adapting](#adapting).
+
 ## Adapting
 
 - **Survey whether the repo's auto-merge waits for review.** IssueManager's armed native auto-merge and merged on `CLEAN` alone; its #231 merged with an open Copilot thread.

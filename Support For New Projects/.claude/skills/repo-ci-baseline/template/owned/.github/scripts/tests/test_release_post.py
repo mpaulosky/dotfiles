@@ -1693,3 +1693,45 @@ def test_a_reference_definition_inside_a_code_span_is_left_alone():
 )
 def test_the_excerpt_skips_only_real_html_blocks(summary, expected):
     assert rp.first_paragraph(rp.sanitize_markdown(summary)) == expected
+
+
+def test_a_title_that_looks_like_a_reference_definition_keeps_its_code():
+    # A title is rendered in a heading or table cell, where no definition can start, so its code span pairs as usual.
+    assert rp.sanitize_inline("[Use `List<T>`]: support") == "[Use <code>List&#60;T&#62;</code>]: support"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # An autolink is read whole, so a "]" in it closes no label and the link around it is still rebased.
+        ("![<https://example.test/a]b>](docs/logo.png)\n", "![<https://example.test/a]b>](logo.png)\n"),
+        ("[<mailto:a]b@example.test>](docs/a.md)\n", "[<mailto:a]b@example.test>](a.md)\n"),
+    ],
+)
+def test_an_autolink_in_a_label_does_not_close_it(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Only a definition's destination is rebased: its label and title are text, even where they read like HTML.
+        ("[api]: docs/a.md \"Use href='docs/b.md'\"\n", "[api]: a.md \"Use href='docs/b.md'\"\n"),
+        ("[src='docs/b.md']: docs/a.md\n", "[src='docs/b.md']: a.md\n"),
+        ("[api]: docs/a.md\n(Use href='docs/b.md')\n", "[api]: a.md\n(Use href='docs/b.md')\n"),
+    ],
+)
+def test_a_reference_definition_keeps_its_label_and_title_as_written(text, expected):
+    assert rp.rebase_readme_links(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # The sanitizer escapes this autolink's "<", so in the post it's text: its backtick pairs as the post reads it.
+        ("<https://x.test/a`b> `<i>`", "&lt;https://x.test/a`b> `&lt;i>`"),
+        ("[<https://x.test/a`]b> `<i>`](docs/a.md)", "[&lt;https://x.test/a<code>&#93;b&#62; </code>&lt;i>`](docs/a.md)"),
+    ],
+)
+def test_an_autolink_the_sanitizer_escapes_is_scanned_as_text(body, expected):
+    assert rp.sanitize_markdown(body) == expected

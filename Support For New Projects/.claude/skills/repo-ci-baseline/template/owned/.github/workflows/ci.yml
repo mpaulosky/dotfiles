@@ -30,8 +30,11 @@ permissions:
   # workflow never runs against would leave them permanently missing,
   # blocking the PR from merging. The changes job skips the build and tests
   # for such a PR instead; a skipped required check counts as passing.
+  # Drafts run CI too, so marking one ready adds nothing: a ready_for_review
+  # run only cancelled the one in progress on the same head, and the cancelled
+  # "Test Suite" reported as a failure.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened]
 
   workflow_dispatch:
     inputs:

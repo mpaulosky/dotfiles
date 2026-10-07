@@ -4,6 +4,8 @@ import io
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import rollout  # noqa: E402
 
@@ -38,40 +40,54 @@ def test_a_round_starts_with_ticketmanager_alone():
 
 
 def test_the_rest_are_held_while_ticketmanagers_reapply_pr_is_open():
-    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(ok=True, open_pr=129))
+    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(True, 129, "OPEN"))
     assert step.run == ()
     assert step.held == REST
     assert step.reason == "waiting for TicketManager#129 to merge"
 
 
 def test_the_rest_are_held_when_ticketmanagers_reapply_failed():
-    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(ok=False, open_pr=None))
+    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(False, 128, "MERGED"))
     assert step.run == ()
     assert step.held == REST
     assert step.reason == "reapply failed on TicketManager"
 
 
-def test_a_failed_push_holds_the_rest_even_with_an_open_pr():
-    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(ok=False, open_pr=129))
+def test_the_rest_are_held_when_ticketmanagers_reapply_pr_was_closed_unmerged():
+    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(True, 129, "CLOSED"))
     assert step.run == ()
-    assert step.reason == "reapply failed on TicketManager"
+    assert step.held == REST
+    assert step.reason == "TicketManager#129 was closed without merging"
 
 
-def test_the_rest_run_in_order_once_ticketmanager_has_no_open_reapply_pr():
-    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(ok=True, open_pr=None))
+def test_the_rest_are_held_when_no_reapply_pr_of_ticketmanagers_is_found():
+    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(True, None, None))
+    assert step.run == ()
+    assert step.reason == "no re-Apply PR of TicketManager's found to have merged"
+
+
+def test_the_rest_run_in_order_once_ticketmanagers_reapply_pr_has_merged():
+    step = rollout.next_step(rollout.rollout_order(LISTED), rollout.Lead(True, 129, "MERGED"))
     assert step.run == REST
     assert step.held == ()
+
+
+def test_an_order_without_ticketmanager_is_refused():
+    with pytest.raises(ValueError, match="TicketManager"):
+        rollout.rollout_order({"mpaulosky/IssueTracker": "full"})
 
 
 # ── The round ───────────────────────────────────────────────────────────────
 
 class Fake:
-    """reapply.sh and the open re-Apply PR lookup as the tests set them."""
+    """reapply.sh and the newest re-Apply PR lookup as the tests set them."""
 
-    def __init__(self, open_prs=None, fail=(), opens=None):
-        self.open = dict(open_prs or {})  # {repo: open re-Apply PR number}
+    def __init__(self, latest=None, fail=(), opens=None, unreadable=()):
+        # {repo: (number, state)}; every repo's last round merged unless set
+        self.latest = {repo: (100, "MERGED") for repo in LISTED} | dict(latest or {})
         self.fail = set(fail)  # repos whose reapply exits 1
         self.opens = opens or {}  # {repo: PR number its reapply opens}
+        self.unreadable = set(unreadable)  # repos whose lookup fails
         self.ran = []
 
     def reapply(self, brings, path):
@@ -80,16 +96,18 @@ class Fake:
         if repo in self.fail:
             return 1
         if repo in self.opens:
-            self.open[repo] = self.opens[repo]
+            self.latest[repo] = (self.opens[repo], "OPEN")
         return 0
 
-    def open_pr(self, repo):
-        return self.open.get(repo)
+    def latest_pr(self, repo):
+        if repo in self.unreadable:
+            raise RuntimeError("HTTP 502")
+        return self.latest.get(repo)
 
 
 def run(argv, fake, exists=lambda path: True):
     out, err = io.StringIO(), io.StringIO()
-    code = rollout.main(argv, listed=LISTED, reapply=fake.reapply, open_pr=fake.open_pr, exists=exists,
+    code = rollout.main(argv, listed=LISTED, reapply=fake.reapply, latest_pr=fake.latest_pr, exists=exists,
                         out=out, err=err)
     return code, out.getvalue(), err.getvalue()
 
@@ -146,7 +164,7 @@ def test_a_missing_checkout_fails_that_repo_only():
 
 
 def test_dry_run_runs_nothing_and_shows_the_plan_from_the_open_pr():
-    fake = Fake(open_prs={"mpaulosky/TicketManager": 129})
+    fake = Fake(latest={"mpaulosky/TicketManager": (129, "OPEN")})
     code, out, _ = run(["--brings", "#82", "--root", "/r", "--dry-run"], fake)
     assert code == 0
     assert fake.ran == []
@@ -160,5 +178,29 @@ def test_dry_run_with_ticketmanager_landed_shows_every_repo():
     assert code == 0
     assert fake.ran == []
     assert out.count("would run: reapply.sh") == 6
-    assert "then, if that leaves TicketManager with no open re-Apply PR (its Apply is already on main):" in out
+    assert "then, if that leaves TicketManager with no new re-Apply PR (its Apply is already on main):" in out
     assert out.index("/r/TicketManager") < out.index("then, if") < out.index("/r/IssueTracker")
+
+
+def test_a_failed_lookup_on_ticketmanager_is_reported_as_one_and_holds_the_round():
+    fake = Fake(unreadable={"mpaulosky/TicketManager"})
+    code, out, err = run(["--brings", "#82", "--root", "/r"], fake)
+    assert code == 1
+    assert ran_repos(fake) == ["TicketManager"]
+    assert "can't read mpaulosky/TicketManager's re-Apply PR: HTTP 502" in err
+    assert "reapply failed" not in out + err
+
+
+def test_a_closed_unmerged_reapply_pr_holds_the_round_on_rerun():
+    fake = Fake(latest={"mpaulosky/TicketManager": (129, "CLOSED")})
+    code, out, _ = run(["--brings", "#82", "--root", "/r"], fake)
+    assert code == 1
+    assert ran_repos(fake) == ["TicketManager"]
+    assert "TicketManager#129 was closed without merging" in out
+
+
+def test_a_merged_reapply_pr_on_the_rest_is_not_offered_to_land():
+    fake = Fake(opens={"mpaulosky/Articles": 300})
+    code, out, _ = run(["--brings", "#82", "--root", "/r"], fake)
+    assert code == 0
+    assert "land them with: land.sh mpaulosky/Articles#300\n" in out

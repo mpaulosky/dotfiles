@@ -72,8 +72,8 @@ IssueManager and Articles. TinyTicket is retired and not Standardized.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.
    Open it ready, not as a draft: the repo's own auto-merge lands it ([automerge.md](references/automerge.md#landing)).
-   - **Roll out:** `rollout.sh --brings mpaulosky/dotfiles#<n>,#<n>` runs `reapply.sh` on TicketManager and holds the rest while its re-Apply PR is open.
-     Land that PR, fix any finding Template first, then run `rollout.sh` again: once TicketManager has no open re-Apply PR,
+   - **Roll out:** `rollout.sh --brings mpaulosky/dotfiles#<n>,#<n>` runs `reapply.sh` on TicketManager and holds the rest until its re-Apply PR has merged.
+     Land that PR, fix any finding Template first, then run `rollout.sh` again: once it has merged,
      it re-Applies the other repos in order, one pre-push gate at a time, reports a repo that fails and goes on.
      Start with `--dry-run`. It ends with the `land.sh` command for the PRs it left open.
    - **One repo:** `reapply.sh --brings mpaulosky/dotfiles#<n>,#<n> <repo>` (what `rollout.sh` runs, and the way to retry a repo that failed)

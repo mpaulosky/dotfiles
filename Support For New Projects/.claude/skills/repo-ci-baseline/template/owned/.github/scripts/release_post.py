@@ -819,8 +819,9 @@ def reference_definitions(text, breaks):
 
     A definition starts a paragraph, or follows another one, and is a label
     and a destination on one line, then an optional title, which may start on
-    the next line and hold line endings, with nothing after it on its last
-    line; anything else there makes the line paragraph text ([x]: foo [y](b.md)).
+    the next line and hold line endings within its paragraph, with nothing
+    after it on its last line; anything else there makes the line paragraph
+    text ([x]: foo [y](b.md)).
     `breaks` are paragraph_breaks(). A definition is read before any code
     span, so a backtick in its label or title pairs with nothing.
     """
@@ -838,7 +839,10 @@ def reference_definitions(text, breaks):
                 start = label.end()
                 angle = LINK_ANGLE_DESTINATION.match(text, start, line_end)
                 end = angle.end() if angle else bare_destination_end(text, start)
-                tail = LINK_DEFINITION_TAIL.match(text, end) if end is not None else None
+                # A title can't run into the next paragraph, quote or list item.
+                paragraph = bisect.bisect_right(breaks, line_start)
+                paragraph_end = breaks[paragraph] if paragraph < len(breaks) else len(text)
+                tail = LINK_DEFINITION_TAIL.match(text, end, paragraph_end) if end is not None else None
                 if tail:
                     line_end = tail.end()  # a title's last line, before its "\n"
                     definition = (line_start, start, end, line_end)
@@ -926,7 +930,7 @@ def inline_code(text, continues=None, html=False):
                     destination, end, pos = link
                     yield destination, end, ANGLE_DESTINATION if text[destination] == "<" else BARE_DESTINATION
         elif token[0] == "<" and token != "<!--":
-            tag = INLINE_HTML_TAG.match(text, start, paragraph_end)
+            tag = None if odd_backslashes_before(text, start) else INLINE_HTML_TAG.match(text, start, paragraph_end)
             if tag:
                 pos = tag.end()
         elif token == "<!--":

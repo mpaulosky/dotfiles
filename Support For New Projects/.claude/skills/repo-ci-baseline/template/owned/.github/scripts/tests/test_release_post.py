@@ -1593,6 +1593,9 @@ def test_a_reference_definition_with_backticks_in_its_label_and_title_is_rebased
         # A blank line ends the title, so this is no definition; nor is a title with text after it.
         ('[a]: docs/a.md "first\n\nsecond"\n', '[a]: docs/a.md "first\n\nsecond"\n'),
         ('[a]: docs/a.md\n"t" x\n', '[a]: a.md\n"t" x\n'),
+        # A title can't run into a quote or list item that follows, so their links are still rebased.
+        ('[a]: docs/a.md\n> "see [b](docs/b.md)"\n', '[a]: a.md\n> "see [b](b.md)"\n'),
+        ('[a]: docs/a.md "x\n- [b](docs/b.md) y"\n', '[a]: docs/a.md "x\n- [b](b.md) y"\n'),
     ],
 )
 def test_reference_definitions_are_read_before_code_spans_in_the_docs_readme(text, expected):
@@ -1624,8 +1627,9 @@ def test_a_close_bracket_without_a_label_is_not_rebased(text, expected):
         ("[<b title='`'>x</b>](docs/a.md) `\n", "[<b title='`'>x</b>](a.md) `\n"),
         # Its own src and href are rebased as before.
         ('[<img src="docs/a.png" alt="]">](docs/b.md)\n', '[<img src="a.png" alt="]">](b.md)\n'),
-        # A "<" that opens no tag is text.
+        # A "<" that opens no tag is text, and so is an escaped one, so the backticks after it pair.
         ("[a < b](docs/a.md)\n", "[a < b](a.md)\n"),
+        ('Use \\<span title="`">[x](docs/a.md)`\n', 'Use \\<span title="`">[x](docs/a.md)`\n'),
     ],
 )
 def test_inline_html_in_a_label_is_read_whole_in_the_docs_readme(text, expected):

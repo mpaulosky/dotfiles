@@ -5,7 +5,7 @@
 #
 # Runs the Template's own tests (hook suites, auto-merge script tests,
 # release-script pytest), the renderer oracle and the GitHub scripts' tests
-# (settings, the landing decision, status and land), lints its workflows, YAML, shell
+# (settings, the landing decision, status, land and rollout), lints its workflows, YAML, shell
 # and Markdown with the Template's configs, checks that
 # Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh and
 # reapply.sh against throwaway repos. dotfiles CI runs this on every change
@@ -64,7 +64,7 @@ else
 fi
 (cd "$skill_dir/tests/render_oracle" && "${oracle_cmd[@]}" -q -p no:cacheprovider .) || fail "renderer oracle"
 
-step "GitHub scripts tests (settings, landing decision, status, land)"
+step "GitHub scripts tests (settings, landing decision, status, land, rollout)"
 (cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider github/tests) || fail "github scripts pytest"
 
 step "actionlint"
@@ -81,7 +81,7 @@ yamllint -c "$owned/.yamllint.yml" "${yaml_files[@]}" || fail "yamllint"
 step "shellcheck"
 shell_files=(
   "$skill_dir/apply.sh" "$skill_dir/reapply.sh" "$skill_dir/test.sh" "$skill_dir/github-settings.sh" "$skill_dir/status.sh"
-  "$skill_dir/land.sh"
+  "$skill_dir/land.sh" "$skill_dir/rollout.sh"
   "$skill_dir/tests/apply.test.sh" "$skill_dir/tests/reapply.test.sh"
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"

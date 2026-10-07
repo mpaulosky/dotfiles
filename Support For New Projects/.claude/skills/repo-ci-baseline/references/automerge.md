@@ -59,6 +59,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **A re-Apply PR opens ready, not as a draft, and this workflow lands it.** The copy on `main` is already the Template's,
   so it waits for Copilot's review of the head and every thread resolved; answer the threads and let it merge.
 - **A Standardize PR is a draft landed by hand.** The repo's old workflow on `main` would merge it the moment its checks pass: see [Adapting](#adapting).
+- **`land.sh` watches a round** until it lands: see [Landing a round](#landing-a-round).
 
 ## Adapting
 
@@ -73,8 +74,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 
 ## Status and the landing decision
 
-Skill files (not copied into repos): `status.sh`, which runs `github/status.py`, and the decision it prints, `github/landing.py`.
-Tests: `github/tests/test_landing.py` and `test_status.py`, run by `test.sh`; none calls GitHub.
+Skill files (not copied into repos): `status.sh`, which runs `github/status.py`, `land.sh`, which runs `github/land.py`,
+and the decision both act on, `github/landing.py`.
+Tests: `github/tests/test_landing.py`, `test_status.py` and `test_land.py`, run by `test.sh`; none calls GitHub.
 
 ```bash
 status.sh                     # one line per open PR in every repo in github/repos.txt
@@ -88,10 +90,27 @@ running, failed and cancelled checks, and the next action. It costs one GraphQL 
 `landing.decide(PrState)` returns one action, the rules PRs are landed by:
 nothing for a merged, closed or already-armed PR; **report blocker** for a failed check, a cancelled check nothing newer replaced, or a conflict;
 **mark ready** for a draft only when the caller says it should be (otherwise wait);
+**arm auto-merge** for a release-blog PR its workflow didn't arm (branch `docs/release-notes` or `docs/backfill-blog-posts`, no review needed, as `release.yml` arms it);
 **update branch and request Copilot** when it's `BEHIND`; **wait** until Copilot reviewed the current head and no thread is open;
-then **arm auto-merge**. A repo with no required checks (dotfiles, `repo-settings-only` in `repos.txt`) waits for its checks to finish green first,
+then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
+or **arm auto-merge** where there is no such workflow (dotfiles). A repo with no required checks (dotfiles, `repo-settings-only` in `repos.txt`) waits for its checks to finish green first,
 since auto-merge alone wouldn't wait for CI. A cancelled run with a newer run of the same check on the same head is superseded, not a failure:
 CI's concurrency cancels runs, and the newest counts. Commands that act on PRs call the same function, so they can't drift from these rules.
+
+### Landing a round
+
+```bash
+land.sh --once --dry-run      # one pass over every open PR in github/repos.txt, printing the calls it would make
+land.sh mpaulosky/<repo>#<n>  # watch these PRs (or owner/repo for all its open PRs) until they land
+```
+
+`land.sh` polls the PRs (default every 60 s, one GraphQL query per repo) and does what `decide()` says, once per head:
+`gh pr update-branch` then `gh pr edit --add-reviewer @copilot`, `gh pr ready` only with `--ready`,
+and `gh pr merge --auto --squash --match-head-commit <head>`. It has no rules of its own.
+It also watches each release-blog PR that opens in a watched repo, and after a watched Baseline PR merges it waits `--blog-wait` (15) minutes for one.
+It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),
+and exits once every watched PR is merged or closed, or with 1 at `--timeout` (180 minutes).
+On a `CLEAN` dotfiles PR, `gh pr merge --auto` merges at once, which is what arming there means: its checks are already green.
 
 ## Verify live
 

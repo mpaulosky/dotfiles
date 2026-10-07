@@ -118,3 +118,22 @@ def test_a_run_not_yet_started_counts_as_newest():
               ld.Check("Test Suite", "QUEUED", None, ""))
     summary = ld.summarize_checks(checks)
     assert summary.running == ("Test Suite",) and summary.cancelled == ()
+
+
+def test_a_baseline_repo_leaves_a_reviewed_pr_to_its_pr_auto_merge():
+    baseline = replace(READY, merged_by_workflow=True)
+    assert ld.decide(baseline).action == ld.HAND_OFF
+    # Its gates still come first: nothing is handed off before Copilot reviewed the head.
+    assert ld.decide(replace(baseline, copilot_reviewed=frozenset({OLD}))).action == ld.WAIT
+    assert ld.decide(replace(baseline, open_threads=1)).action == ld.WAIT
+    assert ld.decide(replace(baseline, merge_state="BEHIND")).action == ld.UPDATE_BRANCH
+
+
+def test_a_release_blog_pr_is_armed_without_copilot_unless_blocked_or_armed():
+    blog = replace(READY, release_blog=True, merged_by_workflow=True, copilot_reviewed=frozenset(),
+                   checks=(running("Lint Markdown"),))
+    assert ld.decide(blog).action == ld.ARM_AUTO_MERGE
+    assert ld.decide(replace(blog, auto_merge_armed=True)) == ld.Decision(ld.NOTHING, "auto-merge armed")
+    failing = replace(blog, checks=(ld.Check("Lint Markdown", "COMPLETED", "FAILURE", "2026-10-07T10:00:00Z"),))
+    assert ld.decide(failing).action == ld.BLOCKER
+    assert ld.decide(replace(blog, merge_state="DIRTY")).action == ld.BLOCKER

@@ -105,8 +105,9 @@ and GitHub Pages publishes it through Jekyll and kramdown, so `release_post.py` 
   destination and title are read before spans, so `` [x](docs/a.md "Use `code`") `` stays one link, even with a line
   ending between its parts. So is a one-line reference definition at the start of a paragraph, so `` [`a]: docs/a.md ``
   doesn't pair its backtick with later prose; a line with more than a title after the destination is text, as in
-  CommonMark. `rebase_readme_links` rebases only the links this finds, so a `](` with no open `[` stays as written
-  (#68). Where this scanner and
+  CommonMark; its title may run onto later lines. `rebase_readme_links` rebases only the links this finds, so a `](`
+  with no open `[` stays as written (#68), and it reads an inline HTML tag whole, as GitHub does, so a `]` in an
+  attribute closes no label. Where this scanner and
   a renderer could pair backticks differently, the result is still safe: a span left between backticks holds no `<`,
   `{` or `]`, and the text outside it is escaped either way.
 - **Liquid:** Jekyll runs Liquid before Markdown, even inside code, so `{{` or `{%` in a PR body could break the Pages

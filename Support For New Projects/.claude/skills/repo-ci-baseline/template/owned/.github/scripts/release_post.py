@@ -230,6 +230,8 @@ HTML_BLOCK_TAGS = (
     "|th|thead|title|tr|track|ul"
 )
 HTML_ATTRIBUTE = r"""\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?"""
+# A complete open or close tag, as CommonMark reads raw inline HTML.
+INLINE_HTML_TAG = re.compile(rf"<[A-Za-z][A-Za-z0-9-]*(?:{HTML_ATTRIBUTE})*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>", re.A)
 HTML_BLOCKS = [
     (re.compile(r" {0,3}<(?:pre|script|style|textarea)(?:\s|>|$)", re.I | re.A), re.compile(r"</(?:pre|script|style|textarea)>", re.I | re.A)),
     (re.compile(r" {0,3}<!--", re.A), re.compile(r"-->", re.A)),
@@ -584,6 +586,8 @@ FOOTNOTE_DEFINITION = re.compile(r"[ \t>]*\[\^[A-Za-z0-9_][A-Za-z0-9_-]*\]:")
 # What inline_code() stops at: a backtick run, a comment's opener, the "](" before a link
 # destination, and the brackets that open and close a link's label.
 INLINE_MARK = re.compile(r"`+|<!--|\]\(|\[|\]")
+# The same, and the "<" that may open an inline HTML tag, for inline_code(html=True).
+INLINE_MARK_HTML = re.compile(r"`+|<!--|</?[A-Za-z]|\]\(|\[|\]")
 CONTAINER_MARKER = re.compile(r"[ \t]*(?:>|(?:[-+*]|[0-9]{1,9}[.)])(?=[ \t]|$))")
 BACKTICKS = re.compile(r"`+")
 # Characters that make a code span unsafe to leave between backticks: a parser
@@ -602,8 +606,14 @@ LINK_SPACE = re.compile(r"[ \t]*(?:\r?\n[ \t>]*)?")
 # label with a footnote ID, as in FOOTNOTE_DEFINITION, is a footnote's, which GitHub and
 # kramdown read as one, not as a link; any other "[^...]" label is a link's.
 LINK_DEFINITION_LABEL = re.compile(r"[ \t]*\[(?!\^[A-Za-z0-9_][A-Za-z0-9_-]*\])((?:[^\[\]\\\n]|\\.){1,999})\]:[ \t]*")
-# What may follow a definition's destination on its line: a title, then nothing.
-LINK_DEFINITION_TAIL = re.compile(r"""(?:[ \t]+(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\((?:[^()\\\n]|\\.)*\)))?[ \t]*\r?$""", re.M)
+# What may follow a definition's destination: a title, on its line or the next, then
+# nothing on the title's last line. A title may hold line endings, but not a blank line.
+LINK_TITLE_LINE_ENDING = r"\r?\n(?![ \t>]*\r?$)"
+LINK_DEFINITION_TAIL = re.compile(
+    rf"""(?:(?:[ \t]+|[ \t]*\r?\n[ \t>]*)(?:"(?:[^"\\\r\n]|\\.|{LINK_TITLE_LINE_ENDING})*"|'(?:[^'\\\r\n]|\\.|{LINK_TITLE_LINE_ENDING})*'"""
+    rf"""|\((?:[^()\\\r\n]|\\.|{LINK_TITLE_LINE_ENDING})*\)))?[ \t]*\r?$""",
+    re.M,
+)
 # How a <destination>'s characters that a bare one can't hold are written in it.
 BARE_DESTINATION_ESCAPES = {" ": "%20", "\t": "%09", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E"}
 # The characters a backslash escapes in CommonMark: ASCII punctuation.
@@ -805,11 +815,12 @@ def link_end(text, start, limit):
 
 
 def reference_definitions(text, breaks):
-    """Each one-line reference definition in Markdown text, as (start, destination start, destination end, end).
+    """Each reference definition in Markdown text, as (start, destination start, destination end, end).
 
-    A definition starts a paragraph, or follows another one, and is a label,
-    a destination, and an optional title with nothing after it on the line;
-    anything else there makes the line paragraph text ([x]: foo [y](b.md)).
+    A definition starts a paragraph, or follows another one, and is a label
+    and a destination on one line, then an optional title, which may start on
+    the next line and hold line endings, with nothing after it on its last
+    line; anything else there makes the line paragraph text ([x]: foo [y](b.md)).
     `breaks` are paragraph_breaks(). A definition is read before any code
     span, so a backtick in its label or title pairs with nothing.
     """
@@ -827,7 +838,9 @@ def reference_definitions(text, breaks):
                 start = label.end()
                 angle = LINK_ANGLE_DESTINATION.match(text, start, line_end)
                 end = angle.end() if angle else bare_destination_end(text, start)
-                if end is not None and LINK_DEFINITION_TAIL.match(text, end, line_end):
+                tail = LINK_DEFINITION_TAIL.match(text, end) if end is not None else None
+                if tail:
+                    line_end = tail.end()  # a title's last line, before its "\n"
                     definition = (line_start, start, end, line_end)
                     definitions.append(definition)
         follows_definition = definition is not None
@@ -835,7 +848,7 @@ def reference_definitions(text, breaks):
     return definitions
 
 
-def inline_code(text, continues=None):
+def inline_code(text, continues=None, html=False):
     """Each code span, HTML comment and link destination in Markdown text, as (start, end, content).
 
     content is None for a comment, and ANGLE_DESTINATION or BARE_DESTINATION
@@ -855,7 +868,10 @@ def inline_code(text, continues=None):
     backticks pair. As in CommonMark, a link deactivates the link (not image)
     openers before it, since a link can't hold a link. A reference definition
     is read before anything else on its line, as reference_definitions()
-    finds it.
+    finds it. With `html` set, a complete inline HTML tag is skipped as
+    GitHub reads a README's, so a "]" or backtick in its attributes is
+    neither a label's end nor a span's; the post sanitizer, which escapes
+    every tag, leaves it unset.
 
     Runs and paragraph ends are indexed once, and bare_destination_end() caps
     how far a link is read, so the scan stays linear.
@@ -870,9 +886,10 @@ def inline_code(text, continues=None):
     labels_paragraph = 0
     definitions = reference_definitions(text, breaks)
     next_definition = 0
+    marks = INLINE_MARK_HTML if html else INLINE_MARK
     pos = 0
     while True:
-        mark = INLINE_MARK.search(text, pos)
+        mark = marks.search(text, pos)
         # A definition a comment hid is text; the next one is read before any mark on its line.
         while next_definition < len(definitions) and definitions[next_definition][0] < pos:
             next_definition += 1
@@ -908,6 +925,10 @@ def inline_code(text, continues=None):
                         inactive_below = len(labels)
                     destination, end, pos = link
                     yield destination, end, ANGLE_DESTINATION if text[destination] == "<" else BARE_DESTINATION
+        elif token[0] == "<" and token != "<!--":
+            tag = INLINE_HTML_TAG.match(text, start, paragraph_end)
+            if tag:
+                pos = tag.end()
         elif token == "<!--":
             close = text.find("-->", pos) if comments_can_close else -1
             if close < 0:
@@ -1632,15 +1653,16 @@ def rebase_text_links(lines, continues=None):
     read before any code span, so code in its label doesn't hide its
     destination, and so is an inline link's destination and title, so code in
     its title doesn't either (#58). A "](" with no open label is text, and so
-    is a line that only starts like a definition. `continues` is as for
-    paragraph_breaks().
+    is a line that only starts like a definition. An inline HTML tag is read
+    whole, as GitHub reads it, so a "]" in its attributes closes no label.
+    `continues` is as for paragraph_breaks().
     """
     if not lines:
         return []
     text = "\n".join(lines)
     out = []
     done = 0
-    for start, end, content in inline_code(text, continues):
+    for start, end, content in inline_code(text, continues, html=True):
         out.append(LINK_HTML_ATTRIBUTE.sub(rebase_html_attribute, text[done:start]))
         if content is ANGLE_DESTINATION:
             out.append("<" + rebase_link(text[start + 1:end - 1]) + ">")

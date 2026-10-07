@@ -1760,9 +1760,16 @@ def test_a_title_that_looks_like_a_reference_definition_keeps_its_code():
         ("> [a]: docs/x.md", "> \\[a]: docs/x.md"),
         ("- [a]: x", "- \\[a]: x"),
         ("1. [a]: x", "1. \\[a]: x"),
-        ("-\t[a]: x", "-\t\\[a]: x"),
+        ("-\t[a]: x", "- \\[a]: x"),
         ("> - [^1]: note", "> - \\[^1]: note"),
         ("* *[HTML]: Hyper", "* \\*[HTML]: Hyper"),
+        # Spaces after those markers collapse to one, so the rest is never indented code (where kramdown and
+        # cmark-gfm disagree, and an escape would show), and a definition there is escaped in both.
+        (">     [a]: docs/x.md", "> \\[a]: docs/x.md"),
+        ("-     [a]: docs/x.md", "- \\[a]: docs/x.md"),
+        (">\t\t[a]: x", "> \\[a]: x"),
+        (">     some code", "> some code"),
+        (">     - [a]: x", "> - \\[a]: x"),
         # Or once sanitizing drops a comment before it.
         ("<!--x-->[a]: docs/x.md", "\\[a]: docs/x.md"),
         ("> <!--x-->[a]: x", "> \\[a]: x"),

@@ -118,7 +118,13 @@ def render_commits(commits):
         # Escaped, it can't start a definition, so it was rightly sanitized like a title.
         subject = sanitize_inline(commit_subject(commit))
         after = after_containers(subject, 0)
-        start = len(subject) - len(subject[after:].lstrip(" \t"))
+        if after:
+            # One space around each marker, so nothing after them is indented code: kramdown
+            # and cmark-gfm read that differently, and an escape in code would show.
+            rest = subject[after:].lstrip(" \t")
+            subject = " ".join(subject[:after].split()) + (" " + rest if rest else "")
+        start = after_containers(subject, 0)
+        start += len(subject[start:]) - len(subject[start:].lstrip(" "))
         if DEFINITION_LIKE_SUBJECT.match(subject, start):
             subject = subject[:start] + "\\" + subject[start:]
         lines.append(f"- {subject} (`{commit.get('sha', '')[:7]}`)")

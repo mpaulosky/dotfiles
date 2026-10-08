@@ -26,9 +26,12 @@ name: Claude Review
 #
 # Accepted limit (repo-ci-baseline's ADR 0004): the marker proves a review
 # came through github-actions[bot], not that Claude wrote it. This workflow
-# runs on pull_request, so a branch could change the post step and post a
-# marked review of its own. The merge gate guards against merging before a
-# review, not against someone who can push a branch. A fork PR can't use it:
+# runs on pull_request, from the PR's merge commit, so a push that changes it
+# could post a marked review of its own. The merge gate guards against
+# merging before a review, not against someone who can push workflow changes.
+# A push without that permission (an app's, or a coding agent's) can't: the
+# answer check is inline here, and the post job runs the base's
+# post_claude_review.py, not the PR's. A fork PR can't use it:
 # its run gets no secrets and a read-only token, so it can't post, and PR
 # Auto-Merge never merges a fork PR (isCrossRepository); the maintainer does.
 #
@@ -402,9 +405,14 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      # The base's script, not the PR's: this job holds a token that can post
+      # a review under the marker, and a push without the workflow permission
+      # can still change .github/scripts. A PR that changes the script is
+      # posted by the base's copy until it merges.
       - name: Checkout the post script
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: .github/scripts
           persist-credentials: false
 

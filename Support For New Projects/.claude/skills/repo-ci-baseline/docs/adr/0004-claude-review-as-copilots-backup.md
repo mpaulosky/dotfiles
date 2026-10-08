@@ -155,8 +155,10 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   scripts but not to its workflows. #133 ran the PR's copy of the script and called write access the boundary; Claude Review
   on Blazor-Server#176 showed that boundary is the workflow permission, and on atelier-store#130 that an older PR's script
   lacked the option the merged workflow called. `pull_request` runs the workflow from the PR's merge commit, so the check is
-  always the workflow's own. The post job still runs `post_claude_review.py` from the merge commit, with only the job's
-  token, which expires with the job; a changed script there can post a review under the marker, the limit below.
+  always the workflow's own. The post job runs the base's `post_claude_review.py` (its checkout's `ref` is the base commit),
+  since it holds a token that can post a review under the marker: a changed script in the PR could otherwise post a marked
+  review Claude never wrote, which PR Auto-Merge would accept (Claude Review on #134). A PR that changes the script is
+  posted by the base's copy until it merges.
 - **A quoted secret can't skip the post job.** A withheld answer, by that check or by GitHub withholding a job output that holds a
   masked secret, reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't hold a secret,
   not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.
@@ -169,5 +171,4 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   and the exact check above already covers the real secrets. The tests build their sample tokens at runtime.
 - The pinned action runs on the Claude Agent SDK `^0.3.293` and passes `--allowedTools`, `--disallowedTools` and `--add-dir` through (its `parse-sdk-options.ts`).
 - Someone who can push workflow changes to a branch is out of scope here, as for the marker: they can change the workflow
-  itself. Someone who can push only other files can change the post script, and so post a review under the marker, but never
-  reaches `CLAUDE_CODE_OAUTH_TOKEN`.
+  itself. Someone who can push only other files reaches neither `CLAUDE_CODE_OAUTH_TOKEN` nor the post job's script.

@@ -198,6 +198,9 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     # The check holds the OAuth token, so it runs inline from the workflow,
     # never from a script the PR could change.
     assert "python3 -I - <<'PY'" in answer["run"] and ".github/scripts" not in answer["run"]
+    # The post job, which can post under the marker, runs the base's script.
+    checkout = next(s for s in jobs["post"]["steps"] if s.get("name") == "Checkout the post script")
+    assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
     # And Claude may answer only in the fields that get posted.
     claude_args = review["with"]["claude_args"]
     assert claude_args.count('"additionalProperties": false') == 2

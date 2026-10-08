@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 
@@ -45,15 +46,6 @@ def run(findings, gh=None):
     return gh
 
 
-def run_off_diff(findings, capsys):
-    """Run with a finding outside the diff: the review is posted, then the step fails."""
-    gh = FakeGitHub()
-    with pytest.raises(SystemExit) as exit_info:
-        run(findings, gh)
-    assert exit_info.value.code == 1
-    return gh, capsys.readouterr().err
-
-
 # diff_lines()
 
 
@@ -91,18 +83,16 @@ def test_findings_become_one_review_on_the_head_commit():
     assert "Looked at the diff." in review["body"]
 
 
-def test_the_marker_is_always_first(capsys):
-    for findings in (findings_json(), findings_json(("src/app.py", 2, "x"))):
+def test_the_marker_is_always_first():
+    for findings in (findings_json(), findings_json(("src/app.py", 2, "x")), findings_json(("other.py", 1, "y"))):
         _, review = run(findings).posted[0]
         assert review["body"].startswith(pcr.MARKER + "\n")
-    gh, _ = run_off_diff(findings_json(("other.py", 1, "y")), capsys)
-    assert gh.posted[0][1]["body"].startswith(pcr.MARKER + "\n")
 
 
-def test_a_finding_off_the_diff_moves_to_the_body(capsys):
+def test_a_finding_off_the_diff_moves_to_the_body():
     findings = findings_json(("src/app.py", 2, "On the diff."), ("src/app.py", 10, "Off the diff."),
                              ("README.md", 1, "Not changed."))
-    gh, _ = run_off_diff(findings, capsys)
+    gh = run(findings)
 
     _, review = gh.posted[0]
     assert [c["line"] for c in review["comments"]] == [2]
@@ -110,16 +100,25 @@ def test_a_finding_off_the_diff_moves_to_the_body(capsys):
     assert "`README.md:1`" in review["body"] and "Not changed." in review["body"]
 
 
-def test_a_finding_off_the_diff_fails_the_step_after_posting(capsys):
-    # A body finding opens no thread, so PR Auto-Merge wouldn't wait on it:
-    # the failing check is what holds the merge until the next push.
-    gh, err = run_off_diff(findings_json(("src/app.py", 2, "On."), ("README.md", 1, "Off.")), capsys)
+def test_a_finding_off_the_diff_passes_the_step_with_a_warning(capsys):
+    # The marker, not the check, holds the merge: a failed check would leave
+    # the PR UNSTABLE, which PR Auto-Merge never merges, even at the review cap.
+    gh = run(findings_json(("src/app.py", 2, "On."), ("README.md", 1, "Off.")))
 
     assert len(gh.posted) == 1
-    assert "1 finding(s) outside the diff" in err
+    assert "::warning::1 finding(s) outside the diff" in capsys.readouterr().out
     assert "hold the merge" in gh.posted[0][1]["body"]
-    # PR Auto-Merge reads this, so a later skipped run that clears the check can't clear the hold.
+    # PR Auto-Merge reads this: it's the only thing holding the merge.
     assert gh.posted[0][1]["body"].startswith(pcr.MARKER + "\n" + pcr.OFF_DIFF_MARKER + "\n")
+
+
+def test_a_failed_post_fails_the_step():
+    class FailingGitHub(FakeGitHub):
+        def create_review(self, number, review):
+            raise subprocess.CalledProcessError(1, ["gh", "api"])
+
+    with pytest.raises(subprocess.CalledProcessError):
+        run(findings_json(("README.md", 1, "Off.")), FailingGitHub())
 
 
 def test_findings_on_the_diff_only_pass():

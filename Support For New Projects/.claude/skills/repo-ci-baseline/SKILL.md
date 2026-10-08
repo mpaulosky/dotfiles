@@ -60,7 +60,7 @@ With squad still installed (`.squad/` or `squad-*` workflows), run the `remove-s
    Done when the next Standardize wouldn't hit the same surprise.
 
 Order across repos (`github/repos.txt`): TicketManager first, as the live check of each Template change, then IssueTracker, atelier-store, Blazor-Server,
-IssueManager and Articles. TinyTicket is retired and not Standardized.
+IssueManager, Articles and SuggestionApp. TinyTicket is retired and not Standardized.
 
 ## Change the Baseline
 

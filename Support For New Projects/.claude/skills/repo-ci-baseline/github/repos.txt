@@ -7,4 +7,5 @@ mpaulosky/atelier-store
 mpaulosky/Blazor-Server
 mpaulosky/IssueManager
 mpaulosky/Articles
+mpaulosky/SuggestionApp
 mpaulosky/dotfiles repo-settings-only

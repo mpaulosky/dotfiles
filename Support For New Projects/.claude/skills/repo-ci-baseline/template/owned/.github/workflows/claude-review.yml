@@ -222,12 +222,14 @@ jobs:
       # It reads the answer from the execution file, a path, so this log
       # holds none.
       #
-      # Accepted limits (repo-ci-baseline's ADR 0004), listed here because the
-      # ADR isn't in this repo: the check is a backstop, and Claude's read
-      # restrictions above are the defence, so these get through by design:
-      # pieces split by letters or digits, or spread across fields or
-      # findings; look-alikes NFKC doesn't map (Cyrillic, Greek); a reversed
-      # quote; character codes written as digits, or packed into a line.
+      # Accepted limits (repo-ci-baseline's ADR 0004, which ships with the
+      # skill, not with this workflow): the check is a backstop, and Claude's
+      # read restrictions above are the defence, so a quote changed any other
+      # way gets through too, such as these, raised in review: pieces split
+      # by letters or digits, or spread across fields or findings; look-alikes
+      # NFKC doesn't map (Cyrillic, Greek); a reversed or swap-cased quote;
+      # base64, hex or ROT13; character codes written as digits, or packed
+      # into a line.
       #
       # Inline, not in .github/scripts: this step holds CLAUDE_CODE_OAUTH_TOKEN,
       # and a token without the workflow permission (an app's, or an agent's)

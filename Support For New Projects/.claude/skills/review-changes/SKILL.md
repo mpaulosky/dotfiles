@@ -131,8 +131,8 @@ any gate you did not actually run as not run.
    start with `git fetch origin <default branch>` and, when the branch is
    behind, `git merge origin/<default branch>` and a rerun of step 5's
    gates, on a clean tree only. A merge that won't start, a conflict
-   (`git merge --abort` when `MERGE_HEAD` exists) or a red gate goes back
-   to the user unpushed.
+   (`git merge --abort` when `git rev-parse -q --verify MERGE_HEAD`
+   succeeds) or a red gate goes back to the user unpushed.
 
    Close with any **prune candidates**: linked worktrees safe to remove, with
    their `git worktree remove <path>` and `git branch -D <branch>` commands.
@@ -145,11 +145,13 @@ any gate you did not actually run as not run.
      whose `headRefOid` equals `git rev-parse refs/heads/<branch>` (the tip
      itself merged, whatever PRs once shared the name);
    - `git -C <path> status --porcelain --untracked-files=all` succeeds and
-     prints nothing;
+     prints nothing (except for a `prunable` worktree, below);
+   - `git worktree list --porcelain` shows no `locked` line for it;
    - it is neither the worktree this run created nor the one it runs in.
 
    `git worktree remove` also deletes ignored files, so flag anything in
    `git -C <path> status --porcelain --ignored` (one line per ignored
    folder) beyond build output (a `.env`, `*.user`). A worktree
    `git worktree list` marks `prunable` (its folder is gone) gets
-   `git worktree prune` instead.
+   `git worktree prune` in place of `git worktree remove`, and
+   `git branch -D` only when its ls-remote and merged-PR tests hold.

@@ -83,7 +83,9 @@ class GitHub:
             ).stdout
         except subprocess.CalledProcessError:
             return None
-        return len(text.splitlines())
+        # Line numbers count newlines only, as in diff_lines(); a last line
+        # without one still counts.
+        return text.count("\n") + (0 if text.endswith("\n") or not text else 1)
 
     def pull_files(self, number):
         output = subprocess.run(

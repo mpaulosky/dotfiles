@@ -135,6 +135,11 @@ dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
 for file in .github/workflows/claude-review.yml .github/scripts/post_claude_review.py \
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
+  # The mode too: a hook that isn't executable doesn't run.
+  owned_x=no; dotfiles_x=no
+  [[ -x "$owned/$file" ]] && owned_x=yes
+  [[ -x "$dotfiles/$file" ]] && dotfiles_x=yes
+  [[ "$owned_x" == "$dotfiles_x" ]] || fail "dotfiles' $file is executable: $dotfiles_x, the Template's: $owned_x"
 done
 
 step "apply.sh smoke test"

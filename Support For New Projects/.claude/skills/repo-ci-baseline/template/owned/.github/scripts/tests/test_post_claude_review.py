@@ -153,6 +153,19 @@ def test_a_file_the_diff_doesnt_touch_still_holds_the_merge():
     assert "`README.md:999`" in review["body"]
 
 
+@pytest.mark.parametrize(
+    "text, lines",
+    [("", 0), ("one\n", 1), ("one\ntwo", 2), ("one\x0cstill one\x85and\u2028one\n", 1), ("a\nb\n", 2)],
+)
+def test_a_files_length_counts_newlines_only(text, lines, monkeypatch):
+    def fake_run(argv, **kwargs):
+        assert argv[-1] == "repos/octo/demo/contents/docs/a%20b.md?ref=abc123"
+        return subprocess.CompletedProcess(argv, 0, stdout=text)
+    monkeypatch.setattr(pcr.subprocess, "run", fake_run)
+
+    assert pcr.GitHub("octo/demo").line_count("docs/a b.md", HEAD) == lines
+
+
 TOKENS = [
     "sk-ant-oat01-" + "a" * 40,
     "ghp_" + "b" * 36,

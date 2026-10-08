@@ -27,16 +27,19 @@ any gate you did not actually run as not run.
    `scripts/check-branch-name.sh` when the repo has one, otherwise from its
    `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md` and existing branches; absent
    any, treat the default branch as protected and use `chore/<slug>`. Stay put
-   on a branch that already follows the standard. Otherwise, before any
-   fixing, start a new branch at `HEAD` named by the standard:
+   when the branch already follows the standard and this checkout accepts
+   commits. Otherwise, before any fixing, move:
    - **Worktree rule** (the repo's `.github/hooks/pre-commit` refuses commits
-     in the primary checkout, as Baseline repos' does): create it as a linked
-     worktree, `git worktree add -b <branch> ../<Repo>-worktrees/<branch with
-     / as -> HEAD`, and carry the in-scope files over with
-     `git stash push -- <paths>`, then `git stash pop --index` inside the new
-     worktree. Out-of-scope work stays in the primary checkout. Every later
-     step runs in the worktree.
-   - **Otherwise:** `git switch -c <branch>`.
+     in the primary checkout, as Baseline repos' does), in the primary
+     checkout: set the in-scope files aside with
+     `git stash push --include-untracked -- <paths>`. On a branch that
+     follows the standard, `git switch <default branch>`, then
+     `git worktree add ../<Repo>-worktrees/<branch with / as -> <branch>`;
+     otherwise `git worktree add -b <branch> ../<Repo>-worktrees/<folder>
+     HEAD` with a new name by the standard. Then `git stash pop --index`
+     inside the new worktree. Out-of-scope work stays in the primary
+     checkout, and every later step runs in the worktree.
+   - **Otherwise:** `git switch -c <branch>`, named by the standard.
 
    Skip in dry run or when the worktree is clean. Done when you are on a
    branch that passes the standard, in a checkout where the hooks accept a

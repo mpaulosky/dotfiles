@@ -461,13 +461,29 @@ def test_a_secret_in_an_extra_field_is_withheld_too(tmp_path):
     assert withheld(tmp_path, {"summary": "s", "findings": [], SECRET[20:40]: 1}, [SECRET])
 
 
-# ADR 0004's accepted limits, pinned so a change to them is deliberate.
-@pytest.mark.parametrize("quote", [
-    " ".join(f"part {i}: {SECRET[13:][j:j + 15]}" for i, j in enumerate(range(0, 49, 15))),
-    SECRET[13:][::-1],
+# Four of the accepted limits in repo-ci-baseline's ADR 0004, pinned so a
+# change to them is deliberate. Pieces are joined by a character of the body
+# that isn't next to them in it, so no window across a join is a window of
+# the secret, whatever order the seed gives.
+BODY = SECRET[13:]
+SEPARATED = "".join(BODY[j:j + 15] + BODY[j + 20] for j in range(0, 45, 15))
+
+
+@pytest.mark.parametrize("answer", [
+    # Pieces split by letters or digits.
+    {"summary": SEPARATED, "findings": []},
+    # Pieces in separate fields, with the keys' letters between them.
+    {"summary": BODY[:15], "findings": [{"path": "a.py", "line": 1, "body": BODY[15:30]}]},
+    # Character codes written as digits.
+    {"summary": " ".join(str(ord(c)) for c in BODY[:20]), "findings": []},
+    # A reversed quote.
+    {"summary": BODY[::-1], "findings": []},
 ])
-def test_the_accepted_limits_get_through(tmp_path, quote):
-    assert not withheld(tmp_path, {"summary": quote, "findings": []}, [SECRET])
+def test_the_accepted_limits_get_through(tmp_path, answer):
+    # The keys between the separate fields start "findings" and end "body";
+    # a seed where they'd continue the body would test nothing.
+    assert BODY[15] != "f" and BODY[14] != "y", "pick another seed for SECRET"
+    assert not withheld(tmp_path, answer, [SECRET])
 
 
 def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):

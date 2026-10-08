@@ -218,7 +218,7 @@ jobs:
       # a sample token never trips it, while a quote that differs only in
       # separators or in look-alikes NFKC maps, which GitHub's masking would
       # let through, still does. It's a backstop: other encodings get through
-      # (ADR 0004's accepted limits). Then only the schema's
+      # (the accepted limits in repo-ci-baseline's ADR 0004). Then only the schema's
       # fields are passed on, with credential-shaped text redacted. It reads
       # the answer from the execution file, a path, so this log holds none.
       #
@@ -415,7 +415,8 @@ jobs:
       # parent, the base this run's workflow was merged against (the event's
       # base.sha can be older, on a labeled event after main moved). A PR that
       # changes the script is posted by the base's copy until it merges, so a
-      # change to the script's interface lands in two steps (ADR 0004).
+      # change to the script's interface lands in two steps (repo-ci-baseline's
+      # ADR 0004).
       - name: Checkout the merge commit and its base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -194,7 +194,19 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     assert review["with"]["display_report"] is False and review["with"]["show_full_output"] is False
     # Nor does a debug run, where the action shows the full output anyway.
     assert "runner.debug != '1'" in review["if"] and review["env"]["ACTIONS_STEP_DEBUG"] == "false"
-    assert "--check-answer" in answer["run"] and "structured_output" not in str(answer.get("env"))
+    assert "structured_output" not in str(answer.get("env"))
+    # The check holds the OAuth token, so it runs inline from the workflow,
+    # never from a script the PR could change.
+    assert "python3 -I - <<'PY'" in answer["run"] and ".github/scripts" not in answer["run"]
+    # The post job, which can post under the marker, runs the base's script.
+    post = next(s for s in jobs["post"]["steps"] if s.get("name") == "Post the review on the head commit")
+    assert 'git show "HEAD^1:.github/scripts/post_claude_review.py"' in post["run"]
+    assert "python3 -I \"$script\"" in post["run"] and "python3 .github" not in post["run"]
+    checkout = next(s for s in jobs["post"]["steps"] if "checkout" in s.get("uses", ""))
+    assert checkout["with"]["fetch-depth"] == 2 and "ref" not in checkout["with"]
+    # And Claude may answer only in the fields that get posted.
+    claude_args = review["with"]["claude_args"]
+    assert claude_args.count('"additionalProperties": false') == 2
 
 
 # bad_lines() (#122)
@@ -217,3 +229,64 @@ def test_a_line_past_the_end_or_a_missing_file_is_bad(tmp_path):
 
 def test_bad_lines_is_none_without_the_clone(tmp_path):
     assert bench.bad_lines(tmp_path / "missing", "HEAD", [{"path": "a", "line": 1}]) is None
+
+
+# The post step takes the script from the merge commit's first parent (#134)
+
+def run_post_step(tmp_path, base_script, findings='{"summary": "s", "findings": []}', merge=True):
+    import subprocess
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(bench.WORKFLOW.read_text())["jobs"]
+    run = next(s for s in jobs["post"]["steps"] if s.get("name") == "Post the review on the head commit")["run"]
+    repo, temp = tmp_path / "repo", tmp_path / "temp"
+    repo.mkdir(), temp.mkdir()
+    # Hooks and signing off, as above.
+    git = lambda *a: subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                                     "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo), *a],
+                                    check=True, capture_output=True)
+    git("init", "-q", "-b", "main")
+    scripts = repo / ".github" / "scripts"
+    scripts.mkdir(parents=True)
+    (repo / "README.md").write_text("base\n")
+    if base_script is not None:
+        (scripts / "post_claude_review.py").write_text(base_script)
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    git("checkout", "-q", "-b", "pr")
+    # The PR's own copy, which the step must never run.
+    (scripts / "post_claude_review.py").write_text("import sys\nprint('the PR script')\nsys.exit(3)\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "pr")
+    if merge:
+        git("checkout", "-q", "main")
+        git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+    env = {"PATH": __import__("os").environ["PATH"], "RUNNER_TEMP": str(temp), "REPOSITORY": "o/r",
+           "PR_NUMBER": "7", "HEAD_SHA": "abc", "FINDINGS": findings}
+    return subprocess.run(["bash", "-e", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
+
+
+def test_the_post_step_runs_the_bases_script_not_the_prs(tmp_path):
+    done = run_post_step(tmp_path, "import sys\nprint('the base script', *sys.argv[1:])\n")
+
+    assert done.returncode == 0
+    assert done.stdout.strip() == "the base script --repo o/r --pr 7 --head abc"
+
+
+def test_a_base_without_the_script_warns_and_posts_nothing(tmp_path):
+    done = run_post_step(tmp_path, None)
+
+    assert done.returncode == 0
+    assert done.stdout.startswith("::warning::The base has no .github/scripts/post_claude_review.py yet")
+    assert "the PR script" not in done.stdout
+
+
+def test_a_base_without_the_script_still_fails_a_withheld_answer(tmp_path):
+    done = run_post_step(tmp_path, None, findings="")
+
+    assert done.returncode == 1 and "rotate CLAUDE_CODE_OAUTH_TOKEN" in done.stdout
+
+
+def test_a_checkout_that_isnt_a_merge_commit_fails(tmp_path):
+    done = run_post_step(tmp_path, "print('the base script')\n", merge=False)
+
+    assert done.returncode == 1 and done.stdout.startswith("::error::The checkout isn't the PR's merge commit")

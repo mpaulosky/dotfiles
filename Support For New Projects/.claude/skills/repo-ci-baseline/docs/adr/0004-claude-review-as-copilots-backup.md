@@ -28,10 +28,10 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
 - A review posted with `GITHUB_TOKEN` starts no workflows, so PR Auto-Merge follows Claude Review's completion through `workflow_run`.
 - Claude Review runs on `pull_request`, so it reviews with the PR's own copy of the workflow: the PR that brings it in lands on the old gate, and the next round is the first to land on Claude's review.
 - The marker proves a review came through `github-actions[bot]`, not that Claude wrote it.
-  Claude Review runs on `pull_request`, so a branch could change the post step and post a marked review of its own.
-  Running the post from `main`'s code wouldn't close that: a branch can add any workflow that asks for `pull-requests: write`,
-  and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
-  The merge gate has never guarded against someone who can push a branch; it guards against merging before a review.
+  Someone who can push workflow changes can still post a marked review of their own: a branch can add any workflow that
+  asks for `pull-requests: write`, and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
+  The post job runs the base's script (below), so a push that changes only `.github/scripts`, without the workflow
+  permission, can't. The merge gate guards against merging before a review, not against someone who can push workflow changes.
   A fork PR can't use it: its run gets no secrets and a read-only token, so it can't post, and PR Auto-Merge never merges a fork PR; the maintainer does.
 - A finding outside the diff can't be a thread, so it goes in the review body under a second marker, and PR Auto-Merge holds on it.
   A finding on a changed file at a line the file doesn't have (past its end) is a wrong line number, not unchanged code,
@@ -128,21 +128,40 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   The token is read-only and expires with the job. The redaction's GitHub pattern also covers today's `ghs_<digits>_<JWT>` form.
 - **`--setting-sources user`.** The action already replaces the PR's `.claude/` and `.mcp.json` with the base's;
   this also keeps the base's project settings from granting `Read` again. The runner's user level has no settings.
-- **An answer that quotes a secret is withheld, exactly.** A step in the review job (`post_claude_review.py --check-answer`) reads
+- **An answer that quotes a secret is withheld, exactly.** A step in the review job, inline in `claude-review.yml`, reads
   Claude's answer from the action's execution file and drops it when it holds 16 characters in a row of the secret part of
   `CLAUDE_CODE_OAUTH_TOKEN` or the job's `GITHUB_TOKEN`, passed to it as masked secrets. That catches a near-miss quote GitHub's
   masking would let through, and never fires on a sample token from the PR. The secret part is a token's body after its public
   prefix, or a JWT's signature: the first round checked the whole stored value, and failed every review in the #132 re-Apply
   round, most likely on a part every review quotes: a stored value can hold more than the token, and a JWT's header is the same
   in every job's token. It compares letters and digits only, across the answer's strings as Claude wrote them, so a secret
-  quoted in pieces split by backticks or newlines is caught too; pieces split by letters or digits aren't, an accepted limit.
+  quoted in pieces split by backticks or newlines is caught too, and so is one in look-alike characters (fullwidth,
+  mathematical), which it NFKC-normalises first; pieces split by letters or digits aren't, an accepted limit.
+- **Only the schema's fields are passed on.** The check drops every key but the summary and each finding's path, line and
+  body, and the schema sets `additionalProperties: false`, so an extra field, never posted but printed by the post job's log,
+  is gone (Claude Review, IssueManager#274). An answer of the wrong shape, judged as `parse_findings` judges it, becomes a fixed
+  placeholder holding none of it, so nothing the check didn't compare reaches the log, and `post_claude_review.py` still
+  rejects it rather than posting "No findings". Each finding's `line` must be 0 to 1000000, so no single line
+  carries a token as one big number, and is checked, read as a character code, with the strings. An encoding the check
+  doesn't compare, such as character codes written as digits in the summary or a body, or packed several to a line, still
+  gets through: an accepted limit, like pieces split by letters or digits. The check is a backstop; Claude's read restrictions
+  above, which keep it from reading the token, are the defence.
 - **No answer in the execution file fails the review job.** The check step runs only when Claude answered, so an empty or
   unreadable execution file is its own error, not a quoted secret, and the post job doesn't run.
 - **No review in a debug run.** At the pinned action, debug logging turns `show_full_output` on, and the runner logs step outputs,
   so a debug rerun would publish Claude's answer before the check above. The Review step is skipped when `runner.debug` is set,
   with a warning to rerun without it, and sets `ACTIONS_STEP_DEBUG` to `false` for the action.
-- **The check runs the PR's copy of the script.** A same-repo PR can change it, but it can change the workflow too, which
-  `pull_request` runs from the PR; fork PRs get no secrets. Write access is the boundary, as for every workflow.
+- **The check is inline in the workflow, not in `.github/scripts`.** It holds `CLAUDE_CODE_OAUTH_TOKEN`, and a token without
+  the workflow permission (an app's, or a coding agent's that a prompt injection could steer) can push a change to a PR's
+  scripts but not to its workflows. #133 ran the PR's copy of the script and called write access the boundary; Claude Review
+  on Blazor-Server#176 showed that boundary is the workflow permission, and on atelier-store#130 that an older PR's script
+  lacked the option the merged workflow called. `pull_request` runs the workflow from the PR's merge commit, so the check is
+  always the workflow's own. The post job runs the base's `post_claude_review.py`, taken from the merge commit's first parent,
+  since it holds a token that can post a review under the marker: a changed script in the PR could otherwise post a marked
+  review Claude never wrote, which PR Auto-Merge would accept (Claude Review on #134). The first parent is the base the
+  workflow was merged against; the event's `base.sha` can be older. A PR that changes the script is posted by the base's
+  copy until it merges, so a PR that changes the script's interface together with the workflow's call fails its own post
+  job: land such a change in two steps, the script accepting both first. A base with no script yet warns and posts nothing.
 - **A quoted secret can't skip the post job.** A withheld answer, by that check or by GitHub withholding a job output that holds a
   masked secret, reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't hold a secret,
   not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.
@@ -154,4 +173,5 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   fixtures, and a re-run posts a duplicate review: matches that reach this point are public text far more often than leaks,
   and the exact check above already covers the real secrets. The tests build their sample tokens at runtime.
 - The pinned action runs on the Claude Agent SDK `^0.3.293` and passes `--allowedTools`, `--disallowedTools` and `--add-dir` through (its `parse-sdk-options.ts`).
-- Someone who can push a branch is out of scope here, as for the marker: they can change the workflow itself.
+- Someone who can push workflow changes to a branch is out of scope here, as for the marker: they can change the workflow
+  itself. Someone who can push only other files reaches neither `CLAUDE_CODE_OAUTH_TOKEN` nor the post job's script.

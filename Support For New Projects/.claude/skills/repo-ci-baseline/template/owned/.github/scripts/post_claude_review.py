@@ -91,7 +91,9 @@ def diff_lines(files):
     for file in files:
         commentable = lines.setdefault(file["filename"], set())
         line = None
-        for row in (file.get("patch") or "").splitlines():
+        # GitHub's patches are newline-delimited; splitlines() would also split
+        # on form feeds and other line breaks inside a line's content.
+        for row in (file.get("patch") or "").split("\n"):
             hunk = HUNK.match(row)
             if hunk:
                 line = int(hunk.group(1))

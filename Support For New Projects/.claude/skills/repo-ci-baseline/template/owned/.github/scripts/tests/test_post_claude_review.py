@@ -54,6 +54,12 @@ def test_diff_lines_are_the_new_side_lines_a_comment_can_sit_on():
     assert lines == {"src/app.py": {1, 2, 3, 4, 21, 22}}
 
 
+def test_line_breaks_other_than_newline_inside_a_line_dont_shift_the_count():
+    patch = "\n".join(["@@ -1,2 +1,3 @@", " page one\x0cpage two", "+added\x85text\u2028more", " context"])
+
+    assert pcr.diff_lines([{"filename": "doc.txt", "patch": patch}]) == {"doc.txt": {1, 2, 3}}
+
+
 def test_a_file_without_a_patch_has_no_commentable_lines():
     assert pcr.diff_lines([{"filename": "logo.png"}]) == {"logo.png": set()}
 

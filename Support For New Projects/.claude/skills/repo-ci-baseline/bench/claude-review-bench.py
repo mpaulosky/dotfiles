@@ -15,15 +15,19 @@ It is close to the workflow, not identical: it runs the `claude` on PATH,
 not the Claude Code version the pinned claude-code-action installs. The
 results file records the CLI version, so a rerun on another version is told
 apart. It takes the case's root Claude Code config (`.claude/`, `.mcp.json`,
-`CLAUDE.md`, `CLAUDE.local.md`) from the base, starts no MCP servers and runs
-git with hooks off, so a head commit's settings, hooks and servers never run.
-Nested `CLAUDE.md` files and `.claude/skills` in subdirectories still come
-from the head, as the diff Claude reads does.
+`CLAUDE.md`, `CLAUDE.local.md`) from the base, as the action does. It loads
+no settings at all (`--setting-sources ""`, standing in for the runner's
+empty user level), starts no MCP servers and runs git with hooks off, so
+neither a head commit's nor the base's settings, hooks and servers run, nor
+your own. Nested `CLAUDE.md` files and `.claude/skills` in subdirectories
+still come from the head, as the diff Claude reads does.
 
-It runs Claude on your machine with an unscoped Read, against code from the
-case's commits. Only add a case whose commits you trust, and read a results
-file before committing it: a prompt-injected diff could put local files in
-the findings. Needs PyYAML (for reading the workflow) and git.
+The source of the actions the case head's review job pins is copied into the
+temporary directory's `work/_actions`, where the workflow's prompt says the runner
+keeps it (clones are cached in ~/.cache/claude-review-bench). Claude reads
+only the case's worktree, the diff and that copy, as in CI. Still, only add a
+case whose commits you trust, and read a results file before committing it.
+Needs PyYAML (for reading the workflow) and git.
 
 It prints each case's findings and which expected findings they caught, and
 writes the run to bench/results/<timestamp>.json. Matching is by keyword, so
@@ -57,16 +61,20 @@ def review_step(workflow):
 
 
 def render(text, pr, temp):
-    """Fill in the workflow expressions the prompt and args use."""
+    """Fill in the workflow expressions the prompt and args use.
+
+    github.workspace is temp/work/repo/repo, so its ../../_actions is temp/work/_actions, laid out as on a runner.
+    """
     text = text.replace("${{ github.event.pull_request.number }}", str(pr))
     text = text.replace("${{ runner.temp }}", str(temp))
+    text = text.replace("${{ github.workspace }}", str(Path(temp) / "work" / "repo" / "repo"))
     left = re.findall(r"\$\{\{[^}]*\}\}", text)
     if left:
         sys.exit(f"claude-review-bench.py: unrendered expressions: {left}")
     return text
 
 
-def override(args, effort, model, tools):
+def override(args, effort, model, tools, setting_sources=None):
     """claude_args with one flag's value replaced, or the flag added."""
     def put(flag, value):
         if flag in args:
@@ -77,6 +85,8 @@ def override(args, effort, model, tools):
         put("--effort", effort)
     if model:
         put("--model", model)
+    if setting_sources is not None:
+        put("--setting-sources", setting_sources)
     if tools:
         put("--allowedTools", tools)
         if "--disallowedTools" in args:
@@ -97,13 +107,52 @@ def caught(finding, findings_found):
         text = text.lower()
         return all(any(mentions(text, word) for word in group) for group in finding["match"])
     def on_path(found):
-        return not finding.get("paths") or any(str(found.get("path", "")).endswith(p) for p in finding["paths"])
+        # A whole path component: release_post.py isn't tests/test_release_post.py.
+        path = str(found.get("path", ""))
+        return not finding.get("paths") or any(path == p or path.endswith("/" + p) for p in finding["paths"])
     return [f for f in findings_found if on_path(f) and matches(str(f.get("body", "")))]
 
 
 # Git with hooks off: Baseline repos set a relative core.hooksPath, so a worktree's own
 # hooks (a case head's post-checkout) would otherwise run here.
 GIT = ["git", "-c", "core.hooksPath=/dev/null"]
+
+
+# A step's remote action: owner/repo[/path]@ref.
+USES = re.compile(r"([\w.-]+)/([\w.-]+)(?:/[^@]*)?@([\w.-]+)")
+CACHE = Path.home() / ".cache" / "claude-review-bench" / "actions"
+
+
+def pinned_actions(workflow_text):
+    """(owner, repo, ref) for each remote action the review job uses, in order and without repeats."""
+    import yaml
+    try:
+        steps = yaml.safe_load(workflow_text)["jobs"]["review"]["steps"]
+    except (yaml.YAMLError, KeyError, TypeError):
+        return []
+    found = []
+    for step in steps:
+        match = USES.fullmatch(str(step.get("uses", ""))) if isinstance(step, dict) else None
+        if match and match.groups() not in found:
+            found.append(match.groups())
+    return found
+
+
+def copy_actions(tree, head, actions_dir):
+    """Copy the source of the actions the head's review job pins into actions_dir, as a runner lays it out."""
+    shown = subprocess.run([*GIT, "-C", str(tree), "show", f"{head}:.github/workflows/claude-review.yml"],
+                           capture_output=True, text=True)
+    for owner, repo, ref in pinned_actions(shown.stdout if shown.returncode == 0 else ""):
+        cache = CACHE / owner / repo
+        if not cache.exists():
+            subprocess.run([*GIT, "clone", "-q", "--bare", "--filter=blob:none", f"https://github.com/{owner}/{repo}.git",
+                            str(cache)], check=True, capture_output=True, text=True)
+        if subprocess.run([*GIT, "-C", str(cache), "cat-file", "-e", f"{ref}^{{commit}}"], capture_output=True).returncode:
+            subprocess.run([*GIT, "-C", str(cache), "fetch", "-q", "origin", ref], check=True, capture_output=True, text=True)
+        dest = actions_dir / owner / repo / ref
+        dest.mkdir(parents=True, exist_ok=True)
+        archive = subprocess.run([*GIT, "-C", str(cache), "archive", ref], check=True, capture_output=True).stdout
+        subprocess.run(["tar", "-x", "-C", str(dest)], input=archive, check=True, capture_output=True)
 
 
 # What Claude Code reads from a project: its settings and hooks, its MCP servers, and its instructions.
@@ -138,20 +187,25 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
                            check=True, capture_output=True, text=True)
             added = True
             use_base_settings(tree, case["base"])
+            (temp / "work" / "repo" / "repo").mkdir(parents=True)
+            copy_actions(tree, case["head"], temp / "work" / "_actions")
             # The runner's plain git diff: no external diff tool or prefix settings from the global config, and
             # any file encoding read without failing.
             diff = subprocess.run([*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-C", str(tree),
                                    "diff", "--no-color", "--no-ext-diff", f"{case['base']}...{case['head']}"],
                                   check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
-            (temp / "pr.diff").write_text(diff)
-            argv = ["claude", "-p", render(prompt, case["pr"], temp),
-                    *override(shlex.split(render(claude_args, case["pr"], temp)), *overrides),
-                    "--output-format", "json", "--setting-sources", "project", "--strict-mcp-config", "--no-session-persistence"]
+            (temp / "claude-review").mkdir()
+            (temp / "claude-review" / "pr.diff").write_text(diff)
+            args = override(shlex.split(render(claude_args, case["pr"], temp)), *overrides)
+            # The runner's user level has no settings; yours mustn't load in its place.
+            args = override(args, None, None, None, setting_sources="")
+            argv = ["claude", "-p", render(prompt, case["pr"], temp), *args,
+                    "--output-format", "json", "--strict-mcp-config", "--no-session-persistence"]
             done = subprocess.run(argv, cwd=tree, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"error": f"timed out after {timeout}s", "seconds": round(time.monotonic() - started)}
         except (subprocess.CalledProcessError, OSError) as error:
-            # A missing clone or commit.
+            # A missing clone or commit, or an action that can't be fetched.
             detail = getattr(error, "stderr", None) or ""
             return {"error": f"{error} {detail}".strip(), "seconds": round(time.monotonic() - started)}
         finally:

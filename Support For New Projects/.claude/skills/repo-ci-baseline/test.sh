@@ -127,12 +127,19 @@ if git -C "$ignore_repo" check-ignore -q .env.example; then
   fail ".gitignore must not ignore .env.example"
 fi
 
-step "dotfiles' copy of Claude Review"
-# dotfiles isn't a Baseline repo, so it carries Claude Review as a copy of the
-# Template's files, which must not drift from them.
+step "dotfiles' copies of Template files"
+# dotfiles isn't a Baseline repo, so it carries Claude Review and the git hooks
+# as copies of the Template's files, which must not drift from them. Its
+# scripts/gate.sh is its own: it runs this script.
 dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
-for file in .github/workflows/claude-review.yml .github/scripts/post_claude_review.py; do
+for file in .github/workflows/claude-review.yml .github/scripts/post_claude_review.py \
+  .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
+  # The mode too: a hook that isn't executable doesn't run.
+  owned_x=no; dotfiles_x=no
+  [[ -x "$owned/$file" ]] && owned_x=yes
+  [[ -x "$dotfiles/$file" ]] && dotfiles_x=yes
+  [[ "$owned_x" == "$dotfiles_x" ]] || fail "dotfiles' $file is executable: $dotfiles_x, the Template's: $owned_x"
 done
 
 step "apply.sh smoke test"

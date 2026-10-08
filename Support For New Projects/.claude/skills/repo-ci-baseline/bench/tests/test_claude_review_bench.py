@@ -43,6 +43,11 @@ def test_a_finding_on_another_file_never_counts():
     assert not bench.caught(TAB, [finding(".github/workflows/ci.yml", "A leading tab survives.")])
 
 
+def test_a_path_matches_whole_components_only():
+    assert bench.caught(TAB, [finding("release_post.py", "A leading tab survives.")])
+    assert not bench.caught(TAB, [finding(".github/scripts/tests/test_release_post.py", "A leading tab survives.")])
+
+
 def test_every_cases_file_finding_has_paths_and_match():
     spec = json.loads((BENCH / "claude-review-cases.json").read_text())
     for key, entry in spec["findings"].items():
@@ -66,6 +71,11 @@ def test_an_override_adds_a_flag_that_was_missing():
     assert args[-2:] == ["--effort", "high"]
 
 
+def test_setting_sources_can_be_emptied():
+    args = bench.override(["--setting-sources", "user"], None, None, None, setting_sources="")
+    assert args == ["--setting-sources", ""]
+
+
 def test_allowed_tools_are_dropped_from_the_disallowed_list():
     args = bench.override(list(ARGS), None, None, "Read,Glob,Grep,WebFetch")
     assert args[args.index("--allowedTools") + 1] == "Read,Glob,Grep,WebFetch"
@@ -75,13 +85,42 @@ def test_allowed_tools_are_dropped_from_the_disallowed_list():
 # render()
 
 def test_render_fills_in_the_workflow_expressions():
-    text = "PR #${{ github.event.pull_request.number }}, diff in ${{ runner.temp }}/pr.diff"
-    assert bench.render(text, 7, "/tmp/t") == "PR #7, diff in /tmp/t/pr.diff"
+    text = "PR #${{ github.event.pull_request.number }}, diff in ${{ runner.temp }}/pr.diff, ${{ github.workspace }}/../../_actions"
+    assert bench.render(text, 7, "/tmp/t") == "PR #7, diff in /tmp/t/pr.diff, /tmp/t/work/repo/repo/../../_actions"
 
 
 def test_render_refuses_an_expression_it_doesnt_know():
     with pytest.raises(SystemExit):
         bench.render("${{ secrets.TOKEN }}", 7, "/tmp/t")
+
+
+# pinned_actions()
+
+def test_the_review_jobs_remote_actions_are_found_once_each():
+    pytest.importorskip("yaml")
+    workflow = """
+jobs:
+  review:
+    steps:
+      - uses: actions/checkout@abc123
+      - run: echo hi
+      - uses: anthropics/claude-code-action@def456
+      - uses: actions/checkout@abc123
+      - uses: ./.github/actions/local
+      - uses: owner/repo/sub/path@v1
+  post:
+    steps:
+      - uses: actions/setup-python@v6
+"""
+    assert bench.pinned_actions(workflow) == [("actions", "checkout", "abc123"),
+                                              ("anthropics", "claude-code-action", "def456"),
+                                              ("owner", "repo", "v1")]
+
+
+def test_a_head_without_a_review_job_pins_nothing():
+    pytest.importorskip("yaml")
+    assert bench.pinned_actions("") == []
+    assert bench.pinned_actions("jobs: {build: {steps: []}}") == []
 
 
 # use_base_settings()
@@ -119,8 +158,24 @@ def test_the_benchmark_can_read_the_template_workflows_review_step():
     prompt, claude_args = bench.review_step(bench.WORKFLOW)
     rendered = shlex.split(bench.render(claude_args, 7, "/tmp/t"))
     assert "#7" in bench.render(prompt, 7, "/tmp/t")
-    for flag in ("--model", "--effort", "--json-schema", "--allowedTools"):
+    for flag in ("--model", "--effort", "--json-schema"):
         assert flag in rendered, flag
+    # The token's guards (#121): no tool granted outright, so reads stay in the
+    # checkout and the --add-dir directories; no repo settings; /proc denied.
+    assert "--allowedTools" not in rendered and "--allowed-tools" not in rendered
+    assert rendered[rendered.index("--setting-sources") + 1] == "user"
+    added = [rendered[i + 1] for i, arg in enumerate(rendered) if arg == "--add-dir"]
+    assert added == ["/tmp/t/claude-review", "/tmp/t/work/repo/repo/../../_actions"]
     disallowed = rendered[rendered.index("--disallowedTools") + 1].split(",")
     assert "Read(//proc/**)" in disallowed
-    assert {"Bash", "WebFetch", "WebSearch"} <= set(disallowed)
+    assert {"Bash", "Edit", "Write", "WebFetch", "WebSearch"} <= set(disallowed)
+
+
+def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
+    # #123: a failed check leaves the PR UNSTABLE, which PR Auto-Merge never merges.
+    yaml = pytest.importorskip("yaml")
+    jobs = yaml.safe_load(bench.WORKFLOW.read_text())["jobs"]
+    step = next(s for s in jobs["review"]["steps"] if s.get("id") == "claude")
+    assert step["continue-on-error"] is True
+    assert step["timeout-minutes"] < jobs["review"]["timeout-minutes"]
+    assert "needs.review.outputs.findings != ''" in jobs["post"]["if"]

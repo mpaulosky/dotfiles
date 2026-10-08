@@ -34,9 +34,15 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   The merge gate has never guarded against someone who can push a branch; it guards against merging before a review.
   A fork PR can't use it: its run gets no secrets and a read-only token, so it can't post, and PR Auto-Merge never merges a fork PR; the maintainer does.
 - A finding outside the diff can't be a thread, so it goes in the review body under a second marker, and PR Auto-Merge holds on it.
+  A finding on a changed file at a line the file doesn't have (past its end) is a wrong line number, not unchanged code,
+  so it goes on the file's nearest line in the diff as a thread, with a note (#122). When the file's length can't be read, it holds as before.
   The post job warns instead of failing. A failing check couldn't hold the merge on its own: a later run with its jobs skipped (another label added) replaces it.
   And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges, so the cap couldn't bypass the hold.
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
+- A Review step that fails, times out (its own 25 minutes, under the job's 30) or is refused at the usage limit doesn't fail the job either (#123):
+  `continue-on-error` lets a warning step say so, and the post job skips when there's nothing to post (an empty output would fail it as malformed).
+  The PR then has no Claude review of its head, so PR Auto-Merge waits for Copilot's or a rerun, instead of the PR going `UNSTABLE`.
+  The prompt also asks Claude to skim generated files, lockfiles, snapshots and recorded data, so a big PR is less likely to run out of time.
 - dotfiles isn't a Baseline repo, so it carries a copy of the two files, which `test.sh` keeps identical to the Template's; its "reviewed" rule is the landing decision's.
 
 ## Model, effort and prompt (#117)
@@ -55,9 +61,10 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 | Sonnet 5.5, max | 2 | ~16 min, ~$3 |
 | Sonnet 5.5, high, thorough prompt v2 (`bench/prompts/thorough-v2.txt`), with WebFetch | 2 | ~2 min, ~$0.47 |
 | Opus 5.5, high, thorough prompt v2 | 4 | ~4–7 min, ~$1.20 |
-| **Opus 5.5, high, thorough prompt v3 (`thorough-v3.txt`, one sentence edited since)** | **3** | ~4 min, ~$1.34 |
+| Opus 5.5, high, thorough prompt v3 (`thorough-v3.txt`, one sentence edited since) | 3 | ~4 min, ~$1.34 |
+| **Opus 5.5, high, the workflow's prompt, reads scoped, pinned actions' source readable (#121, #117)** | **4** | ~4–5 min, ~$1.68 |
 
-- **Opus at high effort with the thorough prompt (v3) is what the workflow runs.**
+- **Opus at high effort with the thorough prompt (v3, edited as below) is what the workflow runs.**
   - With v2 it caught findings 1, 3 and 4, in two runs. With v3 it caught 3 and 4, and missed finding 1 in that one run.
     A point either way is within what one run varies by. It flagged the known marker limit once in the run without WebFetch, and on all three commits in the run with it.
   - Its findings on the benchmark commits were on the right lines, each with a fix, and several were real problems Copilot didn't raise.
@@ -66,9 +73,12 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   - v3 differs from v2 only in where a finding goes: on a line the diff adds or shows, with a problem in unchanged code put on the changed line that depends on it,
     because any other line holds the merge. On the ordinary PRs it made 2, 2 and 4 findings, all on real lines, and on Articles#298 every finding was on a changed line.
     It flagged the known marker limit on all three commits.
-- After the benchmark, one sentence of v3 changed: it had asked Claude to read a pinned action's source or GitHub's documentation, which it has no way to do.
-  It now asks Claude to say what it's relying on when that decides a finding. Pointing it at the action's source on the runner, for finding 5, is #117.
-- **The review job's `timeout-minutes` is 30.** Opus took up to about 7 minutes on these diffs, and a timed-out job is a failing check that holds the merge.
+- After the benchmark, one sentence of v3 changed: it had asked Claude to read a pinned action's source or GitHub's documentation, which it had no way to do.
+  Now the runner's `_actions` (the source of the actions the review job pins) is an `--add-dir`, and the prompt points Claude at it;
+  for anything else it says what it's relying on. The benchmark copies the case head's pinned actions into the same layout.
+  In that run (`v4-scoped-actions`) Claude caught finding 5 for the first time, from the action's `checkHumanActor`, along with 3 and 4 and the marker limit;
+  it missed finding 1, which the v2 runs caught. The same run is the check that scoping reads (#121) cost nothing.
+- **The review job's `timeout-minutes` is 30**, and the Review step's 25. Opus took up to about 7 minutes on these diffs; a step that times out now warns instead of failing the check (#123).
   `review:claude` goes mostly on re-Apply PRs, which carry only the Owned files that changed: 2 to 8 files and under 800 lines in the #116 and #82 rounds,
   the largest being Articles#298, the benchmark's own case.
 - **The prompt was the bigger change.**
@@ -76,23 +86,44 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   - The thorough prompt asks for the files around the diff, untested paths (reruns, skipped jobs, other actors, odd input) and how GitHub itself behaves.
   - It also asks that every line number be checked against the file. An earlier draft produced impossible line numbers, and an off-diff finding holds the merge.
 - **No WebFetch.**
-  - No run caught finding 5 with it or without it, and Opus scored the same without it.
-  - It would also be one more way out for a prompt-injected diff. It isn't the only one: with `Read` unscoped, Claude can read the OAuth token from its own environment,
-    and the review it writes is posted publicly. In the meantime `Read(//proc/**)` is denied, which also covers Grep and Glob (checked locally:
-    without the rule both read `/proc/self/status`, with it both are refused). Scoping `Read` further and redacting the output are #121.
-- **Still missed: finding 5.** Spotting it needs the pinned action's source: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
-  #117 asked for it, so #117 stays open for it. Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
+  - No run caught finding 5 with it, and Opus scored the same without it.
+  - It would also be one more way out for a prompt-injected diff. See [Keeping the token out of the review](#keeping-the-token-out-of-the-review-121) for the others.
+- **Finding 5 needed the pinned action's source**: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
+  Only an action this review job itself runs is on the runner, so a finding about another workflow's pinned action still rests on what Claude says it's relying on.
+  Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
-  Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 runs); the earlier files predate that, and the CLI updated during these runs.
+  Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 and v4 runs); the earlier files predate that, and the CLI updated during these runs.
 - **Cost:** about $1.20 a review instead of $0.19 at API prices. That is acceptable, because the backup only runs while a PR carries `review:claude`.
   In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's Opus allowance, and the plan has to include Opus in Claude Code.
-  A run refused at the usage limit fails the check and holds the PR until someone reruns it after the reset, or merges by hand. A fallback is #123.
+  A run refused at the usage limit posts nothing and warns, and the PR waits for Copilot's review or a rerun after the reset (#123).
 - Matching is by keyword, whole words, on the files a finding is about, and every saved run in `bench/results/` is scored with the current cases file
   (`--rescore` rewrites a file's score after the cases change). Read the findings too: an early, looser matcher counted a finding about skipping `[bot]` actors as finding 5.
 - Each results file keeps the exact prompt and arguments it ran with, which is what reproduces its score; a prompt file may have changed since.
 - The workflow's header records the accepted marker limit, because the prompt asks for problems "a maintainer would want fixed or knowingly accepted",
   and this ADR isn't in the Baseline repos: without it, every re-Apply PR that touches the workflow would get the same thread.
 - The benchmark runs Claude on the maintainer's machine against the cases' commits.
-  It takes the root `.claude/`, `.mcp.json`, `CLAUDE.md` and `CLAUDE.local.md` from the base, starts no MCP servers and runs git with hooks off,
-  so a head's settings, hooks and servers never run (nested `CLAUDE.md` files still come from the head, as the diff does). Only trusted commits become cases, and a results file is read before it's committed.
+  It takes the root `.claude/`, `.mcp.json`, `CLAUDE.md` and `CLAUDE.local.md` from the base, as the action does, loads no settings at all
+  (`--setting-sources ""`, for the runner's empty user level), starts no MCP servers and runs git with hooks off.
+  So no settings, hooks or servers run, the head's, the base's or the maintainer's own (#125); the base's hooks used to, against the head's scripts.
+  Nested `CLAUDE.md` files still come from the head, as the diff does. Only trusted commits become cases, and a results file is read before it's committed.
 - Rerun the benchmark before changing the model, effort, prompt or tools, and add a case whenever Copilot finds something Claude Review missed.
+
+## Keeping the token out of the review (#121)
+
+The Claude process holds `CLAUDE_CODE_OAUTH_TOKEN`, it reads untrusted PR content, and the review it writes is posted publicly.
+A prompt-injected diff (or text an agent copied into a PR) could ask Claude to read the token and quote it.
+Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted those tools on every path, so nothing stopped it.
+
+- **No tool is granted outright.** Read, Glob and Grep are then allowed only in the working directory and the `--add-dir` directories:
+  the checkout, `$RUNNER_TEMP/claude-review` (the diff alone, not the rest of `RUNNER_TEMP`) and the runner's `_actions`.
+  Checked with Claude Code 2.1.294 in `-p` mode with the workflow's flags: reads, Greps and Globs of `/etc`, a sibling of the diff's directory and `/proc/self/environ`
+  are refused, and so are `/dev/fd/../environ` and a symlink in the checkout pointing at `/proc/self/environ` or `/etc/hostname`: Claude Code resolves the path before it checks.
+  With `--allowedTools "Glob,Grep"`, Grep searched outside the workspace and Glob listed `/etc`, which is why nothing is granted.
+- **`Read(//proc/**)` stays denied**, in case a later change grants a tool again.
+- **`--setting-sources user`.** The action already replaces the PR's `.claude/` and `.mcp.json` with the base's;
+  this also keeps the base's project settings from granting `Read` again. The runner's user level has no settings.
+- **`post_claude_review.py` redacts** anything shaped like an Anthropic key or OAuth token, a GitHub token or a JWT in the summary, paths and bodies,
+  posts the redacted review, and fails the step with an error, so a person checks the PR and rotates the token if it was exposed.
+  Here a failing check is wanted: the PR shouldn't merge on its own until someone has looked.
+- The pinned action runs on the Claude Agent SDK `^0.3.293` and passes `--allowedTools`, `--disallowedTools` and `--add-dir` through (its `parse-sdk-options.ts`).
+- Someone who can push a branch is out of scope here, as for the marker: they can change the workflow itself.

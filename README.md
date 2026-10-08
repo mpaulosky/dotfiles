@@ -26,6 +26,19 @@ docs/                    Documentation templates (CONTRIBUTING, SECURITY, etc.)
 .squad/                  Squad AI team orchestration
 ```
 
+## Working in this repo
+
+dotfiles follows the Baseline's branch and worktree rules, with copies of the repo-ci-baseline Template's git hooks
+in `.github/hooks/`: commit in a worktree under `../dotfiles-worktrees/`, on a branch named
+`feature|fix|hotfix/<issue>-<slug>` or `chore/<slug>`, and push through the pre-push gate, which runs
+`scripts/gate.sh` (the skill's `test.sh`). Switch the hooks on once per clone:
+
+```bash
+git config core.hooksPath .github/hooks
+```
+
+`test.sh` fails if a copied hook drifts from the Template's; change the Template's and copy it over.
+
 ## Quick Start
 
 ### Using a Starter Template
@@ -51,7 +64,7 @@ The `.devcontainer/` folder provides a ready-to-use development container target
 Files in `.github/instructions/` are reusable Copilot instruction templates:
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `copilot-instructions.md` | .NET project coding standards (C# 14, Blazor, MongoDB, testing) |
 | `blazor-web-app.instructions.md` | Blazor component and application patterns |
 | `mongodb-dba.agent.md` | MongoDB DBA chat mode instructions |

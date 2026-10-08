@@ -29,9 +29,15 @@ name: Claude Review
 # runs on pull_request, from the PR's merge commit, so a push that changes it
 # could post a marked review of its own. The merge gate guards against
 # merging before a review, not against someone who can push workflow changes.
-# A push without that permission (an app's, or a coding agent's) can't: the
-# answer check is inline here, and the post job runs the base's
-# post_claude_review.py, not the PR's. A fork PR can't use it:
+# A push without that permission (an app's, or a coding agent's) can't
+# change the code that checks or posts the answer: the check is inline here,
+# and the post job runs the base's post_claude_review.py, not the PR's. It can
+# still steer what Claude answers, by editing the conventions the prompt has
+# Claude follow (AGENTS.md, CLAUDE.md, docs/) or by instructions in the diff,
+# and the base's script posts that answer under the marker. A prompt-injected
+# "no findings" is an accepted limit too: the marker shows a review of the
+# head was posted, not that the PR was reviewed in good faith. A fork PR can't
+# use it:
 # its run gets no secrets and a read-only token, so it can't post, and PR
 # Auto-Merge never merges a fork PR (isCrossRepository); the maintainer does.
 #

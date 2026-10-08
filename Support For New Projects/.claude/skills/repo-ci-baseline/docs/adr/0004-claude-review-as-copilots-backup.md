@@ -32,6 +32,12 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   asks for `pull-requests: write`, and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
   The post job runs the base's script (below), so a push that changes only `.github/scripts`, without the workflow
   permission, can't. The merge gate guards against merging before a review, not against someone who can push workflow changes.
+- A push without the workflow permission can still steer what Claude answers, and so what gets posted under the marker.
+  The review job checks out the PR's head and the prompt has Claude follow the repo's conventions (AGENTS.md, CLAUDE.md,
+  `docs/`), so a push that edits those files, or puts instructions in the diff, can steer Claude to answer with no findings,
+  which the base's script posts as an ordinary review of the head (Claude Review, IssueTracker#227). This is an accepted
+  limit: such a push can't change the code that checks or posts the answer, but the marker shows that a review of the head
+  was posted, not that the PR was reviewed in good faith.
   A fork PR can't use it: its run gets no secrets and a read-only token, so it can't post, and PR Auto-Merge never merges a fork PR; the maintainer does.
 - A finding outside the diff can't be a thread, so it goes in the review body under a second marker, and PR Auto-Merge holds on it.
   A finding on a changed file at a line the file doesn't have (past its end) is a wrong line number, not unchanged code,
@@ -191,4 +197,5 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   and the exact check above already covers the real secrets. The tests build their sample tokens at runtime.
 - The pinned action runs on the Claude Agent SDK `^0.3.293` and passes `--allowedTools`, `--disallowedTools` and `--add-dir` through (its `parse-sdk-options.ts`).
 - Someone who can push workflow changes to a branch is out of scope here, as for the marker: they can change the workflow
-  itself. Someone who can push only other files reaches neither `CLAUDE_CODE_OAUTH_TOKEN` nor the post job's script.
+  itself. Someone who can push only other files reaches neither `CLAUDE_CODE_OAUTH_TOKEN` nor the post job's script,
+  though they can steer Claude's verdict (the marker limit above).

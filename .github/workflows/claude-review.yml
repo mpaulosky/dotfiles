@@ -321,8 +321,9 @@ jobs:
                   pairs = [redact(item) for item in value]
                   return [item for item, _ in pairs], sum(n for _, n in pairs)
               if isinstance(value, dict):
-                  pairs = {key: redact(item) for key, item in value.items()}
-                  return {key: item for key, (item, _) in pairs.items()}, sum(n for _, n in pairs.values())
+                  # Keys too: a wrong-shaped answer is passed on as it is.
+                  pairs = [(redact(key), redact(item)) for key, item in value.items()]
+                  return {key: item for (key, _), (item, _) in pairs}, sum(m + n for (_, m), (_, n) in pairs)
               return value, 0
 
 

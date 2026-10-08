@@ -406,6 +406,18 @@ def test_a_malformed_answer_reaches_the_post_script_malformed(tmp_path, answer):
         pcr.parse_findings(outputs["findings"])
 
 
+@pytest.mark.parametrize("answer", [
+    {"summary": "s", "findings": [[{TOKENS[1]: 1}]]},
+    {"summary": {TOKENS[1]: "x"}, "findings": []},
+    [{TOKENS[1]: "x"}],
+])
+def test_credential_shaped_keys_in_a_malformed_answer_are_redacted(tmp_path, answer):
+    _, outputs, _ = check(tmp_path, answer, [SECRET])
+
+    assert TOKENS[1] not in outputs["findings"] and pcr.REDACTED in outputs["findings"]
+    assert outputs["redacted"] == "1"
+
+
 def test_a_secret_spelled_out_in_line_numbers_is_withheld(tmp_path):
     findings = [{"path": "a.py", "line": ord(c), "body": "b"} for c in SECRET[13:33]]
 

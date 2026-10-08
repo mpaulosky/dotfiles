@@ -67,14 +67,15 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # Text shaped like a credential, in the formats the tokens are issued in, so
 # a long snake_case name such as ghs_installation_token_value isn't one:
 # Anthropic keys and OAuth tokens, GitHub tokens (classic, fine-grained and
-# today's ghs_<digits>_<JWT> installation tokens), and JWTs.
+# today's ghs_<digits>_<JWT> installation tokens), and JWTs. No boundary on
+# the left, so text run up against a token (token_ghp_..., x-eyJ...) can't
+# hide it; a match only warns, so redacting a little too much costs little.
 CREDENTIAL = re.compile(
-    r"(?<![A-Za-z0-9_-])sk-ant-[A-Za-z0-9_-]{20,}"
-    r"|\bgh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
-    r"|\bgh[pousr]_[A-Za-z0-9]{36,}\b"
-    r"|\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b"
-    # A JWT anywhere, even after a word character.
-    r"|(?<![A-Za-z0-9-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"sk-ant-[A-Za-z0-9_-]{20,}"
+    r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"|gh[pousr]_[A-Za-z0-9]{36,}"
+    r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
 )
 REDACTED = "[redacted]"
 # How much of a secret, in a row, counts as quoting it.

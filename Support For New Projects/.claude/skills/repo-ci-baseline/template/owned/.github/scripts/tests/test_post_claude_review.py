@@ -183,7 +183,12 @@ TOKENS = [
 ]
 
 
-@pytest.mark.parametrize("token", TOKENS + ["x-access-token:" + TOKENS[-1] + "@github.com"])
+# Text run up against a token doesn't hide it.
+PREFIXED = ["x-access-token:" + TOKENS[-1] + "@github.com", "token_" + TOKENS[1], "token_" + TOKENS[2],
+            "x" + JWT, "token-" + JWT, "docs/session-" + JWT, "\\n" + TOKENS[1], "risk-" + TOKENS[0]]
+
+
+@pytest.mark.parametrize("token", TOKENS + PREFIXED)
 def test_a_credential_is_redacted_everywhere_and_warns(token, capsys):
     gh = FakeGitHub()
     findings = findings_json(("src/app.py", 2, f"The token is {token}."), (f"docs/{token}.md", 1, "Path."),
@@ -192,7 +197,8 @@ def test_a_credential_is_redacted_everywhere_and_warns(token, capsys):
     pcr.main(["--repo", "octo/demo", "--pr", "7", "--head", HEAD], gh=gh, findings=findings)
 
     _, review = gh.posted[0]
-    assert TOKENS[-1] not in json.dumps(review) and token not in json.dumps(review)
+    posted = json.dumps(review)
+    assert token not in posted and not any(t in posted for t in TOKENS)
     assert pcr.REDACTED in review["comments"][0]["body"]
     assert "3 credential-shaped string(s) were redacted" in review["body"]
     assert "::warning::Redacted 3" in capsys.readouterr().out
@@ -208,7 +214,6 @@ def test_the_review_jobs_redactions_are_counted(monkeypatch, capsys):
 
 @pytest.mark.parametrize("text", [
     "ghs_installation_token_value_for_the_runner_job",
-    "a risk-ant-colony_simulation_parameter_set here",
     "github_pat_example_placeholder_value_goes_here_xx",
     "ghp_short",
 ])

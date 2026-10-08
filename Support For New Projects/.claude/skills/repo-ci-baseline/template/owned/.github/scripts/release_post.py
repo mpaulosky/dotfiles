@@ -123,8 +123,12 @@ def render_commits(commits):
             # and cmark-gfm read that differently, and an escape in code would show.
             rest = subject[after:].lstrip(" \t")
             subject = " ".join(subject[:after].split()) + (" " + rest if rest else "")
+        # Spaces and tabs after the markers are skipped, so a definition behind them is
+        # found; with no marker they're only what a dropped comment left, and they go.
         start = after_containers(subject, 0)
-        start += len(subject[start:]) - len(subject[start:].lstrip(" "))
+        if start == 0:
+            subject = subject.lstrip(" \t")
+        start += len(subject[start:]) - len(subject[start:].lstrip(" \t"))
         if DEFINITION_LIKE_SUBJECT.match(subject, start):
             subject = subject[:start] + "\\" + subject[start:]
         lines.append(f"- {subject} (`{commit.get('sha', '')[:7]}`)")

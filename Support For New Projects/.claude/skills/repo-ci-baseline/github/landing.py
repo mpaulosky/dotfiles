@@ -12,7 +12,9 @@ skill lands PRs by (references/automerge.md):
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup: Claude Review posts as
-  github-actions[bot] with CLAUDE_MARKER first in the body;
+  github-actions[bot] with CLAUDE_MARKER first in the body. When Claude's
+  latest review of the head has findings outside the diff (OFF_DIFF_MARKER
+  on its second line), they open no thread, so the PR waits for a new head;
 - where the repo requires no checks (dotfiles), auto-merge wouldn't wait for
   CI, so the checks must finish green first;
 - in a Baseline repo, its own PR Auto-Merge workflow merges a reviewed PR
@@ -43,6 +45,7 @@ COPILOT = re.compile(r"copilot", re.IGNORECASE)
 # the marker its review bodies start with; post_claude_review.py writes both.
 GITHUB_ACTIONS = "github-actions"
 CLAUDE_MARKER = "<!-- claude-review -->"
+OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->"
 
 # The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
 RELEASE_BLOG_BRANCHES = frozenset({"docs/release-notes", "docs/backfill-blog-posts"})
@@ -88,6 +91,8 @@ class PrState:
 
     copilot_reviewed: the commit oids Copilot reviewed (see copilot_reviews()).
     claude_reviewed: the commit oids Claude Review reviewed (see claude_reviews()).
+    claude_off_diff: the commit oids whose latest Claude review has findings
+    outside the diff (see claude_off_diff()).
     checks_required: whether the repo requires checks before a merge; without
     them native auto-merge merges at once, so green checks must come first.
     want_ready: the caller's say that a draft should be marked ready.
@@ -101,6 +106,7 @@ class PrState:
     head: str = ""
     copilot_reviewed: frozenset[str] = field(default_factory=frozenset)
     claude_reviewed: frozenset[str] = field(default_factory=frozenset)
+    claude_off_diff: frozenset[str] = field(default_factory=frozenset)
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -137,11 +143,23 @@ def copilot_reviews(reviews):
     return frozenset(oid for login, oid in reviews if login and oid and COPILOT.search(login))
 
 
+def is_claude_review(login, oid, body):
+    return bool(login and oid and login.removesuffix("[bot]") == GITHUB_ACTIONS and (body or "").startswith(CLAUDE_MARKER))
+
+
 def claude_reviews(reviews):
     """The commit oids reviewed by Claude Review, from (author login, commit oid, body) triples."""
-    return frozenset(oid for login, oid, body in reviews
-                     if login and oid and login.removesuffix("[bot]") == GITHUB_ACTIONS
-                     and (body or "").startswith(CLAUDE_MARKER))
+    return frozenset(oid for login, oid, body in reviews if is_claude_review(login, oid, body))
+
+
+def claude_off_diff(reviews):
+    """The commit oids whose latest Claude review has findings outside the diff.
+
+    reviews are (author login, commit oid, body) triples, oldest first, so a
+    later review of the same commit replaces an earlier one.
+    """
+    latest = {oid: body for login, oid, body in reviews if is_claude_review(login, oid, body)}
+    return frozenset(oid for oid, body in latest.items() if body.split("\n")[1:2] == [OFF_DIFF_MARKER])
 
 
 def summarize_checks(checks):
@@ -198,6 +216,8 @@ def decide(pr):
         return Decision(WAIT, f"no Copilot or Claude review of {pr.head[:7]} yet")
     if pr.open_threads:
         return Decision(WAIT, f"{pr.open_threads} open thread(s)")
+    if pr.head in pr.claude_off_diff:
+        return Decision(WAIT, f"Claude's review of {pr.head[:7]} has findings outside the diff")
     if checks.running and not pr.checks_required:
         return Decision(WAIT, "no required checks; waiting for: " + ", ".join(checks.running))
     reviewer = pr.head_reviewer.capitalize()

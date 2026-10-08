@@ -109,3 +109,9 @@ def test_the_review_column_names_the_reviewer_of_the_head():
 
 def test_the_query_fetches_review_bodies():
     assert "author { login } commit { oid } body" in st.QUERY
+
+
+def test_claude_findings_outside_the_diff_hold_the_landing_decision():
+    off = "<!-- claude-review -->\n<!-- claude-review:off-diff -->\n**Claude Review**"
+    _, out, _ = run(["owner/app"], {"owner/app": repo(pr_node(reviews=[("github-actions", HEAD, off)]))})
+    assert "review:claude" in out and "-> wait (Claude's review of 1234567 has findings outside the diff)" in out

@@ -167,3 +167,20 @@ def test_a_release_blog_pr_is_armed_without_copilot_unless_blocked_or_armed():
     failing = replace(blog, checks=(ld.Check("Lint Markdown", "COMPLETED", "FAILURE", "2026-10-07T10:00:00Z"),))
     assert ld.decide(failing).action == ld.BLOCKER
     assert ld.decide(replace(blog, merge_state="DIRTY")).action == ld.BLOCKER
+
+
+def test_a_claude_review_of_the_head_with_findings_outside_the_diff_waits():
+    blocked = replace(READY, claude_reviewed=frozenset({HEAD}), claude_off_diff=frozenset({HEAD}))
+    decision = ld.decide(blocked)
+    assert decision == ld.Decision(ld.WAIT, "Claude's review of aaaaaaa has findings outside the diff")
+    assert ld.decide(replace(blocked, claude_off_diff=frozenset({OLD}))).action == ld.ARM_AUTO_MERGE
+
+
+def test_off_diff_findings_are_judged_by_the_latest_claude_review_of_each_commit():
+    clean = ld.CLAUDE_MARKER + "\n**Claude Review**"
+    off = ld.CLAUDE_MARKER + "\n" + ld.OFF_DIFF_MARKER + "\n**Claude Review**"
+    reviews = [("github-actions", HEAD, clean), ("github-actions", HEAD, off),
+               ("github-actions", OLD, off), ("github-actions", OLD, clean),
+               ("github-actions", "c" * 40, "Not Claude's.\n" + ld.OFF_DIFF_MARKER),
+               ("copilot-pull-request-reviewer", "d" * 40, off)]
+    assert ld.claude_off_diff(reviews) == frozenset({HEAD})

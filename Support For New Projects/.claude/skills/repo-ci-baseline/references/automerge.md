@@ -55,14 +55,16 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **PR Review Submitted** (`pr-review-submitted.yml`) runs on `pull_request_review: submitted` with no permissions and does nothing.
   Its completion fires this workflow's `workflow_run`, which runs main's copy.
   Copilot's review usually arrives after CI has finished, so without it the last blocker clears with no trigger and the PR waits for the sweep (IssueTracker #197 waited, and was swept by hand).
-- **Claude Review** (`claude-review.yml`) is the backup reviewer, run only while a PR carries `review:claude`, on `labeled`, `synchronize`, `reopened` and `ready_for_review`.
+- **Claude Review** (`claude-review.yml`) is the backup reviewer, run only while a PR into `main` carries `review:claude`, on `labeled`, `synchronize`, `reopened` and `ready_for_review`.
   It skips drafts, Dependabot and events a bot started (the action refuses a bot actor), and logs a notice and succeeds without the `CLAUDE_CODE_OAUTH_TOKEN` secret.
   It must not fail on its own: it isn't a required check, so a failed run leaves the PR `UNSTABLE`, which this workflow never merges; re-run it or remove the label.
   Claude (Sonnet 5.5, medium effort, `anthropics/claude-code-action`) never holds a write token: its job has read-only permissions,
   gets the diff against the base and only Read, Glob and Grep, and answers in a JSON schema.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
-  A body finding opens no thread, so this workflow wouldn't wait on it: the post job fails after posting, and that failing check holds the merge until the next push.
+  A body finding opens no thread, so the review's body carries a second marker, `<!-- claude-review:off-diff -->`, and this workflow holds the merge
+  while that review is Claude's latest of the head (until the review cap, like threads); the post job also fails, so the check shows it.
+  The hold lives in the review, not the check: adding another label re-runs Claude Review with its jobs skipped, and a skipped run replaces a failed check.
   The review is posted with `GITHUB_TOKEN`, which starts no workflows, so PR Auto-Merge follows Claude Review's completion instead of PR Review Submitted.
 - **The schedule** is `7,22,37,52 * * * *`, off the round minutes where GitHub drops the most scheduled runs.
   GitHub still runs it far less often than asked: IssueTracker's sweeps after #201 ran about 70 minutes apart. Treat it as the fallback, never the expected path.

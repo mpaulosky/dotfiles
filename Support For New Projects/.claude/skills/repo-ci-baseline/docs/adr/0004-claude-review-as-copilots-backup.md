@@ -32,5 +32,7 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
   The merge gate has never guarded against someone who can push a branch; it guards against merging before a review.
   These repos take no fork PRs, and a fork's run gets no secrets and a read-only token, so it can't post.
+- A finding outside the diff can't be a thread, so it goes in the review body under a second marker, and PR Auto-Merge holds on it.
+  A failing check alone wasn't enough: a later run with its jobs skipped (another label added) replaces the failed check.
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
 - dotfiles isn't a Baseline repo, so it carries a copy of the two files, which `test.sh` keeps identical to the Template's; its "reviewed" rule is the landing decision's.

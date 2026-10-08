@@ -1772,6 +1772,9 @@ def test_a_title_that_looks_like_a_reference_definition_keeps_its_code():
         (">     - [a]: x", "> - \\[a]: x"),
         # Or once sanitizing drops a comment before it.
         ("<!--x-->[a]: docs/x.md", "\\[a]: docs/x.md"),
+        # A tab or space the comment left behind is dropped, so the definition is still escaped.
+        ("<!--x-->\t[a]: docs/x.md", "\\[a]: docs/x.md"),
+        ("<!--x--> [a]: docs/x.md", "\\[a]: docs/x.md"),
         ("> <!--x-->[a]: x", "> \\[a]: x"),
         # Without the space after it, "-" is no list marker, and nothing nests.
         ("-[a]: x", "-[a]: x"),

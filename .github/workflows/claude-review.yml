@@ -101,9 +101,11 @@ jobs:
       # the checked-out code, and answers in the JSON schema below. The prompt
       # and model were chosen on the skill's benchmark (bench/ in the
       # repo-ci-baseline skill, #117): Sonnet at medium effort caught none of
-      # the findings Copilot made on the same commits. No WebFetch: with an
-      # unscoped Read it would give a prompt-injected diff a way to send out
-      # what Claude can read.
+      # the findings Copilot made on the same commits. No WebFetch: it made no
+      # difference to the benchmark, and it would be one more way out for a
+      # prompt-injected diff. Known gap, not accepted (repo-ci-baseline #121):
+      # with Read unscoped, Claude can read the OAuth token from its own
+      # environment, and the review it writes is posted publicly.
       - name: Review
         id: claude
         if: steps.secret.outputs.enabled == 'true'

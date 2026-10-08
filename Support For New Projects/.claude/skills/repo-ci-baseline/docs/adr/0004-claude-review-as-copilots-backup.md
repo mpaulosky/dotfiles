@@ -136,24 +136,26 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   round, most likely on a part every review quotes: a stored value can hold more than the token, and a JWT's header is the same
   in every job's token. It compares letters and digits only, across the answer's strings as Claude wrote them, so a secret
   quoted in pieces split by backticks or newlines is caught too, and so is one in look-alike characters (fullwidth,
-  mathematical), which it NFKD-normalises first, or with a combining mark after each letter, which NFKD splits off to be
-  stripped (NFKC, used at first, composed them into non-ASCII letters: Claude Review, IssueTracker#227); pieces split by
-  letters or digits aren't, an accepted limit.
+  mathematical). It compares the answer after NFKC and after NFKD: NFKC alone let through a mark after each letter,
+  composing each pair into a non-ASCII letter that was stripped (Claude Review, IssueTracker#227), and NFKD alone let
+  through pieces joined by accented letters, keeping the base letter between them (Claude Review, dotfiles #137). Pieces
+  split by letters or digits aren't caught, an accepted limit.
 - **Only the schema's fields are passed on.** The check drops every key but the summary and each finding's path, line and
   body, and the schema sets `additionalProperties: false`, so an extra field, never posted but printed by the post job's log,
   is gone (Claude Review, IssueManager#274). An answer of the wrong shape, judged as `parse_findings` judges it, becomes a fixed
   placeholder holding none of it, so nothing the check didn't compare reaches the log, and `post_claude_review.py` still
   rejects it rather than posting "No findings". Each finding's `line` must be 0 to 1000000, so no single line
   carries a token as one big number, and is checked, read as a character code, with the strings.
-- **Accepted limits of the check.** It catches a quote of 16 characters in a row, after NFKD and with everything but ASCII
+- **Accepted limits of the check.** It catches a quote of 16 characters in a row, after NFKC or NFKD and with everything but ASCII
   letters and digits taken out. A quote changed any other way still gets through, and each of these was raised in review
   and accepted rather than closed, since closing one leaves the next:
   - pieces split by letters or digits, including pieces in separate fields or findings, where the text between them is the
     other fields' (Copilot, Blazor-Server#176);
-  - look-alikes NFKD doesn't map, such as Cyrillic or Greek letters, which are taken out and leave gaps (Claude Review,
+  - look-alikes NFKC doesn't map, such as Cyrillic or Greek letters, which are taken out and leave gaps (Claude Review,
     atelier-store#130), and a reversed quote;
   - a swap-cased quote, since the comparison doesn't fold case, and base64, hex or ROT13 of the token (Claude Review,
     TicketManager#147 and dotfiles #136);
+  - a quote using both Unicode tricks at once, a mark after each letter and accented letters between pieces;
   - character codes written as digits in the summary or a body, or packed several to a `line`.
 
   The check is a backstop. Claude's read restrictions above, which keep it from reading the token at all, are the defence;

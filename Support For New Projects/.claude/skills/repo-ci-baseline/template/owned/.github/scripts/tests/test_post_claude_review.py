@@ -438,8 +438,9 @@ def test_an_answer_quoting_a_secret_even_in_part_is_withheld(tmp_path, quote):
     assert withheld(tmp_path, answer, [SECRET])
 
 
-# Combining marks too: NFKC would compose one with the letter before it.
-@pytest.mark.parametrize("separator", ["`", "\n", "` `", "-", "\t", "\u0323", "\u0301", "\u0307"])
+# Accented letters too, which NFKD would split into a base letter between the
+# pieces and a mark; the NFKC comparison strips them whole.
+@pytest.mark.parametrize("separator", ["`", "\n", "` `", "-", "\t", "é", "ạ"])
 def test_a_secret_quoted_in_short_pieces_is_withheld(tmp_path, separator):
     body = SECRET[13:]
     pieces = separator.join(body[i:i + 15] for i in range(0, len(body), 15))
@@ -449,7 +450,7 @@ def test_a_secret_quoted_in_short_pieces_is_withheld(tmp_path, separator):
 
 @pytest.mark.parametrize("offset", [0xFEE0, None])
 def test_a_secret_in_look_alike_characters_is_withheld(tmp_path, offset):
-    # Fullwidth, or mathematical bold: both NFKD-normalise to ASCII.
+    # Fullwidth, or mathematical bold: both normalise to ASCII under NFKC and NFKD.
     def look_alike(c):
         if offset:
             return chr(ord(c) + offset)
@@ -460,8 +461,8 @@ def test_a_secret_in_look_alike_characters_is_withheld(tmp_path, offset):
 
 
 # Each letter followed by a dot below: as written, and composed into one
-# character where Unicode has one. NFKC would compose both into non-ASCII
-# letters and strip them; NFKD strips only the marks.
+# character where Unicode has one. NFKC composes both into non-ASCII letters
+# and strips them; the NFKD comparison strips only the marks.
 @pytest.mark.parametrize("form", [None, "NFC"])
 def test_a_secret_with_a_mark_on_each_letter_is_withheld(tmp_path, form):
     quote = "".join(c + "\u0323" for c in SECRET[13:33])
@@ -476,7 +477,7 @@ def test_a_secret_in_an_extra_field_is_withheld_too(tmp_path):
     assert withheld(tmp_path, {"summary": "s", "findings": [], SECRET[20:40]: 1}, [SECRET])
 
 
-# Four of the accepted limits in repo-ci-baseline's ADR 0004, pinned so a
+# Five of the accepted limits in repo-ci-baseline's ADR 0004, pinned so a
 # change to them is deliberate. Pieces are joined by a character of the body
 # that isn't next to them in it, so no window across a join is a window of
 # the secret, whatever order the seed gives.
@@ -493,6 +494,8 @@ SEPARATED = "".join(BODY[j:j + 15] + BODY[j + 20] for j in range(0, 45, 15))
     {"summary": " ".join(str(ord(c)) for c in BODY[:20]), "findings": []},
     # A reversed quote.
     {"summary": BODY[::-1], "findings": []},
+    # Both Unicode tricks at once: a mark on each letter, pieces joined by é.
+    {"summary": "é".join("".join(c + "\u0323" for c in BODY[j:j + 15]) for j in range(0, 45, 15)), "findings": []},
 ])
 def test_the_accepted_limits_get_through(tmp_path, answer):
     # The keys between the separate fields start "findings" and end "body";

@@ -27,10 +27,11 @@ any gate you did not actually run as not run.
    `scripts/check-branch-name.sh`, it is the branch standard: run
    `bash scripts/check-branch-name.sh <branch>` from the repo root, as its
    pre-push hook does, on the current branch and on any name you pick, and
-   use a name only once it exits 0. Otherwise learn the standard from the repo's `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md` and
-   existing branches; absent any, treat the default branch as protected and
-   use `chore/<slug>`. Stay put when the branch already follows the standard
-   and this checkout accepts commits. Otherwise, before any fixing, move:
+   use a name only once it exits 0. Otherwise learn the standard from the
+   repo's `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md` and existing branches;
+   absent any, treat the default branch as protected and use `chore/<slug>`.
+   Stay put when the branch already follows the standard and this checkout
+   accepts commits. Otherwise, before any fixing, move:
    - **Worktree rule** (the repo's `.github/hooks/pre-commit` refuses commits
      in the primary checkout, as Baseline repos' does), in the primary
      checkout: set the in-scope files aside with
@@ -148,5 +149,5 @@ any gate you did not actually run as not run.
 
    `git worktree remove` also deletes ignored files, so flag anything in
    `git -C <path> status --porcelain --untracked-files=all --ignored` beyond
-   build output (a `.env`, `*.user`). A worktree `git worktree list` marks `prunable` (its
-   folder is gone) gets `git worktree prune` instead.
+   build output (a `.env`, `*.user`). A worktree `git worktree list` marks
+   `prunable` (its folder is gone) gets `git worktree prune` instead.

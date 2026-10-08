@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -363,8 +364,12 @@ def withheld(tmp_path, answer, secrets):
 
 
 def test_the_workflows_credential_pattern_matches_the_scripts():
-    assert pcr.CREDENTIAL.pattern in "".join(
-        line.strip()[2:-1] for line in answer_check_script().splitlines() if line.strip().startswith(('r"', 'r"|')))
+    script = answer_check_script()
+    start = script.index("CREDENTIAL = re.compile(")
+    namespace = {"re": re}
+    exec(script[start:script.index("\n)\n", start) + 3], namespace)
+
+    assert namespace["CREDENTIAL"].pattern == pcr.CREDENTIAL.pattern
 
 
 def test_an_answer_passes_on_with_credentials_redacted(tmp_path):
@@ -379,12 +384,32 @@ def test_an_answer_passes_on_with_credentials_redacted(tmp_path):
 
 def test_only_the_schemas_fields_are_passed_on(tmp_path):
     answer = {"summary": "s", "debug": [115, 107], TOKENS[1]: "x",
-              "findings": [{"path": "a.py", "line": 3, "body": "b", "extra": "e"}, "not a finding"]}
+              "findings": [{"path": "a.py", "line": 3, "body": "b", "extra": "e"}]}
 
     _, outputs, _ = check(tmp_path, answer, [SECRET])
 
     assert json.loads(outputs["findings"]) == {"summary": "s", "findings": [{"path": "a.py", "line": 3, "body": "b"}]}
     assert outputs["redacted"] == "0"
+
+
+@pytest.mark.parametrize("answer", [
+    {"summary": "s", "findings": "none"},
+    {"summary": "s", "findings": ["not a finding"]},
+    {"summary": "s"},
+    {"findings": []},
+    {"summary": "s", "findings": [{"path": "a.py", "body": "no line"}]},
+])
+def test_a_malformed_answer_reaches_the_post_script_malformed(tmp_path, answer):
+    _, outputs, _ = check(tmp_path, answer, [SECRET])
+
+    with pytest.raises(pcr.MalformedFindings):
+        pcr.parse_findings(outputs["findings"])
+
+
+def test_a_secret_spelled_out_in_line_numbers_is_withheld(tmp_path):
+    findings = [{"path": "a.py", "line": ord(c), "body": "b"} for c in SECRET[13:33]]
+
+    assert withheld(tmp_path, {"summary": "s", "findings": findings}, [SECRET])
 
 
 @pytest.mark.parametrize("quote", [SECRET, SECRET[13:29], "x" + SECRET[30:50] + "y"])

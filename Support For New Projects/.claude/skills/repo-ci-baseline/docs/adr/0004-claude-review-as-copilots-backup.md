@@ -136,10 +136,13 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   round, most likely on a part every review quotes: a stored value can hold more than the token, and a JWT's header is the same
   in every job's token. It compares letters and digits only, across the answer's strings as Claude wrote them, so a secret
   quoted in pieces split by backticks or newlines is caught too; pieces split by letters or digits aren't, an accepted limit.
-- **Only the schema's fields are passed on.** The check passes on the summary and each finding's path, line and body, and
-  nothing else; the schema also sets `additionalProperties: false`. An extra field, which is never posted but which the post
-  job's log would print, can't carry a secret in a form the check doesn't compare, such as character codes (Claude Review,
-  IssueManager#274).
+- **Only the schema's fields are passed on.** The check drops every key but the summary and each finding's path, line and
+  body, and the schema sets `additionalProperties: false`, so an extra field, never posted but printed by the post job's log,
+  is gone (Claude Review, IssueManager#274). Anything of the wrong shape is passed on as it is, so `post_claude_review.py`
+  rejects it rather than posting "No findings". Each finding's `line`, read as a character code, is checked with the strings.
+  An encoding the check doesn't compare, such as character codes written as digits in the summary or a body, still gets
+  through: an accepted limit, like pieces split by letters or digits. The check is a backstop; Claude's read restrictions
+  above, which keep it from reading the token, are the defence.
 - **No answer in the execution file fails the review job.** The check step runs only when Claude answered, so an empty or
   unreadable execution file is its own error, not a quoted secret, and the post job doesn't run.
 - **No review in a debug run.** At the pinned action, debug logging turns `show_full_output` on, and the runner logs step outputs,

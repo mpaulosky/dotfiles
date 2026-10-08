@@ -279,8 +279,16 @@ jobs:
               return re.sub(r"[^A-Za-z0-9]", "", text)
 
 
+          def lines_as_characters(answer):
+              """Each finding's line read as a character code, a channel strings_in doesn't see."""
+              findings = answer.get("findings") if isinstance(answer, dict) else None
+              return "".join(chr(finding["line"]) for finding in (findings if isinstance(findings, list) else [])
+                             if isinstance(finding, dict) and isinstance(finding.get("line"), int)
+                             and 0 <= finding["line"] <= 0x10FFFF)
+
+
           def quotes_a_secret(answer, secrets):
-              text = letters_and_digits("\n".join(strings_in(answer)))
+              text = letters_and_digits("\n".join([*strings_in(answer), lines_as_characters(answer)]))
               for secret in secrets:
                   parts = [part for match in SECRET_PART.finditer(secret) for part in match.groups() if part]
                   for part in map(letters_and_digits, parts or [secret.strip()]):
@@ -291,14 +299,19 @@ jobs:
 
 
           def schema_fields(answer):
-              """Only what gets posted: the summary, and each finding's path, line and body."""
-              findings = answer.get("findings") if isinstance(answer, dict) else None
-              return {
-                  "summary": answer.get("summary") if isinstance(answer, dict) else None,
-                  "findings": [{key: finding.get(key) for key in ("path", "line", "body")}
-                               for finding in (findings if isinstance(findings, list) else [])
-                               if isinstance(finding, dict)],
-              }
+              """Only what gets posted: the summary, and each finding's path, line and body.
+
+              Only extra keys are dropped. Anything of the wrong shape is passed on
+              as it is, so the post script rejects it rather than posting "No findings".
+              """
+              if not isinstance(answer, dict):
+                  return answer
+              findings = answer.get("findings")
+              if isinstance(findings, list):
+                  findings = [{key: finding[key] for key in ("path", "line", "body") if key in finding}
+                              if isinstance(finding, dict) else finding for finding in findings]
+              return {key: value for key, value in (("summary", answer.get("summary")), ("findings", findings))
+                      if key in answer}
 
 
           def redact(value):

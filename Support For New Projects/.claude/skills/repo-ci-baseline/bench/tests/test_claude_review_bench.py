@@ -189,6 +189,9 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     # whose value the post job's log would print.
     assert jobs["review"]["outputs"]["findings"] == "${{ steps.answer.outputs.findings }}"
     answer = next(s for s in jobs["review"]["steps"] if s.get("id") == "answer")
+    # Nothing publishes Claude's transcript before that check runs.
+    review = next(s for s in jobs["review"]["steps"] if s.get("id") == "claude")
+    assert review["with"]["display_report"] is False and review["with"]["show_full_output"] is False
     assert "--check-answer" in answer["run"] and "structured_output" not in str(answer.get("env"))
 
 

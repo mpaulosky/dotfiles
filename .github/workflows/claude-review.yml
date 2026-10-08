@@ -147,6 +147,11 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The job's read-only token, in place of the Claude GitHub App's.
           github_token: ${{ github.token }}
+          # Both off by default at this pin; set here so a later pin can't
+          # turn them on. Either would publish Claude's transcript (the step
+          # summary, the log) before the answer check below runs.
+          display_report: false
+          show_full_output: false
           prompt: |
             You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.
             The PR's head is checked out in the working directory. Its diff against the base

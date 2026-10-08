@@ -21,6 +21,13 @@ name: Claude Review
 # merges, even at the cap. Only PRs into main, the only ones PR Auto-Merge
 # merges.
 #
+# Accepted limit (repo-ci-baseline's ADR 0004): the marker proves a review
+# came through github-actions[bot], not that Claude wrote it. This workflow
+# runs on pull_request, so a branch could change the post step and post a
+# marked review of its own. The merge gate guards against merging before a
+# review, not against someone who can push a branch, and these repos take no
+# fork PRs (a fork's run gets no secrets and a read-only token).
+#
 # Without the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`) the
 # run logs a notice and succeeds, so the workflow can be Applied before every
 # repo has the secret.

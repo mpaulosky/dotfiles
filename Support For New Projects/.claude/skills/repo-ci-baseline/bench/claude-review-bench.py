@@ -12,10 +12,15 @@ the workflow runs; the flags override one part at a time. The repo's own
 settings and CLAUDE.md load, as in CI; user-level settings and plugins don't.
 
 It is close to the workflow, not identical: it runs the `claude` on PATH,
-not the Claude Code version the pinned claude-code-action installs, and it
-loads the head commit's project settings, where the action restores them
-from the PR's base. The results file records the CLI version, so a rerun
-on another version is told apart.
+not the Claude Code version the pinned claude-code-action installs. The
+results file records the CLI version, so a rerun on another version is told
+apart. Like the action, it uses the case's base for `.claude/`, so a head
+commit's settings and hooks never run.
+
+It runs Claude on your machine with an unscoped Read, against code from the
+case's commits. Only add a case whose commits you trust, and read a results
+file before committing it: a prompt-injected diff could put local files in
+the findings. Needs PyYAML (for reading the workflow) and git.
 
 It prints each case's findings and which expected findings they caught, and
 writes the run to bench/results/<timestamp>.json. Matching is by keyword, so
@@ -26,13 +31,13 @@ import argparse
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-import yaml
 
 HERE = Path(__file__).resolve().parent
 WORKFLOW = HERE.parent / "template/owned/.github/workflows/claude-review.yml"
@@ -40,6 +45,7 @@ WORKFLOW = HERE.parent / "template/owned/.github/workflows/claude-review.yml"
 
 def review_step(workflow):
     """The prompt and claude_args of the workflow's Review step."""
+    import yaml  # PyYAML; imported here so the scoring code and its tests don't need it
     jobs = yaml.safe_load(workflow.read_text())["jobs"]
     step = next(s for s in jobs["review"]["steps"] if s.get("id") == "claude")
     return step["with"]["prompt"], step["with"]["claude_args"]
@@ -90,6 +96,15 @@ def caught(finding, findings_found):
     return [f for f in findings_found if on_path(f) and matches(str(f.get("body", "")))]
 
 
+def use_base_settings(tree, base):
+    """Replace the head's .claude/ with the base's, as the action does: a PR's own settings and hooks never load."""
+    shutil.rmtree(tree / ".claude", ignore_errors=True)
+    listed = subprocess.run(["git", "-C", str(tree), "ls-tree", "-d", base, ".claude"],
+                            check=True, capture_output=True, text=True).stdout
+    if listed.strip():
+        subprocess.run(["git", "-C", str(tree), "checkout", base, "--", ".claude"], check=True, capture_output=True, text=True)
+
+
 def run_case(case, prompt, claude_args, overrides, root, timeout):
     """One case's review, or an error outcome: a failed case never ends the run."""
     repo = root / case["repo"]
@@ -102,6 +117,7 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
             subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(tree), case["head"]],
                            check=True, capture_output=True, text=True)
             added = True
+            use_base_settings(tree, case["base"])
             diff = subprocess.run(["git", "-C", str(tree), "diff", "--no-color", f"{case['base']}...{case['head']}"],
                                   check=True, capture_output=True, text=True).stdout
             (temp / "pr.diff").write_text(diff)

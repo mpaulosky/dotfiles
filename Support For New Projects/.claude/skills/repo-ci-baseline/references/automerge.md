@@ -56,7 +56,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Its completion fires this workflow's `workflow_run`, which runs main's copy.
   Copilot's review usually arrives after CI has finished, so without it the last blocker clears with no trigger and the PR waits for the sweep (IssueTracker #197 waited, and was swept by hand).
 - **Claude Review** (`claude-review.yml`) is the backup reviewer, run only while a PR into `main` carries `review:claude`, on `labeled`, `synchronize`, `reopened` and `ready_for_review`.
-  It skips drafts, Dependabot and events a bot started (the action refuses a bot actor), and logs a notice and succeeds without the `CLAUDE_CODE_OAUTH_TOKEN` secret.
+  It skips drafts, Dependabot and events a bot started (the action refuses a bot actor, `Copilot` included, which has no `[bot]` suffix),
+  and logs a notice and succeeds without the `CLAUDE_CODE_OAUTH_TOKEN` secret.
   It must not fail on its own: it isn't a required check, so a failed run leaves the PR `UNSTABLE`, which this workflow never merges; re-run it or remove the label.
   Claude (Sonnet 5.5, medium effort, `anthropics/claude-code-action`) never holds a write token: its job has read-only permissions,
   gets the diff against the base and only Read, Glob and Grep, and answers in a JSON schema.

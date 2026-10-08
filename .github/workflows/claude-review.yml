@@ -39,12 +39,14 @@ jobs:
     # refuses a bot as the actor (an app's push), and a failed run here is a
     # failing check that leaves the PR UNSTABLE, which PR Auto-Merge never
     # merges, so a bot's event skips instead; the next person's push or a
-    # re-added label reviews the head.
+    # re-added label reviews the head. Copilot's coding agent acts as
+    # `Copilot`, without the [bot] suffix, and the action refuses it too.
     if: >-
       contains(github.event.pull_request.labels.*.name, 'review:claude') &&
       !github.event.pull_request.draft &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
       !endsWith(github.actor, '[bot]') &&
+      github.actor != 'Copilot' &&
       (github.event.action != 'labeled' || github.event.label.name == 'review:claude')
     runs-on: ubuntu-latest
     timeout-minutes: 15

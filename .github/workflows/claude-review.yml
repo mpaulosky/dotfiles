@@ -214,9 +214,10 @@ jobs:
       # Before the answer becomes a job output, whose value the post job's log
       # prints: dropped when it holds 16 characters in a row of the secret
       # part of either secret (a token's body after its public prefix, or a
-      # JWT's signature), compared as ASCII letters and digits after NFKC, so
+      # JWT's signature), compared as ASCII letters and digits after NFKD, so
       # a sample token never trips it, while a quote that differs only in
-      # separators other than letters and digits, or in look-alikes NFKC maps,
+      # separators other than letters and digits (combining marks included),
+      # or in look-alikes NFKD maps,
       # which GitHub's masking would let through, still does. Then only the
       # schema's fields are passed on, with credential-shaped text redacted.
       # It reads the answer from the execution file, a path, so this log
@@ -227,7 +228,7 @@ jobs:
       # read restrictions above are the defence, so a quote changed any other
       # way gets through too, such as these, raised in review: pieces split
       # by letters or digits, or spread across fields or findings; look-alikes
-      # NFKC doesn't map (Cyrillic, Greek); a reversed or swap-cased quote;
+      # NFKD doesn't map (Cyrillic, Greek); a reversed or swap-cased quote;
       # base64, hex or ROT13; character codes written as digits, or packed
       # into a line.
       #
@@ -290,8 +291,13 @@ jobs:
 
 
           def letters_and_digits(text):
-              """Text's ASCII letters and digits, after NFKC maps look-alikes (fullwidth, mathematical) to them."""
-              return re.sub(r"[^A-Za-z0-9]", "", unicodedata.normalize("NFKC", text))
+              """Text's ASCII letters and digits, after NFKD maps look-alikes (fullwidth, mathematical) to them.
+
+              NFKD, not NFKC: NFKC would compose a letter and a combining mark after
+              it into one accented letter, which isn't ASCII, so the letter would be
+              stripped with it. NFKD splits it, and only the mark is stripped.
+              """
+              return re.sub(r"[^A-Za-z0-9]", "", unicodedata.normalize("NFKD", text))
 
 
           def lines_as_characters(answer):

@@ -6,6 +6,7 @@ import string
 import subprocess
 import sys
 import textwrap
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -437,7 +438,8 @@ def test_an_answer_quoting_a_secret_even_in_part_is_withheld(tmp_path, quote):
     assert withheld(tmp_path, answer, [SECRET])
 
 
-@pytest.mark.parametrize("separator", ["`", "\n", "` `", "-", "\t"])
+# Combining marks too: NFKC would compose one with the letter before it.
+@pytest.mark.parametrize("separator", ["`", "\n", "` `", "-", "\t", "\u0323", "\u0301", "\u0307"])
 def test_a_secret_quoted_in_short_pieces_is_withheld(tmp_path, separator):
     body = SECRET[13:]
     pieces = separator.join(body[i:i + 15] for i in range(0, len(body), 15))
@@ -447,7 +449,7 @@ def test_a_secret_quoted_in_short_pieces_is_withheld(tmp_path, separator):
 
 @pytest.mark.parametrize("offset", [0xFEE0, None])
 def test_a_secret_in_look_alike_characters_is_withheld(tmp_path, offset):
-    # Fullwidth, or mathematical bold: both NFKC-normalise to ASCII.
+    # Fullwidth, or mathematical bold: both NFKD-normalise to ASCII.
     def look_alike(c):
         if offset:
             return chr(ord(c) + offset)
@@ -455,6 +457,19 @@ def test_a_secret_in_look_alike_characters_is_withheld(tmp_path, offset):
                    else (0x1D7CE + ord(c) - 48))
 
     assert withheld(tmp_path, {"summary": "".join(map(look_alike, SECRET[13:33])), "findings": []}, [SECRET])
+
+
+# Each letter followed by a dot below: as written, and composed into one
+# character where Unicode has one. NFKC would compose both into non-ASCII
+# letters and strip them; NFKD strips only the marks.
+@pytest.mark.parametrize("form", [None, "NFC"])
+def test_a_secret_with_a_mark_on_each_letter_is_withheld(tmp_path, form):
+    quote = "".join(c + "\u0323" for c in SECRET[13:33])
+    if form:
+        quote = unicodedata.normalize(form, quote)
+        assert any(ord(c) > 127 and not unicodedata.combining(c) for c in quote)
+
+    assert withheld(tmp_path, {"summary": quote, "findings": []}, [SECRET])
 
 
 def test_a_secret_in_an_extra_field_is_withheld_too(tmp_path):

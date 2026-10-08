@@ -170,33 +170,52 @@ def test_a_files_length_counts_newlines_only(text, lines, monkeypatch):
     assert pcr.GitHub("octo/demo").line_count("docs/a b.md", HEAD) == lines
 
 
+# Built at runtime, so this file holds nothing credential-shaped for a review
+# of it to quote.
+JWT = "eyJ" + "hbGciOiJIUzI1NiJ9" + "." + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + "." + "abcdefghijklmnop"
 TOKENS = [
-    "sk-ant-oat01-" + "a" * 40,
+    "sk-ant-" + "oat01-" + "a" * 40,
     "ghp_" + "b" * 36,
-    "github_pat_" + "c" * 40,
-    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop",
+    "github_pat_" + "c" * 22 + "_" + "d" * 59,
+    JWT,
     # Today's installation token: digits, then a JWT after an underscore.
-    "ghs_12345_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJnaXRodWIifQ.c2lnbmF0dXJlLXBhcnQ",
-    "x-access-token:ghs_67890_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJnaXRodWIifQ.c2lnbmF0dXJlLXBhcnQ@github.com",
+    "ghs_" + "12345_" + JWT,
 ]
 
 
-@pytest.mark.parametrize("token", TOKENS)
-def test_a_credential_is_redacted_everywhere_and_fails_the_step(token, capsys):
+@pytest.mark.parametrize("token", TOKENS + ["x-access-token:" + TOKENS[-1] + "@github.com"])
+def test_a_credential_is_redacted_everywhere_and_warns(token, capsys):
     gh = FakeGitHub()
     findings = findings_json(("src/app.py", 2, f"The token is {token}."), (f"docs/{token}.md", 1, "Path."),
                              summary=f"Found {token} in the environment.")
 
-    with pytest.raises(SystemExit) as exit_info:
-        pcr.main(["--repo", "octo/demo", "--pr", "7", "--head", HEAD], gh=gh, findings=findings)
+    pcr.main(["--repo", "octo/demo", "--pr", "7", "--head", HEAD], gh=gh, findings=findings)
 
-    assert exit_info.value.code == 1
     _, review = gh.posted[0]
-    posted = json.dumps(review)
-    assert token not in posted
+    assert TOKENS[-1] not in json.dumps(review) and token not in json.dumps(review)
     assert pcr.REDACTED in review["comments"][0]["body"]
     assert "3 credential-shaped string(s) were redacted" in review["body"]
-    assert "::error::Redacted 3" in capsys.readouterr().out
+    assert "::warning::Redacted 3" in capsys.readouterr().out
+
+
+def test_the_review_jobs_redactions_are_counted(monkeypatch, capsys):
+    monkeypatch.setenv("REDACTED", "2")
+    _, review = run(findings_json(("src/app.py", 2, "Was [redacted]."))).posted[0]
+
+    assert "2 credential-shaped string(s) were redacted" in review["body"]
+    assert "::warning::Redacted 2" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("text", [
+    "ghs_installation_token_value_for_the_runner_job",
+    "a risk-ant-colony_simulation_parameter_set here",
+    "github_pat_example_placeholder_value_goes_here_xx",
+    "ghp_short",
+])
+def test_names_shaped_loosely_like_tokens_arent_redacted(text):
+    _, review = run(findings_json(("src/app.py", 2, text))).posted[0]
+
+    assert review["comments"][0]["body"] == text
 
 
 def test_ordinary_text_isnt_redacted():
@@ -252,9 +271,9 @@ def test_malformed_findings_fail_with_a_clear_message_and_post_nothing(findings,
 
 
 @pytest.mark.parametrize("findings", ["", "  \n"])
-def test_empty_findings_say_github_withheld_a_secret_and_post_nothing(findings, capsys):
+def test_empty_findings_say_a_secret_was_withheld_and_post_nothing(findings, capsys):
     # The post job runs only once Claude has answered, so empty findings mean
-    # GitHub dropped the output for holding a masked secret.
+    # the answer quoted a secret and was withheld.
     gh = FakeGitHub()
 
     with pytest.raises(SystemExit) as exit_info:
@@ -262,5 +281,88 @@ def test_empty_findings_say_github_withheld_a_secret_and_post_nothing(findings, 
 
     assert exit_info.value.code == 1
     out = capsys.readouterr().out
-    assert out.startswith("::error::") and "masked secret" in out and "rotate CLAUDE_CODE_OAUTH_TOKEN" in out
+    assert out.startswith("::error::") and "quoted a secret" in out and "rotate CLAUDE_CODE_OAUTH_TOKEN" in out
     assert gh.posted == []
+
+
+# --check-answer, in the review job
+
+def execution_file(tmp_path, answer):
+    path = tmp_path / "execution.json"
+    path.write_text(json.dumps([{"type": "system"}, {"type": "assistant"},
+                                {"type": "result", "subtype": "success", "structured_output": answer}]))
+    return path
+
+
+SECRET = "sk-ant-" + "oat01-" + "Zq9" * 20
+
+
+def test_an_answer_passes_on_with_credentials_redacted(tmp_path):
+    answer = {"summary": "Uses " + TOKENS[1], "findings": [{"path": "a.py", "line": 1, "body": "See " + JWT}]}
+
+    findings, redacted, leaked = pcr.check_answer(execution_file(tmp_path, answer), [SECRET, ""])
+
+    assert not leaked and redacted == 2
+    assert json.loads(findings)["findings"][0]["body"] == "See " + pcr.REDACTED
+    assert TOKENS[1] not in findings and JWT not in findings
+
+
+@pytest.mark.parametrize("quote", [SECRET, SECRET[10:26], "x" + SECRET[30:50] + "y"])
+def test_an_answer_quoting_a_secret_even_in_part_is_withheld(tmp_path, quote):
+    answer = {"summary": "s", "findings": [{"path": "a.py", "line": 1, "body": f"The token is {quote}."}]}
+
+    assert pcr.check_answer(execution_file(tmp_path, answer), [SECRET]) == ("", 0, True)
+
+
+def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):
+    answer = {"summary": "Mentions " + SECRET[:15], "findings": []}
+
+    _, _, leaked = pcr.check_answer(execution_file(tmp_path, answer), [SECRET])
+
+    assert not leaked
+
+
+@pytest.mark.parametrize("content", [None, "not json", "[]", '[{"type": "result", "subtype": "error"}]'])
+def test_no_answer_in_the_execution_file_passes_on_nothing(tmp_path, content):
+    path = tmp_path / "execution.json"
+    if content is not None:
+        path.write_text(content)
+
+    assert pcr.check_answer(path, [SECRET]) == ("", 0, False)
+
+
+def test_check_answer_writes_step_outputs_and_errors_on_a_leak(tmp_path, monkeypatch, capsys):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("OAUTH_TOKEN", SECRET)
+    monkeypatch.delenv("JOB_TOKEN", raising=False)
+    answer = {"summary": "Leaks " + SECRET, "findings": []}
+
+    pcr.main(["--check-answer", str(execution_file(tmp_path, answer))])
+
+    written, out = output.read_text(), capsys.readouterr().out
+    assert SECRET not in written and SECRET not in out
+    assert out.startswith("::error::Claude's answer quotes")
+    lines = written.splitlines()
+    assert lines[0] == "findings="
+    assert lines[1].startswith("redacted<<EOF_") and lines[2] == "0" and lines[3] == lines[1].split("<<")[1]
+
+
+def test_check_answer_writes_the_redacted_answer(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("OAUTH_TOKEN", SECRET)
+    answer = {"summary": "Quotes " + TOKENS[1], "findings": []}
+
+    pcr.main(["--check-answer", str(execution_file(tmp_path, answer))])
+
+    lines = output.read_text().splitlines()
+    assert json.loads(lines[1]) == {"summary": "Quotes " + pcr.REDACTED, "findings": []}
+    assert lines[4] == "1"
+
+
+def test_posting_needs_repo_pr_and_head():
+    with pytest.raises(SystemExit) as exit_info:
+        pcr.main(["--repo", "octo/demo"], gh=FakeGitHub(), findings=findings_json())
+
+    assert exit_info.value.code == 2

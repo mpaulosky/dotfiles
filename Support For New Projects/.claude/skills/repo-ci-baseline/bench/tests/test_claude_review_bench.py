@@ -185,6 +185,11 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     assert "needs.review.outputs.reviewed == 'true'" in jobs["post"]["if"]
     assert "findings" not in jobs["post"]["if"]
     assert jobs["review"]["outputs"]["reviewed"] == "${{ steps.claude.outputs.structured_output != '' }}"
+    # Findings come from the answer check, never straight from Claude's step,
+    # whose value the post job's log would print.
+    assert jobs["review"]["outputs"]["findings"] == "${{ steps.answer.outputs.findings }}"
+    answer = next(s for s in jobs["review"]["steps"] if s.get("id") == "answer")
+    assert "--check-answer" in answer["run"] and "structured_output" not in str(answer.get("env"))
 
 
 # bad_lines() (#122)

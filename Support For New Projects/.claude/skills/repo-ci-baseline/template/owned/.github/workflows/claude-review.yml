@@ -70,11 +70,14 @@ jobs:
       pull-requests: read
     outputs:
       enabled: ${{ steps.secret.outputs.enabled }}
-      findings: ${{ steps.claude.outputs.structured_output }}
-      # Whether Claude answered, apart from findings: GitHub withholds a job
-      # output that contains a masked secret, so findings arrive empty if
-      # Claude quoted a token. This flag can't hold one, so it still says the
-      # post job should run, and post_claude_review.py fails on the empty findings.
+      # Claude's answer after the check below: empty when it quotes a secret
+      # of this job, with credential-shaped text redacted otherwise.
+      findings: ${{ steps.answer.outputs.findings }}
+      redacted: ${{ steps.answer.outputs.redacted }}
+      # Whether Claude answered, apart from findings, which arrive empty when
+      # the answer quotes a secret (withheld by the check, or by GitHub's
+      # masking). This flag can't hold one, so it still says the post job
+      # should run, and post_claude_review.py fails on the empty findings.
       reviewed: ${{ steps.claude.outputs.structured_output != '' }}
     steps:
       - name: Check for CLAUDE_CODE_OAUTH_TOKEN
@@ -128,8 +131,9 @@ jobs:
       # it (Read, Glob and Grep all refused it on 2.1.293). Settings
       # come only from the runner's user level, so no repo settings can grant
       # more. No WebFetch: it made no difference to the benchmark, and it would
-      # be one more way out for a prompt-injected diff. post_claude_review.py
-      # also redacts anything shaped like a credential before posting.
+      # be one more way out for a prompt-injected diff. The next step also
+      # withholds an answer that quotes a secret, and redacts anything shaped
+      # like a credential before posting.
       #
       # Its own timeout, under the job's, and continue-on-error, so a timed-out
       # or refused run ends in the warning step below, not a failed check.
@@ -193,6 +197,21 @@ jobs:
             "findings": {"type": "array", "items": {"type": "object", "required": ["path", "line", "body"],
             "properties": {"path": {"type": "string"}, "line": {"type": "integer"}, "body": {"type": "string"}}}}}}'
 
+      # Before the answer becomes a job output, whose value the post job's log
+      # prints: dropped when it holds 16 characters in a row of either secret
+      # (an exact test, so a quoted sample token never trips it, while a
+      # near-miss that GitHub's masking would let through still does), and
+      # credential-shaped text redacted otherwise. It reads the answer from
+      # the execution file, a path, so this step's log holds none of it.
+      - name: Check Claude's answer for secrets
+        id: answer
+        if: steps.secret.outputs.enabled == 'true' && steps.claude.outputs.structured_output != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          JOB_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/post_claude_review.py --check-answer "$EXECUTION_FILE"
+
       - name: Warn when Claude didn't review
         if: steps.secret.outputs.enabled == 'true' && steps.claude.outputs.structured_output == ''
         env:
@@ -206,8 +225,8 @@ jobs:
     name: Post Claude's review
     needs: review
     # Nothing to post when the Review step failed, timed out or was refused.
-    # Gated on reviewed, not on findings, so findings GitHub withheld for
-    # holding a secret still reach the script, which fails on them.
+    # Gated on reviewed, not on findings, so findings withheld for quoting a
+    # secret still reach the script, which fails on them.
     if: needs.review.outputs.enabled == 'true' && needs.review.outputs.reviewed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -230,6 +249,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           FINDINGS: ${{ needs.review.outputs.findings }}
+          REDACTED: ${{ needs.review.outputs.redacted }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}

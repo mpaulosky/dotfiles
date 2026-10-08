@@ -129,9 +129,12 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 - **`--setting-sources user`.** The action already replaces the PR's `.claude/` and `.mcp.json` with the base's;
   this also keeps the base's project settings from granting `Read` again. The runner's user level has no settings.
 - **An answer that quotes a secret is withheld, exactly.** A step in the review job (`post_claude_review.py --check-answer`) reads
-  Claude's answer from the action's execution file and drops it when it holds 16 characters in a row of `CLAUDE_CODE_OAUTH_TOKEN`
-  or the job's `GITHUB_TOKEN`, passed to it as masked secrets. That catches a near-miss quote GitHub's masking would let through,
-  and never fires on a sample token from the PR.
+  Claude's answer from the action's execution file and drops it when it holds 16 characters in a row of the secret part of
+  `CLAUDE_CODE_OAUTH_TOKEN` or the job's `GITHUB_TOKEN`, passed to it as masked secrets. That catches a near-miss quote GitHub's
+  masking would let through, and never fires on a sample token from the PR. The secret part is a token's body after its public
+  prefix, or a JWT's signature: the first round checked the whole stored value, and failed every review in the #132 re-Apply
+  round, most likely on a part every review quotes: a stored value can hold more than the token, and a JWT's header is the same
+  in every job's token.
 - **A quoted secret can't skip the post job.** A withheld answer, by that check or by GitHub withholding a job output that holds a
   masked secret, reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't hold a secret,
   not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.

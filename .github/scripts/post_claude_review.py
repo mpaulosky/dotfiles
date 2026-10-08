@@ -80,6 +80,17 @@ CREDENTIAL = re.compile(
 REDACTED = "[redacted]"
 # How much of a secret, in a row, counts as quoting it.
 LEAK_WINDOW = 16
+# The part of a secret that is secret: an Anthropic key's or GitHub token's
+# body after its public prefix, or a JWT's signature (its header and claims
+# are shared by every token of a kind, so quoting them leaks nothing). A
+# stored secret may hold more than the token, such as a NAME= in front, and
+# Claude names CLAUDE_CODE_OAUTH_TOKEN in any review of this workflow.
+SECRET_PART = re.compile(
+    r"sk-ant-(?:[a-z]+[0-9]+-)?([A-Za-z0-9_-]{20,})"
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)"
+    r"|gh[pousr]_([A-Za-z0-9]{36,})"
+    r"|github_pat_([A-Za-z0-9_]{82})"
+)
 
 
 class MalformedFindings(ValueError):
@@ -180,12 +191,19 @@ def structured_output(path):
     return ""
 
 
+def secret_parts(secret):
+    """The secret parts of the tokens in secret, or the whole of it, stripped, when it holds none."""
+    parts = [part for match in SECRET_PART.finditer(secret) for part in match.groups() if part]
+    return parts or [secret.strip()]
+
+
 def quotes_a_secret(text, secrets):
-    """Whether text holds LEAK_WINDOW characters in a row of any of the secrets."""
+    """Whether text holds LEAK_WINDOW characters in a row of the secret part of any of the secrets."""
     for secret in secrets:
-        for start in range(len(secret) - LEAK_WINDOW + 1):
-            if secret[start:start + LEAK_WINDOW] in text:
-                return True
+        for part in secret_parts(secret):
+            for start in range(len(part) - LEAK_WINDOW + 1):
+                if part[start:start + LEAK_WINDOW] in text:
+                    return True
     return False
 
 

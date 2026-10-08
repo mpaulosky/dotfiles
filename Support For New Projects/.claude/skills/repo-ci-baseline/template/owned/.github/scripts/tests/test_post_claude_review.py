@@ -312,7 +312,7 @@ def test_an_answer_passes_on_with_credentials_redacted(tmp_path):
     assert TOKENS[1] not in findings and JWT not in findings
 
 
-@pytest.mark.parametrize("quote", [SECRET, SECRET[10:26], "x" + SECRET[30:50] + "y"])
+@pytest.mark.parametrize("quote", [SECRET, SECRET[13:29], "x" + SECRET[30:50] + "y"])
 def test_an_answer_quoting_a_secret_even_in_part_is_withheld(tmp_path, quote):
     answer = {"summary": "s", "findings": [{"path": "a.py", "line": 1, "body": f"The token is {quote}."}]}
 
@@ -325,6 +325,32 @@ def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):
     _, _, leaked = pcr.check_answer(execution_file(tmp_path, answer), [SECRET])
 
     assert not leaked
+
+
+def test_a_secret_stored_with_its_name_isnt_leaked_by_naming_it(tmp_path):
+    stored = "CLAUDE_CODE_OAUTH_TOKEN=" + SECRET + "\n"
+    answer = {"summary": "Rotate CLAUDE_CODE_OAUTH_TOKEN; it starts sk-ant-oat01-.", "findings": []}
+
+    _, _, leaked = pcr.check_answer(execution_file(tmp_path, answer), [stored])
+
+    assert not leaked
+    assert pcr.check_answer(execution_file(tmp_path, {"summary": SECRET[20:40]}), [stored])[2]
+
+
+JOB_TOKEN = "ghs_" + "98765_" + "eyJ" + "hbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJ" + "pc3MiOiJnaXRodWIifQ" + "." + "Xy7" * 15
+
+
+def test_a_job_tokens_jwt_header_and_claims_arent_a_leak_but_its_signature_is(tmp_path):
+    header, claims, signature = JOB_TOKEN.split("_", 2)[2].split(".")
+    answer = {"summary": f"A JWT starts {header}.{claims}.", "findings": []}
+
+    assert not pcr.check_answer(execution_file(tmp_path, answer), [JOB_TOKEN])[2]
+    assert pcr.check_answer(execution_file(tmp_path, {"summary": signature[:16]}), [JOB_TOKEN])[2]
+
+
+def test_a_secret_without_a_token_shape_is_checked_whole():
+    assert pcr.secret_parts("  plain-secret-value-1234  \n") == ["plain-secret-value-1234"]
+    assert pcr.quotes_a_secret("x plain-secret-value y", ["plain-secret-value-1234"])
 
 
 @pytest.mark.parametrize("content", [None, "not json", "[]", '[{"type": "result", "subtype": "error"}]'])

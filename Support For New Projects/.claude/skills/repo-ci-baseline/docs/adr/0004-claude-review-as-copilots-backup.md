@@ -28,10 +28,10 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
 - A review posted with `GITHUB_TOKEN` starts no workflows, so PR Auto-Merge follows Claude Review's completion through `workflow_run`.
 - Claude Review runs on `pull_request`, so it reviews with the PR's own copy of the workflow: the PR that brings it in lands on the old gate, and the next round is the first to land on Claude's review.
 - The marker proves a review came through `github-actions[bot]`, not that Claude wrote it.
-  Claude Review runs on `pull_request`, so a branch could change the post step and post a marked review of its own.
-  Running the post from `main`'s code wouldn't close that: a branch can add any workflow that asks for `pull-requests: write`,
-  and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
-  The merge gate has never guarded against someone who can push a branch; it guards against merging before a review.
+  Someone who can push workflow changes can still post a marked review of their own: a branch can add any workflow that
+  asks for `pull-requests: write`, and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
+  The post job runs the base's script (below), so a push that changes only `.github/scripts`, without the workflow
+  permission, can't. The merge gate guards against merging before a review, not against someone who can push workflow changes.
   A fork PR can't use it: its run gets no secrets and a read-only token, so it can't post, and PR Auto-Merge never merges a fork PR; the maintainer does.
 - A finding outside the diff can't be a thread, so it goes in the review body under a second marker, and PR Auto-Merge holds on it.
   A finding on a changed file at a line the file doesn't have (past its end) is a wrong line number, not unchanged code,

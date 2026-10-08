@@ -194,7 +194,13 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     assert review["with"]["display_report"] is False and review["with"]["show_full_output"] is False
     # Nor does a debug run, where the action shows the full output anyway.
     assert "runner.debug != '1'" in review["if"] and review["env"]["ACTIONS_STEP_DEBUG"] == "false"
-    assert "--check-answer" in answer["run"] and "structured_output" not in str(answer.get("env"))
+    assert "structured_output" not in str(answer.get("env"))
+    # The check holds the OAuth token, so it runs inline from the workflow,
+    # never from a script the PR could change.
+    assert "python3 -I - <<'PY'" in answer["run"] and ".github/scripts" not in answer["run"]
+    # And Claude may answer only in the fields that get posted.
+    claude_args = review["with"]["claude_args"]
+    assert claude_args.count('"additionalProperties": false') == 2
 
 
 # bad_lines() (#122)

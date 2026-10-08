@@ -128,7 +128,7 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   The token is read-only and expires with the job. The redaction's GitHub pattern also covers today's `ghs_<digits>_<JWT>` form.
 - **`--setting-sources user`.** The action already replaces the PR's `.claude/` and `.mcp.json` with the base's;
   this also keeps the base's project settings from granting `Read` again. The runner's user level has no settings.
-- **An answer that quotes a secret is withheld, exactly.** A step in the review job (`post_claude_review.py --check-answer`) reads
+- **An answer that quotes a secret is withheld, exactly.** A step in the review job, inline in `claude-review.yml`, reads
   Claude's answer from the action's execution file and drops it when it holds 16 characters in a row of the secret part of
   `CLAUDE_CODE_OAUTH_TOKEN` or the job's `GITHUB_TOKEN`, passed to it as masked secrets. That catches a near-miss quote GitHub's
   masking would let through, and never fires on a sample token from the PR. The secret part is a token's body after its public
@@ -136,13 +136,22 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   round, most likely on a part every review quotes: a stored value can hold more than the token, and a JWT's header is the same
   in every job's token. It compares letters and digits only, across the answer's strings as Claude wrote them, so a secret
   quoted in pieces split by backticks or newlines is caught too; pieces split by letters or digits aren't, an accepted limit.
+- **Only the schema's fields are passed on.** The check passes on the summary and each finding's path, line and body, and
+  nothing else; the schema also sets `additionalProperties: false`. An extra field, which is never posted but which the post
+  job's log would print, can't carry a secret in a form the check doesn't compare, such as character codes (Claude Review,
+  IssueManager#274).
 - **No answer in the execution file fails the review job.** The check step runs only when Claude answered, so an empty or
   unreadable execution file is its own error, not a quoted secret, and the post job doesn't run.
 - **No review in a debug run.** At the pinned action, debug logging turns `show_full_output` on, and the runner logs step outputs,
   so a debug rerun would publish Claude's answer before the check above. The Review step is skipped when `runner.debug` is set,
   with a warning to rerun without it, and sets `ACTIONS_STEP_DEBUG` to `false` for the action.
-- **The check runs the PR's copy of the script.** A same-repo PR can change it, but it can change the workflow too, which
-  `pull_request` runs from the PR; fork PRs get no secrets. Write access is the boundary, as for every workflow.
+- **The check is inline in the workflow, not in `.github/scripts`.** It holds `CLAUDE_CODE_OAUTH_TOKEN`, and a token without
+  the workflow permission (an app's, or a coding agent's that a prompt injection could steer) can push a change to a PR's
+  scripts but not to its workflows. #133 ran the PR's copy of the script and called write access the boundary; Claude Review
+  on Blazor-Server#176 showed that boundary is the workflow permission, and on atelier-store#130 that an older PR's script
+  lacked the option the merged workflow called. `pull_request` runs the workflow from the PR's merge commit, so the check is
+  always the workflow's own. The post job still runs `post_claude_review.py` from the merge commit, with only the job's
+  token, which expires with the job; a changed script there can post a review under the marker, the limit below.
 - **A quoted secret can't skip the post job.** A withheld answer, by that check or by GitHub withholding a job output that holds a
   masked secret, reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't hold a secret,
   not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.
@@ -154,4 +163,6 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   fixtures, and a re-run posts a duplicate review: matches that reach this point are public text far more often than leaks,
   and the exact check above already covers the real secrets. The tests build their sample tokens at runtime.
 - The pinned action runs on the Claude Agent SDK `^0.3.293` and passes `--allowedTools`, `--disallowedTools` and `--add-dir` through (its `parse-sdk-options.ts`).
-- Someone who can push a branch is out of scope here, as for the marker: they can change the workflow itself.
+- Someone who can push workflow changes to a branch is out of scope here, as for the marker: they can change the workflow
+  itself. Someone who can push only other files can change the post script, and so post a review under the marker, but never
+  reaches `CLAUDE_CODE_OAUTH_TOKEN`.

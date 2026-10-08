@@ -25,8 +25,9 @@ name: Claude Review
 # came through github-actions[bot], not that Claude wrote it. This workflow
 # runs on pull_request, so a branch could change the post step and post a
 # marked review of its own. The merge gate guards against merging before a
-# review, not against someone who can push a branch, and these repos take no
-# fork PRs (a fork's run gets no secrets and a read-only token).
+# review, not against someone who can push a branch. A fork PR can't use it:
+# its run gets no secrets and a read-only token, so it can't post, and PR
+# Auto-Merge never merges a fork PR (isCrossRepository); the maintainer does.
 #
 # Without the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`) the
 # run logs a notice and succeeds, so the workflow can be Applied before every

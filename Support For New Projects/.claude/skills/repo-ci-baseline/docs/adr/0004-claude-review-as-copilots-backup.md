@@ -32,7 +32,7 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   Running the post from `main`'s code wouldn't close that: a branch can add any workflow that asks for `pull-requests: write`,
   and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
   The merge gate has never guarded against someone who can push a branch; it guards against merging before a review.
-  These repos take no fork PRs, and a fork's run gets no secrets and a read-only token, so it can't post.
+  A fork PR can't use it: its run gets no secrets and a read-only token, so it can't post, and PR Auto-Merge never merges a fork PR; the maintainer does.
 - A finding outside the diff can't be a thread, so it goes in the review body under a second marker, and PR Auto-Merge holds on it.
   The post job warns instead of failing. A failing check couldn't hold the merge on its own: a later run with its jobs skipped (another label added) replaces it.
   And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges, so the cap couldn't bypass the hold.

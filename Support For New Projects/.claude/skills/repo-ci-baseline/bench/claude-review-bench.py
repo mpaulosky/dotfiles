@@ -136,13 +136,16 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
                            check=True, capture_output=True, text=True)
             added = True
             use_base_settings(tree, case["base"])
-            diff = subprocess.run([*GIT, "-C", str(tree), "diff", "--no-color", f"{case['base']}...{case['head']}"],
-                                  check=True, capture_output=True, text=True).stdout
+            # The runner's plain git diff: no external diff tool or prefix settings from the global config, and
+            # any file encoding read without failing.
+            diff = subprocess.run([*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-C", str(tree),
+                                   "diff", "--no-color", "--no-ext-diff", f"{case['base']}...{case['head']}"],
+                                  check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
             (temp / "pr.diff").write_text(diff)
             argv = ["claude", "-p", render(prompt, case["pr"], temp),
                     *override(shlex.split(render(claude_args, case["pr"], temp)), *overrides),
                     "--output-format", "json", "--setting-sources", "project", "--strict-mcp-config", "--no-session-persistence"]
-            done = subprocess.run(argv, cwd=tree, capture_output=True, text=True, timeout=timeout)
+            done = subprocess.run(argv, cwd=tree, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"error": f"timed out after {timeout}s", "seconds": round(time.monotonic() - started)}
         except (subprocess.CalledProcessError, OSError) as error:

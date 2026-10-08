@@ -12,6 +12,8 @@ name: repo-ci-baseline Template
       - ".github/workflows/repo-ci-baseline.yml"
       - ".github/workflows/claude-review.yml"
       - ".github/scripts/post_claude_review.py"
+      - ".github/hooks/**"
+      - "scripts/**"
   push:
     branches: [main]
     paths:
@@ -19,6 +21,8 @@ name: repo-ci-baseline Template
       - ".github/workflows/repo-ci-baseline.yml"
       - ".github/workflows/claude-review.yml"
       - ".github/scripts/post_claude_review.py"
+      - ".github/hooks/**"
+      - "scripts/**"
   workflow_dispatch:
 
 permissions:

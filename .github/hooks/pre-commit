@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Pre-commit gate. First it refuses a commit made in the primary checkout:
+# every change is made in a linked worktree under ../<Repo>-worktrees/.
+# Then it runs markdownlint-cli2 on staged .md files, with the same
+# .markdownlint-cli2.jsonc config as CI. It lints the staged content, not the
+# working copy, so a partly staged file is checked as it will be committed.
+# Blocks the commit if any markdownlint violations are found.
+# Degrades gracefully if markdownlint-cli2 is not available.
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || exit 1
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
+
+# ── Commit only in a linked worktree ───────────────────────────────────────
+# In the primary checkout the git dir is the common one. A repo with no
+# commits on any ref is exempt, so a new repo's first commit (the Apply) goes
+# on main; an orphan branch in a repo with history is not. A clone that can't
+# use worktrees opts out with baseline.allowPrimaryCommits.
+GIT_DIR_ABS="$(git rev-parse --absolute-git-dir)"
+COMMON_DIR_ABS="$(git rev-parse --path-format=absolute --git-common-dir)"
+if [[ "$GIT_DIR_ABS" == "$COMMON_DIR_ABS" ]] \
+  && [[ -n "$(git rev-list -n 1 --all)" ]] \
+  && [[ "$(git config --bool baseline.allowPrimaryCommits)" != true ]]; then
+  # Absolute paths: the hook's cd doesn't move the shell that ran git commit.
+  WORKTREES="$(dirname "$ROOT")/$(basename "$ROOT")-worktrees"
+  BRANCH="$(git symbolic-ref -q --short HEAD || true)"
+  echo -e "${RED}❌  Commit in a worktree, not in the primary checkout ($ROOT).${RESET}"
+  if [[ -n "$BRANCH" && "$BRANCH" != main ]] && git rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; then
+    # The branch already exists and is checked out here, so it can't also be
+    # checked out in a worktree until the primary checkout is back on main.
+    FOLDER="${BRANCH//\//-}"
+    echo -e "    Move $BRANCH into its own worktree, and carry your changes over with a stash:"
+    echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
+    echo -e "      ${CYAN}git switch main${RESET}"
+    echo -e "      ${CYAN}git worktree add \"$WORKTREES/$FOLDER\" $BRANCH${RESET}"
+    echo -e "      ${CYAN}cd \"$WORKTREES/$FOLDER\" && git stash pop --index${RESET}"
+  else
+    echo -e "    Start the branch in its own worktree, and carry your changes over with a stash."
+    echo -e "    <branch> is feature|fix|hotfix/<issue>-<slug> or chore/<slug>; <folder> is <branch> with / as -."
+    echo -e "      ${CYAN}git stash push --include-untracked${RESET}"
+    echo -e "      ${CYAN}git fetch origin${RESET}"
+    echo -e "      ${CYAN}git worktree add -b <branch> \"$WORKTREES/<folder>\" origin/main${RESET}"
+    echo -e "      ${CYAN}cd \"$WORKTREES/<folder>\" && git stash pop --index${RESET}"
+  fi
+  echo -e "    For a clone that can't use worktrees: ${YELLOW}git config baseline.allowPrimaryCommits true${RESET}"
+  exit 1
+fi
+
+# ── Collect staged .md files ───────────────────────────────────────────────
+# NUL-separated, so paths with spaces or other odd characters survive.
+# R counts too: a renamed file is listed under its new name.
+MD_FILES=()
+while IFS= read -r -d '' file; do
+  [[ "$file" == *.md ]] && MD_FILES+=("$file")
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+if [[ ${#MD_FILES[@]} -eq 0 ]]; then
+  exit 0
+fi
+
+echo -e "${CYAN}━━━ Pre-Commit Markdownlint Gate ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+# ── Probe for markdownlint binary ──────────────────────────────────────────
+MARKDOWNLINT_BIN=""
+
+# Only markdownlint-cli2 reads .markdownlint-cli2.jsonc, the config CI uses.
+if [[ -x "$ROOT/node_modules/.bin/markdownlint-cli2" ]]; then
+  MARKDOWNLINT_BIN="$ROOT/node_modules/.bin/markdownlint-cli2"
+elif command -v markdownlint-cli2 &>/dev/null; then
+  MARKDOWNLINT_BIN="markdownlint-cli2"
+fi
+
+if [[ -z "$MARKDOWNLINT_BIN" ]]; then
+  echo -e "${YELLOW}⚠️   markdownlint-cli2 not found — skipping markdown lint check.${RESET}"
+  echo -e "    To enable: ${CYAN}pnpm add -g markdownlint-cli2${RESET}"
+  exit 0
+fi
+
+# ── Snapshot the staged content ───────────────────────────────────────────
+# Write each staged file, and the configs as they will be committed, into a
+# temporary tree with the same layout, then lint that tree. The working copy
+# can differ from what's staged, and only the staged version gets committed.
+SNAPSHOT="$(mktemp -d)"
+trap 'rm -rf "$SNAPSHOT"' EXIT
+
+# Only staged configs are used; one that exists only in the working copy won't
+# be in the commit. Nested ones count too: markdownlint-cli2 applies a
+# directory's .markdownlint-cli2.jsonc to the files under it, as CI does.
+git ls-files -z --cached -- ':(glob)**/.markdownlint-cli2.jsonc' \
+  | git checkout-index --prefix="$SNAPSHOT/" -z --stdin
+printf '%s\0' "${MD_FILES[@]}" | git checkout-index --prefix="$SNAPSHOT/" -z --stdin
+
+# ── Run markdownlint on staged files ──────────────────────────────────────
+echo -e "  Linting staged .md files with: ${CYAN}$(basename "$MARKDOWNLINT_BIN")${RESET}"
+
+if (cd "$SNAPSHOT" && "$MARKDOWNLINT_BIN" "${MD_FILES[@]}") 2>&1; then
+  echo -e "${GREEN}✅  All staged .md files passed markdownlint.${RESET}"
+  exit 0
+else
+  echo -e ""
+  echo -e "${RED}❌  Markdownlint violations found in staged files above.${RESET}"
+  echo -e "    Fix the violations and re-stage the files before committing."
+  echo -e "    To skip in an emergency: ${YELLOW}git commit --no-verify${RESET}"
+  exit 1
+fi

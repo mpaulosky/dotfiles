@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Pre-push gate: branch naming, up to date with main, then scripts/gate.sh (lint, build and tests)
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; RESET='\033[0m'
+
+echo -e "${CYAN}━━━ Pre-Push Gate ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+
+# Read push refs from stdin (provided by git when run as a hook).
+PUSH_REFS="$(cat || true)"
+
+is_protected_branch() {
+  [[ "$1" == "main" || "$1" == "preview" || "$1" == "dev" ]]
+}
+
+check_branch_name() {
+  local branch="$1"
+
+  if is_protected_branch "$branch"; then
+    echo -e "${RED}❌ Direct pushes to '${branch}' are not allowed.${RESET}"
+    exit 1
+  fi
+
+  # The branch standard, shared with ci.yml's "Branch name" job.
+  local reason
+  if ! reason="$(bash "$ROOT/scripts/check-branch-name.sh" "$branch")"; then
+    echo -e "${RED}❌ ${reason%%$'\n'*}${RESET}"
+    echo -e "   ${YELLOW}${reason#*$'\n'}${RESET}"
+    exit 1
+  fi
+}
+
+if [[ -n "$PUSH_REFS" ]]; then
+  # Gate the refs being pushed, not the checked-out branch: pushing another
+  # branch or deleting one from a main checkout is not a push to main.
+  # Classify by remote ref: `git push origin v1.0.0:main` has a tag as its
+  # local ref but still updates main.
+  UPDATES_BRANCH=false
+  while read -r _local_ref local_sha remote_ref _remote_sha; do
+    [[ "$remote_ref" == refs/heads/* ]] || continue
+    branch="${remote_ref#refs/heads/}"
+
+    if [[ "$local_sha" =~ ^0+$ ]]; then
+      if is_protected_branch "$branch"; then
+        echo -e "${RED}❌ Deleting '${branch}' is not allowed.${RESET}"
+        exit 1
+      fi
+      continue
+    fi
+
+    check_branch_name "$branch"
+
+    # The gate runs against the working tree, so it only vouches for the
+    # commit that is checked out. Refuse a push of anything else (another
+    # branch, or a tag pushed to a branch) rather than gate the wrong code.
+    pushed_commit="$(git rev-parse --verify --quiet "${local_sha}^{commit}" || echo "$local_sha")"
+    if [[ "$pushed_commit" != "$(git rev-parse HEAD)" ]]; then
+      echo -e "${RED}❌ '${branch}' is not the checked-out commit, so the gate can't test it.${RESET}"
+      echo -e "   Check it out first: ${YELLOW}git switch ${branch}${RESET}, then push again."
+      exit 1
+    fi
+    UPDATES_BRANCH=true
+  done <<< "$PUSH_REFS"
+
+  if [[ "$UPDATES_BRANCH" == false ]]; then
+    echo -e "${GREEN}✅ No branch updates — skipping the gate.${RESET}"
+    exit 0
+  fi
+else
+  # Run by hand: there are no refs on stdin, so gate the checked-out branch.
+  check_branch_name "$(git symbolic-ref --short HEAD 2>/dev/null || echo "")"
+fi
+
+# Every pushed branch is the checked-out commit (checked above). The gate
+# tests the working tree, so it must match that commit exactly: uncommitted
+# or untracked files (an untracked .cs file still compiles) could pass the
+# gate for code that isn't in the push. Ignored files don't count.
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo -e "${RED}❌ The working tree has uncommitted or untracked changes, so the gate can't vouch for the pushed commit.${RESET}"
+  echo -e "   Commit them, or set them aside with ${YELLOW}git stash --include-untracked${RESET}, then push again."
+  git status --short | head -n 20
+  exit 1
+fi
+
+# Sandcastle runs this gate in its sandbox and records the commit it passed as
+# sandcastle.gatedHead before pushing it. Every pushed branch is HEAD and the
+# tree is clean (both checked above), so a HEAD Sandcastle already gated needs
+# no second run. Unset everywhere but a Sandcastle repo.
+GATED_HEAD="$(git config --local --get sandcastle.gatedHead 2>/dev/null || true)"
+if [[ -n "$GATED_HEAD" && "$GATED_HEAD" == "$(git rev-parse HEAD)" ]]; then
+  echo -e "${GREEN}✅ Sandcastle already gated ${GATED_HEAD:0:12} — skipping the gate.${RESET}"
+  exit 0
+fi
+
+# The ruleset makes a PR be up to date with main before it merges, so a branch
+# behind origin/main couldn't merge as pushed, and the gate would test it
+# against an old main. Fetch main first, so the check sees what merged since
+# the last fetch; offline, it compares with the last fetched copy.
+if ! git fetch --quiet origin main 2>/dev/null; then
+  echo -e "${YELLOW}⚠️  Couldn't fetch origin/main; checking against the last fetched copy.${RESET}"
+fi
+if git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+  BEHIND="$(git rev-list --count HEAD..refs/remotes/origin/main)"
+  if (( BEHIND > 0 )); then
+    echo -e "${RED}❌ The branch is ${BEHIND} commit(s) behind origin/main, so its PR couldn't merge as pushed.${RESET}"
+    echo -e "   Bring main in, then push again: ${YELLOW}git merge origin/main${RESET}"
+    exit 1
+  fi
+else
+  echo -e "${YELLOW}⚠️  No origin/main to compare with — skipping the up-to-date check.${RESET}"
+fi
+
+"$ROOT/scripts/gate.sh"
+
+echo -e "\n${GREEN}━━━ All gates passed — pushing ✅ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"

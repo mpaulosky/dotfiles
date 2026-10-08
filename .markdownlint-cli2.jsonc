@@ -1,0 +1,13 @@
+// markdownlint-cli2 config for dotfiles' own Markdown, used by the pre-commit
+// hook. The repo-ci-baseline skill has its own config; this one keeps the
+// Template's rules for everything else.
+{
+  "config": {
+    "default": true,
+    // Lines up to 200 characters; tables and code blocks can't wrap.
+    "MD013": { "line_length": 200, "tables": false, "code_blocks": false },
+    "MD010": { "code_blocks": false },
+    "MD025": { "front_matter_title": "" }
+  },
+  "ignores": ["**/node_modules/**", "**/.pytest_cache/**"]
+}

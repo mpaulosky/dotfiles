@@ -68,8 +68,15 @@ fi
 step "GitHub scripts tests (settings, landing decision, status, land, rollout)"
 (cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider github/tests) || fail "github scripts pytest"
 
-step "Claude Review benchmark tests (scoring, arguments, config swap)"
-(cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider bench/tests) || fail "benchmark pytest"
+step "Claude Review benchmark tests (scoring, arguments, config swap, the workflow it reads)"
+# PyYAML lets the test that reads the Template's claude-review.yml run instead of skipping.
+if python3 -c 'import pytest, yaml' &>/dev/null; then
+  bench_cmd=(python3 -m pytest)
+else
+  need uvx
+  bench_cmd=(uvx --with pyyaml pytest)
+fi
+(cd "$skill_dir" && "${bench_cmd[@]}" -q -p no:cacheprovider -rs bench/tests) || fail "benchmark pytest"
 
 step "actionlint"
 mapfile -t workflows < <(find "$owned/.github/workflows" -name '*.yml' | sort)

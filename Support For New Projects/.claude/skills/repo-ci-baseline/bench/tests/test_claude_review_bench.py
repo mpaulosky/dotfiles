@@ -110,3 +110,14 @@ def test_the_heads_claude_config_is_replaced_by_the_bases(tmp_path):
     assert (tmp_path / "CLAUDE.md").read_text() == "base instructions\n"
     assert not (tmp_path / ".mcp.json").exists()
     assert not (tmp_path / ".claude").exists()
+
+
+# review_step(), against the real Template workflow
+
+def test_the_benchmark_can_read_the_template_workflows_review_step():
+    pytest.importorskip("yaml")
+    prompt, claude_args = bench.review_step(bench.WORKFLOW)
+    rendered = shlex.split(bench.render(claude_args, 7, "/tmp/t"))
+    assert "#7" in bench.render(prompt, 7, "/tmp/t")
+    for flag in ("--model", "--effort", "--json-schema", "--allowedTools"):
+        assert flag in rendered, flag

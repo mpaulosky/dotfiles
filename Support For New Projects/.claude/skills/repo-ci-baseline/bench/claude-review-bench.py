@@ -50,7 +50,9 @@ def review_step(workflow):
     """The prompt and claude_args of the workflow's Review step."""
     import yaml  # PyYAML; imported here so the scoring code and its tests don't need it
     jobs = yaml.safe_load(workflow.read_text())["jobs"]
-    step = next(s for s in jobs["review"]["steps"] if s.get("id") == "claude")
+    step = next((s for s in jobs["review"]["steps"] if s.get("id") == "claude"), None)
+    if step is None:
+        sys.exit(f"claude-review-bench.py: no step with id: claude in {workflow}'s review job")
     return step["with"]["prompt"], step["with"]["claude_args"]
 
 
@@ -149,7 +151,7 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
         except subprocess.TimeoutExpired:
             return {"error": f"timed out after {timeout}s", "seconds": round(time.monotonic() - started)}
         except (subprocess.CalledProcessError, OSError) as error:
-            # A missing clone or commit, or no claude on PATH.
+            # A missing clone or commit.
             detail = getattr(error, "stderr", None) or ""
             return {"error": f"{error} {detail}".strip(), "seconds": round(time.monotonic() - started)}
         finally:
@@ -165,6 +167,10 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
             review = json.loads(data.get("result") or "{}")
     except (json.JSONDecodeError, AttributeError) as error:
         return {"error": f"no structured review ({error}): {done.stdout[-2000:]}", "seconds": seconds}
+    # The shape post_claude_review.py accepts; anything else is this case's error, not the run's.
+    if not (isinstance(review, dict) and isinstance(review.get("findings"), list)
+            and all(isinstance(f, dict) for f in review["findings"])):
+        return {"error": f"review isn't an object with a list of findings: {str(review)[:2000]}", "seconds": seconds}
     return {"review": review, "seconds": seconds, "cost_usd": data.get("total_cost_usd"),
             "turns": data.get("num_turns")}
 
@@ -232,6 +238,8 @@ def main():
             rescore(spec, path)
         return
 
+    if shutil.which("claude") is None:
+        sys.exit("claude-review-bench.py: claude isn't on PATH")
     prompt, claude_args = review_step(WORKFLOW)
     if args.prompt_file:
         prompt = args.prompt_file.read_text()

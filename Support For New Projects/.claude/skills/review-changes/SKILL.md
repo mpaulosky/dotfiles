@@ -23,14 +23,24 @@ any gate you did not actually run as not run.
 
 1. **Inspect.** Run `git status --short`, note the branch, and read all of
    `git diff` and `git diff --staged`.
-2. **Branch off a protected branch.** Learn the repo's protected branches and
-   branch naming from its `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md`, hooks
-   (e.g. `.github/hooks/pre-push`), and existing branches; absent any, treat
-   the default branch as protected and use `chore/<slug>`. If on a protected
-   branch, switch now, before any fixing, to a new branch named by that
-   convention, so the whole fix loop stays off it. Stay put on a branch that
-   already follows the convention. Skip in dry run or when the worktree is
-   clean.
+2. **Get onto a working branch.** Learn the branch standard from
+   `scripts/check-branch-name.sh` when the repo has one, otherwise from its
+   `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md` and existing branches; absent
+   any, treat the default branch as protected and use `chore/<slug>`. Stay put
+   on a branch that already follows the standard. Otherwise, before any
+   fixing, start a new branch at `HEAD` named by the standard:
+   - **Worktree rule** (the repo's `.github/hooks/pre-commit` refuses commits
+     in the primary checkout, as Baseline repos' does): create it as a linked
+     worktree, `git worktree add -b <branch> ../<Repo>-worktrees/<branch with
+     / as -> HEAD`, and carry the in-scope files over with
+     `git stash push -- <paths>`, then `git stash pop --index` inside the new
+     worktree. Out-of-scope work stays in the primary checkout. Every later
+     step runs in the worktree.
+   - **Otherwise:** `git switch -c <branch>`.
+
+   Skip in dry run or when the worktree is clean. Done when you are on a
+   branch that passes the standard, in a checkout where the hooks accept a
+   commit.
 3. **Fix scope.** Default is the full worktree; narrow only to files or areas
    the user named. If scope is genuinely ambiguous, ask before staging.
 4. **Review the in-scope diff** for correctness bugs, regressions, security
@@ -93,12 +103,20 @@ any gate you did not actually run as not run.
 
    Green only when every project reports its tests passed.
 
-6. **Loop** until all four gates are green on the same final state.
+   **e. Repo gate.** When the repo has `scripts/gate.sh` (the pre-push gate,
+   which runs what CI runs), finish on it; a-d are its inner loop. A repo
+   with no .NET solution and no `gate.sh` runs its documented check (a
+   `test.sh`, or its CI workflow's commands) in place of c and d.
+
+6. **Loop** until every gate that applies is green on the same final state.
 7. **Stage the in-scope files by explicit path**, then re-read
    `git status` and `git diff --staged` and confirm only in-scope files are
    staged.
 8. **Commit once**: a new commit with a concise conventional-commit message
    giving the _why_. Stop there; pushing is a separate, explicit ask.
-9. **Report**: branch (and whether step 2 created it), commit hash and
-   message, files committed, exact gate commands and results, and every
-   uncommitted file left in the worktree with why.
+9. **Report**: branch and worktree path (and whether step 2 created them),
+   commit hash and message, files committed, exact gate commands and results,
+   and every uncommitted file left behind with why. Say plainly that the
+   commit is local, unpushed and has no PR, and give the commands that would
+   push it and open the PR (title in the commit format; the repo's
+   `docs/PROCESS.md` when present).

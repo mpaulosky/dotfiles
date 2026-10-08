@@ -1,0 +1,126 @@
+{
+  "label": "noise-v2-opus-high",
+  "claude_version": "2.1.293 (Claude Code)",
+  "claude_args": "--model claude-opus-5-5 --effort high --add-dir ${{ runner.temp }} --allowedTools \"Read,Glob,Grep\" --disallowedTools \"Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch\" --json-schema '{\"type\": \"object\", \"required\": [\"summary\", \"findings\"], \"properties\": { \"summary\": {\"type\": \"string\"}, \"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"required\": [\"path\", \"line\", \"body\"], \"properties\": {\"path\": {\"type\": \"string\"}, \"line\": {\"type\": \"integer\"}, \"body\": {\"type\": \"string\"}}}}}}'",
+  "overrides": [
+    null,
+    null,
+    null
+  ],
+  "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/pr.diff; read it first. Then read every file the diff\ntouches in full, and the unchanged code it calls or is called by: a bug often lies in\nhow the change interacts with code it doesn't touch. Follow the repository's own\nconventions (AGENTS.md, CLAUDE.md, docs/ and .github/instructions/ where present).\n\nYour review may be the only one this PR gets before it merges on its own, so be\nthorough. For each change, ask what happens on the paths the author didn't test:\nanother event or trigger, a rerun, a skipped or cancelled job, a different actor\n(a bot, an app, a person without write access), an empty, malformed or unusual\ninput (whitespace, tabs, Unicode, markup), a race between two runs. For GitHub\nActions workflows and merge gates, reason about how GitHub itself behaves: which\nevents fire, what a skipped or failed check does to a PR's mergeStateStatus, who\nthe actor is, what each token can do. Where the behaviour of a pinned action or of\nGitHub decides the answer, read its source or documentation rather than guess.\nLook hardest at code that decides whether something merges, releases or gets\npermissions, and at text processing that turns input into rendered output.\n\nReport every real problem a maintainer would want fixed or knowingly accepted\nbefore merging: bugs, security issues, broken edge cases, missing or wrong tests,\nand clear departures from the repository's conventions. Don't report style nits,\npraise, or the PR's scope (what it bundles together is the author's call).\n\nEvery finding names a file path relative to the repository root and a line number\non the new side of that file. Before you report a line, read it in the checked-out\nfile and make sure it is the line the finding is about; prefer a line the diff\nadds or shows as context. Say what goes wrong, in which situation, and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\n",
+  "score": [
+    0,
+    0
+  ],
+  "cases": [
+    {
+      "set": "noise",
+      "repo": "IssueTracker",
+      "pr": 197,
+      "base": "36bd6a9",
+      "head": "2ffab1d",
+      "expect": [],
+      "copilot_threads": 3,
+      "review": {
+        "summary": "**What the PR changes:** `AddMongoDBWithManagement` and `AddRedisCache` no longer call `.WithHealthCheck(name)`. `AddMongoDB` and `AddRedis` already register and attach their own health check under the `{name}_check` key. The extra annotation pointed at a key nothing registers, so Aspire's `HealthCheckServiceOptions` validation failed and the AppHost would not start. The PR also adds the dashboard OTLP and resource-service URLs and `ASPIRE_ALLOW_UNSECURED_TRANSPORT` to the `http` launch profile so it can start the dashboard over plain http. It re-indents `MongoDBHostingExtensionsTests` with tabs and adds one test per resource meant to prove every health check the resource needs is registered.\n\n**Verdict:** The production fix is correct and small. The existing \"has a health check annotation\" tests still pass, because `AddRedis` and `AddMongoDB` add their own annotation. The launch-profile change is fine for a development-only http profile. I could not run the tests here. The one issue worth fixing before this merges on its own is that the new regression tests check too little: they can pass without proving anything.",
+        "findings": [
+          {
+            "path": "tests/AppHost.Tests/Extensions/RedisExtensionsTests.cs",
+            "line": 195,
+            "body": "This regression test can pass without checking anything. FluentAssertions' `NotThrow<OptionsValidationException>()` only fails when that exact exception type is thrown; any other exception counts as a pass.\n\nThe test resolves `IOptions<HealthCheckServiceOptions>` from `builder.Services.BuildServiceProvider()` without calling `builder.Build()`. If resolving Aspire's health-check validator throws something else, the test goes green. For example, the validator needs `DistributedApplicationModel` and `ILogger<DistributedApplicationBuilder>`, and a future Aspire version could register them, or the validator itself, only in `Build()`. In that case the test would also pass with the old `.WithHealthCheck(name)` line back in, so it would not catch the bug it was written for. Nothing in the PR shows the test failing before the fix.\n\nFix: use `act.Should().NotThrow()` so any exception fails the test. Better still, assert the requirement directly instead of relying on Aspire internals:\n\n```csharp\nHashSet<string> registered = provider.GetRequiredService<IOptions<HealthCheckServiceOptions>>().Value.Registrations.Select(r => r.Name).ToHashSet();\nredis.Resource.Annotations.OfType<HealthCheckAnnotation>().Should().OnlyContain(a => registered.Contains(a.Key));\n```\n\nThen confirm the test fails with `.WithHealthCheck(name)` restored."
+          },
+          {
+            "path": "tests/AppHost.Tests/MongoDBHostingExtensionsTests.cs",
+            "line": 155,
+            "body": "The MongoDB copy of the new test has the same problem. `NotThrow<OptionsValidationException>()` passes when the act throws any other exception, such as a DI resolution failure from building the provider straight from `builder.Services` without `Build()`. It also passes if the Aspire validator isn't registered at that point at all. So the test does not reliably guard against `.WithHealthCheck(name)` coming back.\n\nFix: use `NotThrow()`, or assert that every `HealthCheckAnnotation.Key` on the MongoDB server resource, and on its database resource, appears in `HealthCheckServiceOptions.Registrations`. Then check that the test fails with the old line restored.\n\nSmaller point: the name says `With_Default_Name`, but `name` has no default; the test passes \"mongodb\" explicitly."
+          }
+        ]
+      },
+      "seconds": 84,
+      "cost_usd": 0.5419654,
+      "turns": 16,
+      "caught": {}
+    },
+    {
+      "set": "noise",
+      "repo": "IssueManager",
+      "pr": 249,
+      "base": "1b0020c",
+      "head": "660225d",
+      "expect": [],
+      "copilot_threads": 1,
+      "review": {
+        "summary": "The PR fixes #246. It points the cookie scheme's challenge and forbid redirects at the app's own `/auth/login` (passing `returnUrl`) and `/not-authorized`, replacing the defaults `/Account/Login` and `/Account/AccessDenied`, neither of which exists in this app. This works because the Auth0 SDK sets cookies as the default challenge scheme. The PR also wraps the home page's New Issue button in `<AuthorizeView>`, scopes the E2E menu selectors to `nav[aria-label='Main navigation']` (avoiding Playwright strict-mode clashes with links in the page body), trims the trailing slash when building URLs, adds an E2E test that a User opening `/admin` lands on Access Denied, and un-skips the tests that were marked #246.\n\nThe production change looks correct:\n- `Configure<CookieAuthenticationOptions>` runs after the Auth0 SDK's `AddCookie` setup, so its values win.\n- The cookie handler builds the return URL from the request's own path and query (PathBase + Path + QueryString), so it always passes `GetLocalReturnUrl`.\n- `NotAuthorizedPage` exists at `/not-authorized`.\n\nVerdict: the app change is fine. One of the newly un-skipped E2E tests will fail on its first run because of a strict-mode locator bug. There are also two test-quality gaps to fix or knowingly accept.\n\nNot reported because it predates this PR: navigating inside the running app to a protected page still goes through `RedirectToLoginPage`, which sends users to `/auth/login` without `returnUrl`. As a result, only a full page load preserves the user's destination. `Shared/RedirectToLogin.razor` is unused and still points at `/Account/Login`.",
+        "findings": [
+          {
+            "path": "tests/AppHost.Tests.E2E/Issues/IssuesCrudFlowTests.cs",
+            "line": 256,
+            "body": "**This un-skipped test will throw a Playwright strict-mode violation.**\n\n`Admin_CanViewCategoriesForArchive` was un-skipped in this PR. It calls `archiveButton.IsVisibleAsync()` on a locator that can match many elements: `button:has-text('Archive'), \u2026`.\n\n- `Locator.IsVisibleAsync` is strict: it throws when the locator resolves to more than one element. That is the same problem the nav-scoping commit in this PR fixes for the menu links.\n- `CategoriesPage` renders a `RadzenButton Icon=\"archive\"` on every row. Radzen draws the icon as `<i class=\"rzi\">archive</i>`, and `:has-text()` is a case-insensitive substring match, so every row's button matches.\n- The fixture starts a fresh MongoDB container, and the API's `DatabaseSeeder` seeds 5 categories (Bug, Feature, Enhancement, Documentation, Question).\n\nSo, with Admin credentials configured, the locator resolves to 5 buttons. `IsVisibleAsync` then throws a strict-mode violation instead of returning true, and the test fails on its first run.\n\n**Fix:** target the buttons precisely and avoid strictness, for example:\n```csharp\nvar archiveButton = page.Locator(\"button[id^='archive-']\");\nif (await archiveButton.CountAsync() > 0)\n    (await archiveButton.First.IsVisibleAsync()).Should().BeTrue(...);\n```\nAlternatively, use `archiveButton.First` in the `if` as well."
+          },
+          {
+            "path": "tests/AppHost.Tests.E2E/Issues/IssuesCrudFlowTests.cs",
+            "line": 157,
+            "body": "**The un-skipped Admin tests don't check that login succeeded, so some pass while signed out.**\n\n`Auth0LoginHelper.LoginAsync` catches `TimeoutException`/`PlaywrightException` and returns `false`. `Admin_CanFilterIssuesPage`, which this PR re-enables, ignores that return value.\n\n`/issues` is public, so the test passes even when the Auth0 login fails: the URL contains `/issues` and the `h1` is visible. It therefore says nothing about Admin behaviour, and a broken login flow goes unnoticed.\n\n`Admin_CanNavigateToCreateIssuePage` and `Admin_CanCreateAndViewIssue` would at least fail, but with a misleading assertion about the URL or form instead of a login failure.\n\n**Fix:** after `LoginAsync`, assert login the way `AdminNavigationTests` and the new `User_OpeningAdminPage_ShowsAccessDenied` do:\n```csharp\n(await Auth0LoginHelper.IsLoggedInAsync(page)).Should().BeTrue(\"Admin should be logged in\");\n```\nAsserting `LoginAsync`'s return value also works."
+          },
+          {
+            "path": "src/Web/Extensions/AuthExtensions.cs",
+            "line": 138,
+            "body": "**No unit test covers the new cookie redirect settings or the home-page button change.**\n\nThe only checks of `LoginPath`, `ReturnUrlParameter` and `AccessDeniedPath` are Playwright E2E tests. Those throw `SkipException` unless Auth0 test credentials are configured, so CI without those secrets doesn't check this fix at all.\n\nThe risk is a quiet regression back to `/Account/Login` (404). That could come from a refactor that moves this `Configure` call above `AddAuth0WebAppAuthentication`, or from a change in the Auth0 SDK's cookie scheme name.\n\n**Fix:** add a case to `tests/Web.Tests.Unit/Extensions/AuthExtensionsTests.cs` in the style of `AddAuth0_WithConfig_RegistersAuthenticationServices`:\n1. Build the app.\n2. Resolve `IOptionsMonitor<CookieAuthenticationOptions>`.\n3. Call `.Get(CookieAuthenticationDefaults.AuthenticationScheme)`.\n4. Assert `LoginPath == \"/auth/login\"`, `ReturnUrlParameter == \"returnUrl\"` and `AccessDeniedPath == \"/not-authorized\"`.\n\nThe `Home.razor` change could get a matching bUnit test alongside `tests/Web.Tests.Bunit/Components/Layout/NavMenuTests.cs`: no `/issues/create` link when signed out, one link when authorized."
+          }
+        ]
+      },
+      "seconds": 177,
+      "cost_usd": 1.3434824,
+      "turns": 42,
+      "caught": {}
+    },
+    {
+      "set": "noise",
+      "repo": "Blazor-Server",
+      "pr": 148,
+      "base": "5de3dbc",
+      "head": "048b34e",
+      "expect": [],
+      "copilot_threads": 2,
+      "review": {
+        "summary": "This PR replaces the temporary `implementer` role with two roles that run one after the other. The tester (`roles/tester.md`) commits failing tests with stubs. The backend developer (`roles/backend.md`, renamed from `implement-prompt.md`) makes those tests pass. `buildIssue` now stops an issue, and comments on it, when either role throws, times out, or runs out of iterations without `<promise>COMPLETE</promise>`. The reviewer prompt gains checks that the acceptance tests cover every criterion and weren't weakened. Tests cover the new ordering, the failure paths and the comments.\n\nThe host logic is clean and well tested. Sandcastle 0.12.0 does return `completionSignal: undefined` when it reaches maxIterations, and it throws on a timeout, so both failure branches match how the library behaves.\n\nVerdict: needs changes before merging. The main problems:\n- The new failure comment pastes raw agent errors into a public issue comment, without a fence or a length cap.\n- The prompts leave criteria with no tests, and docs-only issues, with no role that implements them.\n- The reviewer's new instruction to add a failing test contradicts its gate rule.",
+        "findings": [
+          {
+            "path": ".sandcastle/lib/build.mts",
+            "line": 101,
+            "body": "**Raw agent error goes into a public issue comment, unfenced and unbounded.**\n\n`failure = `the ${role} failed: ${error}`` is placed inline in a sentence and posted with `gh issue comment`. For a non-zero agent exit, Sandcastle's `AgentError` message (`dist/index.js:289-302`) is `claude exited with code N:` followed by one of:\n- the process's whole stderr;\n- otherwise, the model's final result text;\n- otherwise, the last 20 raw stream-json stdout lines.\n\nWhat goes wrong:\n- **Rendering:** the multi-line text renders as Markdown in the middle of the sentence. Any `@user` in it pings that person, `#123` links issues, and HTML or markup renders.\n- **Length:** 20 stream-json lines with tool output can easily pass GitHub's 65,536-character comment limit. `gh` then fails, `execFileSync` throws, the issue gets no comment at all, and the failure only shows up in the host log.\n- **Leaks:** whatever the agent printed, such as file contents or environment output, is published on the issue.\n\n`gateFailureComment` already handles this case: it tails the output and picks a fence longer than any backtick run in it.\n\n**Fix:** keep the one-line reason in the sentence (for example `the backend failed`). Put `String(error)` below it, passed through `tail(..., GATE_COMMENT_LINES)`, in a computed fence, as `gateFailureComment` does. Add a test with a multi-line error that contains backticks."
+          },
+          {
+            "path": ".sandcastle/roles/backend.md",
+            "line": 23,
+            "body": "**Nothing implements criteria that have no tests, so docs-only issues are silently never built.**\n\n`implement-prompt.md` said \"Fix issue {{TASK_ID}}\". `backend.md` now says \"Make the tests pass\", \"Your job is to make those tests pass\" and \"REPEAT until every test passes\". `tester.md:604-616`, however, tells the tester to write no test for a criterion that can't be tested automatically (docs, manual steps), and to commit nothing when no criterion can be. No prompt tells the backend developer to implement those criteria.\n\nWhat goes wrong:\n- **Docs-only issue:** the tester commits nothing and outputs COMPLETE. The backend developer finds no failing test and outputs COMPLETE. `commitsAhead` is 0 with a clean tree, so `buildIssue` returns `prUrl: undefined` with no issue comment. `main.mts` then stops with \"No pull requests opened this round\", and the issue just stays open.\n- **Mixed issue:** the tested parts get built and the docs or config parts are quietly dropped. The reviewer is refactor-only, so its new check (\"check it against the change directly\") can at best notice the gap; it can't fill it.\n\nThe scribe and UI roles from the plan aren't wired in yet, so today the backend developer is the only role that could do this work.\n\n**Fix:** tell the backend developer to implement the whole issue: make the tester's tests pass, and also complete every criterion the tester named as untestable, checking each one directly."
+          },
+          {
+            "path": ".sandcastle/roles/tester.md",
+            "line": 605,
+            "body": "**The tester's \"final message\" goes nowhere.**\n\nWhen the tester has nothing to commit, this line tells it to explain the untestable criteria \"in your final message\". `buildIssue` discards the tester's output: `developerFinishes` reads only `run.commits` and `run.completionSignal`. Nothing passes that text to the backend developer, the reviewer, or the issue.\n\nSo the one place the tester records which criteria have no test, and why, is lost exactly when it matters most: nothing was committed, and the backend developer has no tests to go on.\n\n**Fix:** have the tester always record this somewhere durable, for example an empty commit (`git commit --allow-empty`) with the explanation in the body. Alternatively, have the host forward the tester's final text into the backend developer's prompt arguments."
+          },
+          {
+            "path": ".sandcastle/review-prompt.md",
+            "line": 71,
+            "body": "**The new instruction to add a failing test contradicts the reviewer's gate rule, and checkpoint 2 can never pass afterwards.**\n\nLine 71 tells the reviewer to commit a missing or restored acceptance test even when the code fails it, and not to change the test. Two other rules then conflict with that:\n- Line 77 still says \"Run `scripts/gate.sh` as your last step and confirm it passes\".\n- The shared rules say to run the gate and \"fix what it reports\".\n\nThe reviewer is refactor-only. Faced with a red gate it must fix, it can implement behaviour, which breaks the \"never change what the code does\" rule, or edit the test it just added. That second option is the very weakening this section forbids.\n\nIf the reviewer leaves the test red as intended, checkpoint 2 runs the gate-fixer twice. At checkpoint 2, `gate-fixer.md` lets it \"add no behaviour the branch doesn't already have\", so it can't make the test pass. The checkpoint is guaranteed to stay red after two wasted fixer runs. The issue comment then shows only the gate's tail, not that the reviewer found an uncovered criterion.\n\n**Fix:** say explicitly that after adding such a test the gate is expected to be red, so the reviewer must not try to make it pass. Then either let the checkpoint-2 gate-fixer implement behaviour for a test the reviewer added, or skip the fixer and post a comment naming the uncovered criterion."
+          },
+          {
+            "path": ".sandcastle/roles/tester.md",
+            "line": 598,
+            "body": "**The tester and backend prompts assume a .NET change, but Sandcastle issues often touch the TypeScript host.**\n\nSteps 3-5 say to:\n- add stubs that `throw new NotImplementedException()`;\n- build with `dotnet build Blazor-Server.slnx`;\n- run the new tests.\n\nNo step says how to run tests in TypeScript. `backend.md:23` likewise tells the backend developer the stubs throw `NotImplementedException`.\n\nMany of this repo's Sandcastle issues change `.sandcastle/` itself (#69, #71). There the tests are `node:test` files run by `pnpm run check:sandcastle`, and the stub pattern and build command don't apply. The tester has no command to confirm its tests fail for the right reason, and the backend developer starts from a wrong description of the branch.\n\n**Fix:** add the TypeScript route next to the .NET one:\n- stubs that `throw new Error(\"not implemented\")`;\n- run the tests with `pnpm run check:sandcastle`.\n\nThen make the backend prompt's description of the stubs language-neutral."
+          },
+          {
+            "path": ".sandcastle/lib/role-prompts.test.mts",
+            "line": 16,
+            "body": "**No test pins the completion signal that `buildIssue` now depends on.**\n\n`buildIssue` now treats a tester or backend run without `completionSignal` as a failed build: it posts an issue comment and nothing is published. Sandcastle sets that signal only when the agent outputs `<promise>COMPLETE</promise>`.\n\nThe new prompt tests check `{{SHARED_RULES}}` and the skill list, but not that `roles/tester.md` and `roles/backend.md` still tell the agent to output `<promise>COMPLETE</promise>`. A later rewording or deletion of that line would pass every test. In production, every issue would then fail as \"ran out of iterations unfinished\", after spending all 3 tester iterations or all 10 backend iterations.\n\n**Fix:** add `assert.match(read(`roles/${role}.md`), /<promise>COMPLETE<\\/promise>/)` to the per-role loop."
+          }
+        ]
+      },
+      "seconds": 399,
+      "cost_usd": 2.271131,
+      "turns": 25,
+      "caught": {}
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "label": "v2-opus-high-webfetch",
+  "claude_args": "--model claude-sonnet-5-5 --effort medium --add-dir ${{ runner.temp }} --allowedTools \"Read,Glob,Grep\" --disallowedTools \"Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch\" --json-schema '{\"type\": \"object\", \"required\": [\"summary\", \"findings\"], \"properties\": { \"summary\": {\"type\": \"string\"}, \"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"required\": [\"path\", \"line\", \"body\"], \"properties\": {\"path\": {\"type\": \"string\"}, \"line\": {\"type\": \"integer\"}, \"body\": {\"type\": \"string\"}}}}}}'",
+  "overrides": [
+    "high",
+    "claude-opus-5-5",
+    "Read,Glob,Grep,WebFetch"
+  ],
+  "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/pr.diff; read it first. Then read every file the diff\ntouches in full, and the unchanged code it calls or is called by: a bug often lies in\nhow the change interacts with code it doesn't touch. Follow the repository's own\nconventions (AGENTS.md, CLAUDE.md, docs/ and .github/instructions/ where present).\n\nYour review may be the only one this PR gets before it merges on its own, so be\nthorough. For each change, ask what happens on the paths the author didn't test:\nanother event or trigger, a rerun, a skipped or cancelled job, a different actor\n(a bot, an app, a person without write access), an empty, malformed or unusual\ninput (whitespace, tabs, Unicode, markup), a race between two runs. For GitHub\nActions workflows and merge gates, reason about how GitHub itself behaves: which\nevents fire, what a skipped or failed check does to a PR's mergeStateStatus, who\nthe actor is, what each token can do. Where the behaviour of a pinned action or of\nGitHub decides the answer, read its source or documentation rather than guess.\nLook hardest at code that decides whether something merges, releases or gets\npermissions, and at text processing that turns input into rendered output.\n\nReport every real problem a maintainer would want fixed or knowingly accepted\nbefore merging: bugs, security issues, broken edge cases, missing or wrong tests,\nand clear departures from the repository's conventions. Don't report style nits,\npraise, or the PR's scope (what it bundles together is the author's call).\n\nEvery finding names a file path relative to the repository root and a line number\non the new side of that file. Before you report a line, read it in the checked-out\nfile and make sure it is the line the finding is about; prefer a line the diff\nadds or shows as context. Say what goes wrong, in which situation, and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\n",
+  "score": [
+    4,
+    7
+  ],
+  "cases": [
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "4b90c96",
+      "expect": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "set": "recall",
+      "review": {
+        "summary": "PR #298 adds a Claude Review workflow. It runs only on PRs labelled review:claude: one job has Claude review the PR with read-only tools and return structured JSON, and a second job posts that as one review on the head commit via post_claude_review.py, with a body starting <!-- claude-review -->. PR Auto-Merge now accepts a review with that marker in place of Copilot's, and Copilot and Claude review rounds count together toward the cap of 3. The PR also drops ready_for_review from the CI triggers, adds a timeout to the Playwright install step, and collapses the spaces after quote or list markers in release-post commit subjects. Verdict: changes requested. Adding any other label creates skipped check runs that replace the failing check meant to hold the merge. The review that PR Auto-Merge trusts is produced by the PR's own copy of the workflow and script. A failed backup review blocks PRs that Copilot already cleared, even past the cap. The release_post spacing fix misses subjects that have no marker. PROCESS.md still describes a Copilot-only gate. These conclusions come from reading the code; no tests or workflows were run.",
+        "findings": [
+          {
+            "path": ".github/workflows/claude-review.yml",
+            "line": 24,
+            "body": "Adding any other label clears the failing check that is meant to hold the merge. The design relies on 'Post Claude's review' failing (exit 1 for off-diff findings), or the review job failing, to keep the PR UNSTABLE. The workflow also runs on `labeled`, so adding any other label (`bug`, `sandcastle:needs-human`, ...) starts a new run on the same head whose jobs are skipped by the `if`. GitHub shows only the newest check run with a given name for a commit, so the skipped 'Review with Claude' and 'Post Claude's review' runs replace the failed ones, and a skipped check counts as passing. The PR can then go back to CLEAN. The failed post had already posted its review, so the head counts as reviewed, and body findings open no threads. This run's completion also triggers PR Auto-Merge through workflow_run, so the PR merges at once with the off-diff findings unaddressed. Fix: don't use a check as the hold. Either post off-diff findings as file-level comments (`subject_type: \"file\"`) so they open threads, or record the count in the body (e.g. `<!-- claude-review off-diff=N -->`) and have PR Auto-Merge refuse a marked review of the head with N > 0."
+          },
+          {
+            "path": ".github/workflows/claude-review.yml",
+            "line": 136,
+            "body": "The PR's own code produces the review that PR Auto-Merge accepts. On `pull_request`, both the workflow file and this checkout (default ref `refs/pull/N/merge`) come from the PR, and the PR's copy of `post_claude_review.py` runs with `pull-requests: write`. A same-repo PR (an agent's or a person's) carrying review:claude can edit the script, the prompt or the workflow to post a marked review with no findings. PR Auto-Merge (pr-automerge.yml:262) trusts any github-actions[bot] review that starts with the marker, so that counts as a review of the head and the PR merges on green with no real review. Before this PR the review gate depended only on Copilot, which a PR can't fake, and pr-automerge.yml's own comment says a PR can't edit the script that decides whether it merges. Fix: produce the review from main's code. One way is to move the post into a workflow_run-triggered workflow that runs main's script on an uploaded artifact; another is to run the review on pull_request_target. At minimum, check out `ref: ${{ github.event.pull_request.base.sha }}` for the script, though that alone doesn't stop a PR from editing the workflow itself."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 161,
+            "body": "A failed backup review blocks PRs that Copilot already cleared, and ignores the review cap. If the review step fails (expired CLAUDE_CODE_OAUTH_TOKEN, usage limit, max turns, malformed structured output), the failing check leaves every labelled PR UNSTABLE. That holds even when Copilot reviewed the head with nothing unresolved. An off-diff finding does the same after COPILOT_REVIEW_CAP is reached, although the cap is meant to stop reviewers holding the merge. The only way out is a new push, which Claude then reviews again. Fix: make the hold depend on whether Copilot already reviewed the head and on the cap. One option is to let PR Auto-Merge read the body-finding count from the marked review and ignore it at the cap or when Copilot reviewed the head. Alternatively, make review failures non-blocking."
+          },
+          {
+            "path": ".github/scripts/release_post.py",
+            "line": 121,
+            "body": "The spacing fix only runs when `after` is non-zero, so it misses subjects that have no marker. If sanitizing removes a leading comment, as in the subject `<!--x-->    [a]: x`, the subject becomes `    [a]: x` and `after` is 0. The escape is still added at column 4, giving `-     \\[a]: x (`sha`)`. Five spaces after `-` make the rest indented code inside the list item. The backslash and the backtick-wrapped SHA then appear literally, and kramdown and cmark-gfm read it differently: the exact problem this change fixes. Fix: always strip the leading spaces and tabs from the rest, whether or not there is a marker (e.g. `prefix = \" \".join(subject[:after].split()); rest = subject[after:].lstrip(\" \\t\"); subject = f\"{prefix} {rest}\" if prefix and rest else prefix or rest`). Add a test case such as `(\"<!--x-->    [a]: x\", \"\\\\[a]: x\")`."
+          },
+          {
+            "path": "docs/PROCESS.md",
+            "line": 65,
+            "body": "PROCESS.md still describes a Copilot-only gate. It says PR Auto-Merge merges once \"Copilot has reviewed its latest commit\" and stops waiting \"after three Copilot review rounds\". After this PR, a marked Claude Review review also counts, rounds are shared between the two reviewers, and there is a new review:claude label. AGENTS.md sends agents to this file, so it should describe the new rules and label."
+          }
+        ]
+      },
+      "seconds": 217,
+      "cost_usd": 1.3841942,
+      "turns": 14,
+      "caught": {
+        "1": true,
+        "2": true,
+        "3": true,
+        "4": true,
+        "5": false
+      }
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "38b0431",
+      "expect": [
+        "2",
+        "4",
+        "5"
+      ],
+      "set": "recall",
+      "review": {
+        "summary": "I'd hold this PR until the first two findings are fixed or knowingly accepted.\n\nThe PR adds a Claude Review workflow (`claude-review.yml` plus `post_claude_review.py`) as a backup reviewer to Copilot. PR Auto-Merge now accepts a `github-actions[bot]` review whose body starts with `<!-- claude-review -->` as a review of the head. Claude's review rounds count toward the shared cap, and a second `off-diff` marker holds the merge. The PR also normalises whitespace after list and quote markers in `release_post.py`'s commit subjects, drops `ready_for_review` from CI, and adds a timeout to the Playwright install. The `release_post.py` and `ci.yml` changes look correct.\n\n1. **The merge gate can be forged.** The review is recognised only by a marker string under the shared `github-actions[bot]` login, and the workflow and script that post it run from the PR's own code.\n2. **The cap can't bypass Claude's off-diff findings.** The post job's deliberate `exit 1` leaves the PR UNSTABLE, so PR Auto-Merge never merges at the cap either. The tests that say it does only pass because they stub `mergeStateStatus` as CLEAN.\n\nThe other findings are smaller: `docs/PROCESS.md` wasn't updated, the `gh` error text is thrown away, and multi-line findings in the review body render badly.",
+        "findings": [
+          {
+            "path": ".github/workflows/pr-automerge.yml",
+            "line": 265,
+            "body": "**Any same-repo PR can forge the Claude review that satisfies this gate.** A review counts if its author is `github-actions[bot]` and its body starts with `CLAUDE_MARKER`. Both are under the PR author's control:\n\n- `claude-review.yml` runs on `pull_request`, so GitHub runs the PR branch's own copy of the workflow.\n- Its post job checks out the PR merge ref (no `ref:` at `claude-review.yml:141`) and runs the PR's own `.github/scripts/post_claude_review.py`. It does this with `pull-requests: write`.\n\nSo a PR that edits that script, that workflow, or adds any workflow with `pull-requests: write` can post `<!-- claude-review -->\\nNo findings.` on its own head. PR Auto-Merge then squash-merges it with no real review. This includes PRs from Sandcastle agents, which this repo specifically gates. Before this change, the only accepted reviewer was Copilot's bot login, which a PR can't impersonate.\n\nPrompt injection is a softer version of the same problem: the reviewed diff is attacker-controlled input to a model whose 'no findings' answer now opens the merge.\n\n**Fix:** post from code the PR can't change. For example, move the post job to a `workflow_run`-triggered workflow that runs main's copy of the script, and post under a dedicated identity (a GitHub App or PAT login) that PR Auto-Merge matches by login. At minimum, refuse to count a Claude review when the PR touches `.github/workflows/` or `.github/scripts/`."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 159,
+            "body": "**The deliberate failure after an off-diff finding blocks merging even after the review cap is reached.** The cap-bypass branch in PR Auto-Merge never gets to run.\n\n- `exit 1` makes \"Post Claude's review\" a failing check on the head. It isn't a required check, so `mergeStateStatus` becomes UNSTABLE.\n- PR Auto-Merge requires `CLEAN` (`pr-automerge.yml:321`), so it waits even when `capReached`. The workflow's own comment at `claude-review.yml:37-40` already says a failed run leaves the PR UNSTABLE, which PR Auto-Merge never merges.\n- The next push gets a fresh Claude review, which can fail the same way. So with `review:claude` on, a PR still chases reviews forever, which is what the cap exists to stop.\n- The test `merges past off-diff findings at the review cap and says so` passes only because `readyPr()` hard-codes `mergeStateStatus: \"CLEAN\"`.\n\nThe failing check is also unreliable as a hold before the cap: adding any other label starts a run whose skipped checks replace it (the docstring admits this).\n\nThe `OFF_DIFF_MARKER` that PR Auto-Merge now reads already holds the merge below the cap. **Fix:** drop the `sys.exit(1)` and report the off-diff findings with a `::warning::` instead. Then the cap logic at `pr-automerge.yml:309` and `:344` actually applies, and the docstring and tests that rely on the exit code need updating."
+          },
+          {
+            "path": ".github/workflows/claude-review.yml",
+            "line": 37,
+            "body": "**Any failure of the review job, not just a bot actor, leaves a failing check that blocks merging.** Examples:\n\n- an expired `CLAUDE_CODE_OAUTH_TOKEN` or a rate limit;\n- the 15-minute timeout;\n- structured output the post script rejects as malformed;\n- a 422 from the reviews API.\n\nEach of these leaves a failing \"Review with Claude\" or \"Post Claude's review\" check on the head. That makes the PR UNSTABLE, which PR Auto-Merge never merges, even when Copilot has already reviewed the head or the cap is reached.\n\nSo one Anthropic outage stalls every PR labelled `review:claude` until someone pushes or toggles a label. That's a backup reviewer taking down the primary path.\n\n**Fix:** use `continue-on-error: true` on the Review step and treat an empty or malformed `structured_output` as \"no review\" (exit 0 with a warning). Then the only thing that holds the merge is a missing review of the head, which PR Auto-Merge already handles."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 67,
+            "body": "**When the reviews API rejects the review, the reason is lost.** `create_review` and `pull_files` run `gh` with `capture_output=True, check=True`. If GitHub rejects the review, for example 422 `Line could not be resolved` (a whole review fails on one bad comment line, as the docstring notes), the job shows only a Python traceback with `returned non-zero exit status 1`. gh's stderr with GitHub's message is captured and never printed, and Claude's review is lost without a usable error.\n\n**Fix:** catch `subprocess.CalledProcessError` in `main()`, print `error.stderr` to stderr, and exit 1. Or drop `capture_output` for the POST so gh's error reaches the log."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 121,
+            "body": "**Multi-line findings render badly in the review body.** Each off-diff finding is written as `- \\`{path}:{line}\\`: {body}` with the body inserted verbatim. Claude's findings are often several paragraphs or contain a fenced code block for the suggested fix.\n\n- After a blank line, unindented continuation lines leave the list item.\n- A fence or heading inside a finding becomes top-level markup.\n- An unclosed fence turns every later off-diff finding into code.\n- A backtick in `path` breaks the code span.\n\n**Fix:** indent every line of `body` after the first by two spaces, e.g. `body.replace(\"\\n\", \"\\n  \")`, so the whole finding stays inside its list item. Add a test with a multi-paragraph, fenced finding."
+          },
+          {
+            "path": "docs/PROCESS.md",
+            "line": 65,
+            "body": "**`docs/PROCESS.md` still describes the old merge rules.** `AGENTS.md` says merging follows `docs/PROCESS.md`, which still says:\n\n- PR Auto-Merge merges once \"Copilot has reviewed its latest commit\";\n- the cap is \"three Copilot review rounds\".\n\nThis PR changes the rule:\n\n- a marked Claude review of the head also counts;\n- Claude's rounds count toward the cap;\n- unresolved Claude threads are bypassed at the cap;\n- off-diff findings hold the merge until the next push.\n\nThe PR also adds the `review:claude` label as the way to request a review. None of this is documented where the process lives, so people and agents following PROCESS.md won't know how to request a Claude review or why a PR is held.\n\n**Fix:** update this section: Claude Review as the backup reviewer, the `review:claude` label, the shared cap, and the off-diff hold. Also list `review:claude` with the repo's labels if a canonical list is kept."
+          }
+        ]
+      },
+      "seconds": 191,
+      "cost_usd": 1.0163532,
+      "turns": 16,
+      "caught": {
+        "2": true,
+        "4": true,
+        "5": false
+      }
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "d6d55a2",
+      "expect": [
+        "2",
+        "5"
+      ],
+      "set": "recall",
+      "review": {
+        "summary": "This PR adds Claude Review as a backup to Copilot. It runs only while a PR carries the `review:claude` label. `claude-review.yml` has a read-only review job that sends Claude's structured findings to a post job. The post job runs `post_claude_review.py`, which posts one COMMENT review under github-actions[bot] marked `<!-- claude-review -->`. Findings that land outside the diff go into the review body under an off-diff marker. PR Auto-Merge now accepts a marked Claude review of the head the same way it accepts Copilot's. It counts Claude's rounds toward the shared cap of 3, treats threads from Claude reviews like Copilot threads at the cap, and holds the merge on a latest-of-head off-diff review until the cap. The PR also normalises the whitespace after container markers in `release_post.py` commit subjects, drops `ready_for_review` from CI, and gives the Playwright install a 10-minute timeout.\n\nVerdict: the gating logic in pr-automerge.yml and its tests are consistent, and I found no bug in the release_post change. Still worth fixing before merge:\n1. Several ordinary failure paths of the new workflow leave a failing or cancelled check on the head. That makes the PR UNSTABLE, which PR Auto-Merge never merges, even at the review cap. This is the outcome the workflow comments say they avoid.\n2. Because of the `pull_request` trigger, the workflow, the post script and the reviewer's instructions all come from the PR. Yet the review they produce satisfies the merge gate.\n3. Finding paths are compared to the diff exactly, so a `./` or absolute path becomes an off-diff finding that holds the merge.\n4. docs/PROCESS.md still describes Copilot as the only reviewer.",
+        "findings": [
+          {
+            "path": ".github/workflows/claude-review.yml",
+            "line": 93,
+            "body": "Several ordinary failures of this workflow leave a non-passing check on the PR head:\n- the Review step fails: the subscription usage limit is hit (the very situation this backup exists for), the OAuth token has expired, Claude Code errors, or no structured output comes back so `post_claude_review.py` exits 1 on empty FINDINGS;\n- a large PR runs past `timeout-minutes: 15`;\n- `create_review` gets a 422, for example a body over 65,536 characters;\n- `review:claude` is removed and re-added while a review of the same head is running, and `cancel-in-progress` (line 54) leaves a cancelled \"Review with Claude\" check on that head. The ci.yml change in this same PR notes that a cancelled run reports as a failure.\n\nThe header and the job's `if` comment both say a failed check leaves the PR UNSTABLE, which PR Auto-Merge never merges, even at the cap. So any of these failures stalls the PR. Removing the label doesn't clear the check, and a later Copilot review doesn't help either. A person has to notice and rerun, and docs/PROCESS.md says nobody merges by hand.\n\nFix: put `continue-on-error: true` on the Review step and skip the post (with a `::warning::`) when `structured_output` is empty. Nothing is lost: with no Claude review of the head, PR Auto-Merge already keeps waiting for one. Also consider making the post step warn instead of fail on a 422."
+          },
+          {
+            "path": ".github/workflows/claude-review.yml",
+            "line": 141,
+            "body": "This workflow runs on `pull_request`, so a same-repo PR's own copy of claude-review.yml is what runs. The post job's checkout uses the default ref, the PR merge ref, so `post_claude_review.py` comes from the PR too, and it runs with `pull-requests: write`. The review job checks out the PR head and tells Claude to follow AGENTS.md, CLAUDE.md and docs/ from that checkout. A PR can change any of these: drop findings, never write the off-diff marker, or tell the reviewer to report nothing. The review it then posts carries `<!-- claude-review -->` and satisfies PR Auto-Merge's \"reviewed head\" gate. pr-automerge.yml:32-34 runs on `pull_request_target` precisely \"so a PR can't edit the script that decides whether it merges\". This path brings that back for anyone (or any agent such as Sandcastle) pushing a same-repo branch, including a PR that legitimately but wrongly changes the poster.\n\nFix: at minimum check out the post script from the base (`ref: ${{ github.event.pull_request.base.sha }}`, or main). For a real guarantee, move posting into a `workflow_run`/`pull_request_target` workflow that runs main's copy. Otherwise, document in the workflow header that the Claude gate is only as trustworthy as the PR's author."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 120,
+            "body": "The finding's `path` is compared to the PR file names exactly. If Claude returns `./src/app.py` or an absolute runner path (`/home/runner/work/<repo>/<repo>/src/app.py`), the lookup misses even when the line is in the diff. That is easy since it read files through absolute paths in the checkout. The finding then goes to the body under OFF_DIFF_MARKER, and PR Auto-Merge holds the PR until the review cap or another push. The only clearing action is a new commit, so a formatting slip blocks the merge.\n\nFix: normalise `path` before the lookup: strip a leading `./` and a `$GITHUB_WORKSPACE/` prefix (passed in as an argument or read from the env). Add a test for both forms."
+          },
+          {
+            "path": "docs/PROCESS.md",
+            "line": 65,
+            "body": "PROCESS.md, which AGENTS.md says governs merging, still says PR Auto-Merge merges once \"Copilot has reviewed its latest commit\" and stops waiting \"after three Copilot review rounds\". This PR changes those rules:\n- a marked Claude review of the head now counts;\n- Claude rounds count toward the shared cap;\n- Claude threads are bypassed at the cap;\n- a Claude review with findings outside the diff holds the merge until a new push or the cap.\n\nNone of this is documented for contributors, including the `review:claude` label and the fact that off-diff findings can only be cleared by pushing or rerunning Claude Review. Update lines 64-67 to describe the backup reviewer, the label and the off-diff hold."
+          }
+        ]
+      },
+      "seconds": 289,
+      "cost_usd": 1.5642964,
+      "turns": 23,
+      "caught": {
+        "2": true,
+        "5": false
+      }
+    }
+  ]
+}

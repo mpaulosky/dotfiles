@@ -107,6 +107,8 @@ jobs:
             const COPILOT_LOGIN = "copilot-pull-request-reviewer";
             // Claude Review posts as github-actions[bot]; the marker tells its
             // reviews apart from anything else posted under that login.
+            // Accepted limit (repo-ci-baseline's ADR 0004): the marker proves the
+            // login, not that Claude wrote the review; see claude-review.yml.
             const CLAUDE_MARKER = "<!-- claude-review -->";
             // The second line of a Claude review with findings outside the
             // diff: they open no thread, so the review itself holds the merge.

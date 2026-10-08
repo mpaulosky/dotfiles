@@ -179,3 +179,23 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     assert step["continue-on-error"] is True
     assert step["timeout-minutes"] < jobs["review"]["timeout-minutes"]
     assert "needs.review.outputs.findings != ''" in jobs["post"]["if"]
+
+
+# bad_lines() (#122)
+
+def test_a_line_past_the_end_or_a_missing_file_is_bad(tmp_path):
+    import subprocess
+    git = lambda *a: subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+    git("init", "-q")
+    (tmp_path / "three.md").write_text("a\nb\nc\n")
+    (tmp_path / "no-newline.md").write_text("a\nb")
+    git("add", "-A")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c")
+    findings = [{"path": "three.md", "line": 3}, {"path": "three.md", "line": 4}, {"path": "three.md", "line": 0},
+                {"path": "no-newline.md", "line": 2}, {"path": "gone.md", "line": 1}]
+
+    assert bench.bad_lines(tmp_path, "HEAD", findings) == ["three.md:4", "three.md:0", "gone.md:1"]
+
+
+def test_bad_lines_is_none_without_the_clone(tmp_path):
+    assert bench.bad_lines(tmp_path / "missing", "HEAD", [{"path": "a", "line": 1}]) is None

@@ -30,6 +30,7 @@ case whose commits you trust, and read a results file before committing it.
 Needs PyYAML (for reading the workflow) and git.
 
 It prints each case's findings and which expected findings they caught, and
+any finding that cites a line its file doesn't have at the head (#122), and
 writes the run to bench/results/<timestamp>.json. Matching is by keyword, so
 read the findings too: a miss can be a finding worded another way.
 """
@@ -237,6 +238,27 @@ def score(spec, case, outcome):
     return hits, (sum(hits[key] for key in required), len(required))
 
 
+def bad_lines(repo, head, findings):
+    """The "path:line" of each finding that cites a line its file doesn't have at head (#122).
+
+    A file that isn't in head counts too. None when the clone isn't there to check.
+    """
+    if not (repo / ".git").exists():
+        return None
+    lengths = {}
+    bad = []
+    for f in findings:
+        path, line = str(f.get("path", "")), f.get("line")
+        if path not in lengths:
+            shown = subprocess.run([*GIT, "-C", str(repo), "show", f"{head}:{path}"], capture_output=True)
+            content = shown.stdout
+            lengths[path] = (None if shown.returncode != 0
+                             else content.count(b"\n") + (1 if content and not content.endswith(b"\n") else 0))
+        if lengths[path] is None or not isinstance(line, int) or not 1 <= line <= lengths[path]:
+            bad.append(f"{path}:{line}")
+    return bad
+
+
 def report(spec, case, outcome, hits):
     found = (outcome.get("review") or {}).get("findings", [])
     print(f"== {case['repo']}#{case['pr']} {case['head']}", flush=True)
@@ -250,9 +272,11 @@ def report(spec, case, outcome, hits):
         print(f"   {'caught' if hit else 'missed'} {key}{optional}: {spec['findings'][key]['about']}")
     for f in found:
         print(f"   - {f.get('path')}:{f.get('line')}: {' '.join(str(f.get('body', '')).split())[:300]}")
+    if outcome.get("bad_lines"):
+        print(f"   {len(outcome['bad_lines'])} finding(s) on a line the file doesn't have: {', '.join(outcome['bad_lines'])}")
 
 
-def rescore(spec, path):
+def rescore(spec, path, root):
     """Score a saved run again with the current cases file, and write the new score back into it."""
     saved = json.loads(path.read_text())
     cases = {c["head"]: c for c in spec["cases"]}
@@ -260,6 +284,8 @@ def rescore(spec, path):
     for result in saved["cases"]:
         case = {**result, **cases.get(result["head"], {})}
         hits, (got, out_of) = score(spec, case, result)
+        if "review" in result:
+            result["bad_lines"] = bad_lines(root / case["repo"], case["head"], result["review"].get("findings", []))
         report(spec, case, result, hits)
         result["caught"] = hits
         total[0] += got
@@ -289,7 +315,7 @@ def main():
     if args.rescore:
         for path in args.rescore:
             print(f"#### {path.name}")
-            rescore(spec, path)
+            rescore(spec, path, args.root)
         return
 
     if shutil.which("claude") is None:
@@ -312,6 +338,8 @@ def main():
         sys.exit(f"claude-review-bench.py: no case matches {'--only ' + args.only if args.only else '--set ' + args.set}")
     for case in selected:
         outcome = run_case(case, prompt, claude_args, overrides, args.root, args.timeout)
+        if "review" in outcome:
+            outcome["bad_lines"] = bad_lines(args.root / case["repo"], case["head"], outcome["review"]["findings"])
         hits, (got, out_of) = score(spec, case, outcome)
         report(spec, case, outcome, hits)
         run["cases"].append({**case, **outcome, "caught": hits})

@@ -128,11 +128,19 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   The token is read-only and expires with the job. The redaction's GitHub pattern also covers today's `ghs_<digits>_<JWT>` form.
 - **`--setting-sources user`.** The action already replaces the PR's `.claude/` and `.mcp.json` with the base's;
   this also keeps the base's project settings from granting `Read` again. The runner's user level has no settings.
-- **`post_claude_review.py` redacts** anything shaped like an Anthropic key or OAuth token, a GitHub token or a JWT in the summary, paths and bodies,
-  posts the redacted review, and fails the step with an error, so a person checks the PR and rotates the token if it was exposed.
-  Here a failing check is wanted: the PR shouldn't merge on its own until someone has looked.
-- **A quoted secret can't skip the post job.** GitHub withholds a job output that contains a masked secret, so a review quoting
-  the OAuth token or the job's token reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't
-  hold a secret, not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.
+- **An answer that quotes a secret is withheld, exactly.** A step in the review job (`post_claude_review.py --check-answer`) reads
+  Claude's answer from the action's execution file and drops it when it holds 16 characters in a row of `CLAUDE_CODE_OAUTH_TOKEN`
+  or the job's `GITHUB_TOKEN`, passed to it as masked secrets. That catches a near-miss quote GitHub's masking would let through,
+  and never fires on a sample token from the PR.
+- **A quoted secret can't skip the post job.** A withheld answer, by that check or by GitHub withholding a job output that holds a
+  masked secret, reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't hold a secret,
+  not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.
+- **Credential-shaped text is redacted and warns.** The same step replaces anything shaped like an Anthropic key or OAuth token,
+  a GitHub token or a JWT, in the formats they're issued in, before the answer becomes the job output the post job's log prints.
+  The post step redacts again, notes the count in the review, and warns.
+  It first failed the step instead, so a person would look. On the first re-Apply round that carried it, the PR Auto-Merge hold
+  that failure caused fired on atelier-store#130 and IssueManager#274 for a snake_case name and for this script's own test
+  fixtures, and a re-run posts a duplicate review: matches that reach this point are public text far more often than leaks,
+  and the exact check above already covers the real secrets. The tests build their sample tokens at runtime.
 - The pinned action runs on the Claude Agent SDK `^0.3.293` and passes `--allowedTools`, `--disallowedTools` and `--add-dir` through (its `parse-sdk-options.ts`).
 - Someone who can push a branch is out of scope here, as for the marker: they can change the workflow itself.

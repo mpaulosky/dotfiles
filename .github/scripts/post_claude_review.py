@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Post Claude Review's findings as one PR review on the head commit.
 
-Called by .github/workflows/claude-review.yml once Claude has reviewed the PR:
+Called by .github/workflows/claude-review.yml twice. In the review job,
+before Claude's answer becomes a job output:
+
+    OAUTH_TOKEN=... JOB_TOKEN=... python3 .github/scripts/post_claude_review.py --check-answer <execution file>
+
+and in the post job, once Claude has reviewed the PR:
 
     FINDINGS='{"summary": ..., "findings": [...]}' \\
         python3 .github/scripts/post_claude_review.py --repo owner/name --pr 42 --head <sha>
@@ -22,11 +27,19 @@ body's second line is OFF_DIFF_MARKER, which PR Auto-Merge holds on while
 that review is the latest of the head, up to the review cap. The step
 passes with a warning: a failed check would leave the PR UNSTABLE, which
 PR Auto-Merge never merges, so it couldn't merge past the cap either. Only
-malformed findings, a failed API call or a redacted credential fail the
-step, and so do empty findings: the post job runs only once Claude has
-answered, so empty findings mean GitHub withheld them for holding a secret. Anything shaped like a credential (an Anthropic, GitHub or JWT token)
-is replaced with [redacted] before posting, and the step then fails, so a
-person looks at what a prompt-injected diff may have tried. The body always
+malformed findings, a failed API call or empty findings fail the step: the
+post job runs only once Claude has answered, so empty findings mean the
+answer quoted a secret of the review job and was withheld.
+
+--check-answer is what withholds it. It reads Claude's answer from the
+action's execution file (a path, so no log prints the answer) and drops it
+when it holds 16 characters in a row of CLAUDE_CODE_OAUTH_TOKEN or the job's
+GITHUB_TOKEN: an exact test against the real secrets, so a quoted fixture
+never trips it, and a near-miss quote that GitHub's masking would let
+through still does. Otherwise it replaces anything shaped like a
+credential (an Anthropic, GitHub or JWT token) with [redacted] before the
+answer becomes the FINDINGS the post job's log prints. Those matches are
+public text from the PR far more often than leaks, so they only warn. The body always
 starts with MARKER: the review is posted as github-actions[bot], and the
 marker is how PR Auto-Merge and the skill's landing decision tell it apart
 from anything else posted under that login.
@@ -51,17 +64,22 @@ OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->"
 # The new-side start of a hunk: "@@ -a,b +c,d @@" (",d" is optional).
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
-# Text shaped like a credential: Anthropic keys and OAuth tokens, GitHub
-# tokens, and JWTs.
+# Text shaped like a credential, in the formats the tokens are issued in, so
+# a long snake_case name such as ghs_installation_token_value isn't one:
+# Anthropic keys and OAuth tokens, GitHub tokens (classic, fine-grained and
+# today's ghs_<digits>_<JWT> installation tokens), and JWTs. No boundary on
+# the left, so text run up against a token (token_ghp_..., x-eyJ...) can't
+# hide it; a match only warns, so redacting a little too much costs little.
 CREDENTIAL = re.compile(
-    r"sk-ant-[A-Za-z0-9_-]{8,}"
-    # The whole of a GitHub token, including today's ghs_<digits>_<JWT> form.
-    r"|\bgh[pousr]_[A-Za-z0-9_.-]{20,}"
-    r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
-    # A JWT anywhere, even after a word character such as ghs_12345_.
-    r"|(?<![A-Za-z0-9-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"sk-ant-[A-Za-z0-9_-]{20,}"
+    r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"|gh[pousr]_[A-Za-z0-9]{36,}"
+    r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
 )
 REDACTED = "[redacted]"
+# How much of a secret, in a row, counts as quoting it.
+LEAK_WINDOW = 16
 
 
 class MalformedFindings(ValueError):
@@ -149,6 +167,74 @@ def diff_lines(files):
     return lines
 
 
+def structured_output(path):
+    """Claude's answer from the action's execution file, as JSON text, or '' when there's none."""
+    try:
+        with open(path, encoding="utf-8") as file:
+            messages = json.load(file)
+    except (OSError, ValueError):
+        return ""
+    for message in reversed(messages if isinstance(messages, list) else []):
+        if isinstance(message, dict) and message.get("type") == "result" and message.get("structured_output"):
+            return json.dumps(message["structured_output"])
+    return ""
+
+
+def quotes_a_secret(text, secrets):
+    """Whether text holds LEAK_WINDOW characters in a row of any of the secrets."""
+    for secret in secrets:
+        for start in range(len(secret) - LEAK_WINDOW + 1):
+            if secret[start:start + LEAK_WINDOW] in text:
+                return True
+    return False
+
+
+def redact_all(value):
+    """Every string in a JSON value with credential-shaped text replaced, and how many were replaced."""
+    if isinstance(value, str):
+        return CREDENTIAL.subn(REDACTED, value)
+    if isinstance(value, list):
+        pairs = [redact_all(item) for item in value]
+        return [item for item, _ in pairs], sum(n for _, n in pairs)
+    if isinstance(value, dict):
+        pairs = {key: redact_all(item) for key, item in value.items()}
+        return {key: item for key, (item, _) in pairs.items()}, sum(n for _, n in pairs.values())
+    return value, 0
+
+
+def check_answer(path, secrets):
+    """The answer to pass on as FINDINGS, how many strings were redacted, and whether it quoted a secret."""
+    text = structured_output(path)
+    if not text:
+        return "", 0, False
+    if quotes_a_secret(text, [secret for secret in secrets if secret]):
+        return "", 0, True
+    answer, redacted = redact_all(json.loads(text))
+    return json.dumps(answer), redacted, False
+
+
+def write_outputs(outputs):
+    """Write step outputs to GITHUB_OUTPUT: an empty value as name=, any other under its own heredoc delimiter."""
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as file:
+        for name, value in outputs.items():
+            if not value:
+                file.write(f"{name}=\n")
+                continue
+            delimiter = f"EOF_{os.urandom(8).hex()}"
+            file.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
+
+
+def check_answer_main(path):
+    findings, redacted, leaked = check_answer(path, [os.environ.get("OAUTH_TOKEN", ""), os.environ.get("JOB_TOKEN", "")])
+    write_outputs({"findings": findings, "redacted": str(redacted)})
+    if leaked:
+        print("::error::Claude's answer quotes CLAUDE_CODE_OAUTH_TOKEN or the job's GITHUB_TOKEN, so it is withheld "
+              "and the post job fails. A prompt-injected diff may have tried to leak it: check the PR, and rotate "
+              "CLAUDE_CODE_OAUTH_TOKEN (the job's token expires with the job).")
+    elif redacted:
+        print(f"Redacted {redacted} credential-shaped string(s) from Claude's answer.")
+
+
 def redact(summary, findings):
     """The summary and findings with credential-shaped text replaced, and how many were replaced."""
     count = 0
@@ -195,19 +281,25 @@ def build_review(summary, findings, commentable, head, line_count=lambda path: N
 
 def main(argv=None, gh=None, findings=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--repo", required=True, help="owner/name")
-    parser.add_argument("--pr", type=int, required=True, help="the PR to review")
-    parser.add_argument("--head", required=True, help="the head commit Claude reviewed")
+    parser.add_argument("--check-answer", metavar="EXECUTION_FILE",
+                        help="in the review job: check Claude's answer and write it as step outputs")
+    parser.add_argument("--repo", help="owner/name")
+    parser.add_argument("--pr", type=int, help="the PR to review")
+    parser.add_argument("--head", help="the head commit Claude reviewed")
     args = parser.parse_args(argv)
+    if args.check_answer:
+        return check_answer_main(args.check_answer)
+    if not (args.repo and args.pr and args.head):
+        parser.error("--repo, --pr and --head are required to post")
 
     text = os.environ.get("FINDINGS", "") if findings is None else findings
     if not text.strip():
-        print("post_claude_review.py: Claude Review's findings are empty, though Claude answered: GitHub withholds "
-              "a job output that contains a masked secret.", file=sys.stderr)
-        print("::error::Claude's review reached the post job empty: GitHub withheld it because it contains a masked "
-              "secret. A prompt-injected diff may have got Claude to quote CLAUDE_CODE_OAUTH_TOKEN, the only long-lived "
-              "secret in that job (its GITHUB_TOKEN expires with the job): check the PR and the review job's log, and "
-              "rotate CLAUDE_CODE_OAUTH_TOKEN.")
+        print("post_claude_review.py: Claude Review's findings are empty, though Claude answered: the answer "
+              "quoted a secret of the review job and was withheld.", file=sys.stderr)
+        print("::error::Claude's review reached the post job empty: it quoted a secret of the review job, so the "
+              "review job's check (or GitHub's masking) withheld it. A prompt-injected diff may have got Claude to "
+              "quote CLAUDE_CODE_OAUTH_TOKEN, the only long-lived secret in that job (its GITHUB_TOKEN expires with "
+              "the job): check the PR and the review job's log, and rotate CLAUDE_CODE_OAUTH_TOKEN.")
         sys.exit(1)
     try:
         summary, parsed = parse_findings(text)
@@ -216,9 +308,10 @@ def main(argv=None, gh=None, findings=None):
         sys.exit(1)
 
     summary, parsed, redacted = redact(summary, parsed)
+    # The review job's check redacts first; this counts what it did too.
+    redacted += int(os.environ.get("REDACTED") or 0)
     if redacted:
-        summary += (f"\n\n{redacted} credential-shaped string(s) were redacted from this review; "
-                    "the post step fails so a person checks why.")
+        summary += f"\n\n{redacted} credential-shaped string(s) were redacted from this review."
 
     gh = gh or GitHub(args.repo)
     review = build_review(summary, parsed, diff_lines(gh.pull_files(args.pr)), args.head,
@@ -232,9 +325,9 @@ def main(argv=None, gh=None, findings=None):
             "its off-diff marker holds the merge until the next push or the review cap."
         )
     if redacted:
-        print(f"::error::Redacted {redacted} credential-shaped string(s) from Claude's review. A prompt-injected diff "
-              "may have tried to leak a secret: check the PR, and rotate CLAUDE_CODE_OAUTH_TOKEN if it was exposed.")
-        sys.exit(1)
+        print(f"::warning::Redacted {redacted} credential-shaped string(s) from Claude's review. They aren't this "
+              "job's secrets (an answer quoting those is withheld), so they are most likely sample or placeholder "
+              "tokens from the PR.")
     return review
 
 

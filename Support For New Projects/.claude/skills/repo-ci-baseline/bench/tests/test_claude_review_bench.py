@@ -233,7 +233,7 @@ def test_bad_lines_is_none_without_the_clone(tmp_path):
 
 # The post step takes the script from the merge commit's first parent (#134)
 
-def run_post_step(tmp_path, base_script):
+def run_post_step(tmp_path, base_script, findings='{"summary": "s", "findings": []}', merge=True):
     import subprocess
     yaml = pytest.importorskip("yaml")
     jobs = yaml.safe_load(bench.WORKFLOW.read_text())["jobs"]
@@ -257,10 +257,11 @@ def run_post_step(tmp_path, base_script):
     (scripts / "post_claude_review.py").write_text("import sys\nprint('the PR script')\nsys.exit(3)\n")
     git("add", "-A")
     git("commit", "-q", "-m", "pr")
-    git("checkout", "-q", "main")
-    git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+    if merge:
+        git("checkout", "-q", "main")
+        git("merge", "-q", "--no-ff", "-m", "merge", "pr")
     env = {"PATH": __import__("os").environ["PATH"], "RUNNER_TEMP": str(temp), "REPOSITORY": "o/r",
-           "PR_NUMBER": "7", "HEAD_SHA": "abc"}
+           "PR_NUMBER": "7", "HEAD_SHA": "abc", "FINDINGS": findings}
     return subprocess.run(["bash", "-e", "-c", run], cwd=repo, env=env, capture_output=True, text=True)
 
 
@@ -277,3 +278,15 @@ def test_a_base_without_the_script_warns_and_posts_nothing(tmp_path):
     assert done.returncode == 0
     assert done.stdout.startswith("::warning::The base has no .github/scripts/post_claude_review.py yet")
     assert "the PR script" not in done.stdout
+
+
+def test_a_base_without_the_script_still_fails_a_withheld_answer(tmp_path):
+    done = run_post_step(tmp_path, None, findings="")
+
+    assert done.returncode == 1 and "rotate CLAUDE_CODE_OAUTH_TOKEN" in done.stdout
+
+
+def test_a_checkout_that_isnt_a_merge_commit_fails(tmp_path):
+    done = run_post_step(tmp_path, "print('the base script')\n", merge=False)
+
+    assert done.returncode == 1 and done.stdout.startswith("::error::The checkout isn't the PR's merge commit")

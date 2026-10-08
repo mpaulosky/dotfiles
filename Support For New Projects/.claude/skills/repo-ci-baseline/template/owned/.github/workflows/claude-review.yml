@@ -431,9 +431,20 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           script="${RUNNER_TEMP}/post_claude_review.py"
-          if ! git show "HEAD^1:.github/scripts/post_claude_review.py" > "$script" 2>/dev/null; then
+          if ! git rev-parse --verify -q "HEAD^2" >/dev/null; then
+            echo "::error::The checkout isn't the PR's merge commit, so the base's post_claude_review.py can't be found."
+            exit 1
+          fi
+          if ! git cat-file -e "HEAD^1:.github/scripts/post_claude_review.py" 2>/dev/null; then
+            if [ -z "$FINDINGS" ]; then
+              # The script would fail on this; without it, fail here.
+              echo "::error::Claude's answer was withheld for quoting a secret of the review job. Check the PR and the" \
+                "review job's log, and rotate CLAUDE_CODE_OAUTH_TOKEN."
+              exit 1
+            fi
             echo "::warning::The base has no .github/scripts/post_claude_review.py yet, so Claude's review isn't posted." \
               "The PR needs Copilot's review, or a merge by hand."
             exit 0
           fi
+          git show "HEAD^1:.github/scripts/post_claude_review.py" > "$script"
           python3 -I "$script" --repo "$REPOSITORY" --pr "$PR_NUMBER" --head "$HEAD_SHA"

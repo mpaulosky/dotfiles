@@ -14,7 +14,10 @@ diff, so the PR records it the same way it records Copilot's.
 
 GitHub rejects a whole review if one comment sits on a line outside the
 diff, so a finding whose line isn't in the diff goes into the review body
-instead. The body always starts with MARKER: the review is posted as
+instead. A body finding opens no review thread, so PR Auto-Merge wouldn't
+wait on it: after posting, the script exits 1, and the failing check holds
+the merge until the next push gets a fresh review. The body always starts
+with MARKER: the review is posted as
 github-actions[bot], and the marker is how PR Auto-Merge and the skill's
 landing decision tell it apart from anything else posted under that login.
 
@@ -118,7 +121,8 @@ def build_review(summary, findings, commentable, head):
     if not findings:
         parts.append("No findings.")
     if off_diff:
-        parts.append("Findings outside the diff:\n\n" + "\n".join(off_diff))
+        parts.append("Findings outside the diff (no thread to resolve, so Claude Review's failing check "
+                     "holds the merge until the next push):\n\n" + "\n".join(off_diff))
     body = "\n\n".join(part for part in parts if part)
     return {"commit_id": head, "event": "COMMENT", "body": f"{MARKER}\n{body}", "comments": comments}
 
@@ -140,10 +144,15 @@ def main(argv=None, gh=None, findings=None):
     gh = gh or GitHub(args.repo)
     review = build_review(summary, parsed, diff_lines(gh.pull_files(args.pr)), args.head)
     gh.create_review(args.pr, review)
-    print(
-        f"Posted Claude's review of {args.head} on PR #{args.pr}: {len(review['comments'])} inline, "
-        f"{len(parsed) - len(review['comments'])} in the body."
-    )
+    in_body = len(parsed) - len(review["comments"])
+    print(f"Posted Claude's review of {args.head} on PR #{args.pr}: {len(review['comments'])} inline, {in_body} in the body.")
+    if in_body:
+        print(
+            f"post_claude_review.py: {in_body} finding(s) outside the diff are in the review body; "
+            "this failing check holds the merge until the next push.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     return review
 
 

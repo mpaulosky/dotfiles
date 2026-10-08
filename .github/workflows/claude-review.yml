@@ -3,16 +3,19 @@ name: Claude Review
 
 # Claude reviews a PR as a backup to Copilot, whose review requests GitHub
 # drops without a word once the account's Copilot code review budget is used
-# up. It runs only on request: while the PR carries review:claude, which
-# reapply.sh and land.sh add when Copilot's request didn't register, and a
-# person can add at any time. It reviews every new head while the label is on.
+# up. It runs only on request: while the PR carries review:claude, which the
+# repo-ci-baseline skill's reapply.sh and land.sh (in mpaulosky/dotfiles, not
+# this repo) add when Copilot's request didn't register, and a person can add
+# at any time. It reviews every new head while the label is on.
 #
 # Claude never holds a write token. The review job checks the PR out with a
 # read-only token, gives Claude the diff against the base and read-only tools,
 # and takes its findings as structured JSON. The post job turns that JSON
 # into one review on the head commit (post_claude_review.py), with inline
 # threads like Copilot's, and a body that starts with <!-- claude-review -->:
-# PR Auto-Merge accepts that review of the head as it does Copilot's.
+# PR Auto-Merge accepts that review of the head as it does Copilot's. A
+# finding outside the diff can't be a thread, so it goes in the body and the
+# post job fails, which holds the merge until the next push.
 #
 # Without the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`) the
 # run logs a notice and succeeds, so the workflow can be Applied before every

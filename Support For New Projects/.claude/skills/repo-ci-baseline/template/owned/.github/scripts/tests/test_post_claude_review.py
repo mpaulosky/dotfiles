@@ -45,6 +45,15 @@ def run(findings, gh=None):
     return gh
 
 
+def run_off_diff(findings, capsys):
+    """Run with a finding outside the diff: the review is posted, then the step fails."""
+    gh = FakeGitHub()
+    with pytest.raises(SystemExit) as exit_info:
+        run(findings, gh)
+    assert exit_info.value.code == 1
+    return gh, capsys.readouterr().err
+
+
 # diff_lines()
 
 
@@ -82,19 +91,39 @@ def test_findings_become_one_review_on_the_head_commit():
     assert "Looked at the diff." in review["body"]
 
 
-def test_the_marker_is_always_first():
-    for findings in (findings_json(), findings_json(("src/app.py", 2, "x")), findings_json(("other.py", 1, "y"))):
+def test_the_marker_is_always_first(capsys):
+    for findings in (findings_json(), findings_json(("src/app.py", 2, "x"))):
         _, review = run(findings).posted[0]
         assert review["body"].startswith(pcr.MARKER + "\n")
+    gh, _ = run_off_diff(findings_json(("other.py", 1, "y")), capsys)
+    assert gh.posted[0][1]["body"].startswith(pcr.MARKER + "\n")
 
 
-def test_a_finding_off_the_diff_moves_to_the_body():
-    gh = run(findings_json(("src/app.py", 2, "On the diff."), ("src/app.py", 10, "Off the diff."), ("README.md", 1, "Not changed.")))
+def test_a_finding_off_the_diff_moves_to_the_body(capsys):
+    findings = findings_json(("src/app.py", 2, "On the diff."), ("src/app.py", 10, "Off the diff."),
+                             ("README.md", 1, "Not changed."))
+    gh, _ = run_off_diff(findings, capsys)
 
     _, review = gh.posted[0]
     assert [c["line"] for c in review["comments"]] == [2]
     assert "`src/app.py:10`" in review["body"] and "Off the diff." in review["body"]
     assert "`README.md:1`" in review["body"] and "Not changed." in review["body"]
+
+
+def test_a_finding_off_the_diff_fails_the_step_after_posting(capsys):
+    # A body finding opens no thread, so PR Auto-Merge wouldn't wait on it:
+    # the failing check is what holds the merge until the next push.
+    gh, err = run_off_diff(findings_json(("src/app.py", 2, "On."), ("README.md", 1, "Off.")), capsys)
+
+    assert len(gh.posted) == 1
+    assert "1 finding(s) outside the diff" in err
+    assert "holds the merge" in gh.posted[0][1]["body"]
+
+
+def test_findings_on_the_diff_only_pass():
+    gh = run(findings_json(("src/app.py", 2, "On.")))
+
+    assert "holds the merge" not in gh.posted[0][1]["body"]
 
 
 def test_no_findings_says_so():

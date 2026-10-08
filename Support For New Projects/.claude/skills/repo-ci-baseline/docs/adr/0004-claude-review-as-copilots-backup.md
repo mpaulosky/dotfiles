@@ -69,6 +69,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 - After the benchmark, one sentence of v3 changed: it had asked Claude to read a pinned action's source or GitHub's documentation, which it has no way to do.
   It now asks Claude to say what it's relying on when that decides a finding. Pointing it at the action's source on the runner, for finding 5, is #117.
 - **The review job's `timeout-minutes` is 30.** Opus took up to about 7 minutes on these diffs, and a timed-out job is a failing check that holds the merge.
+  `review:claude` goes mostly on re-Apply PRs, which carry only the Owned files that changed: 2 to 8 files and under 800 lines in the #116 and #82 rounds,
+  the largest being Articles#298, the benchmark's own case.
 - **The prompt was the bigger change.**
   - The original said an empty findings list was a good answer and to leave out anything Claude wasn't confident about, and Sonnet then read little beyond the diff.
   - The thorough prompt asks for the files around the diff, untested paths (reruns, skipped jobs, other actors, odd input) and how GitHub itself behaves.
@@ -87,6 +89,7 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 - Each results file keeps the exact prompt and arguments it ran with, which is what reproduces its score; a prompt file may have changed since.
 - The workflow's header records the accepted marker limit, because the prompt asks for problems "a maintainer would want fixed or knowingly accepted",
   and this ADR isn't in the Baseline repos: without it, every re-Apply PR that touches the workflow would get the same thread.
-- The benchmark runs Claude on the maintainer's machine against the cases' commits. It takes `.claude/`, `.mcp.json`, `CLAUDE.md` and `CLAUDE.local.md` from the base and starts no MCP servers,
-  so a head's settings and hooks never run. Only trusted commits become cases, and a results file is read before it's committed.
+- The benchmark runs Claude on the maintainer's machine against the cases' commits.
+  It takes the root `.claude/`, `.mcp.json`, `CLAUDE.md` and `CLAUDE.local.md` from the base, starts no MCP servers and runs git with hooks off,
+  so a head's settings, hooks and servers never run (nested `CLAUDE.md` files still come from the head, as the diff does). Only trusted commits become cases, and a results file is read before it's committed.
 - Rerun the benchmark before changing the model, effort, prompt or tools, and add a case whenever Copilot finds something Claude Review missed.

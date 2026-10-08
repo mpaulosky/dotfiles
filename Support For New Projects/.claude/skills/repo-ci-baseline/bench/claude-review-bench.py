@@ -14,9 +14,11 @@ settings and CLAUDE.md load, as in CI; user-level settings and plugins don't.
 It is close to the workflow, not identical: it runs the `claude` on PATH,
 not the Claude Code version the pinned claude-code-action installs. The
 results file records the CLI version, so a rerun on another version is told
-apart. It takes the case's Claude Code config (`.claude/`, `.mcp.json`,
-`CLAUDE.md`, `CLAUDE.local.md`) from the base, and starts no MCP servers, so
-a head commit's settings, hooks, servers and instructions never run.
+apart. It takes the case's root Claude Code config (`.claude/`, `.mcp.json`,
+`CLAUDE.md`, `CLAUDE.local.md`) from the base, starts no MCP servers and runs
+git with hooks off, so a head commit's settings, hooks and servers never run.
+Nested `CLAUDE.md` files and `.claude/skills` in subdirectories still come
+from the head, as the diff Claude reads does.
 
 It runs Claude on your machine with an unscoped Read, against code from the
 case's commits. Only add a case whose commits you trust, and read a results
@@ -97,23 +99,28 @@ def caught(finding, findings_found):
     return [f for f in findings_found if on_path(f) and matches(str(f.get("body", "")))]
 
 
+# Git with hooks off: Baseline repos set a relative core.hooksPath, so a worktree's own
+# hooks (a case head's post-checkout) would otherwise run here.
+GIT = ["git", "-c", "core.hooksPath=/dev/null"]
+
+
 # What Claude Code reads from a project: its settings and hooks, its MCP servers, and its instructions.
 PROJECT_CONFIG = (".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md")
 
 
 def use_base_settings(tree, base):
-    """Replace the head's Claude Code config with the base's: a case's own settings, hooks, MCP servers and
-    instructions never load. --strict-mcp-config (in run_case) also keeps any MCP server from starting."""
+    """Replace the head's root Claude Code config with the base's, so a case's own settings, hooks and MCP servers
+    never load. --strict-mcp-config (in run_case) also keeps any MCP server from starting."""
     for name in PROJECT_CONFIG:
         path = tree / name
         if path.is_dir():
             shutil.rmtree(path)
         elif path.exists():
             path.unlink()
-        listed = subprocess.run(["git", "-C", str(tree), "ls-tree", base, "--", name],
+        listed = subprocess.run([*GIT, "-C", str(tree), "ls-tree", base, "--", name],
                                 check=True, capture_output=True, text=True).stdout
         if listed.strip():
-            subprocess.run(["git", "-C", str(tree), "checkout", base, "--", name], check=True, capture_output=True, text=True)
+            subprocess.run([*GIT, "-C", str(tree), "checkout", base, "--", name], check=True, capture_output=True, text=True)
 
 
 def run_case(case, prompt, claude_args, overrides, root, timeout):
@@ -125,11 +132,11 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
         tree = temp / "tree"
         added = False
         try:
-            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(tree), case["head"]],
+            subprocess.run([*GIT, "-C", str(repo), "worktree", "add", "-q", "--detach", str(tree), case["head"]],
                            check=True, capture_output=True, text=True)
             added = True
             use_base_settings(tree, case["base"])
-            diff = subprocess.run(["git", "-C", str(tree), "diff", "--no-color", f"{case['base']}...{case['head']}"],
+            diff = subprocess.run([*GIT, "-C", str(tree), "diff", "--no-color", f"{case['base']}...{case['head']}"],
                                   check=True, capture_output=True, text=True).stdout
             (temp / "pr.diff").write_text(diff)
             argv = ["claude", "-p", render(prompt, case["pr"], temp),
@@ -144,7 +151,7 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
             return {"error": f"{error} {detail}".strip(), "seconds": round(time.monotonic() - started)}
         finally:
             if added:
-                subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(tree)], check=False)
+                subprocess.run([*GIT, "-C", str(repo), "worktree", "remove", "--force", str(tree)], check=False)
     seconds = round(time.monotonic() - started)
     if done.returncode != 0:
         return {"error": (done.stderr or done.stdout)[-2000:], "seconds": seconds}

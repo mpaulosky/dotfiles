@@ -1,4 +1,4 @@
-"""Tests for bench/claude-review-bench.py's scoring and argument handling. No Claude, no git."""
+"""Tests for bench/claude-review-bench.py's scoring, argument handling and config swap. No Claude."""
 
 import importlib.util
 import json
@@ -90,7 +90,9 @@ def test_the_heads_claude_config_is_replaced_by_the_bases(tmp_path):
     import subprocess
 
     def git(*args):
-        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+        # Hooks and signing off, as the skill's other test repos: the maintainer's global config may set them.
+        subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True)
     git("init", "-q")
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "t")

@@ -130,8 +130,9 @@ any gate you did not actually run as not run.
    refuses a branch behind its default branch (the Baseline's does), they
    start with `git fetch origin <default branch>` and, when the branch is
    behind, `git merge origin/<default branch>` and a rerun of step 5's
-   gates, on a clean tree only. A merge that won't start, a conflict (`git merge --abort` when
-   `MERGE_HEAD` exists) or a red gate goes back to the user unpushed.
+   gates, on a clean tree only. A merge that won't start, a conflict
+   (`git merge --abort` when `MERGE_HEAD` exists) or a red gate goes back
+   to the user unpushed.
 
    Close with any **prune candidates**: linked worktrees safe to remove, with
    their `git worktree remove <path>` and `git branch -D <branch>` commands.
@@ -149,5 +150,6 @@ any gate you did not actually run as not run.
 
    `git worktree remove` also deletes ignored files, so flag anything in
    `git -C <path> status --porcelain --ignored` (one line per ignored
-   folder) beyond build output (a `.env`, `*.user`). A worktree `git worktree list` marks
-   `prunable` (its folder is gone) gets `git worktree prune` instead.
+   folder) beyond build output (a `.env`, `*.user`). A worktree
+   `git worktree list` marks `prunable` (its folder is gone) gets
+   `git worktree prune` instead.

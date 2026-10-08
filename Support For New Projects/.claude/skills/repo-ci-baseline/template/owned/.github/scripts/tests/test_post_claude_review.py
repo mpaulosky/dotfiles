@@ -570,3 +570,105 @@ def test_posting_needs_repo_pr_and_head():
         pcr.main(["--repo", "octo/demo"], gh=FakeGitHub(), findings=findings_json())
 
     assert exit_info.value.code == 2
+
+
+# The post job's gate, which picks the post_claude_review.py the merge
+# commit's first parent (the base) holds, never the PR's own copy.
+
+def post_step_script():
+    """The bash the "Post the review on the head commit" step runs, from its run: block."""
+    lines = WORKFLOW.read_text().splitlines()
+    step = next(i for i, line in enumerate(lines) if line.strip() == "- name: Post the review on the head commit")
+    run = next(i for i in range(step, len(lines)) if lines[i].strip() == "run: |")
+    indent = len(lines[run]) - len(lines[run].lstrip())
+    end = next((i for i in range(run + 1, len(lines))
+                if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) <= indent), len(lines))
+    return textwrap.dedent("\n".join(lines[run + 1:end])) + "\n"
+
+
+def stub_script(name):
+    """A post_claude_review.py that only says which copy ran, and with what."""
+    return f'import sys\nprint("{name} copy ran with", " ".join(sys.argv[1:]))\n'
+
+
+def git(repo, *args):
+    env = {"PATH": os.environ["PATH"], "HOME": str(repo), "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com"}
+    subprocess.run(["git", "-C", str(repo), *args], env=env, check=True, capture_output=True)
+
+
+def commit_script(repo, content, message):
+    script = repo / ".github" / "scripts" / "post_claude_review.py"
+    if content is None:
+        (repo / "README").write_text(message)
+    else:
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(content)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", message)
+
+
+def merge_repo(tmp_path, base, pr):
+    """A repo whose HEAD merges a PR commit (holding pr) into a base commit (holding base); None is no script."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    commit_script(repo, base, "base")
+    git(repo, "checkout", "-q", "-b", "pr")
+    commit_script(repo, pr, "pr")
+    git(repo, "checkout", "-q", "main")
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge", "pr")
+    return repo
+
+
+def run_post_step(repo, tmp_path, findings="{}"):
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "RUNNER_TEMP": str(runner_temp),
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "FINDINGS": findings, "REDACTED": "0",
+           "REPOSITORY": "octo/demo", "PR_NUMBER": "7", "HEAD_SHA": HEAD}
+    return subprocess.run(["bash", "-e", "-c", post_step_script()], cwd=repo, env=env, capture_output=True, text=True)
+
+
+def test_the_post_step_runs_the_bases_script_not_the_prs(tmp_path):
+    repo = merge_repo(tmp_path, stub_script("base"), stub_script("pr"))
+
+    done = run_post_step(repo, tmp_path)
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == f"base copy ran with --repo octo/demo --pr 7 --head {HEAD}"
+
+
+def test_a_base_without_the_script_warns_and_posts_nothing(tmp_path):
+    repo = merge_repo(tmp_path, None, stub_script("pr"))
+
+    done = run_post_step(repo, tmp_path)
+
+    assert done.returncode == 0
+    assert "::warning::The base has no .github/scripts/post_claude_review.py" in done.stdout
+    assert "copy ran" not in done.stdout
+
+
+def test_a_base_without_the_script_fails_on_withheld_findings(tmp_path):
+    repo = merge_repo(tmp_path, None, stub_script("pr"))
+
+    done = run_post_step(repo, tmp_path, findings="")
+
+    assert done.returncode == 1
+    assert "::error::Claude's answer was withheld for quoting a secret" in done.stdout
+    assert "copy ran" not in done.stdout
+
+
+def test_a_checkout_that_isnt_a_merge_commit_fails(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    commit_script(repo, stub_script("base"), "base")
+    commit_script(repo, stub_script("pr"), "pr")
+
+    done = run_post_step(repo, tmp_path)
+
+    assert done.returncode == 1
+    assert "::error::The checkout isn't the PR's merge commit" in done.stdout
+    assert "copy ran" not in done.stdout

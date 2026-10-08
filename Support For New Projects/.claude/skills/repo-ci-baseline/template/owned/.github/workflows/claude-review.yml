@@ -18,8 +18,11 @@ name: Claude Review
 # second marker, which PR Auto-Merge holds on until the next push gets a fresh
 # review or the review cap is reached, and the post job warns. It doesn't
 # fail: a failed check leaves the PR UNSTABLE, which PR Auto-Merge never
-# merges, even at the cap. Only PRs into main, the only ones PR Auto-Merge
-# merges.
+# merges, even at the cap. For the same reason a Review step that fails, times
+# out or hits the subscription's usage limit doesn't fail the job: it warns
+# and posts nothing, so the PR waits for a review of its head (Copilot's, or
+# Claude's on a rerun) instead of stranding. Only PRs into main, the only ones
+# PR Auto-Merge merges.
 #
 # Accepted limit (repo-ci-baseline's ADR 0004): the marker proves a review
 # came through github-actions[bot], not that Claude wrote it. This workflow
@@ -95,21 +98,37 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: git diff --no-color "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/pr.diff"
+        # In a directory of its own, the only part of RUNNER_TEMP Claude can read.
+        run: |
+          mkdir -p "${RUNNER_TEMP}/claude-review"
+          git diff --no-color "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
 
       # Opus 5.5 at high effort, with read-only tools: it reads the diff and
       # the checked-out code, and answers in the JSON schema below. The prompt
       # and model were chosen on the skill's benchmark (bench/ in the
       # repo-ci-baseline skill, #117): Sonnet at medium effort caught none of
-      # the findings Copilot made on the same commits. No WebFetch: it made no
-      # difference to the benchmark, and it would be one more way out for a
-      # prompt-injected diff. Read(//proc/**) is denied (Grep and Glob too), so
-      # Claude can't read the OAuth token from a process's environment; the
-      # review it writes is posted publicly. Scoping Read further and redacting
-      # the output are repo-ci-baseline #121.
+      # the findings Copilot made on the same commits.
+      #
+      # The review is posted publicly and the Claude process holds the OAuth
+      # token, so Claude reads nothing but the checkout, the diff's directory
+      # and the source of the actions this job uses (_actions, for questions
+      # about how a pinned action behaves). No tool is granted outright: read
+      # tools are then allowed only inside those directories, and Claude Code
+      # resolves symlinks and `..` before it checks, so a symlink in the PR or
+      # /dev/fd/../environ can't reach the token (repo-ci-baseline #121, checked
+      # with Claude Code 2.1.294). Read(//proc/**) is denied as well. Settings
+      # come only from the runner's user level, so no repo settings can grant
+      # more. No WebFetch: it made no difference to the benchmark, and it would
+      # be one more way out for a prompt-injected diff. post_claude_review.py
+      # also redacts anything shaped like a credential before posting.
+      #
+      # Its own timeout, under the job's, and continue-on-error, so a timed-out
+      # or refused run ends in the warning step below, not a failed check.
       - name: Review
         id: claude
         if: steps.secret.outputs.enabled == 'true'
+        timeout-minutes: 25
+        continue-on-error: true
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -118,10 +137,12 @@ jobs:
           prompt: |
             You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.
             The PR's head is checked out in the working directory. Its diff against the base
-            branch is in ${{ runner.temp }}/pr.diff; read it first. Then read every file the diff
-            touches in full, and the unchanged code it calls or is called by: a bug often lies in
-            how the change interacts with code it doesn't touch. Follow the repository's own
-            conventions (AGENTS.md, CLAUDE.md, docs/ and .github/instructions/ where present).
+            branch is in ${{ runner.temp }}/claude-review/pr.diff; read it first. Then read every
+            source file the diff touches in full, and the unchanged code it calls or is called by:
+            a bug often lies in how the change interacts with code it doesn't touch. Skim
+            generated files, lockfiles, snapshots and recorded data instead of reading them in
+            full. Follow the repository's own conventions (AGENTS.md, CLAUDE.md, docs/ and
+            .github/instructions/ where present).
 
             Your review may be the only one this PR gets before it merges on its own, so be
             thorough. For each change, ask what happens on the paths the author didn't test:
@@ -130,8 +151,10 @@ jobs:
             input (whitespace, tabs, Unicode, markup), a race between two runs. For GitHub
             Actions workflows and merge gates, reason about how GitHub itself behaves: which
             events fire, what a skipped or failed check does to a PR's mergeStateStatus, who
-            the actor is, what each token can do. Where the behaviour of a pinned action or of
-            GitHub decides the answer and you can't check it here, say what you're relying on.
+            the actor is, what each token can do. The source of the actions this review runs on
+            is under ${{ github.workspace }}/../../_actions/<owner>/<repo>/<ref>; read it when a
+            pinned action's behaviour decides the answer. Where the behaviour of an action or
+            of GitHub decides it and you can't check it here, say what you're relying on.
             Look hardest at code that decides whether something merges, releases or gets
             permissions, and at text processing that turns input into rendered output.
 
@@ -152,18 +175,30 @@ jobs:
           claude_args: >-
             --model claude-opus-5-5
             --effort high
-            --add-dir ${{ runner.temp }}
-            --allowedTools "Read,Glob,Grep"
-            --disallowedTools "Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,Read(//proc/**)"
+            --add-dir ${{ runner.temp }}/claude-review
+            --add-dir ${{ github.workspace }}/../../_actions
+            --setting-sources user
+            --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read(//proc/**)"
             --json-schema '{"type": "object", "required": ["summary", "findings"], "properties": {
             "summary": {"type": "string"},
             "findings": {"type": "array", "items": {"type": "object", "required": ["path", "line", "body"],
             "properties": {"path": {"type": "string"}, "line": {"type": "integer"}, "body": {"type": "string"}}}}}}'
 
+      - name: Warn when Claude didn't review
+        if: steps.secret.outputs.enabled == 'true' && steps.claude.outputs.structured_output == ''
+        env:
+          OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          echo "::warning::Claude Review ended without a review (Review step: ${OUTCOME}), so nothing is posted" \
+            "and the PR waits for a review of its head. Rerun this workflow once a usage limit has reset," \
+            "or remove review:claude and merge by hand."
+
   post:
     name: Post Claude's review
     needs: review
-    if: needs.review.outputs.enabled == 'true'
+    # Nothing to post when the Review step failed, timed out or was refused:
+    # an empty FINDINGS would fail post_claude_review.py as malformed.
+    if: needs.review.outputs.enabled == 'true' && needs.review.outputs.findings != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:

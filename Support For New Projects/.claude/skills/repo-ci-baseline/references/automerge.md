@@ -60,12 +60,16 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Claude Review** (`claude-review.yml`) is the backup reviewer, run only while a PR into `main` carries `review:claude`, on `labeled`, `synchronize`, `reopened` and `ready_for_review`.
   It skips drafts, Dependabot and events a bot started (the action refuses a bot actor, `Copilot` included, which has no `[bot]` suffix),
   and logs a notice and succeeds without the `CLAUDE_CODE_OAUTH_TOKEN` secret.
-  It must not fail on its own: it isn't a required check, so a failed run leaves the PR `UNSTABLE`, which this workflow never merges; re-run it or remove the label.
+  It must not fail on its own: it isn't a required check, so a failed run leaves the PR `UNSTABLE`, which this workflow never merges.
+  So a Review step that fails, times out or hits the usage limit warns and posts nothing (`continue-on-error`), and the PR waits for a review of its head:
+  Copilot's, or Claude's on a rerun. The one deliberate failure is a review the post step had to redact a credential from.
   Claude (`anthropics/claude-code-action`; model, effort and prompt in [ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#model-effort-and-prompt-117))
   never holds a write token: its job has read-only permissions,
-  gets the diff against the base and only Read, Glob and Grep, and answers in a JSON schema.
+  gets the diff against the base, and reads only the checkout, the diff and the runner's `_actions`, with no tool granted outright
+  ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#keeping-the-token-out-of-the-review-121)), and answers in a JSON schema.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
+  A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.
   A body finding opens no thread, so the review's body carries a second marker, `<!-- claude-review:off-diff -->`, and this workflow holds the merge
   while that review is Claude's latest of the head (until the review cap, like threads); the post job warns but passes.
   The hold lives in the review, not the check: a failed check would leave the PR `UNSTABLE`, so it couldn't merge past the cap,

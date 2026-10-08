@@ -298,20 +298,32 @@ jobs:
               return False
 
 
+          def malformed(answer):
+              """Why the answer doesn't fit the schema, as post_claude_review.py's parse_findings judges it, or None."""
+              if not isinstance(answer, dict) or not isinstance(answer.get("summary"), str):
+                  return "no summary string"
+              if not isinstance(answer.get("findings"), list):
+                  return "findings is not a list"
+              for index, finding in enumerate(answer["findings"]):
+                  if not (isinstance(finding, dict) and isinstance(finding.get("path"), str)
+                          and type(finding.get("line")) is int and isinstance(finding.get("body"), str)):
+                      return f"finding {index} needs a string path, an integer line and a string body"
+              return None
+
+
           def schema_fields(answer):
               """Only what gets posted: the summary, and each finding's path, line and body.
 
-              Only extra keys are dropped. Anything of the wrong shape is passed on
-              as it is, so the post script rejects it rather than posting "No findings".
+              A malformed answer becomes a fixed placeholder holding none of it, so
+              nothing the check didn't compare reaches the post job's log, and the
+              post script still rejects it rather than posting "No findings".
               """
-              if not isinstance(answer, dict):
-                  return answer
-              findings = answer.get("findings")
-              if isinstance(findings, list):
-                  findings = [{key: finding[key] for key in ("path", "line", "body") if key in finding}
-                              if isinstance(finding, dict) else finding for finding in findings]
-              return {key: value for key, value in (("summary", answer.get("summary")), ("findings", findings))
-                      if key in answer}
+              reason = malformed(answer)
+              if reason:
+                  return {"malformed": f"Claude's answer was withheld: {reason}"}
+              return {"summary": answer["summary"],
+                      "findings": [{key: finding[key] for key in ("path", "line", "body")}
+                                   for finding in answer["findings"]]}
 
 
           def redact(value):
@@ -321,9 +333,8 @@ jobs:
                   pairs = [redact(item) for item in value]
                   return [item for item, _ in pairs], sum(n for _, n in pairs)
               if isinstance(value, dict):
-                  # Keys too: a wrong-shaped answer is passed on as it is.
-                  pairs = [(redact(key), redact(item)) for key, item in value.items()]
-                  return {key: item for (key, _), (item, _) in pairs}, sum(m + n for (_, m), (_, n) in pairs)
+                  pairs = {key: redact(item) for key, item in value.items()}
+                  return {key: item for key, (item, _) in pairs.items()}, sum(n for _, n in pairs.values())
               return value, 0
 
 

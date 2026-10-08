@@ -398,24 +398,20 @@ def test_only_the_schemas_fields_are_passed_on(tmp_path):
     {"summary": "s"},
     {"findings": []},
     {"summary": "s", "findings": [{"path": "a.py", "body": "no line"}]},
-])
-def test_a_malformed_answer_reaches_the_post_script_malformed(tmp_path, answer):
-    _, outputs, _ = check(tmp_path, answer, [SECRET])
-
-    with pytest.raises(pcr.MalformedFindings):
-        pcr.parse_findings(outputs["findings"])
-
-
-@pytest.mark.parametrize("answer", [
-    {"summary": "s", "findings": [[{TOKENS[1]: 1}]]},
-    {"summary": {TOKENS[1]: "x"}, "findings": []},
+    {"summary": "s", "findings": [{"path": "a.py", "line": True, "body": "b"}]},
+    {"summary": "s", "findings": [[115, 107, 45]]},
+    {"summary": "s", "findings": [{"path": "a", "line": [115, 107], "body": "b"}]},
+    {"summary": {TOKENS[1]: [115, 107]}, "findings": []},
     [{TOKENS[1]: "x"}],
 ])
-def test_credential_shaped_keys_in_a_malformed_answer_are_redacted(tmp_path, answer):
+def test_a_malformed_answer_becomes_a_placeholder_the_post_script_rejects(tmp_path, answer):
     _, outputs, _ = check(tmp_path, answer, [SECRET])
 
-    assert TOKENS[1] not in outputs["findings"] and pcr.REDACTED in outputs["findings"]
-    assert outputs["redacted"] == "1"
+    placeholder = json.loads(outputs["findings"])
+    assert list(placeholder) == ["malformed"] and placeholder["malformed"].startswith("Claude's answer was withheld: ")
+    assert "115" not in outputs["findings"] and TOKENS[1] not in outputs["findings"] and outputs["redacted"] == "0"
+    with pytest.raises(pcr.MalformedFindings):
+        pcr.parse_findings(outputs["findings"])
 
 
 def test_a_secret_spelled_out_in_line_numbers_is_withheld(tmp_path):

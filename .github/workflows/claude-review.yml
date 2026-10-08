@@ -41,6 +41,15 @@ name: Claude Review
 # its run gets no secrets and a read-only token, so it can't post, and PR
 # Auto-Merge never merges a fork PR (isCrossRepository); the maintainer does.
 #
+# A push that only merges main into a reviewed commit isn't reviewed again:
+# PR Auto-Merge counts the review of that commit for a clean merge from main
+# on top of it, and brings ready PRs up to date that way itself, so a review
+# of each merge would spend Claude's usage on code main already has. The
+# merge-from-main job decides, by PR Auto-Merge's rule, and reviews whenever
+# it can't tell. It runs from the PR like the rest of this workflow, so a push
+# that changes it can skip its own review; PR Auto-Merge, which runs from
+# main, still waits for a review that covers the head.
+#
 # Without the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`) the
 # run logs a notice and succeeds, so the workflow can be Applied before every
 # repo has the secret.
@@ -52,8 +61,8 @@ name: Claude Review
 permissions: {}
 
 jobs:
-  review:
-    name: Review with Claude
+  merge-from-main:
+    name: Check for a merge from main
     # Dependabot PRs keep their own auto-merge path and get no secrets anyway.
     # Another label being added is no reason to review again. The action
     # refuses a bot as the actor (an app's push), and a failed run here is a
@@ -61,6 +70,7 @@ jobs:
     # merges, so a bot's event skips instead; the next person's push or a
     # re-added label reviews the head. Copilot's coding agent acts as
     # `Copilot`, without the [bot] suffix, and the action refuses it too.
+    # The review job runs only after this one, so this condition covers both.
     if: >-
       contains(github.event.pull_request.labels.*.name, 'review:claude') &&
       !github.event.pull_request.draft &&
@@ -69,8 +79,120 @@ jobs:
       github.actor != 'Copilot' &&
       (github.event.action != 'labeled' || github.event.label.name == 'review:claude')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip == 'true' }}
+    steps:
+      # Only a push can be a merge from main; a label or a reopen asks for a
+      # review. Both steps carry on past an error, which then reviews: a
+      # failed job would be a failed check.
+      - name: Checkout the PR head
+        if: github.event.action == 'synchronize'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # The whole history and every branch, for merge bases and main.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # PR Auto-Merge's rule (reviewCovering and isCleanMerge in
+      # pr-automerge.yml), which this must match: skip when the head was
+      # reviewed, or is a merge whose second parent is on main, whose every
+      # file is what a clean merge gives (where only one side changed a file
+      # since the merge base, that side's version), and whose first parent is
+      # covered the same way, up to MERGE_CHAIN_LIMIT merges down. Where the
+      # two could differ (several merge bases), this one reviews.
+      - name: Skip a clean merge of main into a reviewed commit
+        id: check
+        if: github.event.action == 'synchronize'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # Commits Copilot or Claude Review (a marked github-actions[bot] review) reviewed.
+          gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --jq '.[]
+            | select(.user.login == "copilot-pull-request-reviewer[bot]"
+              or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))))
+            | .commit_id' > "${RUNNER_TEMP}/reviewed.txt"
+          python3 -I - <<'PY'
+          import os, subprocess
+
+          MERGE_CHAIN_LIMIT = 5  # PR Auto-Merge's
+
+
+          def git(*args):
+              return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout
+
+
+          def files(commit):
+              # Path -> "mode sha" of every file (and submodule) in commit.
+              entries = {}
+              for item in git("ls-tree", "-r", "-z", "--full-tree", commit).split("\0"):
+                  if item:
+                      meta, path = item.split("\t", 1)
+                      mode, _, sha = meta.split()
+                      entries[path] = f"{mode} {sha}"
+              return entries
+
+
+          def clean_merge(merge, ours, theirs):
+              bases = git("merge-base", "--all", ours, theirs).split()
+              if len(bases) != 1:
+                  return False
+              trees = [files(commit) for commit in (bases[0], ours, theirs, merge)]
+              for path in set().union(*trees):
+                  b, o, t, m = (tree.get(path) for tree in trees)
+                  if o == t or t == b:
+                      expected = o
+                  elif o == b:
+                      expected = t
+                  else:
+                      return False
+                  if m != expected:
+                      return False
+              return True
+
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "reviewed.txt"), encoding="utf-8") as file:
+              reviewed = set(file.read().split())
+          main = "refs/remotes/origin/" + os.environ["BASE_REF"]
+          head = commit = os.environ["HEAD_SHA"]
+          skip = False
+          for _ in range(MERGE_CHAIN_LIMIT + 1):
+              if commit in reviewed:
+                  skip = True
+                  break
+              parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
+              if len(parents) != 2:
+                  break
+              ours, theirs = parents
+              if subprocess.run(["git", "merge-base", "--is-ancestor", theirs, main]).returncode != 0:
+                  break
+              if not clean_merge(commit, ours, theirs):
+                  break
+              commit = ours
+          if skip:
+              print(f"::notice::{head} only merges main into {commit}, which was reviewed, so Claude doesn't review it again.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as file:
+              file.write(f"skip={'true' if skip else 'false'}\n")
+          PY
+
+  review:
+    name: Review with Claude
+    needs: merge-from-main
+    if: needs.merge-from-main.outputs.skip != 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Job-level, so a run skipped above can't cancel a review in progress.
+    # Job-level, so a run skipped above (by the merge-from-main job's
+    # condition, or a merge from main) can't cancel a review in progress.
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
       cancel-in-progress: true

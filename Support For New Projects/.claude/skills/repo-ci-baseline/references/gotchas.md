@@ -35,11 +35,10 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
 - **A check stuck at pending holds auto-merge.** On Articles #280 the `Hook tests` job finished every step successfully,
   but GitHub left its check `in_progress` for over 30 minutes, so the PR never auto-merged. Its run already showed
   `completed`, so `gh run cancel` refuses; re-run the one job (`gh run rerun <run> --job <job>`) and the check reports.
-- **A PR left `BEHIND` never auto-merges.** When the ruleset requires branches to be up to date, a PR that went green
-  while another PR merged sits at `mergeStateStatus: BEHIND`: every check passes and nothing happens. Run `gh pr
-  update-branch <n>`, then `gh pr edit <n> --add-reviewer @copilot`: the auto-merge workflow wants Copilot's review on
-  the exact head, and the merge commit `update-branch` makes doesn't get one by itself. The workflow's 15-minute sweep
-  merges it once the review lands. Watch for this whenever two PRs are in flight.
+- **A PR left `BEHIND` waits for an update.** When the ruleset requires branches to be up to date, a PR that went green
+  while another PR merged sits at `mergeStateStatus: BEHIND`. PR Auto-Merge brings it up to date once it is otherwise
+  ready (#142, [ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)), but only with
+  `RELEASE_PR_PAT`: without it, run `gh pr update-branch <n>` by hand. The merge from main needs no new review.
 - **A cancelled run's "Test Suite" reads as a failure.** It runs `if: always()`, so a run cancelled by a newer one on
   the same head (`cancel-in-progress`) leaves a failed check beside the newer run's result; the newer one is what
   counts. `ci.yml` doesn't run on `ready_for_review`, since drafts already run CI, so marking a PR ready no longer

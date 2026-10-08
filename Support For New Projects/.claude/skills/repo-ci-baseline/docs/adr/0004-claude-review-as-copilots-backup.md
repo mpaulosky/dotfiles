@@ -156,7 +156,8 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
     atelier-store#130), and a reversed quote;
   - a swap-cased quote, since the comparison doesn't fold case, and base64, hex or ROT13 of the token (Claude Review,
     TicketManager#147 and dotfiles #136);
-  - a quote using both Unicode tricks at once, a mark after each letter and accented letters between pieces;
+  - a quote mixing Unicode tricks, since each window must match in one form: accented letters at some joins and combining
+    marks at others, or a mark after each letter with accented letters between pieces (Claude Review, dotfiles #137);
   - character codes written as digits in the summary or a body, or packed several to a `line`.
 
   The check is a backstop. Claude's read restrictions above, which keep it from reading the token at all, are the defence;

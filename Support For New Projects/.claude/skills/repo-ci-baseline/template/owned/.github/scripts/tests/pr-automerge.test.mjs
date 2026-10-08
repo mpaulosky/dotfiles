@@ -9,6 +9,8 @@ import { test } from "node:test";
 const WORKFLOW = new URL("../../workflows/pr-automerge.yml", import.meta.url);
 const OWNER = "octo";
 const HEAD = "abc123";
+// reapply.sh's branch, the head of a re-Apply PR.
+const REAPPLY_BRANCH = "chore/reapply-baseline";
 const NEEDS_HUMAN = "sandcastle:needs-human";
 
 // Returns the body of the `script: |` block scalar with its indentation removed.
@@ -38,6 +40,7 @@ function readyPr(overrides = {}) {
     isDraft: false,
     isCrossRepository: false,
     baseRefName: "main",
+    headRefName: "feature/x",
     headRefOid: HEAD,
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
@@ -543,4 +546,66 @@ test("merges past off-diff findings at the review cap and says so", async () => 
   assert.equal(merges.length, 1);
   assert.ok(logs.some((line) => line.includes("Review cap (3) reached") && line.includes("past Claude's findings outside the diff")),
     logs.join("\n"));
+});
+
+// A re-Apply PR has no review cap: its rounds come from re-Apply commits, not
+// from chasing comments, and it changes the gate itself.
+test("still waits on an unresolved Copilot thread past the cap on a re-Apply PR", async () => {
+  const pr = readyPr({
+    headRefName: REAPPLY_BRANCH,
+    copilotReviews: copilotReviewsOf("one", "two", HEAD),
+    reviewThreads: threadsBy(COPILOT)
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
+});
+
+test("still waits on an unresolved Claude thread past the cap on a re-Apply PR", async () => {
+  const pr = readyPr({
+    headRefName: REAPPLY_BRANCH,
+    copilotReviews: copilotReviewsOf("one", "two"),
+    claudeReviews: claudeReviewsOf(HEAD),
+    reviewThreads: threadsBy({ login: ACTIONS, review: "claude-1" })
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
+});
+
+test("still waits for a review of the head past the cap on a re-Apply PR", async () => {
+  const pr = readyPr({ headRefName: REAPPLY_BRANCH, copilotReviews: copilotReviewsOf("one", "two", "three") });
+  const { merges } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+});
+
+test("still waits on off-diff findings past the cap on a re-Apply PR", async () => {
+  const pr = readyPr({
+    headRefName: REAPPLY_BRANCH,
+    copilotReviews: copilotReviewsOf("one", "two"),
+    claudeReviews: claudeReviewsOf({ oid: HEAD, offDiff: true })
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+});
+
+test("merges a re-Apply PR past the cap once its head is reviewed and its threads are resolved", async () => {
+  const pr = readyPr({
+    headRefName: REAPPLY_BRANCH,
+    copilotReviews: copilotReviewsOf("one", "two", HEAD),
+    reviewThreads: threadsBy({ login: COPILOT, resolved: true })
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
+});
+
+test("asks for the head branch's name", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.some((query) => /\bheadRefName\b/.test(query)), queries.join("\n"));
 });

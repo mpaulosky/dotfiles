@@ -150,11 +150,12 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
     other fields' (Copilot, Blazor-Server#176);
   - look-alikes NFKC doesn't map, such as Cyrillic or Greek letters, which are taken out and leave gaps (Claude Review,
     atelier-store#130), and a reversed quote;
+  - a swap-cased quote, since the comparison doesn't fold case, and base64, hex or ROT13 of the token (Claude Review,
+    TicketManager#147 and dotfiles #136);
   - character codes written as digits in the summary or a body, or packed several to a `line`.
 
   The check is a backstop. Claude's read restrictions above, which keep it from reading the token at all, are the defence;
-  a gap here matters only if those fail. The workflow's comment that a near-miss "still does" trip the check means a quote
-  that differs only in separators or in the compatibility characters NFKC maps.
+  a gap here matters only if those fail. The workflow's comment lists these limits too, since this ADR isn't in the Baseline repos.
 - **No answer in the execution file fails the review job.** The check step runs only when Claude answered, so an empty or
   unreadable execution file is its own error, not a quoted secret, and the post job doesn't run.
 - **No review in a debug run.** At the pinned action, debug logging turns `show_full_output` on, and the runner logs step outputs,

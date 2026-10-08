@@ -1,6 +1,8 @@
 import json
 import os
+import random
 import re
+import string
 import subprocess
 import sys
 import textwrap
@@ -350,8 +352,13 @@ def parse_outputs(text):
     return outputs
 
 
-SECRET = "sk-ant-" + "oat01-" + "Zq9" * 20
-JOB_TOKEN = "ghs_" + "98765_" + "eyJ" + "hbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJ" + "pc3MiOiJnaXRodWIifQ" + "." + "Xy7" * 15
+# No character repeats in either secret part, so a 16-character window
+# matches at one offset only, and a check that compared only some windows
+# would fail these tests.
+ALPHANUMERIC = string.ascii_letters + string.digits
+SECRET = "sk-ant-" + "oat01-" + "".join(random.Random(7).sample(ALPHANUMERIC, 62))
+JOB_TOKEN = ("ghs_" + "98765_" + "eyJ" + "hbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJ" + "pc3MiOiJnaXRodWIifQ" + "."
+             + "".join(random.Random(11).sample(ALPHANUMERIC, 45)))
 
 
 def withheld(tmp_path, answer, secrets):
@@ -422,7 +429,8 @@ def test_a_secret_spelled_out_in_line_numbers_is_withheld(tmp_path):
     assert withheld(tmp_path, {"summary": "s", "findings": findings}, [SECRET])
 
 
-@pytest.mark.parametrize("quote", [SECRET, SECRET[13:29], "x" + SECRET[30:50] + "y"])
+# The whole secret, its body's first window, a middle one and its last one.
+@pytest.mark.parametrize("quote", [SECRET, SECRET[13:29], "x" + SECRET[40:56] + "y", SECRET[-16:]])
 def test_an_answer_quoting_a_secret_even_in_part_is_withheld(tmp_path, quote):
     answer = {"summary": "s", "findings": [{"path": "a.py", "line": 1, "body": f"The token is {quote}."}]}
 
@@ -451,6 +459,15 @@ def test_a_secret_in_look_alike_characters_is_withheld(tmp_path, offset):
 
 def test_a_secret_in_an_extra_field_is_withheld_too(tmp_path):
     assert withheld(tmp_path, {"summary": "s", "findings": [], SECRET[20:40]: 1}, [SECRET])
+
+
+# ADR 0004's accepted limits, pinned so a change to them is deliberate.
+@pytest.mark.parametrize("quote", [
+    " ".join(f"part {i}: {SECRET[13:][j:j + 15]}" for i, j in enumerate(range(0, 49, 15))),
+    SECRET[13:][::-1],
+])
+def test_the_accepted_limits_get_through(tmp_path, quote):
+    assert not withheld(tmp_path, {"summary": quote, "findings": []}, [SECRET])
 
 
 def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):

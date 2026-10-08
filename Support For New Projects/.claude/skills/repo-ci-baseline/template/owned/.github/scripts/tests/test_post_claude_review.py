@@ -175,6 +175,9 @@ TOKENS = [
     "ghp_" + "b" * 36,
     "github_pat_" + "c" * 40,
     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop",
+    # Today's installation token: digits, then a JWT after an underscore.
+    "ghs_12345_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJnaXRodWIifQ.c2lnbmF0dXJlLXBhcnQ",
+    "x-access-token:ghs_67890_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJnaXRodWIifQ.c2lnbmF0dXJlLXBhcnQ@github.com",
 ]
 
 

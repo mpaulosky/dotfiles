@@ -55,9 +55,11 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # tokens, and JWTs.
 CREDENTIAL = re.compile(
     r"sk-ant-[A-Za-z0-9_-]{8,}"
-    r"|\bgh[pousr]_[A-Za-z0-9]{20,}"
+    # The whole of a GitHub token, including today's ghs_<digits>_<JWT> form.
+    r"|\bgh[pousr]_[A-Za-z0-9_.-]{20,}"
     r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
-    r"|\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    # A JWT anywhere, even after a word character such as ghs_12345_.
+    r"|(?<![A-Za-z0-9-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
 )
 REDACTED = "[redacted]"
 
@@ -203,8 +205,9 @@ def main(argv=None, gh=None, findings=None):
         print("post_claude_review.py: Claude Review's findings are empty, though Claude answered: GitHub withholds "
               "a job output that contains a masked secret.", file=sys.stderr)
         print("::error::Claude's review reached the post job empty: GitHub withheld it because it contains a masked "
-              "secret. A prompt-injected diff may have got Claude to quote CLAUDE_CODE_OAUTH_TOKEN or the job's token: "
-              "check the PR and the review job's log, and rotate CLAUDE_CODE_OAUTH_TOKEN.")
+              "secret. A prompt-injected diff may have got Claude to quote CLAUDE_CODE_OAUTH_TOKEN, the only long-lived "
+              "secret in that job (its GITHUB_TOKEN expires with the job): check the PR and the review job's log, and "
+              "rotate CLAUDE_CODE_OAUTH_TOKEN.")
         sys.exit(1)
     try:
         summary, parsed = parse_findings(text)

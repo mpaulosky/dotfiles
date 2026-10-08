@@ -146,14 +146,15 @@ any gate you did not actually run as not run.
      whose `headRefOid` equals `git rev-parse refs/heads/<branch>` (the tip
      itself merged, whatever PRs once shared the name);
    - `git -C <path> status --porcelain --untracked-files=all` succeeds and
-     prints nothing (except for a `prunable` worktree, below);
+     prints nothing;
    - `git worktree list --porcelain` shows no `locked` line for it;
    - it is neither the worktree this run created nor the one it runs in.
 
    `git worktree remove` also deletes ignored files, so flag anything in
    `git -C <path> status --porcelain --ignored` (one line per ignored
-   folder) beyond build output (a `.env`, `*.user`). For a worktree
-   `git worktree list` marks `prunable` (its folder is gone), the other
-   tests still apply and `git worktree remove <path>` clears just its
-   entry; `git worktree prune` would drop every missing worktree's entry,
-   vetted or not. Each `git branch -D` comes after its worktree's removal.
+   folder) beyond build output (a `.env`, `*.user`). A worktree
+   `git worktree list` marks `prunable` has no folder and no files left to
+   lose, so skip both `git -C <path>` checks for it; the other tests still
+   apply, and `git worktree remove <path>` clears just its entry, where
+   `git worktree prune` would drop every missing worktree's entry, vetted
+   or not. Each `git branch -D` comes after its worktree's removal.

@@ -216,11 +216,18 @@ jobs:
       # part of either secret (a token's body after its public prefix, or a
       # JWT's signature), compared as ASCII letters and digits after NFKC, so
       # a sample token never trips it, while a quote that differs only in
-      # separators or in look-alikes NFKC maps, which GitHub's masking would
-      # let through, still does. It's a backstop: other encodings get through
-      # (the accepted limits in repo-ci-baseline's ADR 0004). Then only the schema's
-      # fields are passed on, with credential-shaped text redacted. It reads
-      # the answer from the execution file, a path, so this log holds none.
+      # separators other than letters and digits, or in look-alikes NFKC maps,
+      # which GitHub's masking would let through, still does. Then only the
+      # schema's fields are passed on, with credential-shaped text redacted.
+      # It reads the answer from the execution file, a path, so this log
+      # holds none.
+      #
+      # Accepted limits (repo-ci-baseline's ADR 0004), listed here because the
+      # ADR isn't in this repo: the check is a backstop, and Claude's read
+      # restrictions above are the defence, so these get through by design:
+      # pieces split by letters or digits, or spread across fields or
+      # findings; look-alikes NFKC doesn't map (Cyrillic, Greek); a reversed
+      # quote; character codes written as digits, or packed into a line.
       #
       # Inline, not in .github/scripts: this step holds CLAUDE_CODE_OAUTH_TOKEN,
       # and a token without the workflow permission (an app's, or an agent's)

@@ -83,7 +83,9 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   #117 asked for it, so #117 stays open for it. Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
   Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 runs); the earlier files predate that, and the CLI updated during these runs.
-- **Cost:** about $1.20 a review instead of $0.19. That is acceptable, because the backup only runs while a PR carries `review:claude`.
+- **Cost:** about $1.20 a review instead of $0.19 at API prices. That is acceptable, because the backup only runs while a PR carries `review:claude`.
+  In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's Opus allowance, and the plan has to include Opus in Claude Code.
+  A run refused at the usage limit fails the check and holds the PR until someone reruns it after the reset, or merges by hand. A fallback is #123.
 - Matching is by keyword, whole words, on the files a finding is about, and every saved run in `bench/results/` is scored with the current cases file
   (`--rescore` rewrites a file's score after the cases change). Read the findings too: an early, looser matcher counted a finding about skipping `[bot]` actors as finding 5.
 - Each results file keeps the exact prompt and arguments it ran with, which is what reproduces its score; a prompt file may have changed since.

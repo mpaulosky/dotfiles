@@ -238,8 +238,10 @@ def redact_all(value):
         pairs = [redact_all(item) for item in value]
         return [item for item, _ in pairs], sum(n for _, n in pairs)
     if isinstance(value, dict):
-        pairs = {key: redact_all(item) for key, item in value.items()}
-        return {key: item for key, (item, _) in pairs.items()}, sum(n for _, n in pairs.values())
+        # Keys too: the schema allows extra properties, and the job output
+        # holds the whole answer.
+        pairs = [(redact_all(key), redact_all(item)) for key, item in value.items()]
+        return {key: item for (key, _), (item, _) in pairs}, sum(m + n for (_, m), (_, n) in pairs)
     return value, 0
 
 

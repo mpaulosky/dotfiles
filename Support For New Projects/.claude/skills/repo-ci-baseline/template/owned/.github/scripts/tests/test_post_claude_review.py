@@ -334,6 +334,14 @@ def test_jwts_sharing_a_job_tokens_header_arent_a_leak(tmp_path):
     assert not pcr.check_answer(execution_file(tmp_path, {"summary": "e.g. " + example}), [JOB_TOKEN])[2]
 
 
+def test_credential_shaped_keys_are_redacted_too(tmp_path):
+    answer = {"summary": "s", "findings": [], TOKENS[1]: "extra"}
+
+    findings, redacted, _ = pcr.check_answer(execution_file(tmp_path, answer), [SECRET])
+
+    assert redacted == 1 and TOKENS[1] not in findings and pcr.REDACTED in json.loads(findings)
+
+
 def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):
     answer = {"summary": "Mentions " + SECRET[:15], "findings": []}
 

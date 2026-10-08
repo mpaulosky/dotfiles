@@ -121,3 +121,6 @@ def test_the_benchmark_can_read_the_template_workflows_review_step():
     assert "#7" in bench.render(prompt, 7, "/tmp/t")
     for flag in ("--model", "--effort", "--json-schema", "--allowedTools"):
         assert flag in rendered, flag
+    disallowed = rendered[rendered.index("--disallowedTools") + 1].split(",")
+    assert "Read(//proc/**)" in disallowed
+    assert {"Bash", "WebFetch", "WebSearch"} <= set(disallowed)

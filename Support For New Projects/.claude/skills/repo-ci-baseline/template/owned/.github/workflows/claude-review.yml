@@ -137,9 +137,12 @@ jobs:
       #
       # Its own timeout, under the job's, and continue-on-error, so a timed-out
       # or refused run ends in the warning step below, not a failed check.
+      # Skipped when debug logging is on: at this pin the action then logs
+      # every Claude message whatever show_full_output says, and the runner
+      # logs step outputs, so the answer would be public before it's checked.
       - name: Review
         id: claude
-        if: steps.secret.outputs.enabled == 'true'
+        if: steps.secret.outputs.enabled == 'true' && runner.debug != '1'
         timeout-minutes: 25
         continue-on-error: true
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
@@ -217,8 +220,14 @@ jobs:
           JOB_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/post_claude_review.py --check-answer "$EXECUTION_FILE"
 
+      - name: Warn that a debug run doesn't review
+        if: steps.secret.outputs.enabled == 'true' && runner.debug == '1'
+        run: |
+          echo "::warning::Claude Review doesn't run with debug logging on, since the log would show Claude's answer" \
+            "before it's checked for secrets. Rerun this workflow without debug logging."
+
       - name: Warn when Claude didn't review
-        if: steps.secret.outputs.enabled == 'true' && steps.claude.outputs.structured_output == ''
+        if: steps.secret.outputs.enabled == 'true' && runner.debug != '1' && steps.claude.outputs.structured_output == ''
         env:
           OUTCOME: ${{ steps.claude.outcome }}
         run: |

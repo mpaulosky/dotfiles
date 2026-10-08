@@ -249,6 +249,13 @@ def check_answer_main(path):
         print("::error::Claude's answer quotes CLAUDE_CODE_OAUTH_TOKEN or the job's GITHUB_TOKEN, so it is withheld "
               "and the post job fails. A prompt-injected diff may have tried to leak it: check the PR, and rotate "
               "CLAUDE_CODE_OAUTH_TOKEN (the job's token expires with the job).")
+    elif not findings:
+        # This step runs only when Claude answered, so the file is unreadable
+        # or laid out differently, not a leak: fail here, so the post job,
+        # whose error is about a quoted secret, doesn't run.
+        print(f"::error::Claude answered, but its answer isn't in the action's execution file ({path or 'not set'}), "
+              "so there's nothing to post. A later action pin may have changed the file's layout.")
+        sys.exit(1)
     elif redacted:
         print(f"Redacted {redacted} credential-shaped string(s) from Claude's answer.")
 
@@ -305,7 +312,7 @@ def main(argv=None, gh=None, findings=None):
     parser.add_argument("--pr", type=int, help="the PR to review")
     parser.add_argument("--head", help="the head commit Claude reviewed")
     args = parser.parse_args(argv)
-    if args.check_answer:
+    if args.check_answer is not None:
         return check_answer_main(args.check_answer)
     if not (args.repo and args.pr and args.head):
         parser.error("--repo, --pr and --head are required to post")

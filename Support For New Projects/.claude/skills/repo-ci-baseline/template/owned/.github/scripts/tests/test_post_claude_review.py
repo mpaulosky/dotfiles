@@ -379,6 +379,20 @@ def test_check_answer_writes_step_outputs_and_errors_on_a_leak(tmp_path, monkeyp
     assert lines[1].startswith("redacted<<EOF_") and lines[2] == "0" and lines[3] == lines[1].split("<<")[1]
 
 
+@pytest.mark.parametrize("make_path", [lambda tmp_path: "", lambda tmp_path: str(tmp_path / "missing.json")])
+def test_check_answer_fails_without_an_answer_in_the_execution_file(tmp_path, monkeypatch, capsys, make_path):
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
+    monkeypatch.setenv("OAUTH_TOKEN", SECRET)
+
+    with pytest.raises(SystemExit) as exit_info:
+        pcr.main(["--check-answer", make_path(tmp_path)])
+
+    assert exit_info.value.code == 1
+    out = capsys.readouterr().out
+    assert out.startswith("::error::Claude answered, but its answer isn't in the action's execution file")
+    assert "rotate" not in out
+
+
 def test_check_answer_writes_the_redacted_answer(tmp_path, monkeypatch):
     output = tmp_path / "output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))

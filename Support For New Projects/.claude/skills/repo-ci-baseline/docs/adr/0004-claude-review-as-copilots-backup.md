@@ -78,7 +78,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 - **No WebFetch.**
   - No run caught finding 5 with it or without it, and Opus scored the same without it.
   - It would also be one more way out for a prompt-injected diff. It isn't the only one: with `Read` unscoped, Claude can read the OAuth token from its own environment,
-    and the review it writes is posted publicly. Scoping `Read` and redacting the output are #121.
+    and the review it writes is posted publicly. In the meantime `Read(//proc/**)` is denied, which also covers Grep and Glob (checked locally:
+    without the rule both read `/proc/self/status`, with it both are refused). Scoping `Read` further and redacting the output are #121.
 - **Still missed: finding 5.** Spotting it needs the pinned action's source: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
   #117 asked for it, so #117 stays open for it. Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.

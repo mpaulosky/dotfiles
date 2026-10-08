@@ -34,6 +34,8 @@ import re
 import subprocess
 import sys
 
+# Accepted limit (repo-ci-baseline's ADR 0004): the marker proves the login,
+# not that Claude wrote the review; see claude-review.yml.
 MARKER = "<!-- claude-review -->"
 # The second line of a review with findings outside the diff.
 OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->"

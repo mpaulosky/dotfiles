@@ -103,9 +103,10 @@ jobs:
       # repo-ci-baseline skill, #117): Sonnet at medium effort caught none of
       # the findings Copilot made on the same commits. No WebFetch: it made no
       # difference to the benchmark, and it would be one more way out for a
-      # prompt-injected diff. Known gap, not accepted (repo-ci-baseline #121):
-      # with Read unscoped, Claude can read the OAuth token from its own
-      # environment, and the review it writes is posted publicly.
+      # prompt-injected diff. Read(//proc/**) is denied (Grep and Glob too), so
+      # Claude can't read the OAuth token from a process's environment; the
+      # review it writes is posted publicly. Scoping Read further and redacting
+      # the output are repo-ci-baseline #121.
       - name: Review
         id: claude
         if: steps.secret.outputs.enabled == 'true'
@@ -153,7 +154,7 @@ jobs:
             --effort high
             --add-dir ${{ runner.temp }}
             --allowedTools "Read,Glob,Grep"
-            --disallowedTools "Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch"
+            --disallowedTools "Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch,Read(//proc/**)"
             --json-schema '{"type": "object", "required": ["summary", "findings"], "properties": {
             "summary": {"type": "string"},
             "findings": {"type": "array", "items": {"type": "object", "required": ["path", "line", "body"],

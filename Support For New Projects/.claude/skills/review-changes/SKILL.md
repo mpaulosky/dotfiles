@@ -130,9 +130,10 @@ any gate you did not actually run as not run.
    refuses a branch behind its default branch (the Baseline's does), they
    start with `git fetch origin <default branch>` and, when the branch is
    behind, `git merge origin/<default branch>` and a rerun of step 5's
-   gates, on a clean tree only. A merge that won't start, a conflict
-   (`git merge --abort` when `git rev-parse -q --verify MERGE_HEAD`
-   succeeds) or a red gate goes back to the user unpushed.
+   gates, on a clean tree only. A dirty tree (name its files), a merge
+   that won't start, a conflict (`git merge --abort` when
+   `git rev-parse -q --verify MERGE_HEAD` succeeds) or a red gate goes back
+   to the user unpushed.
 
    Close with any **prune candidates**: linked worktrees safe to remove, with
    their `git worktree remove <path>` and `git branch -D <branch>` commands.

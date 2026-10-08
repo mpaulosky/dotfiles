@@ -146,6 +146,9 @@ jobs:
         timeout-minutes: 25
         continue-on-error: true
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
+        env:
+          # The action reads this too; runner.debug above covers the runner.
+          ACTIONS_STEP_DEBUG: "false"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The job's read-only token, in place of the Claude GitHub App's.

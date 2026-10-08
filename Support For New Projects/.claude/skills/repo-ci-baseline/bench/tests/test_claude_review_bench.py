@@ -193,7 +193,7 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     review = next(s for s in jobs["review"]["steps"] if s.get("id") == "claude")
     assert review["with"]["display_report"] is False and review["with"]["show_full_output"] is False
     # Nor does a debug run, where the action shows the full output anyway.
-    assert "runner.debug != '1'" in review["if"]
+    assert "runner.debug != '1'" in review["if"] and review["env"]["ACTIONS_STEP_DEBUG"] == "false"
     assert "--check-answer" in answer["run"] and "structured_output" not in str(answer.get("env"))
 
 

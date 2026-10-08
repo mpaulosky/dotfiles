@@ -197,14 +197,37 @@ def secret_parts(secret):
     return parts or [secret.strip()]
 
 
+def letters_and_digits(text):
+    """Text with all but its letters and digits taken out."""
+    return re.sub(r"[^A-Za-z0-9]", "", text)
+
+
 def quotes_a_secret(text, secrets):
-    """Whether text holds LEAK_WINDOW characters in a row of the secret part of any of the secrets."""
+    """Whether text holds LEAK_WINDOW characters in a row of the secret part of any of the secrets.
+
+    Compared as letters and digits only, so a secret quoted in short pieces
+    split by backticks, newlines or dashes is still caught.
+    """
+    text = letters_and_digits(text)
     for secret in secrets:
-        for part in secret_parts(secret):
+        for part in map(letters_and_digits, secret_parts(secret)):
             for start in range(len(part) - LEAK_WINDOW + 1):
                 if part[start:start + LEAK_WINDOW] in text:
                     return True
     return False
+
+
+def strings_in(value):
+    """Every string in a JSON value, keys included."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings_in(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from strings_in(item)
 
 
 def redact_all(value):
@@ -225,9 +248,12 @@ def check_answer(path, secrets):
     text = structured_output(path)
     if not text:
         return "", 0, False
-    if quotes_a_secret(text, [secret for secret in secrets if secret]):
+    answer = json.loads(text)
+    # The answer's strings as Claude wrote them, not JSON-escaped, so a \n
+    # between pieces of a secret is a separator, not an n.
+    if quotes_a_secret("\n".join(strings_in(answer)), [secret for secret in secrets if secret]):
         return "", 0, True
-    answer, redacted = redact_all(json.loads(text))
+    answer, redacted = redact_all(answer)
     return json.dumps(answer), redacted, False
 
 

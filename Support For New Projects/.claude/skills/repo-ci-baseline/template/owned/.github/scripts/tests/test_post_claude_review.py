@@ -319,6 +319,21 @@ def test_an_answer_quoting_a_secret_even_in_part_is_withheld(tmp_path, quote):
     assert pcr.check_answer(execution_file(tmp_path, answer), [SECRET]) == ("", 0, True)
 
 
+@pytest.mark.parametrize("separator", ["`", "\n", "` `", "-", "\t"])
+def test_a_secret_quoted_in_short_pieces_is_withheld(tmp_path, separator):
+    body = SECRET[13:]
+    pieces = separator.join(body[i:i + 15] for i in range(0, len(body), 15))
+
+    assert pcr.check_answer(execution_file(tmp_path, {"summary": pieces}), [SECRET])[2]
+
+
+def test_jwts_sharing_a_job_tokens_header_arent_a_leak(tmp_path):
+    header = JOB_TOKEN.split("_", 2)[2].split(".")[0]
+    example = header + "." + "eyJ" + "zdWIiOiJleGFtcGxlIn0" + "." + "Qw8" * 12
+
+    assert not pcr.check_answer(execution_file(tmp_path, {"summary": "e.g. " + example}), [JOB_TOKEN])[2]
+
+
 def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):
     answer = {"summary": "Mentions " + SECRET[:15], "findings": []}
 

@@ -168,6 +168,8 @@ def test_the_benchmark_can_read_the_template_workflows_review_step():
     assert added == ["/tmp/t/claude-review", "/tmp/t/work/repo/repo/../../_actions"]
     disallowed = rendered[rendered.index("--disallowedTools") + 1].split(",")
     assert "Read(//proc/**)" in disallowed
+    # The action writes the job's GITHUB_TOKEN into the checkout's .git/config.
+    assert "Read(**/.git/**)" in disallowed
     assert {"Bash", "Edit", "Write", "WebFetch", "WebSearch"} <= set(disallowed)
 
 

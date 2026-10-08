@@ -121,6 +121,11 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   are refused, and so are `/dev/fd/../environ` and a symlink in the checkout pointing at `/proc/self/environ` or `/etc/hostname`: Claude Code resolves the path before it checks.
   With `--allowedTools "Glob,Grep"`, Grep searched outside the workspace and Glob listed `/etc`, which is why nothing is granted.
 - **`Read(//proc/**)` stays denied**, in case a later change grants a tool again.
+- **`Read(**/.git/**)` is denied.** In agent mode the pinned action sets the checkout's origin URL to
+  `https://x-access-token:<GITHUB_TOKEN>@github.com/...`, so `.git/config` holds the job's token inside the workspace, whatever
+  `persist-credentials` says (found by Claude Review on TicketManager#145, which read it there). Checked with Claude Code 2.1.293:
+  without the rule Read returned `.git/config`; with it, Read (directly, through `..` and through a symlink), Glob and Grep were all refused or empty.
+  The token is read-only and expires with the job. The redaction's GitHub pattern also covers today's `ghs_<digits>_<JWT>` form.
 - **`--setting-sources user`.** The action already replaces the PR's `.claude/` and `.mcp.json` with the base's;
   this also keeps the base's project settings from granting `Read` again. The runner's user level has no settings.
 - **`post_claude_review.py` redacts** anything shaped like an Anthropic key or OAuth token, a GitHub token or a JWT in the summary, paths and bodies,

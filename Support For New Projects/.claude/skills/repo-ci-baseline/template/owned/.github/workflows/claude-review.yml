@@ -122,7 +122,10 @@ jobs:
       # resolves symlinks and `..` before it checks, so a symlink in the PR or
       # /dev/fd/../environ can't reach the token (repo-ci-baseline #121, checked
       # with Claude Code 2.1.293, the version this action pin installs, and
-      # 2.1.294). Read(//proc/**) is denied as well. Settings
+      # 2.1.294). Read(//proc/**) is denied as well, and so is the checkout's
+      # .git: the action writes the job's GITHUB_TOKEN into .git/config as the
+      # origin URL's credentials, so Read(**/.git/**) keeps Claude from quoting
+      # it (Read, Glob and Grep all refused it on 2.1.293). Settings
       # come only from the runner's user level, so no repo settings can grant
       # more. No WebFetch: it made no difference to the benchmark, and it would
       # be one more way out for a prompt-injected diff. post_claude_review.py
@@ -184,7 +187,7 @@ jobs:
             --add-dir ${{ runner.temp }}/claude-review
             --add-dir ${{ github.workspace }}/../../_actions
             --setting-sources user
-            --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read(//proc/**)"
+            --disallowedTools "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read(//proc/**),Read(**/.git/**)"
             --json-schema '{"type": "object", "required": ["summary", "findings"], "properties": {
             "summary": {"type": "string"},
             "findings": {"type": "array", "items": {"type": "object", "required": ["path", "line", "body"],

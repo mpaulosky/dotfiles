@@ -18,7 +18,8 @@ name: PR Auto-Merge
 # threads. Merges
 # from main don't count: the ruleset keeps branches up to date, so they would
 # use up the cap without a single fix. Threads anyone else opens still hold
-# the merge.
+# the merge. A re-Apply PR (chore/reapply-baseline) has no cap: its rounds
+# come from re-Apply commits, and it changes this gate itself.
 #
 # A PR labelled sandcastle:needs-human (Sandcastle's hand-back to a person)
 # never merges while it carries the label, or when someone other than the
@@ -93,9 +94,15 @@ jobs:
             const NEEDS_HUMAN = "sandcastle:needs-human";
 
             // Review rounds, Copilot's and Claude's together, after which
-            // neither reviewer holds the merge. Named for Copilot, the first
-            // reviewer: github-settings.sh reads the cap by this name.
+            // neither reviewer holds the merge (except on a re-Apply PR).
+            // Named for Copilot, the first reviewer: github-settings.sh reads
+            // the cap by this name.
             const COPILOT_REVIEW_CAP = 3;
+            // The head branch of a re-Apply PR, as the repo-ci-baseline
+            // skill's reapply.sh names it. Such a PR has no cap: its rounds
+            // come from the re-Apply commits added to it, not from chasing
+            // comments, and it changes this gate itself.
+            const REAPPLY_BRANCH = "chore/reapply-baseline";
             // GraphQL reports the bots' logins without the "[bot]" suffix.
             const COPILOT_LOGIN = "copilot-pull-request-reviewer";
             // Claude Review posts as github-actions[bot]; the marker tells its
@@ -118,6 +125,7 @@ jobs:
                        isDraft
                        isCrossRepository
                        baseRefName
+                       headRefName
                        headRefOid
                        mergeable
                        mergeStateStatus
@@ -261,7 +269,7 @@ jobs:
               // Both reviewers re-review every push, including merge-from-main
               // commits, so a review has to cover the exact head, until they
               // have reviewed COPILOT_REVIEW_CAP different non-merge commits
-              // between them.
+              // between them. A re-Apply PR never reaches the cap.
               const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
                 return review.body?.startsWith(CLAUDE_MARKER);
               });
@@ -273,7 +281,9 @@ jobs:
               const reviewRounds = new Set(
                 reviewed.filter((commit) => commit.parents?.totalCount === 1).map((commit) => commit.oid)
               );
-              const capReached = reviewRounds.size >= COPILOT_REVIEW_CAP;
+              // A re-Apply PR's reviews and threads hold the merge however many
+              // rounds it takes.
+              const capReached = pr.headRefName !== REAPPLY_BRANCH && reviewRounds.size >= COPILOT_REVIEW_CAP;
               if (!capReached && !reviewedCommits.has(pr.headRefOid)) {
                 core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);
                 return;

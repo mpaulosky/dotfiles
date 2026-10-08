@@ -67,6 +67,13 @@ def test_an_open_thread_waits():
     assert decision == ld.Decision(ld.WAIT, "2 open thread(s)")
 
 
+def test_there_is_no_review_cap_so_an_open_thread_waits_after_any_number_of_rounds():
+    # PR Auto-Merge's cap is the gate's alone, and a re-Apply PR doesn't get
+    # even that (#115): the landing decision never arms past a thread.
+    rounds = replace(READY, copilot_reviewed=frozenset({"c" * 40, "d" * 40, OLD, HEAD}), open_threads=1)
+    assert ld.decide(rounds) == ld.Decision(ld.WAIT, "1 open thread(s)")
+
+
 def test_a_behind_branch_is_updated_and_copilot_asked_again():
     assert ld.decide(replace(READY, merge_state="BEHIND")).action == ld.UPDATE_BRANCH
     # Behind wins over a missing review: the update makes a new head to review anyway.

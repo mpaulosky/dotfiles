@@ -42,6 +42,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A thread belongs to whoever wrote its first comment; one with no known author counts as a person's.
   A `github-actions` thread is Claude's only when its first comment belongs to a marked review, so other workflows' threads still hold.
   Everything else still holds at the cap, and the log says when the cap let a PR through and past how many Copilot and Claude threads.
+  A re-Apply PR (`chore/reapply-baseline`) has no cap: its rounds come from the re-Apply commits `reapply.sh` adds to it, not from chasing comments,
+  and it changes this gate itself. Articles#298 merged past a real Copilot finding on its third round (#115).
 - **Hand-back hold.** A PR labelled `sandcastle:needs-human` (Sandcastle giving up and handing it to a person) is skipped while it carries the label,
   and also when someone other than the repository owner last removed it, since anyone with triage access can remove a label.
   The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues access.

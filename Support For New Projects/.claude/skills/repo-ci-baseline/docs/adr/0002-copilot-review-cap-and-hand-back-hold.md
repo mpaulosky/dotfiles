@@ -26,8 +26,12 @@ The hold is in the Template, not a per-repo file, because Applying the old Templ
 
 - Everything else still holds the merge at the cap: threads anyone else opens (including other bots, and threads whose author no longer exists), required checks, conflicts and the hand-back label.
 - Copilot comments from round three on can merge unaddressed. They stay on the merged PR, and the run log says when the cap let a PR through.
+- A re-Apply PR (`chore/reapply-baseline`) has no cap (#115). Its rounds come from the re-Apply commits `reapply.sh` adds to it, not from chasing comments,
+  and it changes the Owned CI files and this gate itself: Articles#298 merged past a real Copilot finding on its third round.
+  Exempting the branch was chosen over restarting the count on each re-Apply commit, which would need the gate to tell those commits apart,
+  and over a higher cap, which leaves the same gap. A round that keeps drawing comments stalls where someone sees it, since `land.sh` and a person watch every round.
 - Claude Review, Copilot's backup ([ADR 0004](0004-claude-review-as-copilots-backup.md)), shares the cap: rounds from both reviewers count toward it,
   and past it neither reviewer's threads hold the merge.
-- The cap is one constant, `COPILOT_REVIEW_CAP`. `.github/scripts/tests/pr-automerge.test.mjs` covers the cap and the hold, and CI and `test.sh` run it.
+- The cap is one constant, `COPILOT_REVIEW_CAP`, and the exempt branch another, `REAPPLY_BRANCH`. `.github/scripts/tests/pr-automerge.test.mjs` covers the cap and the hold, and CI and `test.sh` run it.
 - The workflow reads a PR's label events with `GITHUB_TOKEN` and `issues: read`, so `RELEASE_PR_PAT` needs no Issues access,
   and `pull_request_target` gains the `unlabeled` type so the owner removing the label re-evaluates the PR at once.

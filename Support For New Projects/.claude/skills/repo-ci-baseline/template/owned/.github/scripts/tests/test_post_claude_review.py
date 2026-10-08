@@ -174,6 +174,17 @@ def test_a_files_length_counts_newlines_only(text, lines, monkeypatch):
     assert pcr.GitHub("octo/demo").line_count("docs/a b.md", HEAD) == lines
 
 
+@pytest.mark.parametrize("error", [subprocess.CalledProcessError(1, ["gh"]), FileNotFoundError("gh")])
+def test_a_files_length_is_unknown_when_gh_fails(error, monkeypatch):
+    # A 404 for a symlink or submodule, a rate limit, or no gh at all: the
+    # finding stays in the body instead of failing the step.
+    def fake_run(argv, **kwargs):
+        raise error
+    monkeypatch.setattr(pcr.subprocess, "run", fake_run)
+
+    assert pcr.GitHub("octo/demo").line_count("docs/a.md", HEAD) is None
+
+
 # Built at runtime, so this file holds nothing credential-shaped for a review
 # of it to quote.
 JWT = "eyJ" + "hbGciOiJIUzI1NiJ9" + "." + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + "." + "abcdefghijklmnop"

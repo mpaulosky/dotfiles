@@ -478,6 +478,13 @@ def test_a_missing_execution_file_fails_the_step(tmp_path):
     assert code == 1 and "execution file" in out
 
 
+def test_an_unset_execution_file_fails_the_step(tmp_path):
+    # A later action pin that drops the execution_file output.
+    code, outputs, out = check(tmp_path, path="")
+
+    assert code == 1 and outputs["findings"] == "" and "(not set)" in out
+
+
 def test_posting_needs_repo_pr_and_head():
     with pytest.raises(SystemExit) as exit_info:
         pcr.main(["--repo", "octo/demo"], gh=FakeGitHub(), findings=findings_json())

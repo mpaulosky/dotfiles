@@ -141,6 +141,20 @@ def test_a_copilot_request_github_dropped_calls_in_claude():
     assert "  failed:" not in text
 
 
+def test_a_copilot_request_github_refused_outright_calls_in_claude():
+    # TicketManager#141: "Could not add requested reviewers". No request is
+    # left to read back, so it's handled like a dropped one.
+    request = "gh pr edit 7 -R o/app --add-reviewer @copilot"
+    fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)}, fail_calls={request})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert fake.calls == ["gh pr update-branch 7 -R o/app", request, "gh pr edit 7 -R o/app --add-label review:claude"]
+    assert fake.read_back == [("o/app", 7)]
+    text = printed(out)
+    assert f"  warning: {request} failed (boom)" in text
+    assert "added review:claude, so Claude Review reviews it instead" in text
+
+
 def test_a_failed_review_claude_label_is_reported_as_failed():
     fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)},
                 fail_calls={"gh pr edit 7 -R o/app --add-label review:claude"})

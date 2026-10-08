@@ -25,10 +25,10 @@
 #   5. Open the re-Apply PR (ready, not a draft), or add a line for this Apply
 #      commit to the open one's description, then request Copilot's review and
 #      read the request back: gh exits 0 even when GitHub drops it. A request
-#      that didn't register (as when the Copilot code review budget is used up)
-#      adds the review:claude label instead, so Claude Review reviews the PR,
-#      and warns; the run still passes. A failed label call exits 1 with the
-#      PR's URL to request a review from.
+#      that didn't register (as when the Copilot code review budget is used up),
+#      or that GitHub refused outright, adds the review:claude label instead,
+#      so Claude Review reviews the PR, and warns; the run still passes. A
+#      failed label call exits 1 with the PR's URL to request a review from.
 #
 # The head it prints and writes into the description comes from the local
 # branch after the push, never from the API, which lags behind a push: name
@@ -244,8 +244,10 @@ else
   echo "── $repo_name: added $head to PR #$pr's description"
 fi
 
+# A request GitHub refuses outright is no worse than one it drops: the
+# read-back below finds no request, and Claude Review is called in.
 if ! out="$(gh_ pr edit "$pr" --add-reviewer @copilot 2>&1)"; then
-  grep -qi 'already' <<< "$out" || die "requesting Copilot's review on #$pr failed: $out"
+  grep -qi 'already' <<< "$out" || echo "reapply.sh: warning: requesting Copilot's review on #$pr failed: $out" >&2
 fi
 read -r copilot url < <(gh_ pr view "$pr" --json headRefOid,reviewRequests,reviews,url --jq "$copilot_jq")
 if [[ "${copilot:-0}" -gt 0 ]]; then

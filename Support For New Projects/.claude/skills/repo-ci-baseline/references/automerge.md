@@ -62,6 +62,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   gets the diff against the base and only Read, Glob and Grep, and answers in a JSON schema.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
+  A body finding opens no thread, so this workflow wouldn't wait on it: the post job fails after posting, and that failing check holds the merge until the next push.
   The review is posted with `GITHUB_TOKEN`, which starts no workflows, so PR Auto-Merge follows Claude Review's completion instead of PR Review Submitted.
 - **The schedule** is `7,22,37,52 * * * *`, off the round minutes where GitHub drops the most scheduled runs.
   GitHub still runs it far less often than asked: IssueTracker's sweeps after #201 ran about 70 minutes apart. Treat it as the fallback, never the expected path.

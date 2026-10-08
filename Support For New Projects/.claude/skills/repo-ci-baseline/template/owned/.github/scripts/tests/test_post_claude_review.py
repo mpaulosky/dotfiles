@@ -415,10 +415,13 @@ def test_only_the_schemas_fields_are_passed_on(tmp_path):
     [{TOKENS[1]: "x"}],
 ])
 def test_a_malformed_answer_becomes_a_placeholder_the_post_script_rejects(tmp_path, answer):
-    _, outputs, _ = check(tmp_path, answer, [SECRET])
+    _, outputs, out = check(tmp_path, answer, [SECRET])
 
     placeholder = json.loads(outputs["findings"])
     assert list(placeholder) == ["malformed"] and placeholder["malformed"].startswith("Claude's answer was withheld: ")
+    reason = placeholder["malformed"].removeprefix("Claude's answer was withheld: ")
+    assert f"::error::Claude's answer doesn't fit the schema ({reason}), so it is withheld" in out
+    assert "115" not in out and TOKENS[1] not in out
     assert "115" not in outputs["findings"] and TOKENS[1] not in outputs["findings"] and outputs["redacted"] == "0"
     with pytest.raises(pcr.MalformedFindings):
         pcr.parse_findings(outputs["findings"])

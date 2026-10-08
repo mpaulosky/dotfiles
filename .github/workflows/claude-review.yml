@@ -345,10 +345,14 @@ jobs:
 
               A malformed answer becomes a fixed placeholder holding none of it, so
               nothing the check didn't compare reaches the post job's log, and the
-              post script still rejects it rather than posting "No findings".
+              post script still rejects it rather than posting "No findings". The
+              reason is printed here, since the post job's error can't name it; it's
+              fixed text with at most an index, so it holds nothing from the answer.
               """
               reason = malformed(answer)
               if reason:
+                  print(f"::error::Claude's answer doesn't fit the schema ({reason}), so it is withheld "
+                        "and the post job fails.")
                   return {"malformed": f"Claude's answer was withheld: {reason}"}
               return {"summary": answer["summary"],
                       "findings": [{key: finding[key] for key in ("path", "line", "body")}

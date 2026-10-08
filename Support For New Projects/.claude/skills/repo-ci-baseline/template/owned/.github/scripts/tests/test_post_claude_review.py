@@ -435,6 +435,18 @@ def test_a_secret_quoted_in_short_pieces_is_withheld(tmp_path, separator):
     assert withheld(tmp_path, {"summary": pieces, "findings": []}, [SECRET])
 
 
+@pytest.mark.parametrize("offset", [0xFEE0, None])
+def test_a_secret_in_look_alike_characters_is_withheld(tmp_path, offset):
+    # Fullwidth, or mathematical bold: both NFKC-normalise to ASCII.
+    def look_alike(c):
+        if offset:
+            return chr(ord(c) + offset)
+        return chr((0x1D400 + ord(c) - 65) if c.isupper() else (0x1D41A + ord(c) - 97) if c.islower()
+                   else (0x1D7CE + ord(c) - 48))
+
+    assert withheld(tmp_path, {"summary": "".join(map(look_alike, SECRET[13:33])), "findings": []}, [SECRET])
+
+
 def test_a_secret_in_an_extra_field_is_withheld_too(tmp_path):
     assert withheld(tmp_path, {"summary": "s", "findings": [], SECRET[20:40]: 1}, [SECRET])
 

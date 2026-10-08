@@ -135,7 +135,8 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   prefix, or a JWT's signature: the first round checked the whole stored value, and failed every review in the #132 re-Apply
   round, most likely on a part every review quotes: a stored value can hold more than the token, and a JWT's header is the same
   in every job's token. It compares letters and digits only, across the answer's strings as Claude wrote them, so a secret
-  quoted in pieces split by backticks or newlines is caught too; pieces split by letters or digits aren't, an accepted limit.
+  quoted in pieces split by backticks or newlines is caught too, and so is one in look-alike characters (fullwidth,
+  mathematical), which it NFKC-normalises first; pieces split by letters or digits aren't, an accepted limit.
 - **Only the schema's fields are passed on.** The check drops every key but the summary and each finding's path, line and
   body, and the schema sets `additionalProperties: false`, so an extra field, never posted but printed by the post job's log,
   is gone (Claude Review, IssueManager#274). An answer of the wrong shape, judged as `parse_findings` judges it, becomes a fixed

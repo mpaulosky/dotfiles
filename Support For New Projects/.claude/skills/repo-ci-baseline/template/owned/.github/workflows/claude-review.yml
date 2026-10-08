@@ -232,7 +232,7 @@ jobs:
           JOB_TOKEN: ${{ github.token }}
         run: |
           python3 -I - <<'PY'
-          import json, os, re, sys
+          import json, os, re, sys, unicodedata
 
           CREDENTIAL = re.compile(
               r"sk-ant-[A-Za-z0-9_-]{20,}"
@@ -276,7 +276,8 @@ jobs:
 
 
           def letters_and_digits(text):
-              return re.sub(r"[^A-Za-z0-9]", "", text)
+              """Text's ASCII letters and digits, after NFKC maps look-alikes (fullwidth, mathematical) to them."""
+              return re.sub(r"[^A-Za-z0-9]", "", unicodedata.normalize("NFKC", text))
 
 
           def lines_as_characters(answer):

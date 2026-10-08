@@ -51,6 +51,7 @@ class Repo:
     def commit(self, files, message="change"):
         for name, content in files.items():
             path = self.path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
             if content is None:
                 path.unlink()
             else:
@@ -87,11 +88,12 @@ class Repo:
 
 @pytest.fixture
 def repo(tmp_path):
-    """main: base, then main1 changing lib. The PR branch: rev changing app, checked out."""
+    """main: base (with PR Auto-Merge), then main1 changing lib. The PR branch: rev changing app, checked out."""
     path = tmp_path / "repo"
     path.mkdir()
     repo = Repo(path)
-    repo.base = repo.commit({"app": "app 0\n", "lib": "lib 0\n", "shared": "one\ntwo\nthree\nfour\nfive\n"}, "base")
+    repo.base = repo.commit({"app": "app 0\n", "lib": "lib 0\n", "shared": "one\ntwo\nthree\nfour\nfive\n",
+                             ".github/workflows/pr-automerge.yml": "name: PR Auto-Merge\n"}, "base")
     repo.git("checkout", "-q", "-b", "feature")
     repo.rev = repo.commit({"app": "app 1\n"}, "rev")
     repo.git("checkout", "-q", "main")
@@ -187,3 +189,13 @@ def test_stops_past_the_chain_limit(repo, tmp_path):
 def test_fails_without_a_skip_when_git_errors(repo, tmp_path):
     code, skip, _ = repo.check("f" * 40, [repo.rev], tmp_path)
     assert code != 0 and skip is None
+
+
+def test_reviews_a_clean_merge_where_main_has_no_pr_auto_merge(repo, tmp_path):
+    # dotfiles carries this workflow without PR Auto-Merge, which alone honours the skip.
+    repo.git("checkout", "-q", "main")
+    repo.commit({".github/workflows/pr-automerge.yml": None}, "no PR Auto-Merge")
+    repo.git("checkout", "-q", "feature")
+    head = repo.merge("main")
+    assert repo.check(head, [repo.rev], tmp_path)[:2] == (0, "false")
+    assert repo.check(repo.rev, [repo.rev], tmp_path)[:2] == (0, "false")

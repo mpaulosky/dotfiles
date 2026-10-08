@@ -53,6 +53,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A file both sides changed, a rename across them or any other change needs a fresh review. Claude's off-diff hold on the covered commit still holds.
   Claude Review's `merge-from-main` job skips the review of such a head on `synchronize` by the same rule (with `git ls-tree` on its checkout),
   in a job of its own so a skipped run can't cancel a review in progress; the two copies must agree.
+  It reviews anyway when the base has no `pr-automerge.yml` (dotfiles' copy), and skips a run whose head is no longer the PR's.
 - **Bringing a ready PR up to date.** A PR that passes every check above but is `BEHIND` (and `MERGEABLE`, every required check's newest run passed)
   gets `pulls.updateBranch` with `expected_head_sha: headRefOid`, made with `RELEASE_PR_PAT`, since a `GITHUB_TOKEN` push starts no CI.
   A PR with native auto-merge armed (release-blog and Dependabot PRs) is updated once its required checks pass, with no review.
@@ -162,8 +163,7 @@ land.sh mpaulosky/<repo>#<n>  # watch these PRs (or owner/repo for all its open 
 ```
 
 `land.sh` polls the PRs (default every 60 s, one GraphQL query per repo) and does what `decide()` says, once per head:
-`gh pr update-branch` then `gh pr edit --add-reviewer @copilot` (and `--add-label review:claude` when the request is dropped or refused;
-no request in a Baseline repo when the head was already reviewed, since PR Auto-Merge counts that review for the merge from main), `gh pr ready` only with `--ready`,
+`gh pr update-branch` then `gh pr edit --add-reviewer @copilot` (and `--add-label review:claude` when the request is dropped or refused), `gh pr ready` only with `--ready`,
 and `gh pr merge --auto --squash --match-head-commit <head>`. It has no rules of its own.
 It also watches each release-blog PR that opens in a watched repo, and after a watched Baseline PR merges it waits `--blog-wait` (15) minutes for one.
 It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),

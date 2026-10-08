@@ -14,10 +14,7 @@ once per PR head:
                     read back: gh exits 0 even when GitHub drops the request;
                     a dropped request, or one GitHub refused outright, adds
                     review:claude (gh pr edit --add-label), so Claude Review
-                    reviews the head instead. In a Baseline repo, a head that
-                    was already reviewed gets no request: its PR Auto-Merge
-                    counts that review for the clean merge from main
-                    update-branch makes (and makes the same update itself)
+                    reviews the head instead
 - arm auto-merge:   gh pr merge --auto --squash --match-head-commit <head>
 - leave to PR Auto-Merge, wait, report blocker, nothing: no call
 
@@ -68,17 +65,13 @@ def parse_targets(args):
     return targets
 
 
-def commands(action, repo, number, head, request_review=True):
-    """The gh calls that carry out one decision's action; none for the rest.
-
-    request_review=False leaves out the Copilot request after an update.
-    """
+def commands(action, repo, number, head):
+    """The gh calls that carry out one decision's action; none for the rest."""
     pr = [str(number), "-R", repo]
     if action == MARK_READY:
         return [["gh", "pr", "ready", *pr]]
     if action == UPDATE_BRANCH:
-        update = [["gh", "pr", "update-branch", *pr]]
-        return update + ([["gh", "pr", "edit", *pr, "--add-reviewer", "@copilot"]] if request_review else [])
+        return [["gh", "pr", "update-branch", *pr], ["gh", "pr", "edit", *pr, "--add-reviewer", "@copilot"]]
     if action == ARM_AUTO_MERGE:
         return [["gh", "pr", "merge", *pr, "--auto", "--squash", "--match-head-commit", head]]
     return []
@@ -205,10 +198,7 @@ class Lander:
         pr.seen = seen
         self.say(line(repo, node, state))
         key = (repo, number, decision.action, state.head)
-        # PR Auto-Merge counts the review of a head for the merge from main
-        # update-branch puts on top of it, so asking again would spend one.
-        request_review = not (state.merged_by_workflow and state.reviewer_on_head)
-        calls = commands(decision.action, repo, number, state.head, request_review)
+        calls = commands(decision.action, repo, number, state.head)
         if not calls or key in self.acted:
             return
         self.acted.add(key)

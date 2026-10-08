@@ -46,9 +46,14 @@ name: Claude Review
 # on top of it, and brings ready PRs up to date that way itself, so a review
 # of each merge would spend Claude's usage on code main already has. The
 # merge-from-main job decides, by PR Auto-Merge's rule, and reviews whenever
-# it can't tell. It runs from the PR like the rest of this workflow, so a push
-# that changes it can skip its own review; PR Auto-Merge, which runs from
-# main, still waits for a review that covers the head.
+# it can't tell, or when the base has no pr-automerge.yml to honour the skip
+# (dotfiles, which carries a copy of this file). It runs from the PR like the
+# rest of this workflow, so a push that changes it can skip its own review;
+# PR Auto-Merge, which runs from main, still waits for a review that covers
+# the head. The same job skips a run whose head is no longer the PR's: the
+# newer push's run reviews, and the check job's varying length could
+# otherwise let the stale review join the concurrency group last and cancel
+# the newer one.
 #
 # Without the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`) the
 # run logs a notice and succeeds, so the workflow can be Applied before every
@@ -79,7 +84,9 @@ jobs:
       github.actor != 'Copilot' &&
       (github.event.action != 'labeled' || github.event.label.name == 'review:claude')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # A backstop: each step's own, shorter timeout ends in a review instead
+    # of a failed job, which would be a failed check and skip the review.
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read
@@ -87,11 +94,12 @@ jobs:
       skip: ${{ steps.check.outputs.skip == 'true' }}
     steps:
       # Only a push can be a merge from main; a label or a reopen asks for a
-      # review. Both steps carry on past an error, which then reviews: a
-      # failed job would be a failed check.
+      # review. Both steps carry on past an error or a timeout, which then
+      # reviews: a failed job would be a failed check.
       - name: Checkout the PR head
         if: github.event.action == 'synchronize'
         continue-on-error: true
+        timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -106,17 +114,28 @@ jobs:
       # since the merge base, that side's version), and whose first parent is
       # covered the same way, up to MERGE_CHAIN_LIMIT merges down. Where the
       # two could differ (several merge bases), this one reviews.
-      - name: Skip a clean merge of main into a reviewed commit
+      - name: Skip a stale head, or a clean merge of main into a reviewed commit
         id: check
-        if: github.event.action == 'synchronize'
         continue-on-error: true
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          ACTION: ${{ github.event.action }}
         run: |
+          current="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)"
+          if [ -n "$current" ] && [ "$current" != "$HEAD_SHA" ]; then
+            echo "::notice::The PR's head is now ${current}, not ${HEAD_SHA}, so that push's run reviews it instead."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$ACTION" != "synchronize" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Commits Copilot or Claude Review (a marked github-actions[bot] review) reviewed.
           gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --jq '.[]
             | select(.user.login == "copilot-pull-request-reviewer[bot]"
@@ -166,7 +185,11 @@ jobs:
           main = "refs/remotes/origin/" + os.environ["BASE_REF"]
           head = commit = os.environ["HEAD_SHA"]
           skip = False
-          for _ in range(MERGE_CHAIN_LIMIT + 1):
+          # Only PR Auto-Merge counts a review for a merge from main; without it
+          # on the base (dotfiles), the merge needs a review of its own.
+          honoured = subprocess.run(["git", "cat-file", "-e", main + ":.github/workflows/pr-automerge.yml"],
+                                    capture_output=True).returncode == 0
+          for _ in range(MERGE_CHAIN_LIMIT + 1 if honoured else 0):
               if commit in reviewed:
                   skip = True
                   break

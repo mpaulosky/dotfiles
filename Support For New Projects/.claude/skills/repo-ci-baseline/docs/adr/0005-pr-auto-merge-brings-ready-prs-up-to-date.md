@@ -38,8 +38,13 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
   So nothing reaches `main` that neither a reviewer nor `main` itself has seen. Claude's off-diff hold on the covered commit still holds.
   This was already the cap's view: merges from `main` aren't review rounds ([ADR 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 - **Claude Review skips such a head** on `synchronize`, by the same rule, in a job of its own before the review job,
-  so a skipped run doesn't join the review's concurrency group and cancel a review in progress. It reviews whenever it can't tell.
-- **`land.sh`** keeps updating `BEHIND` PRs (it also covers repos without the PAT, and dotfiles), but in a Baseline repo it no longer re-requests Copilot for a head that was already reviewed.
+  so a skipped run doesn't join the review's concurrency group and cancel a review in progress. It reviews whenever it can't tell,
+  and whenever the base has no `pr-automerge.yml` to honour the skip (dotfiles carries a copy of `claude-review.yml` and lands PRs with `land.sh`,
+  whose decision wants a review of the exact head). The same job skips a run whose head is no longer the PR's,
+  since the check job's varying length could otherwise let a stale review join the concurrency group last and cancel the newer one.
+- **`land.sh`** keeps updating `BEHIND` PRs (it also covers repos without the PAT) and keeps requesting Copilot after an update:
+  Copilot reviews every push anyway (`review_on_push`), and the request's read-back is what calls in Claude (`review:claude`) when Copilot's budget is spent,
+  for an update that isn't a clean merge. The label stays on, so that costs at most one Claude review per PR.
 
 ## Considered Options
 
@@ -53,6 +58,8 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
 
 - Copilot still re-reviews each update (`review_on_push` in `main-rules`) while its budget lasts; its review is no longer waited for.
 - A merge from `main` that git resolved by merging a file both sides changed is reviewed again, as is a rename across the two sides.
+  When PR Auto-Merge made that update, nothing calls in Claude: with Copilot's budget spent and no `review:claude` on the PR,
+  it waits for a review like any other push (`status.sh` shows `review:no`); add the label, or let `land.sh` do it.
 - The two copies of the rule (JavaScript in `pr-automerge.yml`, Python in `claude-review.yml`) must agree; each has tests on the same shapes of history.
   Where they could differ (several merge bases, a tree listing GitHub truncates), Claude Review errs towards reviewing,
   except for a tree past GitHub's listing limit (100,000 entries), which no Baseline repo comes near.

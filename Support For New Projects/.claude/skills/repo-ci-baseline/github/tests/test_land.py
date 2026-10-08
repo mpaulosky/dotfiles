@@ -128,22 +128,6 @@ def test_a_behind_branch_is_updated_and_copilot_asked_again_once_per_head():
     assert "-> update branch" in printed(out) and len(fake.calls) == 2
 
 
-def test_a_baseline_repos_behind_branch_reviewed_at_its_head_is_updated_without_a_new_request():
-    # PR Auto-Merge counts the review of the head for the clean merge from main.
-    fake = Fake({"o/app": [node(merge_state="BEHIND", reviews=COPILOT)]})
-    lander, out, _ = start(fake, {"o/app": None})
-    lander.poll()
-    assert fake.calls == ["gh pr update-branch 7 -R o/app"]
-    assert fake.read_back == []
-
-
-def test_dotfiles_behind_branch_reviewed_at_its_head_still_asks_copilot_again():
-    fake = Fake({"o/dots": [node(merge_state="BEHIND", reviews=COPILOT, contexts=GREEN)]})
-    lander, out, _ = start(fake, {"o/dots": None})
-    lander.poll()
-    assert fake.calls == ["gh pr update-branch 7 -R o/dots", "gh pr edit 7 -R o/dots --add-reviewer @copilot"]
-
-
 def test_a_copilot_request_github_dropped_calls_in_claude():
     fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)})
     lander, out, _ = start(fake, {"o/app": None})

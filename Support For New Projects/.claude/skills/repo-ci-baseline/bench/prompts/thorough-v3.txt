@@ -13,7 +13,7 @@ input (whitespace, tabs, Unicode, markup), a race between two runs. For GitHub
 Actions workflows and merge gates, reason about how GitHub itself behaves: which
 events fire, what a skipped or failed check does to a PR's mergeStateStatus, who
 the actor is, what each token can do. Where the behaviour of a pinned action or of
-GitHub decides the answer, read its source or documentation rather than guess.
+GitHub decides the answer and you can't check it here, say what you're relying on.
 Look hardest at code that decides whether something merges, releases or gets
 permissions, and at text processing that turns input into rendered output.
 

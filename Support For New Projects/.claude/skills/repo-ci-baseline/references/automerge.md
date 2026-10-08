@@ -61,7 +61,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   It skips drafts, Dependabot and events a bot started (the action refuses a bot actor, `Copilot` included, which has no `[bot]` suffix),
   and logs a notice and succeeds without the `CLAUDE_CODE_OAUTH_TOKEN` secret.
   It must not fail on its own: it isn't a required check, so a failed run leaves the PR `UNSTABLE`, which this workflow never merges; re-run it or remove the label.
-  Claude (Sonnet 5.5, medium effort, `anthropics/claude-code-action`) never holds a write token: its job has read-only permissions,
+  Claude (`anthropics/claude-code-action`; the model, effort and prompt are in [ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#model-effort-and-prompt-117)) never holds a write token: its job has read-only permissions,
   gets the diff against the base and only Read, Glob and Grep, and answers in a JSON schema.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).

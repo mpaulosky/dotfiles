@@ -97,8 +97,11 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
     with tempfile.TemporaryDirectory(prefix="claude-review-bench-") as temp:
         temp = Path(temp)
         tree = temp / "tree"
-        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(tree), case["head"]], check=True)
+        added = False
         try:
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "--detach", str(tree), case["head"]],
+                           check=True, capture_output=True, text=True)
+            added = True
             diff = subprocess.run(["git", "-C", str(tree), "diff", "--no-color", f"{case['base']}...{case['head']}"],
                                   check=True, capture_output=True, text=True).stdout
             (temp / "pr.diff").write_text(diff)
@@ -108,8 +111,13 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
             done = subprocess.run(argv, cwd=tree, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"error": f"timed out after {timeout}s", "seconds": round(time.monotonic() - started)}
+        except (subprocess.CalledProcessError, OSError) as error:
+            # A missing clone or commit, or no claude on PATH.
+            detail = getattr(error, "stderr", None) or ""
+            return {"error": f"{error} {detail}".strip(), "seconds": round(time.monotonic() - started)}
         finally:
-            subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(tree)], check=False)
+            if added:
+                subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(tree)], check=False)
     seconds = round(time.monotonic() - started)
     if done.returncode != 0:
         return {"error": (done.stderr or done.stdout)[-2000:], "seconds": seconds}

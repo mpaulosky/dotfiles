@@ -66,6 +66,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   - v3 differs from v2 only in where a finding goes: on a line the diff adds or shows, with a problem in unchanged code put on the changed line that depends on it,
     because any other line holds the merge. On the ordinary PRs it made 2, 2 and 4 findings, all on real lines, and on Articles#298 every finding was on a changed line.
     It flagged the known marker limit on all three commits.
+- After the benchmark, one sentence of v3 changed: it had asked Claude to read a pinned action's source or GitHub's documentation, which it has no way to do.
+  It now asks Claude to say what it's relying on when that decides a finding. Pointing it at the action's source on the runner, for finding 5, is #117.
 - **The review job's `timeout-minutes` is 30.** Opus took up to about 7 minutes on these diffs, and a timed-out job is a failing check that holds the merge.
 - **The prompt was the bigger change.**
   - The original said an empty findings list was a good answer and to leave out anything Claude wasn't confident about, and Sonnet then read little beyond the diff.

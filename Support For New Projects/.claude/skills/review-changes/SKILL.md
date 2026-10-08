@@ -127,19 +127,25 @@ any gate you did not actually run as not run.
    push it and open the PR (title in the commit format; the repo's
    `docs/PROCESS.md` when present), and offer to run them. Where the
    repo's pre-push hook refuses a branch behind its default branch (the
-   Baseline's does), `git fetch origin <default branch>` first and merge it
-   when the branch is behind.
+   Baseline's does), `git fetch origin <default branch>` and, when the branch
+   is behind, merge it before pushing. A conflict: `git merge --abort` and
+   hand the conflict to the user. A clean merge: rerun step 5's gates on the
+   merged state and report those results, and the merge commit beside step
+   8's.
 
-   Close with any **prune candidates**: a linked worktree from
-   `git worktree list` that passes every test below, with its
-   `git worktree remove <path>` and `git branch -D <branch>` commands. List
-   them; removing one is the user's call, and `-D` deletes unmerged commits,
-   so the tests must hold:
-   - `git ls-remote --heads origin <branch>` prints nothing (the branch is
-     gone from the remote, whatever a stale remote-tracking ref says);
-   - `gh pr list --head <branch> --state merged --json
-     headRefOid,headRepositoryOwner` has a PR from this repo whose
-     `headRefOid` equals `git rev-parse <branch>` (a merged PR with the same
-     name but an older head leaves newer commits unmerged);
+   Close with any **prune candidates**: linked worktrees safe to remove, with
+   their `git worktree remove <path>` and `git branch -D <branch>` commands.
+   Removing one is the user's call, and `-D` deletes unmerged commits, so
+   list a worktree only when every test holds, each command exiting 0:
+   - `git ls-remote --exit-code --heads origin refs/heads/<branch>` exits 2
+     (gone from the remote; any other failure means unknown, so skip it);
+   - `gh pr list --head <branch> --state merged --json headRefOid` has a PR
+     whose `headRefOid` equals `git rev-parse <branch>` (the tip itself
+     merged, whatever PRs once shared the name);
    - `git -C <path> status --porcelain` prints nothing;
    - it is neither the worktree this run created nor the one it runs in.
+
+   `git worktree remove` also deletes ignored files, so flag anything in
+   `git -C <path> status --porcelain --ignored` beyond build output (a
+   `.env`, `*.user`). A worktree `git worktree list` marks `prunable` (its
+   folder is gone) gets `git worktree prune` instead.

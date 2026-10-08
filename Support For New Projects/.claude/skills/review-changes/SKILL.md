@@ -152,7 +152,8 @@ any gate you did not actually run as not run.
 
    `git worktree remove` also deletes ignored files, so flag anything in
    `git -C <path> status --porcelain --ignored` (one line per ignored
-   folder) beyond build output (a `.env`, `*.user`). A worktree
-   `git worktree list` marks `prunable` (its folder is gone) gets
-   `git worktree prune` in place of `git worktree remove`, and
-   `git branch -D` only when its ls-remote and merged-PR tests hold.
+   folder) beyond build output (a `.env`, `*.user`). For a worktree
+   `git worktree list` marks `prunable` (its folder is gone), the other
+   tests still apply and `git worktree remove <path>` clears just its
+   entry; `git worktree prune` would drop every missing worktree's entry,
+   vetted or not. Each `git branch -D` comes after its worktree's removal.

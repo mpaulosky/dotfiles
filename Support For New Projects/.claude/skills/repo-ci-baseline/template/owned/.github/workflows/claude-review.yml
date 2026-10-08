@@ -407,17 +407,20 @@ jobs:
     steps:
       # The base's script, not the PR's: this job holds a token that can post
       # a review under the marker, and a push without the workflow permission
-      # can still change .github/scripts. A PR that changes the script is
-      # posted by the base's copy until it merges.
-      - name: Checkout the post script
+      # can still change .github/scripts. Taken from the merge commit's first
+      # parent, the base this run's workflow was merged against (the event's
+      # base.sha can be older, on a labeled event after main moved). A PR that
+      # changes the script is posted by the base's copy until it merges.
+      - name: Checkout the merge commit and its base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          sparse-checkout: .github/scripts
+          fetch-depth: 2
           persist-credentials: false
 
       # A review posted with GITHUB_TOKEN starts no workflows, so PR Auto-Merge
       # follows this workflow's completion instead (its workflow_run trigger).
+      # A base without the script (a PR that brings Claude Review to a repo)
+      # warns and posts nothing, like a review that didn't run.
       - name: Post the review on the head commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -426,4 +429,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 .github/scripts/post_claude_review.py --repo "$REPOSITORY" --pr "$PR_NUMBER" --head "$HEAD_SHA"
+        run: |
+          script="${RUNNER_TEMP}/post_claude_review.py"
+          if ! git show "HEAD^1:.github/scripts/post_claude_review.py" > "$script" 2>/dev/null; then
+            echo "::warning::The base has no .github/scripts/post_claude_review.py yet, so Claude's review isn't posted." \
+              "The PR needs Copilot's review, or a merge by hand."
+            exit 0
+          fi
+          python3 -I "$script" --repo "$REPOSITORY" --pr "$PR_NUMBER" --head "$HEAD_SHA"

@@ -155,10 +155,12 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   scripts but not to its workflows. #133 ran the PR's copy of the script and called write access the boundary; Claude Review
   on Blazor-Server#176 showed that boundary is the workflow permission, and on atelier-store#130 that an older PR's script
   lacked the option the merged workflow called. `pull_request` runs the workflow from the PR's merge commit, so the check is
-  always the workflow's own. The post job runs the base's `post_claude_review.py` (its checkout's `ref` is the base commit),
+  always the workflow's own. The post job runs the base's `post_claude_review.py`, taken from the merge commit's first parent,
   since it holds a token that can post a review under the marker: a changed script in the PR could otherwise post a marked
-  review Claude never wrote, which PR Auto-Merge would accept (Claude Review on #134). A PR that changes the script is
-  posted by the base's copy until it merges.
+  review Claude never wrote, which PR Auto-Merge would accept (Claude Review on #134). The first parent is the base the
+  workflow was merged against; the event's `base.sha` can be older. A PR that changes the script is posted by the base's
+  copy until it merges, so a PR that changes the script's interface together with the workflow's call fails its own post
+  job: land such a change in two steps, the script accepting both first. A base with no script yet warns and posts nothing.
 - **A quoted secret can't skip the post job.** A withheld answer, by that check or by GitHub withholding a job output that holds a
   masked secret, reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't hold a secret,
   not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.

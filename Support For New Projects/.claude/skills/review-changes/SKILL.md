@@ -23,12 +23,15 @@ any gate you did not actually run as not run.
 
 1. **Inspect.** Run `git status --short`, note the branch, and read all of
    `git diff` and `git diff --staged`.
-2. **Get onto a working branch.** Learn the branch standard from
-   `scripts/check-branch-name.sh` when the repo has one, otherwise from its
-   `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md` and existing branches; absent
-   any, treat the default branch as protected and use `chore/<slug>`. Stay put
-   when the branch already follows the standard and this checkout accepts
-   commits. Otherwise, before any fixing, move:
+2. **Get onto a working branch.** When the repo has
+   `scripts/check-branch-name.sh`, it is the branch standard: run
+   `bash scripts/check-branch-name.sh <branch>` from the repo root, as its
+   pre-push hook does, on the current branch and on any name you pick, and
+   use a name only once it exits 0. Otherwise learn the standard from the
+   repo's `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md` and existing branches;
+   absent any, treat the default branch as protected and use `chore/<slug>`.
+   Stay put when the branch already follows the standard and this checkout
+   accepts commits. Otherwise, before any fixing, move:
    - **Worktree rule** (the repo's `.github/hooks/pre-commit` refuses commits
      in the primary checkout, as Baseline repos' does), in the primary
      checkout: set the in-scope files aside with
@@ -122,4 +125,35 @@ any gate you did not actually run as not run.
    and every uncommitted file left behind with why. Say plainly that the
    commit is local, unpushed and has no PR, and give the commands that would
    push it and open the PR (title in the commit format; the repo's
-   `docs/PROCESS.md` when present).
+   `docs/PROCESS.md` when present), and offer to run them; they run only
+   on the user's yes, never in a dry run. Where the repo's pre-push hook
+   refuses a branch behind its default branch (the Baseline's does), they
+   start with `git fetch origin <default branch>` and, when the branch is
+   behind, `git merge origin/<default branch>` and a rerun of step 5's
+   gates, on a clean tree only. A dirty tree (name its files), a merge
+   that won't start, a conflict (`git merge --abort` when
+   `git rev-parse -q --verify MERGE_HEAD` succeeds) or a red gate goes back
+   to the user unpushed.
+
+   Close with any **prune candidates**: linked worktrees safe to remove, with
+   their `git worktree remove <path>` and `git branch -D <branch>` commands.
+   Removing one is the user's call, and `-D` deletes unmerged commits, so
+   list a worktree only when every test holds; a command that errors means
+   unknown, so skip that worktree:
+   - `git ls-remote --exit-code --heads origin refs/heads/<branch>` exits 2
+     (gone from the remote);
+   - `gh pr list --head <branch> --state merged --json headRefOid` has a PR
+     whose `headRefOid` equals `git rev-parse refs/heads/<branch>` (the tip
+     itself merged, whatever PRs once shared the name);
+   - `git -C <path> status --porcelain --untracked-files=all` succeeds and
+     prints nothing (except for a `prunable` worktree, below);
+   - `git worktree list --porcelain` shows no `locked` line for it;
+   - it is neither the worktree this run created nor the one it runs in.
+
+   `git worktree remove` also deletes ignored files, so flag anything in
+   `git -C <path> status --porcelain --ignored` (one line per ignored
+   folder) beyond build output (a `.env`, `*.user`). For a worktree
+   `git worktree list` marks `prunable` (its folder is gone), the other
+   tests still apply and `git worktree remove <path>` clears just its
+   entry; `git worktree prune` would drop every missing worktree's entry,
+   vetted or not. Each `git branch -D` comes after its worktree's removal.

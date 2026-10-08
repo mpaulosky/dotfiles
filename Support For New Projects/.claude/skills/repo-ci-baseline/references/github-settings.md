@@ -28,8 +28,8 @@ would let a repo's own PRs change the rules that gate them.
 | Actions | Workflows get a **read** token by default (every Template workflow declares its own `permissions:`), and may create PRs, which `release.yml` and `backfill-blog-posts.yml` need when they fall back to `GITHUB_TOKEN` without `RELEASE_PR_PAT`. Pinned actions are required once every workflow is pinned. |
 | Ruleset `main-rules` | On `~DEFAULT_BRANCH`: no deletion or force-push, linear history, squash only, 0 approvals, review threads **not** required, Copilot reviews every push (drafts too), strict required checks, **no bypass actors**. No `code_quality` rule. |
 | Required checks | `Build Solution`, `Test Suite`, `Branch name`, `PR title`, `actionlint`, `zizmor`, `shellcheck`, `markdownlint`, `yamllint`. CodeQL isn't one: it skips docs-only PRs, so requiring it would block them. |
-| Labels | `semver:minor`, `semver:major`, `docs-only`, `sandcastle:needs-human`, `dependencies`, `github-actions`, with the colors and descriptions in `labels.json`. Dependabot drops a label that doesn't exist, and `release.yml` releases a PR without its semver label as a patch. |
-| Secret | `RELEASE_PR_PAT` must exist; the script reads secret names, never values, so a missing one is MANUAL. |
+| Labels | `semver:minor`, `semver:major`, `docs-only`, `review:claude`, `sandcastle:needs-human`, `dependencies`, `github-actions`, with the colors and descriptions in `labels.json`. Dependabot drops a label that doesn't exist, `release.yml` releases a PR without its semver label as a patch, and `gh pr edit --add-label review:claude` fails without the label. |
+| Secrets | `RELEASE_PR_PAT` and `CLAUDE_CODE_OAUTH_TOKEN` (Claude Review's, from `claude setup-token`) must exist; the script reads secret names, never values, so a missing one is MANUAL. |
 
 **Review threads hold the merge for at most three Copilot rounds**, in every repo. A ruleset can only require *every* thread resolved,
 with no cap, which blocks ADR 0002's cap (IssueTracker's did); so `main-rules` leaves it off and `pr-automerge.yml` enforces the cap.

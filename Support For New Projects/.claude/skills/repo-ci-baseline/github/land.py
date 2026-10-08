@@ -11,7 +11,9 @@ once per PR head:
 
 - mark ready:       gh pr ready (only with --ready; otherwise a draft waits)
 - update branch:    gh pr update-branch, then gh pr edit --add-reviewer @copilot,
-                    read back: gh exits 0 even when GitHub drops the request
+                    read back: gh exits 0 even when GitHub drops the request;
+                    a dropped request adds review:claude (gh pr edit
+                    --add-label), so Claude Review reviews the head instead
 - arm auto-merge:   gh pr merge --auto --squash --match-head-commit <head>
 - leave to PR Auto-Merge, wait, report blocker, nothing: no call
 
@@ -36,6 +38,9 @@ import time
 from dataclasses import dataclass, field
 
 from landing import ARM_AUTO_MERGE, MARK_READY, UPDATE_BRANCH, decide
+
+# The label that starts Claude Review, the backup to Copilot's review.
+REVIEW_CLAUDE = "review:claude"
 from settings import read_repo_list
 from status import gh_graphql, line, repo_flags, to_state
 
@@ -185,7 +190,7 @@ class Lander:
         state = to_state(node, **flags, want_ready=self.want_ready)
         decision = decide(state)
         pr.title = node["title"]
-        seen = (state.state, state.head, state.draft, state.merge_state, state.copilot_on_head,
+        seen = (state.state, state.head, state.draft, state.merge_state, state.head_reviewer,
                 state.open_threads, state.auto_merge_armed, decision.action, decision.reason)
         if seen == pr.seen:
             return
@@ -208,15 +213,29 @@ class Lander:
                 break
 
     def copilot_registered(self, repo, number):
-        """Read Copilot's review request back, saying so when it didn't register."""
+        """Read Copilot's review request back; when GitHub dropped it, call in Claude Review.
+
+        False when neither reviewer is on its way: the read-back failed, or
+        adding review:claude did.
+        """
+        url = f"https://github.com/{repo}/pull/{number}"
         try:
             if self.copilot_requested(repo, number):
                 return True
-            problem = f"didn't register on #{number} (GitHub drops it once the Copilot code review budget is used up)"
         except Exception as error:  # noqa: BLE001 - reported like a failed call
-            problem = f"couldn't be read back on #{number} ({error})"
-        self.say(f"  failed: Copilot's review request {problem}; request it at https://github.com/{repo}/pull/{number}")
-        return False
+            self.say(f"  failed: Copilot's review request couldn't be read back on #{number} ({error}); request it at {url}")
+            return False
+        problem = f"didn't register on #{number} (GitHub drops it once the Copilot code review budget is used up)"
+        argv = ["gh", "pr", "edit", str(number), "-R", repo, "--add-label", REVIEW_CLAUDE]
+        ok, message = self.run(argv)
+        if not ok:
+            self.say(f"  failed: Copilot's review request {problem}; request it at {url}")
+            self.say("  failed: " + " ".join(argv) + (f" ({message})" if message else ""))
+            return False
+        self.say(f"  warning: Copilot's review request {problem}; added {REVIEW_CLAUDE}, "
+                 "so Claude Review reviews it instead")
+        self.say("  ran: " + " ".join(argv))
+        return True
 
     def update_gone(self, repo, number, pr, flags):
         try:

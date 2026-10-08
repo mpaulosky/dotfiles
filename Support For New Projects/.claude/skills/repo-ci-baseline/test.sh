@@ -116,6 +116,14 @@ if git -C "$ignore_repo" check-ignore -q .env.example; then
   fail ".gitignore must not ignore .env.example"
 fi
 
+step "dotfiles' copy of Claude Review"
+# dotfiles isn't a Baseline repo, so it carries Claude Review as a copy of the
+# Template's files, which must not drift from them.
+dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
+for file in .github/workflows/claude-review.yml .github/scripts/post_claude_review.py; do
+  cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
+done
+
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
 

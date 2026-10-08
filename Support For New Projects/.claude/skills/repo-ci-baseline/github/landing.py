@@ -9,12 +9,14 @@ skill lands PRs by (references/automerge.md):
   report, never something to arm past; so is a merge conflict;
 - a draft is marked ready only when the caller says it should be;
 - a branch BEHIND main is updated, and Copilot asked to review the new head;
-- auto-merge is armed only once Copilot (an author matching /copilot/i) has
-  reviewed the current head and no review thread is unresolved;
+- auto-merge is armed only once a reviewer has reviewed the current head and
+  no review thread is unresolved. The reviewer is Copilot (an author matching
+  /copilot/i), or Claude as its backup: Claude Review posts as
+  github-actions[bot] with CLAUDE_MARKER first in the body;
 - where the repo requires no checks (dotfiles), auto-merge wouldn't wait for
   CI, so the checks must finish green first;
 - in a Baseline repo, its own PR Auto-Merge workflow merges a reviewed PR
-  through the API once its checks pass (and past Copilot's review cap), and it
+  through the API once its checks pass (and past the review cap), and it
   never arms native auto-merge: so the PR is left to it, never armed around it;
 - a release-blog PR (release.yml's or backfill-blog-posts.yml's branch) is
   armed as soon as it is open and not blocked, without Copilot's review, as
@@ -37,6 +39,10 @@ NOTHING = "nothing"
 ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, ARM_AUTO_MERGE, HAND_OFF, BLOCKER, NOTHING)
 
 COPILOT = re.compile(r"copilot", re.IGNORECASE)
+# Claude Review's login (GraphQL drops the "[bot]" suffix, REST keeps it) and
+# the marker its review bodies start with; post_claude_review.py writes both.
+GITHUB_ACTIONS = "github-actions"
+CLAUDE_MARKER = "<!-- claude-review -->"
 
 # The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
 RELEASE_BLOG_BRANCHES = frozenset({"docs/release-notes", "docs/backfill-blog-posts"})
@@ -81,6 +87,7 @@ class PrState:
     """What decide() reads about one PR.
 
     copilot_reviewed: the commit oids Copilot reviewed (see copilot_reviews()).
+    claude_reviewed: the commit oids Claude Review reviewed (see claude_reviews()).
     checks_required: whether the repo requires checks before a merge; without
     them native auto-merge merges at once, so green checks must come first.
     want_ready: the caller's say that a draft should be marked ready.
@@ -93,6 +100,7 @@ class PrState:
     draft: bool = False
     head: str = ""
     copilot_reviewed: frozenset[str] = field(default_factory=frozenset)
+    claude_reviewed: frozenset[str] = field(default_factory=frozenset)
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -103,8 +111,19 @@ class PrState:
     release_blog: bool = False
 
     @property
-    def copilot_on_head(self):
-        return bool(self.head) and self.head in self.copilot_reviewed
+    def head_reviewer(self):
+        """"copilot" or "claude", whichever reviewed the head (Copilot first), else ""."""
+        if not self.head:
+            return ""
+        if self.head in self.copilot_reviewed:
+            return "copilot"
+        if self.head in self.claude_reviewed:
+            return "claude"
+        return ""
+
+    @property
+    def reviewer_on_head(self):
+        return bool(self.head_reviewer)
 
 
 @dataclass(frozen=True)
@@ -116,6 +135,13 @@ class Decision:
 def copilot_reviews(reviews):
     """The commit oids reviewed by Copilot, from (author login, commit oid) pairs."""
     return frozenset(oid for login, oid in reviews if login and oid and COPILOT.search(login))
+
+
+def claude_reviews(reviews):
+    """The commit oids reviewed by Claude Review, from (author login, commit oid, body) triples."""
+    return frozenset(oid for login, oid, body in reviews
+                     if login and oid and login.removesuffix("[bot]") == GITHUB_ACTIONS
+                     and (body or "").startswith(CLAUDE_MARKER))
 
 
 def summarize_checks(checks):
@@ -168,13 +194,14 @@ def decide(pr):
         return Decision(ARM_AUTO_MERGE, "release-blog PR, not armed by its workflow")
     if pr.merge_state == "BEHIND":
         return Decision(UPDATE_BRANCH, "behind main")
-    if not pr.copilot_on_head:
-        return Decision(WAIT, f"no Copilot review of {pr.head[:7]} yet")
+    if not pr.reviewer_on_head:
+        return Decision(WAIT, f"no Copilot or Claude review of {pr.head[:7]} yet")
     if pr.open_threads:
         return Decision(WAIT, f"{pr.open_threads} open thread(s)")
     if checks.running and not pr.checks_required:
         return Decision(WAIT, "no required checks; waiting for: " + ", ".join(checks.running))
-    reason = "Copilot reviewed the head, no open threads" + ("" if checks.green else ", required checks running")
+    reviewer = pr.head_reviewer.capitalize()
+    reason = f"{reviewer} reviewed the head, no open threads" + ("" if checks.green else ", required checks running")
     if pr.merged_by_workflow:
         return Decision(HAND_OFF, reason)
     return Decision(ARM_AUTO_MERGE, reason)

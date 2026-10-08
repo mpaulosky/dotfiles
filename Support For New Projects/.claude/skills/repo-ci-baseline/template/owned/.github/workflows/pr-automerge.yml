@@ -2,16 +2,19 @@
 name: PR Auto-Merge
 
 # Squash-merges a same-repo PR into main once it is ready: required checks
-# pass, Copilot has reviewed the PR's head commit, and every review thread is
-# resolved. The main ruleset asks Copilot to review each push but doesn't
-# require its review, so merging on green alone would usually land a PR
-# before that review arrives. Each trigger below is a moment one of those
-# conditions can become true; the job re-checks all of them every time.
+# pass, a reviewer has reviewed the PR's head commit, and every review thread
+# is resolved. The reviewer is Copilot, or Claude as its backup: Claude
+# Review (claude-review.yml) posts a review under github-actions[bot] whose
+# body starts with CLAUDE_MARKER. The main ruleset asks Copilot to review
+# each push but doesn't require its review, so merging on green alone would
+# usually land a PR before that review arrives. Each trigger below is a
+# moment one of those conditions can become true; the job re-checks all of
+# them every time.
 #
-# Copilot re-reviews every push and can find something new each time, so a
-# PR could chase its reviews forever. Once Copilot has reviewed
-# COPILOT_REVIEW_CAP distinct non-merge commits, the merge stops waiting for
-# its review of the head and stops counting its unresolved threads. Merges
+# Both reviewers re-review every push and can find something new each time,
+# so a PR could chase its reviews forever. Once the two together have
+# reviewed COPILOT_REVIEW_CAP distinct non-merge commits, the merge stops waiting for
+# a review of the head and stops counting their unresolved threads. Merges
 # from main don't count: the ruleset keeps branches up to date, so they would
 # use up the cap without a single fix. Threads anyone else opens still hold
 # the merge.
@@ -38,9 +41,11 @@ name: PR Auto-Merge
   # pull_request_review would run the PR's own copy of this file with write
   # access, so a submitted review arrives through PR Review Submitted, a
   # no-op workflow whose completion lands here. Copilot's review usually
-  # arrives after CI, so without it the PR waits for the sweep.
+  # arrives after CI, so without it the PR waits for the sweep. Claude
+  # Review posts with GITHUB_TOKEN, which starts no workflows, so its own
+  # completion is the signal instead.
   workflow_run:
-    workflows: ["Build and Test Suite", "Lint Markdown", "Lint YAML", "Lint Actions", "CodeQL", "PR Title", "PR Review Submitted"]
+    workflows: ["Build and Test Suite", "Lint Markdown", "Lint YAML", "Lint Actions", "CodeQL", "PR Title", "PR Review Submitted", "Claude Review"]
     types: [completed]
   # Resolving a review thread has no Actions trigger, so a PR whose last
   # blocker was an open thread is picked up by this sweep. Off the round
@@ -86,10 +91,15 @@ jobs:
             // back to a person, who removes it once the PR may merge again.
             const NEEDS_HUMAN = "sandcastle:needs-human";
 
-            // Review rounds after which Copilot no longer holds the merge.
+            // Review rounds, Copilot's and Claude's together, after which
+            // neither reviewer holds the merge. Named for Copilot, the first
+            // reviewer: github-settings.sh reads the cap by this name.
             const COPILOT_REVIEW_CAP = 3;
-            // GraphQL reports the bot's login without the "[bot]" suffix.
+            // GraphQL reports the bots' logins without the "[bot]" suffix.
             const COPILOT_LOGIN = "copilot-pull-request-reviewer";
+            // Claude Review posts as github-actions[bot]; the marker tells its
+            // reviews apart from anything else posted under that login.
+            const CLAUDE_MARKER = "<!-- claude-review -->";
 
             async function getPullRequestStatus(pullNumber) {
               const status = await github.graphql(
@@ -124,13 +134,29 @@ jobs:
                            }
                          }
                        }
-                       # The first comment's author is who opened the thread.
+                       # Claude Review's, and anything else github-actions[bot]
+                       # posted; the body's marker tells them apart.
+                       claudeReviews: reviews(last: 100, author: "github-actions[bot]") {
+                         nodes {
+                           id
+                           body
+                           commit {
+                             oid
+                             parents { totalCount }
+                           }
+                         }
+                       }
+                       # The first comment's author is who opened the thread,
+                       # and its review says whether Claude Review opened it.
                        reviewThreads(first: 100) {
                          totalCount
                          nodes {
                            isResolved
                            comments(first: 1) {
-                             nodes { author { login } }
+                             nodes {
+                               author { login }
+                               pullRequestReview { id }
+                             }
                            }
                          }
                        }
@@ -228,17 +254,24 @@ jobs:
                 return;
               }
 
-              // Copilot re-reviews every push, including merge-from-main
-              // commits, so its review has to cover the exact head, until it
-              // has reviewed COPILOT_REVIEW_CAP different non-merge commits.
-              const reviewed = pr.copilotReviews.nodes.map((review) => review.commit).filter(Boolean);
+              // Both reviewers re-review every push, including merge-from-main
+              // commits, so a review has to cover the exact head, until they
+              // have reviewed COPILOT_REVIEW_CAP different non-merge commits between
+              // them.
+              const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
+                return review.body?.startsWith(CLAUDE_MARKER);
+              });
+              const claudeReviewIds = new Set(claudeReviews.map((review) => review.id));
+              const reviewed = [...pr.copilotReviews.nodes, ...claudeReviews]
+                .map((review) => review.commit)
+                .filter(Boolean);
               const reviewedCommits = new Set(reviewed.map((commit) => commit.oid));
               const reviewRounds = new Set(
                 reviewed.filter((commit) => commit.parents?.totalCount === 1).map((commit) => commit.oid)
               );
               const capReached = reviewRounds.size >= COPILOT_REVIEW_CAP;
               if (!capReached && !reviewedCommits.has(pr.headRefOid)) {
-                core.info(`Waiting on PR #${pullNumber}: no Copilot review of ${pr.headRefOid} yet.`);
+                core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);
                 return;
               }
 
@@ -255,7 +288,11 @@ jobs:
               const unresolvedCopilot = unresolved.filter((thread) => {
                 return thread.comments?.nodes[0]?.author?.login === COPILOT_LOGIN;
               }).length;
-              const blocking = capReached ? unresolved.length - unresolvedCopilot : unresolved.length;
+              const unresolvedClaude = unresolved.filter((thread) => {
+                return claudeReviewIds.has(thread.comments?.nodes[0]?.pullRequestReview?.id);
+              }).length;
+              const unresolvedReviewers = unresolvedCopilot + unresolvedClaude;
+              const blocking = capReached ? unresolved.length - unresolvedReviewers : unresolved.length;
               if (blocking > 0) {
                 core.info(`Waiting on PR #${pullNumber}: ${blocking} unresolved review thread(s).`);
                 return;
@@ -274,18 +311,25 @@ jobs:
               }
 
               // Log only when the cap changed the outcome: without it, this PR
-              // would still be waiting on Copilot.
+              // would still be waiting on a reviewer.
               const headReviewed = reviewedCommits.has(pr.headRefOid);
-              if (capReached && (!headReviewed || unresolvedCopilot > 0)) {
+              if (capReached && (!headReviewed || unresolvedReviewers > 0)) {
                 const bypassed = [];
                 if (!headReviewed) {
-                  bypassed.push(`without a Copilot review of ${pr.headRefOid}`);
+                  bypassed.push(`without a review of ${pr.headRefOid}`);
                 }
+                const threads = [];
                 if (unresolvedCopilot > 0) {
-                  bypassed.push(`past ${unresolvedCopilot} unresolved Copilot thread(s)`);
+                  threads.push(`${unresolvedCopilot} unresolved Copilot thread(s)`);
+                }
+                if (unresolvedClaude > 0) {
+                  threads.push(`${unresolvedClaude} unresolved Claude thread(s)`);
+                }
+                if (threads.length > 0) {
+                  bypassed.push(`past ${threads.join(" and ")}`);
                 }
                 core.info(
-                  `Copilot review cap (${COPILOT_REVIEW_CAP}) reached on PR #${pullNumber}: merging ` +
+                  `Review cap (${COPILOT_REVIEW_CAP}) reached on PR #${pullNumber}: merging ` +
                   `${bypassed.join(" and ")}.`
                 );
               }

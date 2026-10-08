@@ -42,7 +42,7 @@ reapply="$skill/reapply.sh"
 # $stub/open is the open PR's number (empty for none), $stub/merged the merged
 # PRs' head commits, $stub/body the PR description. Copilot's review request
 # reads back as registered unless $stub/dropped exists (GitHub accepts it and
-# drops it).
+# drops it). Adding a label fails while $stub/label-fails exists.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<EOF
 #!/usr/bin/env bash
@@ -66,6 +66,9 @@ case "\$1 \$2" in
     body_from "\$@"
     if [[ "\$*" == *"--add-reviewer"* && -e "\$stub/already" ]]; then
       echo "reviewer already requested" >&2; exit 1
+    fi
+    if [[ "\$*" == *"--add-label"* && -e "\$stub/label-fails" ]]; then
+      echo "could not add label: 'review:claude' not found" >&2; exit 1
     fi ;;
   *) echo "fake gh: unexpected \$*" >&2; exit 1 ;;
 esac
@@ -75,7 +78,7 @@ export PATH="$work/bin:$PATH"
 
 # Hooks off for the test's own git calls.
 git_q() { git -c core.hooksPath=/dev/null "$@"; }
-reset_gh() { : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; command rm -f "$stub/already" "$stub/dropped"; }
+reset_gh() { : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; command rm -f "$stub/already" "$stub/dropped" "$stub/label-fails"; }
 
 # ── The repo: a bare origin, its primary checkout on main, and a helper clone
 # that plays GitHub (squash merges, update-branch) ──────────────────────────
@@ -209,18 +212,30 @@ check "merged: Apply commit is apply.sh output alone" \
   '[[ "$(git -C "$wt" show --name-only --format= HEAD)" == .github/workflows/ci.yml ]]'
 check "merged: new PR opened" 'grep -q "^pr create" "$stub/gh.log"'
 
-# ── Copilot's request dropped: the PR is there, the run fails and says so ──
+# ── Copilot's request dropped: Claude Review is called in, and the run passes
 reset_gh
 echo 7 > "$stub/open"
 touch "$stub/dropped"
 printf 'name: CI v5\n' > "$skill/template/owned/.github/workflows/ci.yml"
 out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
-check "dropped: exits non-zero" '[[ $rc -ne 0 ]]'
-check "dropped: says Copilot wasn't requested, with the PR to request it on" \
-  'grep -q "Copilot.s review request didn.t register on #7 (GitHub drops it once the Copilot code review budget is used up); request it at https://github.com/acme/Widget/pull/7" <<< "$out"'
+check "dropped: exits 0" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
+check "dropped: adds review:claude" 'grep -qx "pr edit 7 --add-label review:claude" "$stub/gh.log"'
+check "dropped: warns that Copilot wasn't requested and Claude was called in" \
+  'grep -q "warning: Copilot.s review request didn.t register on #7 (GitHub drops it once the Copilot code review budget is used up); added review:claude, so Claude Review reviews https://github.com/acme/Widget/pull/7 instead" <<< "$out"'
 check "dropped: does not claim Copilot was requested" '! grep -q "Copilot requested" <<< "$out"'
+check "dropped: says Claude was requested" 'grep -q "Claude Review requested" <<< "$out"'
 check "dropped: the Apply commit is pushed and the PR updated" \
   '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]] && grep -q "^pr edit 7 --body-file" "$stub/gh.log"'
+
+# ── Copilot's request dropped and the label can't be added: the run fails ──
+reset_gh
+echo 7 > "$stub/open"
+touch "$stub/dropped" "$stub/label-fails"
+printf 'name: CI v6\n' > "$skill/template/owned/.github/workflows/ci.yml"
+out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
+check "label fails: exits non-zero" '[[ $rc -ne 0 ]]'
+check "label fails: says neither reviewer was requested, with the PR to request one on" \
+  'grep -q "adding review:claude to #7 failed" <<< "$out" && grep -q "https://github.com/acme/Widget/pull/7" <<< "$out"'
 
 # ── An unmerged branch with no open PR: refused ─────────────────────────────
 reset_gh

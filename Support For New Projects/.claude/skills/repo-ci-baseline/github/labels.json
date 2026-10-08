@@ -2,6 +2,7 @@
   {"name": "semver:minor", "color": "1D76DB", "description": "Release a minor version when this PR merges"},
   {"name": "semver:major", "color": "B60205", "description": "Release a major version when this PR merges"},
   {"name": "docs-only", "color": "0075CA", "description": "Changes only docs; CI skips the build and tests"},
+  {"name": "review:claude", "color": "D97757", "description": "Claude reviews each head, a backup to Copilot's review"},
   {"name": "sandcastle:needs-human", "color": "D93F0B", "description": "Sandcastle tried and couldn't; a person takes over (removal by the owner re-queues)"},
   {"name": "dependencies", "color": "0366D6", "description": "Pull requests that update a dependency"},
   {"name": "github-actions", "color": "000000", "description": "Pull requests that update GitHub Actions"}

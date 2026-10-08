@@ -552,6 +552,16 @@ def test_a_missing_secret_needs_a_person():
     assert "MANUAL      secret RELEASE_PR_PAT" in output
 
 
+def test_claude_reviews_token_is_checked_by_name():
+    missing = next(f for f in gs.check(FakeGitHub(secrets=["RELEASE_PR_PAT"]), REPO)
+                   if f.area == "secret CLAUDE_CODE_OAUTH_TOKEN")
+    present = next(f for f in gs.check(FakeGitHub(secrets=["RELEASE_PR_PAT", "CLAUDE_CODE_OAUTH_TOKEN"]), REPO)
+                   if f.area == "secret CLAUDE_CODE_OAUTH_TOKEN")
+
+    assert missing.status == gs.MANUAL
+    assert present.status == gs.OK
+
+
 # ── Scope, per-repo additions and options ───────────────────────────────────
 
 def test_a_repo_settings_only_repo_gets_just_its_merge_settings(monkeypatch, tmp_path):

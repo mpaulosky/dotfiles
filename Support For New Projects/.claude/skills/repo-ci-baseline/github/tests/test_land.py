@@ -12,6 +12,7 @@ import land  # noqa: E402
 HEAD = "1234567" + "0" * 33
 NEW = "abcdef0" + "0" * 33
 COPILOT = [("copilot-pull-request-reviewer", HEAD)]
+CLAUDE = [("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")]
 GREEN = [{"__typename": "CheckRun", "name": "Template tests", "status": "COMPLETED", "conclusion": "SUCCESS",
           "startedAt": "2026-10-07T10:00:00Z"}]
 RUNNING = [{"__typename": "CheckRun", "name": "Template tests", "status": "IN_PROGRESS", "conclusion": None,
@@ -25,7 +26,8 @@ def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=Fa
         "number": number, "title": title, "state": "OPEN", "isDraft": draft, "headRefName": branch,
         "headRefOid": head, "mergeStateStatus": merge_state,
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
-        "reviews": {"nodes": [{"author": {"login": login}, "commit": {"oid": oid}} for login, oid in reviews]},
+        "reviews": {"nodes": [{"author": {"login": review[0]}, "commit": {"oid": review[1]},
+                               "body": review[2] if len(review) > 2 else ""} for review in reviews]},
         "reviewThreads": {"nodes": [{"isResolved": resolved} for resolved in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
                                           if contexts else None}}]},
@@ -35,10 +37,11 @@ def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=Fa
 class Fake:
     """GitHub as the tests set it: open PRs per repo, final states, and a log of gh calls."""
 
-    def __init__(self, open_prs, final=None, fail=(), dropped=()):
+    def __init__(self, open_prs, final=None, fail=(), dropped=(), fail_calls=()):
         self.open = open_prs  # {repo: [node, ...]}
         self.final = final or {}  # {(repo, number): "MERGED" | "CLOSED"}
         self.fail = set(fail)  # gh subcommands that fail
+        self.fail_calls = set(fail_calls)  # whole gh calls that fail
         self.dropped = set(dropped)  # {(repo, number)} whose Copilot request GitHub drops
         self.calls = []
         self.read_back = []
@@ -54,8 +57,10 @@ class Fake:
         return self.final.get((repo, number), "OPEN")
 
     def run(self, argv):
-        self.calls.append(" ".join(argv))
-        return (argv[2] not in self.fail), ("boom" if argv[2] in self.fail else "")
+        call = " ".join(argv)
+        self.calls.append(call)
+        failed = argv[2] in self.fail or call in self.fail_calls
+        return not failed, ("boom" if failed else "")
 
     def copilot_requested(self, repo, number):
         self.read_back.append((repo, number))
@@ -93,7 +98,7 @@ def test_dotfiles_is_armed_only_once_reviewed_threadless_and_green():
     fake = Fake({"o/dots": [node(contexts=RUNNING)]})
     lander, out, _ = start(fake, {"o/dots": None})
     lander.poll()
-    assert "-> wait (no Copilot review" in printed(out) and fake.calls == []
+    assert "-> wait (no Copilot or Claude review" in printed(out) and fake.calls == []
 
     fake.open["o/dots"] = [node(reviews=COPILOT, threads=[False], contexts=RUNNING)]
     lander.poll()
@@ -123,14 +128,46 @@ def test_a_behind_branch_is_updated_and_copilot_asked_again_once_per_head():
     assert "-> update branch" in printed(out) and len(fake.calls) == 2
 
 
-def test_a_copilot_request_github_dropped_is_reported_as_failed():
+def test_a_copilot_request_github_dropped_calls_in_claude():
     fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
-    assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
-    assert ("  failed: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review "
-            "budget is used up); request it at https://github.com/o/app/pull/7"
-            in printed(out))
+    assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot",
+                          "gh pr edit 7 -R o/app --add-label review:claude"]
+    text = printed(out)
+    assert ("  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review "
+            "budget is used up); added review:claude, so Claude Review reviews it instead" in text)
+    assert "  ran: gh pr edit 7 -R o/app --add-label review:claude" in text
+    assert "  failed:" not in text
+
+
+def test_a_failed_review_claude_label_is_reported_as_failed():
+    fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)},
+                fail_calls={"gh pr edit 7 -R o/app --add-label review:claude"})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    text = printed(out)
+    assert "  failed: gh pr edit 7 -R o/app --add-label review:claude (boom)" in text
+    assert "request it at https://github.com/o/app/pull/7" in text
+
+
+def test_a_copilot_request_that_cant_be_read_back_is_reported_as_failed():
+    fake = Fake({"o/app": [node(merge_state="BEHIND")]})
+    fake.copilot_requested = lambda repo, number: (_ for _ in ()).throw(RuntimeError("HTTP 502"))
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert len(fake.calls) == 2
+    assert ("  failed: Copilot's review request couldn't be read back on #7 (HTTP 502); request it at "
+            "https://github.com/o/app/pull/7" in printed(out))
+
+
+def test_dotfiles_is_armed_on_a_claude_review_of_the_head():
+    fake = Fake({"o/dots": [node(reviews=CLAUDE, contexts=GREEN)]})
+    lander, out, _ = start(fake, {"o/dots": None})
+    lander.poll()
+    text = printed(out)
+    assert "review:claude" in text and "-> arm auto-merge (Claude reviewed the head" in text
+    assert fake.calls == [f"gh pr merge 7 -R o/dots --auto --squash --match-head-commit {HEAD}"]
 
 
 def test_a_draft_is_marked_ready_only_when_asked():

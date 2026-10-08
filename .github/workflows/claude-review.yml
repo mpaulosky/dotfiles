@@ -1,0 +1,142 @@
+---
+name: Claude Review
+
+# Claude reviews a PR as a backup to Copilot, whose review requests GitHub
+# drops without a word once the account's Copilot code review budget is used
+# up. It runs only on request: while the PR carries review:claude, which
+# reapply.sh and land.sh add when Copilot's request didn't register, and a
+# person can add at any time. It reviews every new head while the label is on.
+#
+# Claude never holds a write token. The review job checks the PR out with a
+# read-only token, gives Claude the diff against the base and read-only tools,
+# and takes its findings as structured JSON. The post job turns that JSON
+# into one review on the head commit (post_claude_review.py), with inline
+# threads like Copilot's, and a body that starts with <!-- claude-review -->:
+# PR Auto-Merge accepts that review of the head as it does Copilot's.
+#
+# Without the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`) the
+# run logs a notice and succeeds, so the workflow can be Applied before every
+# repo has the secret.
+"on":
+  pull_request:
+    types: [labeled, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  review:
+    name: Review with Claude
+    # Dependabot PRs keep their own auto-merge path and get no secrets anyway.
+    # Another label being added is no reason to review again.
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'review:claude') &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'review:claude')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Job-level, so a run skipped above can't cancel a review in progress.
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      enabled: ${{ steps.secret.outputs.enabled }}
+      findings: ${{ steps.claude.outputs.structured_output }}
+    steps:
+      - name: Check for CLAUDE_CODE_OAUTH_TOKEN
+        id: secret
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::notice::CLAUDE_CODE_OAUTH_TOKEN is not set, so Claude Review is skipped. Add it with \`claude setup-token\`."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the PR head
+        if: steps.secret.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          # The whole history, so the diff can be taken from the merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Write the PR's diff
+        if: steps.secret.outputs.enabled == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --no-color "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/pr.diff"
+
+      # Sonnet 5.5 at medium effort, with read-only tools: it reads the diff
+      # and the checked-out code, and answers in the JSON schema below.
+      - name: Review
+        id: claude
+        if: steps.secret.outputs.enabled == 'true'
+        uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515 # v1.0.245
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The job's read-only token, in place of the Claude GitHub App's.
+          github_token: ${{ github.token }}
+          prompt: |
+            You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.
+            The PR's head is checked out in the working directory. Its diff against the base
+            branch is in ${{ runner.temp }}/pr.diff; read it first, then read the surrounding
+            code as needed. Follow the repository's own conventions (AGENTS.md, CLAUDE.md,
+            docs/ and .github/instructions/ where present).
+
+            Report only real problems a maintainer would want fixed before merging: bugs,
+            security issues, broken edge cases, missing or wrong tests, and clear departures
+            from the repository's conventions. Don't report style nits, praise, or anything
+            you aren't confident about. Every finding names a file path relative to the
+            repository root and a line number on the new side of the diff, on a line the diff
+            adds or shows as context, and says what is wrong and how to fix it.
+
+            Answer with a short summary of the change and your verdict, and your findings.
+            An empty findings list is a good answer when nothing needs fixing.
+          claude_args: >-
+            --model claude-sonnet-5-5
+            --effort medium
+            --add-dir ${{ runner.temp }}
+            --allowedTools "Read,Glob,Grep"
+            --disallowedTools "Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch"
+            --json-schema '{"type": "object", "required": ["summary", "findings"], "properties": {
+            "summary": {"type": "string"},
+            "findings": {"type": "array", "items": {"type": "object", "required": ["path", "line", "body"],
+            "properties": {"path": {"type": "string"}, "line": {"type": "integer"}, "body": {"type": "string"}}}}}}'
+
+  post:
+    name: Post Claude's review
+    needs: review
+    if: needs.review.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: claude-review-post-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout the post script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      # A review posted with GITHUB_TOKEN starts no workflows, so PR Auto-Merge
+      # follows this workflow's completion instead (its workflow_run trigger).
+      - name: Post the review on the head commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINDINGS: ${{ needs.review.outputs.findings }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/post_claude_review.py --repo "$REPOSITORY" --pr "$PR_NUMBER" --head "$HEAD_SHA"

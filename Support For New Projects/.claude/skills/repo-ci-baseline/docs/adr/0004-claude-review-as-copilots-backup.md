@@ -116,7 +116,8 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 
 - **No tool is granted outright.** Read, Glob and Grep are then allowed only in the working directory and the `--add-dir` directories:
   the checkout, `$RUNNER_TEMP/claude-review` (the diff alone, not the rest of `RUNNER_TEMP`) and the runner's `_actions`.
-  Checked with Claude Code 2.1.294 in `-p` mode with the workflow's flags: reads, Greps and Globs of `/etc`, a sibling of the diff's directory and `/proc/self/environ`
+  Checked with Claude Code 2.1.293 (the version the pinned action installs) and 2.1.294 in `-p` mode with the workflow's flags:
+  reads, Greps and Globs of `/etc`, a sibling of the diff's directory and `/proc/self/environ`
   are refused, and so are `/dev/fd/../environ` and a symlink in the checkout pointing at `/proc/self/environ` or `/etc/hostname`: Claude Code resolves the path before it checks.
   With `--allowedTools "Glob,Grep"`, Grep searched outside the workspace and Glob listed `/etc`, which is why nothing is granted.
 - **`Read(//proc/**)` stays denied**, in case a later change grants a tool again.
@@ -125,5 +126,8 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 - **`post_claude_review.py` redacts** anything shaped like an Anthropic key or OAuth token, a GitHub token or a JWT in the summary, paths and bodies,
   posts the redacted review, and fails the step with an error, so a person checks the PR and rotates the token if it was exposed.
   Here a failing check is wanted: the PR shouldn't merge on its own until someone has looked.
+- **A quoted secret can't skip the post job.** GitHub withholds a job output that contains a masked secret, so a review quoting
+  the OAuth token or the job's token reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't
+  hold a secret, not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.
 - The pinned action runs on the Claude Agent SDK `^0.3.293` and passes `--allowedTools`, `--disallowedTools` and `--add-dir` through (its `parse-sdk-options.ts`).
 - Someone who can push a branch is out of scope here, as for the marker: they can change the workflow itself.

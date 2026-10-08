@@ -155,11 +155,15 @@ def test_a_file_the_diff_doesnt_touch_still_holds_the_merge():
 
 @pytest.mark.parametrize(
     "text, lines",
-    [("", 0), ("one\n", 1), ("one\ntwo", 2), ("one\x0cstill one\x85and\u2028one\n", 1), ("a\nb\n", 2)],
+    [(b"", 0), (b"one\n", 1), (b"one\ntwo", 2), ("one\x0cstill one\x85and\u2028one\n".encode(), 1), (b"a\nb\n", 2),
+     (b"caf\xe9\nna\xefve\n", 2), (b"one\rstill one\n", 1)],
 )
 def test_a_files_length_counts_newlines_only(text, lines, monkeypatch):
+    # Bytes, as gh returns them: a file that isn't UTF-8 (the Latin-1 case)
+    # still counts, and a lone \r isn't a newline.
     def fake_run(argv, **kwargs):
         assert argv[-1] == "repos/octo/demo/contents/docs/a%20b.md?ref=abc123"
+        assert "text" not in kwargs
         return subprocess.CompletedProcess(argv, 0, stdout=text)
     monkeypatch.setattr(pcr.subprocess, "run", fake_run)
 
@@ -241,4 +245,19 @@ def test_malformed_findings_fail_with_a_clear_message_and_post_nothing(findings,
 
     assert exit_info.value.code == 1
     assert "Claude Review's findings" in capsys.readouterr().err
+    assert gh.posted == []
+
+
+@pytest.mark.parametrize("findings", ["", "  \n"])
+def test_empty_findings_say_github_withheld_a_secret_and_post_nothing(findings, capsys):
+    # The post job runs only once Claude has answered, so empty findings mean
+    # GitHub dropped the output for holding a masked secret.
+    gh = FakeGitHub()
+
+    with pytest.raises(SystemExit) as exit_info:
+        pcr.main(["--repo", "octo/demo", "--pr", "7", "--head", HEAD], gh=gh, findings=findings)
+
+    assert exit_info.value.code == 1
+    out = capsys.readouterr().out
+    assert out.startswith("::error::") and "masked secret" in out and "rotate CLAUDE_CODE_OAUTH_TOKEN" in out
     assert gh.posted == []

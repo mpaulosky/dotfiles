@@ -23,7 +23,8 @@ that review is the latest of the head, up to the review cap. The step
 passes with a warning: a failed check would leave the PR UNSTABLE, which
 PR Auto-Merge never merges, so it couldn't merge past the cap either. Only
 malformed findings, a failed API call or a redacted credential fail the
-step. Anything shaped like a credential (an Anthropic, GitHub or JWT token)
+step, and so do empty findings: the post job runs only once Claude has
+answered, so empty findings mean GitHub withheld them for holding a secret. Anything shaped like a credential (an Anthropic, GitHub or JWT token)
 is replaced with [redacted] before posting, and the step then fails, so a
 person looks at what a prompt-injected diff may have tried. The body always
 starts with MARKER: the review is posted as github-actions[bot], and the
@@ -74,18 +75,18 @@ class GitHub:
     def line_count(self, path, ref):
         """How many lines the file has at ref, or None when it can't be read."""
         try:
-            text = subprocess.run(
+            data = subprocess.run(
                 ["gh", "api", "-H", "Accept: application/vnd.github.raw",
                  f"repos/{self.repository}/contents/{urllib.parse.quote(path)}?ref={ref}"],
                 check=True,
                 capture_output=True,
-                text=True,
             ).stdout
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, OSError):
             return None
         # Line numbers count newlines only, as in diff_lines(); a last line
-        # without one still counts.
-        return text.count("\n") + (0 if text.endswith("\n") or not text else 1)
+        # without one still counts. Counted in bytes, so a file that isn't
+        # UTF-8 can't fail the step, and a lone \r isn't read as a newline.
+        return data.count(b"\n") + (0 if data.endswith(b"\n") or not data else 1)
 
     def pull_files(self, number):
         output = subprocess.run(
@@ -198,6 +199,13 @@ def main(argv=None, gh=None, findings=None):
     args = parser.parse_args(argv)
 
     text = os.environ.get("FINDINGS", "") if findings is None else findings
+    if not text.strip():
+        print("post_claude_review.py: Claude Review's findings are empty, though Claude answered: GitHub withholds "
+              "a job output that contains a masked secret.", file=sys.stderr)
+        print("::error::Claude's review reached the post job empty: GitHub withheld it because it contains a masked "
+              "secret. A prompt-injected diff may have got Claude to quote CLAUDE_CODE_OAUTH_TOKEN or the job's token: "
+              "check the PR and the review job's log, and rotate CLAUDE_CODE_OAUTH_TOKEN.")
+        sys.exit(1)
     try:
         summary, parsed = parse_findings(text)
     except MalformedFindings as error:

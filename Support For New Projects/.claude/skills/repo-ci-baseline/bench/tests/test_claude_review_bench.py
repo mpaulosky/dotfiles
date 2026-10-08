@@ -178,7 +178,11 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
     step = next(s for s in jobs["review"]["steps"] if s.get("id") == "claude")
     assert step["continue-on-error"] is True
     assert step["timeout-minutes"] < jobs["review"]["timeout-minutes"]
-    assert "needs.review.outputs.findings != ''" in jobs["post"]["if"]
+    # Gated on a flag that can't hold a secret, not on findings, which GitHub
+    # empties when they quote one: the post step then fails on them.
+    assert "needs.review.outputs.reviewed == 'true'" in jobs["post"]["if"]
+    assert "findings" not in jobs["post"]["if"]
+    assert jobs["review"]["outputs"]["reviewed"] == "${{ steps.claude.outputs.structured_output != '' }}"
 
 
 # bad_lines() (#122)

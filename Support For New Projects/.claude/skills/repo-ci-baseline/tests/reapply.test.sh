@@ -42,7 +42,8 @@ reapply="$skill/reapply.sh"
 # $stub/open is the open PR's number (empty for none), $stub/merged the merged
 # PRs' head commits, $stub/body the PR description. Copilot's review request
 # reads back as registered unless $stub/dropped exists (GitHub accepts it and
-# drops it). Adding a label fails while $stub/label-fails exists.
+# drops it). While $stub/request-fails exists, the request call itself fails
+# and nothing registers. Adding a label fails while $stub/label-fails exists.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<EOF
 #!/usr/bin/env bash
@@ -58,7 +59,7 @@ case "\$1 \$2" in
   "pr create") body_from "\$@"; echo "https://github.com/acme/Widget/pull/7" ;;
   "pr view")
     if [[ "\$*" == *"--json headRefOid,reviewRequests,reviews,url"* ]]; then
-      if [[ -e "\$stub/dropped" ]]; then echo "0 https://github.com/acme/Widget/pull/7"; else echo "1 https://github.com/acme/Widget/pull/7"; fi
+      if [[ -e "\$stub/dropped" || -e "\$stub/request-fails" ]]; then echo "0 https://github.com/acme/Widget/pull/7"; else echo "1 https://github.com/acme/Widget/pull/7"; fi
     else
       cat "\$stub/body"
     fi ;;
@@ -66,6 +67,9 @@ case "\$1 \$2" in
     body_from "\$@"
     if [[ "\$*" == *"--add-reviewer"* && -e "\$stub/already" ]]; then
       echo "reviewer already requested" >&2; exit 1
+    fi
+    if [[ "\$*" == *"--add-reviewer"* && -e "\$stub/request-fails" ]]; then
+      echo "GraphQL: Could not add requested reviewers to pull request. (requestReviewsByLogin)" >&2; exit 1
     fi
     if [[ "\$*" == *"--add-label"* && -e "\$stub/label-fails" ]]; then
       echo "could not add label: 'review:claude' not found" >&2; exit 1
@@ -78,7 +82,7 @@ export PATH="$work/bin:$PATH"
 
 # Hooks off for the test's own git calls.
 git_q() { git -c core.hooksPath=/dev/null "$@"; }
-reset_gh() { : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; command rm -f "$stub/already" "$stub/dropped" "$stub/label-fails"; }
+reset_gh() { : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; command rm -f "$stub/already" "$stub/dropped" "$stub/request-fails" "$stub/label-fails"; }
 
 # ── The repo: a bare origin, its primary checkout on main, and a helper clone
 # that plays GitHub (squash merges, update-branch) ──────────────────────────
@@ -235,6 +239,28 @@ printf 'name: CI v6\n' > "$skill/template/owned/.github/workflows/ci.yml"
 out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
 check "label fails: exits non-zero" '[[ $rc -ne 0 ]]'
 check "label fails: says neither reviewer was requested, with the PR to request one on" \
+  'grep -q "adding review:claude to #7 failed" <<< "$out" && grep -q "https://github.com/acme/Widget/pull/7" <<< "$out"'
+
+# ── Copilot's request call fails outright: Claude Review is called in ───────
+reset_gh
+echo 7 > "$stub/open"
+touch "$stub/request-fails"
+printf 'name: CI v7\n' > "$skill/template/owned/.github/workflows/ci.yml"
+out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
+check "request fails: exits 0" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
+check "request fails: adds review:claude" 'grep -qx "pr edit 7 --add-label review:claude" "$stub/gh.log"'
+check "request fails: warns with gh's message" \
+  'grep -q "warning: requesting Copilot.s review on #7 failed: GraphQL: Could not add requested reviewers" <<< "$out"'
+check "request fails: says Claude was requested" 'grep -q "Claude Review requested" <<< "$out"'
+
+# ── Request fails and the label can't be added: the run fails ───────────────
+reset_gh
+echo 7 > "$stub/open"
+touch "$stub/request-fails" "$stub/label-fails"
+printf 'name: CI v8\n' > "$skill/template/owned/.github/workflows/ci.yml"
+out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
+check "request and label fail: exits non-zero" '[[ $rc -ne 0 ]]'
+check "request and label fail: names the PR to request a review on" \
   'grep -q "adding review:claude to #7 failed" <<< "$out" && grep -q "https://github.com/acme/Widget/pull/7" <<< "$out"'
 
 # ── An unmerged branch with no open PR: refused ─────────────────────────────

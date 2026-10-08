@@ -86,6 +86,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Copilot's review request is read back.** `gh pr edit --add-reviewer @copilot` exits 0 even when GitHub drops the request,
   so `reapply.sh` and `land.sh` then read the PR's review requests (and Copilot's reviews of the head).
   When Copilot isn't there they add `review:claude`, so Claude Review reviews the head instead, and warn; they fail with the PR's URL only when adding the label fails.
+  A request GitHub refuses outright (`Could not add requested reviewers`, TicketManager#141) is handled the same way: it warns with gh's message and reads back (#118).
 - **GitHub drops the request once the account's Copilot code review budget is used up.** Nothing in the API says so:
   `gh pr edit` and GraphQL `requestReviewsByLogin` return success with no request, and REST `requested_reviewers` returns 422 "not a collaborator".
   Seen on 2026-10-07 from about 20:30 UTC (#97: TicketManager#131, then every re-Apply PR of the #82 round).
@@ -138,7 +139,7 @@ land.sh mpaulosky/<repo>#<n>  # watch these PRs (or owner/repo for all its open 
 ```
 
 `land.sh` polls the PRs (default every 60 s, one GraphQL query per repo) and does what `decide()` says, once per head:
-`gh pr update-branch` then `gh pr edit --add-reviewer @copilot` (and `--add-label review:claude` when the request is dropped), `gh pr ready` only with `--ready`,
+`gh pr update-branch` then `gh pr edit --add-reviewer @copilot` (and `--add-label review:claude` when the request is dropped or refused), `gh pr ready` only with `--ready`,
 and `gh pr merge --auto --squash --match-head-commit <head>`. It has no rules of its own.
 It also watches each release-blog PR that opens in a watched repo, and after a watched Baseline PR merges it waits `--blog-wait` (15) minutes for one.
 It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),

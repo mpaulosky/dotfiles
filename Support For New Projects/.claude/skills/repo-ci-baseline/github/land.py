@@ -12,8 +12,9 @@ once per PR head:
 - mark ready:       gh pr ready (only with --ready; otherwise a draft waits)
 - update branch:    gh pr update-branch, then gh pr edit --add-reviewer @copilot,
                     read back: gh exits 0 even when GitHub drops the request;
-                    a dropped request adds review:claude (gh pr edit
-                    --add-label), so Claude Review reviews the head instead
+                    a dropped request, or one GitHub refused outright, adds
+                    review:claude (gh pr edit --add-label), so Claude Review
+                    reviews the head instead
 - arm auto-merge:   gh pr merge --auto --squash --match-head-commit <head>
 - leave to PR Auto-Merge, wait, report blocker, nothing: no call
 
@@ -206,10 +207,18 @@ class Lander:
                 self.say("  would run: " + " ".join(argv))
                 continue
             ok, message = self.run(argv)
+            if "--add-reviewer" in argv:
+                # A request GitHub refuses outright is no worse than one it
+                # drops: the read-back finds none, and Claude Review is called in.
+                if ok:
+                    self.say("  ran: " + " ".join(argv))
+                else:
+                    self.say("  warning: " + " ".join(argv) + " failed" + (f" ({message})" if message else ""))
+                if not self.reviewer_requested(repo, number):
+                    break
+                continue
             self.say(("  ran: " if ok else "  failed: ") + " ".join(argv) + (f" ({message})" if message and not ok else ""))
             if not ok:
-                break
-            if "--add-reviewer" in argv and not self.reviewer_requested(repo, number):
                 break
 
     def reviewer_requested(self, repo, number):

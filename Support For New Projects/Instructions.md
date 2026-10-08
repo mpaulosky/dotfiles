@@ -39,6 +39,11 @@ It also runs `git config core.hooksPath .github/hooks`. From here on, `pre-commi
 checkout: every later change, including filling the placeholders, is made in a worktree under
 `../[ProjectName]-worktrees/` (see the skill's `references/git-hooks.md`). Fill any placeholders the report lists.
 
+`core.hooksPath` is what turns the hooks on, in each clone. Don't set a global `init.templateDir` to install them:
+the hooks it copies into `.git/hooks/` are symlinks or copies that go stale when the Template moves (#12 left them
+dangling), a Baseline repo's `core.hooksPath` overrides them anyway, and in any other repo the pre-push hook would run a
+`scripts/gate.sh` that isn't there. To drop an old one: `git config --global --unset init.templateDir`.
+
 Push `main`, add the `RELEASE_PR_PAT` secret, then apply the GitHub settings (merge settings, ruleset, required checks,
 labels, Actions and security):
 

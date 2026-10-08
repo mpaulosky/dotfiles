@@ -29,9 +29,15 @@ def findings_json(*findings, summary="Looked at the diff."):
 
 
 class FakeGitHub:
-    def __init__(self, files=None):
+    def __init__(self, files=None, lengths=None):
         self.files = files if files is not None else [{"filename": "src/app.py", "patch": PATCH}]
+        # src/app.py runs to line 30: lines 5-20 and 23-30 are real but outside the diff.
+        self.lengths = lengths if lengths is not None else {"src/app.py": 30}
         self.posted = []
+
+    def line_count(self, path, ref):
+        assert ref == HEAD
+        return self.lengths.get(path)
 
     def pull_files(self, number):
         return self.files
@@ -110,6 +116,74 @@ def test_a_finding_off_the_diff_passes_the_step_with_a_warning(capsys):
     assert "hold the merge" in gh.posted[0][1]["body"]
     # PR Auto-Merge reads this: it's the only thing holding the merge.
     assert gh.posted[0][1]["body"].startswith(pcr.MARKER + "\n" + pcr.OFF_DIFF_MARKER + "\n")
+
+
+def test_a_line_past_the_end_of_a_changed_file_goes_on_its_nearest_diff_line(capsys):
+    # A wrong line number on changed code, not a finding about unchanged code:
+    # a thread to resolve, not a hold on the merge.
+    gh = run(findings_json(("src/app.py", 598, "Wrong number."), ("src/app.py", 0, "Zero.")))
+
+    _, review = gh.posted[0]
+    assert [(c["line"], c["side"]) for c in review["comments"]] == [(22, "RIGHT"), (1, "RIGHT")]
+    assert "cited line 598, which isn't a line of this file" in review["comments"][0]["body"]
+    assert review["comments"][0]["body"].endswith("Wrong number.")
+    assert pcr.OFF_DIFF_MARKER not in review["body"]
+    assert "::warning::" not in capsys.readouterr().out
+
+
+def test_a_real_line_outside_the_hunks_still_holds_the_merge():
+    _, review = run(findings_json(("src/app.py", 10, "Unchanged code."))).posted[0]
+
+    assert review["comments"] == []
+    assert review["body"].startswith(pcr.MARKER + "\n" + pcr.OFF_DIFF_MARKER + "\n")
+
+
+def test_an_unreadable_file_length_keeps_the_hold():
+    # Unknown length: it may be a real line, so it's treated as one.
+    gh = run(findings_json(("src/app.py", 598, "Maybe real.")), FakeGitHub(lengths={}))
+
+    assert gh.posted[0][1]["comments"] == []
+    assert pcr.OFF_DIFF_MARKER in gh.posted[0][1]["body"]
+
+
+def test_a_file_the_diff_doesnt_touch_still_holds_the_merge():
+    _, review = run(findings_json(("README.md", 999, "Not changed."))).posted[0]
+
+    assert review["comments"] == []
+    assert "`README.md:999`" in review["body"]
+
+
+TOKENS = [
+    "sk-ant-oat01-" + "a" * 40,
+    "ghp_" + "b" * 36,
+    "github_pat_" + "c" * 40,
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop",
+]
+
+
+@pytest.mark.parametrize("token", TOKENS)
+def test_a_credential_is_redacted_everywhere_and_fails_the_step(token, capsys):
+    gh = FakeGitHub()
+    findings = findings_json(("src/app.py", 2, f"The token is {token}."), (f"docs/{token}.md", 1, "Path."),
+                             summary=f"Found {token} in the environment.")
+
+    with pytest.raises(SystemExit) as exit_info:
+        pcr.main(["--repo", "octo/demo", "--pr", "7", "--head", HEAD], gh=gh, findings=findings)
+
+    assert exit_info.value.code == 1
+    _, review = gh.posted[0]
+    posted = json.dumps(review)
+    assert token not in posted
+    assert pcr.REDACTED in review["comments"][0]["body"]
+    assert "3 credential-shaped string(s) were redacted" in review["body"]
+    assert "::error::Redacted 3" in capsys.readouterr().out
+
+
+def test_ordinary_text_isnt_redacted():
+    text = "The ghp_ prefix, sk-ant- keys and a JWT header like eyJ are named here, not quoted."
+    _, review = run(findings_json(("src/app.py", 2, text))).posted[0]
+
+    assert review["comments"][0]["body"] == text
 
 
 def test_a_failed_post_fails_the_step():

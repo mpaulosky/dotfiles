@@ -64,12 +64,16 @@ function copilotReviewsOf(...commits) {
 // Claude Review's reviews (github-actions[bot] with the marker) of each given
 // commit, oldest first, with ids claude-1, claude-2, ... A { oid, merge: true }
 // entry is a merge commit; { oid, marked: false } is a github-actions[bot]
-// review without the marker.
+// review without the marker; { oid, offDiff: true } has findings outside the diff.
 function claudeReviewsOf(...commits) {
   return {
     nodes: commits.map((commit, index) => {
-      const { oid, merge, marked } = typeof commit === "string" ? { oid: commit } : commit;
-      const body = marked === false ? "Some other workflow's review." : CLAUDE_MARKER + "\nNo findings.";
+      const { oid, merge, marked, offDiff } = typeof commit === "string" ? { oid: commit } : commit;
+      const body = marked === false
+        ? "Some other workflow's review."
+        : offDiff
+          ? CLAUDE_MARKER + "\n" + OFF_DIFF_MARKER + "\n**Claude Review**"
+          : CLAUDE_MARKER + "\nNo findings.";
       return { id: `claude-${index + 1}`, body, commit: { oid, parents: { totalCount: merge ? 2 : 1 } } };
     })
   };
@@ -96,6 +100,7 @@ const COPILOT = "copilot-pull-request-reviewer";
 // GraphQL reports github-actions[bot] without the "[bot]" suffix.
 const ACTIONS = "github-actions";
 const CLAUDE_MARKER = "<!-- claude-review -->";
+const OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->";
 
 function labelled(...names) {
   return { totalCount: names.length, nodes: names.map((name) => ({ name })) };
@@ -506,4 +511,36 @@ test("follows Claude Review's runs", () => {
   const workflow = readFileSync(WORKFLOW, "utf8");
 
   assert.match(workflow, /workflows: \[[^\]]*"Claude Review"[^\]]*\]/);
+});
+
+test("waits on a Claude review of the head with findings outside the diff", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(HEAD), claudeReviews: claudeReviewsOf({ oid: HEAD, offDiff: true }) });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("findings outside the diff")), logs.join("\n"));
+});
+
+test("judges off-diff findings by the latest Claude review of the head", async () => {
+  const blocked = claudeReviewsOf(HEAD, { oid: HEAD, offDiff: true });
+  const cleared = claudeReviewsOf({ oid: HEAD, offDiff: true }, HEAD);
+
+  assert.equal((await evaluate(readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: blocked }))).merges.length, 0);
+  assert.equal((await evaluate(readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: cleared }))).merges.length, 1);
+});
+
+test("ignores off-diff findings on an older head", async () => {
+  const claude = claudeReviewsOf({ oid: "older", offDiff: true });
+  const { merges } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(HEAD), claudeReviews: claude }));
+
+  assert.equal(merges.length, 1);
+});
+
+test("merges past off-diff findings at the review cap and says so", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf({ oid: HEAD, offDiff: true }) });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
+  assert.ok(logs.some((line) => line.includes("Review cap (3) reached") && line.includes("past Claude's findings outside the diff")),
+    logs.join("\n"));
 });

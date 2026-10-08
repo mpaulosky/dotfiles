@@ -101,6 +101,9 @@ jobs:
             // Claude Review posts as github-actions[bot]; the marker tells its
             // reviews apart from anything else posted under that login.
             const CLAUDE_MARKER = "<!-- claude-review -->";
+            // The second line of a Claude review with findings outside the
+            // diff: they open no thread, so the review itself holds the merge.
+            const OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->";
 
             async function getPullRequestStatus(pullNumber) {
               const status = await github.graphql(
@@ -299,6 +302,18 @@ jobs:
                 return;
               }
 
+              // Reviews come oldest first, so the last of the head is Claude's
+              // latest word on it; a later run on the same head replaces it.
+              const latestClaudeOfHead = claudeReviews.findLast((review) => review.commit?.oid === pr.headRefOid);
+              const claudeOffDiff = Boolean(latestClaudeOfHead?.body?.split("\n")[1] === OFF_DIFF_MARKER);
+              if (claudeOffDiff && !capReached) {
+                core.info(
+                  `Waiting on PR #${pullNumber}: Claude's review of ${pr.headRefOid} has findings outside the ` +
+                  "diff, which open no thread; push a fix for a fresh review."
+                );
+                return;
+              }
+
               // CLEAN means required checks passed and the branch is up to
               // date with main. Anything else (pending or failing checks,
               // BEHIND, conflicts, or UNKNOWN while GitHub computes it) waits
@@ -314,7 +329,7 @@ jobs:
               // Log only when the cap changed the outcome: without it, this PR
               // would still be waiting on a reviewer.
               const headReviewed = reviewedCommits.has(pr.headRefOid);
-              if (capReached && (!headReviewed || unresolvedReviewers > 0)) {
+              if (capReached && (!headReviewed || unresolvedReviewers > 0 || claudeOffDiff)) {
                 const bypassed = [];
                 if (!headReviewed) {
                   bypassed.push(`without a review of ${pr.headRefOid}`);
@@ -325,6 +340,9 @@ jobs:
                 }
                 if (unresolvedClaude > 0) {
                   threads.push(`${unresolvedClaude} unresolved Claude thread(s)`);
+                }
+                if (claudeOffDiff) {
+                  threads.push("Claude's findings outside the diff");
                 }
                 if (threads.length > 0) {
                   bypassed.push(`past ${threads.join(" and ")}`);

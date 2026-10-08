@@ -22,7 +22,8 @@ import json
 import subprocess
 import sys
 
-from landing import RELEASE_BLOG_BRANCHES, Check, PrState, claude_reviews, copilot_reviews, decide, summarize_checks
+from landing import (RELEASE_BLOG_BRANCHES, Check, PrState, claude_off_diff, claude_reviews, copilot_reviews, decide,
+                     summarize_checks)
 from settings import read_repo_list
 
 QUERY = """
@@ -89,6 +90,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         head=node["headRefOid"],
         copilot_reviewed=copilot_reviews((login, oid) for login, oid, _ in reviews),
         claude_reviewed=claude_reviews(reviews),
+        claude_off_diff=claude_off_diff(reviews),
         open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),

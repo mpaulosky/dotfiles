@@ -117,13 +117,16 @@ def test_a_finding_off_the_diff_fails_the_step_after_posting(capsys):
 
     assert len(gh.posted) == 1
     assert "1 finding(s) outside the diff" in err
-    assert "holds the merge" in gh.posted[0][1]["body"]
+    assert "hold the merge" in gh.posted[0][1]["body"]
+    # PR Auto-Merge reads this, so a later skipped run that clears the check can't clear the hold.
+    assert gh.posted[0][1]["body"].startswith(pcr.MARKER + "\n" + pcr.OFF_DIFF_MARKER + "\n")
 
 
 def test_findings_on_the_diff_only_pass():
     gh = run(findings_json(("src/app.py", 2, "On.")))
 
-    assert "holds the merge" not in gh.posted[0][1]["body"]
+    assert "hold the merge" not in gh.posted[0][1]["body"]
+    assert pcr.OFF_DIFF_MARKER not in gh.posted[0][1]["body"]
 
 
 def test_no_findings_says_so():

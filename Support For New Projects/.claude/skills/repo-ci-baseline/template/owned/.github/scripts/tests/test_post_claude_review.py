@@ -477,7 +477,7 @@ def test_a_secret_in_an_extra_field_is_withheld_too(tmp_path):
     assert withheld(tmp_path, {"summary": "s", "findings": [], SECRET[20:40]: 1}, [SECRET])
 
 
-# Five of the accepted limits in repo-ci-baseline's ADR 0004, pinned so a
+# Six of the accepted limits in repo-ci-baseline's ADR 0004, pinned so a
 # change to them is deliberate. Pieces are joined by a character of the body
 # that isn't next to them in it, so no window across a join is a window of
 # the secret, whatever order the seed gives.
@@ -494,8 +494,12 @@ SEPARATED = "".join(BODY[j:j + 15] + BODY[j + 20] for j in range(0, 45, 15))
     {"summary": " ".join(str(ord(c)) for c in BODY[:20]), "findings": []},
     # A reversed quote.
     {"summary": BODY[::-1], "findings": []},
-    # Both Unicode tricks at once: a mark on each letter, pieces joined by é.
-    {"summary": "é".join("".join(c + "\u0323" for c in BODY[j:j + 15]) for j in range(0, 45, 15)), "findings": []},
+    # Both Unicode tricks at once: a mark on each letter, and pieces joined by
+    # an accented letter, built from a body character that isn't next to them.
+    {"summary": "".join("".join(c + "\u0323" for c in BODY[j:j + 15]) + BODY[j + 20] + "\u0301"
+                        for j in range(0, 45, 15)), "findings": []},
+    # Pieces joined by a fullwidth letter, which both forms map to ASCII.
+    {"summary": "".join(BODY[j:j + 15] + chr(ord(BODY[j + 20]) + 0xFEE0) for j in range(0, 45, 15)), "findings": []},
 ])
 def test_the_accepted_limits_get_through(tmp_path, answer):
     # The keys between the separate fields start "findings" and end "body";

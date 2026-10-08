@@ -149,8 +149,9 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 - **Accepted limits of the check.** It catches a quote of 16 characters in a row, after NFKC or NFKD and with everything but ASCII
   letters and digits taken out. A quote changed any other way still gets through, and each of these was raised in review
   and accepted rather than closed, since closing one leaves the next:
-  - pieces split by letters or digits, including pieces in separate fields or findings, where the text between them is the
-    other fields' (Copilot, Blazor-Server#176);
+  - pieces split by letters or digits, or by characters NFKC and NFKD map to them (fullwidth, ligatures, circled or
+    superscript: Claude Review, dotfiles #137), including pieces in separate fields or findings, where the text between
+    them is the other fields' (Copilot, Blazor-Server#176);
   - look-alikes NFKC doesn't map, such as Cyrillic or Greek letters, which are taken out and leave gaps (Claude Review,
     atelier-store#130), and a reversed quote;
   - a swap-cased quote, since the comparison doesn't fold case, and base64, hex or ROT13 of the token (Claude Review,

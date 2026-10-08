@@ -1,0 +1,87 @@
+{
+  "label": "baseline",
+  "claude_args": "--model claude-sonnet-5-5 --effort medium --add-dir ${{ runner.temp }} --allowedTools \"Read,Glob,Grep\" --disallowedTools \"Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch\" --json-schema '{\"type\": \"object\", \"required\": [\"summary\", \"findings\"], \"properties\": { \"summary\": {\"type\": \"string\"}, \"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"required\": [\"path\", \"line\", \"body\"], \"properties\": {\"path\": {\"type\": \"string\"}, \"line\": {\"type\": \"integer\"}, \"body\": {\"type\": \"string\"}}}}}}'",
+  "overrides": [
+    null,
+    null,
+    null
+  ],
+  "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/pr.diff; read it first, then read the surrounding\ncode as needed. Follow the repository's own conventions (AGENTS.md, CLAUDE.md,\ndocs/ and .github/instructions/ where present).\n\nReport only real problems a maintainer would want fixed before merging: bugs,\nsecurity issues, broken edge cases, missing or wrong tests, and clear departures\nfrom the repository's conventions. Don't report style nits, praise, or anything\nyou aren't confident about. Every finding names a file path relative to the\nrepository root and a line number on the new side of the diff, on a line the diff\nadds or shows as context, and says what is wrong and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\nAn empty findings list is a good answer when nothing needs fixing.\n",
+  "score": [
+    0,
+    7
+  ],
+  "cases": [
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "4b90c96",
+      "expect": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "review": {
+        "summary": "Adds a Claude Review workflow (read-only review job plus a post job that publishes a marker-prefixed COMMENT review on the head commit), a post_claude_review.py script with tests, and PR Auto-Merge support for counting and gating on Claude reviews under the shared 3-round cap. It also fixes release_post.py container-marker whitespace and trims the CI triggers and Playwright timeout. No blocking problems found. Verdict: approve.",
+        "findings": []
+      },
+      "seconds": 17,
+      "cost_usd": 0.18735919999999998,
+      "turns": 4,
+      "caught": {
+        "1": false,
+        "2": false,
+        "3": false,
+        "4": false,
+        "5": false
+      }
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "38b0431",
+      "expect": [
+        "2",
+        "4",
+        "5"
+      ],
+      "review": {
+        "summary": "PR #298 adds a \"Claude Review\" backup reviewer for when Copilot's review doesn't arrive. It consists of:\n- A label-gated `claude-review.yml` workflow. The review job runs with a read-only token and the post job has write access.\n- A `post_claude_review.py` script that posts the findings as one review, with inline comments for lines in the diff and the rest in the review body under an off-diff marker.\n- Changes to `pr-automerge.yml` so a marked github-actions review counts toward the review cap, its threads are tracked, and off-diff findings hold the merge.\n- A `release_post.py` change that normalizes the whitespace after quote and list markers.\n- A `ci.yml` change that drops the `ready_for_review` trigger and adds a 10-minute timeout to the Playwright install.\n\nI read the diff and checked the surrounding code, including the `reviews(author: \"...[bot]\")` convention for Copilot and `CONTAINER_MARKER` and `after_containers` in `release_post.py`. I found no defects I'm confident about. I did not run the tests. Verdict: looks good to merge.",
+        "findings": []
+      },
+      "seconds": 25,
+      "cost_usd": 0.1863896,
+      "turns": 6,
+      "caught": {
+        "2": false,
+        "4": false,
+        "5": false
+      }
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "d6d55a2",
+      "expect": [
+        "2",
+        "5"
+      ],
+      "review": {
+        "summary": "This PR adds a \"Claude Review\" backup reviewer. A read-only job runs Claude and produces structured findings. A write-scoped job then posts them as one inline COMMENT review through the new `post_claude_review.py`. Findings that fall outside the diff go in the review body under a second marker. PR Auto-Merge now counts marked `github-actions[bot]` reviews as a review round, subject to the shared review cap. It also holds on unresolved Claude threads and on off-diff findings, and it follows the \"Claude Review\" workflow's completion. The PR also adds tests, drops the `ready_for_review` trigger from `ci.yml`, adds a 10-minute timeout to the Playwright install, and changes `release_post.py` so spaces after container markers collapse to one. I found no real problems and read the diff only. I did not run the tests. The GraphQL `author:` filter follows the existing Copilot query, and the marker, cap and off-diff logic is consistent with its tests. Verdict: looks good to merge.",
+        "findings": []
+      },
+      "seconds": 16,
+      "cost_usd": 0.147544,
+      "turns": 4,
+      "caught": {
+        "2": false,
+        "5": false
+      }
+    }
+  ]
+}

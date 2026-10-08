@@ -1,0 +1,173 @@
+{
+  "about": "Claude Review's benchmark (#117): Articles#298's three reviewed commits, and the five findings Copilot made on them. Each commit expects the findings whose bug it still contains. A finding is caught when one of Claude's findings is on a file named in `paths` and mentions every word group in `match` (each group is any-of, case-insensitive). `optional` findings are welcome, not required. The `noise` set is ordinary merged PRs with no expected findings, to read for false positives against Copilot's thread count.",
+  "findings": {
+    "1": {
+      "about": "An off-diff finding's only blocker is the failed post check, and a skipped rerun (another label added) replaces it.",
+      "match": [
+        [
+          "skip"
+        ],
+        [
+          "replace",
+          "supersed",
+          "clear"
+        ],
+        [
+          "label",
+          "rerun",
+          "re-run",
+          "another run"
+        ]
+      ],
+      "fixed_in": "mpaulosky/dotfiles#111",
+      "paths": [
+        "claude-review.yml",
+        "post_claude_review.py",
+        "pr-automerge.yml"
+      ]
+    },
+    "2": {
+      "about": "The shared github-actions[bot] login and the public marker don't prove Claude wrote a review; a branch can change the post step.",
+      "match": [
+        [
+          "marker"
+        ],
+        [
+          "write token",
+          "pull-requests: write",
+          "pr-controlled",
+          "pr code",
+          "forge",
+          "spoof",
+          "authentic",
+          "impersonat",
+          "own head",
+          "any workflow"
+        ]
+      ],
+      "optional": true,
+      "fixed_in": "accepted as a known limit in ADR 0004",
+      "paths": [
+        "claude-review.yml",
+        "post_claude_review.py",
+        "pr-automerge.yml"
+      ]
+    },
+    "3": {
+      "about": "release_post.py strips only spaces after a removed HTML comment, so a tab survives and a definition-like subject renders as an empty list item.",
+      "match": [
+        [
+          "tab",
+          "\\t"
+        ]
+      ],
+      "fixed_in": "mpaulosky/dotfiles#111",
+      "paths": [
+        "release_post.py"
+      ]
+    },
+    "4": {
+      "about": "The post job exits 1 on off-diff findings; the failed check leaves the PR UNSTABLE, and PR Auto-Merge needs CLEAN even past the review cap.",
+      "match": [
+        [
+          "unstable"
+        ],
+        [
+          "cap"
+        ]
+      ],
+      "fixed_in": "mpaulosky/dotfiles#113",
+      "paths": [
+        "claude-review.yml",
+        "post_claude_review.py",
+        "pr-automerge.yml"
+      ]
+    },
+    "5": {
+      "about": "Copilot's coding agent acts as `Copilot`, without a [bot] suffix, so it passes the bot-actor guard and the pinned action refuses it.",
+      "match": [
+        [
+          "copilot"
+        ],
+        [
+          "actor"
+        ],
+        [
+          "[bot]",
+          "suffix",
+          "allowed_bots"
+        ]
+      ],
+      "fixed_in": "mpaulosky/dotfiles#114",
+      "paths": [
+        "claude-review.yml"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "4b90c96",
+      "expect": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "set": "recall"
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "38b0431",
+      "expect": [
+        "2",
+        "4",
+        "5"
+      ],
+      "set": "recall"
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "d6d55a2",
+      "expect": [
+        "2",
+        "5"
+      ],
+      "set": "recall"
+    },
+    {
+      "set": "noise",
+      "repo": "IssueTracker",
+      "pr": 197,
+      "base": "36bd6a9",
+      "head": "2ffab1d",
+      "expect": [],
+      "copilot_threads": 3
+    },
+    {
+      "set": "noise",
+      "repo": "IssueManager",
+      "pr": 249,
+      "base": "1b0020c",
+      "head": "660225d",
+      "expect": [],
+      "copilot_threads": 1
+    },
+    {
+      "set": "noise",
+      "repo": "Blazor-Server",
+      "pr": 148,
+      "base": "5de3dbc",
+      "head": "048b34e",
+      "expect": [],
+      "copilot_threads": 2
+    }
+  ]
+}

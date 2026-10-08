@@ -6,7 +6,8 @@ Every Baseline PR waits on a review of its head before PR Auto-Merge lands it.
 Copilot was the only reviewer, and when the account's Copilot code review budget is used up, GitHub drops every review request without a word (#97, #99).
 On 2026-10-07 that stranded a whole re-Apply round: nothing merged until the budget reset or a person merged past the gate.
 
-So Claude reviews as a backup: Claude Review runs Sonnet 5.5 at medium effort in CI and posts an ordinary review of the head, with inline threads, under `github-actions[bot]`.
+So Claude reviews as a backup: Claude Review runs Opus 5.5 at high effort in CI (Sonnet 5.5 at medium effort until #117; see below)
+and posts an ordinary review of the head, with inline threads, under `github-actions[bot]`.
 It runs only while a PR carries `review:claude`, which `reapply.sh` and `land.sh` add when Copilot's request didn't register, and a person can add at any time.
 PR Auto-Merge accepts a review of the head by either reviewer, holds on either's unresolved threads, and counts both reviewers' rounds toward one cap ([ADR 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 The review body starts with `<!-- claude-review -->`: that marker, not the login alone, is how the gate tells Claude's review from anything else posted as `github-actions[bot]`.
@@ -37,3 +38,40 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges, so the cap couldn't bypass the hold.
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
 - dotfiles isn't a Baseline repo, so it carries a copy of the two files, which `test.sh` keeps identical to the Template's; its "reviewed" rule is the landing decision's.
+
+## Model, effort and prompt (#117)
+
+Copilot made five findings on Articles#298's three reviewed commits. Four were real bugs that we fixed (#111, #113, #114), and one is a known limit, the marker that proves nothing.
+On the same commits, Claude Review as first shipped (Sonnet 5.5, medium effort) found nothing and approved all three.
+A PR that landed on Claude's review alone would have merged all of them.
+
+`bench/claude-review-bench.py` replays the Review step with `claude -p` against those commits and scores what it catches (`bench/claude-review-cases.json`).
+It also replays three ordinary merged PRs to read for noise. Required findings caught, out of 7 (a finding counts once for each commit that still has the bug):
+
+| Variant | Caught | Per commit |
+| --- | --- | --- |
+| Sonnet 5.5, medium, original prompt | 0 | ~20 s, ~$0.19 |
+| Sonnet 5.5, high | 1 | ~50 s, ~$0.25 |
+| Sonnet 5.5, max | 2 | ~16 min, ~$3 |
+| Sonnet 5.5, high, thorough prompt (`bench/prompts/thorough-v2.txt`) | 2 | ~2 min, ~$0.47 |
+| **Opus 5.5, high, thorough prompt** | **4** | ~4–7 min, ~$1.20 |
+
+- **Opus at high effort with the thorough prompt is what the workflow runs.**
+  - It caught findings 1, 3 and 4. It flagged the known marker limit once in the run without WebFetch, and twice in the run with it.
+  - Its findings on the benchmark commits were on the right lines, each with a fix, and several were real problems Copilot didn't raise.
+  - On the three ordinary PRs, run as deployed, it made 2, 3 and 6 findings, where Copilot opened 3, 1 and 2 threads. None were nits,
+    but two of the six on Blazor-Server#148 cited lines past the end of an 80-line file, which would hold the merge as off-diff findings (#122).
+- **The prompt was the bigger change.**
+  - The original said an empty findings list was a good answer and to leave out anything Claude wasn't confident about, and Sonnet then read little beyond the diff.
+  - The thorough prompt asks for the files around the diff, untested paths (reruns, skipped jobs, other actors, odd input) and how GitHub itself behaves.
+  - It also asks that every line number be checked against the file. An earlier draft produced impossible line numbers, and an off-diff finding holds the merge.
+- **No WebFetch.**
+  - It caught finding 5 once with an earlier prompt, but never with the thorough prompt, and Opus scored the same without it.
+  - It would also be one more way out for a prompt-injected diff. It isn't the only one: with `Read` unscoped, Claude can read the OAuth token from its own environment,
+    and the review it writes is posted publicly. Scoping `Read` and redacting the output are #121.
+- **Still missed: finding 5.** Spotting it needs the pinned action's source: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
+  #117 asked for it, so #117 stays open for it. Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
+- **The benchmark is close to the workflow, not identical.** It runs the local `claude` (2.1.293 for these runs), not the version the pinned action installs,
+  and it loads the head's project settings, where the action restores them from the PR's base.
+- **Cost:** about $1.20 a review instead of $0.19. That is acceptable, because the backup only runs while a PR carries `review:claude`.
+- Rerun the benchmark before changing the model, effort, prompt or tools, and add a case whenever Copilot finds something Claude Review missed.

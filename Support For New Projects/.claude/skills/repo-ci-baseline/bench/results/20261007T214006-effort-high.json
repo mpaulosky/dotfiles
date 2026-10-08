@@ -1,0 +1,93 @@
+{
+  "label": "effort-high",
+  "claude_args": "--model claude-sonnet-5-5 --effort medium --add-dir ${{ runner.temp }} --allowedTools \"Read,Glob,Grep\" --disallowedTools \"Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch\" --json-schema '{\"type\": \"object\", \"required\": [\"summary\", \"findings\"], \"properties\": { \"summary\": {\"type\": \"string\"}, \"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"required\": [\"path\", \"line\", \"body\"], \"properties\": {\"path\": {\"type\": \"string\"}, \"line\": {\"type\": \"integer\"}, \"body\": {\"type\": \"string\"}}}}}}'",
+  "overrides": [
+    "high",
+    null,
+    null
+  ],
+  "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/pr.diff; read it first, then read the surrounding\ncode as needed. Follow the repository's own conventions (AGENTS.md, CLAUDE.md,\ndocs/ and .github/instructions/ where present).\n\nReport only real problems a maintainer would want fixed before merging: bugs,\nsecurity issues, broken edge cases, missing or wrong tests, and clear departures\nfrom the repository's conventions. Don't report style nits, praise, or anything\nyou aren't confident about. Every finding names a file path relative to the\nrepository root and a line number on the new side of the diff, on a line the diff\nadds or shows as context, and says what is wrong and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\nAn empty findings list is a good answer when nothing needs fixing.\n",
+  "score": [
+    1,
+    7
+  ],
+  "cases": [
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "4b90c96",
+      "expect": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "review": {
+        "summary": "Adds an opt-in Claude Review workflow. The review job has a read-only token and posts nothing. A separate job runs post_claude_review.py, which posts one marker-prefixed COMMENT review on the head commit, with off-diff findings in the body and a failing check. PR Auto-Merge now accepts that review in place of Copilot's, counts both reviewers toward the review cap, and waits on unresolved Claude threads. The change also collapses whitespace after quote and list markers in release_post.py commit subjects, removes the ready_for_review trigger from ci.yml, and adds a 10-minute timeout to the Playwright install step, with tests for each. I read the diff and the surrounding code and found no defects. Verdict: approve.",
+        "findings": []
+      },
+      "seconds": 56,
+      "cost_usd": 0.2562628,
+      "turns": 13,
+      "caught": {
+        "1": false,
+        "2": false,
+        "3": false,
+        "4": false,
+        "5": false
+      }
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "38b0431",
+      "expect": [
+        "2",
+        "4",
+        "5"
+      ],
+      "review": {
+        "summary": "This PR adds Claude Review, a label-triggered backup to Copilot. It has a read-only review job and a separate job that posts the findings (`post_claude_review.py`). PR Auto-Merge now counts Claude's marked reviews and threads next to Copilot's, and holds the merge on a second \"off-diff\" marker. The PR also bundles a `release_post.py` blockquote/list-marker normalisation and two small `ci.yml` tweaks. Most of it looks sound, and the new Python and JS tests cover the marker, cap and off-diff paths well. One design flaw defeats the review-cap bypass for off-diff findings, so I'd fix that before merging.",
+        "findings": [
+          {
+            "path": ".github/workflows/pr-automerge.yml",
+            "line": 309,
+            "body": "The cap bypass for off-diff findings can't take effect in practice. When a Claude review has findings outside the diff, `post_claude_review.py` posts the review and then exits 1. That fails the \"Post Claude's review\" check, and `claude-review.yml` itself notes that a failing check leaves the PR UNSTABLE, which auto-merge never merges. So at the cap (`capReached`) the `claudeOffDiff && !capReached` guard lets the PR through, but the `mergeStateStatus !== \"CLEAN\"` check just below stops it. The log line \"merging ... past Claude's findings outside the diff\" is never reached for that case. The new test \"merges past off-diff findings at the review cap\" fakes CLEAN, so it hides this. After the cap, every push gets another Claude review, and any off-diff finding in it fails the check again, so the PR can stay stuck. Fix by making the post step not fail once the cap would apply, which means giving the script the round count. Alternatively, drop the failing exit and rely on the OFF_DIFF_MARKER hold alone, since the marker already blocks below the cap. Or document that off-diff findings are never bypassed and remove the cap exception and its test."
+          }
+        ]
+      },
+      "seconds": 46,
+      "cost_usd": 0.23177140000000002,
+      "turns": 7,
+      "caught": {
+        "2": false,
+        "4": true,
+        "5": false
+      }
+    },
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "d6d55a2",
+      "expect": [
+        "2",
+        "5"
+      ],
+      "review": {
+        "summary": "The PR adds a \"Claude Review\" backup reviewer, which runs only while a PR carries the `review:claude` label. A read-only job has Claude review the diff and return structured JSON. A separate write-token job (`post_claude_review.py`) posts that JSON as one inline review on the head commit. Findings on lines outside the diff go in the review body under a second marker. PR Auto-Merge now accepts a marked github-actions[bot] review of the head in place of Copilot's. It counts Claude's rounds toward the shared review cap, treats Claude's threads as non-blocking at the cap, and holds on off-diff findings until the next push or the cap. The PR also bundles a `render_commits` whitespace normalization in `release_post.py`, drops `ready_for_review` from the `ci.yml` triggers, and adds a 10-minute timeout on the Playwright install. I read the diff and the surrounding `pr-automerge.yml`, `ci.yml` and `release_post.py` code. I did not run the tests or the workflows. I found no defects in the new logic, thread attribution, cap counting, or the diff-line mapping. The `release_post.py` change also holds up, since `CONTAINER_MARKER` already accepts leading whitespace. `ci.yml` has no draft-skipping condition, so dropping `ready_for_review` is safe. Verdict: ready to merge.",
+        "findings": []
+      },
+      "seconds": 56,
+      "cost_usd": 0.2633346,
+      "turns": 9,
+      "caught": {
+        "2": false,
+        "5": false
+      }
+    }
+  ]
+}

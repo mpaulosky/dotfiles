@@ -89,8 +89,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: git diff --no-color "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/pr.diff"
 
-      # Sonnet 5.5 at medium effort, with read-only tools: it reads the diff
-      # and the checked-out code, and answers in the JSON schema below.
+      # Opus 5.5 at high effort, with read-only tools: it reads the diff and
+      # the checked-out code, and answers in the JSON schema below. The prompt
+      # and model were chosen on the skill's benchmark (bench/ in the
+      # repo-ci-baseline skill, #117): Sonnet at medium effort caught none of
+      # the findings Copilot made on the same commits. No WebFetch: with an
+      # unscoped Read it would give a prompt-injected diff a way to send out
+      # what Claude can read.
       - name: Review
         id: claude
         if: steps.secret.outputs.enabled == 'true'
@@ -102,22 +107,37 @@ jobs:
           prompt: |
             You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.
             The PR's head is checked out in the working directory. Its diff against the base
-            branch is in ${{ runner.temp }}/pr.diff; read it first, then read the surrounding
-            code as needed. Follow the repository's own conventions (AGENTS.md, CLAUDE.md,
-            docs/ and .github/instructions/ where present).
+            branch is in ${{ runner.temp }}/pr.diff; read it first. Then read every file the diff
+            touches in full, and the unchanged code it calls or is called by: a bug often lies in
+            how the change interacts with code it doesn't touch. Follow the repository's own
+            conventions (AGENTS.md, CLAUDE.md, docs/ and .github/instructions/ where present).
 
-            Report only real problems a maintainer would want fixed before merging: bugs,
-            security issues, broken edge cases, missing or wrong tests, and clear departures
-            from the repository's conventions. Don't report style nits, praise, or anything
-            you aren't confident about. Every finding names a file path relative to the
-            repository root and a line number on the new side of the diff, on a line the diff
-            adds or shows as context, and says what is wrong and how to fix it.
+            Your review may be the only one this PR gets before it merges on its own, so be
+            thorough. For each change, ask what happens on the paths the author didn't test:
+            another event or trigger, a rerun, a skipped or cancelled job, a different actor
+            (a bot, an app, a person without write access), an empty, malformed or unusual
+            input (whitespace, tabs, Unicode, markup), a race between two runs. For GitHub
+            Actions workflows and merge gates, reason about how GitHub itself behaves: which
+            events fire, what a skipped or failed check does to a PR's mergeStateStatus, who
+            the actor is, what each token can do. Where the behaviour of a pinned action or of
+            GitHub decides the answer, read its source or documentation rather than guess.
+            Look hardest at code that decides whether something merges, releases or gets
+            permissions, and at text processing that turns input into rendered output.
+
+            Report every real problem a maintainer would want fixed or knowingly accepted
+            before merging: bugs, security issues, broken edge cases, missing or wrong tests,
+            and clear departures from the repository's conventions. Don't report style nits,
+            praise, or the PR's scope (what it bundles together is the author's call).
+
+            Every finding names a file path relative to the repository root and a line number
+            on the new side of that file. Before you report a line, read it in the checked-out
+            file and make sure it is the line the finding is about; prefer a line the diff
+            adds or shows as context. Say what goes wrong, in which situation, and how to fix it.
 
             Answer with a short summary of the change and your verdict, and your findings.
-            An empty findings list is a good answer when nothing needs fixing.
           claude_args: >-
-            --model claude-sonnet-5-5
-            --effort medium
+            --model claude-opus-5-5
+            --effort high
             --add-dir ${{ runner.temp }}
             --allowedTools "Read,Glob,Grep"
             --disallowedTools "Bash,Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch"

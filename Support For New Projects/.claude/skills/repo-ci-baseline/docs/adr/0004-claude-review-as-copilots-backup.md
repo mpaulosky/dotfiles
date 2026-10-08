@@ -26,5 +26,11 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
 - A repo without `CLAUDE_CODE_OAUTH_TOKEN` skips Claude Review with a notice, so the workflow is Applied before every secret is added; `github-settings.sh` reports the missing secret as MANUAL.
 - A review posted with `GITHUB_TOKEN` starts no workflows, so PR Auto-Merge follows Claude Review's completion through `workflow_run`.
 - Claude Review runs on `pull_request`, so it reviews with the PR's own copy of the workflow: the PR that brings it in lands on the old gate, and the next round is the first to land on Claude's review.
+- The marker proves a review came through `github-actions[bot]`, not that Claude wrote it.
+  Claude Review runs on `pull_request`, so a branch could change the post step and post a marked review of its own.
+  Running the post from `main`'s code wouldn't close that: a branch can add any workflow that asks for `pull-requests: write`,
+  and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
+  The merge gate has never guarded against someone who can push a branch; it guards against merging before a review.
+  These repos take no fork PRs, and a fork's run gets no secrets and a read-only token, so it can't post.
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
 - dotfiles isn't a Baseline repo, so it carries a copy of the two files, which `test.sh` keeps identical to the Template's; its "reviewed" rule is the landing decision's.

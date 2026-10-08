@@ -86,6 +86,10 @@ class Repo:
         return done.returncode, outputs.get("skip"), done.stdout
 
 
+# Enough of pr-automerge.yml for the check to see that it honours the skip.
+PR_AUTO_MERGE = "name: PR Auto-Merge\n# async function reviewCovering(sha, reviewedCommits, base, depth = 0) {\n"
+
+
 @pytest.fixture
 def repo(tmp_path):
     """main: base (with PR Auto-Merge), then main1 changing lib. The PR branch: rev changing app, checked out."""
@@ -93,7 +97,7 @@ def repo(tmp_path):
     path.mkdir()
     repo = Repo(path)
     repo.base = repo.commit({"app": "app 0\n", "lib": "lib 0\n", "shared": "one\ntwo\nthree\nfour\nfive\n",
-                             ".github/workflows/pr-automerge.yml": "name: PR Auto-Merge\n"}, "base")
+                             ".github/workflows/pr-automerge.yml": PR_AUTO_MERGE}, "base")
     repo.git("checkout", "-q", "-b", "feature")
     repo.rev = repo.commit({"app": "app 1\n"}, "rev")
     repo.git("checkout", "-q", "main")
@@ -199,3 +203,12 @@ def test_reviews_a_clean_merge_where_main_has_no_pr_auto_merge(repo, tmp_path):
     head = repo.merge("main")
     assert repo.check(head, [repo.rev], tmp_path)[:2] == (0, "false")
     assert repo.check(repo.rev, [repo.rev], tmp_path)[:2] == (0, "false")
+
+
+def test_reviews_a_clean_merge_where_mains_pr_auto_merge_predates_the_rule(repo, tmp_path):
+    # The re-Apply PR that brings the rule: main's PR Auto-Merge still wants a review of the exact head.
+    repo.git("checkout", "-q", "main")
+    repo.commit({".github/workflows/pr-automerge.yml": "name: PR Auto-Merge\n"}, "old PR Auto-Merge")
+    repo.git("checkout", "-q", "feature")
+    head = repo.merge("main")
+    assert repo.check(head, [repo.rev], tmp_path)[:2] == (0, "false")

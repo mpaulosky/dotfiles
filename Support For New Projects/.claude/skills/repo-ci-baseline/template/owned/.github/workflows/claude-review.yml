@@ -46,8 +46,9 @@ name: Claude Review
 # on top of it, and brings ready PRs up to date that way itself, so a review
 # of each merge would spend Claude's usage on code main already has. The
 # merge-from-main job decides, by PR Auto-Merge's rule, and reviews whenever
-# it can't tell, or when the base has no pr-automerge.yml to honour the skip
-# (dotfiles, which carries a copy of this file). It runs from the PR like the
+# it can't tell, or when the base's pr-automerge.yml doesn't honour the skip
+# (dotfiles, which carries a copy of this file and has none, and the re-Apply
+# PR that brings this to a repo, whose main still has the old one). It runs from the PR like the
 # rest of this workflow, so a push that changes it can skip its own review;
 # PR Auto-Merge, which runs from main, still waits for a review that covers
 # the head. The same job skips a run whose head is no longer the PR's: the
@@ -185,10 +186,12 @@ jobs:
           main = "refs/remotes/origin/" + os.environ["BASE_REF"]
           head = commit = os.environ["HEAD_SHA"]
           skip = False
-          # Only PR Auto-Merge counts a review for a merge from main; without it
-          # on the base (dotfiles), the merge needs a review of its own.
-          honoured = subprocess.run(["git", "cat-file", "-e", main + ":.github/workflows/pr-automerge.yml"],
-                                    capture_output=True).returncode == 0
+          # Only PR Auto-Merge counts a review for a merge from main, and only
+          # since it has reviewCovering: without that on the base (dotfiles, or
+          # the re-Apply PR that brings it), the merge needs a review of its own.
+          base_workflow = subprocess.run(["git", "show", main + ":.github/workflows/pr-automerge.yml"],
+                                         capture_output=True, text=True)
+          honoured = base_workflow.returncode == 0 and "async function reviewCovering(" in base_workflow.stdout
           for _ in range(MERGE_CHAIN_LIMIT + 1 if honoured else 0):
               if commit in reviewed:
                   skip = True

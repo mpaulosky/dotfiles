@@ -53,7 +53,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A file both sides changed, a rename across them or any other change needs a fresh review. Claude's off-diff hold on the covered commit still holds.
   Claude Review's `merge-from-main` job skips the review of such a head on `synchronize` by the same rule (with `git ls-tree` on its checkout),
   in a job of its own so a skipped run can't cancel a review in progress; the two copies must agree.
-  It reviews anyway when the base has no `pr-automerge.yml` (dotfiles' copy), and skips a run whose head is no longer the PR's.
+  It reviews anyway when the base's `pr-automerge.yml` lacks the rule (dotfiles has none; a re-Apply PR's `main` has the old one),
+  and skips a run whose head is no longer the PR's.
 - **Bringing a ready PR up to date.** A PR that passes every check above but is `BEHIND` (and `MERGEABLE`, every required check's newest run passed)
   gets `pulls.updateBranch` with `expected_head_sha: headRefOid`, made with `RELEASE_PR_PAT`, since a `GITHUB_TOKEN` push starts no CI.
   A PR with native auto-merge armed (release-blog and Dependabot PRs) is updated once its required checks pass, with no review.

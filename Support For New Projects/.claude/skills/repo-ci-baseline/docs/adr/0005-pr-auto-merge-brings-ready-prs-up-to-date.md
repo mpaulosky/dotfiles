@@ -39,8 +39,8 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
   This was already the cap's view: merges from `main` aren't review rounds ([ADR 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 - **Claude Review skips such a head** on `synchronize`, by the same rule, in a job of its own before the review job,
   so a skipped run doesn't join the review's concurrency group and cancel a review in progress. It reviews whenever it can't tell,
-  and whenever the base has no `pr-automerge.yml` to honour the skip (dotfiles carries a copy of `claude-review.yml` and lands PRs with `land.sh`,
-  whose decision wants a review of the exact head). The same job skips a run whose head is no longer the PR's,
+  and whenever the base's `pr-automerge.yml` doesn't honour the skip: dotfiles has none (it carries a copy of `claude-review.yml` and lands PRs with `land.sh`,
+  whose decision wants a review of the exact head), and the re-Apply PR that brings this change still has the old one on `main`. The same job skips a run whose head is no longer the PR's,
   since the check job's varying length could otherwise let a stale review join the concurrency group last and cancel the newer one.
 - **`land.sh`** keeps updating `BEHIND` PRs (it also covers repos without the PAT) and keeps requesting Copilot after an update:
   Copilot reviews every push anyway (`review_on_push`), and the request's read-back is what calls in Claude (`review:claude`) when Copilot's budget is spent,

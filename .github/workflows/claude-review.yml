@@ -232,7 +232,8 @@ jobs:
       # fields or findings; look-alikes
       # NFKC doesn't map (Cyrillic, Greek); a mix of Unicode tricks, such as
       # accented letters at some joins and combining marks at others, or a
-      # mark on each letter; a reversed or swap-cased quote;
+      # mark on each letter with accented letters between pieces; a reversed
+      # or swap-cased quote;
       # base64, hex or ROT13; character codes written as digits, or packed
       # into a line.
       #

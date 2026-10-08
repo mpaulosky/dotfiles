@@ -209,7 +209,7 @@ jobs:
             --json-schema '{"type": "object", "required": ["summary", "findings"], "additionalProperties": false, "properties": {
             "summary": {"type": "string"},
             "findings": {"type": "array", "items": {"type": "object", "required": ["path", "line", "body"], "additionalProperties": false,
-            "properties": {"path": {"type": "string"}, "line": {"type": "integer"}, "body": {"type": "string"}}}}}}'
+            "properties": {"path": {"type": "string"}, "line": {"type": "integer", "minimum": 0, "maximum": 1000000}, "body": {"type": "string"}}}}}}'
 
       # Before the answer becomes a job output, whose value the post job's log
       # prints: dropped when it holds 16 characters in a row of the secret
@@ -310,8 +310,10 @@ jobs:
                   return "findings is not a list"
               for index, finding in enumerate(answer["findings"]):
                   if not (isinstance(finding, dict) and isinstance(finding.get("path"), str)
-                          and type(finding.get("line")) is int and isinstance(finding.get("body"), str)):
-                      return f"finding {index} needs a string path, an integer line and a string body"
+                          and type(finding.get("line")) is int and 0 <= finding["line"] <= 1_000_000
+                          and isinstance(finding.get("body"), str)):
+                      # Bounded, so no single line can carry a token as one big number.
+                      return f"finding {index} needs a string path, an integer line up to 1000000 and a string body"
               return None
 
 

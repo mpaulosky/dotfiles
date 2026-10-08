@@ -399,6 +399,8 @@ def test_only_the_schemas_fields_are_passed_on(tmp_path):
     {"findings": []},
     {"summary": "s", "findings": [{"path": "a.py", "body": "no line"}]},
     {"summary": "s", "findings": [{"path": "a.py", "line": True, "body": "b"}]},
+    {"summary": "s", "findings": [{"path": "a.py", "line": int.from_bytes(SECRET.encode(), "big"), "body": "b"}]},
+    {"summary": "s", "findings": [{"path": "a.py", "line": -1, "body": "b"}]},
     {"summary": "s", "findings": [[115, 107, 45]]},
     {"summary": "s", "findings": [{"path": "a", "line": [115, 107], "body": "b"}]},
     {"summary": {TOKENS[1]: [115, 107]}, "findings": []},

@@ -141,9 +141,10 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   body, and the schema sets `additionalProperties: false`, so an extra field, never posted but printed by the post job's log,
   is gone (Claude Review, IssueManager#274). An answer of the wrong shape, judged as `parse_findings` judges it, becomes a fixed
   placeholder holding none of it, so nothing the check didn't compare reaches the log, and `post_claude_review.py` still
-  rejects it rather than posting "No findings". Each finding's `line`, read as a character code, is checked with the strings.
-  An encoding the check doesn't compare, such as character codes written as digits in the summary or a body, still gets
-  through: an accepted limit, like pieces split by letters or digits. The check is a backstop; Claude's read restrictions
+  rejects it rather than posting "No findings". Each finding's `line` must be 0 to 1000000, so no single line
+  carries a token as one big number, and is checked, read as a character code, with the strings. An encoding the check
+  doesn't compare, such as character codes written as digits in the summary or a body, or packed several to a line, still
+  gets through: an accepted limit, like pieces split by letters or digits. The check is a backstop; Claude's read restrictions
   above, which keep it from reading the token, are the defence.
 - **No answer in the execution file fails the review job.** The check step runs only when Claude answered, so an empty or
   unreadable execution file is its own error, not a quoted secret, and the post job doesn't run.

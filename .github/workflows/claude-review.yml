@@ -216,8 +216,8 @@ jobs:
       # part of either secret (a token's body after its public prefix, or a
       # JWT's signature), compared as ASCII letters and digits after NFKC and
       # after NFKD, so a sample token never trips it, while a quote that
-      # differs only in separators that neither form maps to ASCII letters or
-      # digits (accented letters and combining marks included), or in
+      # differs only in separators that NFKC or NFKD drops (accented letters
+      # and combining marks included), or in
       # look-alikes NFKC maps, which GitHub's masking would let through, still
       # does. Then only the schema's fields are passed on, with
       # credential-shaped text redacted. It reads the answer from the

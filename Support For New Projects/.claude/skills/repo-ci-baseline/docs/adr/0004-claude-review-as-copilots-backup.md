@@ -61,9 +61,10 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 | Sonnet 5.5, max | 2 | ~16 min, ~$3 |
 | Sonnet 5.5, high, thorough prompt v2 (`bench/prompts/thorough-v2.txt`), with WebFetch | 2 | ~2 min, ~$0.47 |
 | Opus 5.5, high, thorough prompt v2 | 4 | ~4–7 min, ~$1.20 |
-| **Opus 5.5, high, thorough prompt v3 (`thorough-v3.txt`, one sentence edited since)** | **3** | ~4 min, ~$1.34 |
+| Opus 5.5, high, thorough prompt v3 (`thorough-v3.txt`, one sentence edited since) | 3 | ~4 min, ~$1.34 |
+| **Opus 5.5, high, the workflow's prompt, reads scoped, pinned actions' source readable (#121, #117)** | **4** | ~4–5 min, ~$1.68 |
 
-- **Opus at high effort with the thorough prompt (v3) is what the workflow runs.**
+- **Opus at high effort with the thorough prompt (v3, edited as below) is what the workflow runs.**
   - With v2 it caught findings 1, 3 and 4, in two runs. With v3 it caught 3 and 4, and missed finding 1 in that one run.
     A point either way is within what one run varies by. It flagged the known marker limit once in the run without WebFetch, and on all three commits in the run with it.
   - Its findings on the benchmark commits were on the right lines, each with a fix, and several were real problems Copilot didn't raise.
@@ -72,8 +73,11 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   - v3 differs from v2 only in where a finding goes: on a line the diff adds or shows, with a problem in unchanged code put on the changed line that depends on it,
     because any other line holds the merge. On the ordinary PRs it made 2, 2 and 4 findings, all on real lines, and on Articles#298 every finding was on a changed line.
     It flagged the known marker limit on all three commits.
-- After the benchmark, one sentence of v3 changed: it had asked Claude to read a pinned action's source or GitHub's documentation, which it has no way to do.
-  It now asks Claude to say what it's relying on when that decides a finding. Pointing it at the action's source on the runner, for finding 5, is #117.
+- After the benchmark, one sentence of v3 changed: it had asked Claude to read a pinned action's source or GitHub's documentation, which it had no way to do.
+  Now the runner's `_actions` (the source of the actions the review job pins) is an `--add-dir`, and the prompt points Claude at it;
+  for anything else it says what it's relying on. The benchmark copies the case head's pinned actions into the same layout.
+  In that run (`v4-scoped-actions`) Claude caught finding 5 for the first time, from the action's `checkHumanActor`, along with 3 and 4 and the marker limit;
+  it missed finding 1, which the v2 runs caught. The same run is the check that scoping reads (#121) cost nothing.
 - **The review job's `timeout-minutes` is 30**, and the Review step's 25. Opus took up to about 7 minutes on these diffs; a step that times out now warns instead of failing the check (#123).
   `review:claude` goes mostly on re-Apply PRs, which carry only the Owned files that changed: 2 to 8 files and under 800 lines in the #116 and #82 rounds,
   the largest being Articles#298, the benchmark's own case.
@@ -82,12 +86,13 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   - The thorough prompt asks for the files around the diff, untested paths (reruns, skipped jobs, other actors, odd input) and how GitHub itself behaves.
   - It also asks that every line number be checked against the file. An earlier draft produced impossible line numbers, and an off-diff finding holds the merge.
 - **No WebFetch.**
-  - No run caught finding 5 with it or without it, and Opus scored the same without it.
+  - No run caught finding 5 with it, and Opus scored the same without it.
   - It would also be one more way out for a prompt-injected diff. See [Keeping the token out of the review](#keeping-the-token-out-of-the-review-121) for the others.
-- **Still missed: finding 5.** Spotting it needs the pinned action's source: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
-  #117 asked for it, so #117 stays open for it. Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
+- **Finding 5 needed the pinned action's source**: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
+  Only an action this review job itself runs is on the runner, so a finding about another workflow's pinned action still rests on what Claude says it's relying on.
+  Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
-  Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 runs); the earlier files predate that, and the CLI updated during these runs.
+  Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 and v4 runs); the earlier files predate that, and the CLI updated during these runs.
 - **Cost:** about $1.20 a review instead of $0.19 at API prices. That is acceptable, because the backup only runs while a PR carries `review:claude`.
   In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's Opus allowance, and the plan has to include Opus in Claude Code.
   A run refused at the usage limit posts nothing and warns, and the PR waits for Copilot's review or a rerun after the reset (#123).

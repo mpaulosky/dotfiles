@@ -25,8 +25,9 @@ any gate you did not actually run as not run.
    `git diff` and `git diff --staged`.
 2. **Get onto a working branch.** When the repo has
    `scripts/check-branch-name.sh`, it is the branch standard: run
-   `scripts/check-branch-name.sh <branch>` on the current branch and on any
-   name you pick, and use a name only once it exits 0. Otherwise learn the
+   `bash scripts/check-branch-name.sh <branch>` from the repo root, as its
+   hook and CI do, on the current branch and on any name you pick, and use a
+   name only once it exits 0. Otherwise learn the
    standard from the repo's `CONTRIBUTING.md`, `CLAUDE.md`/`AGENTS.md` and
    existing branches; absent any, treat the default branch as protected and
    use `chore/<slug>`. Stay put when the branch already follows the standard
@@ -124,12 +125,21 @@ any gate you did not actually run as not run.
    and every uncommitted file left behind with why. Say plainly that the
    commit is local, unpushed and has no PR, and give the commands that would
    push it and open the PR (title in the commit format; the repo's
-   `docs/PROCESS.md` when present). Offer to run them; the pre-push hook
-   refuses a branch behind `origin/main`, so merge `origin/main` first when
-   it is.
+   `docs/PROCESS.md` when present), and offer to run them. Where the
+   repo's pre-push hook refuses a branch behind its default branch (the
+   Baseline's does), `git fetch origin <default branch>` first and merge it
+   when the branch is behind.
 
-   Close with any **prune candidates** from `git worktree list`: a linked
-   worktree whose branch is gone from the remote and whose PR merged
-   (`gh pr list --head <branch> --state merged`), with its
+   Close with any **prune candidates**: a linked worktree from
+   `git worktree list` that passes every test below, with its
    `git worktree remove <path>` and `git branch -D <branch>` commands. List
-   them; removing one is the user's call.
+   them; removing one is the user's call, and `-D` deletes unmerged commits,
+   so the tests must hold:
+   - `git ls-remote --heads origin <branch>` prints nothing (the branch is
+     gone from the remote, whatever a stale remote-tracking ref says);
+   - `gh pr list --head <branch> --state merged --json
+     headRefOid,headRepositoryOwner` has a PR from this repo whose
+     `headRefOid` equals `git rev-parse <branch>` (a merged PR with the same
+     name but an older head leaves newer commits unmerged);
+   - `git -C <path> status --porcelain` prints nothing;
+   - it is neither the worktree this run created nor the one it runs in.

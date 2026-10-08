@@ -80,6 +80,17 @@ CREDENTIAL = re.compile(
 REDACTED = "[redacted]"
 # How much of a secret, in a row, counts as quoting it.
 LEAK_WINDOW = 16
+# The part of a secret that is secret: an Anthropic key's or GitHub token's
+# body after its public prefix, or a JWT's signature (its header and claims
+# are shared by every token of a kind, so quoting them leaks nothing). A
+# stored secret may hold more than the token, such as a NAME= in front, and
+# Claude names CLAUDE_CODE_OAUTH_TOKEN in any review of this workflow.
+SECRET_PART = re.compile(
+    r"sk-ant-(?:[a-z]+[0-9]+-)?([A-Za-z0-9_-]{20,})"
+    r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)"
+    r"|gh[pousr]_([A-Za-z0-9]{36,})"
+    r"|github_pat_([A-Za-z0-9_]{82})"
+)
 
 
 class MalformedFindings(ValueError):
@@ -180,13 +191,43 @@ def structured_output(path):
     return ""
 
 
+def secret_parts(secret):
+    """The secret parts of the tokens in secret, or the whole of it, stripped, when it holds none."""
+    parts = [part for match in SECRET_PART.finditer(secret) for part in match.groups() if part]
+    return parts or [secret.strip()]
+
+
+def letters_and_digits(text):
+    """Text with all but its letters and digits taken out."""
+    return re.sub(r"[^A-Za-z0-9]", "", text)
+
+
 def quotes_a_secret(text, secrets):
-    """Whether text holds LEAK_WINDOW characters in a row of any of the secrets."""
+    """Whether text holds LEAK_WINDOW characters in a row of the secret part of any of the secrets.
+
+    Compared as letters and digits only, so a secret quoted in short pieces
+    split by backticks, newlines or dashes is still caught.
+    """
+    text = letters_and_digits(text)
     for secret in secrets:
-        for start in range(len(secret) - LEAK_WINDOW + 1):
-            if secret[start:start + LEAK_WINDOW] in text:
-                return True
+        for part in map(letters_and_digits, secret_parts(secret)):
+            for start in range(len(part) - LEAK_WINDOW + 1):
+                if part[start:start + LEAK_WINDOW] in text:
+                    return True
     return False
+
+
+def strings_in(value):
+    """Every string in a JSON value, keys included."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings_in(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from strings_in(item)
 
 
 def redact_all(value):
@@ -197,8 +238,10 @@ def redact_all(value):
         pairs = [redact_all(item) for item in value]
         return [item for item, _ in pairs], sum(n for _, n in pairs)
     if isinstance(value, dict):
-        pairs = {key: redact_all(item) for key, item in value.items()}
-        return {key: item for key, (item, _) in pairs.items()}, sum(n for _, n in pairs.values())
+        # Keys too: the schema allows extra properties, and the job output
+        # holds the whole answer.
+        pairs = [(redact_all(key), redact_all(item)) for key, item in value.items()]
+        return {key: item for (key, _), (item, _) in pairs}, sum(m + n for (_, m), (_, n) in pairs)
     return value, 0
 
 
@@ -207,9 +250,12 @@ def check_answer(path, secrets):
     text = structured_output(path)
     if not text:
         return "", 0, False
-    if quotes_a_secret(text, [secret for secret in secrets if secret]):
+    answer = json.loads(text)
+    # The answer's strings as Claude wrote them, not JSON-escaped, so a \n
+    # between pieces of a secret is a separator, not an n.
+    if quotes_a_secret("\n".join(strings_in(answer)), [secret for secret in secrets if secret]):
         return "", 0, True
-    answer, redacted = redact_all(json.loads(text))
+    answer, redacted = redact_all(answer)
     return json.dumps(answer), redacted, False
 
 
@@ -231,6 +277,13 @@ def check_answer_main(path):
         print("::error::Claude's answer quotes CLAUDE_CODE_OAUTH_TOKEN or the job's GITHUB_TOKEN, so it is withheld "
               "and the post job fails. A prompt-injected diff may have tried to leak it: check the PR, and rotate "
               "CLAUDE_CODE_OAUTH_TOKEN (the job's token expires with the job).")
+    elif not findings:
+        # This step runs only when Claude answered, so the file is unreadable
+        # or laid out differently, not a leak: fail here, so the post job,
+        # whose error is about a quoted secret, doesn't run.
+        print(f"::error::Claude answered, but its answer isn't in the action's execution file ({path or 'not set'}), "
+              "so there's nothing to post. A later action pin may have changed the file's layout.")
+        sys.exit(1)
     elif redacted:
         print(f"Redacted {redacted} credential-shaped string(s) from Claude's answer.")
 
@@ -287,7 +340,7 @@ def main(argv=None, gh=None, findings=None):
     parser.add_argument("--pr", type=int, help="the PR to review")
     parser.add_argument("--head", help="the head commit Claude reviewed")
     args = parser.parse_args(argv)
-    if args.check_answer:
+    if args.check_answer is not None:
         return check_answer_main(args.check_answer)
     if not (args.repo and args.pr and args.head):
         parser.error("--repo, --pr and --head are required to post")

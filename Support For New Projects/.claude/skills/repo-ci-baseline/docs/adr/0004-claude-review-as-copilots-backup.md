@@ -129,9 +129,20 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 - **`--setting-sources user`.** The action already replaces the PR's `.claude/` and `.mcp.json` with the base's;
   this also keeps the base's project settings from granting `Read` again. The runner's user level has no settings.
 - **An answer that quotes a secret is withheld, exactly.** A step in the review job (`post_claude_review.py --check-answer`) reads
-  Claude's answer from the action's execution file and drops it when it holds 16 characters in a row of `CLAUDE_CODE_OAUTH_TOKEN`
-  or the job's `GITHUB_TOKEN`, passed to it as masked secrets. That catches a near-miss quote GitHub's masking would let through,
-  and never fires on a sample token from the PR.
+  Claude's answer from the action's execution file and drops it when it holds 16 characters in a row of the secret part of
+  `CLAUDE_CODE_OAUTH_TOKEN` or the job's `GITHUB_TOKEN`, passed to it as masked secrets. That catches a near-miss quote GitHub's
+  masking would let through, and never fires on a sample token from the PR. The secret part is a token's body after its public
+  prefix, or a JWT's signature: the first round checked the whole stored value, and failed every review in the #132 re-Apply
+  round, most likely on a part every review quotes: a stored value can hold more than the token, and a JWT's header is the same
+  in every job's token. It compares letters and digits only, across the answer's strings as Claude wrote them, so a secret
+  quoted in pieces split by backticks or newlines is caught too; pieces split by letters or digits aren't, an accepted limit.
+- **No answer in the execution file fails the review job.** The check step runs only when Claude answered, so an empty or
+  unreadable execution file is its own error, not a quoted secret, and the post job doesn't run.
+- **No review in a debug run.** At the pinned action, debug logging turns `show_full_output` on, and the runner logs step outputs,
+  so a debug rerun would publish Claude's answer before the check above. The Review step is skipped when `runner.debug` is set,
+  with a warning to rerun without it, and sets `ACTIONS_STEP_DEBUG` to `false` for the action.
+- **The check runs the PR's copy of the script.** A same-repo PR can change it, but it can change the workflow too, which
+  `pull_request` runs from the PR; fork PRs get no secrets. Write access is the boundary, as for every workflow.
 - **A quoted secret can't skip the post job.** A withheld answer, by that check or by GitHub withholding a job output that holds a
   masked secret, reaches the post job as empty findings. The post job is gated on a `reviewed` flag that can't hold a secret,
   not on the findings, so it still runs, and `post_claude_review.py` fails on empty findings with an error to rotate the token.

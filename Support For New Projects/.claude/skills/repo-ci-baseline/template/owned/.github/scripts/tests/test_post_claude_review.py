@@ -312,11 +312,34 @@ def test_an_answer_passes_on_with_credentials_redacted(tmp_path):
     assert TOKENS[1] not in findings and JWT not in findings
 
 
-@pytest.mark.parametrize("quote", [SECRET, SECRET[10:26], "x" + SECRET[30:50] + "y"])
+@pytest.mark.parametrize("quote", [SECRET, SECRET[13:29], "x" + SECRET[30:50] + "y"])
 def test_an_answer_quoting_a_secret_even_in_part_is_withheld(tmp_path, quote):
     answer = {"summary": "s", "findings": [{"path": "a.py", "line": 1, "body": f"The token is {quote}."}]}
 
     assert pcr.check_answer(execution_file(tmp_path, answer), [SECRET]) == ("", 0, True)
+
+
+@pytest.mark.parametrize("separator", ["`", "\n", "` `", "-", "\t"])
+def test_a_secret_quoted_in_short_pieces_is_withheld(tmp_path, separator):
+    body = SECRET[13:]
+    pieces = separator.join(body[i:i + 15] for i in range(0, len(body), 15))
+
+    assert pcr.check_answer(execution_file(tmp_path, {"summary": pieces}), [SECRET])[2]
+
+
+def test_jwts_sharing_a_job_tokens_header_arent_a_leak(tmp_path):
+    header = JOB_TOKEN.split("_", 2)[2].split(".")[0]
+    example = header + "." + "eyJ" + "zdWIiOiJleGFtcGxlIn0" + "." + "Qw8" * 12
+
+    assert not pcr.check_answer(execution_file(tmp_path, {"summary": "e.g. " + example}), [JOB_TOKEN])[2]
+
+
+def test_credential_shaped_keys_are_redacted_too(tmp_path):
+    answer = {"summary": "s", "findings": [], TOKENS[1]: "extra"}
+
+    findings, redacted, _ = pcr.check_answer(execution_file(tmp_path, answer), [SECRET])
+
+    assert redacted == 1 and TOKENS[1] not in findings and pcr.REDACTED in json.loads(findings)
 
 
 def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):
@@ -325,6 +348,32 @@ def test_a_short_overlap_with_a_secret_isnt_a_leak(tmp_path):
     _, _, leaked = pcr.check_answer(execution_file(tmp_path, answer), [SECRET])
 
     assert not leaked
+
+
+def test_a_secret_stored_with_its_name_isnt_leaked_by_naming_it(tmp_path):
+    stored = "CLAUDE_CODE_OAUTH_TOKEN=" + SECRET + "\n"
+    answer = {"summary": "Rotate CLAUDE_CODE_OAUTH_TOKEN; it starts sk-ant-oat01-.", "findings": []}
+
+    _, _, leaked = pcr.check_answer(execution_file(tmp_path, answer), [stored])
+
+    assert not leaked
+    assert pcr.check_answer(execution_file(tmp_path, {"summary": SECRET[20:40]}), [stored])[2]
+
+
+JOB_TOKEN = "ghs_" + "98765_" + "eyJ" + "hbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9" + "." + "eyJ" + "pc3MiOiJnaXRodWIifQ" + "." + "Xy7" * 15
+
+
+def test_a_job_tokens_jwt_header_and_claims_arent_a_leak_but_its_signature_is(tmp_path):
+    header, claims, signature = JOB_TOKEN.split("_", 2)[2].split(".")
+    answer = {"summary": f"A JWT starts {header}.{claims}.", "findings": []}
+
+    assert not pcr.check_answer(execution_file(tmp_path, answer), [JOB_TOKEN])[2]
+    assert pcr.check_answer(execution_file(tmp_path, {"summary": signature[:16]}), [JOB_TOKEN])[2]
+
+
+def test_a_secret_without_a_token_shape_is_checked_whole():
+    assert pcr.secret_parts("  plain-secret-value-1234  \n") == ["plain-secret-value-1234"]
+    assert pcr.quotes_a_secret("x plain-secret-value y", ["plain-secret-value-1234"])
 
 
 @pytest.mark.parametrize("content", [None, "not json", "[]", '[{"type": "result", "subtype": "error"}]'])
@@ -351,6 +400,20 @@ def test_check_answer_writes_step_outputs_and_errors_on_a_leak(tmp_path, monkeyp
     lines = written.splitlines()
     assert lines[0] == "findings="
     assert lines[1].startswith("redacted<<EOF_") and lines[2] == "0" and lines[3] == lines[1].split("<<")[1]
+
+
+@pytest.mark.parametrize("make_path", [lambda tmp_path: "", lambda tmp_path: str(tmp_path / "missing.json")])
+def test_check_answer_fails_without_an_answer_in_the_execution_file(tmp_path, monkeypatch, capsys, make_path):
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "output"))
+    monkeypatch.setenv("OAUTH_TOKEN", SECRET)
+
+    with pytest.raises(SystemExit) as exit_info:
+        pcr.main(["--check-answer", make_path(tmp_path)])
+
+    assert exit_info.value.code == 1
+    out = capsys.readouterr().out
+    assert out.startswith("::error::Claude answered, but its answer isn't in the action's execution file")
+    assert "rotate" not in out
 
 
 def test_check_answer_writes_the_redacted_answer(tmp_path, monkeypatch):

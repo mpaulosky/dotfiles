@@ -14,8 +14,9 @@ settings and CLAUDE.md load, as in CI; user-level settings and plugins don't.
 It is close to the workflow, not identical: it runs the `claude` on PATH,
 not the Claude Code version the pinned claude-code-action installs. The
 results file records the CLI version, so a rerun on another version is told
-apart. Like the action, it uses the case's base for `.claude/`, so a head
-commit's settings and hooks never run.
+apart. It takes the case's Claude Code config (`.claude/`, `.mcp.json`,
+`CLAUDE.md`, `CLAUDE.local.md`) from the base, and starts no MCP servers, so
+a head commit's settings, hooks, servers and instructions never run.
 
 It runs Claude on your machine with an unscoped Read, against code from the
 case's commits. Only add a case whose commits you trust, and read a results
@@ -96,13 +97,23 @@ def caught(finding, findings_found):
     return [f for f in findings_found if on_path(f) and matches(str(f.get("body", "")))]
 
 
+# What Claude Code reads from a project: its settings and hooks, its MCP servers, and its instructions.
+PROJECT_CONFIG = (".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md")
+
+
 def use_base_settings(tree, base):
-    """Replace the head's .claude/ with the base's, as the action does: a PR's own settings and hooks never load."""
-    shutil.rmtree(tree / ".claude", ignore_errors=True)
-    listed = subprocess.run(["git", "-C", str(tree), "ls-tree", "-d", base, ".claude"],
-                            check=True, capture_output=True, text=True).stdout
-    if listed.strip():
-        subprocess.run(["git", "-C", str(tree), "checkout", base, "--", ".claude"], check=True, capture_output=True, text=True)
+    """Replace the head's Claude Code config with the base's: a case's own settings, hooks, MCP servers and
+    instructions never load. --strict-mcp-config (in run_case) also keeps any MCP server from starting."""
+    for name in PROJECT_CONFIG:
+        path = tree / name
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+        listed = subprocess.run(["git", "-C", str(tree), "ls-tree", base, "--", name],
+                                check=True, capture_output=True, text=True).stdout
+        if listed.strip():
+            subprocess.run(["git", "-C", str(tree), "checkout", base, "--", name], check=True, capture_output=True, text=True)
 
 
 def run_case(case, prompt, claude_args, overrides, root, timeout):
@@ -123,7 +134,7 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
             (temp / "pr.diff").write_text(diff)
             argv = ["claude", "-p", render(prompt, case["pr"], temp),
                     *override(shlex.split(render(claude_args, case["pr"], temp)), *overrides),
-                    "--output-format", "json", "--setting-sources", "project", "--no-session-persistence"]
+                    "--output-format", "json", "--setting-sources", "project", "--strict-mcp-config", "--no-session-persistence"]
             done = subprocess.run(argv, cwd=tree, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"error": f"timed out after {timeout}s", "seconds": round(time.monotonic() - started)}
@@ -194,7 +205,7 @@ def main():
     parser.add_argument("--model", help="replace --model")
     parser.add_argument("--prompt-file", type=Path, help="replace the prompt")
     parser.add_argument("--tools", help="replace --allowedTools, and drop these from --disallowedTools")
-    parser.add_argument("--only", help="run only the case with this head")
+    parser.add_argument("--only", help="run only the case with this head (in either set)")
     parser.add_argument("--set", default="recall", help="which cases: recall (findings to catch) or noise (ordinary PRs)")
     parser.add_argument("--root", type=Path, default=Path.home() / "github", help="where the cases' clones live")
     parser.add_argument("--timeout", type=int, default=1800, help="seconds per case")
@@ -222,9 +233,12 @@ def main():
            "claude_version": subprocess.run(["claude", "--version"], capture_output=True, text=True).stdout.strip(),
            "claude_args": claude_args, "overrides": overrides, "prompt": prompt, "score": [0, 0], "cases": []}
 
-    for case in spec["cases"]:
-        if case.get("set", "recall") != args.set or (args.only and not case["head"].startswith(args.only)):
-            continue
+    # --only names one case, whichever set it's in.
+    selected = [c for c in spec["cases"]
+                if (c["head"].startswith(args.only) if args.only else c.get("set", "recall") == args.set)]
+    if not selected:
+        sys.exit(f"claude-review-bench.py: no case matches {'--only ' + args.only if args.only else '--set ' + args.set}")
+    for case in selected:
         outcome = run_case(case, prompt, claude_args, overrides, args.root, args.timeout)
         hits, (got, out_of) = score(spec, case, outcome)
         report(spec, case, outcome, hits)

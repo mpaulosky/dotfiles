@@ -82,3 +82,29 @@ def test_render_fills_in_the_workflow_expressions():
 def test_render_refuses_an_expression_it_doesnt_know():
     with pytest.raises(SystemExit):
         bench.render("${{ secrets.TOKEN }}", 7, "/tmp/t")
+
+
+# use_base_settings()
+
+def test_the_heads_claude_config_is_replaced_by_the_bases(tmp_path):
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "CLAUDE.md").write_text("base instructions\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    base = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    (tmp_path / "CLAUDE.md").write_text("head instructions\n")
+    (tmp_path / ".mcp.json").write_text('{"mcpServers": {"x": {"command": "evil"}}}\n')
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text('{"hooks": {}}\n')
+
+    bench.use_base_settings(tmp_path, base)
+
+    assert (tmp_path / "CLAUDE.md").read_text() == "base instructions\n"
+    assert not (tmp_path / ".mcp.json").exists()
+    assert not (tmp_path / ".claude").exists()

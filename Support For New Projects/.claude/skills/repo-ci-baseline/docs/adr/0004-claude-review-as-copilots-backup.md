@@ -79,14 +79,14 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
     and the review it writes is posted publicly. Scoping `Read` and redacting the output are #121.
 - **Still missed: finding 5.** Spotting it needs the pinned action's source: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
   #117 asked for it, so #117 stays open for it. Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
-- **The benchmark is close to the workflow, not identical.** It runs the local `claude` (2.1.293 for these runs), not the version the pinned action installs,
-  and it loads the head's project settings, where the action restores them from the PR's base.
+- **The benchmark is close to the workflow, not identical.** It runs the local `claude` (2.1.293, and 2.1.294 for the v3 runs),
+  not the version the pinned action installs; each results file records the version.
 - **Cost:** about $1.20 a review instead of $0.19. That is acceptable, because the backup only runs while a PR carries `review:claude`.
 - Matching is by keyword, whole words, on the files a finding is about, and every saved run in `bench/results/` is scored with the current cases file
   (`--rescore` rewrites a file's score after the cases change). Read the findings too: an early, looser matcher counted a finding about skipping `[bot]` actors as finding 5.
 - Each results file keeps the exact prompt and arguments it ran with, which is what reproduces its score; a prompt file may have changed since.
 - The workflow's header records the accepted marker limit, because the prompt asks for problems "a maintainer would want fixed or knowingly accepted",
   and this ADR isn't in the Baseline repos: without it, every re-Apply PR that touches the workflow would get the same thread.
-- The benchmark runs Claude on the maintainer's machine against the cases' commits. It uses the base's `.claude/`, as the action does,
+- The benchmark runs Claude on the maintainer's machine against the cases' commits. It takes `.claude/`, `.mcp.json`, `CLAUDE.md` and `CLAUDE.local.md` from the base and starts no MCP servers,
   so a head's settings and hooks never run. Only trusted commits become cases, and a results file is read before it's committed.
 - Rerun the benchmark before changing the model, effort, prompt or tools, and add a case whenever Copilot finds something Claude Review missed.

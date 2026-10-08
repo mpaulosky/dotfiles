@@ -142,10 +142,19 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   is gone (Claude Review, IssueManager#274). An answer of the wrong shape, judged as `parse_findings` judges it, becomes a fixed
   placeholder holding none of it, so nothing the check didn't compare reaches the log, and `post_claude_review.py` still
   rejects it rather than posting "No findings". Each finding's `line` must be 0 to 1000000, so no single line
-  carries a token as one big number, and is checked, read as a character code, with the strings. An encoding the check
-  doesn't compare, such as character codes written as digits in the summary or a body, or packed several to a line, still
-  gets through: an accepted limit, like pieces split by letters or digits. The check is a backstop; Claude's read restrictions
-  above, which keep it from reading the token, are the defence.
+  carries a token as one big number, and is checked, read as a character code, with the strings.
+- **Accepted limits of the check.** It catches a quote of 16 characters in a row, after NFKC and with everything but ASCII
+  letters and digits taken out. A quote changed any other way still gets through, and each of these was raised in review
+  and accepted rather than closed, since closing one leaves the next:
+  - pieces split by letters or digits, including pieces in separate fields or findings, where the text between them is the
+    other fields' (Copilot, Blazor-Server#176);
+  - look-alikes NFKC doesn't map, such as Cyrillic or Greek letters, which are taken out and leave gaps (Claude Review,
+    atelier-store#130), and a reversed quote;
+  - character codes written as digits in the summary or a body, or packed several to a `line`.
+
+  The check is a backstop. Claude's read restrictions above, which keep it from reading the token at all, are the defence;
+  a gap here matters only if those fail. The workflow's comment that a near-miss "still does" trip the check means a quote
+  that differs only in separators or in the compatibility characters NFKC maps.
 - **No answer in the execution file fails the review job.** The check step runs only when Claude answered, so an empty or
   unreadable execution file is its own error, not a quoted secret, and the post job doesn't run.
 - **No review in a debug run.** At the pinned action, debug logging turns `show_full_output` on, and the runner logs step outputs,

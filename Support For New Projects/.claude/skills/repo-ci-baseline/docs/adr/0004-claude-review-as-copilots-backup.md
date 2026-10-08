@@ -15,8 +15,10 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
 
 - **Replace Copilot with Claude**: rejected because rounds the size of #82's come from working out the Baseline process; once work is back on one project, Copilot's budget covers it at no cost.
 - **Run both reviewers on every PR**: rejected for the same cost, and because two reviews of every head double the threads to answer.
-- **Let Claude post the review itself**: rejected so the model never holds a write token. It reviews in a read-only job and answers in a JSON schema; a separate job posts.
-- **An advisory review in the local pre-push gate**: rejected as the backup because the merge gate needs a review recorded on the PR. It may still come later as its own issue.
+- **Let Claude post the review itself**: rejected so the model never holds a write token.
+  It reviews in a read-only job and answers in a JSON schema; a separate job posts.
+- **An advisory review in the local pre-push gate**: rejected as the backup because the merge gate needs a review recorded on the PR.
+  It may still come later as its own issue.
 - **Count Copilot's and Claude's rounds separately**: rejected because switching reviewer would reset the cap.
 
 ## Consequences

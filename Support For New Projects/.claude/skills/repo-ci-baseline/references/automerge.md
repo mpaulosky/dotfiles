@@ -35,7 +35,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   More threads than one page is left to a person.
 - **Review cap.** Each reviewer re-reviews every push and can raise something new each time, so a PR could chase its reviews forever.
   Once Copilot and Claude between them have reviewed `COPILOT_REVIEW_CAP` (3) distinct non-merge commits, the merge stops waiting for a review of the head
-  and stops counting their unresolved threads. The constant keeps Copilot's name because `github-settings.sh` reads the cap by it.
+  and stops counting their unresolved threads.
+  The constant keeps Copilot's name because `github-settings.sh` reads the cap by it.
   Rounds are counted across both, so a PR can't reset the cap by switching reviewer.
   Merges from `main` aren't rounds: the ruleset keeps branches up to date, so they'd use up the cap without a fix.
   A thread belongs to whoever wrote its first comment; one with no known author counts as a person's.
@@ -55,9 +56,11 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Its completion fires this workflow's `workflow_run`, which runs main's copy.
   Copilot's review usually arrives after CI has finished, so without it the last blocker clears with no trigger and the PR waits for the sweep (IssueTracker #197 waited, and was swept by hand).
 - **Claude Review** (`claude-review.yml`) is the backup reviewer, run only while a PR carries `review:claude`, on `labeled`, `synchronize`, `reopened` and `ready_for_review`.
-  It skips drafts and Dependabot, and logs a notice and succeeds without the `CLAUDE_CODE_OAUTH_TOKEN` secret.
+  It skips drafts, Dependabot and events a bot started (the action refuses a bot actor), and logs a notice and succeeds without the `CLAUDE_CODE_OAUTH_TOKEN` secret.
+  It must not fail on its own: it isn't a required check, so a failed run leaves the PR `UNSTABLE`, which this workflow never merges; re-run it or remove the label.
   Claude (Sonnet 5.5, medium effort, `anthropics/claude-code-action`) never holds a write token: its job has read-only permissions,
-  gets the diff against the base and only Read, Glob and Grep, and answers in a JSON schema. A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
+  gets the diff against the base and only Read, Glob and Grep, and answers in a JSON schema.
+  A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   The review is posted with `GITHUB_TOKEN`, which starts no workflows, so PR Auto-Merge follows Claude Review's completion instead of PR Review Submitted.
 - **The schedule** is `7,22,37,52 * * * *`, off the round minutes where GitHub drops the most scheduled runs.
@@ -137,7 +140,7 @@ On a `CLEAN` dotfiles PR, `gh pr merge --auto` merges at once, which is what arm
 
 ## Verify live
 
-The next PR after the Standardize must sit green but unmerged until Copilot's review of its head arrives, and again while any thread is open.
+The next PR after the Standardize must sit green but unmerged until Copilot's (or Claude's) review of its head arrives, and again while any thread is open.
 The workflow's log names what it waits on (`Waiting on PR #n: no Copilot or Claude review of <sha> yet.`, or `<k> unresolved review thread(s).`).
 Once the last thread is resolved, the next sweep merges it; that can take an hour or more, since GitHub thins out scheduled runs.
 

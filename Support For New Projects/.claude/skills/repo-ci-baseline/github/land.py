@@ -38,11 +38,11 @@ import time
 from dataclasses import dataclass, field
 
 from landing import ARM_AUTO_MERGE, MARK_READY, UPDATE_BRANCH, decide
+from settings import read_repo_list
+from status import gh_graphql, line, repo_flags, to_state
 
 # The label that starts Claude Review, the backup to Copilot's review.
 REVIEW_CLAUDE = "review:claude"
-from settings import read_repo_list
-from status import gh_graphql, line, repo_flags, to_state
 
 PR_REF = re.compile(r"^(?:https://github\.com/)?([\w.-]+/[\w.-]+)(?:#|/pull/)(\d+)$")
 REPO_REF = re.compile(r"^[\w.-]+/[\w.-]+$")
@@ -209,10 +209,10 @@ class Lander:
             self.say(("  ran: " if ok else "  failed: ") + " ".join(argv) + (f" ({message})" if message and not ok else ""))
             if not ok:
                 break
-            if "--add-reviewer" in argv and not self.copilot_registered(repo, number):
+            if "--add-reviewer" in argv and not self.reviewer_requested(repo, number):
                 break
 
-    def copilot_registered(self, repo, number):
+    def reviewer_requested(self, repo, number):
         """Read Copilot's review request back; when GitHub dropped it, call in Claude Review.
 
         False when neither reviewer is on its way: the read-back failed, or

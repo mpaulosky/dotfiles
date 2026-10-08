@@ -27,11 +27,16 @@ jobs:
   review:
     name: Review with Claude
     # Dependabot PRs keep their own auto-merge path and get no secrets anyway.
-    # Another label being added is no reason to review again.
+    # Another label being added is no reason to review again. The action
+    # refuses a bot as the actor (an app's push), and a failed run here is a
+    # failing check that leaves the PR UNSTABLE, which PR Auto-Merge never
+    # merges, so a bot's event skips instead; the next person's push or a
+    # re-added label reviews the head.
     if: >-
       contains(github.event.pull_request.labels.*.name, 'review:claude') &&
       !github.event.pull_request.draft &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !endsWith(github.actor, '[bot]') &&
       (github.event.action != 'labeled' || github.event.label.name == 'review:claude')
     runs-on: ubuntu-latest
     timeout-minutes: 15

@@ -31,7 +31,7 @@ would let a repo's own PRs change the rules that gate them.
 | Labels | `semver:minor`, `semver:major`, `docs-only`, `review:claude`, `sandcastle:needs-human`, `dependencies`, `github-actions`, with the colors and descriptions in `labels.json`. Dependabot drops a label that doesn't exist, `release.yml` releases a PR without its semver label as a patch, and `gh pr edit --add-label review:claude` fails without the label. |
 | Secrets | `RELEASE_PR_PAT` and `CLAUDE_CODE_OAUTH_TOKEN` (Claude Review's, from `claude setup-token`) must exist; the script reads secret names, never values, so a missing one is MANUAL. |
 
-**Review threads hold the merge for at most three Copilot rounds**, in every repo. A ruleset can only require *every* thread resolved,
+**Review threads hold the merge for at most three review rounds** (Copilot's and Claude's together), in every repo. A ruleset can only require *every* thread resolved,
 with no cap, which blocks ADR 0002's cap (IssueTracker's did); so `main-rules` leaves it off and `pr-automerge.yml` enforces the cap.
 The script checks each repo's `pr-automerge.yml` sets `COPILOT_REVIEW_CAP` to `review_cap` (3); without it, the finding is MANUAL until the re-Apply.
 Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.

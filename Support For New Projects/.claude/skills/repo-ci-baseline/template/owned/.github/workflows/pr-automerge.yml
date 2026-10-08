@@ -13,8 +13,9 @@ name: PR Auto-Merge
 #
 # Both reviewers re-review every push and can find something new each time,
 # so a PR could chase its reviews forever. Once the two together have
-# reviewed COPILOT_REVIEW_CAP distinct non-merge commits, the merge stops waiting for
-# a review of the head and stops counting their unresolved threads. Merges
+# reviewed COPILOT_REVIEW_CAP distinct non-merge commits, the merge stops
+# waiting for a review of the head and stops counting their unresolved
+# threads. Merges
 # from main don't count: the ruleset keeps branches up to date, so they would
 # use up the cap without a single fix. Threads anyone else opens still hold
 # the merge.
@@ -256,8 +257,8 @@ jobs:
 
               // Both reviewers re-review every push, including merge-from-main
               // commits, so a review has to cover the exact head, until they
-              // have reviewed COPILOT_REVIEW_CAP different non-merge commits between
-              // them.
+              // have reviewed COPILOT_REVIEW_CAP different non-merge commits
+              // between them.
               const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
                 return review.body?.startsWith(CLAUDE_MARKER);
               });

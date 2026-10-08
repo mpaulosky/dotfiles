@@ -144,7 +144,8 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
   body, and the schema sets `additionalProperties: false`, so an extra field, never posted but printed by the post job's log,
   is gone (Claude Review, IssueManager#274). An answer of the wrong shape, judged as `parse_findings` judges it, becomes a fixed
   placeholder holding none of it, so nothing the check didn't compare reaches the log, and `post_claude_review.py` still
-  rejects it rather than posting "No findings". Each finding's `line` must be 0 to 1000000, so no single line
+  rejects it rather than posting "No findings". The check prints why as an error, since the post job's message can't
+  name it; the reason is fixed text with at most a finding's index (Claude Review, IssueTracker#227). Each finding's `line` must be 0 to 1000000, so no single line
   carries a token as one big number, and is checked, read as a character code, with the strings.
 - **Accepted limits of the check.** It catches a quote of 16 characters in a row, after NFKC or NFKD and with everything but ASCII
   letters and digits taken out. A quote changed any other way still gets through, and each of these was raised in review

@@ -16,11 +16,13 @@ GitHub rejects a whole review if one comment sits on a line outside the
 diff, so a finding whose line isn't in the diff goes into the review body
 instead. A body finding opens no review thread to hold the merge, so the
 body's second line is OFF_DIFF_MARKER, which PR Auto-Merge holds on while
-that review is the latest of the head; the script also exits 1, so the
-check shows it. A later skipped run can replace the failed check, never the
-marker. The body always starts with MARKER: the review is posted as
-github-actions[bot], and the marker is how PR Auto-Merge and the skill's
-landing decision tell it apart from anything else posted under that login.
+that review is the latest of the head, up to the review cap. The step
+passes with a warning: a failed check would leave the PR UNSTABLE, which
+PR Auto-Merge never merges, so it couldn't merge past the cap either. Only
+malformed findings or a failed API call fail the step. The body always
+starts with MARKER: the review is posted as github-actions[bot], and the
+marker is how PR Auto-Merge and the skill's landing decision tell it apart
+from anything else posted under that login.
 
 Standard library only, like release_post.py; the gh CLI does the rest.
 """
@@ -125,7 +127,7 @@ def build_review(summary, findings, commentable, head):
         parts.append("No findings.")
     if off_diff:
         parts.append("Findings outside the diff (no thread to resolve, so they hold the merge until the next "
-                     "push gets a fresh review):\n\n" + "\n".join(off_diff))
+                     "push gets a fresh review or the review cap is reached):\n\n" + "\n".join(off_diff))
     body = "\n\n".join(part for part in parts if part)
     markers = f"{MARKER}\n{OFF_DIFF_MARKER}" if off_diff else MARKER
     return {"commit_id": head, "event": "COMMENT", "body": f"{markers}\n{body}", "comments": comments}
@@ -152,11 +154,9 @@ def main(argv=None, gh=None, findings=None):
     print(f"Posted Claude's review of {args.head} on PR #{args.pr}: {len(review['comments'])} inline, {in_body} in the body.")
     if in_body:
         print(
-            f"post_claude_review.py: {in_body} finding(s) outside the diff are in the review body; "
-            "this failing check holds the merge until the next push.",
-            file=sys.stderr,
+            f"::warning::{in_body} finding(s) outside the diff are in the review body; "
+            "its off-diff marker holds the merge until the next push or the review cap."
         )
-        sys.exit(1)
     return review
 
 

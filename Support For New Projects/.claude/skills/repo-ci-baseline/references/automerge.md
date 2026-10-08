@@ -63,8 +63,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A body finding opens no thread, so the review's body carries a second marker, `<!-- claude-review:off-diff -->`, and this workflow holds the merge
-  while that review is Claude's latest of the head (until the review cap, like threads); the post job also fails, so the check shows it.
-  The hold lives in the review, not the check: adding another label re-runs Claude Review with its jobs skipped, and a skipped run replaces a failed check.
+  while that review is Claude's latest of the head (until the review cap, like threads); the post job warns but passes.
+  The hold lives in the review, not the check: a failed check would leave the PR `UNSTABLE`, so it couldn't merge past the cap,
+  and adding another label re-runs Claude Review with its jobs skipped, which would replace a failed check anyway.
   The review is posted with `GITHUB_TOKEN`, which starts no workflows, so PR Auto-Merge follows Claude Review's completion instead of PR Review Submitted.
 - **The schedule** is `7,22,37,52 * * * *`, off the round minutes where GitHub drops the most scheduled runs.
   GitHub still runs it far less often than asked: IssueTracker's sweeps after #201 ran about 70 minutes apart. Treat it as the fallback, never the expected path.

@@ -16,8 +16,10 @@ name: Claude Review
 # PR Auto-Merge accepts that review of the head as it does Copilot's. A
 # finding outside the diff can't be a thread, so it goes in the body under a
 # second marker, which PR Auto-Merge holds on until the next push gets a fresh
-# review, and the post job fails so the check shows it. Only PRs into main,
-# the only ones PR Auto-Merge merges.
+# review or the review cap is reached, and the post job warns. It doesn't
+# fail: a failed check leaves the PR UNSTABLE, which PR Auto-Merge never
+# merges, even at the cap. Only PRs into main, the only ones PR Auto-Merge
+# merges.
 #
 # Without the CLAUDE_CODE_OAUTH_TOKEN secret (from `claude setup-token`) the
 # run logs a notice and succeeds, so the workflow can be Applied before every

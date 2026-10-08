@@ -185,7 +185,9 @@ def test_a_failed_or_timed_out_review_doesnt_fail_the_check():
 
 def test_a_line_past_the_end_or_a_missing_file_is_bad(tmp_path):
     import subprocess
-    git = lambda *a: subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True)
+    # Hooks and signing off, as above.
+    git = lambda *a: subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                                     "-C", str(tmp_path), *a], check=True, capture_output=True)
     git("init", "-q")
     (tmp_path / "three.md").write_text("a\nb\nc\n")
     (tmp_path / "no-newline.md").write_text("a\nb")

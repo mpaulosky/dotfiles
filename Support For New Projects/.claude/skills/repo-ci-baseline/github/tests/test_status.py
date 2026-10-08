@@ -16,7 +16,8 @@ def pr_node(number=7, title="feat: Something", draft=False, merge_state="CLEAN",
         "number": number, "title": title, "state": "OPEN", "isDraft": draft, "headRefOid": HEAD,
         "mergeStateStatus": merge_state,
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
-        "reviews": {"nodes": [{"author": {"login": login}, "commit": {"oid": oid}} for login, oid in reviews]},
+        "reviews": {"nodes": [{"author": {"login": review[0]}, "commit": {"oid": review[1]},
+                               "body": review[2] if len(review) > 2 else ""} for review in reviews]},
         "reviewThreads": {"nodes": [{"isResolved": resolved} for resolved in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
                                           if contexts else None}}]},
@@ -45,7 +46,7 @@ def test_one_line_per_pr_with_the_next_action():
     assert code == 0 and err == ""
     assert out.count("\n") == 1
     assert out.startswith("app#7 feat: Something")
-    for part in ("1234567", "ready", "CLEAN", "copilot:head", "threads:1", "automerge:off",
+    for part in ("1234567", "ready", "CLEAN", "review:copilot", "threads:1", "automerge:off",
                  "running:1", "failed:1", "cancelled:0", "-> report blocker (failed: codecov)"):
         assert part in out
 
@@ -95,3 +96,16 @@ def test_a_release_blog_pr_is_told_apart_by_its_branch():
     assert blog.release_blog and not other.release_blog
     assert blog.merged_by_workflow and blog.checks_required
     assert st.repo_flags("repo-settings-only") == {"checks_required": False, "merged_by_workflow": False}
+
+
+def test_the_review_column_names_the_reviewer_of_the_head():
+    claude = pr_node(reviews=[("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")])
+    unmarked = pr_node(number=8, reviews=[("github-actions", HEAD, "Something else.")])
+    _, out, _ = run(["owner/app"], {"owner/app": repo(claude, unmarked)})
+    first, second = out.splitlines()
+    assert "review:claude" in first and "Claude reviewed the head" in first
+    assert "review:no" in second
+
+
+def test_the_query_fetches_review_bodies():
+    assert "author { login } commit { oid } body" in st.QUERY

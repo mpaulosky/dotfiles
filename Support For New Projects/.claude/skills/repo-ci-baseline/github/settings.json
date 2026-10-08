@@ -33,7 +33,8 @@
     "yamllint"
   ],
   "required_secrets": [
-    "RELEASE_PR_PAT"
+    "RELEASE_PR_PAT",
+    "CLAUDE_CODE_OAUTH_TOKEN"
   ],
   "review_cap": 3,
   "removed_label_prefixes": [

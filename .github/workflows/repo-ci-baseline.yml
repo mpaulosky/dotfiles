@@ -10,11 +10,15 @@ name: repo-ci-baseline Template
     paths:
       - "Support For New Projects/.claude/skills/repo-ci-baseline/**"
       - ".github/workflows/repo-ci-baseline.yml"
+      - ".github/workflows/claude-review.yml"
+      - ".github/scripts/post_claude_review.py"
   push:
     branches: [main]
     paths:
       - "Support For New Projects/.claude/skills/repo-ci-baseline/**"
       - ".github/workflows/repo-ci-baseline.yml"
+      - ".github/workflows/claude-review.yml"
+      - ".github/scripts/post_claude_review.py"
   workflow_dispatch:
 
 permissions:

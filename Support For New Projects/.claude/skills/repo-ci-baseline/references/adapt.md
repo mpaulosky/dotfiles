@@ -71,7 +71,8 @@ IssueTracker and IssueManager do.
   Squad's other labels (Articles' `go:yes`, `go:no`, `go:needs-research`) are left alone: delete them by hand after the merge.
   Until the merge, the old `squad-pr-auto-label` workflow on `main` re-creates `squad` on every PR, the docs-only probe included;
   the second run deletes it again.
-- **Secrets.** The script checks `RELEASE_PR_PAT` exists (releases, blog PRs and auto-merge start workflows only with it); add it, and any test secret, by hand.
+- **Secrets.** The script checks `RELEASE_PR_PAT` exists (releases, blog PRs and auto-merge start workflows only with it)
+  and `CLAUDE_CODE_OAUTH_TOKEN` (Claude Review's, from `claude setup-token`); add them, and any test secret, by hand.
   The PAT needs **Workflows: Read and write** (fine-grained) or the `workflow` scope (classic), as well as contents and
   pull requests: the Standardize itself changes the workflows, so the next release that tags an older commit (a missed
   release the queue retries, such as a Dependabot PR merged just before) is refused without it. Blazor-Server's first

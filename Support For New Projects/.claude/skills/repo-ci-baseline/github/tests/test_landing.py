@@ -37,7 +37,29 @@ def test_a_draft_waits_unless_the_caller_wants_it_ready():
 def test_a_head_copilot_has_not_reviewed_waits():
     decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD})))
     assert decision.action == ld.WAIT
-    assert "no Copilot review of aaaaaaa" in decision.reason
+    assert "no Copilot or Claude review of aaaaaaa" in decision.reason
+
+
+def test_a_claude_review_of_the_head_counts_as_reviewed():
+    claude = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({HEAD}))
+    assert claude.head_reviewer == "claude" and claude.reviewer_on_head
+    decision = ld.decide(claude)
+    assert decision.action == ld.ARM_AUTO_MERGE
+    assert decision.reason.startswith("Claude reviewed the head")
+    assert ld.decide(replace(claude, merged_by_workflow=True)).action == ld.HAND_OFF
+
+
+def test_a_claude_review_of_an_older_head_waits():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD})))
+    assert decision.action == ld.WAIT
+    assert "no Copilot or Claude review of aaaaaaa" in decision.reason
+
+
+def test_copilot_is_named_when_both_reviewed_the_head():
+    both = replace(READY, claude_reviewed=frozenset({HEAD}))
+    assert both.head_reviewer == "copilot"
+    assert ld.decide(both).reason.startswith("Copilot reviewed the head")
+    assert replace(READY, copilot_reviewed=frozenset()).head_reviewer == ""
 
 
 def test_an_open_thread_waits():
@@ -111,6 +133,14 @@ def test_a_merged_or_closed_pr_needs_nothing():
 def test_copilot_reviews_match_any_copilot_login():
     reviews = [("copilot-pull-request-reviewer", HEAD), ("Copilot", OLD), ("mpaulosky", "c" * 40), (None, "d" * 40)]
     assert ld.copilot_reviews(reviews) == frozenset({HEAD, OLD})
+
+
+def test_claude_reviews_are_marked_github_actions_reviews():
+    marker = ld.CLAUDE_MARKER + "\n**Claude Review**"
+    reviews = [("github-actions", HEAD, marker), ("github-actions[bot]", OLD, marker),
+               ("github-actions", "c" * 40, "Some other workflow's review."), ("mpaulosky", "d" * 40, marker),
+               ("github-actions", "e" * 40, None), (None, "f" * 40, marker), ("github-actions", None, marker)]
+    assert ld.claude_reviews(reviews) == frozenset({HEAD, OLD})
 
 
 def test_a_run_not_yet_started_counts_as_newest():

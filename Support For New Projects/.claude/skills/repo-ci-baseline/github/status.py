@@ -4,8 +4,9 @@
     status.sh                   every repo in github/repos.txt
     status.sh <owner/repo>...   just these
 
-Each line: repo#number, title, head, draft, merge state, whether Copilot
-reviewed the head, open threads, auto-merge, running/failed/cancelled checks,
+Each line: repo#number, title, head, draft, merge state, which reviewer
+reviewed the head (review:copilot, review:claude or review:no), open threads,
+auto-merge, running/failed/cancelled checks,
 and the landing decision's next action (github/landing.py). One GraphQL query
 per repo, read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
@@ -21,7 +22,7 @@ import json
 import subprocess
 import sys
 
-from landing import RELEASE_BLOG_BRANCHES, Check, PrState, copilot_reviews, decide, summarize_checks
+from landing import RELEASE_BLOG_BRANCHES, Check, PrState, claude_reviews, copilot_reviews, decide, summarize_checks
 from settings import read_repo_list
 
 QUERY = """
@@ -31,7 +32,7 @@ query($owner: String!, $name: String!) {
       nodes {
         number title state isDraft headRefName headRefOid mergeStateStatus
         autoMergeRequest { enabledAt }
-        reviews(last: 100) { nodes { author { login } commit { oid } } }
+        reviews(last: 100) { nodes { author { login } commit { oid } body } }
         reviewThreads(first: 100) { nodes { isResolved } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
@@ -80,12 +81,14 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
     commits = node["commits"]["nodes"]
     rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
     contexts = rollup["contexts"]["nodes"] if rollup else []
+    reviews = [((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"))
+               for review in node["reviews"]["nodes"]]
     return PrState(
         state=node["state"],
         draft=node["isDraft"],
         head=node["headRefOid"],
-        copilot_reviewed=copilot_reviews(((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"))
-                                         for review in node["reviews"]["nodes"]),
+        copilot_reviewed=copilot_reviews((login, oid) for login, oid, _ in reviews),
+        claude_reviewed=claude_reviews(reviews),
         open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),
@@ -107,7 +110,7 @@ def line(repo, node, pr):
     name = repo.split("/")[-1]
     return (f"{name}#{node['number']} {shorten(node['title']):<{TITLE_WIDTH}} {pr.head[:7]}"
             f" {'draft' if pr.draft else 'ready'} {pr.merge_state}"
-            f" copilot:{'head' if pr.copilot_on_head else 'no'} threads:{pr.open_threads}"
+            f" review:{pr.head_reviewer or 'no'} threads:{pr.open_threads}"
             f" automerge:{'on' if pr.auto_merge_armed else 'off'}"
             f" running:{len(checks.running)} failed:{len(checks.failed)} cancelled:{len(checks.cancelled)}"
             f" -> {decision.action} ({decision.reason})")

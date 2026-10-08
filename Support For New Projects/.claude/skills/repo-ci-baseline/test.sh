@@ -5,7 +5,8 @@
 #
 # Runs the Template's own tests (hook suites, auto-merge script tests,
 # release-script pytest), the renderer oracle and the GitHub scripts' tests
-# (settings, the landing decision, status, land and rollout), lints its workflows, YAML, shell
+# (settings, the landing decision, status, land and rollout), the Claude Review
+# benchmark's tests, lints its workflows, YAML, shell
 # and Markdown with the Template's configs, checks that
 # Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh and
 # reapply.sh against throwaway repos. dotfiles CI runs this on every change
@@ -65,7 +66,10 @@ fi
 (cd "$skill_dir/tests/render_oracle" && "${oracle_cmd[@]}" -q -p no:cacheprovider .) || fail "renderer oracle"
 
 step "GitHub scripts tests (settings, landing decision, status, land, rollout)"
-(cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider github/tests bench/tests) || fail "github scripts pytest"
+(cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider github/tests) || fail "github scripts pytest"
+
+step "Claude Review benchmark tests (scoring, arguments, config swap)"
+(cd "$skill_dir" && "${pytest_cmd[@]}" -q -p no:cacheprovider bench/tests) || fail "benchmark pytest"
 
 step "actionlint"
 mapfile -t workflows < <(find "$owned/.github/workflows" -name '*.yml' | sort)

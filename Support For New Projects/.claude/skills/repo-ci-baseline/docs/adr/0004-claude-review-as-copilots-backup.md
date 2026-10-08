@@ -81,8 +81,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
     and the review it writes is posted publicly. Scoping `Read` and redacting the output are #121.
 - **Still missed: finding 5.** Spotting it needs the pinned action's source: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
   #117 asked for it, so #117 stays open for it. Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
-- **The benchmark is close to the workflow, not identical.** It runs the local `claude` (2.1.293, and 2.1.294 for the v3 runs),
-  not the version the pinned action installs; each results file records the version.
+- **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
+  Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 runs); the earlier files predate that, and the CLI updated during these runs.
 - **Cost:** about $1.20 a review instead of $0.19. That is acceptable, because the backup only runs while a PR carries `review:claude`.
 - Matching is by keyword, whole words, on the files a finding is about, and every saved run in `bench/results/` is scored with the current cases file
   (`--rescore` rewrites a file's score after the cases change). Read the findings too: an early, looser matcher counted a finding about skipping `[bot]` actors as finding 5.

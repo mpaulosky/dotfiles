@@ -8,7 +8,7 @@
   ],
   "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/pr.diff; read it first, then read the surrounding\ncode as needed. Follow the repository's own conventions (AGENTS.md, CLAUDE.md,\ndocs/ and .github/instructions/ where present).\n\nReport only real problems a maintainer would want fixed before merging: bugs,\nsecurity issues, broken edge cases, missing or wrong tests, and clear departures\nfrom the repository's conventions. Don't report style nits, praise, or anything\nyou aren't confident about. Every finding names a file path relative to the\nrepository root and a line number on the new side of the diff, on a line the diff\nadds or shows as context, and says what is wrong and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\nAn empty findings list is a good answer when nothing needs fixing.\n",
   "score": [
-    4,
+    2,
     7
   ],
   "cases": [
@@ -43,11 +43,11 @@
       "cost_usd": 2.7737287999999998,
       "turns": 51,
       "caught": {
-        "1": true,
-        "2": false,
+        "1": false,
+        "2": true,
         "3": true,
         "4": false,
-        "5": true
+        "5": false
       }
     },
     {

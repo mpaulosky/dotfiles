@@ -54,19 +54,25 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 | Sonnet 5.5, high | 1 | ~50 s, ~$0.25 |
 | Sonnet 5.5, max | 2 | ~16 min, ~$3 |
 | Sonnet 5.5, high, thorough prompt (`bench/prompts/thorough-v2.txt`) | 2 | ~2 min, ~$0.47 |
-| **Opus 5.5, high, thorough prompt** | **4** | ~4–7 min, ~$1.20 |
+| Opus 5.5, high, thorough prompt v2 | 4 | ~4–7 min, ~$1.20 |
+| **Opus 5.5, high, thorough prompt v3 (`thorough-v3.txt`)** | **3** | ~4 min, ~$1.34 |
 
-- **Opus at high effort with the thorough prompt is what the workflow runs.**
-  - It caught findings 1, 3 and 4. It flagged the known marker limit once in the run without WebFetch, and twice in the run with it.
+- **Opus at high effort with the thorough prompt (v3) is what the workflow runs.**
+  - With v2 it caught findings 1, 3 and 4, in two runs. With v3 it caught 3 and 4, and missed finding 1 in that one run.
+    A point either way is within what one run varies by. It flagged the known marker limit once in the run without WebFetch, and on all three commits in the run with it.
   - Its findings on the benchmark commits were on the right lines, each with a fix, and several were real problems Copilot didn't raise.
-  - On the three ordinary PRs, run as deployed, it made 2, 3 and 6 findings, where Copilot opened 3, 1 and 2 threads. None were nits,
+  - On the three ordinary PRs, v2 made 2, 3 and 6 findings, where Copilot opened 3, 1 and 2 threads. None were nits,
     but two of the six on Blazor-Server#148 cited lines past the end of an 80-line file, which would hold the merge as off-diff findings (#122).
+  - v3 differs from v2 only in where a finding goes: on a line the diff adds or shows, with a problem in unchanged code put on the changed line that depends on it,
+    because any other line holds the merge. On the ordinary PRs it made 2, 2 and 4 findings, all on real lines, and on Articles#298 every finding was on a changed line.
+    It flagged the known marker limit on all three commits.
+- **The review job's `timeout-minutes` is 30.** Opus took up to about 7 minutes on these diffs, and a timed-out job is a failing check that holds the merge.
 - **The prompt was the bigger change.**
   - The original said an empty findings list was a good answer and to leave out anything Claude wasn't confident about, and Sonnet then read little beyond the diff.
   - The thorough prompt asks for the files around the diff, untested paths (reruns, skipped jobs, other actors, odd input) and how GitHub itself behaves.
   - It also asks that every line number be checked against the file. An earlier draft produced impossible line numbers, and an off-diff finding holds the merge.
 - **No WebFetch.**
-  - It caught finding 5 once with an earlier prompt, but never with the thorough prompt, and Opus scored the same without it.
+  - No run caught finding 5 with it or without it, and Opus scored the same without it.
   - It would also be one more way out for a prompt-injected diff. It isn't the only one: with `Read` unscoped, Claude can read the OAuth token from its own environment,
     and the review it writes is posted publicly. Scoping `Read` and redacting the output are #121.
 - **Still missed: finding 5.** Spotting it needs the pinned action's source: Copilot's coding agent acts as `Copilot` with no `[bot]` suffix, so it passes the guard, and the action then refuses it.
@@ -74,4 +80,6 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude` (2.1.293 for these runs), not the version the pinned action installs,
   and it loads the head's project settings, where the action restores them from the PR's base.
 - **Cost:** about $1.20 a review instead of $0.19. That is acceptable, because the backup only runs while a PR carries `review:claude`.
+- Matching is by keyword, whole words, on the files a finding is about, and every saved run in `bench/results/` is scored with the current cases file
+  (`--rescore` rewrites a file's score after the cases change). Read the findings too: an early, looser matcher counted a finding about skipping `[bot]` actors as finding 5.
 - Rerun the benchmark before changing the model, effort, prompt or tools, and add a case whenever Copilot finds something Claude Review missed.

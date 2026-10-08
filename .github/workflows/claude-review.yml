@@ -49,7 +49,7 @@ jobs:
       github.actor != 'Copilot' &&
       (github.event.action != 'labeled' || github.event.label.name == 'review:claude')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     # Job-level, so a run skipped above can't cancel a review in progress.
     concurrency:
       group: claude-review-${{ github.event.pull_request.number }}
@@ -130,9 +130,12 @@ jobs:
             praise, or the PR's scope (what it bundles together is the author's call).
 
             Every finding names a file path relative to the repository root and a line number
-            on the new side of that file. Before you report a line, read it in the checked-out
-            file and make sure it is the line the finding is about; prefer a line the diff
-            adds or shows as context. Say what goes wrong, in which situation, and how to fix it.
+            on the new side of that file, on a line the diff adds or shows as context: a finding
+            anywhere else holds the merge until the next push. When the problem lies in code the
+            diff doesn't touch, put the finding on the changed line that calls it, depends on it
+            or should have changed with it. Before you report a line, read it in the checked-out
+            file (not in the diff) and make sure it is the line the finding is about. Say what
+            goes wrong, in which situation, and how to fix it.
 
             Answer with a short summary of the change and your verdict, and your findings.
           claude_args: >-

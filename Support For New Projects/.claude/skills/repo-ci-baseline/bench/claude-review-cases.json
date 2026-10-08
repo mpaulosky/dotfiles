@@ -1,20 +1,31 @@
 {
-  "about": "Claude Review's benchmark (#117): Articles#298's three reviewed commits, and the five findings Copilot made on them. Each commit expects the findings whose bug it still contains. A finding is caught when one of Claude's findings is on a file named in `paths` and mentions every word group in `match` (each group is any-of, case-insensitive). `optional` findings are welcome, not required. The `noise` set is ordinary merged PRs with no expected findings, to read for false positives against Copilot's thread count.",
+  "about": "Claude Review's benchmark (#117): Articles#298's three reviewed commits, and the five findings Copilot made on them. Each commit expects the findings whose bug it still contains. A finding is caught when one of Claude's findings is on a file named in `paths` and mentions every word group in `match` (each group is any-of, case-insensitive, whole words). `optional` findings are welcome, not required. The `noise` set is ordinary merged PRs with no expected findings, to read for false positives against Copilot's thread count.",
   "findings": {
     "1": {
       "about": "An off-diff finding's only blocker is the failed post check, and a skipped rerun (another label added) replaces it.",
       "match": [
         [
-          "skip"
+          "skip",
+          "skips",
+          "skipped",
+          "skipping"
         ],
         [
           "replace",
-          "supersed",
-          "clear"
+          "replaces",
+          "replaced",
+          "supersede",
+          "supersedes",
+          "superseded",
+          "clear",
+          "clears",
+          "cleared"
         ],
         [
           "label",
+          "labels",
           "rerun",
+          "reruns",
           "re-run",
           "another run"
         ]
@@ -37,12 +48,20 @@
           "pull-requests: write",
           "pr-controlled",
           "pr code",
-          "forge",
-          "spoof",
-          "authentic",
-          "impersonat",
           "own head",
-          "any workflow"
+          "any workflow",
+          "forge",
+          "forged",
+          "forges",
+          "spoof",
+          "spoofed",
+          "authenticate",
+          "authenticates",
+          "authenticated",
+          "authentication",
+          "impersonate",
+          "impersonates",
+          "impersonation"
         ]
       ],
       "optional": true,
@@ -58,6 +77,7 @@
       "match": [
         [
           "tab",
+          "tabs",
           "\\t"
         ]
       ],
@@ -90,12 +110,13 @@
           "copilot"
         ],
         [
-          "actor"
-        ],
-        [
-          "[bot]",
           "suffix",
-          "allowed_bots"
+          "allowed_bots",
+          "not a user",
+          "without [bot]",
+          "without a [bot]",
+          "without the [bot]",
+          "no [bot]"
         ]
       ],
       "fixed_in": "mpaulosky/dotfiles#114",

@@ -8,7 +8,7 @@
   ],
   "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/pr.diff; read it first. Then read every file the diff\ntouches in full, and the unchanged code it calls or is called by: a bug often lies in\nhow the change interacts with code it doesn't touch. Follow the repository's own\nconventions (AGENTS.md, CLAUDE.md, docs/ and .github/instructions/ where present).\n\nYour review may be the only one this PR gets before it merges on its own, so be\nthorough. For each change, ask what happens on the paths the author didn't test:\nanother event or trigger, a rerun, a skipped or cancelled job, a different actor\n(a bot, an app, a person without write access), an empty or malformed input, a\nrace between two runs. For GitHub Actions workflows and merge gates, reason about\nhow GitHub itself behaves: which events fire, what a skipped or failed check does\nto a PR's mergeStateStatus, who the actor is, what each token can do. Look hardest\nat code that decides whether something merges, releases or gets permissions.\n\nReport every real problem a maintainer would want fixed or knowingly accepted\nbefore merging: bugs, security issues, broken edge cases, missing or wrong tests,\nand clear departures from the repository's conventions. Don't report style nits or\npraise. Every finding names a file path relative to the repository root and a line\nnumber on the new side, preferably a line the diff adds or shows as context, and\nsays what goes wrong, in which situation, and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\n",
   "score": [
-    2,
+    1,
     7
   ],
   "cases": [
@@ -173,7 +173,7 @@
       "turns": 15,
       "caught": {
         "2": false,
-        "5": true
+        "5": false
       }
     }
   ]

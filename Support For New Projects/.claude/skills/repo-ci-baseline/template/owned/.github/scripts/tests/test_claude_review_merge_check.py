@@ -300,3 +300,32 @@ def test_stale_reviews_cant_cancel_the_newer_heads(repo):
         assert re.search(pattern, workflow), job
     assert "stale: ${{ steps.check.outputs.stale == 'true' }}" in workflow
     assert "stale: ${{ needs.merge-from-main.outputs.stale }}" in workflow
+
+
+def test_skips_a_stale_head_a_review_under_its_own_clean_merge_covers(repo, tmp_path):
+    # rev reviewed; head1 merges main into rev; head2 (an app's push) merges main into head1.
+    head1 = repo.merge("main")
+    repo.git("checkout", "-q", "main")
+    repo.commit({"lib": "lib 2\n"}, "main2")
+    repo.git("checkout", "-q", "feature")
+    head2 = repo.merge("main")
+    outputs = {}
+    code, skip, out = repo.check(head1, [repo.rev], tmp_path, current=head2, runs=["skipped"], outputs=outputs)
+    assert (code, skip) == (0, "true")
+    assert f"the review of {repo.rev} covers it" in out
+    assert outputs["stale"] == "false"
+    # Unreviewed, head1 is reviewed instead.
+    assert repo.check(head1, [], tmp_path, current=head2, runs=["skipped"])[:2] == (0, "false")
+
+
+def test_marks_a_stale_head_before_any_other_api_call(repo):
+    """stale=true is written as soon as the head is seen to be stale, so a later failure keeps the stale group."""
+    step = WORKFLOW.read_text().split("id: check", 1)[1]
+    stale_at = step.index('echo "stale=true" >> "$GITHUB_OUTPUT"')
+    assert stale_at < step.index("actions/runs?head_sha=") < step.index("/reviews")
+
+
+def test_check_job_can_read_actions_runs():
+    workflow = WORKFLOW.read_text()
+    job = workflow.split("  merge-from-main:", 1)[1].split("\n  review:", 1)[0]
+    assert "      actions: read\n" in job

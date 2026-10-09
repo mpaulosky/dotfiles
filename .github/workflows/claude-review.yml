@@ -91,6 +91,9 @@ jobs:
     # of a failed job, which would be a failed check and skip the review.
     timeout-minutes: 15
     permissions:
+      # actions: read lists the runs for a newer head; on a private repo
+      # those reads fail without it.
+      actions: read
       contents: read
       pull-requests: read
     outputs:
@@ -148,15 +151,22 @@ jobs:
           fi
           # For a stale head: how this workflow's check job went in each run for
           # the PR's head ("skipped" when its condition skipped it). Nothing
-          # when it can't be read, which reviews.
+          # when it can't be read, which reviews. stale=true goes out first,
+          # so a review after any later failure here still takes the stale
+          # head's own concurrency group; the Python below has the last word.
           : > "${RUNNER_TEMP}/current-runs.txt"
           if [ "$CURRENT_HEAD" != "$HEAD_SHA" ]; then
-            gh api "repos/${REPOSITORY}/actions/runs?head_sha=${CURRENT_HEAD}&event=pull_request" \
-              --jq '.workflow_runs[] | select(.name == "Claude Review") | .id' > "${RUNNER_TEMP}/run-ids.txt" || :
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            if ! gh api "repos/${REPOSITORY}/actions/runs?head_sha=${CURRENT_HEAD}&event=pull_request" \
+              --jq '.workflow_runs[] | select(.name == "Claude Review") | .id' > "${RUNNER_TEMP}/run-ids.txt"; then
+              echo "::warning::Couldn't list the Claude Review runs for ${CURRENT_HEAD}, so ${HEAD_SHA} may be reviewed twice."
+              : > "${RUNNER_TEMP}/run-ids.txt"
+            fi
             while read -r run; do
               gh api "repos/${REPOSITORY}/actions/runs/${run}/jobs" \
                 --jq '.jobs[] | select(.name == "Check for a merge from main") | (.conclusion // .status)' \
-                >> "${RUNNER_TEMP}/current-runs.txt" || :
+                >> "${RUNNER_TEMP}/current-runs.txt" \
+                || echo "::warning::Couldn't read the jobs of Claude Review run ${run}, so ${HEAD_SHA} may be reviewed twice."
             done < "${RUNNER_TEMP}/run-ids.txt"
           fi
           # Commits Copilot or Claude Review (a marked github-actions[bot] review) reviewed.
@@ -239,8 +249,13 @@ jobs:
               # head isn't fetched), leave it to that run as well.
               try:
                   covers = honoured and covering(current, lambda commit: commit == head) == head
+                  # The newer head may already be covered, by a review of this head
+                  # or of a commit under its clean merges, counted from the newer
+                  # head as PR Auto-Merge counts it (within MERGE_CHAIN_LIMIT).
+                  reviewed_under = covers and covering(current, lambda commit: commit in reviewed)
               except subprocess.CalledProcessError:
                   covers = False
+                  reviewed_under = None
               with open(os.path.join(os.environ["RUNNER_TEMP"], "current-runs.txt"), encoding="utf-8") as file:
                   # A run for the newer head whose check job wasn't skipped by its condition.
                   handled = any(state != "skipped" for state in file.read().split())
@@ -251,8 +266,9 @@ jobs:
                   print(f"::notice::The PR's head is now {current}, which only merges main into {head}, and a run "
                         f"for {current} handles its review.")
                   skip = True
-              elif head in reviewed:
-                  print(f"::notice::The PR's head is now {current}, which only merges main into {head}, which was reviewed.")
+              elif reviewed_under:
+                  print(f"::notice::The PR's head is now {current}, which only merges main into {head}; "
+                        f"the review of {reviewed_under} covers it.")
                   skip = True
               else:
                   print(f"::notice::The PR's head is now {current}, which only merges main into {head}, so Claude "

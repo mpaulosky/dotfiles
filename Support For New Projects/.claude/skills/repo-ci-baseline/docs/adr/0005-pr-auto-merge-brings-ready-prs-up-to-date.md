@@ -75,3 +75,9 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
   Where they could differ (several merge bases, a tree listing GitHub truncates), Claude Review errs towards reviewing,
   except for a tree past GitHub's listing limit (100,000 entries), which no Baseline repo comes near.
 - A repo without `RELEASE_PR_PAT` keeps waiting on `BEHIND` PRs, with a notice in the run log.
+- Accepted limit: a stale head's review reports its checks on that older commit, not on the PR's head.
+  So when it fails on purpose (an answer withheld for quoting a secret, or an execution file it can't read), it posts no review and the head shows no failed check.
+  Below the review cap the head then still waits for a review. Past the cap it can merge, since the cap stops that wait.
+  Counting failed Claude Review checks on commits under the head would mean walking the chain whether or not anything was reviewed,
+  and reading each commit's checks, for a case that needs a stale review, a deliberate failure and a PR past the cap all at once.
+  The post job's warning and the failed check on the older commit stay visible on the PR.

@@ -323,19 +323,24 @@ def answer_check_script():
     return textwrap.dedent("\n".join(lines[start:end])) + "\n"
 
 
-def check(tmp_path, answer=None, secrets=(), path=None, raw=None):
-    """Run the step's check: its exit code, its step outputs and what it printed."""
+def check(tmp_path, answer=None, secrets=(), path=None, raw=None, messages=(), extra=None):
+    """Run the step's check: its exit code, its step outputs and what it printed.
+
+    messages go in the execution file between the first two and the result;
+    extra adds to the step's environment.
+    """
     if path is None:
         path = tmp_path / "execution.json"
         if raw is not None:
             path.write_text(raw)
         else:
-            path.write_text(json.dumps([{"type": "system"}, {"type": "assistant"},
+            path.write_text(json.dumps([{"type": "system"}, {"type": "assistant"}, *messages,
                                         {"type": "result", "subtype": "success", "structured_output": answer}]))
     output = tmp_path / "output"
     output.write_text("")
     env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output), "EXECUTION_FILE": str(path),
-           "OAUTH_TOKEN": secrets[0] if secrets else "", "JOB_TOKEN": secrets[1] if len(secrets) > 1 else ""}
+           "OAUTH_TOKEN": secrets[0] if secrets else "", "JOB_TOKEN": secrets[1] if len(secrets) > 1 else "",
+           **(extra or {})}
     done = subprocess.run([sys.executable, "-I", "-"], input=answer_check_script(), env=env,
                           capture_output=True, text=True)
     return done.returncode, parse_outputs(output.read_text()), done.stdout
@@ -672,3 +677,125 @@ def test_a_checkout_that_isnt_a_merge_commit_fails(tmp_path):
     assert done.returncode == 1
     assert "::error::The checkout isn't the PR's merge commit" in done.stdout
     assert "copy ran" not in done.stdout
+
+
+# The answer check's hold: pieces Claude didn't read whole
+
+ANSWER = {"summary": "s", "findings": [{"path": "a.py", "line": 3, "body": "x"}]}
+
+
+def read_of(folder, name, call_id, file=None, error=None):
+    """A Read of folder/name and its result, as the action's execution file holds them (Claude Code 2.1.29x)."""
+    path = f"{folder}/{name}"
+    use = {"type": "assistant", "message": {"id": "msg_" + call_id, "content": [
+        {"type": "tool_use", "id": call_id, "name": "Read", "input": {"file_path": path}}]}}
+    result = {"type": "tool_result", "tool_use_id": call_id, "content": error or "1\tdiff --git a/x b/x\n"}
+    if error:
+        result["is_error"] = True
+    account = f"Error: {error}" if error else {"type": "text", "file": {"filePath": path, "content": "…", "startLine": 1,
+                                                                       "numLines": 40, "totalLines": 40, **(file or {})}}
+    return [use, {"type": "user", "message": {"role": "user", "content": [result]}, "tool_use_result": account}]
+
+
+def hold(tmp_path, messages=(), listed="", skipped="", answer=ANSWER):
+    """Run the answer check over pieces in tmp_path: the findings it added after Claude's, and what it printed."""
+    folder = tmp_path / "claude-review" / "diff"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "INDEX").write_text("The PR's diff of 4 file(s) in 3 piece(s).\n"
+                                  "001.diff\t40 lines\tread\n\tworkflow\t.github/workflows/ci.yml\n"
+                                  "002.diff\t40 lines\tread\n\tsource\tsrc/app.py\n\tsource\t\"src/odd\\tname.py\"\n"
+                                  "003.diff\t40 lines\tnot read\n\tdocs\tREADME.md\n")
+    code, outputs, out = check(tmp_path, answer, [SECRET], messages=messages, extra={
+        "PIECES_DIR": str(folder), "LISTED": listed, "SKIPPED": skipped})
+    assert code == 0
+    return json.loads(outputs["findings"])["findings"][1:], out
+
+
+def test_pieces_read_whole_hold_nothing(tmp_path):
+    folder = tmp_path / "claude-review" / "diff"
+    added, out = hold(tmp_path, [*read_of(folder, "001.diff", "a"), *read_of(folder, "002.diff", "b")],
+                      listed="001.diff 002.diff")
+    assert added == [] and "::warning::" not in out
+
+
+@pytest.mark.parametrize("reads", [
+    # Cut at the token cap: the text carries no banner, only the tool's account says so.
+    lambda f: read_of(f, "002.diff", "b", {"numLines": 12, "truncatedByTokenCap": True}),
+    lambda f: read_of(f, "002.diff", "b", {"startLine": 30, "numLines": 11}),
+    lambda f: read_of(f, "002.diff", "b", error="File content (31000 tokens) exceeds maximum allowed tokens (25000)."),
+    lambda f: [],  # never read
+    lambda f: read_of(f.parent, "002.diff", "b"),  # the same name somewhere else isn't the piece
+], ids=["token-cap", "part", "error", "never", "elsewhere"])
+def test_a_listed_piece_not_read_whole_holds_the_merge(tmp_path, reads):
+    folder = tmp_path / "claude-review" / "diff"
+    added, out = hold(tmp_path, [*read_of(folder, "001.diff", "a"), *reads(folder)], listed="001.diff 002.diff")
+    assert [(f["path"], f["line"]) for f in added] == [("diff", 0)]
+    assert "didn't read all of diff pieces 002.diff:" in added[0]["body"] and "merge by hand" in added[0]["body"]
+    # The log names the piece's files, with workflow commands stopped around the PR's paths.
+    token = re.search(r"^::stop-commands::([0-9a-f]{32})$", out, re.M)[1]
+    listed = out[out.index(f"::stop-commands::{token}"):out.index(f"::{token}::")]
+    assert "src/app.py" in listed and '"src/odd\\tname.py"' in listed and "ci.yml" not in listed
+
+
+def test_two_results_in_one_message_dont_count_as_read_whole(tmp_path):
+    folder = tmp_path / "claude-review" / "diff"
+    first, second = read_of(folder, "001.diff", "a"), read_of(folder, "002.diff", "b")
+    second[1]["message"]["content"].insert(0, first[1]["message"]["content"][0])
+    added, _ = hold(tmp_path, [first[0], second[0], second[1]], listed="001.diff 002.diff")
+    assert "pieces 001.diff, 002.diff:" in added[0]["body"]
+
+
+def test_pieces_past_the_budget_hold_the_merge(tmp_path):
+    folder = tmp_path / "claude-review" / "diff"
+    added, out = hold(tmp_path, read_of(folder, "001.diff", "a"), listed="001.diff", skipped="003.diff")
+    assert "pieces 003.diff:" in added[0]["body"]
+    assert "README.md" in out and "src/app.py" not in out
+
+
+def test_an_answer_without_findings_gets_no_hold(tmp_path):
+    # A malformed answer becomes the placeholder; adding to it would let it through as findings.
+    code, outputs, _ = check(tmp_path, {"summary": "s"}, [SECRET], extra={
+        "PIECES_DIR": str(tmp_path), "LISTED": "001.diff", "SKIPPED": "002.diff"})
+    assert code == 0 and list(json.loads(outputs["findings"])) == ["malformed"]
+
+
+# The "Warn when Claude didn't review" step
+
+def warn_script():
+    """The run script of the step named "Warn when Claude didn't review"."""
+    lines = WORKFLOW.read_text().splitlines()
+    step = next(i for i, line in enumerate(lines) if line.strip() == "- name: Warn when Claude didn't review")
+    run = next(i for i in range(step, len(lines)) if lines[i].strip() == "run: |")
+    indent = len(lines[run]) - len(lines[run].lstrip()) + 1
+    end = next((i for i in range(run + 1, len(lines))
+                if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) < indent), len(lines))
+    return textwrap.dedent("\n".join(lines[run + 1:end])) + "\n"
+
+
+@pytest.mark.parametrize("result, sign_in", [
+    ({"is_error": True, "result": "Invalid API key · Please run /login"}, True),
+    ({"is_error": True, "result": "OAuth token has expired. Please obtain a new token or refresh your existing token."},
+     True),
+    ({"is_error": True, "result": 'API Error: 401 {"type":"error","error":{"type":"authentication_error"}}'}, True),
+    ({"is_error": True, "result": "Claude AI usage limit reached|1759940300"}, False),  # 403 in the reset time
+    ({"is_error": True, "result": 'API Error: 529 {"type":"overloaded_error"} request_id: req_011C403abc'}, False),
+    # It reached the model, whatever its text says.
+    ({"is_error": True, "result": "Invalid API key", "total_cost_usd": 0.41, "modelUsage": {"claude-opus-5-5": {}}},
+     False),
+    ({"is_error": False, "result": "done"}, False),
+], ids=["bad-key", "expired-oauth", "401", "usage-limit", "overloaded", "costed", "no-error"])
+def test_the_warning_tells_a_sign_in_failure_from_a_limit(tmp_path, result, sign_in):
+    execution = tmp_path / "execution.json"
+    execution.write_text(json.dumps([{"type": "system"},
+                                     {"type": "result", "total_cost_usd": 0, "modelUsage": {}, **result}]))
+    done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], "OUTCOME": "failure", "EXECUTION_FILE": str(execution)})
+    assert done.returncode == 0, done.stderr
+    assert ("Claude never reached the model" in done.stdout) is sign_in
+    assert ("once a usage limit has reset" in done.stdout) is not sign_in
+
+
+def test_the_warning_survives_a_missing_execution_file(tmp_path):
+    done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], "OUTCOME": "failure", "EXECUTION_FILE": str(tmp_path / "x")})
+    assert done.returncode == 0 and "once a usage limit has reset" in done.stdout

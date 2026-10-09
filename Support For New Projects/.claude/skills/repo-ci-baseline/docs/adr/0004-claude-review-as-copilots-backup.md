@@ -49,7 +49,7 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
 - A Review step that fails, times out (its own 25 minutes, under the job's 30) or is refused at the usage limit doesn't fail the job either (#123):
   `continue-on-error` lets a warning step say so, and the post job skips when there's nothing to post (an empty output would fail it as malformed).
   The PR then has no Claude review of its head, so PR Auto-Merge waits for Copilot's or a rerun, instead of the PR going `UNSTABLE`.
-  The prompt also asks Claude to skim generated files, lockfiles, snapshots and recorded data, so a big PR is less likely to run out of time.
+  The prompt also has Claude skip the files Copilot code review excludes (see the split-diff decision below).
 - dotfiles isn't a Baseline repo, so it carries a copy of the two files, and of PR Auto-Merge, which `test.sh` keeps identical to the Template's.
 
 ## Model, effort and prompt (#117)
@@ -152,12 +152,15 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     Pieces are few and full, because each Read counts against `--max-turns`.
   - A file's diff too big for a piece is split into parts between hunks. Each part repeats the file's header, and a part that starts inside a hunk
     opens with `@@ -old +new @@ (continued)`, so line numbers still follow. A line over 10,000 bytes is cut into chunks at character boundaries.
-  - Lockfiles go in pieces of their own that the prompt never asks for.
-    They don't hold the merge when unread: a dependency change shows in the manifest.
-  - Generated files (`*.g.cs`, `*.min.js`, snapshots) can hold compiled code, so they come last and are asked for while they fit.
-    Past the budget they hold the merge like any code.
+  - **Claude Review covers exactly the files Copilot code review covers**, because it stands in for Copilot when Copilot is unavailable:
+    a stand-in that reviewed more would hold PRs Copilot passes, and one that reviewed less would let through what Copilot catches.
+    The step copies [Copilot's documented exclusions](https://docs.github.com/en/copilot/reference/review-excluded-files) verbatim
+    (taken 2026-10-09; GitHub calls the named files "an example of some of the files", so this is the documented subset).
+    Excluded files go in no piece, are never read and never hold the merge; INDEX lists them as excluded, and the prompt says to skip them.
+    Everything else is reviewed as git shows it, binaries included, as Copilot sees them.
   - The prompt asks for at most 8 pieces and 300,000 bytes (about 80,000 tokens), leaving room for source files; the rest are listed as not read,
-    and the summary must name them. A code piece among them adds a finding outside the diff, which holds the merge for a person.
+    and the summary must name them. Each one adds a finding outside the diff, which holds the merge for a person; the log lists its files.
+    So does a listed piece Claude didn't read whole, judged from the Read results in the execution file.
 - **Pieces are named by number only (`001.diff`), and the prompt lists them by name, line count and kind.**
   A PR's paths are its author's: none becomes a file name or reaches the prompt. The list reaches the prompt as a step output,
   since Claude can't read an index before its one turn of reads. `diff/INDEX` maps each piece to its files' paths, as git prints them (quoted when unusual, one per line),

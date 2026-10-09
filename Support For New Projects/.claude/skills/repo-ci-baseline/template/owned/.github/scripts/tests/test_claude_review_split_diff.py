@@ -79,11 +79,12 @@ class Repo:
         output.write_text("")
         env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output),
                "BASE_SHA": base, "HEAD_SHA": head}
-        subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
-                       capture_output=True)
-        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\n", output.read_text(), re.S)
+        done = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
+                              capture_output=True)
+        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\nlisted=(.*)\n", output.read_text(), re.S)
         assert found, output.read_text()
-        self.skipped = found[3]
+        self.skipped, self.listed = found[3], found[4]
+        self.log = done.stdout.decode("utf-8", "replace")
         folder = runner_temp / "claude-review" / "diff"
         return found[2], folder, (runner_temp / "claude-review" / "pr.diff").read_bytes()
 
@@ -97,9 +98,10 @@ def repo(tmp_path):
 
 def index(folder):
     """INDEX's pieces: {name: (lines, read, [(kind, path), ...])}, in order."""
-    rows = (folder / "INDEX").read_text(encoding="utf-8").split("\n")[1:-1]
     pieces = {}
-    for row in rows:
+    for row in (folder / "INDEX").read_text(encoding="utf-8").split("\n")[1:-1]:
+        if row == EXCLUDED_HEADING:
+            break
         if row.startswith("\t"):
             _, kind, path = row.split("\t", 2)
             pieces[name][2].append((kind, path))
@@ -107,6 +109,17 @@ def index(folder):
             name, lines, read = row.split("\t")
             pieces[name] = (lines, read, [])
     return pieces
+
+
+EXCLUDED_HEADING = "excluded (Copilot doesn't review these)"
+
+
+def excluded_of(folder):
+    """The paths INDEX lists as excluded, in no piece."""
+    rows = (folder / "INDEX").read_text(encoding="utf-8").split("\n")[:-1]
+    if EXCLUDED_HEADING not in rows:
+        return []
+    return [row.split("\t", 2)[2] for row in rows[rows.index(EXCLUDED_HEADING) + 1:]]
 
 
 def files_of(folder):
@@ -131,7 +144,10 @@ def segments(content):
 
 
 def check_pieces(folder, diff):
-    """Every piece is within the limits, and together they hold every line of every file's diff, in order."""
+    """Every piece is within the limits, and together they hold every line of every reviewed file's diff, in order.
+
+    A file INDEX lists as excluded is in no piece.
+    """
     names = sorted(p.name for p in folder.iterdir() if p.name != "INDEX")
     assert names == list(index(folder))
     assert all(re.fullmatch(r"\d{3}\.diff", name) for name in names)
@@ -142,7 +158,9 @@ def check_pieces(folder, diff):
         assert content.startswith(b"diff --git ")
         for key, body in segments(content):
             found.setdefault(key, []).extend(body)
-    assert {key: joined(body) for key, body in found.items()} == dict(segments(diff))
+    excluded = {f"diff --git a/{path} b/{path}\n".encode() for path in excluded_of(folder)}
+    assert {key: joined(body) for key, body in found.items()} == {
+        key: body for key, body in segments(diff) if key not in excluded}
 
 
 def joined(body):
@@ -225,27 +243,23 @@ def test_a_huge_file_is_split_into_parts_with_their_line_numbers(repo, tmp_path)
 
 
 def test_a_long_line_is_cut_into_chunks_within_a_piece(repo, tmp_path):
-    head = repo.commit({"app.min.css": "a{}" * 30_000, "wide.txt": "\u00e9" * 60_000 + "\n",
-                        "yarn.lock": "x\n" * 10})
+    head = repo.commit({"app.min.css": "a{}" * 30_000, "wide.txt": "\u00e9" * 60_000 + "\n"})
     _, folder, diff = repo.split(repo.base, head, tmp_path)
     for name in index(folder):
         content = (folder / name).read_bytes()
         assert len(content) <= MAX_PIECE_BYTES
         content.decode("utf-8")  # never cut inside a character
     # Every chunk after a line's first is marked, so none reads as a line of its own.
-    wide = next((folder / name).read_bytes() for name, (_, read, _) in index(folder).items() if read == "read")
+    wide = next((folder / name).read_bytes() for name, (_, _, files) in index(folder).items()
+                if any(path.startswith("wide.txt") for _, path in files))
     rows = wide.split(b"\n")
     first = next(i for i, row in enumerate(rows) if row.startswith(b"+\xc3\xa9"))
     assert all(row.startswith(b"\\~ \xc3\xa9") for row in rows[first + 1:-1])
     check_pieces(folder, diff)
     check_line_numbers(folder, repo, head)
-    # A generated file can hold code, so it's read while it fits; a lockfile never is, and never holds the merge.
     assert repo.skipped == ""
-    assert files_of(folder) == {"wide.txt": ("docs", "read"), "app.min.css": ("generated", "read"),
-                                "yarn.lock": ("lockfile", "not read")}
-    # A lockfile never shares a piece with one the prompt asks for.
-    for _, read, files in index(folder).values():
-        assert {kind == "lockfile" for kind, _ in files} == {read == "not read"}
+    assert files_of(folder) == {"wide.txt": ("docs", "read"), "app.min.css": ("source", "read")}
+    assert repo.listed.split() == list(index(folder))
 
 
 def test_lines_after_a_long_line_split_across_parts_keep_their_numbers(repo, tmp_path):
@@ -305,17 +319,116 @@ def test_past_the_read_budget_the_rest_are_named_and_workflows_come_first(repo, 
     files["package-lock.json"] = "{}\n"
     head = repo.commit(files)
     text, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert excluded_of(folder) == ["package-lock.json"]
     pieces = index(folder)
     read = [name for name, (_, flag, _) in pieces.items() if flag == "read"]
     assert len(read) == MAX_READ_PIECES
     assert sum((folder / name).stat().st_size for name in read) <= MAX_READ_BYTES
     assert pieces["001.diff"][2] == [("workflow", ".github/workflows/z.yml")]
     unread = {path for _, flag, files in pieces.values() if flag == "not read" for _, path in files}
-    assert unread == {"package-lock.json", *(f"docs/f{i:02d}.md" for i in range(MAX_READ_PIECES - 1, MAX_READ_PIECES + 2))}
+    assert unread == {f"docs/f{i:02d}.md" for i in range(MAX_READ_PIECES - 1, MAX_READ_PIECES + 2)}
     listed, _, rest = text.partition("\nNot asked for")
     assert len(listed.splitlines()) == MAX_READ_PIECES
     assert all(name in rest for name, (_, flag, _) in pieces.items() if flag == "not read")
-    # The unread pieces of code, not the lockfile's, are named for the hold.
-    assert repo.skipped.split() == [name for name, (_, flag, files) in pieces.items()
-                                    if flag == "not read" and files[0][0] != "lockfile"]
-    assert repo.skipped
+    # Every unread piece is named for the hold; the read ones are listed.
+    assert repo.skipped.split() == [name for name, (_, flag, _) in pieces.items() if flag == "not read"]
+    assert repo.listed.split() == read
+
+
+# Copilot code review's exclusions, as https://docs.github.com/en/copilot/reference/review-excluded-files lists them
+
+COPILOT_EXCLUDED_NAMES = [
+    ".gitignore", "package-lock.json", "yarn.lock", "jest.config.js", "next.config.js", "tailwind.config.js",
+    "tsconfig.json", "requirements.txt", "Pipfile.lock", "Gemfile.lock", "composer.lock", "Cargo.lock", "go.sum",
+    "paket.lock", "pubspec.lock", "stack.yaml", "elm.json", "Project.toml", "Manifest.toml", "renv.lock", "build.sbt",
+    "Package.resolved", "deps.edn", "build.gradle", "mix.lock", "build.gradle.kts", "cpanfile", "Podfile.lock",
+    "conanfile.txt", "info.rkt", "rockspec", "opam", "rebar.config", "nimble", "shard.yml", "dub.json", "dub.sdl",
+    "GPR", "Mason.toml", "fpm.toml", "pack.pl", "baseline.st", "PacletInfo.m", "info.ss", "Jpkg", "box.json",
+    "GNAVI.xml",
+]
+# A file each glob excludes, at the root and deeper where the glob allows.
+COPILOT_EXCLUDED_GLOB_FILES = {
+    "**/*.svg": ["logo.svg", "web/img/icon.svg"],
+    "**/*.log": ["build.log", "logs/app.log"],
+    "**/*.lock": ["pnpm.lock", "sub/poetry.lock"],
+    "**/go.sum": ["svc/go.sum"],
+    "**/*.ipynb.raw.html": ["nb/report.ipynb.raw.html"],
+    "**/dist/**/*": ["dist/app.js", "web/dist/x/y.js"],
+    "**/node_modules/**/*": ["node_modules/a/index.js"],
+    "**/*.min.js": ["web/site.min.js"],
+    "**/*.d.ts": ["types/index.d.ts"],
+    "**/coverage/**/*": ["coverage/lcov.info"],
+    "**/*.bundle.js": ["web/app.bundle.js"],
+    "**/*.map": ["web/site.min.js.map"],
+    "**/out/**/*": ["out/Main.class.txt", "a/out/b.txt"],
+    "**/vendor/**/*": ["vendor/lib/x.go"],
+    "**/generated/**/*": ["src/generated/Api.cs"],
+    "**/generated-sources/**/*": ["target/generated-sources/A.java"],
+    "**/bin/**/*": ["bin/Debug/app.dll.config", "src/App/bin/Release/x.json"],
+}
+
+
+def test_the_workflow_copies_copilots_documented_list():
+    script = step_script()
+    names = re.search(r"COPILOT_EXCLUDED_NAMES = frozenset\(\((.*?)\)\)", script, re.S)[1]
+    globs = re.search(r"COPILOT_EXCLUDED_GLOBS = \((.*?)\)\n", script, re.S)[1]
+    assert re.findall(r'"([^"]+)"', names) == COPILOT_EXCLUDED_NAMES
+    assert re.findall(r'"([^"]+)"', globs) == list(COPILOT_EXCLUDED_GLOB_FILES)
+    assert "review-excluded-files" in script and "2026-10-09" in script
+
+
+def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
+    # "x" for content: a .gitignore naming itself would keep itself out of the commit.
+    files = {f"deps/{name}": "x\n" for name in COPILOT_EXCLUDED_NAMES}
+    files.update({path: "x\n" for paths in COPILOT_EXCLUDED_GLOB_FILES.values() for path in paths})
+    files["src/app.py"] = "print(1)\n"
+    head = repo.commit(files)
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert set(excluded_of(folder)) == set(files) - {"src/app.py"}
+    assert files_of(folder) == {"src/app.py": ("source", "read")}
+    assert len(index(folder)) == 1 and repo.skipped == ""
+    check_pieces(folder, diff)
+
+
+def test_a_name_matches_only_a_whole_basename(repo, tmp_path):
+    head = repo.commit({"pkg/opam": "x\n", "pkg/opam.txt": "x\n", "my.gitignore": "x\n", "nimble/x.nim": "x\n",
+                        "GPR.txt": "x\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert excluded_of(folder) == ["pkg/opam"]
+    assert set(files_of(folder)) == {"pkg/opam.txt", "my.gitignore", "nimble/x.nim", "GPR.txt"}
+
+
+def test_copilots_bin_exceptions_and_dotnet_files_are_reviewed(repo, tmp_path):
+    reviewed = {"tools/bin/main.rs": "fn main() {}\n", "src/bin/cli/args.rs": "fn a() {}\n",
+                "core/hybris/bin/custom/ext/Ext.java": "class Ext {}\n",
+                "src/App/Model.g.cs": "class M {}\n", "src/App/packages.lock.json": "{}\n",
+                "Directory.Packages.props": "<Project />\n", "tests/Api.verified.txt": "{}\n"}
+    head = repo.commit({**reviewed, "tools/bin/main.py": "x\n", "hybris/bin/platform/x.java": "x\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert set(files_of(folder)) == set(reviewed)
+    assert sorted(excluded_of(folder)) == ["hybris/bin/platform/x.java", "tools/bin/main.py"]
+
+
+def test_only_excluded_files_leave_nothing_to_read(repo, tmp_path):
+    head = repo.commit({"yarn.lock": "x\n", "web/logo.svg": "<svg/>\n"})
+    text, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert text == "(none: every changed file is one Copilot code review excludes)"
+    assert index(folder) == {} and repo.listed == "" and repo.skipped == ""
+
+
+def test_an_excluded_file_past_the_budget_holds_nothing(repo, tmp_path):
+    lock = "".join(f'"node_modules/p{n}": {{"resolved": "https://registry.example/p{n}-{n:020d}.tgz"}}\n'
+                   for n in range(MAX_READ_BYTES // 40))
+    head = repo.commit({"src/app.py": "print(2)\n", "package-lock.json": lock, "dist/bundle.js": lock})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert list(index(folder)) == ["001.diff"] and repo.listed == "001.diff" and repo.skipped == ""
+    assert sorted(excluded_of(folder)) == ["dist/bundle.js", "package-lock.json"]
+
+
+def test_a_binary_is_reviewed_as_git_shows_it_and_holds_nothing(repo, tmp_path):
+    # Copilot can't see inside a binary either.
+    head = repo.commit({"scripts/deploy.sh": b"#!/bin/bash\n# \0\n", "lib/Tool.dll": b"MZ\0\0"})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert diff.count(b"Binary files") == 2
+    assert set(files_of(folder)) == {"scripts/deploy.sh", "lib/Tool.dll"}
+    assert repo.skipped == "" and "::warning::" not in repo.log

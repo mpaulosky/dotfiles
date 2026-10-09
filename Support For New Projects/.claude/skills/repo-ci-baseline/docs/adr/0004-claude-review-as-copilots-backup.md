@@ -164,12 +164,14 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     and a PR's own `.gitattributes` (`*.cs -diff`) or a NUL byte in a script made its change show only as "Binary files differ".
     So these hold the merge for a person, listed under `held` in INDEX and in the answer check's log:
     - an excluded file that isn't inert data, deleted or not, and any excluded file under `.github/`.
-      Inert data (`DATA_NAMES`, `DATA_GLOBS`) is `.gitignore`, logs, source maps and named coverage reports (`lcov.info`,
+      Inert data (`DATA_GLOBS`) is logs, source maps and named coverage reports (`lcov.info`,
       `coverage-final.json`, `cobertura*.xml` and the like, not any file under a folder named `coverage`).
       A changed SVG holds unless it's deleted: it can script in more ways than a pattern lists
       (a namespace prefix, a character reference, an escaped `srcdoc`, or uncommenting a script already there).
-      Lockfiles hold: they decide which dependency code the build installs and runs, and nobody reads them here;
-    - a file git shows only as binary, unless it's inert media (`MEDIA`: images, fonts, audio, video, PDFs) or deleted.
+      Lockfiles hold: they decide which dependency code the build installs and runs, and nobody reads them here.
+      So does `.gitignore`: it decides what gets committed, and dropping `.env` from it would let secrets be staged;
+    - unless deleted: a file git shows only as binary that isn't inert media (`MEDIA`: images, fonts, audio, video, PDFs),
+      a submodule bump (mode 160000: the diff shows only two commit IDs), and a Git LFS pointer (only the pointer shows).
 
     The diff takes attributes from the base (`--attr-source`), so a PR's own `.gitattributes` can't hide its text,
     and `--no-textconv` keeps a diff driver from rewriting what the review sees.

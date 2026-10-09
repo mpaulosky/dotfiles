@@ -17,8 +17,8 @@ name: PR Auto-Merge
 # waiting for a review of the head. Merges from main don't count: the ruleset
 # keeps branches up to date, so they would use up the cap without a single
 # fix. Past the cap every unresolved thread still holds the merge, Copilot's
-# and Claude's included, and so do Claude's findings outside the diff on the
-# head's review: the cap only stops the wait for a review that may never come
+# and Claude's included, and so do Claude's findings outside the diff on its
+# review covering the head: the cap only stops the wait for a review that may never come
 # (#146). So a review that arrives after a cap merge comes too late: its
 # findings land on a merged PR. A re-Apply PR (chore/reapply-baseline) has no
 # cap: its rounds come from re-Apply commits, and it changes this gate itself.
@@ -157,6 +157,10 @@ jobs:
             const MERGE_STATE_RETRIES = 4;
             const MERGE_STATE_RETRY_MS = Number(process.env.MERGE_STATE_RETRY_MS || 5000);
             const PASSED = ["SUCCESS", "NEUTRAL", "SKIPPED"];
+            // This job's own check. Its pull_request_target runs report on
+            // the head, and a transient failure there is replaced only by
+            // another PR event, so it never holds an update.
+            const SELF_CHECK = "Merge same-repo PRs when ready";
 
             async function getPullRequestStatus(pullNumber) {
               const status = await github.graphql(
@@ -181,10 +185,12 @@ jobs:
                        }
                        # The head's checks, to tell whether the required ones
                        # passed while the PR is BEHIND (mergeStateStatus then
-                       # says only that it's out of date).
-                       commits(last: 1) {
-                         nodes {
-                           commit {
+                       # says only that it's out of date). Read from headRef,
+                       # not the last of the PR's commits: GitHub lists them by
+                       # date, so the last one listed needn't be the head.
+                       headRef {
+                         target {
+                           ... on Commit {
                              oid
                              statusCheckRollup {
                                contexts(first: 100) {
@@ -314,17 +320,60 @@ jobs:
               return true;
             }
 
+            // A CheckRun conclusion, or a StatusContext state, that failed.
+            // NEUTRAL, SKIPPED and STALE aren't failures; nor is a check still
+            // running.
+            const FAILED_CONCLUSIONS = ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"];
+            const FAILED_STATES = ["FAILURE", "ERROR"];
+
+            // The head commit as the query reported it, or null when the
+            // report isn't of the head (it moved since).
+            function headCommit(pr) {
+              const commit = pr.headRef?.target;
+              return commit?.oid === pr.headRefOid ? commit : null;
+            }
+
+            // Name -> the newest run of each check on the head. A check run
+            // more than once (a rerun, or one CI's concurrency cancelled)
+            // counts by its newest run: the last created, by databaseId,
+            // which GitHub goes by too. So a queued rerun outranks an older
+            // green run, and a later run outranks one cancelled before it
+            // started.
+            function newestChecks(contexts) {
+              const newest = new Map();
+              for (const check of contexts.nodes) {
+                const name = check.name ?? check.context;
+                const rank = check.__typename === "StatusContext" ? check.createdAt ?? "" : check.databaseId ?? 0;
+                if (!newest.has(name) || rank >= newest.get(name).rank) {
+                  newest.set(name, { rank, check });
+                }
+              }
+              return new Map([...newest].map(([name, { check }]) => [name, check]));
+            }
+
+            // The check names main's rulesets require, read once a run. A
+            // required check whose job isn't queued yet has no check run on
+            // the head, so isRequired alone can't see it.
+            let rulesetChecks;
+            function requiredCheckNames(base) {
+              rulesetChecks ??= github
+                .paginate(github.rest.repos.getBranchRules, { owner, repo, branch: base, per_page: 100 })
+                .then((rules) => new Set(
+                  rules
+                    .filter((rule) => rule.type === "required_status_checks")
+                    .flatMap((rule) => rule.parameters?.required_status_checks ?? [])
+                    .map((check) => check.context)
+                ));
+              return rulesetChecks;
+            }
+
             // Why the head's required checks haven't all passed, or null when
-            // they have. A check run more than once (a rerun, or one CI's
-            // concurrency cancelled) counts by its newest run: the last
-            // created, by databaseId, which GitHub goes by too. So a queued
-            // rerun outranks an older green run, and a later run outranks
-            // one cancelled before it started.
-            // isRequired reports main-rules' ruleset checks (checked live on
-            // Blazor-Server #183).
-            function requiredChecksPending(pr) {
-              const commit = pr.commits?.nodes?.[0]?.commit;
-              if (!commit || commit.oid !== pr.headRefOid) {
+            // they have. Required: what main's rulesets list (requiredNames),
+            // and anything isRequired reports (checked live on Blazor-Server
+            // #183). One with no run on the head yet is pending.
+            function requiredChecksPending(pr, requiredNames) {
+              const commit = headCommit(pr);
+              if (!commit) {
                 return "the head's checks aren't reported yet";
               }
               const contexts = commit.statusCheckRollup?.contexts;
@@ -334,47 +383,78 @@ jobs:
               if (contexts.totalCount > contexts.nodes.length) {
                 return "more checks than one page";
               }
-              const newest = new Map();
-              for (const check of contexts.nodes) {
-                if (!check.isRequired) {
-                  continue;
-                }
-                const name = check.name ?? check.context;
-                const rank = check.__typename === "StatusContext" ? check.createdAt ?? "" : check.databaseId ?? 0;
-                if (!newest.has(name) || rank >= newest.get(name).rank) {
-                  newest.set(name, { rank, check });
+              const newest = newestChecks(contexts);
+              const required = new Set(requiredNames);
+              for (const [name, check] of newest) {
+                if (check.isRequired) {
+                  required.add(name);
                 }
               }
-              if (newest.size === 0) {
+              if (required.size === 0) {
                 return "no required check has reported on the head yet";
               }
-              const notPassed = [...newest]
-                .filter(([, { check }]) => {
+              const missing = [...required].filter((name) => !newest.has(name));
+              if (missing.length > 0) {
+                return `required checks not reported yet: ${missing.join(", ")}`;
+              }
+              const notPassed = [...required].filter((name) => {
+                const check = newest.get(name);
+                return check.__typename === "StatusContext"
+                  ? check.state !== "SUCCESS"
+                  : check.status !== "COMPLETED" || !PASSED.includes(check.conclusion);
+              });
+              return notPassed.length > 0 ? `required checks not passed: ${notPassed.join(", ")}` : null;
+            }
+
+            // The head's checks, required or not, whose newest run failed.
+            // Claude Review's post and answer-check jobs fail on purpose to
+            // leave a PR UNSTABLE; an update would start a new head without
+            // those failures and wash the hold out.
+            function failedChecks(pr) {
+              const contexts = headCommit(pr)?.statusCheckRollup?.contexts;
+              if (!contexts) {
+                return [];
+              }
+              return [...newestChecks(contexts)]
+                .filter(([name, check]) => {
+                  if (name === SELF_CHECK) {
+                    return false;
+                  }
                   return check.__typename === "StatusContext"
-                    ? check.state !== "SUCCESS"
-                    : check.status !== "COMPLETED" || !PASSED.includes(check.conclusion);
+                    ? FAILED_STATES.includes(check.state)
+                    : check.status === "COMPLETED" && FAILED_CONCLUSIONS.includes(check.conclusion);
                 })
                 .map(([name]) => name);
-              return notPassed.length > 0 ? `required checks not passed: ${notPassed.join(", ")}` : null;
             }
 
             // Brings a ready PR that is BEHIND main up to date, so its checks
             // rerun on the latest main and it can merge. Never throws: on a
             // pull_request_target run a failure here would be a failed check
-            // on the PR, leaving it UNSTABLE.
-            async function bringUpToDate(pullNumber, pr) {
+            // on the PR, leaving it UNSTABLE. holdOnFailure: a failed check,
+            // required or not, holds the update. Off for a PR with native
+            // auto-merge armed: GitHub merges that one on its required checks
+            // alone, so a failed optional check holds nothing there.
+            async function bringUpToDate(pullNumber, pr, { holdOnFailure = true } = {}) {
               if (pr.mergeable !== "MERGEABLE") {
                 core.info(`Waiting on PR #${pullNumber}: BEHIND main, mergeable=${String(pr.mergeable)}.`);
                 return;
               }
-              const pending = requiredChecksPending(pr);
+              let requiredNames;
+              try {
+                requiredNames = await requiredCheckNames(pr.baseRefName);
+              } catch (error) {
+                core.warning(`Couldn't read the checks ${pr.baseRefName}'s rulesets require: ${error.message}`);
+                core.info(`Waiting on PR #${pullNumber}: BEHIND main, but its required checks are unknown.`);
+                return;
+              }
+              const pending = requiredChecksPending(pr, requiredNames);
               if (pending) {
                 // No required check at all on a head whose checks have all
-                // finished means isRequired doesn't see the ruleset's checks;
+                // finished means neither the rulesets nor isRequired name one;
                 // say so where it shows. While any check is still running, or
                 // on a PR event, CI may not have created the required ones yet
                 // (a job's check run appears only once the job is queued).
-                const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+                const contexts = headCommit(pr)?.statusCheckRollup?.contexts?.nodes ?? [];
                 const settled = contexts.every((check) => {
                   return check.__typename === "StatusContext"
                     ? !["PENDING", "EXPECTED"].includes(check.state)
@@ -383,6 +463,15 @@ jobs:
                 const misconfigured = pending.startsWith("no required check") && settled && !context.payload.pull_request;
                 const log = misconfigured ? core.notice : core.info;
                 log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
+                return;
+              }
+              const failed = holdOnFailure ? failedChecks(pr) : [];
+              if (failed.length > 0) {
+                core.info(
+                  `Waiting on PR #${pullNumber}: BEHIND main, but checks failed on ${pr.headRefOid}: ` +
+                  `${failed.join(", ")}. An update would start CI on a new head without them, so it waits ` +
+                  "for a fix or a passing rerun."
+                );
                 return;
               }
               if (process.env.HAS_RELEASE_PR_PAT !== "true") {
@@ -428,18 +517,29 @@ jobs:
               }
             }
 
+            // The login comments posted with github (the PAT) appear under,
+            // read once a run.
+            let poster;
+            function posterLogin() {
+              poster ??= github.rest.users.getAuthenticated().then(({ data }) => data.login);
+              return poster;
+            }
+
             // Dependabot rebases its own PRs on request, and stops managing
             // one that someone else updated. Asked once per head: the marker
-            // in the comment says which head it was asked for.
+            // in the comment says which head it was asked for. Only a marker
+            // this workflow posted counts: anyone can comment one on a public
+            // repo, which would otherwise stop the request.
             async function askDependabotToRebase(pullNumber, pr) {
               const marker = rebaseMarker(pr.headRefOid);
+              const login = await posterLogin();
               const comments = await eventsClient.paginate(eventsClient.rest.issues.listComments, {
                 owner,
                 repo,
                 issue_number: pullNumber,
                 per_page: 100
               });
-              if (comments.some((comment) => comment.body?.includes(marker))) {
+              if (comments.some((comment) => comment.user?.login === login && comment.body?.includes(marker))) {
                 core.info(`Waiting on PR #${pullNumber}: Dependabot was already asked to rebase ${pr.headRefOid}.`);
                 return;
               }
@@ -522,6 +622,17 @@ jobs:
               return true;
             }
 
+            // Whether sha, a merge of theirs into ours, is a clean merge from
+            // main. Kept for the run: the off-diff check walks the same chain
+            // again for Claude's reviews alone.
+            const cleanMerges = new Map();
+            function isCleanMergeFromMain(sha, ours, theirs, base) {
+              if (!cleanMerges.has(sha)) {
+                cleanMerges.set(sha, (async () => (await isOnBase(theirs, base)) && (await isCleanMerge(sha, ours, theirs)))());
+              }
+              return cleanMerges.get(sha);
+            }
+
             // The reviewed commit that covers sha: sha itself when a reviewer
             // reviewed it, or the one under a chain of clean merges from main
             // (first parent the reviewed side, second parent on main). Null
@@ -539,7 +650,7 @@ jobs:
               }
               const [ours, theirs] = commit.parents.map((parent) => parent.sha);
               const covering = await reviewCovering(ours, reviewedCommits, base, depth + 1);
-              if (!covering || !(await isOnBase(theirs, base)) || !(await isCleanMerge(sha, ours, theirs))) {
+              if (!covering || !(await isCleanMergeFromMain(sha, ours, theirs, base))) {
                 return null;
               }
               return covering;
@@ -572,7 +683,7 @@ jobs:
               // pass: it needs no review.
               if (pr.autoMergeRequest) {
                 if (pr.mergeStateStatus === "BEHIND") {
-                  await bringUpToDate(pullNumber, pr);
+                  await bringUpToDate(pullNumber, pr, { holdOnFailure: false });
                   return;
                 }
                 core.info(`Skipping PR #${pullNumber}: auto-merge is already enabled.`);
@@ -638,19 +749,35 @@ jobs:
                 return;
               }
 
-              // Reviews come oldest first, so the last of the reviewed commit
-              // is Claude's latest word on it; a later run on it replaces it.
-              // A merge from main keeps the hold of the commit it covers. It
-              // holds past the cap too: the findings are Claude's threads that
-              // couldn't be threads. Unlike a thread it can't be resolved, so
-              // only a push (or a merge by hand) clears it.
-              const latestClaudeOfHead = reviewedHead
-                ? claudeReviews.findLast((review) => review.commit?.oid === reviewedHead)
+              // Claude's off-diff findings hold on the newest commit Claude
+              // reviewed that covers the head: the head itself, or the one
+              // under its chain of clean merges from main. That chain is
+              // walked for Claude's reviews alone, since Copilot reviews every
+              // push: its review of a merge from main mustn't lift the hold of
+              // the commit underneath. Reviews come oldest first, so the last
+              // of that commit is Claude's latest word on it; a later run on
+              // it replaces it. It holds past the cap too: the findings are
+              // Claude's threads that couldn't be threads. Unlike a thread it
+              // can't be resolved, so only a push (or a merge by hand) clears it.
+              // No covering review at all (past the cap) means none of Claude's.
+              const claudeCommits = new Set(claudeReviews.map((review) => review.commit?.oid).filter(Boolean));
+              let claudeHead = null;
+              if (reviewedHead && claudeCommits.size > 0) {
+                try {
+                  claudeHead = await reviewCovering(pr.headRefOid, claudeCommits, pr.baseRefName);
+                } catch (error) {
+                  core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
+                  core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
+                  return;
+                }
+              }
+              const latestClaudeOfHead = claudeHead
+                ? claudeReviews.findLast((review) => review.commit?.oid === claudeHead)
                 : undefined;
               const claudeOffDiff = Boolean(latestClaudeOfHead?.body?.split("\n")[1] === OFF_DIFF_MARKER);
               if (claudeOffDiff) {
                 core.info(
-                  `Waiting on PR #${pullNumber}: Claude's review of ${reviewedHead} has findings outside the ` +
+                  `Waiting on PR #${pullNumber}: Claude's review of ${claudeHead} has findings outside the ` +
                   "diff, which open no thread; push a fix for a fresh review."
                 );
                 return;
@@ -716,7 +843,11 @@ jobs:
 
             // pull_request_target events carry the PR;
             // workflow_run carries only a commit; push, schedule and
-            // workflow_dispatch sweep every open PR into main.
+            // workflow_dispatch sweep every open PR into main. A workflow_run
+            // of another commit than the head is stale, except Claude
+            // Review's: it can review an older head that a clean merge from
+            // main now covers (claude-review.yml), so its completion
+            // evaluates every open PR holding that commit.
             let pullNumbers = [];
             const workflowRun = context.payload.workflow_run;
             if (context.payload.pull_request) {
@@ -728,7 +859,7 @@ jobs:
                 commit_sha: workflowRun.head_sha
               });
               pullNumbers = associated.data
-                .filter((pr) => pr.state === "open" && pr.head?.sha === workflowRun.head_sha)
+                .filter((pr) => pr.state === "open" && (workflowRun.name === "Claude Review" || pr.head?.sha === workflowRun.head_sha))
                 .map((pr) => pr.number);
             } else {
               const open = await github.paginate(github.rest.pulls.list, {

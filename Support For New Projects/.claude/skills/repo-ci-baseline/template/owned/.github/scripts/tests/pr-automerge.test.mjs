@@ -46,7 +46,7 @@ function readyPr(overrides = {}) {
     mergeStateStatus: "CLEAN",
     author: { login: "octo" },
     autoMergeRequest: null,
-    commits: checksOn(HEAD, requiredCheck("Build Solution")),
+    headRef: checksOn(HEAD, requiredCheck("Build Solution")),
     copilotReviews: { nodes: [{ commit: { oid: HEAD } }] },
     claudeReviews: { nodes: [] },
     reviewThreads: { totalCount: 0, nodes: [] },
@@ -55,9 +55,9 @@ function readyPr(overrides = {}) {
   };
 }
 
-// The head's checks as the query reports them: commits(last: 1) of oid.
+// The head's checks as the query reports them: headRef's target, at oid.
 function checksOn(oid, ...contexts) {
-  return { nodes: [{ commit: { oid, statusCheckRollup: { contexts: { totalCount: contexts.length, nodes: contexts } } } }] };
+  return { target: { oid, statusCheckRollup: { contexts: { totalCount: contexts.length, nodes: contexts } } } };
 }
 
 // A check run; required and passed unless the overrides say otherwise.
@@ -174,10 +174,29 @@ function ancestors(commits, sha) {
 // Runs the script for PR #7 on a pull_request event and returns what it did.
 // options: commits and onMain (the graph the merge checks read), prCommits
 // (the PR's commits as REST lists them), comments (the PR's comments),
-// updateError (thrown by update-branch), pat (false: no RELEASE_PR_PAT) and
-// push (a push to main, which sweeps the open PRs).
+// updateError (thrown by update-branch), pat (false: no RELEASE_PR_PAT),
+// push (a push to main, which sweeps the open PRs), requiredChecks (the check
+// names main's rulesets require; rulesError makes reading them throw) and
+// poster (the login the PAT posts comments as), and workflowRun (a
+// workflow_run event: { name, head_sha }) with associated (the PRs GitHub
+// associates with its commit).
+const POSTER = "release-bot";
 async function evaluate(pr, events = [], options = {}) {
-  const { commits = graph(), onMain = ON_MAIN, prCommits = [], comments = [], updateError, pat = true, push = false } = options;
+  const {
+    commits = graph(),
+    onMain = ON_MAIN,
+    prCommits = [],
+    comments = [],
+    updateError,
+    pat = true,
+    push = false,
+    requiredChecks = ["Build Solution"],
+    rulesError,
+    poster = POSTER,
+    workflowRun,
+    associated = []
+  } = options;
+  const rulesRequests = [];
   const updates = [];
   const posted = [];
   const merges = [];
@@ -217,6 +236,9 @@ async function evaluate(pr, events = [], options = {}) {
         posted.push(params);
       }
     },
+    users: {
+      getAuthenticated: async () => ({ data: { login: poster } })
+    },
     git: {
       getCommit: async ({ commit_sha: sha }) => {
         if (!commits[sha]) {
@@ -233,6 +255,13 @@ async function evaluate(pr, events = [], options = {}) {
       }
     },
     repos: {
+      listPullRequestsAssociatedWithCommit: async ({ commit_sha: sha }) => {
+        assert.equal(sha, workflowRun.head_sha);
+        return { data: associated };
+      },
+      getBranchRules: async () => {
+        throw new Error("repos.getBranchRules is only called through paginate");
+      },
       compareCommitsWithBasehead: async ({ basehead }) => {
         const [base, head] = basehead.split("...");
         if (head === "main") {
@@ -266,6 +295,17 @@ async function evaluate(pr, events = [], options = {}) {
       if (method === rest.pulls.list) {
         return [{ number: 7 }];
       }
+      if (method === rest.repos.getBranchRules) {
+        rulesRequests.push(params);
+        if (rulesError) {
+          throw rulesError;
+        }
+        // An unrelated rule, and the required checks.
+        return [
+          { type: "pull_request", parameters: {} },
+          { type: "required_status_checks", parameters: { required_status_checks: requiredChecks.map((context) => ({ context })) } }
+        ];
+      }
       throw new Error("the PAT client must not read label events or comments");
     }
   };
@@ -293,14 +333,14 @@ async function evaluate(pr, events = [], options = {}) {
   };
   const context = {
     repo: { owner: OWNER, repo: "demo" },
-    payload: push ? { ref: "refs/heads/main" } : { pull_request: { number: 7 } }
+    payload: workflowRun ? { workflow_run: workflowRun } : push ? { ref: "refs/heads/main" } : { pull_request: { number: 7 } }
   };
 
   process.env.HAS_RELEASE_PR_PAT = pat ? "true" : "false";
   process.env.EVENTS_TOKEN = "github-token";
   process.env.MERGE_STATE_RETRY_MS = "0";
   await run(github, context, core, getOctokit);
-  return { merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests };
+  return { merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests };
 }
 
 test("merges a ready PR at the head it checked", async () => {
@@ -779,7 +819,7 @@ function assertWaitsForReview({ merges, logs }, head) {
 
 // A PR whose head is the given commit of graph(), reviewed by Copilot at rev.
 function mergedPr(head, overrides = {}) {
-  return readyPr({ headRefOid: head, copilotReviews: copilotReviewsOf("rev"), commits: checksOn(head, requiredCheck("Build Solution")), ...overrides });
+  return readyPr({ headRefOid: head, copilotReviews: copilotReviewsOf("rev"), headRef: checksOn(head, requiredCheck("Build Solution")), ...overrides });
 }
 
 test("merges a clean merge of main into a reviewed commit without a new review", async () => {
@@ -869,6 +909,46 @@ test("keeps Claude's off-diff hold on the commit a merge from main covers", asyn
   assert.ok(logs.some((line) => line.includes("Claude's review of rev has findings outside the diff")), logs.join("\n"));
 });
 
+test("keeps Claude's off-diff hold on the commit a merge from main covers when Copilot reviewed the merge", async () => {
+  // Copilot reviews every push, so it reviews merge1, which Claude Review skips.
+  const pr = mergedPr("merge1", { copilotReviews: copilotReviewsOf({ oid: "merge1", merge: true }), claudeReviews: claudeReviewsOf({ oid: "rev", offDiff: true }) });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("Claude's review of rev has findings outside the diff")), logs.join("\n"));
+});
+
+test("keeps Claude's off-diff hold down a chain of merges Copilot reviewed", async () => {
+  const copilot = copilotReviewsOf({ oid: "merge1", merge: true }, { oid: "merge2", merge: true });
+  const pr = mergedPr("merge2", { copilotReviews: copilot, claudeReviews: claudeReviewsOf({ oid: "rev", offDiff: true }) });
+  const { merges, updates, logs } = await evaluate(pr);
+  const behind = await evaluate({ ...pr, mergeStateStatus: "BEHIND" });
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("Claude's review of rev has findings outside the diff")), logs.join("\n"));
+  assert.deepEqual(behind.updates, []);
+  assert.deepEqual(updates, []);
+});
+
+test("merges a Copilot-reviewed merge from main onto a commit Claude cleared", async () => {
+  const claude = claudeReviewsOf({ oid: "rev", offDiff: true }, "rev");
+  const pr = mergedPr("merge1", { copilotReviews: copilotReviewsOf({ oid: "merge1", merge: true }), claudeReviews: claude });
+
+  assert.equal((await evaluate(pr)).merges.length, 1);
+});
+
+test("lets a fix pushed after Claude's off-diff review clear the hold, even under a merge from main", async () => {
+  // fix sits on rev; merge1 merges main into fix. Copilot reviewed fix and merge1.
+  const commits = graph({
+    fix: { parents: ["rev"], files: { app: "app3", lib: "lib0" } },
+    merge1: { parents: ["fix", "main1"], files: { app: "app3", lib: "lib1" } }
+  });
+  const copilot = copilotReviewsOf("fix", { oid: "merge1", merge: true });
+  const pr = mergedPr("merge1", { copilotReviews: copilot, claudeReviews: claudeReviewsOf({ oid: "rev", offDiff: true }) });
+
+  assert.equal((await evaluate(pr, [], { commits })).merges.length, 1);
+});
+
 test("waits at the cap, with a warning, when the merge check can't read the head", async () => {
   const pr = mergedPr("missing", { copilotReviews: copilotReviewsOf("one", "two", "three") });
   const { merges, logs } = await evaluate(pr);
@@ -949,14 +1029,14 @@ test("doesn't update a BEHIND PR that can't merge cleanly", async () => {
 });
 
 test("doesn't update a BEHIND PR until its required checks pass", async () => {
-  const running = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Build Solution", { status: "IN_PROGRESS", conclusion: null })) });
-  const failed = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Build Solution", { conclusion: "FAILURE" })) });
+  const running = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn(HEAD, requiredCheck("Build Solution", { status: "IN_PROGRESS", conclusion: null })) });
+  const failed = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn(HEAD, requiredCheck("Build Solution", { conclusion: "FAILURE" })) });
   const failedStatus = readyPr({
     mergeStateStatus: "BEHIND",
-    commits: checksOn(HEAD, { __typename: "StatusContext", context: "ci/legacy", state: "FAILURE", createdAt: "x", isRequired: true })
+    headRef: checksOn(HEAD, { __typename: "StatusContext", context: "ci/legacy", state: "FAILURE", createdAt: "x", isRequired: true })
   });
-  const otherHead = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn("older", requiredCheck("Build Solution")) });
-  const noChecks = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD) });
+  const otherHead = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn("older", requiredCheck("Build Solution")) });
+  const noChecks = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn(HEAD) });
 
   const result = await evaluate(running);
   assert.deepEqual(result.updates, []);
@@ -971,7 +1051,7 @@ test("judges a BEHIND PR's required checks by their newest runs, and only the re
     HEAD,
     requiredCheck("Build Solution", { conclusion: "CANCELLED", databaseId: 1 }),
     requiredCheck("Build Solution", { conclusion: "SUCCESS", databaseId: 2 }),
-    requiredCheck("Coverage", { conclusion: "FAILURE", isRequired: false }),
+    requiredCheck("Coverage", { conclusion: "SKIPPED", isRequired: false }),
     requiredCheck("Merge same-repo PRs when ready", { status: "IN_PROGRESS", conclusion: null, isRequired: false }),
     { __typename: "StatusContext", context: "ci/legacy", state: "SUCCESS", createdAt: "x", isRequired: true }
   );
@@ -993,15 +1073,15 @@ test("judges a BEHIND PR's required checks by their newest runs, and only the re
     requiredCheck("Build Solution", { conclusion: "SUCCESS", databaseId: 2 })
   );
 
-  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: rerun }))).updates.length, 1);
-  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: regressed }))).updates.length, 0);
-  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: queuedRerun }))).updates.length, 0);
-  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: cancelledWhileQueued }))).updates.length, 1);
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef: rerun }))).updates.length, 1);
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef: regressed }))).updates.length, 0);
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef: queuedRerun }))).updates.length, 0);
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef: cancelledWhileQueued }))).updates.length, 1);
 });
 
 test("says so where it shows when a BEHIND PR has no required check at all", async () => {
-  const pr = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Lint", { isRequired: false })) });
-  const { updates, logs } = await evaluate(pr, [], { push: true });
+  const pr = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn(HEAD, requiredCheck("Lint", { isRequired: false })) });
+  const { updates, logs } = await evaluate(pr, [], { push: true, requiredChecks: [] });
 
   assert.deepEqual(updates, []);
   assert.ok(logs.some((line) => line.startsWith("notice: ") && line.includes("no required check")), logs.join("\n"));
@@ -1010,7 +1090,7 @@ test("says so where it shows when a BEHIND PR has no required check at all", asy
 test("doesn't flag a head whose CI is still creating its checks", async () => {
   const pr = readyPr({
     mergeStateStatus: "BEHIND",
-    commits: checksOn(HEAD, requiredCheck("Detect Changes", { isRequired: false, status: "IN_PROGRESS", conclusion: null }))
+    headRef: checksOn(HEAD, requiredCheck("Detect Changes", { isRequired: false, status: "IN_PROGRESS", conclusion: null }))
   });
   const { updates, logs } = await evaluate(pr, [], { push: true });
 
@@ -1019,12 +1099,98 @@ test("doesn't flag a head whose CI is still creating its checks", async () => {
 });
 
 test("doesn't flag a PR event that came before CI created its checks", async () => {
-  const pr = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Merge same-repo PRs when ready", { isRequired: false })) });
-  const { updates, logs } = await evaluate(pr);
+  const pr = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn(HEAD, requiredCheck("Merge same-repo PRs when ready", { isRequired: false })) });
+  const { updates, logs } = await evaluate(pr, [], { requiredChecks: [] });
 
   assert.deepEqual(updates, []);
   assert.ok(logs.some((line) => line.includes("no required check")), logs.join("\n"));
   assert.ok(!logs.some((line) => line.startsWith("notice: ")), logs.join("\n"));
+});
+
+test("doesn't update a BEHIND PR while a required check hasn't reported yet", async () => {
+  // Branch name has passed; Test Suite's job isn't queued yet, so it has no check run.
+  const pr = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn(HEAD, requiredCheck("Branch name")) });
+  const { updates, logs, rulesRequests } = await evaluate(pr, [], { requiredChecks: ["Branch name", "Test Suite"] });
+
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("required checks not reported yet: Test Suite")), logs.join("\n"));
+  assert.deepEqual(rulesRequests, [{ owner: OWNER, repo: "demo", branch: "main", per_page: 100 }]);
+});
+
+test("counts a check main's rulesets require even when isRequired doesn't", async () => {
+  const pr = readyPr({ mergeStateStatus: "BEHIND", headRef: checksOn(HEAD, requiredCheck("Test Suite", { isRequired: false, conclusion: "FAILURE" })) });
+  const { updates, logs } = await evaluate(pr, [], { requiredChecks: ["Test Suite"] });
+
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("required checks not passed: Test Suite")), logs.join("\n"));
+});
+
+test("waits, with a warning, when main's required checks can't be read", async () => {
+  const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }), [], { rulesError: new Error("boom") });
+
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && line.includes("boom")), logs.join("\n"));
+});
+
+test("doesn't update a BEHIND PR with a failed check that isn't required", async () => {
+  // Claude Review's post job fails on purpose to hold the PR at UNSTABLE.
+  const failedPost = checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Post the review", { isRequired: false, conclusion: "FAILURE" }));
+  const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef: failedPost }));
+
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes(`checks failed on ${HEAD}: Post the review`)), logs.join("\n"));
+  for (const conclusion of ["CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]) {
+    const headRef = checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Coverage", { isRequired: false, conclusion }));
+    assert.deepEqual((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef }))).updates, [], conclusion);
+  }
+  const erroredStatus = checksOn(HEAD, requiredCheck("Build Solution"), { __typename: "StatusContext", context: "ci/legacy", state: "ERROR", createdAt: "x", isRequired: false });
+  assert.deepEqual((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef: erroredStatus }))).updates, []);
+});
+
+test("updates a BEHIND PR once a failed optional check's rerun passes", async () => {
+  const headRef = checksOn(
+    HEAD,
+    requiredCheck("Build Solution"),
+    requiredCheck("Coverage", { isRequired: false, conclusion: "FAILURE", databaseId: 1 }),
+    requiredCheck("Coverage", { isRequired: false, conclusion: "SUCCESS", databaseId: 2 }),
+    requiredCheck("Docs", { isRequired: false, conclusion: "NEUTRAL" })
+  );
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef }))).updates.length, 1);
+});
+
+test("still updates a PR with native auto-merge armed past a failed optional check", async () => {
+  // GitHub merges it on its required checks alone, so the failure holds nothing.
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Coverage", { isRequired: false, conclusion: "FAILURE" }));
+  const pr = readyPr({ mergeStateStatus: "BEHIND", autoMergeRequest: { enabledAt: "now" }, copilotReviews: copilotReviewsOf(), headRef });
+
+  assert.equal((await evaluate(pr)).updates.length, 1);
+});
+
+test("reads the head's checks from headRef, not the last commit listed", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.some((query) => /headRef\s*\{\s*target\s*\{\s*\.\.\. on Commit\s*\{\s*oid\s+statusCheckRollup/.test(query)), queries.join("\n"));
+  assert.ok(!queries.some((query) => query.includes("commits(last")), queries.join("\n"));
+});
+
+test("doesn't update a BEHIND PR whose head branch is gone", async () => {
+  const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef: null }));
+
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("the head's checks aren't reported yet")), logs.join("\n"));
+});
+
+test("doesn't let a failed run of its own job hold an update", async () => {
+  // A transient failure of a pull_request_target run stays on the head until the next PR event.
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false, conclusion: "FAILURE" }));
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef }))).updates.length, 1);
+});
+
+test("names its own job as the check it leaves out", () => {
+  const workflow = readFileSync(WORKFLOW, "utf8");
+
+  assert.match(workflow, /\n {4}name: Merge same-repo PRs when ready\n/);
+  assert.match(workflow, /const SELF_CHECK = "Merge same-repo PRs when ready";/);
 });
 
 test("takes a 422 from update-branch quietly", async () => {
@@ -1082,14 +1248,27 @@ test("asks Dependabot to rebase its own BEHIND PR instead of updating it", async
 });
 
 test("asks Dependabot to rebase only once per head", async () => {
-  const asked = [{ body: `@dependabot rebase\n\n<!-- pr-automerge:dependabot-rebase ${HEAD} -->` }];
-  const askedBefore = [{ body: "@dependabot rebase\n\n<!-- pr-automerge:dependabot-rebase older -->" }, { body: null }];
+  const asked = [{ user: { login: POSTER }, body: `@dependabot rebase\n\n<!-- pr-automerge:dependabot-rebase ${HEAD} -->` }];
+  const askedBefore = [
+    { user: { login: POSTER }, body: "@dependabot rebase\n\n<!-- pr-automerge:dependabot-rebase older -->" },
+    { user: { login: POSTER }, body: null }
+  ];
 
   const again = await evaluate(dependabotPr(), [], { prCommits: DEPENDABOT_COMMITS, comments: asked });
   assert.deepEqual(again.posted, []);
   assert.deepEqual(again.updates, []);
   assert.ok(again.logs.some((line) => line.includes("already asked to rebase " + HEAD)), again.logs.join("\n"));
   assert.equal((await evaluate(dependabotPr(), [], { prCommits: DEPENDABOT_COMMITS, comments: askedBefore })).posted.length, 1);
+});
+
+test("doesn't count a rebase marker someone else posted", async () => {
+  const forged = [
+    { user: { login: "stranger" }, body: `<!-- pr-automerge:dependabot-rebase ${HEAD} -->` },
+    { user: null, body: `<!-- pr-automerge:dependabot-rebase ${HEAD} -->` }
+  ];
+  const { posted } = await evaluate(dependabotPr(), [], { prCommits: DEPENDABOT_COMMITS, comments: forged });
+
+  assert.equal(posted.length, 1);
 });
 
 test("updates a BEHIND Dependabot PR someone else pushed to", async () => {
@@ -1127,6 +1306,24 @@ test("a push to main sweeps the open PRs and brings the ready ones up to date", 
   const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }), [], { push: true });
 
   assert.equal(updates.length, 1);
+});
+
+test("evaluates a PR on a Claude Review run of an older commit", async () => {
+  // Claude Review reviewed rev, which merge1, the PR's head now, covers.
+  const workflowRun = { name: "Claude Review", head_sha: "rev" };
+  const associated = [{ number: 7, state: "open", head: { sha: "merge1" } }, { number: 8, state: "closed", head: { sha: "x" } }];
+  const { merges } = await evaluate(mergedPr("merge1"), [], { workflowRun, associated });
+
+  assert.deepEqual(merges.map((merge) => merge.pull_number), [7]);
+});
+
+test("ignores another workflow's run of a commit that is no longer the head", async () => {
+  const workflowRun = { name: "Build and Test Suite", head_sha: "rev" };
+  const associated = [{ number: 7, state: "open", head: { sha: "merge1" } }];
+  const { merges, logs } = await evaluate(mergedPr("merge1"), [], { workflowRun, associated });
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("No open pull request")), logs.join("\n"));
 });
 
 test("runs on a push to main", () => {

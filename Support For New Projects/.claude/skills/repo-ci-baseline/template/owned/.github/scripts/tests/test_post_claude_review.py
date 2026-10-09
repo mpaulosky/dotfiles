@@ -795,6 +795,17 @@ def test_the_warning_tells_a_sign_in_failure_from_a_limit(tmp_path, result, sign
     assert ("once a usage limit has reset" in done.stdout) is not sign_in
 
 
+@pytest.mark.parametrize("subtype", ["error_max_budget_usd", "error_max_turns"])
+def test_the_warning_says_a_capped_review_shouldnt_be_rerun(tmp_path, subtype):
+    execution = tmp_path / "execution.json"
+    execution.write_text(json.dumps([{"type": "result", "subtype": subtype, "is_error": True, "result": "",
+                                      "total_cost_usd": 2.97, "modelUsage": {"claude-opus-5-5": {}}}]))
+    done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], "OUTCOME": "failure", "EXECUTION_FILE": str(execution)})
+    assert done.returncode == 0, done.stderr
+    assert "hit its spending or turn cap" in done.stdout and "once a usage limit has reset" not in done.stdout
+
+
 def test_the_warning_survives_a_missing_execution_file(tmp_path):
     done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True,
                           env={"PATH": os.environ["PATH"], "OUTCOME": "failure", "EXECUTION_FILE": str(tmp_path / "x")})

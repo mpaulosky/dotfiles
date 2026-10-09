@@ -475,6 +475,30 @@ def test_a_git_lfs_pointer_holds_the_merge_but_its_deletion_doesnt(repo, tmp_pat
     assert held_of(folder) == {"tools/Tool.dll": "lfs"}
 
 
+@pytest.mark.parametrize("version", ["https://hawser.github.com/spec/v1", "http://git-media.io/v/2"])
+def test_a_pointer_with_an_older_version_url_holds_the_merge(repo, tmp_path, version):
+    head = repo.commit({"tools/run.sh": f"version {version}\noid sha256:{'d' * 64}\nsize 42\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"tools/run.sh": "lfs"}
+
+
+def test_a_pointer_whose_first_line_is_out_of_context_holds_by_its_oid(repo, tmp_path):
+    extensions = "".join(f"ext-{n}-x sha256:{str(n) * 64}\n" for n in range(5))
+    pointer = "version https://git-lfs.github.com/spec/v1\n" + extensions + "oid sha256:{}\nsize 42\n"
+    repo.base = repo.commit({"tools/Tool.dll": pointer.format("a" * 64)})
+    head = repo.commit({"tools/Tool.dll": pointer.format("e" * 64)})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert b"+version" not in diff and b" version" not in diff
+    assert held_of(folder) == {"tools/Tool.dll": "lfs"}
+
+
+def test_media_in_lfs_holds_nothing(repo, tmp_path):
+    pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n"
+    head = repo.commit({"web/img/hero.png": pointer.format("f" * 64), "fonts/a.woff2": pointer.format("9" * 64)})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {}
+
+
 def test_text_quoting_an_lfs_pointer_holds_nothing(repo, tmp_path):
     head = repo.commit({"docs/lfs.md": "# LFS\n\nA pointer reads:\n\nversion https://git-lfs.github.com/spec/v1\n"})
     _, folder, _ = repo.split(repo.base, head, tmp_path)

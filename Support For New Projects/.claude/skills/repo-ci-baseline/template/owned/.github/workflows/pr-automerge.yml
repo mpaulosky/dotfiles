@@ -157,6 +157,10 @@ jobs:
             const MERGE_STATE_RETRIES = 4;
             const MERGE_STATE_RETRY_MS = Number(process.env.MERGE_STATE_RETRY_MS || 5000);
             const PASSED = ["SUCCESS", "NEUTRAL", "SKIPPED"];
+            // This job's own check. Its pull_request_target runs report on
+            // the head, and a transient failure there is replaced only by
+            // another PR event, so it never holds an update.
+            const SELF_CHECK = "Merge same-repo PRs when ready";
 
             async function getPullRequestStatus(pullNumber) {
               const status = await github.graphql(
@@ -412,7 +416,10 @@ jobs:
                 return [];
               }
               return [...newestChecks(contexts)]
-                .filter(([, check]) => {
+                .filter(([name, check]) => {
+                  if (name === SELF_CHECK) {
+                    return false;
+                  }
                   return check.__typename === "StatusContext"
                     ? FAILED_STATES.includes(check.state)
                     : check.status === "COMPLETED" && FAILED_CONCLUSIONS.includes(check.conclusion);
@@ -836,7 +843,11 @@ jobs:
 
             // pull_request_target events carry the PR;
             // workflow_run carries only a commit; push, schedule and
-            // workflow_dispatch sweep every open PR into main.
+            // workflow_dispatch sweep every open PR into main. A workflow_run
+            // of another commit than the head is stale, except Claude
+            // Review's: it can review an older head that a clean merge from
+            // main now covers (claude-review.yml), so its completion
+            // evaluates every open PR holding that commit.
             let pullNumbers = [];
             const workflowRun = context.payload.workflow_run;
             if (context.payload.pull_request) {
@@ -848,7 +859,7 @@ jobs:
                 commit_sha: workflowRun.head_sha
               });
               pullNumbers = associated.data
-                .filter((pr) => pr.state === "open" && pr.head?.sha === workflowRun.head_sha)
+                .filter((pr) => pr.state === "open" && (workflowRun.name === "Claude Review" || pr.head?.sha === workflowRun.head_sha))
                 .map((pr) => pr.number);
             } else {
               const open = await github.paginate(github.rest.pulls.list, {

@@ -177,7 +177,9 @@ function ancestors(commits, sha) {
 // updateError (thrown by update-branch), pat (false: no RELEASE_PR_PAT),
 // push (a push to main, which sweeps the open PRs), requiredChecks (the check
 // names main's rulesets require; rulesError makes reading them throw) and
-// poster (the login the PAT posts comments as).
+// poster (the login the PAT posts comments as), and workflowRun (a
+// workflow_run event: { name, head_sha }) with associated (the PRs GitHub
+// associates with its commit).
 const POSTER = "release-bot";
 async function evaluate(pr, events = [], options = {}) {
   const {
@@ -190,7 +192,9 @@ async function evaluate(pr, events = [], options = {}) {
     push = false,
     requiredChecks = ["Build Solution"],
     rulesError,
-    poster = POSTER
+    poster = POSTER,
+    workflowRun,
+    associated = []
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -251,6 +255,10 @@ async function evaluate(pr, events = [], options = {}) {
       }
     },
     repos: {
+      listPullRequestsAssociatedWithCommit: async ({ commit_sha: sha }) => {
+        assert.equal(sha, workflowRun.head_sha);
+        return { data: associated };
+      },
       getBranchRules: async () => {
         throw new Error("repos.getBranchRules is only called through paginate");
       },
@@ -325,7 +333,7 @@ async function evaluate(pr, events = [], options = {}) {
   };
   const context = {
     repo: { owner: OWNER, repo: "demo" },
-    payload: push ? { ref: "refs/heads/main" } : { pull_request: { number: 7 } }
+    payload: workflowRun ? { workflow_run: workflowRun } : push ? { ref: "refs/heads/main" } : { pull_request: { number: 7 } }
   };
 
   process.env.HAS_RELEASE_PR_PAT = pat ? "true" : "false";
@@ -1172,6 +1180,19 @@ test("doesn't update a BEHIND PR whose head branch is gone", async () => {
   assert.ok(logs.some((line) => line.includes("the head's checks aren't reported yet")), logs.join("\n"));
 });
 
+test("doesn't let a failed run of its own job hold an update", async () => {
+  // A transient failure of a pull_request_target run stays on the head until the next PR event.
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false, conclusion: "FAILURE" }));
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", headRef }))).updates.length, 1);
+});
+
+test("names its own job as the check it leaves out", () => {
+  const workflow = readFileSync(WORKFLOW, "utf8");
+
+  assert.match(workflow, /\n {4}name: Merge same-repo PRs when ready\n/);
+  assert.match(workflow, /const SELF_CHECK = "Merge same-repo PRs when ready";/);
+});
+
 test("takes a 422 from update-branch quietly", async () => {
   const updateError = Object.assign(new Error("expected head sha didn't match current head ref"), { status: 422 });
   const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }), [], { updateError });
@@ -1285,6 +1306,24 @@ test("a push to main sweeps the open PRs and brings the ready ones up to date", 
   const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }), [], { push: true });
 
   assert.equal(updates.length, 1);
+});
+
+test("evaluates a PR on a Claude Review run of an older commit", async () => {
+  // Claude Review reviewed rev, which merge1, the PR's head now, covers.
+  const workflowRun = { name: "Claude Review", head_sha: "rev" };
+  const associated = [{ number: 7, state: "open", head: { sha: "merge1" } }, { number: 8, state: "closed", head: { sha: "x" } }];
+  const { merges } = await evaluate(mergedPr("merge1"), [], { workflowRun, associated });
+
+  assert.deepEqual(merges.map((merge) => merge.pull_number), [7]);
+});
+
+test("ignores another workflow's run of a commit that is no longer the head", async () => {
+  const workflowRun = { name: "Build and Test Suite", head_sha: "rev" };
+  const associated = [{ number: 7, state: "open", head: { sha: "merge1" } }];
+  const { merges, logs } = await evaluate(mergedPr("merge1"), [], { workflowRun, associated });
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("No open pull request")), logs.join("\n"));
 });
 
 test("runs on a push to main", () => {

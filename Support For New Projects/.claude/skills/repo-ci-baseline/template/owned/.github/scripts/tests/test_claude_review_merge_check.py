@@ -70,19 +70,24 @@ class Repo:
             self.git("commit", "-q", "--amend", "--no-edit")
         return self.git("rev-parse", "HEAD")
 
-    def check(self, head, reviewed, tmp_path, current=None):
-        """Run the step: (exit code, its skip output, what it printed). current: the PR's head by then."""
+    def check(self, head, reviewed, tmp_path, current=None, runs=(), outputs=None):
+        """Run the step: (exit code, its skip output, what it printed). current: the PR's head by then; runs: how
+        the check job went in each run for current; outputs: a dict to fill with every output."""
         self.git("update-ref", "refs/remotes/origin/main", "main")
         runner_temp = tmp_path / "runner"
         runner_temp.mkdir(exist_ok=True)
         (runner_temp / "reviewed.txt").write_text("".join(f"{sha}\n" for sha in reviewed))
+        (runner_temp / "current-runs.txt").write_text("".join(f"{state}\n" for state in runs))
         output = runner_temp / "output"
         output.write_text("")
         env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output), "HEAD_SHA": head,
                "BASE_REF": "main", "CURRENT_HEAD": current or head}
         done = subprocess.run([sys.executable, "-I", "-"], input=merge_check_script(), cwd=self.path, env=env,
                               capture_output=True, text=True)
-        outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        found = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        if outputs is not None:
+            outputs.update(found)
+        outputs = found
         return done.returncode, outputs.get("skip"), done.stdout
 
 
@@ -264,3 +269,34 @@ def test_skips_a_stale_head_where_main_has_no_pr_auto_merge(repo, tmp_path):
     repo.git("checkout", "-q", "feature")
     newer = repo.merge("main")
     assert repo.check(repo.rev, [], tmp_path, current=newer)[:2] == (0, "true")
+
+
+def test_marks_a_stale_heads_review_for_its_own_concurrency_group(repo, tmp_path):
+    newer = repo.merge("main")
+    outputs = {}
+    assert repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], outputs=outputs)[:2] == (0, "false")
+    assert outputs["stale"] == "true"
+    outputs = {}
+    repo.check(newer, [repo.rev], tmp_path, outputs=outputs)
+    assert outputs["stale"] == "false"
+
+
+def test_skips_a_stale_head_when_a_run_for_the_newer_head_reviews(repo, tmp_path):
+    # A person pushed the merge: that run's check job ran, so it reviews, and two reviews would race.
+    newer = repo.merge("main")
+    for state in ("in_progress", "queued", "success"):
+        code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped", state])
+        assert (code, skip) == (0, "true"), state
+        assert f"a run for {newer} handles its review" in out
+
+
+def test_stale_reviews_cant_cancel_the_newer_heads(repo):
+    """The review and post jobs' concurrency groups for a stale head are keyed by it."""
+    import re
+    workflow = WORKFLOW.read_text()
+    for job, needs in (("claude-review", "merge-from-main"), ("claude-review-post", "review")):
+        pattern = (r"group: " + re.escape(job) + r"-\$\{\{ github\.event\.pull_request\.number \}\}\$\{\{ needs\."
+                   + re.escape(needs) + r"\.outputs\.stale == 'true' && format\('-\{0\}', github\.event\.pull_request\.head\.sha\)")
+        assert re.search(pattern, workflow), job
+    assert "stale: ${{ steps.check.outputs.stale == 'true' }}" in workflow
+    assert "stale: ${{ needs.merge-from-main.outputs.stale }}" in workflow

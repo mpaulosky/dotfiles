@@ -55,11 +55,14 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   in a job of its own so a skipped run can't cancel a review in progress; the two copies must agree.
   It reviews anyway when the base's `pr-automerge.yml` lacks the rule (dotfiles has none; a re-Apply PR's `main` has the old one),
   and skips a run whose head is no longer the PR's, unless the newer head only merges `main` into it
-  (an app's or Copilot's push of that merge starts no review, so the older head is reviewed, which covers the merge).
+  and no run for it got past the job's condition (an app's or Copilot's push of that merge starts no review, so the older head is reviewed, which covers the merge).
+  That review and its post take concurrency groups keyed by the older head, so they can't cancel the newer head's review,
+  and a Claude Review run's completion evaluates every open PR holding its commit, not only the PR whose head it is.
 - **Bringing a ready PR up to date.** A PR that passes every check above but is `BEHIND` (and `MERGEABLE`, every required check's newest run passed,
   no check's newest run failed, required or not) gets `pulls.updateBranch` with `expected_head_sha: headRefOid`, made with `RELEASE_PR_PAT`, since a `GITHUB_TOKEN` push starts no CI.
   Required checks are the head's `isRequired` ones (read through `headRef`, since GitHub lists a PR's commits by date) and the ones `main`'s rulesets list;
   one with no run yet (its job not queued) is pending. A failed optional check holds the update: Claude Review fails on purpose to leave a PR `UNSTABLE`.
+  This workflow's own job is left out, since a transient failure of it stays on the head until the next PR event.
   A PR with native auto-merge armed (release-blog and Dependabot PRs) is updated once its required checks pass, with no review; GitHub merges it on those alone.
   Dependabot's own PRs (every commit by `dependabot[bot]`) get an `@dependabot rebase` comment instead, once per head
   (a marker in the comment names it; only a marker posted by the PAT's account counts).

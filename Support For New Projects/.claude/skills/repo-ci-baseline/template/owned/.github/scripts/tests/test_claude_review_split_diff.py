@@ -499,6 +499,19 @@ def test_media_in_lfs_holds_nothing(repo, tmp_path):
     assert held_of(folder) == {}
 
 
+@pytest.mark.parametrize("pointer", [
+    "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n\n",
+    "\nversion https://git-lfs.github.com/spec/v1\n\noid sha256:{}\nsize 42\n",
+    "version https://git-lfs.github.com/spec/v1\r\noid sha256:{}\r\nsize 42\r\n",
+    "  version https://git-lfs.github.com/spec/v1\noid sha256:{} \nsize 42\n",
+], ids=["trailing-blank", "blank-lines", "crlf", "spaces"])
+def test_a_pointer_git_lfs_reads_past_whitespace_holds_the_merge(repo, tmp_path, pointer):
+    # git-lfs trims whitespace, drops a CR and skips blank lines.
+    head = repo.commit({"tools/run.sh": pointer.format("d" * 64)})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"tools/run.sh": "lfs"}
+
+
 def test_text_quoting_an_lfs_pointer_holds_nothing(repo, tmp_path):
     pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{'a' * 64}\nsize 42\n"
     head = repo.commit({"docs/lfs.md": f"# LFS\n\nA pointer reads:\n\n{pointer}",

@@ -403,7 +403,7 @@ def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
     assert len(index(folder)) == 1 and repo.skipped == ""
     # Inert data holds nothing; the rest of what nobody reads, lockfiles included, holds the merge.
     data = {f"deps/{name}" for name in DATA_NAMES} | {
-        path for glob in ("**/*.svg", "**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/*")
+        path for glob in ("**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/*")
         for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
     assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"} - data}
     assert repo.held == len(held_of(folder)) and "holds the merge for a person" in repo.log
@@ -439,8 +439,7 @@ def test_copilots_bin_exceptions_and_dotnet_files_are_reviewed(repo, tmp_path):
 
 
 def test_only_excluded_data_leaves_nothing_to_read_and_holds_nothing(repo, tmp_path):
-    head = repo.commit({"build.log": "x\n", "web/logo.svg": "<svg/>\n", "web/site.min.js.map": "{}\n",
-                        "coverage/index.html": "<html/>\n"})
+    head = repo.commit({"build.log": "x\n", "web/site.min.js.map": "{}\n", "coverage/lcov.info": "x\n"})
     text, folder, _ = repo.split(repo.base, head, tmp_path)
     assert text == "(none: every changed file is one Copilot code review excludes)"
     assert index(folder) == {} and repo.listed == "" and repo.skipped == ""
@@ -470,26 +469,38 @@ def test_a_lockfile_holds_the_merge(repo, tmp_path):
                                                              "Cargo.lock")}
 
 
-def test_only_a_coverage_report_is_data(repo, tmp_path):
-    head = repo.commit({"coverage/lcov.info": "x\n", "coverage/report/index.html": "x\n",
-                        "src/app/coverage/policy.rb": "class Policy; end\n", "coverage/run.js": "x\n"})
+def test_only_a_named_coverage_report_is_data(repo, tmp_path):
+    reports = {"coverage/lcov.info": "x\n", "web/coverage/coverage-final.json": "{}\n",
+               "coverage/cobertura-coverage.xml": "<c/>\n", "coverage/clover.xml": "<c/>\n"}
+    code = {"src/app/coverage/policy.rb": "class Policy; end\n", "coverage/pom.xml": "<project/>\n",
+            "packages/coverage/package.json": "{}\n", "coverage/index.html": "<script/>\n",
+            "tools/coverage/requirements.txt": "x\n"}
+    head = repo.commit({**reports, **code})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
-    assert held_of(folder) == {"src/app/coverage/policy.rb": "excluded", "coverage/run.js": "excluded"}
+    assert held_of(folder) == {path: "excluded" for path in code}
 
 
-@pytest.mark.parametrize("svg", ['<svg><script>steal()</script></svg>', '<svg onload="steal()"/>',
-                                 '<svg><a href="JavaScript:steal()"/></svg>',
-                                 '<svg>' + ' ' * 20_000 + '<scr' + 'ipt>steal()</script></svg>'],
-                         ids=["script", "handler", "href", "split-long-line"])
-def test_an_svg_that_gains_script_holds_the_merge(repo, tmp_path, svg):
-    head = repo.commit({"public/logo.svg": svg + "\n", "public/icon.svg": '<svg><path d="M0 0"/></svg>\n'})
+@pytest.mark.parametrize("svg", ["<svg/>", '<svg><path d="M0 0"/></svg>',
+                                 '<svg><s:script xmlns:s="http://www.w3.org/2000/svg">x()</s:script></svg>',
+                                 '<svg><a href="javascript&#58;x()"/></svg>'],
+                         ids=["empty", "path", "prefixed-script", "char-ref"])
+def test_a_changed_svg_holds_the_merge(repo, tmp_path, svg):
+    # An SVG can script in more ways than a pattern can list, so any change to one holds.
+    head = repo.commit({"public/logo.svg": svg + "\n"})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert held_of(folder) == {"public/logo.svg": "excluded"}
 
 
-def test_an_svg_losing_its_script_holds_nothing(repo, tmp_path):
+def test_uncommenting_an_svgs_script_holds_the_merge(repo, tmp_path):
+    repo.base = repo.commit({"public/logo.svg": "<svg>\n<!--\n<script>x()</script>\n-->\n</svg>\n"})
+    head = repo.commit({"public/logo.svg": "<svg>\n<script>x()</script>\n</svg>\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"public/logo.svg": "excluded"}
+
+
+def test_a_deleted_svg_holds_nothing(repo, tmp_path):
     repo.base = repo.commit({"public/logo.svg": "<svg><script>x()</script></svg>\n"})
-    head = repo.commit({"public/logo.svg": "<svg/>\n"})
+    head = repo.commit({"public/logo.svg": None})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert held_of(folder) == {}
 

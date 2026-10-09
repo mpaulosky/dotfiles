@@ -366,8 +366,9 @@ jobs:
       # them as excluded. But Copilot's review is advice and a person merges,
       # while this one gates PR Auto-Merge, so what nobody reads can't merge on
       # it: an excluded file that isn't inert data (DATA_NAMES, DATA_GLOBS:
-      # logs, source maps, coverage reports, and SVGs that gain no script),
-      # or any excluded file under .github/, holds the merge, deleted or not.
+      # logs, source maps and named coverage reports), or any excluded file
+      # under .github/, holds the merge, deleted or not. An SVG can script, so
+      # one holds unless it's deleted.
       # Lockfiles hold: they decide which dependency code the build installs
       # and runs. So does a file git shows only as "Binary files differ",
       # unless it's inert media (MEDIA) or deleted. INDEX lists them under
@@ -432,14 +433,14 @@ jobs:
           COPILOT_INCLUDED_GLOBS = ("**/bin/**/*.rs", "**/hybris/bin/custom/**")
           # The excluded files that are inert data, not code a build or CI runs
           # nor a pin on what it installs: unread, and they hold nothing. Every
-          # other excluded file holds. An SVG holds when its added lines could
-          # script (SCRIPTABLE); coverage only as a report, since a folder named
-          # coverage can hold code.
+          # other excluded file holds. Coverage counts only as a named report
+          # file, since a folder named coverage can hold a build (pom.xml,
+          # package.json) or a page.
           DATA_NAMES = frozenset((".gitignore",))
-          DATA_GLOBS = ("**/*.svg", "**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/*.html",
-                        "**/coverage/**/*.xml", "**/coverage/**/*.json", "**/coverage/**/*.info",
-                        "**/coverage/**/*.lcov", "**/coverage/**/*.css", "**/coverage/**/*.txt")
-          SCRIPTABLE = re.compile(rb"<script|javascript:|\bon[a-z]+\s*=", re.I)
+          DATA_GLOBS = ("**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/lcov.info",
+                        "**/coverage/**/*.lcov", "**/coverage/**/coverage-final.json",
+                        "**/coverage/**/coverage-summary.json", "**/coverage/**/clover.xml",
+                        "**/coverage/**/cobertura*.xml", "**/coverage/**/coverage.xml")
           # Binary files nothing runs: images, fonts, audio, video and PDFs.
           MEDIA = frozenset((
               "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "avif", "heic", "psd",
@@ -476,27 +477,13 @@ jobs:
               return bare.rsplit("/", 1)[-1] in COPILOT_EXCLUDED_NAMES or any(pattern.match(bare) for pattern in EXCLUDED)
 
 
-          def added(body):
-              """The file's added lines, a long line's chunks joined back together."""
-              text, adding = [], False
-              for line, _, _, kind in body:
-                  if kind == "~" and adding:
-                      text[-1] = text[-1][:-1] + line[len(CONTINUED):]
-                  elif kind != "~":
-                      adding = kind == "+"
-                      if adding:
-                          text.append(line)
-              return b"".join(text)
-
-
-          def held(header, body, path, excluded):
+          def held(header, path, excluded):
               """Why the file holds the merge for a person ("excluded" or "binary"), or None: see the comment above."""
               bare = unquoted(path)
               deleted = any(line.startswith(b"deleted file mode") for line in header)
               if excluded:
-                  data = bare.rsplit("/", 1)[-1] in DATA_NAMES or any(pattern.match(bare) for pattern in DATA)
-                  if data and bare.lower().endswith(".svg") and SCRIPTABLE.search(added(body)):
-                      data = False
+                  data = (bare.rsplit("/", 1)[-1] in DATA_NAMES or any(pattern.match(bare) for pattern in DATA)
+                          or deleted and bare.lower().endswith(".svg"))
                   return "excluded" if bare.startswith(".github/") or not data else None
               if deleted:
                   return None
@@ -639,7 +626,7 @@ jobs:
           for number, (header, body) in sorted(enumerate(files), key=lambda item: (
                   KINDS.index(kind_of(item[1][0], path_of(item[1][0]))), item[0])):
               path = path_of(header)
-              reason = held(header, body, path, copilot_excludes(path))
+              reason = held(header, path, copilot_excludes(path))
               if reason:
                   holding.append((reason, path))
               if copilot_excludes(path):

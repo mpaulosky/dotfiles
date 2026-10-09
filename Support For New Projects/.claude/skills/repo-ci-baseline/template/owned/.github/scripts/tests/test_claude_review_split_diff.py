@@ -81,9 +81,10 @@ class Repo:
                "BASE_SHA": base, "HEAD_SHA": head}
         done = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
                               capture_output=True)
-        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\nlisted=(.*)\n", output.read_text(), re.S)
+        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\nlisted=(.*)\nheld=(\d+)\n",
+                             output.read_text(), re.S)
         assert found, output.read_text()
-        self.skipped, self.listed = found[3], found[4]
+        self.skipped, self.listed, self.held = found[3], found[4], int(found[5])
         self.log = done.stdout.decode("utf-8", "replace")
         folder = runner_temp / "claude-review" / "diff"
         return found[2], folder, (runner_temp / "claude-review" / "pr.diff").read_bytes()
@@ -100,7 +101,7 @@ def index(folder):
     """INDEX's pieces: {name: (lines, read, [(kind, path), ...])}, in order."""
     pieces = {}
     for row in (folder / "INDEX").read_text(encoding="utf-8").split("\n")[1:-1]:
-        if row == EXCLUDED_HEADING:
+        if row in (EXCLUDED_HEADING, HELD_HEADING):
             break
         if row.startswith("\t"):
             _, kind, path = row.split("\t", 2)
@@ -112,14 +113,27 @@ def index(folder):
 
 
 EXCLUDED_HEADING = "excluded (Copilot doesn't review these)"
+HELD_HEADING = "held\t(nobody reads these here, so they hold the merge for a person)"
+
+
+def section(folder, heading):
+    """The rows of INDEX's section under heading, as (kind, path)."""
+    rows = (folder / "INDEX").read_text(encoding="utf-8").split("\n")[:-1]
+    if heading not in rows:
+        return []
+    rest = rows[rows.index(heading) + 1:]
+    end = next((i for i, row in enumerate(rest) if not row.startswith("\t")), len(rest))
+    return [tuple(row.split("\t", 2)[1:]) for row in rest[:end]]
 
 
 def excluded_of(folder):
     """The paths INDEX lists as excluded, in no piece."""
-    rows = (folder / "INDEX").read_text(encoding="utf-8").split("\n")[:-1]
-    if EXCLUDED_HEADING not in rows:
-        return []
-    return [row.split("\t", 2)[2] for row in rows[rows.index(EXCLUDED_HEADING) + 1:]]
+    return [path for _, path in section(folder, EXCLUDED_HEADING)]
+
+
+def held_of(folder):
+    """{path: reason} for the files INDEX lists as holding the merge."""
+    return {path: reason for reason, path in section(folder, HELD_HEADING)}
 
 
 def files_of(folder):
@@ -387,7 +401,22 @@ def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
     assert set(excluded_of(folder)) == set(files) - {"src/app.py"}
     assert files_of(folder) == {"src/app.py": ("source", "read")}
     assert len(index(folder)) == 1 and repo.skipped == ""
+    # Inert data holds nothing; the rest of what nobody reads, lockfiles included, holds the merge.
+    data = {f"deps/{name}" for name in DATA_NAMES} | {
+        path for glob in ("**/*.svg", "**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/*")
+        for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
+    assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"} - data}
+    assert repo.held == len(held_of(folder)) and "holds the merge for a person" in repo.log
     check_pieces(folder, diff)
+
+
+DATA_NAMES = [".gitignore"]
+
+
+def test_the_data_names_are_copilots_and_in_the_workflow():
+    script = step_script()
+    names = re.findall(r'"([^"]+)"', re.search(r"DATA_NAMES = frozenset\(\((.*?)\)\)", script, re.S)[1])
+    assert names == DATA_NAMES and set(names) <= set(COPILOT_EXCLUDED_NAMES)
 
 
 def test_a_name_matches_only_a_whole_basename(repo, tmp_path):
@@ -409,26 +438,100 @@ def test_copilots_bin_exceptions_and_dotnet_files_are_reviewed(repo, tmp_path):
     assert sorted(excluded_of(folder)) == ["hybris/bin/platform/x.java", "tools/bin/main.py"]
 
 
-def test_only_excluded_files_leave_nothing_to_read(repo, tmp_path):
-    head = repo.commit({"yarn.lock": "x\n", "web/logo.svg": "<svg/>\n"})
+def test_only_excluded_data_leaves_nothing_to_read_and_holds_nothing(repo, tmp_path):
+    head = repo.commit({"build.log": "x\n", "web/logo.svg": "<svg/>\n", "web/site.min.js.map": "{}\n",
+                        "coverage/index.html": "<html/>\n"})
     text, folder, _ = repo.split(repo.base, head, tmp_path)
     assert text == "(none: every changed file is one Copilot code review excludes)"
     assert index(folder) == {} and repo.listed == "" and repo.skipped == ""
+    assert repo.held == 0 and held_of(folder) == {} and "::warning::" not in repo.log
 
 
-def test_an_excluded_file_past_the_budget_holds_nothing(repo, tmp_path):
+def test_only_excluded_code_leaves_nothing_to_read_and_holds_the_merge(repo, tmp_path):
+    head = repo.commit({"web/vendor/analytics.min.js": "steal()\n"})
+    text, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert text == "(none: every changed file is one Copilot code review excludes)"
+    assert index(folder) == {} and repo.listed == ""
+    assert repo.held == 1 and held_of(folder) == {"web/vendor/analytics.min.js": "excluded"}
+
+
+def test_excluded_data_under_github_holds_the_merge(repo, tmp_path):
+    head = repo.commit({".github/actions/foo/dist/index.js": "run()\n", ".github/actions/foo/build.log": "x\n",
+                        "build.log": "x\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {".github/actions/foo/dist/index.js": "excluded", ".github/actions/foo/build.log": "excluded"}
+
+
+def test_a_lockfile_holds_the_merge(repo, tmp_path):
+    # It decides which dependency code the build installs and runs.
+    head = repo.commit({"package-lock.json": "{}\n", "web/yarn.lock": "x\n", "svc/go.sum": "x\n", "Cargo.lock": "x\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {path: "excluded" for path in ("package-lock.json", "web/yarn.lock", "svc/go.sum",
+                                                             "Cargo.lock")}
+
+
+def test_only_a_coverage_report_is_data(repo, tmp_path):
+    head = repo.commit({"coverage/lcov.info": "x\n", "coverage/report/index.html": "x\n",
+                        "src/app/coverage/policy.rb": "class Policy; end\n", "coverage/run.js": "x\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"src/app/coverage/policy.rb": "excluded", "coverage/run.js": "excluded"}
+
+
+@pytest.mark.parametrize("svg", ['<svg><script>steal()</script></svg>', '<svg onload="steal()"/>',
+                                 '<svg><a href="JavaScript:steal()"/></svg>',
+                                 '<svg>' + ' ' * 20_000 + '<scr' + 'ipt>steal()</script></svg>'],
+                         ids=["script", "handler", "href", "split-long-line"])
+def test_an_svg_that_gains_script_holds_the_merge(repo, tmp_path, svg):
+    head = repo.commit({"public/logo.svg": svg + "\n", "public/icon.svg": '<svg><path d="M0 0"/></svg>\n'})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"public/logo.svg": "excluded"}
+
+
+def test_an_svg_losing_its_script_holds_nothing(repo, tmp_path):
+    repo.base = repo.commit({"public/logo.svg": "<svg><script>x()</script></svg>\n"})
+    head = repo.commit({"public/logo.svg": "<svg/>\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {}
+
+
+def test_deleting_excluded_code_holds_the_merge_but_deleting_data_doesnt(repo, tmp_path):
+    repo.base = repo.commit({"next.config.js": "module.exports = {headers}\n", "dist/app.js": "x\n",
+                             "build.log": "x\n", ".github/actions/foo/build.log": "x\n", "src/app.py": "x\n"})
+    head = repo.commit({"next.config.js": None, "dist/app.js": None, "build.log": None,
+                        ".github/actions/foo/build.log": None, "src/app.py": None})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"next.config.js": "excluded", "dist/app.js": "excluded",
+                               ".github/actions/foo/build.log": "excluded"}
+    assert files_of(folder) == {"src/app.py": ("deleted", "read")}
+
+
+def test_an_excluded_file_past_the_budget_is_never_read(repo, tmp_path):
     lock = "".join(f'"node_modules/p{n}": {{"resolved": "https://registry.example/p{n}-{n:020d}.tgz"}}\n'
                    for n in range(MAX_READ_BYTES // 40))
     head = repo.commit({"src/app.py": "print(2)\n", "package-lock.json": lock, "dist/bundle.js": lock})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert list(index(folder)) == ["001.diff"] and repo.listed == "001.diff" and repo.skipped == ""
     assert sorted(excluded_of(folder)) == ["dist/bundle.js", "package-lock.json"]
+    assert held_of(folder) == {"dist/bundle.js": "excluded", "package-lock.json": "excluded"}
 
 
-def test_a_binary_is_reviewed_as_git_shows_it_and_holds_nothing(repo, tmp_path):
-    # Copilot can't see inside a binary either.
-    head = repo.commit({"scripts/deploy.sh": b"#!/bin/bash\n# \0\n", "lib/Tool.dll": b"MZ\0\0"})
+def test_a_binary_is_reviewed_as_git_shows_it_and_holds_the_merge_unless_its_media(repo, tmp_path):
+    repo.base = repo.commit({"old/Tool.dll": b"MZ\0\1", "old/logo.png": b"\x89PNG\0\1"})
+    head = repo.commit({"scripts/deploy.sh": b"#!/bin/bash\n# \0\n", "lib/Tool.dll": b"MZ\0\0",
+                        "web/img/Logo.PNG": b"\x89PNG\0\0", "fonts/a.woff2": b"wOF2\0", "docs/a.pdf": b"%PDF\0",
+                        "old/Tool.dll": None, "old/logo.png": None})
     _, folder, diff = repo.split(repo.base, head, tmp_path)
-    assert diff.count(b"Binary files") == 2
-    assert set(files_of(folder)) == {"scripts/deploy.sh", "lib/Tool.dll"}
-    assert repo.skipped == "" and "::warning::" not in repo.log
+    assert diff.count(b"Binary files") == 7
+    assert set(files_of(folder)) == {"scripts/deploy.sh", "lib/Tool.dll", "web/img/Logo.PNG", "fonts/a.woff2",
+                                     "docs/a.pdf", "old/Tool.dll", "old/logo.png"}
+    # Deleting a binary runs nothing.
+    assert held_of(folder) == {"scripts/deploy.sh": "binary", "lib/Tool.dll": "binary"} and repo.held == 2
+    assert repo.skipped == "" and "holds the merge for a person" in repo.log
+
+
+def test_the_prs_own_gitattributes_cant_hide_its_text(repo, tmp_path):
+    repo.base = repo.commit({"src/App.cs": "class A {}\n"})
+    head = repo.commit({".gitattributes": "*.cs -diff\n", "src/App.cs": "class A { void Steal() {} }\n"})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert b"Binary files" not in diff and b"+class A { void Steal() {} }" in diff
+    assert repo.held == 0

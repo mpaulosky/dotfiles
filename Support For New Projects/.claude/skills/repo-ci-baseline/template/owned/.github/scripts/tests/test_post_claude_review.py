@@ -697,16 +697,20 @@ def read_of(folder, name, call_id, file=None, error=None):
     return [use, {"type": "user", "message": {"role": "user", "content": [result]}, "tool_use_result": account}]
 
 
-def hold(tmp_path, messages=(), listed="", skipped="", answer=ANSWER):
+def hold(tmp_path, messages=(), listed="", skipped="", answer=ANSWER, held=""):
     """Run the answer check over pieces in tmp_path: the findings it added after Claude's, and what it printed."""
     folder = tmp_path / "claude-review" / "diff"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "INDEX").write_text("The PR's diff of 4 file(s) in 3 piece(s).\n"
                                   "001.diff\t40 lines\tread\n\tworkflow\t.github/workflows/ci.yml\n"
                                   "002.diff\t40 lines\tread\n\tsource\tsrc/app.py\n\tsource\t\"src/odd\\tname.py\"\n"
-                                  "003.diff\t40 lines\tnot read\n\tdocs\tREADME.md\n")
+                                  "003.diff\t40 lines\tnot read\n\tdocs\tREADME.md\n"
+                                  "excluded (Copilot doesn't review these)\n\texcluded\tyarn.lock\n"
+                                  "\texcluded\tdist/index.js\n"
+                                  "held\t(nobody reads these here, so they hold the merge for a person)\n"
+                                  "\texcluded\tdist/index.js\n\tbinary\tlib/Tool.dll\n")
     code, outputs, out = check(tmp_path, answer, [SECRET], messages=messages, extra={
-        "PIECES_DIR": str(folder), "LISTED": listed, "SKIPPED": skipped})
+        "PIECES_DIR": str(folder), "LISTED": listed, "SKIPPED": skipped, "HELD": held})
     assert code == 0
     return json.loads(outputs["findings"])["findings"][1:], out
 
@@ -750,6 +754,23 @@ def test_pieces_past_the_budget_hold_the_merge(tmp_path):
     added, out = hold(tmp_path, read_of(folder, "001.diff", "a"), listed="001.diff", skipped="003.diff")
     assert "pieces 003.diff:" in added[0]["body"]
     assert "README.md" in out and "src/app.py" not in out
+
+
+def test_files_nobody_read_hold_the_merge(tmp_path):
+    folder = tmp_path / "claude-review" / "diff"
+    added, out = hold(tmp_path, read_of(folder, "001.diff", "a"), listed="001.diff", held="2")
+    assert [(f["path"], f["line"]) for f in added] == [("diff", 0)]
+    assert "didn't read 2 changed file(s)" in added[0]["body"] and "merge by hand" in added[0]["body"]
+    token = re.search(r"^::stop-commands::([0-9a-f]{32})$", out, re.M)[1]
+    listed = out[out.index(f"::stop-commands::{token}"):out.index(f"::{token}::")]
+    assert "dist/index.js" in listed and "lib/Tool.dll" in listed and "yarn.lock" not in listed
+
+
+@pytest.mark.parametrize("held", ["", "0"])
+def test_no_held_files_hold_nothing(tmp_path, held):
+    folder = tmp_path / "claude-review" / "diff"
+    added, out = hold(tmp_path, read_of(folder, "001.diff", "a"), listed="001.diff", held=held)
+    assert added == [] and "::warning::" not in out
 
 
 def test_an_answer_without_findings_gets_no_hold(tmp_path):

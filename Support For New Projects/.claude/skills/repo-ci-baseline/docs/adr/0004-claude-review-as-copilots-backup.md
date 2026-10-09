@@ -68,9 +68,13 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 | Sonnet 5.5, high, thorough prompt v2 (`bench/prompts/thorough-v2.txt`), with WebFetch | 2 | ~2 min, ~$0.47 |
 | Opus 5.5, high, thorough prompt v2 | 4 | ~4–7 min, ~$1.20 |
 | Opus 5.5, high, thorough prompt v3 (`thorough-v3.txt`, one sentence edited since) | 3 | ~4 min, ~$1.34 |
-| **Opus 5.5, high, the workflow's prompt, reads scoped, pinned actions' source readable (#121, #117)** | **4** | ~4–5 min, ~$1.68 |
+| Opus 5.5, high, the workflow's prompt, reads scoped, pinned actions' source readable (#121, #117) | 4 | ~4–5 min, ~$1.68 |
+| Opus 5.5, high, one turn of reads, `--max-turns 3` (#153), Articles#298 4b90c96 only | 0 of 4 | ~3 min, ~$0.78 |
 
-- **Opus at high effort with the thorough prompt (v3, edited as below) is what the workflow runs.**
+- **Opus at high effort, held to one turn of reads, on the split diff, is what the workflow runs** (see [One turn of reads](#one-turn-of-reads-153-154)).
+  Everything below until that section is how the model, effort and prompt were chosen, uncapped.
+
+- **Opus at high effort with the thorough prompt (v3, edited as below) was chosen, before the turn cap.**
   - With v2 it caught findings 1, 3 and 4, in two runs. With v3 it caught 3 and 4, and missed finding 1 in that one run.
     A point either way is within what one run varies by. It flagged the known marker limit once in the run without WebFetch, and on all three commits in the run with it.
   - Its findings on the benchmark commits were on the right lines, each with a fix, and several were real problems Copilot didn't raise.
@@ -99,7 +103,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
   Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 and v4 runs); the earlier files predate that, and the CLI updated during these runs.
-- **Cost:** about $1.20 a review instead of $0.19 at API prices. That is acceptable, because the backup only runs while a PR carries `review:claude`.
+- **Cost:** about $1.20 to $1.70 a review uncapped, instead of $0.19 at API prices; about $0.30 to $1.10 under the turn cap.
+  That is acceptable, because the backup only runs while a PR carries `review:claude`.
   In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's Opus allowance, and the plan has to include Opus in Claude Code.
   A run refused at the usage limit posts nothing and warns, and the PR waits for Copilot's review or a rerun after the reset (#123).
 - Matching is by keyword, whole words, on the files a finding is about, and every saved run in `bench/results/` is scored with the current cases file
@@ -113,6 +118,56 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   So no settings, hooks or servers run, the head's, the base's or the maintainer's own (#125); the base's hooks used to, against the head's scripts.
   Nested `CLAUDE.md` files still come from the head, as the diff does. Only trusted commits become cases, and a results file is read before it's committed.
 - Rerun the benchmark before changing the model, effort, prompt or tools, and add a case whenever Copilot finds something Claude Review missed.
+
+### One turn of reads (#153, #154)
+
+The owner's limit is 3 turns a review: one turn of reads, then the answer. The prompt holds a review to it:
+it asks for every Read in one turn of parallel calls, because with `--json-schema` the answer takes a turn of its own,
+so a second turn of reads leaves none for the answer.
+
+- **`--max-turns` is the action's backstop, not the limit**, because two tools read the same number differently.
+  Claude Code stops after that many API round-trips, but claude-code-action compares it with the result's `num_turns`,
+  which counts messages (about one for each tool call, so each parallel Read is one), and rejects a result above it after it has run.
+  - #153 set `--max-turns 3`, and every review that followed the prompt was rejected ("reported a successful result after 6 turns, exceeding the configured maximum of 3").
+  - #154 set 7, which a review of 3 or 4 reads reports. That held for small diffs only: a review that reads more files reports more.
+  - With the diff split into pieces (below) a review reads more files by design: on Blazor-Server#190 it read 14 in its one turn and reported 16.
+    So the cap is now 30, and the prompt allows at most 24 Reads (about 26 reported). At 30, a review that ignored the prompt could make up to 30 round-trips,
+    so `--max-budget-usd 3` caps what one review can spend instead.
+- **Cost under the cap: about $0.30 to $1.10 a review**, against about $1.70 uncapped. On the bench: IssueTracker#197 $0.29, Articles#298 $0.78, Blazor-Server#190 (2,600 lines) $0.93.
+- **Recall under the cap is unmeasured, beyond one run.** On Articles#298 4b90c96, capped at one turn of reads,
+  Claude caught 0 of the 4 required findings (`bench/results/20261009T072452-maxturns3-opus-high.json`; it flagged the optional marker limit), against 2 to 4 uncapped.
+  #117 stays open until the capped recall on Articles#298 is recorded on all three commits, with the split diff.
+
+#### The split diff
+
+Every review of the ~2,600-line re-Apply PRs of 2026-10-09 said the diff was cut off after about 1,030 lines, so the workflow files late in it went unreviewed.
+A Read of a file over 25,000 tokens returns only its first page, and the one turn of reads leaves no turn for the next.
+Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin installs) and 2.1.295, read from the CLI's own code:
+25,000 tokens (counted by the API), 2,000 lines when no limit is given, and no whole-file Read over 256 KiB.
+
+- **The "Write the PR's diff" step also writes the diff in pieces** under `$RUNNER_TEMP/claude-review/diff/`, each under 40,000 bytes and 1,500 lines
+  (about 10,000 tokens of code), so one Read returns a whole piece.
+  - Each file's diff is packed whole into the current piece in read order: workflows, scripts, source, tests, docs, then deleted files, each kind in diff order.
+    Pieces are few and full, because each Read counts against `--max-turns`.
+  - A file's diff too big for a piece is split into parts between hunks. Each part repeats the file's header, and a part that starts inside a hunk
+    opens with `@@ -old +new @@ (continued)`, so line numbers still follow. A line over 10,000 bytes is cut into chunks at character boundaries.
+  - Lockfiles go in pieces of their own that the prompt never asks for.
+    They don't hold the merge when unread: a dependency change shows in the manifest.
+  - Generated files (`*.g.cs`, `*.min.js`, snapshots) can hold compiled code, so they come last and are asked for while they fit.
+    Past the budget they hold the merge like any code.
+  - The prompt asks for at most 8 pieces and 300,000 bytes (about 80,000 tokens), leaving room for source files; the rest are listed as not read,
+    and the summary must name them. A code piece among them adds a finding outside the diff, which holds the merge for a person.
+- **Pieces are named by number only (`001.diff`), and the prompt lists them by name, line count and kind.**
+  A PR's paths are its author's: none becomes a file name or reaches the prompt. The list reaches the prompt as a step output,
+  since Claude can't read an index before its one turn of reads. `diff/INDEX` maps each piece to its files' paths, as git prints them (quoted when unusual, one per line),
+  and Claude reads it in the same turn.
+- **The split is inline in the workflow**, like the answer check: it runs in the job that later hands Claude the token, so a PR's own script mustn't run there.
+  The Template's tests (`test_claude_review_split_diff.py`) and the benchmark run the heredoc as it is.
+- **On the bench** (`bench/results/20261009T084333-split-diff-packed-large-opus-high.json`, the `large` case, Blazor-Server#190):
+  Claude read INDEX, all five pieces, AGENTS.md and CLAUDE.md in one turn, then answered: 10 turns reported, ~3 min, $0.93, three findings,
+  and a summary that says every piece was read. An earlier run with one piece per file (`20261009T083504-split-diff-large-opus-high.json`)
+  read all eleven and made a finding on `pr-automerge.yml`, the last file in the diff, but reported 16 turns, which the action would have rejected at 7.
+  The benchmark now records each turn's tool calls and flags a run whose `num_turns` the action would reject.
 
 ## Keeping the token out of the review (#121)
 

@@ -821,10 +821,18 @@ def test_the_warning_says_a_review_the_action_rejected_for_its_turns_shouldnt_be
 
 
 def test_the_warning_steps_max_turns_is_the_review_steps():
-    # Every --max-turns with a number, comments included, so one in a comment can't stand in for the Review step's.
+    # The Review step's claude_args must pass --max-turns, and every number given for it anywhere, comments
+    # included, must be the warning step's MAX_TURNS.
     text = WORKFLOW.read_text()
-    turns = set(re.findall(r"--max-turns[= ](\d+)", text))
-    assert len(turns) == 1 and turns == set(re.findall(r'MAX_TURNS: "(\d+)"', text))
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "claude_args: >-")
+    indent = len(lines[start]) - len(lines[start].lstrip()) + 1
+    end = next(i for i in range(start + 1, len(lines))
+               if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) < indent)
+    args = re.findall(r'--max-turns(?:=|\s+)"?(\d+)', "\n".join(lines[start + 1:end]))
+    limit = re.findall(r'^\s+MAX_TURNS: "(\d+)"$', text, re.M)
+    assert len(args) == 1 and len(limit) == 1 and args == limit
+    assert set(re.findall(r'--max-turns(?:=|\s+)"?(\d+)', text)) == set(limit)
 
 
 def test_the_warning_survives_a_missing_execution_file(tmp_path):

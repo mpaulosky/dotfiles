@@ -222,19 +222,12 @@ def run_case(case, prompt, claude_args, overrides, root, timeout, split=None):
             copy_actions(tree, case["head"], temp / "work" / "_actions")
             # The runner's plain git diff: no external diff tool or prefix settings from the global config, and
             # any file encoding read without failing.
-            # .gitattributes from the base, as the workflow takes them.
-            span = f"{case['base']}...{case['head']}"
-            plain = [*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-C", str(tree)]
-            diff = subprocess.run([*plain, "-c", "core.quotePath=true", f"--attr-source={case['base']}",
-                                   "diff", "--no-color", "--no-ext-diff", span],
+            diff = subprocess.run([*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                                   "-c", "core.quotePath=true", "-C", str(tree),
+                                   "diff", "--no-color", "--no-ext-diff", f"{case['base']}...{case['head']}"],
                                   check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
             (temp / "claude-review").mkdir()
             (temp / "claude-review" / "pr.diff").write_text(diff)
-            # The numstat the step reads the files shown as binary from.
-            numstat = subprocess.run([*plain, f"--attr-source={case['base']}", "diff", "--numstat", "-z",
-                                      "--no-renames", "--no-ext-diff", "--diff-filter=d", span],
-                                     check=True, capture_output=True).stdout
-            (temp / "claude-review" / "binary.numstat").write_bytes(numstat)
             # The workflow's own split of the diff into pieces, and the list the prompt names them in.
             pieces = split_diff(split, temp) if split else None
             args = override(shlex.split(render(claude_args, case["pr"], temp)), *overrides)

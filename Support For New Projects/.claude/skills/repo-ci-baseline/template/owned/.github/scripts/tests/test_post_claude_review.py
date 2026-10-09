@@ -679,7 +679,7 @@ def test_a_checkout_that_isnt_a_merge_commit_fails(tmp_path):
     assert "copy ran" not in done.stdout
 
 
-# The answer check's hold: pieces Claude didn't read whole, and text shown as binary
+# The answer check's hold: pieces Claude didn't read whole
 
 ANSWER = {"summary": "s", "findings": [{"path": "a.py", "line": 3, "body": "x"}]}
 
@@ -697,7 +697,7 @@ def read_of(folder, name, call_id, file=None, error=None):
     return [use, {"type": "user", "message": {"role": "user", "content": [result]}, "tool_use_result": account}]
 
 
-def hold(tmp_path, messages=(), listed="", skipped="", hidden="0", answer=ANSWER):
+def hold(tmp_path, messages=(), listed="", skipped="", answer=ANSWER):
     """Run the answer check over pieces in tmp_path: the findings it added after Claude's, and what it printed."""
     folder = tmp_path / "claude-review" / "diff"
     folder.mkdir(parents=True, exist_ok=True)
@@ -706,7 +706,7 @@ def hold(tmp_path, messages=(), listed="", skipped="", hidden="0", answer=ANSWER
                                   "002.diff\t40 lines\tread\n\tsource\tsrc/app.py\n\tsource\t\"src/odd\\tname.py\"\n"
                                   "003.diff\t40 lines\tnot read\n\tdocs\tREADME.md\n")
     code, outputs, out = check(tmp_path, answer, [SECRET], messages=messages, extra={
-        "PIECES_DIR": str(folder), "LISTED": listed, "SKIPPED": skipped, "HIDDEN": hidden})
+        "PIECES_DIR": str(folder), "LISTED": listed, "SKIPPED": skipped})
     assert code == 0
     return json.loads(outputs["findings"])["findings"][1:], out
 
@@ -745,18 +745,17 @@ def test_two_results_in_one_message_dont_count_as_read_whole(tmp_path):
     assert "pieces 001.diff, 002.diff:" in added[0]["body"]
 
 
-def test_pieces_past_the_budget_and_hidden_files_hold_the_merge(tmp_path):
+def test_pieces_past_the_budget_hold_the_merge(tmp_path):
     folder = tmp_path / "claude-review" / "diff"
-    added, out = hold(tmp_path, read_of(folder, "001.diff", "a"), listed="001.diff", skipped="003.diff", hidden="2")
-    body = added[0]["body"]
-    assert "pieces 003.diff:" in body and "shows 2 file(s) only as binary" in body
+    added, out = hold(tmp_path, read_of(folder, "001.diff", "a"), listed="001.diff", skipped="003.diff")
+    assert "pieces 003.diff:" in added[0]["body"]
     assert "README.md" in out and "src/app.py" not in out
 
 
 def test_an_answer_without_findings_gets_no_hold(tmp_path):
     # A malformed answer becomes the placeholder; adding to it would let it through as findings.
     code, outputs, _ = check(tmp_path, {"summary": "s"}, [SECRET], extra={
-        "PIECES_DIR": str(tmp_path), "LISTED": "001.diff", "SKIPPED": "002.diff", "HIDDEN": "1"})
+        "PIECES_DIR": str(tmp_path), "LISTED": "001.diff", "SKIPPED": "002.diff"})
     assert code == 0 and list(json.loads(outputs["findings"])) == ["malformed"]
 
 

@@ -302,7 +302,6 @@ def test_the_benchmark_splits_the_diff_with_the_workflows_own_step(tmp_path):
     diff = "".join(f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n@@ -1 +1 @@\n-old\n+new\n"
                    for i in range(3))
     (tmp_path / "claude-review" / "pr.diff").write_text(diff)
-    (tmp_path / "claude-review" / "binary.numstat").write_bytes(b"")
     pieces = bench.split_diff(bench.diff_step(bench.WORKFLOW), tmp_path)
     folder = tmp_path / "claude-review" / "diff"
     assert pieces == f"- {folder}/001.diff (18 lines: source)"

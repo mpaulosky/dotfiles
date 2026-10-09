@@ -162,9 +162,11 @@ nothing for a merged, closed or already-armed PR; **report blocker** for a faile
 **update branch and request Copilot** when it's `BEHIND`; **wait** until Copilot or Claude (a marked `github-actions[bot]` review) reviewed the current head and no thread is open.
 A head with neither review waits while Copilot is requested or `review:claude` is on; otherwise **request Copilot**, once per head, read back.
 Only once that request for the head didn't register (`copilot_dropped`: `land.sh` remembers it per head; `status.sh`, one read, never knows it and shows this step)
-does it **add review:claude**, once the head has checks and every one is green
-(Claude Review's own aside: a run cancelled when the label came off needs no rerun), never while one runs or is queued, and never after Claude reviewed 2 commits of the PR
-(`MAX_CLAUDE_ROUNDS`, the owner's cost rule), when it waits for the owner;
+does it **add review:claude**, once the head has at least one check other than Claude Review's own and every such check is green
+(Claude Review's own don't count: a run cancelled when the label came off needs no rerun), never while one runs or is queued, and never after Claude reviewed 2 commits of the PR
+(`MAX_CLAUDE_ROUNDS`, the owner's cost rule), when it waits for the owner.
+Past PR Auto-Merge's review cap (`REVIEW_CAP`, which must match `COPILOT_REVIEW_CAP`: 3 reviewed commits, not on a re-Apply PR) it asks for neither reviewer,
+and goes on to the threads and checks as PR Auto-Merge does;
 then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
 or **arm auto-merge** where there is no such workflow. A repo with no required checks waits for its checks to finish green first,
 since auto-merge alone wouldn't wait for CI.

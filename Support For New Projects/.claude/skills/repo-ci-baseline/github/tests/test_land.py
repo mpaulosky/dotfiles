@@ -200,6 +200,27 @@ def test_a_failed_review_claude_label_is_reported_as_failed():
     assert "  failed: gh pr edit 7 -R o/app --add-label review:claude (boom)" in printed(out)
 
 
+def test_a_copilot_request_whose_read_back_fails_is_asked_again_next_poll():
+    fake = Fake({"o/app": [node(contexts=GREEN)]})
+    answers = iter([RuntimeError("HTTP 502"), True])
+
+    def read_back(repo, number):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    fake.copilot_requested = read_back
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert "couldn't be read back on #7 (HTTP 502)" in printed(out)
+    lander.poll()
+    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot"] * 2
+    # It registered this time: no third request.
+    lander.poll()
+    assert len(fake.calls) == 2
+
+
 def test_a_copilot_request_that_cant_be_read_back_is_reported_as_failed():
     fake = Fake({"o/app": [node(merge_state="BEHIND")]})
     fake.copilot_requested = lambda repo, number: (_ for _ in ()).throw(RuntimeError("HTTP 502"))

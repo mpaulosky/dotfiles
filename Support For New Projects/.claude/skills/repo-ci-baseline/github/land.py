@@ -225,7 +225,11 @@ class Lander:
                     self.say("  warning: " + " ".join(argv) + " failed" + (f" ({message})" if message else ""))
                 # After update-branch the head is new and unknown here, so only
                 # a request for the head as read is remembered.
-                self.read_back_copilot(repo, number, state.head if decision.action == REQUEST_COPILOT else None)
+                asked = decision.action == REQUEST_COPILOT
+                if not self.read_back_copilot(repo, number, state.head if asked else None) and asked:
+                    # Unknown whether it registered: ask and read back again next poll.
+                    self.acted.discard(key)
+                    pr.seen = None
                 continue
             self.say(("  ran: " if ok else "  failed: ") + " ".join(argv) + (f" ({message})" if message and not ok else ""))
             if not ok:
@@ -236,19 +240,21 @@ class Lander:
 
         A dropped request for head is remembered, so the decision can call in
         Claude Review, though not here: it adds review:claude once the head's
-        checks are green. A read-back that fails remembers nothing.
+        checks are green. A read-back that fails remembers nothing, and
+        returns False; otherwise True.
         """
         url = f"https://github.com/{repo}/pull/{number}"
         try:
             if self.copilot_requested(repo, number):
-                return
+                return True
         except Exception as error:  # noqa: BLE001 - reported like a failed call
             self.say(f"  failed: Copilot's review request couldn't be read back on #{number} ({error}); request it at {url}")
-            return
+            return False
         if head:
             self.copilot_dropped.add((repo, number, head))
         self.say(f"  warning: Copilot's review request didn't register on #{number} (GitHub drops it once the Copilot "
                  f"code review budget is used up); {REVIEW_CLAUDE} is added once the head's checks are green")
+        return True
 
     def update_gone(self, repo, number, pr, flags):
         try:

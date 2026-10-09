@@ -105,6 +105,11 @@ def test_a_one_shot_read_shows_the_copilot_step_for_an_unreviewed_head(monkeypat
     assert "-> request Copilot" in out
 
 
+def test_a_reapply_pr_is_told_apart_by_its_branch():
+    assert st.to_state(dict(pr_node(), headRefName="chore/reapply-baseline"), **st.repo_flags("full")).reapply
+    assert not st.to_state(dict(pr_node(), headRefName="feat/x"), **st.repo_flags("full")).reapply
+
+
 def test_a_release_blog_pr_is_told_apart_by_its_branch():
     blog = st.to_state(dict(pr_node(), headRefName="docs/release-notes"), **st.repo_flags("full"))
     other = st.to_state(dict(pr_node(), headRefName="feat/x"), **st.repo_flags("full"))

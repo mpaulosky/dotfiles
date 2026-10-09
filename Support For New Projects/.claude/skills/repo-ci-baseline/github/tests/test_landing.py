@@ -77,6 +77,34 @@ def test_a_registered_copilot_request_waits_even_after_an_earlier_drop():
     assert decision.action == ld.WAIT and decision.reason.endswith("Copilot is requested")
 
 
+def test_no_checks_is_not_green_even_where_checks_arent_required():
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True, checks=(), checks_required=False)
+    assert ld.decide(dropped).action == ld.WAIT
+
+
+def test_past_pr_auto_merges_review_cap_neither_reviewer_is_asked_for():
+    capped = replace(READY, merged_by_workflow=True, copilot_reviewed=frozenset({OLD, "c" * 40}),
+                     claude_reviewed=frozenset({"d" * 40}))
+    decision = ld.decide(capped)
+    assert decision == ld.Decision(ld.HAND_OFF, "review cap (3) reached, no open threads")
+    # Past the cap the workflow still holds on threads and checks, and so does this.
+    assert ld.decide(replace(capped, open_threads=1)).action == ld.WAIT
+    assert ld.decide(replace(capped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+    # A commit both reviewed counts once: two distinct commits aren't the cap.
+    assert ld.decide(replace(capped, claude_reviewed=frozenset({OLD}))).action == ld.REQUEST_COPILOT
+    # A re-Apply PR has no cap, and nor does a repo whose workflow doesn't merge.
+    assert ld.decide(replace(capped, reapply=True)).action == ld.REQUEST_COPILOT
+    assert ld.decide(replace(capped, merged_by_workflow=False)).action == ld.REQUEST_COPILOT
+    assert ld.REVIEW_CAP == 3
+
+
+def test_review_cap_matches_pr_auto_merges():
+    workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
+    text = workflow.read_text(encoding="utf-8")
+    assert f"const COPILOT_REVIEW_CAP = {ld.REVIEW_CAP};" in text
+    assert f'const REAPPLY_BRANCH = "{ld.REAPPLY_BRANCH}";' in text
+
+
 def test_no_checks_at_all_is_not_green():
     dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True, checks=())
     decision = ld.decide(dropped)

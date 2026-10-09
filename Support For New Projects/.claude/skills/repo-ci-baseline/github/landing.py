@@ -14,10 +14,14 @@ skill lands PRs by (references/automerge.md):
   for Claude while the PR carries review:claude. With neither on its way,
   Copilot is asked first. Only once that request for the head didn't register
   (copilot_dropped, which the caller remembers per head) is review:claude
-  added, and only once the head has checks and every one is green (Claude
-  Review's own aside): a Claude review costs money, and one of a head that
-  fails CI is wasted. Never past MAX_CLAUDE_ROUNDS commits Claude reviewed on
-  the PR: after those the owner decides;
+  added, and only once the head has at least one check other than Claude
+  Review's own and every such check is green: a Claude review costs money,
+  and one of a head that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS
+  commits Claude reviewed on the PR: after those the owner decides;
+- past PR Auto-Merge's review cap (REVIEW_CAP distinct reviewed commits, in a
+  repo whose workflow merges and on a PR other than a re-Apply one) neither
+  reviewer is asked for: the workflow no longer waits for a review of the
+  head, so the PR goes on to its threads and checks like a reviewed one;
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup: Claude Review posts as
@@ -65,6 +69,13 @@ REVIEW_CLAUDE = "review:claude"
 CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", "Post Claude's review"})
 # The owner's cost rule: at most this many Claude review rounds on one PR.
 MAX_CLAUDE_ROUNDS = 2
+# PR Auto-Merge's shared review cap: must match COPILOT_REVIEW_CAP in the
+# Template's pr-automerge.yml. Past it, the workflow stops waiting for a review
+# of the head (it still holds on open threads). It counts distinct non-merge
+# commits Copilot and Claude reviewed; this counts every reviewed commit, so it
+# can reach the cap a little early, never late. The re-Apply branch has no cap.
+REVIEW_CAP = 3
+REAPPLY_BRANCH = "chore/reapply-baseline"
 
 # The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
 RELEASE_BLOG_BRANCHES = frozenset({"docs/release-notes", "docs/backfill-blog-posts"})
@@ -138,6 +149,7 @@ class PrState:
     copilot_requested: bool = False
     claude_requested: bool = False
     copilot_dropped: bool = False
+    reapply: bool = False  # a re-Apply PR (REAPPLY_BRANCH), which PR Auto-Merge never caps
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -161,6 +173,12 @@ class PrState:
     @property
     def reviewer_on_head(self):
         return bool(self.head_reviewer)
+
+    @property
+    def past_review_cap(self):
+        """PR Auto-Merge no longer waits for a review of the head (see REVIEW_CAP)."""
+        return (self.merged_by_workflow and not self.reapply
+                and len(self.copilot_reviewed | self.claude_reviewed) >= REVIEW_CAP)
 
 
 @dataclass(frozen=True)
@@ -245,7 +263,7 @@ def decide(pr):
         return Decision(ARM_AUTO_MERGE, "release-blog PR, not armed by its workflow")
     if pr.merge_state == "BEHIND":
         return Decision(UPDATE_BRANCH, "behind main")
-    if not pr.reviewer_on_head:
+    if not pr.reviewer_on_head and not pr.past_review_cap:
         return review_needed(pr, checks)
     if pr.open_threads:
         return Decision(WAIT, f"{pr.open_threads} open thread(s)")
@@ -253,8 +271,9 @@ def decide(pr):
         return Decision(WAIT, f"Claude's review of {pr.head[:7]} has findings outside the diff")
     if checks.running and not pr.checks_required:
         return Decision(WAIT, "no required checks; waiting for: " + ", ".join(checks.running))
-    reviewer = pr.head_reviewer.capitalize()
-    reason = f"{reviewer} reviewed the head, no open threads" + ("" if checks.green else ", required checks running")
+    reviewed = (f"{pr.head_reviewer.capitalize()} reviewed the head" if pr.reviewer_on_head
+                else f"review cap ({REVIEW_CAP}) reached")
+    reason = f"{reviewed}, no open threads" + ("" if checks.green else ", required checks running")
     if pr.merged_by_workflow:
         return Decision(HAND_OFF, reason)
     return Decision(ARM_AUTO_MERGE, reason)
@@ -277,6 +296,6 @@ def review_needed(pr, checks):
     # No checks yet (CI hasn't created them) isn't green.
     reported = [name for name in checks.passed + checks.running + checks.failed + checks.cancelled
                 if name not in CLAUDE_CHECKS]
-    if pr.checks_required and not reported:
+    if not reported:  # every listed repo has CI, dotfiles included
         return Decision(WAIT, waiting + "; no checks on the head yet, so Claude waits for CI")
     return Decision(REQUEST_CLAUDE, waiting + "; Copilot's request didn't register, checks green")

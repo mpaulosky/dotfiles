@@ -21,7 +21,7 @@ import json
 import subprocess
 import sys
 
-from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, claude_off_diff, claude_reviews,
+from landing import (COPILOT, REAPPLY_BRANCH, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, claude_off_diff, claude_reviews,
                      copilot_reviews, decide, summarize_checks)
 from settings import read_repo_list
 
@@ -107,6 +107,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         copilot_requested=any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested),
         claude_requested=REVIEW_CLAUDE in labels,
         copilot_dropped=copilot_dropped,
+        reapply=node.get("headRefName") == REAPPLY_BRANCH,
         open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),

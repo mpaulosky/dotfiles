@@ -365,18 +365,22 @@ jobs:
       # COPILOT_EXCLUDED_GLOBS) go in no piece and are never read; INDEX lists
       # them as excluded. But Copilot's review is advice and a person merges,
       # while this one gates PR Auto-Merge, so what nobody reads can't merge on
-      # it: an excluded file that isn't inert data (DATA_NAMES, DATA_GLOBS:
-      # logs, source maps and named coverage reports), or any excluded file
-      # under .github/, holds the merge, deleted or not. An SVG can script, so
-      # one holds unless it's deleted.
-      # Lockfiles hold: they decide which dependency code the build installs
-      # and runs. So does a file git shows only as "Binary files differ",
-      # unless it's inert media (MEDIA) or deleted. INDEX lists them under
-      # "held"; the answer check turns
-      # them into a finding that holds the merge for a person. Attributes come
+      # it: an excluded file that isn't inert data (DATA_GLOBS: logs, source
+      # maps and named coverage reports), or any excluded file under .github/,
+      # holds the merge, deleted or not. Lockfiles and .gitignore hold: they
+      # decide what the build installs and what gets committed. An SVG can
+      # script, so one holds unless it's deleted. Unless deleted, these hold
+      # too: a file git shows only as "Binary files differ" that isn't inert
+      # media (MEDIA), a submodule bump (mode 160000: the diff shows only two
+      # commit IDs) and a Git LFS pointer (only the pointer shows). INDEX
+      # lists them under "held"; the answer check turns them into a finding
+      # that holds the merge for a person. Attributes come
       # from the base (--attr-source), so a PR's own .gitattributes can't make
       # its text show as binary, and --no-textconv keeps a driver from
-      # rewriting what the review sees.
+      # rewriting what the review sees. --no-renames shows a rename as the old
+      # path's deletion and the new path's addition, so each is judged on its
+      # own path: a rename into a data path or out of an excluded one hides
+      # nothing.
       #
       # Pieces are named by number only (001.diff): a PR's paths are its
       # author's, so none becomes a file name or reaches the prompt. The
@@ -397,7 +401,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           mkdir -p "${RUNNER_TEMP}/claude-review"
-          git --attr-source="${BASE_SHA}" -c core.quotePath=true diff --no-color --no-ext-diff --no-textconv "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
+          git --attr-source="${BASE_SHA}" -c core.quotePath=true diff --no-color --no-ext-diff --no-textconv --no-renames "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
           python3 -I - <<'PY'
           import os, re
 
@@ -432,11 +436,10 @@ jobs:
           # Files under bin/ that Copilot reviews all the same.
           COPILOT_INCLUDED_GLOBS = ("**/bin/**/*.rs", "**/hybris/bin/custom/**")
           # The excluded files that are inert data, not code a build or CI runs
-          # nor a pin on what it installs: unread, and they hold nothing. Every
-          # other excluded file holds. Coverage counts only as a named report
-          # file, since a folder named coverage can hold a build (pom.xml,
-          # package.json) or a page.
-          DATA_NAMES = frozenset((".gitignore",))
+          # nor a pin on what it installs or commits: unread, and they hold
+          # nothing. Every other excluded file holds. Coverage counts only as a
+          # named report file, since a folder named coverage can hold a build
+          # (pom.xml, package.json) or a page.
           DATA_GLOBS = ("**/*.log", "**/*.map", "**/coverage/**/lcov.info",
                         "**/coverage/**/*.lcov", "**/coverage/**/coverage-final.json",
                         "**/coverage/**/coverage-summary.json", "**/coverage/**/clover.xml",
@@ -477,16 +480,25 @@ jobs:
               return bare.rsplit("/", 1)[-1] in COPILOT_EXCLUDED_NAMES or any(pattern.match(bare) for pattern in EXCLUDED)
 
 
-          def held(header, path, excluded):
-              """Why the file holds the merge for a person ("excluded" or "binary"), or None: see the comment above."""
+          def held(header, body, path, excluded):
+              """Why the file holds the merge for a person ("excluded", "binary", "submodule" or "lfs"), or None:
+              see the comment above."""
               bare = unquoted(path)
               deleted = any(line.startswith(b"deleted file mode") for line in header)
+              # First, so a submodule at an excluded path (deps/x.map) holds too.
+              if not deleted and any(re.match(rb"(new file mode|index \S+) 160000$", line.rstrip(b"\n"))
+                                     for line in header):
+                  return "submodule"
               if excluded:
-                  data = (bare.rsplit("/", 1)[-1] in DATA_NAMES or any(pattern.match(bare) for pattern in DATA)
-                          or deleted and bare.lower().endswith(".svg"))
+                  data = any(pattern.match(bare) for pattern in DATA) or deleted and bare.lower().endswith(".svg")
                   return "excluded" if bare.startswith(".github/") or not data else None
               if deleted:
                   return None
+              # A pointer's first line, added or kept as context; the same line elsewhere (a README) is text.
+              if any(kind in ("+", " ") and new == 1
+                     and line[1:].startswith(b"version https://git-lfs.github.com/spec/")
+                     for line, _, new, kind in body):
+                  return "lfs"
               shown_binary = any(line.startswith((b"Binary files ", b"GIT binary patch")) for line in header)
               name = bare.rsplit("/", 1)[-1]
               media = "." in name and name.rsplit(".", 1)[-1].lower() in MEDIA
@@ -626,7 +638,7 @@ jobs:
           for number, (header, body) in sorted(enumerate(files), key=lambda item: (
                   KINDS.index(kind_of(item[1][0], path_of(item[1][0]))), item[0])):
               path = path_of(header)
-              reason = held(header, path, copilot_excludes(path))
+              reason = held(header, body, path, copilot_excludes(path))
               if reason:
                   holding.append((reason, path))
               if copilot_excludes(path):
@@ -702,8 +714,9 @@ jobs:
           print(f"Split the diff of {len(files)} file(s) into {len(pieces)} piece(s), leaving out {len(excluded)} file(s) "
                 f"Copilot code review excludes; the prompt asks for {len(read)} ({size} bytes).")
           if holding:
-              print(f"::warning::{len(holding)} changed file(s) are excluded code or show only as binary, so nobody "
-                    "reads them here and the review holds the merge for a person (the answer check's log lists them).")
+              print(f"::warning::{len(holding)} changed file(s) are excluded code, binaries, submodule bumps or LFS "
+                    "pointers, so nobody reads them here and the review holds the merge for a person (the answer "
+                    "check's log lists them).")
           if skipped:
               print(f"::warning::The diff is past what one review reads; pieces {skipped} aren't asked for, so the "
                     "review holds the merge for a person to review them (the answer check's log lists their files).")
@@ -1123,12 +1136,13 @@ jobs:
               for row in files_of(set(unread), folder):
                   print("  " + row.replace("\t", "  "))
               print(f"::{token}::")
-          # Excluded code and files that show only as binary, which nobody read.
+          # Excluded code, binaries, submodule bumps and LFS pointers, which nobody read.
           held = os.environ.get("HELD", "")
           if held.isdigit() and int(held) and "findings" in answer:
               answer["findings"].append({"path": "diff", "line": 0, "body": (
-                  f"Claude Review didn't read {held} changed file(s): code Copilot code review excludes (such as dist, "
-                  "bin, vendor or generated files, or build configs), or files the diff shows only as binary. The log "
+                  f"Claude Review didn't read {held} changed file(s): files Copilot code review excludes (such as dist, "
+                  "bin, vendor or generated files, build configs or lockfiles), files the diff shows only as binary, "
+                  "submodule bumps or Git LFS pointers. The log "
                   "of the review job's \"Check Claude's answer for secrets\" step lists them. Review them yourself, "
                   "then merge by hand.")})
               print(f"::warning::Claude Review didn't read {held} changed file(s), so the review holds the merge. "

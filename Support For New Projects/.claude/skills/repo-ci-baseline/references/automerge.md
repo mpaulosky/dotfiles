@@ -19,6 +19,8 @@ The Template waits for `CLEAN` on purpose, so a failing optional check such as m
 A same-repo PR into `main` squash-merges on its own once its required checks pass, a reviewer has reviewed its head commit, and every review thread is resolved.
 The reviewer is Copilot, or Claude as its backup when a PR carries `review:claude`: see [ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md).
 Nothing merges before the review arrives, until the review cap: see [ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md).
+A ready PR that falls `BEHIND` main is brought up to date, and a clean merge from main keeps the review of the commit it merges into:
+see [ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md).
 A PR handed back with `sandcastle:needs-human` never merges while it carries the label.
 
 ## Design
@@ -31,7 +33,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Readiness** comes from one GraphQL query: state, draft, fork, mergeability, `mergeStateStatus`, the auto-merge request, both reviewers' reviews and the review threads.
   The reviews are fetched by author, `copilot-pull-request-reviewer[bot]` and `github-actions[bot]`, so thread replies can't push them off the page.
   A `github-actions[bot]` review counts as Claude's only when its body starts with `<!-- claude-review -->`.
-  A reviewer must have reviewed the exact `headRefOid`: both re-review every push, merge-from-main commits included.
+  A reviewer must have reviewed the `headRefOid`, or the commit a chain of clean merges from main sits on (below).
   More threads than one page is left to a person.
 - **Review cap.** Each reviewer re-reviews every push and can raise something new each time, so a PR could chase its reviews forever.
   Once Copilot and Claude between them have reviewed `COPILOT_REVIEW_CAP` (3) distinct non-merge commits, the merge stops waiting for a review of the head
@@ -44,6 +46,21 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Everything else still holds at the cap, and the log says when the cap let a PR through and past how many Copilot and Claude threads.
   A re-Apply PR (`chore/reapply-baseline`) has no cap: its rounds come from the re-Apply commits `reapply.sh` adds to it, not from chasing comments,
   and it changes this gate itself. Articles#298 merged past a real Copilot finding on its third round (#115).
+- **Merges from main keep their review** ([ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)).
+  The head counts as reviewed when it is a merge whose first parent is reviewed (or is such a merge, up to `MERGE_CHAIN_LIMIT`, 5, deep),
+  whose second parent is on `main`, and whose every file is what a clean merge gives: where only one side changed a file since the merge base,
+  that side's version. Read with the API alone (commits, compare and recursive trees), since the job never checks out PR content.
+  A file both sides changed, a rename across them or any other change needs a fresh review. Claude's off-diff hold on the covered commit still holds.
+  Claude Review's `merge-from-main` job skips the review of such a head on `synchronize` by the same rule (with `git ls-tree` on its checkout),
+  in a job of its own so a skipped run can't cancel a review in progress; the two copies must agree.
+  It reviews anyway when the base's `pr-automerge.yml` lacks the rule (dotfiles has none; a re-Apply PR's `main` has the old one),
+  and skips a run whose head is no longer the PR's.
+- **Bringing a ready PR up to date.** A PR that passes every check above but is `BEHIND` (and `MERGEABLE`, every required check's newest run passed)
+  gets `pulls.updateBranch` with `expected_head_sha: headRefOid`, made with `RELEASE_PR_PAT`, since a `GITHUB_TOKEN` push starts no CI.
+  A PR with native auto-merge armed (release-blog and Dependabot PRs) is updated once its required checks pass, with no review.
+  Dependabot's own PRs (every commit by `dependabot[bot]`) get an `@dependabot rebase` comment instead, once per head (a marker in the comment names it).
+  Without the PAT the run logs a notice and the PR waits. A 422 (the head moved, or nothing to merge) is logged quietly; any other error is a warning, never a failed run.
+  Only ready PRs are updated: an update reruns CI, and a PR waiting on a review or a fix gains nothing from being current.
 - **Hand-back hold.** A PR labelled `sandcastle:needs-human` (Sandcastle giving up and handing it to a person) is skipped while it carries the label,
   and also when someone other than the repository owner last removed it, since anyone with triage access can remove a label.
   The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues access.
@@ -51,7 +68,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   More labels than one page is left to a person. A repo that never applies the label is unaffected.
 - **The merge** is `pulls.merge` with `sha: headRefOid`, so a push landing between the check and the merge fails the merge instead of merging unreviewed code.
   405 and 409 are warnings; a later event re-evaluates.
-- **Triggers**, each a moment a condition can become true: `pull_request_target` (opened, ready_for_review, reopened, edited, synchronize, and unlabeled for the hand-back label),
+- **Triggers**, each a moment a condition can become true: `push` to `main` (it leaves every open PR `BEHIND`, so it sweeps them;
+  GitHub reports `UNKNOWN` merge states right after, so each PR is asked again up to four times, 5 s apart),
+  `pull_request_target` (opened, ready_for_review, reopened, edited, synchronize, and unlabeled for the hand-back label),
   `workflow_run` completion of every workflow that owns a required check, of **PR Review Submitted** and of **Claude Review**,
   a schedule (resolving a thread has no Actions trigger), and `workflow_dispatch` from `main`.
 - **PR Review Submitted** (`pr-review-submitted.yml`) runs on `pull_request_review: submitted` with no permissions and does nothing.
@@ -80,7 +99,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Safety:** `pull_request_target` runs main's copy of the file and never checks out PR code, so a PR can't edit what decides whether it merges.
   `pull_request_review` is never a trigger here: it would run the PR's own copy with write access. It reaches this workflow only through PR Review Submitted.
 - **Token:** `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`.
-  A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip.
+  A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip; an update would start no CI.
+  The PAT also posts `@dependabot rebase`, which Dependabot takes from a person.
 
 ## Landing
 

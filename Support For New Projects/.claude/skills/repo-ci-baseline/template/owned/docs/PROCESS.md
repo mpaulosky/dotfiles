@@ -65,6 +65,9 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 - **PR Auto-Merge squash-merges** a same-repo PR once its checks pass, Copilot has reviewed its latest commit and every
   thread is resolved. After three Copilot review rounds it stops waiting for Copilot, so a PR can't chase reviews forever;
   threads anyone else opens still hold it.
+- **A ready PR is kept up to date.** When `main` moves on, PR Auto-Merge merges `main` into a PR that is otherwise ready
+  (Dependabot rebases its own on request), and the merge from `main` needs no new review as long as it changes nothing
+  of its own: a merge that resolves a conflict is reviewed again.
 - **A draft is never merged.** Open a PR as a draft to hold it back, and mark it ready when it is.
 - **Merging is squash only.** Nobody merges by hand except a fork's PR, which the maintainer merges, and a Baseline
   Standardize PR.

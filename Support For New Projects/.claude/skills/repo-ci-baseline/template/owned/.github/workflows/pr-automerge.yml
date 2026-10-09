@@ -191,10 +191,10 @@ jobs:
                                  nodes {
                                    __typename
                                    ... on CheckRun {
+                                     databaseId
                                      name
                                      status
                                      conclusion
-                                     startedAt
                                      isRequired(pullRequestNumber: $number)
                                    }
                                    ... on StatusContext {
@@ -322,7 +322,12 @@ jobs:
 
             // Why the head's required checks haven't all passed, or null when
             // they have. A check run more than once (a rerun, or one CI's
-            // concurrency cancelled) counts by its newest run.
+            // concurrency cancelled) counts by its newest run: the last
+            // created, by databaseId, which GitHub goes by too. So a queued
+            // rerun outranks an older green run, and a later run outranks
+            // one cancelled before it started.
+            // isRequired reports main-rules' ruleset checks (checked live on
+            // Blazor-Server #183).
             function requiredChecksPending(pr) {
               const commit = pr.commits?.nodes?.[0]?.commit;
               if (!commit || commit.oid !== pr.headRefOid) {
@@ -341,9 +346,9 @@ jobs:
                   continue;
                 }
                 const name = check.name ?? check.context;
-                const at = check.startedAt ?? check.createdAt ?? "";
-                if (!newest.has(name) || at >= newest.get(name).at) {
-                  newest.set(name, { at, check });
+                const rank = check.__typename === "StatusContext" ? check.createdAt ?? "" : check.databaseId ?? 0;
+                if (!newest.has(name) || rank >= newest.get(name).rank) {
+                  newest.set(name, { rank, check });
                 }
               }
               if (newest.size === 0) {
@@ -370,7 +375,20 @@ jobs:
               }
               const pending = requiredChecksPending(pr);
               if (pending) {
-                core.info(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
+                // No required check at all on a head whose checks have all
+                // finished means isRequired doesn't see the ruleset's checks;
+                // say so where it shows. While any check is still running, or
+                // on a PR event, CI may not have created the required ones yet
+                // (a job's check run appears only once the job is queued).
+                const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+                const settled = contexts.every((check) => {
+                  return check.__typename === "StatusContext"
+                    ? !["PENDING", "EXPECTED"].includes(check.state)
+                    : check.status === "COMPLETED";
+                });
+                const misconfigured = pending.startsWith("no required check") && settled && !context.payload.pull_request;
+                const log = misconfigured ? core.notice : core.info;
+                log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
                 return;
               }
               if (process.env.HAS_RELEASE_PR_PAT !== "true") {

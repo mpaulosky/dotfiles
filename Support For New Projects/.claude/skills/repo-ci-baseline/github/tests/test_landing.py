@@ -191,3 +191,17 @@ def test_off_diff_findings_are_judged_by_the_latest_claude_review_of_each_commit
                ("github-actions", "c" * 40, "Not Claude's.\n" + ld.OFF_DIFF_MARKER),
                ("copilot-pull-request-reviewer", "d" * 40, off)]
     assert ld.claude_off_diff(reviews) == frozenset({HEAD})
+
+
+def test_a_run_cancelled_before_it_started_is_superseded_by_a_later_run():
+    # No started_at, so only the creation order (rank) says the green run is newer.
+    checks = (ld.Check("Test Suite", "COMPLETED", "CANCELLED", "", rank=1),
+              ld.Check("Test Suite", "COMPLETED", "SUCCESS", "2026-10-07T10:00:00Z", rank=2))
+    summary = ld.summarize_checks(checks)
+    assert summary.passed == ("Test Suite",) and summary.cancelled == ()
+
+
+def test_a_queued_rerun_outranks_an_older_green_run():
+    checks = (ld.Check("Test Suite", "COMPLETED", "SUCCESS", "2026-10-07T10:00:00Z", rank=1),
+              ld.Check("Test Suite", "QUEUED", None, "", rank=2))
+    assert ld.summarize_checks(checks).running == ("Test Suite",)

@@ -60,14 +60,17 @@ class Check:
     """One check run (or commit status) on the PR's head.
 
     status is GitHub's CheckStatusState (QUEUED, IN_PROGRESS, COMPLETED, ...);
-    conclusion is set once COMPLETED. started_at is an ISO-8601 timestamp,
-    which orders runs of the same name.
+    conclusion is set once COMPLETED. rank is a check run's databaseId, which
+    orders runs of the same name by creation, as GitHub (and PR Auto-Merge)
+    does; a commit status has none, so its started_at (an ISO-8601 timestamp)
+    orders it instead.
     """
 
     name: str
     status: str
     conclusion: str | None = None
     started_at: str = ""
+    rank: int = 0
 
 
 @dataclass(frozen=True)
@@ -165,8 +168,9 @@ def claude_off_diff(reviews):
 def summarize_checks(checks):
     """Sort the head's checks into passed, running, failed and cancelled.
 
-    Runs are grouped by name and the newest (latest started_at; a run not yet
-    started counts as newest) is the check's result. Older runs are ignored,
+    Runs are grouped by name and the newest (the last created, by rank; else
+    the latest started_at, a run not yet started counting as newest) is the
+    check's result. Older runs are ignored,
     and an older cancelled run is listed as superseded.
     """
     by_name = {}
@@ -174,7 +178,7 @@ def summarize_checks(checks):
         by_name.setdefault(check.name, []).append(check)
     buckets = {"passed": [], "running": [], "failed": [], "cancelled": [], "superseded": []}
     for name, runs in sorted(by_name.items()):
-        runs.sort(key=lambda run: (run.started_at == "", run.started_at))
+        runs.sort(key=lambda run: (run.rank, run.started_at == "", run.started_at))
         newest = runs[-1]
         if any(run.conclusion == CANCELLED for run in runs[:-1]):
             buckets["superseded"].append(name)

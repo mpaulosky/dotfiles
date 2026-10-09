@@ -1,0 +1,10 @@
+[Unit]
+Description=Fast-forward ~/github checkouts to origin's default branch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/sync-github-repos.sh
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Nice=10

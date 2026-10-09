@@ -81,8 +81,9 @@ class Repo:
                "BASE_SHA": base, "HEAD_SHA": head}
         subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
                        capture_output=True)
-        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\n", output.read_text(), re.S)
+        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\n", output.read_text(), re.S)
         assert found, output.read_text()
+        self.skipped = found[3]
         folder = runner_temp / "claude-review" / "diff"
         return found[2], folder, (runner_temp / "claude-review" / "pr.diff").read_bytes()
 
@@ -141,7 +142,18 @@ def check_pieces(folder, diff):
         assert content.startswith(b"diff --git ")
         for key, body in segments(content):
             found.setdefault(key, []).extend(body)
-    assert found == dict(segments(diff))
+    assert {key: joined(body) for key, body in found.items()} == dict(segments(diff))
+
+
+def joined(body):
+    """body with each long line's later chunks, which may be in the next piece, joined back onto it."""
+    lines = []
+    for line in body:
+        if line.startswith(b"\\~ "):
+            lines[-1] = lines[-1][:-1] + line[3:]
+        else:
+            lines.append(line)
+    return lines
 
 
 def check_line_numbers(folder, repo, head):
@@ -168,10 +180,12 @@ def test_files_are_packed_into_numbered_pieces_in_read_order(repo, tmp_path):
                         "tests/test_app.py": "def test(): pass\n", "README.md": "readme 2\n",
                         "scripts/build.sh": "make\n"})
     text, folder, diff = repo.split(repo.base, head, tmp_path)
-    assert index(folder) == {"001.diff": (f"{diff.count(b'\n')} lines", "read", [
+    lines = diff.count(b"\n")
+    assert index(folder) == {"001.diff": (f"{lines} lines", "read", [
         ("workflow", ".github/workflows/ci.yml"), ("script", "scripts/build.sh"), ("source", "src/app.py"),
         ("test", "tests/test_app.py"), ("docs", "README.md")])}
-    assert text == f"- {folder}/001.diff ({diff.count(b'\n')} lines: workflow, script, source, test, docs)"
+    assert text == f"- {folder}/001.diff ({lines} lines: workflow, script, source, test, docs)"
+    assert repo.skipped == ""
     check_pieces(folder, diff)
 
 
@@ -210,11 +224,19 @@ def test_a_huge_file_is_split_into_parts_with_their_line_numbers(repo, tmp_path)
 
 def test_a_long_line_is_cut_into_chunks_within_a_piece(repo, tmp_path):
     head = repo.commit({"app.min.css": "a{}" * 50_000, "wide.txt": "\u00e9" * 60_000 + "\n"})
-    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
     for name in index(folder):
         content = (folder / name).read_bytes()
         assert len(content) <= MAX_PIECE_BYTES
         content.decode("utf-8")  # never cut inside a character
+    # Every chunk after a line's first is marked, so none reads as a line of its own.
+    wide = next((folder / name).read_bytes() for name, (_, read, _) in index(folder).items() if read == "read")
+    rows = wide.split(b"\n")
+    first = next(i for i, row in enumerate(rows) if row.startswith(b"+\xc3\xa9"))
+    assert all(row.startswith(b"\\~ \xc3\xa9") for row in rows[first + 1:-1])
+    check_pieces(folder, diff)
+    # A generated file past the budget isn't code left unread.
+    assert repo.skipped == ""
     assert files_of(folder) == {"wide.txt": ("docs", "read"), "app.min.css": ("generated", "not read")}
     # A generated file never shares a piece with one the prompt asks for.
     for _, read, files in index(folder).values():
@@ -277,3 +299,7 @@ def test_past_the_read_budget_the_rest_are_named_and_workflows_come_first(repo, 
     listed, _, rest = text.partition("\nNot asked for")
     assert len(listed.splitlines()) == MAX_READ_PIECES
     assert all(name in rest for name, (_, flag, _) in pieces.items() if flag == "not read")
+    # The unread pieces of code, not the lockfile's, are named for the hold.
+    assert repo.skipped.split() == [name for name, (_, flag, files) in pieces.items()
+                                    if flag == "not read" and files[0][0] != "generated"]
+    assert repo.skipped

@@ -83,7 +83,7 @@ def split_diff(script, temp):
     output.write_text("")
     subprocess.run([sys.executable, "-I", "-"], input=script, text=True, check=True, capture_output=True,
                    env={"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(output)})
-    found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]+)\n(.*)\n\1\n", output.read_text(), re.S)
+    found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]+)\n(.*)\n\1\nskipped=.*\n", output.read_text(), re.S)
     if not found:
         raise OSError(f"the diff step wrote no pieces output: {output.read_text()[:500]}")
     return found[2]

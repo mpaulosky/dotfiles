@@ -3,3 +3,6 @@
 # Left by local test.sh runs; apply.sh never copies them.
 __pycache__/
 .pytest_cache/
+
+# JetBrains IDE (Rider) project settings, local to each machine.
+.idea/

@@ -175,7 +175,7 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
       and linking `scripts/build.sh` to an unread `.log` would make it run), and a Git LFS pointer (only the pointer shows)
       that isn't media. A pointer is known when every line its hunks show is a pointer line and one is its `oid sha256:` line
       or a first line naming any version git-lfs accepts, its older `hawser` and `git-media` aliases included;
-      a doc or fixture quoting a pointer is text.
+      a doc or fixture quoting a pointer is text. Lines are read as git-lfs reads them: whitespace trimmed, a CR dropped, blank lines skipped.
 
     The diff takes attributes from the base (`--attr-source`), so a PR's own `.gitattributes` can't hide its text,
     and `--no-textconv` keeps a diff driver from rewriting what the review sees.

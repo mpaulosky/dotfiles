@@ -442,8 +442,9 @@ jobs:
           # nothing. Every other excluded file holds. Coverage counts only as a
           # named report file, since a folder named coverage can hold a build
           # (pom.xml, package.json) or a page.
-          LFS_OID = re.compile(rb"oid sha256:[0-9a-f]{64}\n?\Z")
-          LFS_LINE = re.compile(rb"(version \S+|ext-\d+-\w+ sha256:[0-9a-f]{64}|oid sha256:[0-9a-f]{64}|size \d+)\n?\Z")
+          # Matched against a line with its whitespace stripped, as git-lfs reads one.
+          LFS_OID = re.compile(rb"oid sha256:[0-9a-f]{64}\Z")
+          LFS_LINE = re.compile(rb"(version \S+|ext-\d+-\w+ sha256:[0-9a-f]{64}|oid sha256:[0-9a-f]{64}|size \d+)\Z")
           LFS_VERSION = re.compile(rb"version (https://git-lfs\.github\.com/spec/"
                                    rb"|https://hawser\.github\.com/spec/v1|http://git-media\.io/v/2)")
           DATA_GLOBS = ("**/*.log", "**/*.map", "**/coverage/**/lcov.info",
@@ -506,12 +507,16 @@ jobs:
                   return None
               name = bare.rsplit("/", 1)[-1]
               media = "." in name and name.rsplit(".", 1)[-1].lower() in MEDIA
-              # A pointer: every line the hunks show is a pointer line, and one is its oid or a first line naming
-              # any version git-lfs accepts (its older hawser and git-media aliases too), so a doc quoting one is
-              # text. Media stored in LFS is as inert as media.
-              shown = [(line[1:], new) for line, _, new, kind in body if kind in ("+", " ")]
-              if not media and shown and all(LFS_LINE.match(line) for line, _ in shown) and any(
-                      LFS_OID.match(line) or new == 1 and LFS_VERSION.match(line) for line, new in shown):
+              # A pointer: every line the hunks show is blank or a pointer line, and one is its oid or a first
+              # non-blank line naming any version git-lfs accepts (its older hawser and git-media aliases too), so
+              # a doc quoting one is text. git-lfs trims whitespace, drops a CR and skips blank lines, and so does
+              # this. Media stored in LFS is as inert as media.
+              shown = [(line[1:].strip(), new) for line, _, new, kind in body if kind in ("+", " ")]
+              blank = {new for line, new in shown if not line}
+              if not media and any(line for line, _ in shown) and all(
+                      not line or LFS_LINE.match(line) for line, _ in shown) and any(
+                      LFS_OID.match(line) or LFS_VERSION.match(line) and blank >= set(range(1, new))
+                      for line, new in shown):
                   return "lfs"
               shown_binary = any(line.startswith((b"Binary files ", b"GIT binary patch")) for line in header)
               return "binary" if shown_binary and not media else None

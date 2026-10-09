@@ -675,8 +675,8 @@ jobs:
       # --max-budget-usd caps what one review can spend instead: $3, against
       # $0.29 to $1.12 for the reviews that followed the prompt on the bench.
       # A rejected, cut-off or over-budget review posts nothing; the step's
-      # continue-on-error turns that into a warning, and the PR waits for a
-      # review as it does at the usage limit.
+      # continue-on-error turns that into a warning, which for a review that
+      # hit a cap says to review and merge by hand rather than rerun.
       #
       # Opus 5.5 at high effort, with read-only tools: it reads the diff and
       # the checked-out code, and answers in the JSON schema below. The prompt
@@ -1079,6 +1079,8 @@ jobs:
         env:
           OUTCOME: ${{ steps.claude.outcome }}
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          # The Review step's --max-turns; a test keeps the two equal.
+          MAX_TURNS: "30"
         run: |
           # An error result that cost nothing, used no model and names a sign-in
           # failure never reached the model, which a rerun won't fix. A usage or
@@ -1087,7 +1089,9 @@ jobs:
           # The secret check above only tests that the token isn't empty.
           # A review that hit --max-budget-usd or --max-turns did reach the
           # model, and a rerun would most likely spend as much and stop there
-          # again, so it gets its own advice.
+          # again, so it gets its own advice. The turn cap mostly trips in the
+          # action instead: Claude Code reports success, and the action rejects
+          # a num_turns over --max-turns afterwards.
           ended=$(python3 -I - <<'PY'
           import json, os, re
           try:
@@ -1097,7 +1101,9 @@ jobs:
               messages = []
           for message in reversed(messages if isinstance(messages, list) else []):
               if isinstance(message, dict) and message.get("type") == "result":
-                  if message.get("subtype") in ("error_max_budget_usd", "error_max_turns"):
+                  turns = message.get("num_turns")
+                  if (message.get("subtype") in ("error_max_budget_usd", "error_max_turns")
+                          or type(turns) is int and turns > int(os.environ.get("MAX_TURNS", "30"))):
                       print("capped")
                       break
                   text = str(message.get("result", "")).lower()

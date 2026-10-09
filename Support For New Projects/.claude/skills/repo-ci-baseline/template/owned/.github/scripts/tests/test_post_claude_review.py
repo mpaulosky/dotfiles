@@ -806,6 +806,25 @@ def test_the_warning_says_a_capped_review_shouldnt_be_rerun(tmp_path, subtype):
     assert "hit its spending or turn cap" in done.stdout and "once a usage limit has reset" not in done.stdout
 
 
+def test_the_warning_says_a_review_the_action_rejected_for_its_turns_shouldnt_be_rerun(tmp_path):
+    # Claude Code reports success; the action rejects num_turns over --max-turns.
+    execution = tmp_path / "execution.json"
+    execution.write_text(json.dumps([{"type": "result", "subtype": "success", "is_error": False, "num_turns": 31,
+                                      "total_cost_usd": 1.9, "modelUsage": {"claude-opus-5-5": {}}}]))
+    env = {"PATH": os.environ["PATH"], "OUTCOME": "failure", "EXECUTION_FILE": str(execution), "MAX_TURNS": "30"}
+    done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True, env=env)
+    assert done.returncode == 0, done.stderr
+    assert "hit its spending or turn cap" in done.stdout
+    within = dict(env, MAX_TURNS="31")
+    done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True, env=within)
+    assert "once a usage limit has reset" in done.stdout
+
+
+def test_the_warning_steps_max_turns_is_the_review_steps():
+    text = WORKFLOW.read_text()
+    assert re.search(r"--max-turns (\d+)", text)[1] == re.search(r'MAX_TURNS: "(\d+)"', text)[1]
+
+
 def test_the_warning_survives_a_missing_execution_file(tmp_path):
     done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True,
                           env={"PATH": os.environ["PATH"], "OUTCOME": "failure", "EXECUTION_FILE": str(tmp_path / "x")})

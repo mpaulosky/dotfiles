@@ -156,7 +156,8 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     or point a dependency at another package. Past the budget they hold the merge like any code.
   - The diff takes `.gitattributes` from the base (`--attr-source`), so the PR's head can't mark its code `-diff`. Any file the diff still
     shows only as binary (by the base's attributes, or a NUL byte early in it, which a script can carry and still run) holds the merge,
-    unless its extension is a known binary format (`BINARY_EXTENSIONS`: images, fonts, archives, compiled code, keys, office and media).
+    unless its extension is a format that can't run (`INERT_EXTENSIONS`: images, fonts, audio and video, PDF and office documents).
+    Compiled code, packages, archives and signing keys or certificates always need a person.
     So does a listed piece Claude didn't read whole, judged from the Read results in the execution file.
   - The prompt asks for at most 8 pieces and 300,000 bytes (about 80,000 tokens), leaving room for source files; the rest are listed as not read,
     and the summary must name them. Each one adds a finding outside the diff, which holds the merge for a person; the log lists its files.

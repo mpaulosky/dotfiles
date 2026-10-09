@@ -370,13 +370,15 @@ def test_a_script_git_calls_binary_by_its_content_holds_the_merge(repo, tmp_path
     assert repo.hidden == 1 and held(repo) == ["scripts/deploy.sh"]
 
 
-def test_a_binary_with_a_binary_files_extension_holds_nothing(repo, tmp_path):
+def test_only_binaries_that_cant_run_hold_nothing(repo, tmp_path):
     repo.base = repo.commit({"old.bin": b"\0gone\n"})
-    head = repo.commit({"logo.png": b"\x89PNG\0\1\2", "lib/Tool.DLL": b"MZ\0\0", "old.bin": None})
+    head = repo.commit({"logo.png": b"\x89PNG\0\1\2", "docs/guide.PDF": b"%PDF\0", "lib/Tool.DLL": b"MZ\0\0",
+                        "gradle/wrapper/gradle-wrapper.jar": b"PK\3\4\0", "tool.pyc": b"\x6f\x0d\r\n\0", "old.bin": None})
     _, _, diff = repo.split(repo.base, head, tmp_path)
-    assert diff.count(b"Binary files") == 3
-    # A deleted file leaves nothing to run, so it doesn't hold either.
-    assert repo.hidden == 0 and held(repo) == []
+    assert diff.count(b"Binary files") == 6
+    # Compiled code and packages always need a person; images and documents, and a deleted file, don't.
+    assert repo.hidden == 3
+    assert held(repo) == ["gradle/wrapper/gradle-wrapper.jar", "lib/Tool.DLL", "tool.pyc"]
 
 
 def test_a_held_binarys_odd_path_is_logged_safely(repo, tmp_path):

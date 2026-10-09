@@ -367,7 +367,8 @@ jobs:
       # diff shows only as "Binary files … differ" (by the base's attributes,
       # or by a NUL byte in its first 8,000 bytes, which a script can carry in
       # a comment and still run) is counted as hidden and holds the merge,
-      # unless its extension is in BINARY_EXTENSIONS; its path is logged here.
+      # unless its extension is in INERT_EXTENSIONS (formats that can't run);
+      # its path is logged here.
       #
       # Pieces are named by number only (001.diff): a PR's paths are its
       # author's, so none becomes a file name or reaches the prompt. The
@@ -417,17 +418,15 @@ jobs:
           DOCS = re.compile(r"(^|/)docs?/|\.(md|mdx|markdown|rst|txt|adoc)$|(^|/)(license|notice|changelog)[^/]*$")
           SCRIPT = re.compile(r"^\.github/|(^|/)\.?(git)?hooks/|(^|/)\.husky/|\.(sh|bash|ps1|psm1)$|(^|/)(makefile|dockerfile)$")
           HUNK = re.compile(rb"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
-          # Extensions whose binary diff holds no reviewable code: images, fonts,
-          # archives and packages, compiled code, signing keys, office documents
-          # and media. Any other file the diff shows only as binary holds the merge.
-          BINARY_EXTENSIONS = re.compile(
+          # Only formats that can't run: images, fonts, audio and video, PDF and
+          # office documents. Any other file the diff shows only as binary holds
+          # the merge: compiled code, packages and archives (a build can run or
+          # unpack them) and signing keys and certificates always need a person.
+          INERT_EXTENSIONS = re.compile(
               rb"\.(png|jpe?g|gif|bmp|ico|icns|webp|avif|tiff?|psd"
               rb"|woff2?|ttf|otf|eot"
-              rb"|zip|gz|tgz|bz2|xz|7z|rar|tar|jar|nupkg|snupkg|whl"
-              rb"|dll|exe|pdb|so|dylib|a|lib|o|obj|class|wasm|pyc"
-              rb"|snk|pfx|p12|cer|der|keystore"
-              rb"|pdf|docx?|xlsx?|pptx?|odt|ods|odp"
-              rb"|mp3|mp4|m4a|wav|ogg|webm|mov|avi|flac)$")
+              rb"|mp3|mp4|m4a|wav|ogg|flac|webm|mov|avi"
+              rb"|pdf|docx?|xlsx?|pptx?|odt|ods|odp)$")
 
 
           def chunks(line):
@@ -624,7 +623,7 @@ jobs:
 
 
           # A binary diff of any other extension holds the merge: its changes aren't in the diff.
-          hidden =sorted(path for path in binary_paths() if not BINARY_EXTENSIONS.search(path.lower()))
+          hidden = sorted(path for path in binary_paths() if not INERT_EXTENSIONS.search(path.lower()))
           # The answer check adds a finding outside the diff for pieces past the
           # read budget, listed pieces Claude didn't read whole, and hidden files,
           # so the review holds the merge.
@@ -635,7 +634,7 @@ jobs:
               print(f"::warning::The diff is past what one review reads; pieces {skipped} aren't asked for, so the "
                     "review holds the merge for a person to review them (the answer check's log lists their files).")
           if hidden:
-              print(f"::warning::The diff shows {len(hidden)} file(s) only as binary, without a binary file's extension, "
+              print(f"::warning::The diff shows {len(hidden)} file(s) only as binary, not an image, font, media or document, "
                     "so their changes aren't reviewed and the review holds the merge. They are listed below.")
               # A path is the PR author's: no workflow command in it may run.
               token = os.urandom(16).hex()
@@ -1051,7 +1050,7 @@ jobs:
                                "review reads, or a Read of them failed or came back in part. The log of the review job's "
                                "\"Check Claude's answer for secrets\" step lists their files.")
               if hidden:
-                  parts.append(f"The diff shows {hidden} file(s) only as binary, without a binary file's extension, so "
+                  parts.append(f"The diff shows {hidden} file(s) only as binary, not an image, font, media or document, so "
                                "their changes weren't reviewed. The log of the review job's \"Write the PR's diff\" step "
                                "lists them.")
               parts.append("Review those files yourself, then merge by hand.")

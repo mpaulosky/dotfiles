@@ -1,0 +1,279 @@
+"""Tests for claude-review.yml's "Write the PR's diff" step, run against real git repos.
+
+The step is inline in the workflow, so its run script (git diff, then the Python
+heredoc that splits the diff into pieces) is read out of the file and run with
+bash, as the other inline steps' tests do.
+"""
+
+import os
+import re
+import subprocess
+import textwrap
+from pathlib import Path
+
+import pytest
+
+WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "claude-review.yml"
+
+# No user or system config: a global hook, diff or quoting setting mustn't reach these repos.
+GIT_ENV = {
+    "PATH": os.environ["PATH"],
+    "HOME": "/nonexistent",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "Test",
+    "GIT_AUTHOR_EMAIL": "test@example.com",
+    "GIT_COMMITTER_NAME": "Test",
+    "GIT_COMMITTER_EMAIL": "test@example.com",
+}
+
+
+def step_script():
+    """The run script of the step with id: diff."""
+    lines = WORKFLOW.read_text().splitlines()
+    step = next(i for i, line in enumerate(lines) if line.strip() == "id: diff")
+    start = next(i for i in range(step, len(lines)) if lines[i].strip() == "run: |") + 1
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "PY") + 1
+    return textwrap.dedent("\n".join(lines[start:end])) + "\n"
+
+
+def constant(name):
+    return int(re.search(rf"^\s*{name} = ([\d_]+)", step_script(), re.M)[1].replace("_", ""))
+
+
+MAX_PIECE_BYTES = constant("MAX_PIECE_BYTES")
+MAX_PIECE_LINES = constant("MAX_PIECE_LINES")
+MAX_READ_PIECES = constant("MAX_READ_PIECES")
+MAX_READ_BYTES = constant("MAX_READ_BYTES")
+
+
+class Repo:
+    def __init__(self, path):
+        self.path = path
+        path.mkdir()
+        self.git("init", "-q", "-b", "main")
+        self.git("config", "core.hooksPath", os.devnull)
+
+    def git(self, *args):
+        return subprocess.run(["git", *args], cwd=self.path, env=GIT_ENV, capture_output=True, check=True).stdout
+
+    def commit(self, files):
+        for name, content in files.items():
+            path = self.path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if content is None:
+                path.unlink()
+            elif isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(content, encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "--allow-empty", "-m", "change")
+        return self.git("rev-parse", "HEAD").decode().strip()
+
+    def split(self, base, head, tmp_path):
+        """Run the step; return (its output's pieces text, the diff folder, the pr.diff bytes)."""
+        runner_temp = tmp_path / "runner"
+        runner_temp.mkdir()
+        output = runner_temp / "output"
+        output.write_text("")
+        env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output),
+               "BASE_SHA": base, "HEAD_SHA": head}
+        subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
+                       capture_output=True)
+        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\n", output.read_text(), re.S)
+        assert found, output.read_text()
+        folder = runner_temp / "claude-review" / "diff"
+        return found[2], folder, (runner_temp / "claude-review" / "pr.diff").read_bytes()
+
+
+@pytest.fixture
+def repo(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.base = repo.commit({"README.md": "readme\n"})
+    return repo
+
+
+def index(folder):
+    """INDEX's pieces: {name: (lines, read, [(kind, path), ...])}, in order."""
+    rows = (folder / "INDEX").read_text(encoding="utf-8").split("\n")[1:-1]
+    pieces = {}
+    for row in rows:
+        if row.startswith("\t"):
+            _, kind, path = row.split("\t", 2)
+            pieces[name][2].append((kind, path))
+        else:
+            name, lines, read = row.split("\t")
+            pieces[name] = (lines, read, [])
+    return pieces
+
+
+def files_of(folder):
+    """{path: (kind, read)} for every file's diff in INDEX, a split file's parts under one path."""
+    return {path.split(" (part ")[0]: (kind, read)
+            for _, read, files in index(folder).values() for kind, path in files}
+
+
+def segments(content):
+    """Each file's diff in content: (its diff --git line, its body without "(continued)" hunk headers)."""
+    found = []
+    for line in content.splitlines(keepends=True):
+        if line.startswith(b"diff --git "):
+            found.append((line, [], [True]))
+        elif line.startswith(b"@@"):
+            found[-1][2][0] = False
+            if not line.endswith(b"@@ (continued)\n"):
+                found[-1][1].append(line)
+        elif not found[-1][2][0]:
+            found[-1][1].append(line)
+    return [(key, body) for key, body, _ in found]
+
+
+def check_pieces(folder, diff):
+    """Every piece is within the limits, and together they hold every line of every file's diff, in order."""
+    names = sorted(p.name for p in folder.iterdir() if p.name != "INDEX")
+    assert names == list(index(folder))
+    assert all(re.fullmatch(r"\d{3}\.diff", name) for name in names)
+    found = {}
+    for name in names:
+        content = (folder / name).read_bytes()
+        assert len(content) <= MAX_PIECE_BYTES and content.count(b"\n") <= MAX_PIECE_LINES, name
+        assert content.startswith(b"diff --git ")
+        for key, body in segments(content):
+            found.setdefault(key, []).extend(body)
+    assert found == dict(segments(diff))
+
+
+def check_line_numbers(folder, repo, head):
+    """Every context and added line sits where its hunk headers say, in the head's file."""
+    for name in index(folder):
+        for key, _ in segments((folder / name).read_bytes()):
+            content = (folder / name).read_bytes()
+            lines = content[content.index(key):].split(b"\n")
+            path = next(line[6:].decode() for line in lines if line.startswith(b"+++ b/"))
+            file = repo.git("show", f"{head}:{path}").split(b"\n")
+            new = None
+            for line in lines[1:]:
+                if line.startswith(b"diff --git "):
+                    break
+                if line.startswith(b"@@"):
+                    new = int(re.match(rb"@@ -\d+(?:,\d+)? \+(\d+)", line)[1])
+                elif new is not None and line[:1] in (b" ", b"+"):
+                    assert file[new - 1] == line[1:], (name, path, new)
+                    new += 1
+
+
+def test_files_are_packed_into_numbered_pieces_in_read_order(repo, tmp_path):
+    head = repo.commit({"src/app.py": "print(1)\n", ".github/workflows/ci.yml": "on: push\n",
+                        "tests/test_app.py": "def test(): pass\n", "README.md": "readme 2\n",
+                        "scripts/build.sh": "make\n"})
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert index(folder) == {"001.diff": (f"{diff.count(b'\n')} lines", "read", [
+        ("workflow", ".github/workflows/ci.yml"), ("script", "scripts/build.sh"), ("source", "src/app.py"),
+        ("test", "tests/test_app.py"), ("docs", "README.md")])}
+    assert text == f"- {folder}/001.diff ({diff.count(b'\n')} lines: workflow, script, source, test, docs)"
+    check_pieces(folder, diff)
+
+
+def test_a_big_multi_file_diff_is_covered_whole(repo, tmp_path):
+    files = {f"src/module{i}.py": "".join(f"value_{i}_{n} = {n}\n" for n in range(700)) for i in range(4)}
+    files["zz/late.yml"] = "".join(f"# step {n}\n" for n in range(1500))
+    files[".github/workflows/late.yml"] = "".join(f"# step {n}\n" for n in range(1500))
+    head = repo.commit(files)
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert len(diff.splitlines()) > 5000
+    check_pieces(folder, diff)
+    check_line_numbers(folder, repo, head)
+    # Every file is in a piece the prompt lists, the workflow, last in the diff, first.
+    assert set(files_of(folder)) == set(files)
+    assert {read for _, read in files_of(folder).values()} == {"read"}
+    assert len(text.splitlines()) == len(index(folder))
+    assert next(iter(index(folder).values()))[2][0] == ("workflow", ".github/workflows/late.yml (part 1 of 2)")
+
+
+def test_a_huge_file_is_split_into_parts_with_their_line_numbers(repo, tmp_path):
+    old = "".join(f"line {n}\n" for n in range(6000))
+    repo.base = repo.commit({"big.txt": old})
+    # One hunk too big for any piece, and several small ones after it.
+    new = old.replace("line 10\n", "".join(f"new {n}\n" for n in range(4000)))
+    for n in (4000, 4500, 5000, 5500):
+        new = new.replace(f"line {n}\n", f"changed {n}\n")
+    head = repo.commit({"big.txt": new})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    parts = [path for _, _, files in index(folder).values() for _, path in files]
+    assert len(parts) >= 3
+    assert parts == [f"big.txt (part {n} of {len(parts)})" for n in range(1, len(parts) + 1)]
+    check_pieces(folder, diff)
+    check_line_numbers(folder, repo, head)
+    assert any(b"@@ (continued)\n" in (folder / name).read_bytes() for name in index(folder))
+
+
+def test_a_long_line_is_cut_into_chunks_within_a_piece(repo, tmp_path):
+    head = repo.commit({"app.min.css": "a{}" * 50_000, "wide.txt": "\u00e9" * 60_000 + "\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    for name in index(folder):
+        content = (folder / name).read_bytes()
+        assert len(content) <= MAX_PIECE_BYTES
+        content.decode("utf-8")  # never cut inside a character
+    assert files_of(folder) == {"wide.txt": ("docs", "read"), "app.min.css": ("generated", "not read")}
+    # A generated file never shares a piece with one the prompt asks for.
+    for _, read, files in index(folder).values():
+        assert {kind == "generated" for kind, _ in files} == {read == "not read"}
+
+
+def test_a_rename_a_binary_and_a_deletion(repo, tmp_path):
+    repo.base = repo.commit({"old/name.py": "".join(f"x = {n}\n" for n in range(50)), "logo.png": b"\x89PNG\0\1\2",
+                             "gone.py": "y = 1\n"})
+    head = repo.commit({"old/name.py": None, "new/name.py": "".join(f"x = {n}\n" for n in range(50)),
+                        "logo.png": b"\x89PNG\0\3\4", "gone.py": None})
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    # Deleted files come after the rest.
+    assert index(folder)["001.diff"][2] == [("source", "logo.png"), ("source", "new/name.py"), ("deleted", "gone.py")]
+    content = (folder / "001.diff").read_bytes()
+    assert b"Binary files" in content and b"rename to new/name.py" in content
+    check_pieces(folder, diff)
+
+
+def test_an_odd_path_never_names_a_file_nor_reaches_the_prompt(repo, tmp_path):
+    odd = "we ird/\u00e9t\u00e9 $(touch pwned) `x` \"q\"\tTAB\nNEWLINE ../..; -rf.py"
+    head = repo.commit({odd: "print('hi')\n", "--help": "x\n", "b/ b/x.png": b"\0bin"})
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert sorted(p.name for p in folder.iterdir()) == ["001.diff", "INDEX"]
+    assert not (repo.path / "pwned").exists() and not (tmp_path / "pwned").exists()
+    # INDEX holds each path on one line, as git quotes it.
+    assert (folder / "INDEX").read_text(encoding="utf-8").count("\n") == 5
+    assert [path for _, path in index(folder)["001.diff"][2]] == [
+        "--help", "b/ b/x.png",
+        '"we ird/\\303\\251t\\303\\251 $(touch pwned) `x` \\"q\\"\\tTAB\\nNEWLINE ../..; -rf.py"']
+    # The prompt's list holds piece names, counts and kinds only.
+    assert re.fullmatch(rf"- {re.escape(str(folder))}/001\.diff \(\d+ lines: source\)", text)
+    check_pieces(folder, diff)
+
+
+def test_an_empty_diff(repo, tmp_path):
+    head = repo.commit({})
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert diff == b""
+    assert text == "(none: the diff is empty)"
+    assert sorted(p.name for p in folder.iterdir()) == ["INDEX"]
+    assert (folder / "INDEX").read_text() == "The diff is empty.\n"
+
+
+def test_past_the_read_budget_the_rest_are_named_and_workflows_come_first(repo, tmp_path):
+    # Each file's diff is about 30 KB, so one fits a piece, and only MAX_READ_PIECES of them are asked for.
+    files = {f"docs/f{i:02d}.md": "".join(f"name_{i}_{n} = {n:020d}\n" for n in range(900))
+             for i in range(MAX_READ_PIECES + 2)}
+    files[".github/workflows/z.yml"] = "".join(f"# {n:028d}\n" for n in range(900))
+    files["package-lock.json"] = "{}\n"
+    head = repo.commit(files)
+    text, folder, _ = repo.split(repo.base, head, tmp_path)
+    pieces = index(folder)
+    read = [name for name, (_, flag, _) in pieces.items() if flag == "read"]
+    assert len(read) == MAX_READ_PIECES
+    assert sum((folder / name).stat().st_size for name in read) <= MAX_READ_BYTES
+    assert pieces["001.diff"][2] == [("workflow", ".github/workflows/z.yml")]
+    unread = {path for _, flag, files in pieces.values() if flag == "not read" for _, path in files}
+    assert unread == {"package-lock.json", *(f"docs/f{i:02d}.md" for i in range(MAX_READ_PIECES - 1, MAX_READ_PIECES + 2))}
+    listed, _, rest = text.partition("\nNot asked for")
+    assert len(listed.splitlines()) == MAX_READ_PIECES
+    assert all(name in rest for name, (_, flag, _) in pieces.items() if flag == "not read")

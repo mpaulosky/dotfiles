@@ -27,6 +27,8 @@ temporary directory's `work/_actions`, where the workflow's prompt says the runn
 keeps it (clones are cached in ~/.cache/claude-review-bench). Claude reads
 only the case's worktree, the diff and that copy, as in CI. Still, only add a
 case whose commits you trust, and read a results file before committing it.
+The diff is split into pieces by the workflow's own "Write the PR's diff"
+step, whose Python this runs, and the prompt gets that step's list of them.
 Needs PyYAML (for reading the workflow) and git.
 
 It prints each case's findings and which expected findings they caught, and
@@ -61,11 +63,39 @@ def review_step(workflow):
     return step["with"]["prompt"], step["with"]["claude_args"]
 
 
-def render(text, pr, temp):
-    """Fill in the workflow expressions the prompt and args use.
+def diff_step(workflow):
+    """The Python the review job's "Write the PR's diff" step (id: diff) runs, from its heredoc."""
+    import yaml
+    jobs = yaml.safe_load(workflow.read_text())["jobs"]
+    step = next((s for s in jobs["review"]["steps"] if s.get("id") == "diff"), None)
+    if step is None:
+        sys.exit(f"claude-review-bench.py: no step with id: diff in {workflow}'s review job")
+    lines = step["run"].splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip() == "python3 -I - <<'PY'") + 1
+    end = next(i for i in range(start, len(lines)) if lines[i].strip() == "PY")
+    return "\n".join(lines[start:end]) + "\n"
+
+
+def split_diff(script, temp):
+    """Run the diff step's Python on temp/claude-review/pr.diff, as the runner does: the pieces under
+    temp/claude-review/diff, and the list of them the prompt gets (its pieces output)."""
+    output = Path(temp) / "github-output"
+    output.write_text("")
+    subprocess.run([sys.executable, "-I", "-"], input=script, text=True, check=True, capture_output=True,
+                   env={"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(output)})
+    found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]+)\n(.*)\n\1\n", output.read_text(), re.S)
+    if not found:
+        raise OSError(f"the diff step wrote no pieces output: {output.read_text()[:500]}")
+    return found[2]
+
+
+def render(text, pr, temp, pieces=None):
+    """Fill in the workflow expressions the prompt and args use; pieces is the diff step's pieces output.
 
     github.workspace is temp/work/repo/repo, so its ../../_actions is temp/work/_actions, laid out as on a runner.
     """
+    if pieces is not None:
+        text = text.replace("${{ steps.diff.outputs.pieces }}", pieces)
     text = text.replace("${{ github.event.pull_request.number }}", str(pr))
     text = text.replace("${{ runner.temp }}", str(temp))
     text = text.replace("${{ github.workspace }}", str(Path(temp) / "work" / "repo" / "repo"))
@@ -175,7 +205,7 @@ def use_base_settings(tree, base):
             subprocess.run([*GIT, "-C", str(tree), "checkout", base, "--", name], check=True, capture_output=True, text=True)
 
 
-def run_case(case, prompt, claude_args, overrides, root, timeout):
+def run_case(case, prompt, claude_args, overrides, root, timeout, split=None):
     """One case's review, or an error outcome: a failed case never ends the run."""
     repo = root / case["repo"]
     started = time.monotonic()
@@ -192,16 +222,19 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
             copy_actions(tree, case["head"], temp / "work" / "_actions")
             # The runner's plain git diff: no external diff tool or prefix settings from the global config, and
             # any file encoding read without failing.
-            diff = subprocess.run([*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-C", str(tree),
+            diff = subprocess.run([*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                                   "-c", "core.quotePath=true", "-C", str(tree),
                                    "diff", "--no-color", "--no-ext-diff", f"{case['base']}...{case['head']}"],
                                   check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
             (temp / "claude-review").mkdir()
             (temp / "claude-review" / "pr.diff").write_text(diff)
+            # The workflow's own split of the diff into pieces, and the list the prompt names them in.
+            pieces = split_diff(split, temp) if split else None
             args = override(shlex.split(render(claude_args, case["pr"], temp)), *overrides)
             # The runner's user level has no settings; yours mustn't load in its place.
             args = override(args, None, None, None, setting_sources="")
-            argv = ["claude", "-p", render(prompt, case["pr"], temp), *args,
-                    "--output-format", "json", "--strict-mcp-config", "--no-session-persistence"]
+            argv = ["claude", "-p", render(prompt, case["pr"], temp, pieces), *args,
+                    "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--no-session-persistence"]
             done = subprocess.run(argv, cwd=tree, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:
             return {"error": f"timed out after {timeout}s", "seconds": round(time.monotonic() - started)}
@@ -216,7 +249,7 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
     if done.returncode != 0:
         return {"error": (done.stderr or done.stdout)[-2000:], "seconds": seconds}
     try:
-        data = json.loads(done.stdout)
+        data, reads = transcript(done.stdout)
         review = data.get("structured_output")
         if review is None:
             review = json.loads(data.get("result") or "{}")
@@ -226,8 +259,38 @@ def run_case(case, prompt, claude_args, overrides, root, timeout):
     if not (isinstance(review, dict) and isinstance(review.get("findings"), list)
             and all(isinstance(f, dict) for f in review["findings"])):
         return {"error": f"review isn't an object with a list of findings: {str(review)[:2000]}", "seconds": seconds}
-    return {"review": review, "seconds": seconds, "cost_usd": data.get("total_cost_usd"),
-            "turns": data.get("num_turns")}
+    outcome = {"review": review, "seconds": seconds, "cost_usd": data.get("total_cost_usd"),
+               "turns": data.get("num_turns"), "reads": reads}
+    # claude-code-action rejects a result whose num_turns is over --max-turns, after it has run; Claude Code itself
+    # counts round-trips instead, so a review it lets finish can still be one the workflow would never post.
+    cap = int(args[args.index("--max-turns") + 1]) if "--max-turns" in args else None
+    if cap is not None and isinstance(outcome["turns"], int) and outcome["turns"] > cap:
+        outcome["action_rejects"] = True
+    return outcome
+
+
+def transcript(stream):
+    """From `claude -p --output-format stream-json`: the result message, and the files each turn of tool calls
+    read (a list per assistant message that called a tool), so a run shows what one turn of reads covered."""
+    result, turns = None, {}
+    for line in stream.splitlines():
+        if not line.strip():
+            continue
+        message = json.loads(line)
+        if message.get("type") == "result":
+            result = message
+        elif message.get("type") == "assistant":
+            # Claude Code streams an API message's blocks as separate messages with the same id.
+            body = message.get("message", {})
+            calls = [block for block in body.get("content", [])
+                     if isinstance(block, dict) and block.get("type") == "tool_use"]
+            if calls:
+                turns.setdefault(body.get("id") or len(turns), []).extend(
+                    str(call.get("input", {}).get("file_path") or call.get("input", {}).get("pattern")
+                        or call.get("name")) for call in calls)
+    if result is None:
+        raise json.JSONDecodeError("no result message", stream[-200:], 0)
+    return result, list(turns.values())
 
 
 def score(spec, case, outcome):
@@ -267,6 +330,10 @@ def report(spec, case, outcome, hits):
     copilot = f" (Copilot opened {case['copilot_threads']} thread(s))" if "copilot_threads" in case else ""
     print(f"   {outcome.get('seconds')}s, {outcome.get('turns')} turns, ${outcome.get('cost_usd')}; "
           f"{len(found)} finding(s){copilot}")
+    if outcome.get("action_rejects"):
+        print("   claude-code-action would reject this review: its num_turns is over --max-turns")
+    if outcome.get("reads") is not None:
+        print(f"   {len(outcome['reads'])} turn(s) of tool calls, of {[len(turn) for turn in outcome['reads']]} call(s)")
     for key, hit in hits.items():
         optional = " (optional)" if spec["findings"][key].get("optional") else ""
         print(f"   {'caught' if hit else 'missed'} {key}{optional}: {spec['findings'][key]['about']}")
@@ -302,7 +369,7 @@ def main():
     parser.add_argument("--prompt-file", type=Path, help="replace the prompt")
     parser.add_argument("--tools", help="replace --allowedTools, and drop these from --disallowedTools")
     parser.add_argument("--only", help="run only the case with this head (in either set)")
-    parser.add_argument("--set", default="recall", help="which cases: recall (findings to catch) or noise (ordinary PRs)")
+    parser.add_argument("--set", default="recall", help="which cases: recall (findings to catch), noise (ordinary PRs) or large (a diff too long for one Read)")
     parser.add_argument("--root", type=Path, default=Path.home() / "github", help="where the cases' clones live")
     parser.add_argument("--timeout", type=int, default=1800, help="seconds per case")
     parser.add_argument("--label", default="", help="a name for this run in its results file")
@@ -321,6 +388,7 @@ def main():
     if shutil.which("claude") is None:
         sys.exit("claude-review-bench.py: claude isn't on PATH")
     prompt, claude_args = review_step(WORKFLOW)
+    split = diff_step(WORKFLOW)
     if args.prompt_file:
         prompt = args.prompt_file.read_text()
     overrides = (args.effort, args.model, args.tools)
@@ -337,7 +405,7 @@ def main():
     if not selected:
         sys.exit(f"claude-review-bench.py: no case matches {'--only ' + args.only if args.only else '--set ' + args.set}")
     for case in selected:
-        outcome = run_case(case, prompt, claude_args, overrides, args.root, args.timeout)
+        outcome = run_case(case, prompt, claude_args, overrides, args.root, args.timeout, split)
         if "review" in outcome:
             outcome["bad_lines"] = bad_lines(args.root / case["repo"], case["head"], outcome["review"]["findings"])
         hits, (got, out_of) = score(spec, case, outcome)

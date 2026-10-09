@@ -157,7 +157,9 @@ def test_the_benchmark_can_read_the_template_workflows_review_step():
     pytest.importorskip("yaml")
     prompt, claude_args = bench.review_step(bench.WORKFLOW)
     rendered = shlex.split(bench.render(claude_args, 7, "/tmp/t"))
-    assert "#7" in bench.render(prompt, 7, "/tmp/t")
+    assert "#7" in bench.render(prompt, 7, "/tmp/t", pieces="- /tmp/t/claude-review/diff/001.diff (3 lines: source)")
+    with pytest.raises(SystemExit):
+        bench.render(prompt, 7, "/tmp/t")  # the diff step's pieces must be filled in
     for flag in ("--model", "--effort", "--json-schema"):
         assert flag in rendered, flag
     # The token's guards (#121): no tool granted outright, so reads stay in the
@@ -290,3 +292,41 @@ def test_a_checkout_that_isnt_a_merge_commit_fails(tmp_path):
     done = run_post_step(tmp_path, "print('the base script')\n", merge=False)
 
     assert done.returncode == 1 and done.stdout.startswith("::error::The checkout isn't the PR's merge commit")
+
+
+# diff_step() and split_diff(), against the real Template workflow
+
+def test_the_benchmark_splits_the_diff_with_the_workflows_own_step(tmp_path):
+    pytest.importorskip("yaml")
+    (tmp_path / "claude-review").mkdir()
+    diff = "".join(f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n@@ -1 +1 @@\n-old\n+new\n"
+                   for i in range(3))
+    (tmp_path / "claude-review" / "pr.diff").write_text(diff)
+    pieces = bench.split_diff(bench.diff_step(bench.WORKFLOW), tmp_path)
+    folder = tmp_path / "claude-review" / "diff"
+    assert pieces == f"- {folder}/001.diff (18 lines: source)"
+    assert (folder / "001.diff").read_text() == diff
+    assert (folder / "INDEX").exists()
+
+
+# transcript()
+
+def test_the_transcript_gives_the_result_and_each_turns_reads():
+    lines = [
+        {"type": "system", "subtype": "init"},
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/t/diff/INDEX"}}]}},
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/t/diff/0001.diff"}}]}},
+        {"type": "user", "message": {"content": []}},
+        {"type": "assistant", "message": {"id": "m2", "content": [{"type": "text", "text": "done"}]}},
+        {"type": "result", "num_turns": 6, "structured_output": {"summary": "s", "findings": []}},
+    ]
+    result, reads = bench.transcript("\n".join(json.dumps(line) for line in lines) + "\n")
+    assert result["num_turns"] == 6
+    assert reads == [["/t/diff/INDEX", "/t/diff/0001.diff"]]
+
+
+def test_a_transcript_without_a_result_is_an_error():
+    with pytest.raises(json.JSONDecodeError):
+        bench.transcript(json.dumps({"type": "system"}) + "\n")

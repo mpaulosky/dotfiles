@@ -1,5 +1,5 @@
 {
-  "about": "Claude Review's benchmark (#117): Articles#298's three reviewed commits, and the five findings Copilot made on them. Each commit expects the findings whose bug it still contains. A finding is caught when one of Claude's findings is on a file named in `paths` and mentions every word group in `match` (each group is any-of, case-insensitive, whole words). `optional` findings are welcome, not required. The `noise` set is ordinary merged PRs with no expected findings, to read for false positives against Copilot's thread count.",
+  "about": "Claude Review's benchmark (#117): Articles#298's three reviewed commits, and the five findings Copilot made on them. Each commit expects the findings whose bug it still contains. A finding is caught when one of Claude's findings is on a file named in `paths` and mentions every word group in `match` (each group is any-of, case-insensitive, whole words). `optional` findings are welcome, not required. The `noise` set is ordinary merged PRs with no expected findings, to read for false positives against Copilot's thread count. The `large` set is a diff too long for one Read (the re-Apply PRs of 2026-10-09, about 2,600 lines), to check that the review's one turn of reads covers its late files.",
   "findings": {
     "1": {
       "about": "An off-diff finding's only blocker is the failed post check, and a skipped rerun (another label added) replaces it.",
@@ -189,6 +189,14 @@
       "head": "048b34e",
       "expect": [],
       "copilot_threads": 2
+    },
+    {
+      "set": "large",
+      "repo": "Blazor-Server",
+      "pr": 190,
+      "base": "3d8d160",
+      "head": "5a56264",
+      "expect": []
     }
   ]
 }

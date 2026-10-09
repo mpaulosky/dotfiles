@@ -79,11 +79,13 @@ class Repo:
         output.write_text("")
         env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output),
                "BASE_SHA": base, "HEAD_SHA": head}
-        subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
-                       capture_output=True)
-        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\n", output.read_text(), re.S)
+        done = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
+                              capture_output=True)
+        found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\nlisted=(.*)\nhidden=(\d+)\n",
+                             output.read_text(), re.S)
         assert found, output.read_text()
-        self.skipped = found[3]
+        self.skipped, self.listed, self.hidden = found[3], found[4], int(found[5])
+        self.log = done.stdout.decode("utf-8", "replace")
         folder = runner_temp / "claude-review" / "diff"
         return found[2], folder, (runner_temp / "claude-review" / "pr.diff").read_bytes()
 
@@ -239,13 +241,11 @@ def test_a_long_line_is_cut_into_chunks_within_a_piece(repo, tmp_path):
     assert all(row.startswith(b"\\~ \xc3\xa9") for row in rows[first + 1:-1])
     check_pieces(folder, diff)
     check_line_numbers(folder, repo, head)
-    # A generated file can hold code, so it's read while it fits; a lockfile never is, and never holds the merge.
-    assert repo.skipped == ""
+    # Generated files and lockfiles can hold code or point a dependency elsewhere, so they're read while they fit.
+    assert repo.skipped == "" and repo.hidden == 0
     assert files_of(folder) == {"wide.txt": ("docs", "read"), "app.min.css": ("generated", "read"),
-                                "yarn.lock": ("lockfile", "not read")}
-    # A lockfile never shares a piece with one the prompt asks for.
-    for _, read, files in index(folder).values():
-        assert {kind == "lockfile" for kind, _ in files} == {read == "not read"}
+                                "yarn.lock": ("lockfile", "read")}
+    assert repo.listed.split() == list(index(folder))
 
 
 def test_lines_after_a_long_line_split_across_parts_keep_their_numbers(repo, tmp_path):
@@ -315,7 +315,39 @@ def test_past_the_read_budget_the_rest_are_named_and_workflows_come_first(repo, 
     listed, _, rest = text.partition("\nNot asked for")
     assert len(listed.splitlines()) == MAX_READ_PIECES
     assert all(name in rest for name, (_, flag, _) in pieces.items() if flag == "not read")
-    # The unread pieces of code, not the lockfile's, are named for the hold.
-    assert repo.skipped.split() == [name for name, (_, flag, files) in pieces.items()
-                                    if flag == "not read" and files[0][0] != "lockfile"]
-    assert repo.skipped
+    # Every unread piece, the lockfile's too, is named for the hold; the read ones are listed.
+    assert repo.skipped.split() == [name for name, (_, flag, _) in pieces.items() if flag == "not read"]
+    assert repo.listed.split() == read
+
+
+def test_a_lockfile_is_read_last_and_holds_the_merge_past_the_budget(repo, tmp_path):
+    lock = "".join(f'"node_modules/p{n}": {{"resolved": "https://registry.example/p{n}-{n:020d}.tgz"}}\n'
+                   for n in range(MAX_READ_BYTES // 60))
+    head = repo.commit({"src/app.py": "print(2)\n", "package-lock.json": lock})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    pieces = index(folder)
+    assert pieces["001.diff"][2][0] == ("source", "src/app.py")
+    assert all(files[-1][0] == "lockfile" for name, (_, _, files) in pieces.items() if name != "001.diff")
+    assert repo.listed.split()[0] == "001.diff"
+    # Past the budget, the lockfile's pieces are named for the hold.
+    assert repo.skipped and all({kind for kind, _ in pieces[name][2]} == {"lockfile"} for name in repo.skipped.split())
+
+
+def test_the_heads_gitattributes_cant_hide_its_code(repo, tmp_path):
+    head = repo.commit({".gitattributes": "src/payload.py -diff\n", "src/payload.py": "import os\nos.system('x')\n"})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert b"os.system('x')" in diff and b"Binary files" not in diff
+    assert repo.hidden == 0
+
+
+def test_text_the_bases_gitattributes_shows_as_binary_holds_the_merge(repo, tmp_path):
+    repo.base = repo.commit({".gitattributes": "*.dat binary\nsrc/odd$(x).dat binary\n"})
+    head = repo.commit({"src/payload.dat": "import os\n", "src/odd$(x).dat": "y\n", "logo.png": b"\x89PNG\0\1"})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert b"Binary files /dev/null and b/src/payload.dat differ" in diff
+    # The PNG is binary by its content; the two .dat files are text shown as binary.
+    assert repo.hidden == 2
+    log = repo.log
+    token = re.search(r"^::stop-commands::([0-9a-f]{32})$", log, re.M)[1]
+    listed = log[log.index(f"::stop-commands::{token}"):log.index(f"::{token}::")]
+    assert "  src/payload.dat" in listed and "  src/odd$(x).dat" in listed and "logo.png" not in listed

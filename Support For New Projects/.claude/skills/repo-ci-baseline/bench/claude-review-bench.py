@@ -39,6 +39,7 @@ read the findings too: a miss can be a finding worded another way.
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -83,7 +84,7 @@ def split_diff(script, temp):
     output.write_text("")
     subprocess.run([sys.executable, "-I", "-"], input=script, text=True, check=True, capture_output=True,
                    env={"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(output)})
-    found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]+)\n(.*)\n\1\nskipped=.*\n", output.read_text(), re.S)
+    found = re.match(r"pieces<<(EOF_[0-9a-f]+)\n(.*?)\n\1\n", output.read_text(), re.S)
     if not found:
         raise OSError(f"the diff step wrote no pieces output: {output.read_text()[:500]}")
     return found[2]
@@ -222,12 +223,22 @@ def run_case(case, prompt, claude_args, overrides, root, timeout, split=None):
             copy_actions(tree, case["head"], temp / "work" / "_actions")
             # The runner's plain git diff: no external diff tool or prefix settings from the global config, and
             # any file encoding read without failing.
-            diff = subprocess.run([*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
-                                   "-c", "core.quotePath=true", "-C", str(tree),
-                                   "diff", "--no-color", "--no-ext-diff", f"{case['base']}...{case['head']}"],
+            # .gitattributes from the base, as the workflow takes them.
+            span = f"{case['base']}...{case['head']}"
+            plain = [*GIT, "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-C", str(tree)]
+            diff = subprocess.run([*plain, "-c", "core.quotePath=true", f"--attr-source={case['base']}",
+                                   "diff", "--no-color", "--no-ext-diff", span],
                                   check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
             (temp / "claude-review").mkdir()
             (temp / "claude-review" / "pr.diff").write_text(diff)
+            # The numstats the step compares to find text shown as binary.
+            empty = subprocess.run([*GIT, "-C", str(tree), "hash-object", "-t", "tree", os.devnull],
+                                   check=True, capture_output=True, text=True).stdout.strip()
+            for name, source in (("attr.numstat", case["base"]), ("plain.numstat", empty)):
+                numstat = subprocess.run([*plain, "-c", f"core.attributesFile={os.devnull}", f"--attr-source={source}",
+                                          "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", span],
+                                         check=True, capture_output=True).stdout
+                (temp / "claude-review" / name).write_bytes(numstat)
             # The workflow's own split of the diff into pieces, and the list the prompt names them in.
             pieces = split_diff(split, temp) if split else None
             args = override(shlex.split(render(claude_args, case["pr"], temp)), *overrides)

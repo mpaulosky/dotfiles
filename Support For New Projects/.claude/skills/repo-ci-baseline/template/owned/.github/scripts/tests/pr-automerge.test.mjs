@@ -958,10 +958,20 @@ test("judges a BEHIND PR's required checks by their newest runs, and only the re
 });
 
 test("says so where it shows when a BEHIND PR has no required check at all", async () => {
-  const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Lint", { isRequired: false })) }));
+  const pr = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Lint", { isRequired: false })) });
+  const { updates, logs } = await evaluate(pr, [], { push: true });
 
   assert.deepEqual(updates, []);
   assert.ok(logs.some((line) => line.startsWith("notice: ") && line.includes("no required check")), logs.join("\n"));
+});
+
+test("doesn't flag a PR event that came before CI created its checks", async () => {
+  const pr = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Merge same-repo PRs when ready", { isRequired: false })) });
+  const { updates, logs } = await evaluate(pr);
+
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("no required check")), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.startsWith("notice: ")), logs.join("\n"));
 });
 
 test("takes a 422 from update-branch quietly", async () => {

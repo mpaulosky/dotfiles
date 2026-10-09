@@ -374,8 +374,10 @@ jobs:
               const pending = requiredChecksPending(pr);
               if (pending) {
                 // No required check at all on a head means isRequired doesn't
-                // see the ruleset's checks; say so where it shows.
-                const log = pending.startsWith("no required check") ? core.notice : core.info;
+                // see the ruleset's checks; say so where it shows. Not on a PR
+                // event, which can come before CI has created its checks.
+                const misconfigured = pending.startsWith("no required check") && !context.payload.pull_request;
+                const log = misconfigured ? core.notice : core.info;
                 log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
                 return;
               }

@@ -85,16 +85,6 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   exit 1
 fi
 
-# Sandcastle runs this gate in its sandbox and records the commit it passed as
-# sandcastle.gatedHead before pushing it. Every pushed branch is HEAD and the
-# tree is clean (both checked above), so a HEAD Sandcastle already gated needs
-# no second run. Unset everywhere but a Sandcastle repo.
-GATED_HEAD="$(git config --local --get sandcastle.gatedHead 2>/dev/null || true)"
-if [[ -n "$GATED_HEAD" && "$GATED_HEAD" == "$(git rev-parse HEAD)" ]]; then
-  echo -e "${GREEN}✅ Sandcastle already gated ${GATED_HEAD:0:12} — skipping the gate.${RESET}"
-  exit 0
-fi
-
 # The ruleset makes a PR be up to date with main before it merges, so a branch
 # behind origin/main couldn't merge as pushed, and the gate would test it
 # against an old main. Fetch main first, so the check sees what merged since

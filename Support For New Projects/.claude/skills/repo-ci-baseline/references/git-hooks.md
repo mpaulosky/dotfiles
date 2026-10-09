@@ -80,16 +80,19 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
   4. Refuse a pushed commit that isn't the checked-out `HEAD`, because the gate only tests the working tree.
   5. Refuse a working tree with uncommitted or untracked changes, for the same reason. Ignored files don't count.
   6. A push with no branch updates (tags only, or deletions only) skips the gate.
-  7. Skip the gate when `HEAD` is the commit recorded in `git config sandcastle.gatedHead`: Sandcastle runs the gate in
-     its sandbox, records the commit it passed, then pushes it, so a second run on the host only repeats it. Steps 4
-     and 5 still apply first. Unset outside a Sandcastle repo (Blazor-Server #93).
-  8. Refuse a branch behind `origin/main`: `main-rules` requires a PR to be up to date before it merges, so its PR
+  7. Refuse a branch behind `origin/main`: `main-rules` requires a PR to be up to date before it merges, so its PR
      couldn't merge as pushed (it would sit at `BEHIND`), and the gate would test it against an old main. The hook
      fetches main first; offline it compares with the last fetched copy, and with no `origin/main` it skips the
      check. The fix it names is `git merge origin/main`, which needs no force push; squash merges drop the merge
-     commit. It comes after step 7, so a Sandcastle-gated push isn't refused here. From Articles' unmerged
-     `chore/pre-push-main-sync-gate`, written after a branch kept being pushed once an earlier push had auto-merged.
-  9. Run `scripts/gate.sh`.
+     commit. From Articles' unmerged `chore/pre-push-main-sync-gate`, written after a branch kept being pushed once an earlier push had auto-merged.
+  8. Run `scripts/gate.sh`. No config key skips it any more: the old `sandcastle.gatedHead` skip (Blazor-Server #93)
+     was removed after Blazor-Server #188's review, because a Sandcastle sandbox can write `.git/config`. That
+     doesn't make the hook a defence against a writable `.git/config`. The hook only runs because the clone's
+     config sets `core.hooksPath`, so anything that can write that file can point it elsewhere and turn the hook
+     off. The hook is a local convenience; the ruleset and CI are the gate. A Sandcastle repo must keep agents
+     from writing the clone's `.git/config`, and run all host git with hooks off, since the relative `hooksPath`
+     makes each worktree's own `.github/hooks/*` the ones that fire; see step 7 of the Sandcastle setup in the
+     README.
 - **`scripts/gate.sh`**, also safe to run by hand: lint the Markdown, YAML, workflow and shell files changed since
   `origin/main`, using CI's configs, and prefer installed tools with pinned fallbacks. Then build and run each test
   project, where the stack allows it locally. Which steps it runs depends on the repo; what's standard is that
@@ -108,8 +111,7 @@ build runs. It needs cases for:
 - a push that isn't the checked-out commit
 - an untracked or unstaged file
 - `.github/ci/gate-checks.sh` running with the merge base, and failing the push before the build
-- a Sandcastle-gated `HEAD` skipping the gate (pushed and by hand), an ungated `HEAD` running it, and a gated `HEAD`
-  with a dirty tree still refused
+- a `sandcastle.gatedHead` marker for `HEAD` not skipping the gate (pushed and by hand)
 - a branch behind `origin/main` refused before the gate (pushed and by hand) with the `git merge origin/main` fix,
   the same branch running the gate once it has merged main, no `origin/main` skipping the check, and a stale local
   `origin/main` refreshed by the hook's fetch

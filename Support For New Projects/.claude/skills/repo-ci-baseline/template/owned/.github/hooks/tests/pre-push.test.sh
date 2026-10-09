@@ -356,22 +356,16 @@ expect "a failing gate-checks.sh refuses the push" refused any
 expect_log "a failing gate-checks.sh stops the gate before the build" not-ran 'dotnet build*'
 git -C "$REPO" switch -q feature/1-x
 
-# Sandcastle records the commit its sandbox gate passed; pushing exactly that
-# commit skips the second run, and anything else still runs the gate.
+# The old sandcastle.gatedHead marker no longer skips the gate: a Sandcastle
+# sandbox can write .git/config, so it let an agent skip the host's gate. (Such a
+# sandbox could also repoint core.hooksPath; the hook can't defend against that,
+# so Sandcastle repos keep .git/config read-only in the sandbox, and CI is the gate.)
 switch_to feature/1-x
 git -C "$REPO" config --local sandcastle.gatedHead "$(git -C "$REPO" rev-parse HEAD)"
 run_hook feature/1-x "$(push_stdin feature/1-x)"
-expect "a Sandcastle-gated HEAD skips the gate" allowed tests-skipped "Sandcastle already gated"
+expect "a sandcastle.gatedHead marker for HEAD doesn't skip the gate" allowed tests-ran
 run_hook_without_stdin feature/1-x
-expect "a Sandcastle-gated HEAD skips the gate when run by hand" allowed tests-skipped "Sandcastle already gated"
-git -C "$REPO" config --local sandcastle.gatedHead "$SHA"
-run_hook feature/1-x "$(push_stdin feature/1-x)"
-expect "a HEAD Sandcastle didn't gate runs the gate" allowed tests-ran
-git -C "$REPO" config --local sandcastle.gatedHead "$(git -C "$REPO" rev-parse HEAD)"
-touch "$REPO/untracked.cs"
-run_hook feature/1-x "$(push_stdin feature/1-x)"
-expect "a Sandcastle-gated HEAD with a dirty tree is still refused" refused tests-skipped "uncommitted or untracked changes"
-rm "$REPO/untracked.cs"
+expect "a sandcastle.gatedHead marker doesn't skip the gate when run by hand" allowed tests-ran
 git -C "$REPO" config --local --unset sandcastle.gatedHead
 
 # The ruleset makes a PR be up to date with main before it merges, so a branch

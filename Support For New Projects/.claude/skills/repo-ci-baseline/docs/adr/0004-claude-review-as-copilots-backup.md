@@ -171,7 +171,9 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
       Lockfiles hold: they decide which dependency code the build installs and runs, and nobody reads them here.
       So does `.gitignore`: it decides what gets committed, and dropping `.env` from it would let secrets be staged;
     - unless deleted: a file git shows only as binary that isn't inert media (`MEDIA`: images, fonts, audio, video, PDFs),
-      a submodule bump (mode 160000: the diff shows only two commit IDs), and a Git LFS pointer (only the pointer shows).
+      a submodule bump (mode 160000: the diff shows only two commit IDs), and a Git LFS pointer (only the pointer shows)
+      that isn't media. A pointer is known by its `oid sha256:` line or by a first line naming any version git-lfs accepts,
+      its older `hawser` and `git-media` aliases included.
 
     The diff takes attributes from the base (`--attr-source`), so a PR's own `.gitattributes` can't hide its text,
     and `--no-textconv` keeps a diff driver from rewriting what the review sees.

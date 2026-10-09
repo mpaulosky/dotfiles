@@ -825,10 +825,14 @@ def test_the_warning_steps_max_turns_is_the_review_steps():
     # included, must be the warning step's MAX_TURNS.
     text = WORKFLOW.read_text()
     lines = text.splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "claude_args: >-")
+    step = next((i for i, line in enumerate(lines) if line.strip() == "- name: Review"), None)
+    assert step is not None, "claude-review.yml has no step named Review"
+    step_end = next((i for i in range(step + 1, len(lines)) if lines[i].strip().startswith("- name: ")), len(lines))
+    start = next((i for i in range(step, step_end) if lines[i].strip() == "claude_args: >-"), None)
+    assert start is not None, "the Review step has no claude_args: >- block"
     indent = len(lines[start]) - len(lines[start].lstrip()) + 1
-    end = next(i for i in range(start + 1, len(lines))
-               if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) < indent)
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].strip() and len(lines[i]) - len(lines[i].lstrip()) < indent), len(lines))
     args = re.findall(r'--max-turns(?:=|\s+)"?(\d+)', "\n".join(lines[start + 1:end]))
     limit = re.findall(r'^\s+MAX_TURNS: "(\d+)"$', text, re.M)
     assert len(args) == 1 and len(limit) == 1 and args == limit

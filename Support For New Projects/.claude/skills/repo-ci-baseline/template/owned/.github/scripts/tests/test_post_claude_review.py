@@ -821,8 +821,10 @@ def test_the_warning_says_a_review_the_action_rejected_for_its_turns_shouldnt_be
 
 
 def test_the_warning_steps_max_turns_is_the_review_steps():
+    # Every --max-turns with a number, comments included, so one in a comment can't stand in for the Review step's.
     text = WORKFLOW.read_text()
-    assert re.search(r"--max-turns (\d+)", text)[1] == re.search(r'MAX_TURNS: "(\d+)"', text)[1]
+    turns = set(re.findall(r"--max-turns[= ](\d+)", text))
+    assert len(turns) == 1 and turns == set(re.findall(r'MAX_TURNS: "(\d+)"', text))
 
 
 def test_the_warning_survives_a_missing_execution_file(tmp_path):

@@ -22,8 +22,7 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   into its blog post word for word. A stale claim (a test count, a feature since removed) turns into a stale post, and
   Copilot then holds the blog PR on it.
 - **Answer every Copilot thread**, fix or reply, then resolve it, and only after the push has landed, so the reply names
-  a commit that exists. Auto-merge waits for every thread (Copilot's only until its review cap, which a re-Apply PR
-  doesn't have). Workflow and release logic draws real findings:
+  a commit that exists. Auto-merge waits for every thread, past the review cap too (#146). Workflow and release logic draws real findings:
   IssueTracker's release pipeline took five rounds and ten fixes, and porting it to atelier-store found three more (a
   manual run naming a PR merged elsewhere, a published draft missing its `Source PR` line, and a draft naming another
   PR, even inside a list item). A fix found late can land after the PR has already auto-merged; it then needs its own

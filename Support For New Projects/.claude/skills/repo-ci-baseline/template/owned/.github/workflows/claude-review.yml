@@ -16,9 +16,9 @@ name: Claude Review
 # PR Auto-Merge accepts that review of the head as it does Copilot's. A
 # finding outside the diff can't be a thread, so it goes in the body under a
 # second marker, which PR Auto-Merge holds on until the next push gets a fresh
-# review or the review cap is reached, and the post job warns. It doesn't
+# review (past the review cap too), and the post job warns. It doesn't
 # fail: a failed check leaves the PR UNSTABLE, which PR Auto-Merge never
-# merges, even at the cap. For the same reason a Review step that fails, times
+# merges. For the same reason a Review step that fails, times
 # out or hits the subscription's usage limit doesn't fail the job: it warns
 # and posts nothing, so the PR waits for a review of its head (Copilot's, or
 # Claude's on a rerun) instead of stranding. Only PRs into main, the only ones

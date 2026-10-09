@@ -151,6 +151,8 @@ function graph(overrides = {}) {
     rev: { parents: ["base0"], files: { app: "app1", lib: "lib0" } },
     merge1: { parents: ["rev", "main1"], files: { app: "app1", lib: "lib1" } },
     merge2: { parents: ["merge1", "main2"], files: { app: "app1", lib: "lib2", docs: "docs2" } },
+    // readyPr()'s head: an ordinary commit, never a merge from main.
+    [HEAD]: { parents: ["rev"], files: { app: "app2", lib: "lib0" } },
     ...overrides
   };
 }
@@ -458,21 +460,21 @@ test("counts reviewed commits, not reviews, toward the cap", async () => {
   assert.deepEqual(merges, []);
 });
 
-test("merges past unresolved Copilot threads at the review cap and says how many", async () => {
+test("still waits on unresolved Copilot threads at the review cap", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two", HEAD),
     reviewThreads: threadsBy(COPILOT, COPILOT, { login: OWNER, resolved: true })
   });
   const { merges, logs } = await evaluate(pr);
 
-  assert.equal(merges.length, 1);
-  assert.ok(logs.some((line) => line.includes("past 2 unresolved Copilot thread(s)")), logs.join("\n"));
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("2 unresolved review thread(s)")), logs.join("\n"));
 });
 
 test("still waits on a person's unresolved thread at the review cap", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two", HEAD),
-    reviewThreads: threadsBy(COPILOT, OWNER)
+    reviewThreads: threadsBy(OWNER)
   });
   const { merges, logs } = await evaluate(pr);
 
@@ -530,15 +532,23 @@ test("doesn't log the cap when it didn't change the outcome", async () => {
   assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
 });
 
-test("logs both requirements the cap bypassed", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), reviewThreads: threadsBy(COPILOT) });
+test("merges at the review cap once every thread is resolved, without a review of the head", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf("one", "two", "three"),
+    reviewThreads: threadsBy({ login: COPILOT, resolved: true }, { login: ACTIONS, review: "claude-1", resolved: true })
+  });
   const { merges, logs } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
-  assert.ok(
-    logs.some((line) => line.includes("without a review of " + HEAD + " and past 1 unresolved Copilot thread(s)")),
-    logs.join("\n")
-  );
+  assert.ok(logs.some((line) => line.includes("Review cap (3) reached") && line.includes("without a review of " + HEAD)), logs.join("\n"));
+});
+
+test("waits at the review cap on an unresolved thread even without a review of the head", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), reviewThreads: threadsBy(COPILOT) });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
 });
 
 test("merges on a Claude review of the head with no threads", async () => {
@@ -606,7 +616,7 @@ test("doesn't count Claude reviews of merge commits toward the cap", async () =>
   assert.deepEqual(merges, []);
 });
 
-test("merges past unresolved Copilot and Claude threads at the cap and names each reviewer", async () => {
+test("still waits on unresolved Copilot and Claude threads at the cap", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two"),
     claudeReviews: claudeReviewsOf(HEAD),
@@ -614,11 +624,19 @@ test("merges past unresolved Copilot and Claude threads at the cap and names eac
   });
   const { merges, logs } = await evaluate(pr);
 
-  assert.equal(merges.length, 1);
-  assert.ok(
-    logs.some((line) => line.includes("past 1 unresolved Copilot thread(s) and 2 unresolved Claude thread(s)")),
-    logs.join("\n")
-  );
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("3 unresolved review thread(s)")), logs.join("\n"));
+});
+
+test("still waits on an unresolved Claude thread at the cap", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf("one", "two"),
+    claudeReviews: claudeReviewsOf(HEAD),
+    reviewThreads: threadsBy({ login: ACTIONS, review: "claude-1" })
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
 });
 
 test("still waits at the cap on a github-actions thread outside a Claude review", async () => {
@@ -662,13 +680,30 @@ test("ignores off-diff findings on an older head", async () => {
   assert.equal(merges.length, 1);
 });
 
-test("merges past off-diff findings at the review cap and says so", async () => {
+test("still waits on off-diff findings at the review cap", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf({ oid: HEAD, offDiff: true }) });
   const { merges, logs } = await evaluate(pr);
 
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("findings outside the diff")), logs.join("\n"));
+});
+
+test("still waits at the cap on off-diff findings of the commit a merge from main covers", async () => {
+  const pr = mergedPr("merge1", {
+    copilotReviews: copilotReviewsOf("one", "two"),
+    claudeReviews: claudeReviewsOf({ oid: "rev", offDiff: true })
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("Claude's review of rev has findings outside the diff")), logs.join("\n"));
+});
+
+test("ignores off-diff findings on an older head at the cap", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf({ oid: "older", offDiff: true }) });
+  const { merges } = await evaluate(pr);
+
   assert.equal(merges.length, 1);
-  assert.ok(logs.some((line) => line.includes("Review cap (3) reached") && line.includes("past Claude's findings outside the diff")),
-    logs.join("\n"));
 });
 
 // A re-Apply PR has no review cap: its rounds come from re-Apply commits, not
@@ -834,12 +869,12 @@ test("keeps Claude's off-diff hold on the commit a merge from main covers", asyn
   assert.ok(logs.some((line) => line.includes("Claude's review of rev has findings outside the diff")), logs.join("\n"));
 });
 
-test("doesn't spend API calls on a merge check once the cap is reached", async () => {
+test("waits at the cap, with a warning, when the merge check can't read the head", async () => {
   const pr = mergedPr("missing", { copilotReviews: copilotReviewsOf("one", "two", "three") });
   const { merges, logs } = await evaluate(pr);
 
-  assert.equal(merges.length, 1);
-  assert.ok(!logs.some((line) => line.startsWith("warning: ")), logs.join("\n"));
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && line.includes("clean merge from main")), logs.join("\n"));
 });
 
 // ── Bringing a ready PR up to date with main ────────────────────────────────

@@ -23,9 +23,10 @@ required check is added only once a workflow on the default branch has the job
 that reports it, so requiring a check can't block every PR before the repo
 produces it.
 
-Review threads hold a merge for at most three Copilot rounds. A ruleset can't
-express a cap, so main-rules leaves thread resolution off and the Template's
-pr-automerge.yml enforces it; this checks every repo runs that cap.
+PR Auto-Merge waits for a review of the head for at most three review rounds,
+and holds on every unresolved thread past them (#146). A ruleset can't express
+the cap, so main-rules leaves thread resolution off and the Template's
+pr-automerge.yml enforces both; this checks every repo runs that cap.
 
 Standard library only; GitHub is reached through `gh api`.
 """
@@ -526,17 +527,17 @@ COPILOT_REVIEW_CAP = re.compile(r"const COPILOT_REVIEW_CAP = (\d+);")
 
 
 def check_review_cap(std, workflows):
-    """Review threads hold the merge for at most review_cap Copilot rounds (ADR 0002).
+    """PR Auto-Merge waits for a review of the head for at most review_cap rounds (ADR 0002).
 
-    A ruleset can only require every thread resolved, with no cap, so the
-    ruleset leaves it off and pr-automerge.yml enforces the cap. This checks
-    the repo runs the Template's pr-automerge.yml with that cap.
+    Threads hold the merge past the cap too (#146). The ruleset leaves thread
+    resolution to pr-automerge.yml, which enforces both. This checks the repo
+    runs the Template's pr-automerge.yml with that cap.
     """
     want = std["settings"]["review_cap"]
     text = next((text for path, text in workflows.items() if Path(path).name == "pr-automerge.yml"), None)
     match = COPILOT_REVIEW_CAP.search(text or "")
     if match and int(match.group(1)) == want:
-        return [Finding("review cap", OK, f"pr-automerge.yml resolves threads for up to {want} Copilot rounds")]
+        return [Finding("review cap", OK, f"pr-automerge.yml stops waiting for a review of the head after {want} rounds")]
     found = f"cap {match.group(1)}" if match else "no review cap" if text else "no pr-automerge.yml"
     return [Finding("review cap", MANUAL, f"{found}; re-Apply the Template for the {want}-round cap")]
 

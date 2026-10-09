@@ -344,17 +344,24 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/claude-review"
           git diff --no-color "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
 
-      # Capped at one turn of reads and the answer, the owner's limit of 3
-      # turns on what a review may cost. The prompt asks for exactly that, and
-      # --max-turns 7 enforces it. 7 isn't 3 because claude-code-action checks
-      # the cap against num_turns, which counts messages: a review that makes
-      # one turn of parallel reads and answers reports 6 or 7 (checked with
-      # Claude Code 2.1.295). With --max-turns 3, the action rejected every
-      # such review ("reported a successful result after 6 turns, exceeding
-      # the configured maximum of 3") and nothing was posted. A review that
-      # runs past the cap returns no review; the step's continue-on-error
-      # turns that into a warning, and the PR waits for a review as it does at
-      # the usage limit.
+      # Turns: the owner's limit is 3 (one turn of reads, then the answer), and
+      # the prompt is what holds a review to it. --max-turns can't enforce that
+      # on its own, because two tools read it differently (checked with Claude
+      # Code 2.1.295):
+      # - Claude Code stops after that many API round-trips. At 7 a review that
+      #   ignored the prompt could make about five turns of reads, all billed.
+      # - claude-code-action then compares the same number with num_turns,
+      #   which counts messages, and rejects a result above it. A review that
+      #   follows the prompt reports 6 or 7, so with --max-turns 3 every review
+      #   was rejected after it had run ("reported a successful result after 6
+      #   turns, exceeding the configured maximum of 3").
+      # So 7 is a backstop, not the limit: it lets a review that follows the
+      # prompt post, and cuts off a runaway one. The margin is thin. One extra
+      # message (a retried structured answer, say) makes a good review report 8,
+      # and the action rejects it after it's paid for. A rejected or cut-off
+      # review posts nothing; the step's continue-on-error turns that into a
+      # warning, and the PR waits for a review as it does at the usage limit.
+      # On the bench a review that followed the prompt cost $0.29 to $0.78.
       #
       # Opus 5.5 at high effort, with read-only tools: it reads the diff and
       # the checked-out code, and answers in the JSON schema below. The prompt

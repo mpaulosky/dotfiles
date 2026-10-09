@@ -376,7 +376,10 @@ jobs:
       # them into a finding that holds the merge for a person. Attributes come
       # from the base (--attr-source), so a PR's own .gitattributes can't make
       # its text show as binary, and --no-textconv keeps a driver from
-      # rewriting what the review sees.
+      # rewriting what the review sees. --no-renames shows a rename as the old
+      # path's deletion and the new path's addition, so each is judged on its
+      # own path: a rename into a data path or out of an excluded one hides
+      # nothing.
       #
       # Pieces are named by number only (001.diff): a PR's paths are its
       # author's, so none becomes a file name or reaches the prompt. The
@@ -397,7 +400,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           mkdir -p "${RUNNER_TEMP}/claude-review"
-          git --attr-source="${BASE_SHA}" -c core.quotePath=true diff --no-color --no-ext-diff --no-textconv "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
+          git --attr-source="${BASE_SHA}" -c core.quotePath=true diff --no-color --no-ext-diff --no-textconv --no-renames "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
           python3 -I - <<'PY'
           import os, re
 

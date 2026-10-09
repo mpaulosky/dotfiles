@@ -293,11 +293,33 @@ def test_a_rename_a_binary_and_a_deletion(repo, tmp_path):
     head = repo.commit({"old/name.py": None, "new/name.py": "".join(f"x = {n}\n" for n in range(50)),
                         "logo.png": b"\x89PNG\0\3\4", "gone.py": None})
     text, folder, diff = repo.split(repo.base, head, tmp_path)
-    # Deleted files come after the rest.
-    assert index(folder)["001.diff"][2] == [("source", "logo.png"), ("source", "new/name.py"), ("deleted", "gone.py")]
+    # Deleted files come after the rest; a rename is the old path's deletion and the new path's addition.
+    assert index(folder)["001.diff"][2] == [("source", "logo.png"), ("source", "new/name.py"),
+                                            ("deleted", "gone.py"), ("deleted", "old/name.py")]
     content = (folder / "001.diff").read_bytes()
-    assert b"Binary files" in content and b"rename to new/name.py" in content
+    assert b"Binary files" in content and b"rename to" not in content
     check_pieces(folder, diff)
+
+
+def test_a_rename_into_data_shows_the_old_files_deletion(repo, tmp_path):
+    workflow = "on: push\njobs: {}\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": workflow, "src/Result.cs": "class Result {}\n"})
+    head = repo.commit({".github/workflows/ci.yml": None, "notes/ci.log": workflow,
+                        "src/Result.cs": None, "old/Result.cs.map": "class Result {}\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert files_of(folder) == {".github/workflows/ci.yml": ("deleted", "read"), "src/Result.cs": ("deleted", "read")}
+    assert sorted(excluded_of(folder)) == ["notes/ci.log", "old/Result.cs.map"]
+
+
+def test_a_rename_out_of_an_excluded_path_is_read_and_holds(repo, tmp_path):
+    payload = "".join(f"steal({n})\n" for n in range(40))
+    repo.base = repo.commit({"dist/payload.js": payload})
+    head = repo.commit({"dist/payload.js": None, "src/payload.js": payload})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert files_of(folder) == {"src/payload.js": ("source", "read")}
+    assert b"+steal(39)" in (folder / "001.diff").read_bytes()
+    # Deleting excluded code holds the merge.
+    assert held_of(folder) == {"dist/payload.js": "excluded"}
 
 
 def test_an_odd_path_never_names_a_file_nor_reaches_the_prompt(repo, tmp_path):

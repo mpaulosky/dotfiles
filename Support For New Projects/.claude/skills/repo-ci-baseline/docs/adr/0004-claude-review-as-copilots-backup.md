@@ -49,7 +49,7 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   `continue-on-error` lets a warning step say so, and the post job skips when there's nothing to post (an empty output would fail it as malformed).
   The PR then has no Claude review of its head, so PR Auto-Merge waits for Copilot's or a rerun, instead of the PR going `UNSTABLE`.
   The prompt also asks Claude to skim generated files, lockfiles, snapshots and recorded data, so a big PR is less likely to run out of time.
-- dotfiles isn't a Baseline repo, so it carries a copy of the two files, which `test.sh` keeps identical to the Template's; its "reviewed" rule is the landing decision's.
+- dotfiles isn't a Baseline repo, so it carries a copy of the two files, and of PR Auto-Merge, which `test.sh` keeps identical to the Template's.
 
 ## Model, effort and prompt (#117)
 

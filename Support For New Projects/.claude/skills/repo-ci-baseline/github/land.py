@@ -259,9 +259,10 @@ class Lander:
         pr.final = final
         self.say(f"{repo.split('/')[-1]}#{number} {final.lower()}")
         # A PR seen open that merges in a Baseline repo starts a release, and
-        # with it a release-blog PR; a [skip-release] one (a blog PR) doesn't.
+        # with it a release-blog PR; a [skip-release] one (a blog PR) doesn't,
+        # and dotfiles (repo-settings-only) has no releases.
         if (final == "MERGED" and pr.seen is not None and "[skip-release]" not in pr.title
-                and flags["merged_by_workflow"]):
+                and self.scopes.get(repo, "full") != "repo-settings-only"):
             self.blog_due[repo] = self.clock() + self.blog_wait
 
     def done(self):

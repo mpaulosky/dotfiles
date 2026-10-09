@@ -356,9 +356,10 @@ expect "a failing gate-checks.sh refuses the push" refused any
 expect_log "a failing gate-checks.sh stops the gate before the build" not-ran 'dotnet build*'
 git -C "$REPO" switch -q feature/1-x
 
-# Nothing in the repo's config can skip the gate: a Sandcastle sandbox can write
-# .git/config, so the old sandcastle.gatedHead marker would let an agent skip the
-# host's gate. The hook ignores it and runs the gate.
+# The old sandcastle.gatedHead marker no longer skips the gate: a Sandcastle
+# sandbox can write .git/config, so it let an agent skip the host's gate. (Such a
+# sandbox could also repoint core.hooksPath; the hook can't defend against that,
+# so Sandcastle repos keep .git/config read-only in the sandbox, and CI is the gate.)
 switch_to feature/1-x
 git -C "$REPO" config --local sandcastle.gatedHead "$(git -C "$REPO" rev-parse HEAD)"
 run_hook feature/1-x "$(push_stdin feature/1-x)"

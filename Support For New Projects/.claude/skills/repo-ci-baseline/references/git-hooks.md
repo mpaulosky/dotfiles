@@ -84,11 +84,13 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
      couldn't merge as pushed (it would sit at `BEHIND`), and the gate would test it against an old main. The hook
      fetches main first; offline it compares with the last fetched copy, and with no `origin/main` it skips the
      check. The fix it names is `git merge origin/main`, which needs no force push; squash merges drop the merge
-     commit. From Articles' unmerged
-     `chore/pre-push-main-sync-gate`, written after a branch kept being pushed once an earlier push had auto-merged.
-  8. Run `scripts/gate.sh`. Nothing in the repo's git config skips it: a Sandcastle sandbox can write `.git/config`,
-     so the old `sandcastle.gatedHead` skip (Blazor-Server #93) let an agent skip the host's gate. It was removed
-     after Blazor-Server #188's review; Sandcastle pushes with hooks off and runs its own check instead.
+     commit. From Articles' unmerged `chore/pre-push-main-sync-gate`, written after a branch kept being pushed once an earlier push had auto-merged.
+  8. Run `scripts/gate.sh`. No config key skips it any more: the old `sandcastle.gatedHead` skip (Blazor-Server #93)
+     was removed after Blazor-Server #188's review, because a Sandcastle sandbox can write `.git/config`. That
+     doesn't make the hook a defence against a writable `.git/config`. The hook only runs because the clone's
+     config sets `core.hooksPath`, so anything that can write that file can point it elsewhere and turn the hook
+     off. The hook is a local convenience; the ruleset and CI are the gate. A Sandcastle repo must keep agents
+     from writing the clone's `.git/config` and `.git/hooks`; see step 7 of the Sandcastle setup in the README.
 - **`scripts/gate.sh`**, also safe to run by hand: lint the Markdown, YAML, workflow and shell files changed since
   `origin/main`, using CI's configs, and prefer installed tools with pinned fallbacks. Then build and run each test
   project, where the stack allows it locally. Which steps it runs depends on the repo; what's standard is that

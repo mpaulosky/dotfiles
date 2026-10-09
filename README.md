@@ -102,8 +102,9 @@ rather than starting from the stock template.
 - The `gh` CLI, logged in on the host (`gh auth status`). The host uses this auth for every GitHub call.
 - Claude Code installed on the host, for `claude setup-token`.
 - The repo-ci-baseline applied to the repo (see the `repo-ci-baseline` skill under
-  `Support For New Projects/.claude/skills/`). Sandcastle relies on its pre-push hook, `scripts/gate.sh`, the
-  `sandcastle:needs-human` label and the auto-merge hand-back hold.
+  `Support For New Projects/.claude/skills/`). Sandcastle relies on its `scripts/gate.sh`, branch-name script,
+  rulesets and CI, the `sandcastle:needs-human` label and the auto-merge hand-back hold. It pushes with hooks off
+  (step 7), so the pre-push hook doesn't guard its pushes.
 
 ### 2. Install the packages
 
@@ -189,9 +190,20 @@ into every role's prompt and names Blazor-Server's solution, gate and commit rul
 - Hold back issues whose blockers haven't landed or that already have an open pull request.
 - Run `scripts/gate.sh` in the sandbox after the implementer and again after the reviewer, with a gate-fixer
   role for a red gate, and comment on the issue when it still fails.
-- Push the exact commit that passed from the main checkout, with hooks off (`-c core.hooksPath=/dev/null`), since
-  the sandbox can write the clone's hooks and config. Don't record a marker for the pre-push hook to skip its gate;
-  the hook no longer honours one. Open a pull request that says `Closes #<id>`.
+- Keep agents out of the host's git. Sandcastle worktrees share the clone's `.git`, which is mounted read-write
+  into every sandbox, and the host's git reads its config: `core.hooksPath`, `credential.helper`,
+  `core.sshCommand`, `core.fsmonitor`, `remote.*.pushurl` and `url.*.pushInsteadOf` can each run a command on the
+  host or send the push elsewhere. So mount `.git/config` and `.git/hooks` read-only in every sandbox (as
+  Articles and Blazor-Server do), pin `GIT_DIR`/`GIT_COMMON_DIR`, and refuse to start if `.git/commondir` exists.
+- Push the exact commit that passed, from the main checkout, to an explicit URL with the risky keys overridden:
+  `git -c core.hooksPath=/dev/null -c core.fsmonitor=false -c credential.helper= -c credential.helper='!gh auth
+  git-credential' push https://github.com/<owner>/<repo>.git <sha>:refs/heads/<branch>`. Don't record a marker
+  for the pre-push hook to skip its gate; the hook no longer honours one.
+- Hooks are off for that push, so the pre-push hook's other checks don't run. Before pushing, run
+  `scripts/check-branch-name.sh` on the branch and refuse a branch behind `origin/main`; the protected-branch
+  refusal can't trigger, because it only pushes issue branches. The ruleset and CI's "Branch name" job catch the
+  same things on GitHub as a backstop.
+- Open a pull request that says `Closes #<id>`.
 
 Set each role's model, effort and budget in `lib/config.mts` (`ROLE_AGENTS`), and keep the
 `onSandboxReady` hook (`pnpm install --frozen-lockfile --config.confirm-modules-purge=false`) and

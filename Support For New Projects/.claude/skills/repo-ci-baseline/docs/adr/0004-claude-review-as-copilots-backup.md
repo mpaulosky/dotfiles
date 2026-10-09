@@ -8,7 +8,8 @@ On 2026-10-07 that stranded a whole re-Apply round: nothing merged until the bud
 
 So Claude reviews as a backup: Claude Review runs Opus 5.5 at high effort in CI (Sonnet 5.5 at medium effort until #117; see below)
 and posts an ordinary review of the head, with inline threads, under `github-actions[bot]`.
-It runs only while a PR carries `review:claude`, which `reapply.sh` and `land.sh` add when Copilot's request didn't register, and a person can add at any time.
+It runs only while a PR carries `review:claude`, which `land.sh` adds when Copilot isn't reviewing the head, once the head's checks are green and for at most 2 rounds per PR,
+and a person can add at any time. `reapply.sh` only warns: a review of a head that then fails CI is money spent for nothing.
 PR Auto-Merge accepts a review of the head by either reviewer, holds on either's unresolved threads, and counts both reviewers' rounds toward one cap ([ADR 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 The review body starts with `<!-- claude-review -->`: that marker, not the login alone, is how the gate tells Claude's review from anything else posted as `github-actions[bot]`.
 

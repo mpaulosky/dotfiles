@@ -5,10 +5,17 @@ PrState and call decide(). The rules are the ones the
 skill lands PRs by (references/automerge.md):
 
 - a merged or closed PR, or one with auto-merge already armed, needs nothing;
-- a failed check (or a cancelled one nothing newer replaced) is a blocker to
-  report, never something to arm past; so is a merge conflict;
+- a failed check (or a cancelled one nothing newer replaced, other than
+  Claude Review's own) is a blocker to report, never something to arm past;
+  so is a merge conflict;
 - a draft is marked ready only when the caller says it should be;
 - a branch BEHIND main is updated, and Copilot asked to review the new head;
+- a head no reviewer has reviewed waits for Copilot while it's requested, and
+  for Claude while the PR carries review:claude. With neither on its way,
+  review:claude is added once every check is green (Claude Review's own
+  checks aside), never before: a Claude review costs money, and one of a head
+  that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS commits Claude
+  reviewed on the PR: after those the owner decides;
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup: Claude Review posts as
@@ -34,11 +41,12 @@ from dataclasses import dataclass, field
 WAIT = "wait"
 MARK_READY = "mark ready"
 UPDATE_BRANCH = "update branch and request Copilot"
+REQUEST_CLAUDE = "add review:claude"
 ARM_AUTO_MERGE = "arm auto-merge"
 HAND_OFF = "leave to PR Auto-Merge"
 BLOCKER = "report blocker"
 NOTHING = "nothing"
-ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, ARM_AUTO_MERGE, HAND_OFF, BLOCKER, NOTHING)
+ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, REQUEST_CLAUDE, ARM_AUTO_MERGE, HAND_OFF, BLOCKER, NOTHING)
 
 COPILOT = re.compile(r"copilot", re.IGNORECASE)
 # Claude Review's login (GraphQL drops the "[bot]" suffix, REST keeps it) and
@@ -46,6 +54,13 @@ COPILOT = re.compile(r"copilot", re.IGNORECASE)
 GITHUB_ACTIONS = "github-actions"
 CLAUDE_MARKER = "<!-- claude-review -->"
 OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->"
+REVIEW_CLAUDE = "review:claude"
+# Claude Review's own checks (claude-review.yml's job names). Removing the
+# label cancels a run in progress and its next add starts a fresh one, so a
+# cancelled run of these needs no rerun, and they don't gate calling it in.
+CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", "Post Claude's review"})
+# The owner's cost rule: at most this many Claude review rounds on one PR.
+MAX_CLAUDE_ROUNDS = 2
 
 # The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
 RELEASE_BLOG_BRANCHES = frozenset({"docs/release-notes", "docs/backfill-blog-posts"})
@@ -98,6 +113,8 @@ class PrState:
     outside the diff (see claude_off_diff()).
     checks_required: whether the repo requires checks before a merge; without
     them native auto-merge merges at once, so green checks must come first.
+    copilot_requested: Copilot is among the PR's pending review requests.
+    claude_requested: the PR carries review:claude.
     want_ready: the caller's say that a draft should be marked ready.
     merged_by_workflow: the repo's own PR Auto-Merge workflow merges it (a
     Baseline repo), so it is left to that workflow rather than armed.
@@ -110,6 +127,8 @@ class PrState:
     copilot_reviewed: frozenset[str] = field(default_factory=frozenset)
     claude_reviewed: frozenset[str] = field(default_factory=frozenset)
     claude_off_diff: frozenset[str] = field(default_factory=frozenset)
+    copilot_requested: bool = False
+    claude_requested: bool = False
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -203,8 +222,9 @@ def decide(pr):
     checks = summarize_checks(pr.checks)
     if checks.failed:
         return Decision(BLOCKER, "failed: " + ", ".join(checks.failed))
-    if checks.cancelled:
-        return Decision(BLOCKER, "cancelled, needs a rerun: " + ", ".join(checks.cancelled))
+    cancelled = [name for name in checks.cancelled if name not in CLAUDE_CHECKS]
+    if cancelled:
+        return Decision(BLOCKER, "cancelled, needs a rerun: " + ", ".join(cancelled))
     if pr.merge_state == "DIRTY":
         return Decision(BLOCKER, "merge conflict with main")
 
@@ -217,7 +237,7 @@ def decide(pr):
     if pr.merge_state == "BEHIND":
         return Decision(UPDATE_BRANCH, "behind main")
     if not pr.reviewer_on_head:
-        return Decision(WAIT, f"no Copilot or Claude review of {pr.head[:7]} yet")
+        return review_needed(pr, checks)
     if pr.open_threads:
         return Decision(WAIT, f"{pr.open_threads} open thread(s)")
     if pr.head in pr.claude_off_diff:
@@ -229,3 +249,18 @@ def decide(pr):
     if pr.merged_by_workflow:
         return Decision(HAND_OFF, reason)
     return Decision(ARM_AUTO_MERGE, reason)
+
+
+def review_needed(pr, checks):
+    """The decision for an open, current PR whose head no reviewer has reviewed."""
+    waiting = f"no Copilot or Claude review of {pr.head[:7]} yet"
+    if pr.copilot_requested:
+        return Decision(WAIT, waiting + "; Copilot is requested")
+    if pr.claude_requested:
+        return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
+    if len(pr.claude_reviewed) >= MAX_CLAUDE_ROUNDS:
+        return Decision(WAIT, waiting + f"; Claude's {MAX_CLAUDE_ROUNDS} review rounds are used, the owner decides")
+    running = [name for name in checks.running if name not in CLAUDE_CHECKS]
+    if running:
+        return Decision(WAIT, waiting + "; waiting for checks before calling in Claude: " + ", ".join(running))
+    return Decision(REQUEST_CLAUDE, waiting + "; checks green and Copilot not requested")

@@ -19,6 +19,14 @@ def running(name, started="2026-10-07T10:05:00Z"):
     return ld.Check(name, "IN_PROGRESS", None, started)
 
 
+def failed(name, started="2026-10-07T10:00:00Z"):
+    return ld.Check(name, "COMPLETED", "FAILURE", started)
+
+
+def cancelled(name, started="2026-10-07T10:00:00Z"):
+    return ld.Check(name, "COMPLETED", "CANCELLED", started)
+
+
 # A PR ready to arm: Copilot reviewed the head, no open thread, checks green.
 READY = ld.PrState(head=HEAD, copilot_reviewed=frozenset({OLD, HEAD}), merge_state="CLEAN",
                    checks=(passed("Build Solution"), passed("Test Suite")))
@@ -34,10 +42,45 @@ def test_a_draft_waits_unless_the_caller_wants_it_ready():
     assert ld.decide(replace(draft, want_ready=True)).action == ld.MARK_READY
 
 
-def test_a_head_copilot_has_not_reviewed_waits():
-    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD})))
+def test_a_head_copilot_has_not_reviewed_waits_while_copilot_is_requested():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), copilot_requested=True))
     assert decision.action == ld.WAIT
-    assert "no Copilot or Claude review of aaaaaaa" in decision.reason
+    assert "no Copilot or Claude review of aaaaaaa" in decision.reason and "Copilot is requested" in decision.reason
+
+
+def test_an_unreviewed_head_waits_while_review_claude_is_on():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), claude_requested=True))
+    assert decision == ld.Decision(ld.WAIT, "no Copilot or Claude review of aaaaaaa yet; review:claude is on")
+
+
+def test_claude_is_called_in_only_once_the_checks_are_green():
+    unreviewed = replace(READY, copilot_reviewed=frozenset({OLD}))
+    assert ld.decide(unreviewed).action == ld.REQUEST_CLAUDE
+    waiting = ld.decide(replace(unreviewed, checks=(passed("Build Solution"), running("Test Suite"))))
+    assert waiting.action == ld.WAIT
+    assert waiting.reason.endswith("waiting for checks before calling in Claude: Test Suite")
+    # A failed check is a blocker: no Claude review of a head that fails CI.
+    assert ld.decide(replace(unreviewed, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+
+
+def test_claude_review_checks_dont_hold_calling_it_in():
+    # Its run cancelled when the label came off early, or skipped without the label.
+    unreviewed = replace(READY, copilot_reviewed=frozenset({OLD}),
+                         checks=(passed("Build Solution"), cancelled("Check for a merge from main"),
+                                 cancelled("Review with Claude"), cancelled("Post Claude's review")))
+    assert ld.decide(unreviewed).action == ld.REQUEST_CLAUDE
+    assert ld.decide(replace(unreviewed, checks=(passed("Build Solution"), running("Review with Claude")))).action \
+        == ld.REQUEST_CLAUDE
+    # Any other cancelled check still needs a rerun.
+    assert ld.decide(replace(unreviewed, checks=(cancelled("Build Solution"),))).action == ld.BLOCKER
+
+
+def test_claude_is_never_called_in_for_a_third_round():
+    two = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40}))
+    decision = ld.decide(two)
+    assert decision.action == ld.WAIT
+    assert decision.reason.endswith("Claude's 2 review rounds are used, the owner decides")
+    assert ld.decide(replace(two, claude_reviewed=frozenset({OLD}))).action == ld.REQUEST_CLAUDE
 
 
 def test_a_claude_review_of_the_head_counts_as_reviewed():
@@ -49,8 +92,9 @@ def test_a_claude_review_of_the_head_counts_as_reviewed():
     assert ld.decide(replace(claude, merged_by_workflow=True)).action == ld.HAND_OFF
 
 
-def test_a_claude_review_of_an_older_head_waits():
-    decision = ld.decide(replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD})))
+def test_a_claude_review_of_an_older_head_doesnt_cover_the_head():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD}),
+                                 copilot_requested=True))
     assert decision.action == ld.WAIT
     assert "no Copilot or Claude review of aaaaaaa" in decision.reason
 
@@ -161,7 +205,7 @@ def test_a_baseline_repo_leaves_a_reviewed_pr_to_its_pr_auto_merge():
     baseline = replace(READY, merged_by_workflow=True)
     assert ld.decide(baseline).action == ld.HAND_OFF
     # Its gates still come first: nothing is handed off before Copilot reviewed the head.
-    assert ld.decide(replace(baseline, copilot_reviewed=frozenset({OLD}))).action == ld.WAIT
+    assert ld.decide(replace(baseline, copilot_reviewed=frozenset({OLD}), copilot_requested=True)).action == ld.WAIT
     assert ld.decide(replace(baseline, open_threads=1)).action == ld.WAIT
     assert ld.decide(replace(baseline, merge_state="BEHIND")).action == ld.UPDATE_BRANCH
 

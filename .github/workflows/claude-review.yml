@@ -360,12 +360,20 @@ jobs:
       # as not read, and the answer check below turns them into a finding that
       # holds the merge.
       #
-      # Claude Review stands in for Copilot code review, so it covers the same
+      # Claude Review stands in for Copilot code review, so it reads the same
       # files: those Copilot excludes (COPILOT_EXCLUDED_NAMES and
-      # COPILOT_EXCLUDED_GLOBS) go in no piece, are never read and never hold
-      # the merge; INDEX lists them as excluded. Everything else is reviewed
-      # as it stands, and a binary file is reviewed as git shows it, as
-      # Copilot sees it.
+      # COPILOT_EXCLUDED_GLOBS) go in no piece and are never read; INDEX lists
+      # them as excluded. But Copilot's review is advice and a person merges,
+      # while this one gates PR Auto-Merge, so what nobody reads can't merge on
+      # it: an excluded file that isn't recorded data (DATA_NAMES, DATA_GLOBS:
+      # lockfiles, logs, SVGs, source maps, coverage), or any excluded file
+      # under .github/, holds the merge, and so does a file git shows only as
+      # "Binary files differ" unless it's inert media (MEDIA). A deleted file
+      # holds nothing. INDEX lists them under "held"; the answer check turns
+      # them into a finding that holds the merge for a person. Attributes come
+      # from the base (--attr-source), so a PR's own .gitattributes can't make
+      # its text show as binary, and --no-textconv keeps a driver from
+      # rewriting what the review sees.
       #
       # Pieces are named by number only (001.diff): a PR's paths are its
       # author's, so none becomes a file name or reaches the prompt. The
@@ -386,7 +394,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           mkdir -p "${RUNNER_TEMP}/claude-review"
-          git -c core.quotePath=true diff --no-color --no-ext-diff "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
+          git --attr-source="${BASE_SHA}" -c core.quotePath=true diff --no-color --no-ext-diff --no-textconv "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
           python3 -I - <<'PY'
           import os, re
 
@@ -420,6 +428,20 @@ jobs:
           )
           # Files under bin/ that Copilot reviews all the same.
           COPILOT_INCLUDED_GLOBS = ("**/bin/**/*.rs", "**/hybris/bin/custom/**")
+          # The excluded files that are recorded data, not code a build or CI
+          # runs: unread, and they hold nothing. Every other excluded file holds.
+          DATA_NAMES = frozenset((
+              ".gitignore", "package-lock.json", "yarn.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock",
+              "Cargo.lock", "go.sum", "paket.lock", "pubspec.lock", "Package.resolved", "mix.lock", "Podfile.lock",
+              "renv.lock", "Manifest.toml",
+          ))
+          DATA_GLOBS = ("**/*.svg", "**/*.log", "**/*.lock", "**/go.sum", "**/*.ipynb.raw.html", "**/*.map",
+                        "**/coverage/**/*")
+          # Binary files nothing runs: images, fonts, audio, video and PDFs.
+          MEDIA = frozenset((
+              "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tif", "tiff", "avif", "heic", "psd",
+              "woff", "woff2", "ttf", "otf", "eot", "mp3", "wav", "ogg", "flac", "m4a", "mp4", "webm", "mov", "pdf",
+          ))
           WORKFLOW = re.compile(r"^\.github/(workflows|actions)/|(^|/)action\.ya?ml$")
           TEST = re.compile(r"(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*$|[._-](test|spec)\.[^/]+$|tests?\.cs$")
           DOCS = re.compile(r"(^|/)docs?/|\.(md|mdx|markdown|rst|txt|adoc)$|(^|/)(license|notice|changelog)[^/]*$")
@@ -436,14 +458,33 @@ jobs:
 
           EXCLUDED = [glob_regex(glob) for glob in COPILOT_EXCLUDED_GLOBS]
           INCLUDED = [glob_regex(glob) for glob in COPILOT_INCLUDED_GLOBS]
+          DATA = [glob_regex(glob) for glob in DATA_GLOBS]
+
+
+          def unquoted(path):
+              return path[1:-1] if len(path) > 1 and path[0] == path[-1] == '"' else path
 
 
           def copilot_excludes(path):
               """Whether Copilot code review leaves out the file at path (as git prints it, quoted when unusual)."""
-              bare = path[1:-1] if len(path) > 1 and path[0] == path[-1] == '"' else path
+              bare = unquoted(path)
               if any(pattern.match(bare) for pattern in INCLUDED):
                   return False
               return bare.rsplit("/", 1)[-1] in COPILOT_EXCLUDED_NAMES or any(pattern.match(bare) for pattern in EXCLUDED)
+
+
+          def held(header, path, excluded):
+              """Why the file holds the merge for a person ("excluded" or "binary"), or None: see the comment above."""
+              bare = unquoted(path)
+              if any(line.startswith(b"deleted file mode") for line in header):
+                  return None
+              if excluded:
+                  data = bare.rsplit("/", 1)[-1] in DATA_NAMES or any(pattern.match(bare) for pattern in DATA)
+                  return "excluded" if bare.startswith(".github/") or not data else None
+              shown_binary = any(line.startswith((b"Binary files ", b"GIT binary patch")) for line in header)
+              name = bare.rsplit("/", 1)[-1]
+              media = "." in name and name.rsplit(".", 1)[-1].lower() in MEDIA
+              return "binary" if shown_binary and not media else None
 
 
           def chunks(line):
@@ -574,10 +615,14 @@ jobs:
               files = files_in(file.read())
           # Each reviewed file's parts, in read order: by kind, then in diff order.
           # Files Copilot excludes go in no piece.
-          parts, excluded = [], []
+          # Files no one reads here hold the merge.
+          parts, excluded, holding = [], [], []
           for number, (header, body) in sorted(enumerate(files), key=lambda item: (
                   KINDS.index(kind_of(item[1][0], path_of(item[1][0]))), item[0])):
               path = path_of(header)
+              reason = held(header, path, copilot_excludes(path))
+              if reason:
+                  holding.append((reason, path))
               if copilot_excludes(path):
                   excluded.append(path)
                   continue
@@ -613,8 +658,8 @@ jobs:
               else:
                   file.write(f"The PR's diff of {len(files)} file(s) in {len(pieces)} piece(s). For each piece: its name, lines, "
                              "and whether the prompt asks you to read it; then, indented, each file's diff it holds, by kind "
-                             "and path as git prints it (quoted when unusual). Files Copilot code review excludes come last, "
-                             "in no piece.\n")
+                             "and path as git prints it (quoted when unusual). Files Copilot code review excludes come next, "
+                             "in no piece; last, under held, the files that hold the merge for a person.\n")
               for index, piece in enumerate(pieces):
                   file.write(f"{piece['name']}\t{piece['lines']} lines\t{'read' if index in read else 'not read'}\n")
                   for part in piece["parts"]:
@@ -623,6 +668,10 @@ jobs:
                   file.write("excluded (Copilot doesn't review these)\n")
                   for path in excluded:
                       file.write(f"\texcluded\t{path}\n")
+              if holding:
+                  file.write("held\t(nobody reads these here, so they hold the merge for a person)\n")
+                  for reason, path in holding:
+                      file.write(f"\t{reason}\t{path}\n")
 
 
           def described(piece):
@@ -646,6 +695,9 @@ jobs:
           skipped = " ".join(piece["name"] for index, piece in enumerate(pieces) if index not in read)
           print(f"Split the diff of {len(files)} file(s) into {len(pieces)} piece(s), leaving out {len(excluded)} file(s) "
                 f"Copilot code review excludes; the prompt asks for {len(read)} ({size} bytes).")
+          if holding:
+              print(f"::warning::{len(holding)} changed file(s) are excluded code or show only as binary, so nobody "
+                    "reads them here and the review holds the merge for a person (the answer check's log lists them).")
           if skipped:
               print(f"::warning::The diff is past what one review reads; pieces {skipped} aren't asked for, so the "
                     "review holds the merge for a person to review them (the answer check's log lists their files).")
@@ -654,6 +706,7 @@ jobs:
               file.write(f"pieces<<{delimiter}\n{text}\n{delimiter}\n")
               file.write(f"skipped={skipped}\n")
               file.write(f"listed={' '.join(pieces[index]['name'] for index in read)}\n")
+              file.write(f"held={len(holding)}\n")
           PY
 
       # Turns: the owner's limit is 3 (one turn of reads, then the answer), and
@@ -833,6 +886,7 @@ jobs:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           SKIPPED: ${{ steps.diff.outputs.skipped }}
           LISTED: ${{ steps.diff.outputs.listed }}
+          HELD: ${{ steps.diff.outputs.held }}
           PIECES_DIR: ${{ runner.temp }}/claude-review/diff
           OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           JOB_TOKEN: ${{ github.token }}
@@ -1061,6 +1115,21 @@ jobs:
               token = os.urandom(16).hex()
               print(f"::stop-commands::{token}")
               for row in files_of(set(unread), folder):
+                  print("  " + row.replace("\t", "  "))
+              print(f"::{token}::")
+          # Excluded code and files that show only as binary, which nobody read.
+          held = os.environ.get("HELD", "")
+          if held.isdigit() and int(held) and "findings" in answer:
+              answer["findings"].append({"path": "diff", "line": 0, "body": (
+                  f"Claude Review didn't read {held} changed file(s): code Copilot code review excludes (such as dist, "
+                  "bin, vendor or generated files, or build configs), or files the diff shows only as binary. The log "
+                  "of the review job's \"Check Claude's answer for secrets\" step lists them. Review them yourself, "
+                  "then merge by hand.")})
+              print(f"::warning::Claude Review didn't read {held} changed file(s), so the review holds the merge. "
+                    "The files:")
+              token = os.urandom(16).hex()
+              print(f"::stop-commands::{token}")
+              for row in files_of({"held"}, folder):
                   print("  " + row.replace("\t", "  "))
               print(f"::{token}::")
           write_outputs({"findings": json.dumps(answer), "redacted": str(redacted)})

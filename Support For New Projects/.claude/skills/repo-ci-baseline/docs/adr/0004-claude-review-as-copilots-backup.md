@@ -156,8 +156,19 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     a stand-in that reviewed more would hold PRs Copilot passes, and one that reviewed less would let through what Copilot catches.
     The step copies [Copilot's documented exclusions](https://docs.github.com/en/copilot/reference/review-excluded-files) verbatim
     (taken 2026-10-09; GitHub calls the named files "an example of some of the files", so this is the documented subset).
-    Excluded files go in no piece, are never read and never hold the merge; INDEX lists them as excluded, and the prompt says to skip them.
+    Excluded files go in no piece and are never read; INDEX lists them as excluded, and the prompt says to skip them.
     Everything else is reviewed as git shows it, binaries included, as Copilot sees them.
+  - **What nobody reads can't merge on this review.** Copilot's review is advice and a person still merges; this one gates PR Auto-Merge.
+    Reviews of the re-Apply PRs (IssueTracker#248, atelier-store#136, Blazor-Server#192) showed what matching Copilot alone let through:
+    a PR changing only `.github/actions/*/dist/index.js` or a `vendor/*.min.js` merged on a review that read nothing,
+    and a PR's own `.gitattributes` (`*.cs -diff`) or a NUL byte in a script made its change show only as "Binary files differ".
+    So these hold the merge for a person, listed under `held` in INDEX and in the answer check's log:
+    - an excluded file that isn't recorded data (lockfiles, logs, SVGs, source maps, coverage: `DATA_NAMES`, `DATA_GLOBS`),
+      and any excluded file under `.github/`;
+    - a file git shows only as binary, unless it's inert media (`MEDIA`: images, fonts, audio, video, PDFs).
+
+    A deleted file holds nothing. The diff takes attributes from the base (`--attr-source`), so a PR's own `.gitattributes` can't hide its text,
+    and `--no-textconv` keeps a diff driver from rewriting what the review sees.
   - The prompt asks for at most 8 pieces and 300,000 bytes (about 80,000 tokens), leaving room for source files; the rest are listed as not read,
     and the summary must name them. Each one adds a finding outside the diff, which holds the merge for a person; the log lists its files.
     So does a listed piece Claude didn't read whole, judged from the Read results in the execution file.

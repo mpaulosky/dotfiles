@@ -485,16 +485,19 @@ jobs:
               see the comment above."""
               bare = unquoted(path)
               deleted = any(line.startswith(b"deleted file mode") for line in header)
+              # First, so a submodule at an excluded path (deps/x.map) holds too.
+              if not deleted and any(re.match(rb"(new file mode|index \S+) 160000$", line.rstrip(b"\n"))
+                                     for line in header):
+                  return "submodule"
               if excluded:
                   data = any(pattern.match(bare) for pattern in DATA) or deleted and bare.lower().endswith(".svg")
                   return "excluded" if bare.startswith(".github/") or not data else None
               if deleted:
                   return None
-              if any(re.match(rb"(new file mode|index \S+) 160000$", line.rstrip(b"\n")) for line in header):
-                  return "submodule"
-              # A changed pointer keeps its version line as context.
-              if any(kind in ("+", " ") and line[1:].startswith(b"version https://git-lfs.github.com/spec/")
-                     for line, _, _, kind in body):
+              # A pointer's first line, added or kept as context; the same line elsewhere (a README) is text.
+              if any(kind in ("+", " ") and new == 1
+                     and line[1:].startswith(b"version https://git-lfs.github.com/spec/")
+                     for line, _, new, kind in body):
                   return "lfs"
               shown_binary = any(line.startswith((b"Binary files ", b"GIT binary patch")) for line in header)
               name = bare.rsplit("/", 1)[-1]

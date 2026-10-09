@@ -177,6 +177,11 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     and `--no-textconv` keeps a diff driver from rewriting what the review sees.
     The diff runs with `--no-renames`, so a rename shows as the old path's deletion and the new path's addition, each judged on its own path:
     renaming a workflow to `x.log` shows its deletion, and renaming `dist/x.js` to `src/x.js` shows its content.
+    Two costs, accepted:
+    - A pure rename costs its content twice, so a PR that moves a big folder can pass the read budget and hold the merge for a person.
+    - GitHub's PR diff still detects renames, so a finding on a line of a renamed file outside GitHub's hunks, or on the old path,
+      can't be anchored. `post_claude_review.py` checks each finding against GitHub's own patches (`pulls/{n}/files`)
+      and puts one it can't anchor in the review body under the off-diff marker, which holds the merge.
   - The prompt asks for at most 8 pieces and 300,000 bytes (about 80,000 tokens), leaving room for source files; the rest are listed as not read,
     and the summary must name them. Each one adds a finding outside the diff, which holds the merge for a person; the log lists its files.
     So does a listed piece Claude didn't read whole, judged from the Read results in the execution file.

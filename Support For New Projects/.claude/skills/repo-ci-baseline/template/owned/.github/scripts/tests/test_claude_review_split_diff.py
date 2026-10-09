@@ -461,6 +461,10 @@ def test_a_submodule_bump_holds_the_merge_but_its_removal_doesnt(repo, tmp_path)
     removed = repo.git("rev-parse", "HEAD").decode().strip()
     _, folder, _ = repo.split(bumped, removed, mkdir(tmp_path / "removed"))
     assert held_of(folder) == {}
+    # At a path that's excluded data, too.
+    at_data = gitlink("deps/tools.map", "4" * 40)
+    _, folder, _ = repo.split(removed, at_data, mkdir(tmp_path / "at-data"))
+    assert held_of(folder) == {"deps/tools.map": "submodule"}
 
 
 def test_a_git_lfs_pointer_holds_the_merge_but_its_deletion_doesnt(repo, tmp_path):
@@ -469,6 +473,12 @@ def test_a_git_lfs_pointer_holds_the_merge_but_its_deletion_doesnt(repo, tmp_pat
     head = repo.commit({"tools/Tool.dll": pointer.format("c" * 64), "tools/Old.dll": None})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert held_of(folder) == {"tools/Tool.dll": "lfs"}
+
+
+def test_text_quoting_an_lfs_pointer_holds_nothing(repo, tmp_path):
+    head = repo.commit({"docs/lfs.md": "# LFS\n\nA pointer reads:\n\nversion https://git-lfs.github.com/spec/v1\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {}
 
 
 @pytest.mark.parametrize("old, content, reason", [

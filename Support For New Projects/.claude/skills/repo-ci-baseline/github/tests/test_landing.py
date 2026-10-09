@@ -4,6 +4,8 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import landing as ld  # noqa: E402
 
@@ -53,19 +55,50 @@ def test_an_unreviewed_head_waits_while_review_claude_is_on():
     assert decision == ld.Decision(ld.WAIT, "no Copilot or Claude review of aaaaaaa yet; review:claude is on")
 
 
-def test_claude_is_called_in_only_once_the_checks_are_green():
-    unreviewed = replace(READY, copilot_reviewed=frozenset({OLD}))
-    assert ld.decide(unreviewed).action == ld.REQUEST_CLAUDE
-    waiting = ld.decide(replace(unreviewed, checks=(passed("Build Solution"), running("Test Suite"))))
+def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
+    # Copilot reviewed an older head and nothing is requested now.
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD})))
+    assert decision.action == ld.REQUEST_COPILOT
+    assert decision.reason.endswith("Copilot not requested")
+
+
+def test_claude_is_called_in_once_copilots_request_for_the_head_dropped_and_checks_are_green():
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True)
+    assert ld.decide(dropped).action == ld.REQUEST_CLAUDE
+    waiting = ld.decide(replace(dropped, checks=(passed("Build Solution"), running("Test Suite"))))
     assert waiting.action == ld.WAIT
     assert waiting.reason.endswith("waiting for checks before calling in Claude: Test Suite")
     # A failed check is a blocker: no Claude review of a head that fails CI.
-    assert ld.decide(replace(unreviewed, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+    assert ld.decide(replace(dropped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+
+
+def test_a_registered_copilot_request_waits_even_after_an_earlier_drop():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), copilot_requested=True, copilot_dropped=True))
+    assert decision.action == ld.WAIT and decision.reason.endswith("Copilot is requested")
+
+
+def test_no_checks_at_all_is_not_green():
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True, checks=())
+    decision = ld.decide(dropped)
+    assert decision.action == ld.WAIT and decision.reason.endswith("no checks on the head yet, so Claude waits for CI")
+    # Claude Review's own checks alone aren't CI either.
+    assert ld.decide(replace(dropped, checks=(passed("Check for a merge from main"),))).action == ld.WAIT
+
+
+@pytest.mark.parametrize("check", [
+    ld.Check("Test Suite", "QUEUED"), ld.Check("Test Suite", "WAITING"), ld.Check("Test Suite", "PENDING"),
+    ld.Check("Test Suite", "REQUESTED"),
+])
+def test_a_queued_pending_or_waiting_check_counts_as_running(check):
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True,
+                      checks=(passed("Build Solution"), check))
+    decision = ld.decide(dropped)
+    assert decision.action == ld.WAIT and decision.reason.endswith("calling in Claude: Test Suite")
 
 
 def test_claude_review_checks_dont_hold_calling_it_in():
     # Its run cancelled when the label came off early, or skipped without the label.
-    unreviewed = replace(READY, copilot_reviewed=frozenset({OLD}),
+    unreviewed = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True,
                          checks=(passed("Build Solution"), cancelled("Check for a merge from main"),
                                  cancelled("Review with Claude"), cancelled("Post Claude's review")))
     assert ld.decide(unreviewed).action == ld.REQUEST_CLAUDE
@@ -76,7 +109,7 @@ def test_claude_review_checks_dont_hold_calling_it_in():
 
 
 def test_claude_is_never_called_in_for_a_third_round():
-    two = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40}))
+    two = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40}), copilot_dropped=True)
     decision = ld.decide(two)
     assert decision.action == ld.WAIT
     assert decision.reason.endswith("Claude's 2 review rounds are used, the owner decides")

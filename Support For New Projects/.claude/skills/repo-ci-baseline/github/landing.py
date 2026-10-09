@@ -12,10 +12,12 @@ skill lands PRs by (references/automerge.md):
 - a branch BEHIND main is updated, and Copilot asked to review the new head;
 - a head no reviewer has reviewed waits for Copilot while it's requested, and
   for Claude while the PR carries review:claude. With neither on its way,
-  review:claude is added once every check is green (Claude Review's own
-  checks aside), never before: a Claude review costs money, and one of a head
-  that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS commits Claude
-  reviewed on the PR: after those the owner decides;
+  Copilot is asked first. Only once that request for the head didn't register
+  (copilot_dropped, which the caller remembers per head) is review:claude
+  added, and only once the head has checks and every one is green (Claude
+  Review's own aside): a Claude review costs money, and one of a head that
+  fails CI is wasted. Never past MAX_CLAUDE_ROUNDS commits Claude reviewed on
+  the PR: after those the owner decides;
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup: Claude Review posts as
@@ -41,12 +43,14 @@ from dataclasses import dataclass, field
 WAIT = "wait"
 MARK_READY = "mark ready"
 UPDATE_BRANCH = "update branch and request Copilot"
+REQUEST_COPILOT = "request Copilot"
 REQUEST_CLAUDE = "add review:claude"
 ARM_AUTO_MERGE = "arm auto-merge"
 HAND_OFF = "leave to PR Auto-Merge"
 BLOCKER = "report blocker"
 NOTHING = "nothing"
-ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, REQUEST_CLAUDE, ARM_AUTO_MERGE, HAND_OFF, BLOCKER, NOTHING)
+ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, REQUEST_COPILOT, REQUEST_CLAUDE, ARM_AUTO_MERGE, HAND_OFF, BLOCKER,
+           NOTHING)
 
 COPILOT = re.compile(r"copilot", re.IGNORECASE)
 # Claude Review's login (GraphQL drops the "[bot]" suffix, REST keeps it) and
@@ -115,6 +119,10 @@ class PrState:
     them native auto-merge merges at once, so green checks must come first.
     copilot_requested: Copilot is among the PR's pending review requests.
     claude_requested: the PR carries review:claude.
+    copilot_dropped: Copilot's review was requested for this head and the
+    request didn't register (dropped or refused). Only a caller that asked
+    and read it back knows this (land.py); a one-shot read (status.py) never
+    sets it, so it shows the Copilot step.
     want_ready: the caller's say that a draft should be marked ready.
     merged_by_workflow: the repo's own PR Auto-Merge workflow merges it (a
     Baseline repo), so it is left to that workflow rather than armed.
@@ -129,6 +137,7 @@ class PrState:
     claude_off_diff: frozenset[str] = field(default_factory=frozenset)
     copilot_requested: bool = False
     claude_requested: bool = False
+    copilot_dropped: bool = False
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -258,9 +267,16 @@ def review_needed(pr, checks):
         return Decision(WAIT, waiting + "; Copilot is requested")
     if pr.claude_requested:
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
+    if not pr.copilot_dropped:
+        return Decision(REQUEST_COPILOT, waiting + "; Copilot not requested")
     if len(pr.claude_reviewed) >= MAX_CLAUDE_ROUNDS:
         return Decision(WAIT, waiting + f"; Claude's {MAX_CLAUDE_ROUNDS} review rounds are used, the owner decides")
     running = [name for name in checks.running if name not in CLAUDE_CHECKS]
     if running:
         return Decision(WAIT, waiting + "; waiting for checks before calling in Claude: " + ", ".join(running))
-    return Decision(REQUEST_CLAUDE, waiting + "; checks green and Copilot not requested")
+    # No checks yet (CI hasn't created them) isn't green.
+    reported = [name for name in checks.passed + checks.running + checks.failed + checks.cancelled
+                if name not in CLAUDE_CHECKS]
+    if pr.checks_required and not reported:
+        return Decision(WAIT, waiting + "; no checks on the head yet, so Claude waits for CI")
+    return Decision(REQUEST_CLAUDE, waiting + "; Copilot's request didn't register, checks green")

@@ -96,6 +96,15 @@ def test_copilot_requests_and_the_review_claude_label_are_read():
     assert not st.to_state(pr_node(), **st.repo_flags("full")).copilot_requested
 
 
+def test_a_one_shot_read_shows_the_copilot_step_for_an_unreviewed_head(monkeypatch):
+    # It can't know an earlier request for the head was dropped, so it never says Claude.
+    monkeypatch.setattr(st, "read_repo_list", lambda: {"owner/app": "full"})
+    green = [{"__typename": "CheckRun", "name": "Test Suite", "status": "COMPLETED", "conclusion": "SUCCESS",
+              "startedAt": "2026-10-07T10:00:00Z"}]
+    code, out, _ = run([], {"owner/app": repo(pr_node(contexts=green))})
+    assert "-> request Copilot" in out
+
+
 def test_a_release_blog_pr_is_told_apart_by_its_branch():
     blog = st.to_state(dict(pr_node(), headRefName="docs/release-notes"), **st.repo_flags("full"))
     other = st.to_state(dict(pr_node(), headRefName="feat/x"), **st.repo_flags("full"))

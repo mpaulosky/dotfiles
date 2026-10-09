@@ -118,7 +118,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Copilot's review request is read back.** `gh pr edit --add-reviewer @copilot` exits 0 even when GitHub drops the request,
   so `reapply.sh` and `land.sh` then read the PR's review requests (and Copilot's reviews of the head).
   When Copilot isn't there they warn, and never add `review:claude` then: the head's CI has only just started, and a Claude review costs money.
-  `land.sh` adds the label once the head's checks are green (see [Landing a round](#landing-a-round)); `reapply.sh` prints that `land.sh` command.
+  `land.sh` asks Copilot for the head again, and adds the label only once that doesn't register either and the head's checks are green
+  (see [Landing a round](#landing-a-round)); `reapply.sh` prints that `land.sh` command.
   A request GitHub refuses outright (`Could not add requested reviewers`, TicketManager#141) is handled the same way: it warns with gh's message and reads back (#118).
 - **GitHub drops the request once the account's Copilot code review budget is used up.** Nothing in the API says so:
   `gh pr edit` and GraphQL `requestReviewsByLogin` return success with no request, and REST `requested_reviewers` returns 422 "not a collaborator".
@@ -159,8 +160,10 @@ nothing for a merged, closed or already-armed PR; **report blocker** for a faile
 **mark ready** for a draft only when the caller says it should be (otherwise wait);
 **arm auto-merge** for a release-blog PR its workflow didn't arm (branch `docs/release-notes` or `docs/backfill-blog-posts`, no review needed, as `release.yml` arms it);
 **update branch and request Copilot** when it's `BEHIND`; **wait** until Copilot or Claude (a marked `github-actions[bot]` review) reviewed the current head and no thread is open.
-A head with neither review waits while Copilot is requested or `review:claude` is on; otherwise **add review:claude** once every check is green
-(Claude Review's own checks aside: a run cancelled when the label came off needs no rerun), never while one runs, and never after Claude reviewed 2 commits of the PR
+A head with neither review waits while Copilot is requested or `review:claude` is on; otherwise **request Copilot**, once per head, read back.
+Only once that request for the head didn't register (`copilot_dropped`: `land.sh` remembers it per head; `status.sh`, one read, never knows it and shows this step)
+does it **add review:claude**, once the head has checks and every one is green
+(Claude Review's own aside: a run cancelled when the label came off needs no rerun), never while one runs or is queued, and never after Claude reviewed 2 commits of the PR
 (`MAX_CLAUDE_ROUNDS`, the owner's cost rule), when it waits for the owner;
 then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
 or **arm auto-merge** where there is no such workflow. A repo with no required checks waits for its checks to finish green first,
@@ -177,7 +180,7 @@ land.sh mpaulosky/<repo>#<n>  # watch these PRs (or owner/repo for all its open 
 
 `land.sh` polls the PRs (default every 60 s, one GraphQL query per repo) and does what `decide()` says, once per head:
 `gh pr update-branch` then `gh pr edit --add-reviewer @copilot` (warning when the request is dropped or refused),
-`gh pr edit --add-label review:claude` once `decide()` says so, `gh pr ready` only with `--ready`,
+`gh pr edit --add-reviewer @copilot` again for an unreviewed head, `gh pr edit --add-label review:claude` once `decide()` says so, `gh pr ready` only with `--ready`,
 and `gh pr merge --auto --squash --match-head-commit <head>`. It has no rules of its own.
 It also watches each release-blog PR that opens in a watched repo, and after a watched Baseline PR merges it waits `--blog-wait` (15) minutes for one.
 It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),

@@ -83,8 +83,12 @@ def repo_flags(scope):
     return {"checks_required": True, "merged_by_workflow": True}
 
 
-def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False):
-    """A PrState from one pullRequests node of QUERY."""
+def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, copilot_dropped=False):
+    """A PrState from one pullRequests node of QUERY.
+
+    copilot_dropped is the caller's memory that Copilot's request for this
+    head didn't register; a one-shot read has none, so it shows the Copilot step.
+    """
     commits = node["commits"]["nodes"]
     rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
     contexts = rollup["contexts"]["nodes"] if rollup else []
@@ -102,6 +106,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         claude_off_diff=claude_off_diff(reviews),
         copilot_requested=any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested),
         claude_requested=REVIEW_CLAUDE in labels,
+        copilot_dropped=copilot_dropped,
         open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),

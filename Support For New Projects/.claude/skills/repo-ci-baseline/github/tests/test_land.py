@@ -127,17 +127,34 @@ def test_a_copilot_request_github_dropped_is_warned_about_and_claude_waits_for_g
     assert ("  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review "
             "budget is used up); review:claude is added once the head's checks are green" in text)
     assert "  failed:" not in text
-    # The update's CI is running on the new head: no label yet.
+    # The update's new head: Copilot is asked for it, and the drop is remembered for it.
     fake.open["o/app"] = [node(head=NEW, contexts=RUNNING)]
     lander.poll()
-    assert "waiting for checks before calling in Claude: Template tests" in printed(out) and len(fake.calls) == 2
+    assert "-> request Copilot" in printed(out)
+    assert fake.calls[2:] == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
+    # Its CI is still running: no label yet.
+    lander.poll()
+    assert "waiting for checks before calling in Claude: Template tests" in printed(out) and len(fake.calls) == 3
     # Green: review:claude, once for the head.
     fake.open["o/app"] = [node(head=NEW, contexts=GREEN)]
     lander.poll()
-    assert fake.calls[2:] == ["gh pr edit 7 -R o/app --add-label review:claude"]
+    assert fake.calls[3:] == ["gh pr edit 7 -R o/app --add-label review:claude"]
     assert "-> add review:claude" in printed(out)
     lander.poll()
-    assert len(fake.calls) == 3
+    assert len(fake.calls) == 4
+
+
+def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
+    older = [("copilot-pull-request-reviewer", NEW)]
+    fake = Fake({"o/app": [node(reviews=older, contexts=GREEN)]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
+    assert "-> request Copilot" in printed(out)
+    # It registered: Copilot is requested, so nothing more, and never Claude.
+    fake.open["o/app"] = [node(reviews=older, contexts=GREEN, requested=["Copilot"])]
+    lander.poll()
+    assert "Copilot is requested" in printed(out) and len(fake.calls) == 1
 
 
 def test_a_copilot_request_github_refused_outright_is_warned_about():
@@ -166,15 +183,19 @@ def test_claude_isnt_called_in_while_copilot_is_requested_or_the_label_is_on():
 
 def test_claude_isnt_called_in_for_a_third_round():
     rounds = [("github-actions", sha, "<!-- claude-review -->\n**Claude Review**") for sha in ("1" * 40, "2" * 40)]
-    fake = Fake({"o/app": [node(reviews=rounds, contexts=GREEN)]})
+    fake = Fake({"o/app": [node(reviews=rounds, contexts=GREEN)]}, dropped={("o/app", 7)})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
-    assert "Claude's 2 review rounds are used, the owner decides" in printed(out) and fake.calls == []
+    lander.poll()
+    assert "Claude's 2 review rounds are used, the owner decides" in printed(out)
+    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
 
 
 def test_a_failed_review_claude_label_is_reported_as_failed():
-    fake = Fake({"o/app": [node(contexts=GREEN)]}, fail_calls={"gh pr edit 7 -R o/app --add-label review:claude"})
+    fake = Fake({"o/app": [node(contexts=GREEN)]}, dropped={("o/app", 7)},
+                fail_calls={"gh pr edit 7 -R o/app --add-label review:claude"})
     lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
     lander.poll()
     assert "  failed: gh pr edit 7 -R o/app --add-label review:claude (boom)" in printed(out)
 
@@ -259,7 +280,7 @@ def test_dry_run_prints_the_calls_and_makes_none():
 # ── Change-only output ──────────────────────────────────────────────────────
 
 def test_nothing_is_printed_when_nothing_changed():
-    fake = Fake({"o/app": [node(contexts=RUNNING)]})
+    fake = Fake({"o/app": [node(contexts=RUNNING, requested=["Copilot"])]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert printed(out).count("\n") == 1
@@ -385,14 +406,14 @@ def test_dotfiles_merging_expects_no_release_blog_pr(monkeypatch):
 
 
 def test_it_stops_at_the_time_limit(monkeypatch):
-    fake = Fake({"o/app": [node(contexts=RUNNING)]})
+    fake = Fake({"o/app": [node(contexts=RUNNING, requested=["Copilot"])]})
     code, out = run_main(fake, ["o/app", "--timeout", "3", "--interval", "60"], [], monkeypatch)
     assert code == 1 and out.splitlines()[-1] == "Time limit reached; still open: app#7"
     assert out.count("-> wait") == 1
 
 
 def test_once_is_a_single_pass(monkeypatch):
-    fake = Fake({"o/app": [node(contexts=RUNNING)]})
+    fake = Fake({"o/app": [node(contexts=RUNNING, requested=["Copilot"])]})
     code, out = run_main(fake, ["--once", "o/app"], [lambda: pytest.fail("slept")], monkeypatch)
     assert code == 0 and out.count("\n") == 1
 

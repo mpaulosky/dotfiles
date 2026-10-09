@@ -428,6 +428,10 @@ Thumbs.db
 .dotnet/
 .nuget/
 
+# pnpm's content-addressable store, which pnpm creates at the worktree root in
+# Sandcastle sandboxes
+.pnpm-store/
+
 # Local dotCover reports
 docs/coverage/
 

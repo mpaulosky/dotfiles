@@ -30,7 +30,7 @@ GIT_ENV = {
 
 
 def merge_check_script():
-    """The Python the "Skip a clean merge of main into a reviewed commit" step runs."""
+    """The Python the "Skip a stale head, or a clean merge of main into a reviewed commit" step runs."""
     lines = WORKFLOW.read_text().splitlines()
     step = next(i for i, line in enumerate(lines) if line.strip() == "id: check")
     start = next(i for i in range(step, len(lines)) if lines[i].strip() == "python3 -I - <<'PY'") + 1
@@ -70,8 +70,8 @@ class Repo:
             self.git("commit", "-q", "--amend", "--no-edit")
         return self.git("rev-parse", "HEAD")
 
-    def check(self, head, reviewed, tmp_path):
-        """Run the step: (exit code, its skip output, what it printed)."""
+    def check(self, head, reviewed, tmp_path, current=None):
+        """Run the step: (exit code, its skip output, what it printed). current: the PR's head by then."""
         self.git("update-ref", "refs/remotes/origin/main", "main")
         runner_temp = tmp_path / "runner"
         runner_temp.mkdir(exist_ok=True)
@@ -79,7 +79,7 @@ class Repo:
         output = runner_temp / "output"
         output.write_text("")
         env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output), "HEAD_SHA": head,
-               "BASE_REF": "main"}
+               "BASE_REF": "main", "CURRENT_HEAD": current or head}
         done = subprocess.run([sys.executable, "-I", "-"], input=merge_check_script(), cwd=self.path, env=env,
                               capture_output=True, text=True)
         outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
@@ -212,3 +212,55 @@ def test_reviews_a_clean_merge_where_mains_pr_auto_merge_predates_the_rule(repo,
     repo.git("checkout", "-q", "feature")
     head = repo.merge("main")
     assert repo.check(head, [repo.rev], tmp_path)[:2] == (0, "false")
+
+
+# A stale head: the PR moved on to a newer head before this run's check.
+
+
+def test_skips_a_stale_head_when_the_newer_push_adds_a_commit(repo, tmp_path):
+    newer = repo.commit({"app": "app 3\n"}, "fix")
+    code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer)
+    assert (code, skip) == (0, "true")
+    assert "that push's run reviews it instead" in out
+
+
+def test_reviews_a_stale_head_that_a_clean_merge_from_main_covers(repo, tmp_path):
+    # An app's or Copilot's push of the merge starts no review, so this run reviews rev.
+    newer = repo.merge("main")
+    code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer)
+    assert (code, skip) == (0, "false")
+    assert f"Claude reviews {repo.rev}" in out
+
+
+def test_reviews_a_stale_head_under_a_chain_of_clean_merges(repo, tmp_path):
+    repo.merge("main")
+    repo.git("checkout", "-q", "main")
+    repo.commit({"lib": "lib 2\n"}, "main2")
+    repo.git("checkout", "-q", "feature")
+    newer = repo.merge("main")
+    assert repo.check(repo.rev, [], tmp_path, current=newer)[:2] == (0, "false")
+
+
+def test_skips_a_stale_head_that_was_reviewed_under_a_clean_merge(repo, tmp_path):
+    newer = repo.merge("main")
+    assert repo.check(repo.rev, [repo.rev], tmp_path, current=newer)[:2] == (0, "true")
+
+
+def test_skips_a_stale_head_under_a_merge_that_changes_a_file(repo, tmp_path):
+    newer = repo.merge("main", edit={"app": "app 2\n"})
+    assert repo.check(repo.rev, [], tmp_path, current=newer)[:2] == (0, "true")
+
+
+def test_skips_a_stale_head_when_the_newer_head_isnt_fetched(repo, tmp_path):
+    code, skip, out = repo.check(repo.rev, [], tmp_path, current="f" * 40)
+    assert (code, skip) == (0, "true")
+    assert "that push's run reviews it instead" in out
+
+
+def test_skips_a_stale_head_where_main_has_no_pr_auto_merge(repo, tmp_path):
+    # Without reviewCovering on main a review of rev wouldn't cover the merge.
+    repo.git("checkout", "-q", "main")
+    repo.commit({".github/workflows/pr-automerge.yml": None}, "no PR Auto-Merge")
+    repo.git("checkout", "-q", "feature")
+    newer = repo.merge("main")
+    assert repo.check(repo.rev, [], tmp_path, current=newer)[:2] == (0, "true")

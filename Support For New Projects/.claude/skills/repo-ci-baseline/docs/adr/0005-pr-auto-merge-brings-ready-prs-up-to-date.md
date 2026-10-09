@@ -14,16 +14,21 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
 ## Decisions
 
 - **Update only a PR that is otherwise ready.** A same-repo, non-draft PR into `main` whose head is reviewed (or covered, below) or past the cap,
-  with no thread holding it, no off-diff hold, no `sandcastle:needs-human`, `mergeable: MERGEABLE` and every required check's newest run passed,
-  gets `PUT /pulls/{n}/update-branch` with `expected_head_sha` set to that head.
+  with no thread holding it, no off-diff hold, no `sandcastle:needs-human`, `mergeable: MERGEABLE`, every required check's newest run passed
+  and no check's newest run failed, required or not, gets `PUT /pulls/{n}/update-branch` with `expected_head_sha` set to that head.
   An update reruns all of CI (and, before this change, a review), and a PR still waiting on a review or a fix gains nothing from being current;
   it is updated on the first event after it becomes ready. The cost is one more CI run between the review and the merge, the same as by hand.
-  Required checks are read from the head's check runs (`isRequired`), since `mergeStateStatus` says only `BEHIND` and the rollup's own state
-  counts this workflow's runs and cancelled duplicates.
+  Required checks are read from the head's check runs (`isRequired`, through `headRef`, since GitHub lists a PR's commits by date)
+  and from `main`'s rulesets (`GET /rules/branches/main`), since `mergeStateStatus` says only `BEHIND`, the rollup's own state
+  counts this workflow's runs and cancelled duplicates, and a required check whose job isn't queued yet has no run: it counts as pending.
+  A failed optional check holds the update too: Claude Review's post and answer-check jobs fail on purpose to leave a PR `UNSTABLE`,
+  and an update would start a new head without the failure.
 - **A PR with native auto-merge armed** (release-blog PRs, Dependabot's) is updated once its required checks pass, with no review: GitHub merges it, but never brings it up to date.
+  A failed optional check doesn't hold it, since GitHub merges it on its required checks alone.
 - **`RELEASE_PR_PAT`, never `GITHUB_TOKEN`.** A merge commit pushed with `GITHUB_TOKEN` starts no workflows, so CI would never run on it.
   Without the PAT the run logs a notice and the PR waits, as before.
-- **Dependabot's own PRs get `@dependabot rebase`** instead, once per head (the comment ends with a marker naming the head), so Dependabot keeps managing them.
+- **Dependabot's own PRs get `@dependabot rebase`** instead, once per head (the comment ends with a marker naming the head;
+  only a marker the PAT's account posted counts), so Dependabot keeps managing them.
   One that someone else pushed to (any commit not authored by `dependabot[bot]`) is updated like any other PR.
 - **A push to `main` sweeps the open PRs.** No existing trigger fired when `main` moved: the `workflow_run`s of `main`'s own CI carry `main`'s head,
   which no open PR has. `push: branches: [main]` runs `main`'s copy, like every other trigger. Right after the push GitHub reports `UNKNOWN`
@@ -35,13 +40,15 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
   whose first parent is reviewed (or is itself such a merge, up to five deep), whose second parent is on `main`,
   and whose every file is what a clean merge gives: where both sides agree, that; where only one side changed a file since the merge base, that side's version.
   A file both sides changed, a rename across them, or any other change (a conflict resolution included) needs a fresh review.
-  So nothing reaches `main` that neither a reviewer nor `main` itself has seen. Claude's off-diff hold on the covered commit still holds.
+  So nothing reaches `main` that neither a reviewer nor `main` itself has seen. Claude's off-diff hold on the covered commit still holds,
+  even when Copilot reviewed the merge: the hold comes from the newest commit Claude reviewed down the chain of clean merges.
   This was already the cap's view: merges from `main` aren't review rounds ([ADR 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 - **Claude Review skips such a head** on `synchronize`, by the same rule, in a job of its own before the review job,
   so a skipped run doesn't join the review's concurrency group and cancel a review in progress. It reviews whenever it can't tell,
   and whenever the base's `pr-automerge.yml` doesn't honour the skip: dotfiles has none (it carries a copy of `claude-review.yml` and lands PRs with `land.sh`,
   whose decision wants a review of the exact head), and the re-Apply PR that brings this change still has the old one on `main`. The same job skips a run whose head is no longer the PR's,
-  since the check job's varying length could otherwise let a stale review join the concurrency group last and cancel the newer one.
+  since the check job's varying length could otherwise let a stale review join the concurrency group last and cancel the newer one,
+  unless the newer head only merges `main` into it: an app's or Copilot's push of that merge starts no review, so the stale head is reviewed, which covers the merge.
 - **`land.sh`** keeps updating `BEHIND` PRs (it also covers repos without the PAT) and keeps requesting Copilot after an update:
   Copilot reviews every push anyway (`review_on_push`), and the request's read-back is what calls in Claude (`review:claude`) when Copilot's budget is spent,
   for an update that isn't a clean merge. The label stays on, so that costs at most one Claude review per PR.

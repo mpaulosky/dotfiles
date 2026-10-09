@@ -191,10 +191,10 @@ jobs:
                                  nodes {
                                    __typename
                                    ... on CheckRun {
+                                     databaseId
                                      name
                                      status
                                      conclusion
-                                     startedAt
                                      isRequired(pullRequestNumber: $number)
                                    }
                                    ... on StatusContext {
@@ -322,8 +322,10 @@ jobs:
 
             // Why the head's required checks haven't all passed, or null when
             // they have. A check run more than once (a rerun, or one CI's
-            // concurrency cancelled) counts by its newest run, and a run not
-            // yet started is the newest, as in the skill's landing.py.
+            // concurrency cancelled) counts by its newest run: the last
+            // created, by databaseId, which GitHub goes by too. So a queued
+            // rerun outranks an older green run, and a later run outranks
+            // one cancelled before it started.
             // isRequired reports main-rules' ruleset checks (checked live on
             // Blazor-Server #183).
             function requiredChecksPending(pr) {
@@ -344,9 +346,9 @@ jobs:
                   continue;
                 }
                 const name = check.name ?? check.context;
-                const at = check.startedAt ?? check.createdAt ?? "\uffff";
-                if (!newest.has(name) || at >= newest.get(name).at) {
-                  newest.set(name, { at, check });
+                const rank = check.__typename === "StatusContext" ? check.createdAt ?? "" : check.databaseId ?? 0;
+                if (!newest.has(name) || rank >= newest.get(name).rank) {
+                  newest.set(name, { rank, check });
                 }
               }
               if (newest.size === 0) {

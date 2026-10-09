@@ -67,7 +67,7 @@ function requiredCheck(name, overrides = {}) {
     name,
     status: "COMPLETED",
     conclusion: "SUCCESS",
-    startedAt: "2026-10-08T10:00:00Z",
+    databaseId: 1,
     isRequired: true,
     ...overrides
   };
@@ -934,27 +934,34 @@ test("doesn't update a BEHIND PR until its required checks pass", async () => {
 test("judges a BEHIND PR's required checks by their newest runs, and only the required ones", async () => {
   const rerun = checksOn(
     HEAD,
-    requiredCheck("Build Solution", { conclusion: "CANCELLED", startedAt: "2026-10-08T10:00:00Z" }),
-    requiredCheck("Build Solution", { conclusion: "SUCCESS", startedAt: "2026-10-08T10:05:00Z" }),
+    requiredCheck("Build Solution", { conclusion: "CANCELLED", databaseId: 1 }),
+    requiredCheck("Build Solution", { conclusion: "SUCCESS", databaseId: 2 }),
     requiredCheck("Coverage", { conclusion: "FAILURE", isRequired: false }),
     requiredCheck("Merge same-repo PRs when ready", { status: "IN_PROGRESS", conclusion: null, isRequired: false }),
     { __typename: "StatusContext", context: "ci/legacy", state: "SUCCESS", createdAt: "x", isRequired: true }
   );
   const regressed = checksOn(
     HEAD,
-    requiredCheck("Build Solution", { conclusion: "SUCCESS", startedAt: "2026-10-08T10:00:00Z" }),
-    requiredCheck("Build Solution", { conclusion: "FAILURE", startedAt: "2026-10-08T10:05:00Z" })
+    requiredCheck("Build Solution", { conclusion: "SUCCESS", databaseId: 1 }),
+    requiredCheck("Build Solution", { conclusion: "FAILURE", databaseId: 2 })
   );
 
   const queuedRerun = checksOn(
     HEAD,
-    requiredCheck("Build Solution", { conclusion: "SUCCESS", startedAt: "2026-10-08T10:00:00Z" }),
-    requiredCheck("Build Solution", { status: "QUEUED", conclusion: null, startedAt: null })
+    requiredCheck("Build Solution", { conclusion: "SUCCESS", databaseId: 1 }),
+    requiredCheck("Build Solution", { status: "QUEUED", conclusion: null, databaseId: 2 })
+  );
+  // Cancelled before it started (no startedAt), then a later run passed.
+  const cancelledWhileQueued = checksOn(
+    HEAD,
+    requiredCheck("Build Solution", { conclusion: "CANCELLED", startedAt: null, databaseId: 1 }),
+    requiredCheck("Build Solution", { conclusion: "SUCCESS", databaseId: 2 })
   );
 
   assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: rerun }))).updates.length, 1);
   assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: regressed }))).updates.length, 0);
   assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: queuedRerun }))).updates.length, 0);
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: cancelledWhileQueued }))).updates.length, 1);
 });
 
 test("says so where it shows when a BEHIND PR has no required check at all", async () => {

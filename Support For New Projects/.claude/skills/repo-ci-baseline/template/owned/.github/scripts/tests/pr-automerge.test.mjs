@@ -972,6 +972,17 @@ test("says so where it shows when a BEHIND PR has no required check at all", asy
   assert.ok(logs.some((line) => line.startsWith("notice: ") && line.includes("no required check")), logs.join("\n"));
 });
 
+test("doesn't flag a head whose CI is still creating its checks", async () => {
+  const pr = readyPr({
+    mergeStateStatus: "BEHIND",
+    commits: checksOn(HEAD, requiredCheck("Detect Changes", { isRequired: false, status: "IN_PROGRESS", conclusion: null }))
+  });
+  const { updates, logs } = await evaluate(pr, [], { push: true });
+
+  assert.deepEqual(updates, []);
+  assert.ok(!logs.some((line) => line.startsWith("notice: ")), logs.join("\n"));
+});
+
 test("doesn't flag a PR event that came before CI created its checks", async () => {
   const pr = readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Merge same-repo PRs when ready", { isRequired: false })) });
   const { updates, logs } = await evaluate(pr);

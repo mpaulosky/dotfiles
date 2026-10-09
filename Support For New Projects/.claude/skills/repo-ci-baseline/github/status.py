@@ -37,7 +37,7 @@ query($owner: String!, $name: String!) {
         reviewThreads(first: 100) { nodes { isResolved } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
-          ... on CheckRun { name status conclusion startedAt }
+          ... on CheckRun { databaseId name status conclusion startedAt }
           ... on StatusContext { context state createdAt }
         } } } } } }
       }
@@ -64,7 +64,8 @@ def to_check(node):
         if state in ("PENDING", "EXPECTED"):
             return Check(node["context"], "PENDING", None, node.get("createdAt") or "")
         return Check(node["context"], "COMPLETED", state, node.get("createdAt") or "")
-    return Check(node["name"], node["status"], node.get("conclusion"), node.get("startedAt") or "")
+    return Check(node["name"], node["status"], node.get("conclusion"), node.get("startedAt") or "",
+                 node.get("databaseId") or 0)
 
 
 def repo_flags(scope):

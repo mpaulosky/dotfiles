@@ -68,8 +68,8 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 - **A ready PR is kept up to date.** When `main` moves on, PR Auto-Merge merges `main` into a PR that is otherwise ready
   (Dependabot rebases its own on request). The merge from `main` needs no new review when it is exactly what merging
   `main` gives and no file was changed on both sides; otherwise (a conflict resolved, a file both sides changed, or a
-  change of its own) it waits for a new review: add `review:claude` if Copilot doesn't review it (remove and re-add it
-  if it's already on).
+  change of its own) it waits for a new review: add `review:claude` if Copilot doesn't review it. If the label is already
+  on, Claude reviews the push itself, unless a bot or app pushed it; then remove and re-add the label.
 - **A draft is never merged.** Open a PR as a draft to hold it back, and mark it ready when it is.
 - **Merging is squash only.** Nobody merges by hand except a fork's PR, which the maintainer merges, and a Baseline
   Standardize PR.

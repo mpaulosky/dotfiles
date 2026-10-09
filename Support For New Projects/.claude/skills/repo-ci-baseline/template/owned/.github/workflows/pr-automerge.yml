@@ -375,10 +375,18 @@ jobs:
               }
               const pending = requiredChecksPending(pr);
               if (pending) {
-                // No required check at all on a head means isRequired doesn't
-                // see the ruleset's checks; say so where it shows. Not on a PR
-                // event, which can come before CI has created its checks.
-                const misconfigured = pending.startsWith("no required check") && !context.payload.pull_request;
+                // No required check at all on a head whose checks have all
+                // finished means isRequired doesn't see the ruleset's checks;
+                // say so where it shows. While any check is still running, or
+                // on a PR event, CI may not have created the required ones yet
+                // (a job's check run appears only once the job is queued).
+                const contexts = pr.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? [];
+                const settled = contexts.every((check) => {
+                  return check.__typename === "StatusContext"
+                    ? !["PENDING", "EXPECTED"].includes(check.state)
+                    : check.status === "COMPLETED";
+                });
+                const misconfigured = pending.startsWith("no required check") && settled && !context.payload.pull_request;
                 const log = misconfigured ? core.notice : core.info;
                 log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
                 return;

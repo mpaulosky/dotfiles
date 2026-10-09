@@ -1,0 +1,72 @@
+{
+  "label": "maxturns3-opus-high",
+  "claude_version": "2.1.295 (Claude Code)",
+  "claude_args": "--model claude-opus-5-5 --effort high --max-turns 3 --add-dir ${{ runner.temp }}/claude-review --add-dir ${{ github.workspace }}/../../_actions --setting-sources user --disallowedTools \"Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read(//proc/**),Read(**/.git/**)\" --json-schema '{\"type\": \"object\", \"required\": [\"summary\", \"findings\"], \"additionalProperties\": false, \"properties\": { \"summary\": {\"type\": \"string\"}, \"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"required\": [\"path\", \"line\", \"body\"], \"additionalProperties\": false, \"properties\": {\"path\": {\"type\": \"string\"}, \"line\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 1000000}, \"body\": {\"type\": \"string\"}}}}}}'",
+  "overrides": [
+    null,
+    null,
+    null
+  ],
+  "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/claude-review/pr.diff.\n\nYou have at most 3 turns in total, and your answer must be one of them, so plan\nyour reads. Turn 1: read the diff and every source file it touches, all in one turn\nas parallel Read calls. Turn 2, only if you need it: read, again in one turn of\nparallel calls, the unchanged code the change calls or is called by, and the\nrepository's conventions (AGENTS.md, CLAUDE.md) where they bear on it. Then answer.\nNever spend a turn on a single small read, and never use a turn without answering\nwhen it is your last. Skip generated files, lockfiles, snapshots and recorded data.\n\nYour review may be the only one this PR gets before it merges on its own, so be\nthorough. For each change, ask what happens on the paths the author didn't test:\nanother event or trigger, a rerun, a skipped or cancelled job, a different actor\n(a bot, an app, a person without write access), an empty, malformed or unusual\ninput (whitespace, tabs, Unicode, markup), a race between two runs. For GitHub\nActions workflows and merge gates, reason about how GitHub itself behaves: which\nevents fire, what a skipped or failed check does to a PR's mergeStateStatus, who\nthe actor is, what each token can do. The source of the actions this review runs on\nis under ${{ github.workspace }}/../../_actions/<owner>/<repo>/<ref>; read it when a\npinned action's behaviour decides the answer. Where the behaviour of an action or\nof GitHub decides it and you can't check it here, say what you're relying on.\nLook hardest at code that decides whether something merges, releases or gets\npermissions, and at text processing that turns input into rendered output.\n\nReport every real problem a maintainer would want fixed or knowingly accepted\nbefore merging: bugs, security issues, broken edge cases, missing or wrong tests,\nand clear departures from the repository's conventions. Don't report style nits,\npraise, or the PR's scope (what it bundles together is the author's call).\n\nEvery finding names a file path relative to the repository root and a line number\non the new side of that file, on a line the diff adds or shows as context: a finding\nanywhere else holds the merge until the next push. When the problem lies in code the\ndiff doesn't touch, put the finding on the changed line that calls it, depends on it\nor should have changed with it. Before you report a line, read it in the checked-out\nfile (not in the diff) and make sure it is the line the finding is about. Say what\ngoes wrong, in which situation, and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\n",
+  "score": [
+    0,
+    4
+  ],
+  "cases": [
+    {
+      "repo": "Articles",
+      "pr": 298,
+      "base": "dda7d1c",
+      "head": "4b90c96",
+      "expect": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "set": "recall",
+      "review": {
+        "summary": "The PR adds a Claude Review workflow that runs only when a PR carries the `review:claude` label. It has two jobs. The review job gives a read-only Claude a diff and collects its findings as structured JSON. The post job runs `post_claude_review.py`, which posts those findings as one COMMENT review from github-actions[bot]. The review is pinned to the head commit and its body starts with `<!-- claude-review -->`.\n\nPR Auto-Merge now accepts that marked review of the head in place of Copilot's. Claude's rounds count toward the shared review cap, and its threads are told apart by their review id. The PR also:\n- drops `ready_for_review` from CI;\n- adds a timeout to the Playwright install;\n- collapses whitespace after container markers in `release_post.py` commit subjects.\n\nI found nothing wrong in the `release_post.py` and CI changes. I checked the action's `structured_output` output, and the `[bot]`-suffixed author filter matches the existing Copilot query. The main problem is in the merge gate. The marked review now satisfies \"reviewed\", but it is produced by a `pull_request` workflow whose definition and post script come from the PR's own branch. A PR can therefore forge it, which breaks the property `pr-automerge.yml` is built on. There are also hold and stall issues in the cancellation and posting paths. Verdict: changes requested.",
+        "findings": [
+          {
+            "path": ".github/workflows/pr-automerge.yml",
+            "line": 263,
+            "body": "**A PR can forge the review that unblocks its own merge.**\n\nThe gate now accepts any github-actions[bot] review whose body starts with `<!-- claude-review -->` as a review of the head. Every github-actions[bot] review on a same-repo PR comes from a `pull_request` workflow, which runs the PR branch's own workflow files and scripts.\n\n`claude-review.yml` itself is one such workflow. It runs on `pull_request`, and its post job (`claude-review.yml:136-139`) checks out `.github/scripts` from the PR's merge ref. It then runs that copy of `post_claude_review.py` with `pull-requests: write`.\n\nSo a same-repo PR can do either of these:\n- edit `post_claude_review.py` or `claude-review.yml`;\n- add any workflow that runs `gh api .../reviews` with a body of `<!-- claude-review -->\\nNo findings.`\n\nThe forged review lands on its own head. Once checks are green, PR Auto-Merge squash-merges it with no review at all. Copilot's review couldn't be forged this way. This file says outright that it uses `pull_request_target` so that \"a PR can't edit the script that decides whether it merges\". The marker check reopens exactly that hole for whoever pushes branches, including an agent like Sandcastle.\n\n**Fix:** post from a trusted context. The review job stays on `pull_request`, writes the findings and head SHA to an artifact, and does nothing else. A separate `workflow_run`-triggered workflow then posts. It runs main's copy of the workflow and script and never executes PR code, the same pattern PR Review Submitted already uses. Even then, github-actions[bot] reviews from any other workflow carry no proof of origin. Either have PR Auto-Merge confirm that the marked review matches a successful Claude Review run from main for that head, or post under an identity a PR can't use (a GitHub App token held only by the posting workflow)."
+          },
+          {
+            "path": ".github/workflows/claude-review.yml",
+            "line": 49,
+            "body": "**A cancelled review on the same head can leave a failing check that stalls the PR.**\n\n`cancel-in-progress: true` combined with the `labeled`, `ready_for_review` and `reopened` triggers recreates the problem this PR removes from `ci.yml` (lines 33-35). There, a `ready_for_review` run cancelled an in-progress run on the same head, and the cancelled check reported as a failure.\n\nHere is how it happens:\n1. `land.sh`/`reapply.sh` runs `gh pr ready` and adds `review:claude` within seconds of each other. Or a person removes and re-adds the label while a review is running. Or the PR is closed and reopened.\n2. Two runs start on the same head, and the second cancels the first.\n3. The cancelled \"Review with Claude\" check stays on the head commit, so mergeStateStatus is not CLEAN.\n4. PR Auto-Merge (`pr-automerge.yml:306`) then waits until someone pushes again, even after the second run has posted a clean review.\n\nI'm relying on the repo's own observation in `ci.yml` that a cancelled same-head check stays red; I couldn't check GitHub's rollup behaviour here.\n\n**Fix:** don't let a same-head event cancel a run in progress. Either use `cancel-in-progress: ${{ github.event.action == 'synchronize' }}`, or add the head SHA to the group (`claude-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}`) so only a new head supersedes it. Dropping `ready_for_review`/`reopened` alone isn't enough, because `labeled` can still race."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 145,
+            "body": "**The comment lines are checked against the wrong diff when the head moves before posting.**\n\n`gh.pull_files(args.pr)` returns the PR's file diff as of now, at the current head. The review, though, is pinned to `commit_id = args.head`, the head at event time. The post job is in a separate concurrency group, so a push during the review job doesn't cancel it.\n\nIf the branch moves before posting, the commentable lines come from the new head's diff, while GitHub checks the comments against the old commit's diff. Two things can go wrong:\n- A finding that sits on the old diff but not the new one is pushed into the body, and the job fails.\n- A finding on a line that is only in the new diff is sent inline. GitHub then rejects the whole review with 422, so nothing is posted.\n\nNeither case is covered by the tests.\n\n**Fix:** take the commentable lines from the reviewed commit itself, using `GET repos/{repo}/compare/{base}...{head}` with the event's base and head SHAs, which is the same diff Claude reviewed. Or re-read the PR head first and skip posting with a notice if it no longer equals `--head`."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 64,
+            "body": "**`capture_output=True` throws away gh's error message, so post failures are hard to diagnose.**\n\nWith `capture_output=True` and `check=True`, a failed `gh api` call raises `CalledProcessError`, and its stderr is never printed. Example: GitHub answers 422 because one comment's line isn't in the diff, or because `commit_id` isn't on the PR. The job log then shows only `returned non-zero exit status 1`, not GitHub's response explaining which comment or field it rejected. The same applies to `pull_files`.\n\n**Fix:** drop `capture_output` in `create_review`, since its stdout isn't used. Otherwise catch `CalledProcessError` in both calls and print `error.stderr` to stderr before exiting 1."
+          },
+          {
+            "path": ".github/scripts/post_claude_review.py",
+            "line": 118,
+            "body": "**Model output is put into a Markdown list item unescaped, so multi-line findings render broken.**\n\nThe line is `off_diff.append(f\"- `{path}:{line}`: {body}\")`. Claude's finding bodies are often several paragraphs, or contain a fenced code block, a heading or a list. Only the first line is inside the bullet. The next unindented paragraph or fence ends the list, so later findings show up as stray paragraphs and code blocks rather than a list of findings. A `path` containing a backtick also breaks the code span.\n\nThis is the review body a maintainer reads to see why the check is failing.\n\n**Fix:** indent every continuation line of `body` by two spaces (`body.replace(\"\\n\", \"\\n  \")`). Wrap `path` in a code span longer than any backtick run inside it, as `release_post.py` does. Add a test with a multi-paragraph off-diff body."
+          }
+        ]
+      },
+      "seconds": 183,
+      "cost_usd": 0.7757772000000001,
+      "turns": 7,
+      "bad_lines": [],
+      "caught": {
+        "1": false,
+        "2": true,
+        "3": false,
+        "4": false,
+        "5": false
+      }
+    }
+  ]
+}

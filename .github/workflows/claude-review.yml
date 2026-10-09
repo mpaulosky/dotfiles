@@ -344,6 +344,15 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/claude-review"
           git diff --no-color "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
 
+      # Capped at 3 turns (--max-turns 3), the owner's hard limit on what a
+      # review may cost. The structured answer uses turns of its own: checked
+      # with Claude Code 2.1.295, one turn of parallel reads then the answer
+      # fits in 3, and two turns of reads don't (error_max_turns). num_turns in
+      # the result counts messages, not these turns (7 for a passing 3-turn
+      # review). A review that runs out of turns returns no structured output;
+      # the step's continue-on-error turns that into a warning, nothing is
+      # posted, and the PR waits for a review as it does at the usage limit.
+      #
       # Opus 5.5 at high effort, with read-only tools: it reads the diff and
       # the checked-out code, and answers in the JSON schema below. The prompt
       # and model were chosen on the skill's benchmark (bench/ in the
@@ -394,12 +403,14 @@ jobs:
           prompt: |
             You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.
             The PR's head is checked out in the working directory. Its diff against the base
-            branch is in ${{ runner.temp }}/claude-review/pr.diff; read it first. Then read every
-            source file the diff touches in full, and the unchanged code it calls or is called by:
-            a bug often lies in how the change interacts with code it doesn't touch. Skim
-            generated files, lockfiles, snapshots and recorded data instead of reading them in
-            full. Follow the repository's own conventions (AGENTS.md, CLAUDE.md, docs/ and
-            .github/instructions/ where present).
+            branch is in ${{ runner.temp }}/claude-review/pr.diff.
+
+            You get exactly one turn of reads, then you must answer: a second turn of reads
+            leaves no turn for the answer, and the review is lost. In that one turn, make all
+            your Read calls in parallel: the diff, every source file it touches, the unchanged
+            code the change calls or is called by that you expect to matter, and AGENTS.md or
+            CLAUDE.md where present. Skip generated files, lockfiles, snapshots and recorded
+            data. Then answer from what you have read; don't read again.
 
             Your review may be the only one this PR gets before it merges on its own, so be
             thorough. For each change, ask what happens on the paths the author didn't test:
@@ -432,6 +443,7 @@ jobs:
           claude_args: >-
             --model claude-opus-5-5
             --effort high
+            --max-turns 3
             --add-dir ${{ runner.temp }}/claude-review
             --add-dir ${{ github.workspace }}/../../_actions
             --setting-sources user

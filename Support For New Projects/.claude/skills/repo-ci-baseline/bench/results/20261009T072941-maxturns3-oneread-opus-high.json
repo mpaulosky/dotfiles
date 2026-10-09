@@ -1,0 +1,46 @@
+{
+  "label": "maxturns3-oneread-opus-high",
+  "claude_version": "2.1.295 (Claude Code)",
+  "claude_args": "--model claude-opus-5-5 --effort high --max-turns 3 --add-dir ${{ runner.temp }}/claude-review --add-dir ${{ github.workspace }}/../../_actions --setting-sources user --disallowedTools \"Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Read(//proc/**),Read(**/.git/**)\" --json-schema '{\"type\": \"object\", \"required\": [\"summary\", \"findings\"], \"additionalProperties\": false, \"properties\": { \"summary\": {\"type\": \"string\"}, \"findings\": {\"type\": \"array\", \"items\": {\"type\": \"object\", \"required\": [\"path\", \"line\", \"body\"], \"additionalProperties\": false, \"properties\": {\"path\": {\"type\": \"string\"}, \"line\": {\"type\": \"integer\", \"minimum\": 0, \"maximum\": 1000000}, \"body\": {\"type\": \"string\"}}}}}}'",
+  "overrides": [
+    null,
+    null,
+    null
+  ],
+  "prompt": "You are reviewing pull request #${{ github.event.pull_request.number }} as a code reviewer.\nThe PR's head is checked out in the working directory. Its diff against the base\nbranch is in ${{ runner.temp }}/claude-review/pr.diff.\n\nYou get exactly one turn of reads, then you must answer: a second turn of reads\nleaves no turn for the answer, and the review is lost. In that one turn, make all\nyour Read calls in parallel: the diff, every source file it touches, the unchanged\ncode the change calls or is called by that you expect to matter, and AGENTS.md or\nCLAUDE.md where present. Skip generated files, lockfiles, snapshots and recorded\ndata. Then answer from what you have read; don't read again.\n\nYour review may be the only one this PR gets before it merges on its own, so be\nthorough. For each change, ask what happens on the paths the author didn't test:\nanother event or trigger, a rerun, a skipped or cancelled job, a different actor\n(a bot, an app, a person without write access), an empty, malformed or unusual\ninput (whitespace, tabs, Unicode, markup), a race between two runs. For GitHub\nActions workflows and merge gates, reason about how GitHub itself behaves: which\nevents fire, what a skipped or failed check does to a PR's mergeStateStatus, who\nthe actor is, what each token can do. The source of the actions this review runs on\nis under ${{ github.workspace }}/../../_actions/<owner>/<repo>/<ref>; read it when a\npinned action's behaviour decides the answer. Where the behaviour of an action or\nof GitHub decides it and you can't check it here, say what you're relying on.\nLook hardest at code that decides whether something merges, releases or gets\npermissions, and at text processing that turns input into rendered output.\n\nReport every real problem a maintainer would want fixed or knowingly accepted\nbefore merging: bugs, security issues, broken edge cases, missing or wrong tests,\nand clear departures from the repository's conventions. Don't report style nits,\npraise, or the PR's scope (what it bundles together is the author's call).\n\nEvery finding names a file path relative to the repository root and a line number\non the new side of that file, on a line the diff adds or shows as context: a finding\nanywhere else holds the merge until the next push. When the problem lies in code the\ndiff doesn't touch, put the finding on the changed line that calls it, depends on it\nor should have changed with it. Before you report a line, read it in the checked-out\nfile (not in the diff) and make sure it is the line the finding is about. Say what\ngoes wrong, in which situation, and how to fix it.\n\nAnswer with a short summary of the change and your verdict, and your findings.\n",
+  "score": [
+    0,
+    0
+  ],
+  "cases": [
+    {
+      "set": "noise",
+      "repo": "IssueTracker",
+      "pr": 197,
+      "base": "36bd6a9",
+      "head": "2ffab1d",
+      "expect": [],
+      "copilot_threads": 3,
+      "review": {
+        "summary": "The PR removes `.WithHealthCheck(name)` from the MongoDB and Redis AppHost extensions. `AddMongoDB` and `AddRedis` already register and attach their own health check, so the extra annotation pointed at an unregistered key and AppHost failed at startup with \"A health check registration is missing\". It also adds the dashboard/OTLP endpoint variables and `ASPIRE_ALLOW_UNSECURED_TRANSPORT` to the http launch profile, adds a regression test per extension, and re-indents the MongoDB tests with tabs. The production changes look correct. The two new regression tests, though, probably pass with or without the fix: they build a ServiceProvider from `builder.Services` without calling `builder.Build()`, and they only reject `OptionsValidationException`. Any other exception, such as the validator failing to resolve `DistributedApplicationModel`, passes silently. They don't guard the fix and should be tightened before merging. I couldn't run the tests or read the Aspire source here; the reasoning relies on how I remember Aspire.Hosting 9.x registering its health-check validator.",
+        "findings": [
+          {
+            "path": "tests/AppHost.Tests/Extensions/RedisExtensionsTests.cs",
+            "line": 195,
+            "body": "This regression test probably can't fail, so it doesn't protect the fix.\n\nIt builds a provider with `builder.Services.BuildServiceProvider()` and never calls `builder.Build()`. As I recall Aspire.Hosting (I couldn't check its source here), the missing-health-check validator is an `IValidateOptions<HealthCheckServiceOptions>` whose factory needs `DistributedApplicationModel`. That type is only registered inside `Build()`. Without it, resolving `IOptions<HealthCheckServiceOptions>.Value` throws `InvalidOperationException` (no service for `DistributedApplicationModel`) before any validation runs.\n\n`NotThrow<OptionsValidationException>()` only fails on that exact type, so the test passes whether or not `.WithHealthCheck(name)` is present. It also accepts any other startup exception. That goes against CLAUDE.md's \"Write the failing test first \u2026 for bug fixes\".\n\nFix: `using DistributedApplication app = builder.Build();`, resolve `app.Services.GetRequiredService<IOptions<HealthCheckServiceOptions>>().Value`, and assert `act.Should().NotThrow();`. `Build()` doesn't start containers. Then confirm the test fails with `.WithHealthCheck(name)` restored in `RedisExtensions`."
+          },
+          {
+            "path": "tests/AppHost.Tests/MongoDBHostingExtensionsTests.cs",
+            "line": 155,
+            "body": "Same problem as the Redis test: this one probably passes with or without the fix.\n\n`builder.Services.BuildServiceProvider()` (line 149) skips `builder.Build()`, which is where Aspire registers the `DistributedApplicationModel` its health-check validator depends on (from memory of Aspire.Hosting; not verified here). Reading `.Value` therefore most likely throws `InvalidOperationException`, and `NotThrow<OptionsValidationException>()` ignores that. Re-adding `.WithHealthCheck(name)` to `AddMongoDBWithManagement` would not turn this test red. Any other startup failure would also be hidden.\n\nFix: build the app (`using DistributedApplication app = builder.Build();`), resolve the options from `app.Services`, assert `act.Should().NotThrow();`, and confirm the test fails against the old code."
+          }
+        ]
+      },
+      "seconds": 64,
+      "cost_usd": 0.2915092,
+      "turns": 7,
+      "bad_lines": [],
+      "caught": {}
+    }
+  ]
+}

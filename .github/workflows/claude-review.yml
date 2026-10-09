@@ -372,7 +372,9 @@ jobs:
       # script, so one holds unless it's deleted. Unless deleted, these hold
       # too: a file git shows only as "Binary files differ" that isn't inert
       # media (MEDIA), a submodule bump (mode 160000: the diff shows only two
-      # commit IDs) and a Git LFS pointer (only the pointer shows). INDEX
+      # commit IDs), a symlink (mode 120000: only its target shows, and it can
+      # make unread content run) and a Git LFS pointer (only the pointer
+      # shows). INDEX
       # lists them under "held"; the answer check turns them into a finding
       # that holds the merge for a person. Attributes come
       # from the base (--attr-source), so a PR's own .gitattributes can't make
@@ -441,6 +443,7 @@ jobs:
           # named report file, since a folder named coverage can hold a build
           # (pom.xml, package.json) or a page.
           LFS_OID = re.compile(rb"oid sha256:[0-9a-f]{64}\n?\Z")
+          LFS_LINE = re.compile(rb"(version \S+|ext-\d+-\w+ sha256:[0-9a-f]{64}|oid sha256:[0-9a-f]{64}|size \d+)\n?\Z")
           LFS_VERSION = re.compile(rb"version (https://git-lfs\.github\.com/spec/"
                                    rb"|https://hawser\.github\.com/spec/v1|http://git-media\.io/v/2)")
           DATA_GLOBS = ("**/*.log", "**/*.map", "**/coverage/**/lcov.info",
@@ -484,14 +487,18 @@ jobs:
 
 
           def held(header, body, path, excluded):
-              """Why the file holds the merge for a person ("excluded", "binary", "submodule" or "lfs"), or None:
+              """Why the file holds the merge for a person ("excluded", "binary", "submodule", "symlink" or "lfs"), or None:
               see the comment above."""
               bare = unquoted(path)
               deleted = any(line.startswith(b"deleted file mode") for line in header)
-              # First, so a submodule at an excluded path (deps/x.map) holds too.
-              if not deleted and any(re.match(rb"(new file mode|index \S+) 160000$", line.rstrip(b"\n"))
-                                     for line in header):
+              # First, so a submodule or symlink at an excluded path (deps/x.map) holds too. A symlink shows only
+              # its target, so it could make content nobody read (a .log) run as a script.
+              modes = [match[2] for line in header
+                       for match in [re.match(rb"(new file mode|index \S+) (\d+)$", line.rstrip(b"\n"))] if match]
+              if not deleted and b"160000" in modes:
                   return "submodule"
+              if not deleted and b"120000" in modes:
+                  return "symlink"
               if excluded:
                   data = any(pattern.match(bare) for pattern in DATA) or deleted and bare.lower().endswith(".svg")
                   return "excluded" if bare.startswith(".github/") or not data else None
@@ -499,11 +506,12 @@ jobs:
                   return None
               name = bare.rsplit("/", 1)[-1]
               media = "." in name and name.rsplit(".", 1)[-1].lower() in MEDIA
-              # A pointer, added or kept as context: its oid line, or a first line naming any version git-lfs
-              # accepts (its older hawser and git-media aliases too). Media stored in LFS is as inert as media.
-              if not media and any(kind in ("+", " ")
-                                   and (LFS_OID.match(line[1:]) or new == 1 and LFS_VERSION.match(line[1:]))
-                                   for line, _, new, kind in body):
+              # A pointer: every line the hunks show is a pointer line, and one is its oid or a first line naming
+              # any version git-lfs accepts (its older hawser and git-media aliases too), so a doc quoting one is
+              # text. Media stored in LFS is as inert as media.
+              shown = [(line[1:], new) for line, _, new, kind in body if kind in ("+", " ")]
+              if not media and shown and all(LFS_LINE.match(line) for line, _ in shown) and any(
+                      LFS_OID.match(line) or new == 1 and LFS_VERSION.match(line) for line, new in shown):
                   return "lfs"
               shown_binary = any(line.startswith((b"Binary files ", b"GIT binary patch")) for line in header)
               return "binary" if shown_binary and not media else None
@@ -718,7 +726,7 @@ jobs:
           print(f"Split the diff of {len(files)} file(s) into {len(pieces)} piece(s), leaving out {len(excluded)} file(s) "
                 f"Copilot code review excludes; the prompt asks for {len(read)} ({size} bytes).")
           if holding:
-              print(f"::warning::{len(holding)} changed file(s) are excluded code, binaries, submodule bumps or LFS "
+              print(f"::warning::{len(holding)} changed file(s) are excluded code, binaries, submodule bumps, symlinks or LFS "
                     "pointers, so nobody reads them here and the review holds the merge for a person (the answer "
                     "check's log lists them).")
           if skipped:
@@ -1140,13 +1148,13 @@ jobs:
               for row in files_of(set(unread), folder):
                   print("  " + row.replace("\t", "  "))
               print(f"::{token}::")
-          # Excluded code, binaries, submodule bumps and LFS pointers, which nobody read.
+          # Excluded code, binaries, submodule bumps, symlinks and LFS pointers, which nobody read.
           held = os.environ.get("HELD", "")
           if held.isdigit() and int(held) and "findings" in answer:
               answer["findings"].append({"path": "diff", "line": 0, "body": (
                   f"Claude Review didn't read {held} changed file(s): files Copilot code review excludes (such as dist, "
                   "bin, vendor or generated files, build configs or lockfiles), files the diff shows only as binary, "
-                  "submodule bumps or Git LFS pointers. The log "
+                  "submodule bumps, symlinks or Git LFS pointers. The log "
                   "of the review job's \"Check Claude's answer for secrets\" step lists them. Review them yourself, "
                   "then merge by hand.")})
               print(f"::warning::Claude Review didn't read {held} changed file(s), so the review holds the merge. "

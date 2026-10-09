@@ -11,16 +11,22 @@ once per PR head:
 
 - mark ready:       gh pr ready (only with --ready; otherwise a draft waits)
 - update branch:    gh pr update-branch, then gh pr edit --add-reviewer @copilot,
-                    read back: gh exits 0 even when GitHub drops the request;
-                    a dropped request, or one GitHub refused outright, adds
-                    review:claude (gh pr edit --add-label), so Claude Review
-                    reviews the head instead
+                    read back: gh exits 0 even when GitHub drops the request,
+                    so a dropped or refused one is warned about
+- request Copilot:  gh pr edit --add-reviewer @copilot for a head no reviewer
+                    has reviewed or is on its way to, read back the same way;
+                    a request that didn't register is remembered for the head
+- add review:claude: gh pr edit --add-label review:claude, so Claude Review
+                    reviews a head whose Copilot request didn't register; the
+                    decision makes it only once the head's checks are green,
+                    and never past Claude's review rounds
+                    (landing.MAX_CLAUDE_ROUNDS)
 - arm auto-merge:   gh pr merge --auto --squash --match-head-commit <head>
 - leave to PR Auto-Merge, wait, report blocker, nothing: no call
 
-So a Baseline repo's reviewed PR is left to its own PR Auto-Merge workflow,
-dotfiles' is armed once its checks are green, and a release-blog PR is armed
-when its workflow hasn't armed it. Release-blog PRs that open in a watched repo
+So a reviewed PR is left to its repo's own PR Auto-Merge workflow (dotfiles
+carries a copy), and a release-blog PR is armed when its workflow hasn't armed
+it. Release-blog PRs that open in a watched repo
 are watched too, and after a watched PR in a Baseline repo merges, the command
 waits up to --blog-wait minutes for its release-blog PR.
 
@@ -38,12 +44,9 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from landing import ARM_AUTO_MERGE, MARK_READY, UPDATE_BRANCH, decide
+from landing import ARM_AUTO_MERGE, MARK_READY, REQUEST_CLAUDE, REQUEST_COPILOT, REVIEW_CLAUDE, UPDATE_BRANCH, decide
 from settings import read_repo_list
 from status import gh_graphql, line, repo_flags, to_state
-
-# The label that starts Claude Review, the backup to Copilot's review.
-REVIEW_CLAUDE = "review:claude"
 
 PR_REF = re.compile(r"^(?:https://github\.com/)?([\w.-]+/[\w.-]+)(?:#|/pull/)(\d+)$")
 REPO_REF = re.compile(r"^[\w.-]+/[\w.-]+$")
@@ -72,6 +75,10 @@ def commands(action, repo, number, head):
         return [["gh", "pr", "ready", *pr]]
     if action == UPDATE_BRANCH:
         return [["gh", "pr", "update-branch", *pr], ["gh", "pr", "edit", *pr, "--add-reviewer", "@copilot"]]
+    if action == REQUEST_COPILOT:
+        return [["gh", "pr", "edit", *pr, "--add-reviewer", "@copilot"]]
+    if action == REQUEST_CLAUDE:
+        return [["gh", "pr", "edit", *pr, "--add-label", REVIEW_CLAUDE]]
     if action == ARM_AUTO_MERGE:
         return [["gh", "pr", "merge", *pr, "--auto", "--squash", "--match-head-commit", head]]
     return []
@@ -130,6 +137,7 @@ class Lander:
     err: object = sys.stderr
     watched: dict = field(default_factory=dict)  # {(repo, number): Watched}
     acted: set = field(default_factory=set)  # {(repo, number, action, head)}
+    copilot_dropped: set = field(default_factory=set)  # {(repo, number, head)} whose Copilot request didn't register
     blog_due: dict = field(default_factory=dict)  # {repo: deadline} while its blog PR is awaited
     errors: dict = field(default_factory=dict)  # {repo: last error printed}
     started: set = field(default_factory=set)  # repos read at least once
@@ -188,7 +196,8 @@ class Lander:
         return True
 
     def update_open(self, repo, number, pr, node, flags):
-        state = to_state(node, **flags, want_ready=self.want_ready)
+        state = to_state(node, **flags, want_ready=self.want_ready,
+                         copilot_dropped=(repo, number, node["headRefOid"]) in self.copilot_dropped)
         decision = decide(state)
         pr.title = node["title"]
         seen = (state.state, state.head, state.draft, state.merge_state, state.head_reviewer,
@@ -209,23 +218,30 @@ class Lander:
             ok, message = self.run(argv)
             if "--add-reviewer" in argv:
                 # A request GitHub refuses outright is no worse than one it
-                # drops: the read-back finds none, and Claude Review is called in.
+                # drops: the read-back finds none, and the warning says so.
                 if ok:
                     self.say("  ran: " + " ".join(argv))
                 else:
                     self.say("  warning: " + " ".join(argv) + " failed" + (f" ({message})" if message else ""))
-                if not self.reviewer_requested(repo, number):
-                    break
+                # After update-branch the head is new and unknown here, so only
+                # a request for the head as read is remembered.
+                asked = decision.action == REQUEST_COPILOT
+                if not self.read_back_copilot(repo, number, state.head if asked else None) and asked:
+                    # Unknown whether it registered: ask and read back again next poll.
+                    self.acted.discard(key)
+                    pr.seen = None
                 continue
             self.say(("  ran: " if ok else "  failed: ") + " ".join(argv) + (f" ({message})" if message and not ok else ""))
             if not ok:
                 break
 
-    def reviewer_requested(self, repo, number):
-        """Read Copilot's review request back; when GitHub dropped it, call in Claude Review.
+    def read_back_copilot(self, repo, number, head=None):
+        """Read Copilot's review request back, and warn when GitHub dropped it.
 
-        False when neither reviewer is on its way: the read-back failed, or
-        adding review:claude did.
+        A dropped request for head is remembered, so the decision can call in
+        Claude Review, though not here: it adds review:claude once the head's
+        checks are green. A read-back that fails remembers nothing, and
+        returns False; otherwise True.
         """
         url = f"https://github.com/{repo}/pull/{number}"
         try:
@@ -234,16 +250,10 @@ class Lander:
         except Exception as error:  # noqa: BLE001 - reported like a failed call
             self.say(f"  failed: Copilot's review request couldn't be read back on #{number} ({error}); request it at {url}")
             return False
-        problem = f"didn't register on #{number} (GitHub drops it once the Copilot code review budget is used up)"
-        argv = ["gh", "pr", "edit", str(number), "-R", repo, "--add-label", REVIEW_CLAUDE]
-        ok, message = self.run(argv)
-        if not ok:
-            self.say(f"  failed: Copilot's review request {problem}; request it at {url}")
-            self.say("  failed: " + " ".join(argv) + (f" ({message})" if message else ""))
-            return False
-        self.say(f"  warning: Copilot's review request {problem}; added {REVIEW_CLAUDE}, "
-                 "so Claude Review reviews it instead")
-        self.say("  ran: " + " ".join(argv))
+        if head:
+            self.copilot_dropped.add((repo, number, head))
+        self.say(f"  warning: Copilot's review request didn't register on #{number} (GitHub drops it once the Copilot "
+                 f"code review budget is used up); {REVIEW_CLAUDE} is added once the head's checks are green")
         return True
 
     def update_gone(self, repo, number, pr, flags):

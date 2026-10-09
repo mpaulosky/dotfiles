@@ -21,8 +21,8 @@ import json
 import subprocess
 import sys
 
-from landing import (RELEASE_BLOG_BRANCHES, Check, PrState, claude_off_diff, claude_reviews, copilot_reviews, decide,
-                     summarize_checks)
+from landing import (COPILOT, REAPPLY_BRANCH, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, claude_off_diff, claude_reviews,
+                     copilot_reviews, decide, summarize_checks)
 from settings import read_repo_list
 
 QUERY = """
@@ -32,6 +32,12 @@ query($owner: String!, $name: String!) {
       nodes {
         number title state isDraft headRefName headRefOid mergeStateStatus
         autoMergeRequest { enabledAt }
+        labels(first: 20) { nodes { name } }
+        reviewRequests(first: 20) { nodes { requestedReviewer {
+          ... on Bot { login }
+          ... on User { login }
+          ... on Team { name }
+        } } }
         reviews(last: 100) { nodes { author { login } commit { oid } body } }
         reviewThreads(first: 100) { nodes { isResolved } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
@@ -77,13 +83,20 @@ def repo_flags(scope):
     return {"checks_required": True, "merged_by_workflow": True}
 
 
-def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False):
-    """A PrState from one pullRequests node of QUERY."""
+def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, copilot_dropped=False):
+    """A PrState from one pullRequests node of QUERY.
+
+    copilot_dropped is the caller's memory that Copilot's request for this
+    head didn't register; a one-shot read has none, so it shows the Copilot step.
+    """
     commits = node["commits"]["nodes"]
     rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
     contexts = rollup["contexts"]["nodes"] if rollup else []
     reviews = [((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"))
                for review in node["reviews"]["nodes"]]
+    # Copilot is requested as a Bot; a login or a team name, like reapply.sh's copilot_jq.
+    requested = [(request.get("requestedReviewer") or {}) for request in (node.get("reviewRequests") or {}).get("nodes", [])]
+    labels = {label["name"] for label in (node.get("labels") or {}).get("nodes", []) if label}
     return PrState(
         state=node["state"],
         draft=node["isDraft"],
@@ -91,6 +104,10 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         copilot_reviewed=copilot_reviews((login, oid) for login, oid, _ in reviews),
         claude_reviewed=claude_reviews(reviews),
         claude_off_diff=claude_off_diff(reviews),
+        copilot_requested=any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested),
+        claude_requested=REVIEW_CLAUDE in labels,
+        copilot_dropped=copilot_dropped,
+        reapply=node.get("headRefName") == REAPPLY_BRANCH,
         open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),

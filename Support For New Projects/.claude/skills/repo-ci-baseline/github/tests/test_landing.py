@@ -4,6 +4,8 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import landing as ld  # noqa: E402
 
@@ -17,6 +19,14 @@ def passed(name, started="2026-10-07T10:00:00Z"):
 
 def running(name, started="2026-10-07T10:05:00Z"):
     return ld.Check(name, "IN_PROGRESS", None, started)
+
+
+def failed(name, started="2026-10-07T10:00:00Z"):
+    return ld.Check(name, "COMPLETED", "FAILURE", started)
+
+
+def cancelled(name, started="2026-10-07T10:00:00Z"):
+    return ld.Check(name, "COMPLETED", "CANCELLED", started)
 
 
 # A PR ready to arm: Copilot reviewed the head, no open thread, checks green.
@@ -34,10 +44,104 @@ def test_a_draft_waits_unless_the_caller_wants_it_ready():
     assert ld.decide(replace(draft, want_ready=True)).action == ld.MARK_READY
 
 
-def test_a_head_copilot_has_not_reviewed_waits():
-    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD})))
+def test_a_head_copilot_has_not_reviewed_waits_while_copilot_is_requested():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), copilot_requested=True))
     assert decision.action == ld.WAIT
-    assert "no Copilot or Claude review of aaaaaaa" in decision.reason
+    assert "no Copilot or Claude review of aaaaaaa" in decision.reason and "Copilot is requested" in decision.reason
+
+
+def test_an_unreviewed_head_waits_while_review_claude_is_on():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), claude_requested=True))
+    assert decision == ld.Decision(ld.WAIT, "no Copilot or Claude review of aaaaaaa yet; review:claude is on")
+
+
+def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
+    # Copilot reviewed an older head and nothing is requested now.
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD})))
+    assert decision.action == ld.REQUEST_COPILOT
+    assert decision.reason.endswith("Copilot not requested")
+
+
+def test_claude_is_called_in_once_copilots_request_for_the_head_dropped_and_checks_are_green():
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True)
+    assert ld.decide(dropped).action == ld.REQUEST_CLAUDE
+    waiting = ld.decide(replace(dropped, checks=(passed("Build Solution"), running("Test Suite"))))
+    assert waiting.action == ld.WAIT
+    assert waiting.reason.endswith("waiting for checks before calling in Claude: Test Suite")
+    # A failed check is a blocker: no Claude review of a head that fails CI.
+    assert ld.decide(replace(dropped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+
+
+def test_a_registered_copilot_request_waits_even_after_an_earlier_drop():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), copilot_requested=True, copilot_dropped=True))
+    assert decision.action == ld.WAIT and decision.reason.endswith("Copilot is requested")
+
+
+def test_no_checks_is_not_green_even_where_checks_arent_required():
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True, checks=(), checks_required=False)
+    assert ld.decide(dropped).action == ld.WAIT
+
+
+def test_past_pr_auto_merges_review_cap_neither_reviewer_is_asked_for():
+    capped = replace(READY, merged_by_workflow=True, copilot_reviewed=frozenset({OLD, "c" * 40}),
+                     claude_reviewed=frozenset({"d" * 40}))
+    decision = ld.decide(capped)
+    assert decision == ld.Decision(ld.HAND_OFF, "review cap (3) reached, no open threads")
+    # Past the cap the workflow still holds on threads and checks, and so does this.
+    assert ld.decide(replace(capped, open_threads=1)).action == ld.WAIT
+    assert ld.decide(replace(capped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+    # A commit both reviewed counts once: two distinct commits aren't the cap.
+    assert ld.decide(replace(capped, claude_reviewed=frozenset({OLD}))).action == ld.REQUEST_COPILOT
+    # A re-Apply PR has no cap, and nor does a repo whose workflow doesn't merge.
+    assert ld.decide(replace(capped, reapply=True)).action == ld.REQUEST_COPILOT
+    assert ld.decide(replace(capped, merged_by_workflow=False)).action == ld.REQUEST_COPILOT
+    assert ld.REVIEW_CAP == 3
+
+
+def test_review_cap_matches_pr_auto_merges():
+    workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
+    text = workflow.read_text(encoding="utf-8")
+    assert f"const COPILOT_REVIEW_CAP = {ld.REVIEW_CAP};" in text
+    assert f'const REAPPLY_BRANCH = "{ld.REAPPLY_BRANCH}";' in text
+
+
+def test_no_checks_at_all_is_not_green():
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True, checks=())
+    decision = ld.decide(dropped)
+    assert decision.action == ld.WAIT and decision.reason.endswith("no checks on the head yet, so Claude waits for CI")
+    # Claude Review's own checks alone aren't CI either.
+    assert ld.decide(replace(dropped, checks=(passed("Check for a merge from main"),))).action == ld.WAIT
+
+
+@pytest.mark.parametrize("check", [
+    ld.Check("Test Suite", "QUEUED"), ld.Check("Test Suite", "WAITING"), ld.Check("Test Suite", "PENDING"),
+    ld.Check("Test Suite", "REQUESTED"),
+])
+def test_a_queued_pending_or_waiting_check_counts_as_running(check):
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True,
+                      checks=(passed("Build Solution"), check))
+    decision = ld.decide(dropped)
+    assert decision.action == ld.WAIT and decision.reason.endswith("calling in Claude: Test Suite")
+
+
+def test_claude_review_checks_dont_hold_calling_it_in():
+    # Its run cancelled when the label came off early, or skipped without the label.
+    unreviewed = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True,
+                         checks=(passed("Build Solution"), cancelled("Check for a merge from main"),
+                                 cancelled("Review with Claude"), cancelled("Post Claude's review")))
+    assert ld.decide(unreviewed).action == ld.REQUEST_CLAUDE
+    assert ld.decide(replace(unreviewed, checks=(passed("Build Solution"), running("Review with Claude")))).action \
+        == ld.REQUEST_CLAUDE
+    # Any other cancelled check still needs a rerun.
+    assert ld.decide(replace(unreviewed, checks=(cancelled("Build Solution"),))).action == ld.BLOCKER
+
+
+def test_claude_is_never_called_in_for_a_third_round():
+    two = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40}), copilot_dropped=True)
+    decision = ld.decide(two)
+    assert decision.action == ld.WAIT
+    assert decision.reason.endswith("Claude's 2 review rounds are used, the owner decides")
+    assert ld.decide(replace(two, claude_reviewed=frozenset({OLD}))).action == ld.REQUEST_CLAUDE
 
 
 def test_a_claude_review_of_the_head_counts_as_reviewed():
@@ -49,8 +153,9 @@ def test_a_claude_review_of_the_head_counts_as_reviewed():
     assert ld.decide(replace(claude, merged_by_workflow=True)).action == ld.HAND_OFF
 
 
-def test_a_claude_review_of_an_older_head_waits():
-    decision = ld.decide(replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD})))
+def test_a_claude_review_of_an_older_head_doesnt_cover_the_head():
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD}),
+                                 copilot_requested=True))
     assert decision.action == ld.WAIT
     assert "no Copilot or Claude review of aaaaaaa" in decision.reason
 
@@ -161,7 +266,7 @@ def test_a_baseline_repo_leaves_a_reviewed_pr_to_its_pr_auto_merge():
     baseline = replace(READY, merged_by_workflow=True)
     assert ld.decide(baseline).action == ld.HAND_OFF
     # Its gates still come first: nothing is handed off before Copilot reviewed the head.
-    assert ld.decide(replace(baseline, copilot_reviewed=frozenset({OLD}))).action == ld.WAIT
+    assert ld.decide(replace(baseline, copilot_reviewed=frozenset({OLD}), copilot_requested=True)).action == ld.WAIT
     assert ld.decide(replace(baseline, open_threads=1)).action == ld.WAIT
     assert ld.decide(replace(baseline, merge_state="BEHIND")).action == ld.UPDATE_BRANCH
 

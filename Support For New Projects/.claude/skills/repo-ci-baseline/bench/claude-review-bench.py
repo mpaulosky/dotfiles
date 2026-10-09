@@ -39,7 +39,6 @@ read the findings too: a miss can be a finding worded another way.
 
 import argparse
 import json
-import os
 import re
 import shlex
 import shutil
@@ -231,14 +230,11 @@ def run_case(case, prompt, claude_args, overrides, root, timeout, split=None):
                                   check=True, capture_output=True, encoding="utf-8", errors="replace").stdout
             (temp / "claude-review").mkdir()
             (temp / "claude-review" / "pr.diff").write_text(diff)
-            # The numstats the step compares to find text shown as binary.
-            empty = subprocess.run([*GIT, "-C", str(tree), "hash-object", "-t", "tree", os.devnull],
-                                   check=True, capture_output=True, text=True).stdout.strip()
-            for name, source in (("attr.numstat", case["base"]), ("plain.numstat", empty)):
-                numstat = subprocess.run([*plain, "-c", f"core.attributesFile={os.devnull}", f"--attr-source={source}",
-                                          "diff", "--numstat", "-z", "--no-renames", "--no-ext-diff", span],
-                                         check=True, capture_output=True).stdout
-                (temp / "claude-review" / name).write_bytes(numstat)
+            # The numstat the step reads the files shown as binary from.
+            numstat = subprocess.run([*plain, f"--attr-source={case['base']}", "diff", "--numstat", "-z",
+                                      "--no-renames", "--no-ext-diff", "--diff-filter=d", span],
+                                     check=True, capture_output=True).stdout
+            (temp / "claude-review" / "binary.numstat").write_bytes(numstat)
             # The workflow's own split of the diff into pieces, and the list the prompt names them in.
             pieces = split_diff(split, temp) if split else None
             args = override(shlex.split(render(claude_args, case["pr"], temp)), *overrides)

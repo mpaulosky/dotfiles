@@ -749,7 +749,7 @@ def test_pieces_past_the_budget_and_hidden_files_hold_the_merge(tmp_path):
     folder = tmp_path / "claude-review" / "diff"
     added, out = hold(tmp_path, read_of(folder, "001.diff", "a"), listed="001.diff", skipped="003.diff", hidden="2")
     body = added[0]["body"]
-    assert "pieces 003.diff:" in body and "shows 2 text file(s) as binary" in body
+    assert "pieces 003.diff:" in body and "shows 2 file(s) only as binary" in body
     assert "README.md" in out and "src/app.py" not in out
 
 

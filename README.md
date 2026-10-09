@@ -54,6 +54,24 @@ git config core.hooksPath .github/hooks
 - **PowerShell:** Copy the profile from `PowerShell 7/` to your PowerShell profile path
 - **Posh-Git:** Copy theme files from `Posh-Git Themes/`
 
+### Keeping ~/github checkouts in sync
+
+PRs merge on GitHub (mostly through PR Auto-Merge), so a local checkout of `main` falls behind until someone pulls.
+`systemd/sync-github-repos.sh` fast-forwards the primary checkout of every repo under `~/github` to its origin's default
+branch, and `sync-github-repos.timer` runs it every 5 minutes. It only runs `git merge --ff-only`: a checkout that's on
+another branch, has local changes or commits of its own, or is mid-merge or mid-rebase is skipped and logged, never
+merged, stashed or reset. Install it once:
+
+```bash
+install -Dm755 systemd/sync-github-repos.sh ~/.local/bin/sync-github-repos.sh
+install -Dm644 -t ~/.config/systemd/user systemd/sync-github-repos.service systemd/sync-github-repos.timer
+systemctl --user daemon-reload
+systemctl --user enable --now sync-github-repos.timer
+```
+
+See what it did with `journalctl --user -u sync-github-repos.service`. Set `GITHUB_ROOT` in the service to sync another
+folder.
+
 ### Dev Container
 
 The `.devcontainer/` folder provides a ready-to-use development container targeting

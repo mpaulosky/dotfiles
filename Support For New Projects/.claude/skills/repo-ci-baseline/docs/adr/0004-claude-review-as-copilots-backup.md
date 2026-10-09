@@ -151,9 +151,12 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     Pieces are few and full, because each Read counts against `--max-turns`.
   - A file's diff too big for a piece is split into parts between hunks. Each part repeats the file's header, and a part that starts inside a hunk
     opens with `@@ -old +new @@ (continued)`, so line numbers still follow. A line over 10,000 bytes is cut into chunks at character boundaries.
-  - Lockfiles and generated files go in pieces of their own that the prompt never asks for.
+  - Lockfiles go in pieces of their own that the prompt never asks for.
+    They don't hold the merge when unread: a dependency change shows in the manifest.
+  - Generated files (`*.g.cs`, `*.min.js`, snapshots) can hold compiled code, so they come last and are asked for while they fit.
+    Past the budget they hold the merge like any code.
   - The prompt asks for at most 8 pieces and 300,000 bytes (about 80,000 tokens), leaving room for source files; the rest are listed as not read,
-    and the summary must name them.
+    and the summary must name them. A code piece among them adds a finding outside the diff, which holds the merge for a person.
 - **Pieces are named by number only (`001.diff`), and the prompt lists them by name, line count and kind.**
   A PR's paths are its author's: none becomes a file name or reaches the prompt. The list reaches the prompt as a step output,
   since Claude can't read an index before its one turn of reads. `diff/INDEX` maps each piece to its files' paths, as git prints them (quoted when unusual, one per line),

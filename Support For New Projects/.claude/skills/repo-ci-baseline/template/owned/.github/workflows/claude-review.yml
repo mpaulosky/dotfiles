@@ -356,10 +356,11 @@ jobs:
       # its line numbers. A line over LONG_LINE bytes is cut into chunks; each
       # chunk after the first starts with CONTINUED, which the prompt explains,
       # so nobody counts it as a line of its own.
-      # Lockfiles and generated files go in pieces of their own, never asked
-      # for. The prompt asks for the first MAX_READ_PIECES pieces within
-      # MAX_READ_BYTES; the rest are listed as not read, and the review's
-      # summary names them.
+      # Generated files come last, since they can hold compiled code. Lockfiles
+      # go in pieces of their own, never asked for and never holding the merge:
+      # a dependency change shows in the manifest. The prompt asks for the
+      # first MAX_READ_PIECES pieces within MAX_READ_BYTES; the rest are listed
+      # as not read, and a code piece among them holds the merge.
       #
       # Pieces are named by number only (001.diff): a PR's paths are its
       # author's, so none becomes a file name or reaches the prompt. The
@@ -390,10 +391,11 @@ jobs:
           MAX_READ_BYTES = 300_000  # about 80,000 tokens, leaving room for the source files
           LONG_LINE = MAX_PIECE_BYTES // 4
           CONTINUED = b"\\~ "  # starts a long line's later chunk: no line of its own, like git's "\ No newline"
-          # In the order the prompt asks for them; never "generated".
-          KINDS = ("workflow", "script", "source", "test", "docs", "deleted", "generated")
-          GENERATED = re.compile(r"(^|/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|packages\.lock\.json"
-                                 r"|go\.sum|[^/]+\.lock)$|\.(min\.js|min\.css|map|snap)$|\.(designer|g|generated)\.cs$"
+          # In the order the prompt asks for them; never "lockfile".
+          KINDS = ("workflow", "script", "source", "test", "docs", "deleted", "generated", "lockfile")
+          LOCKFILE = re.compile(r"(^|/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|packages\.lock\.json"
+                                r"|go\.sum|[^/]+\.lock)$")
+          GENERATED = re.compile(r"\.(min\.js|min\.css|map|snap)$|\.(designer|g|generated)\.cs$"
                                  r"|\.(verified|received)\.[^/]+$")
           WORKFLOW = re.compile(r"^\.github/(workflows|actions)/|(^|/)action\.ya?ml$")
           TEST = re.compile(r"(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*$|[._-](test|spec)\.[^/]+$|tests?\.cs$")
@@ -437,7 +439,8 @@ jobs:
                   else:
                       for index, chunk in enumerate(chunks(line)):
                           body.append((chunk, old, new, line[:1].decode("latin-1")) if index == 0
-                                      else (CONTINUED + chunk, old, new, "~"))
+                                      else (CONTINUED + chunk, old + (line[:1] in (b" ", b"-")),
+                                            new + (line[:1] in (b" ", b"+")), "~"))
                       old += line[:1] in (b" ", b"-")
                       new += line[:1] in (b" ", b"+")
               return files
@@ -514,6 +517,8 @@ jobs:
 
           def kind_of(header, path):
               bare = path.strip('"').lower()
+              if LOCKFILE.search(bare):
+                  return "lockfile"
               if GENERATED.search(bare):
                   return "generated"
               if any(line.startswith(b"deleted file mode") for line in header):
@@ -538,11 +543,11 @@ jobs:
               for part_number, content in enumerate(split, 1):
                   parts.append({"content": content, "kind": kind_of(header, path),
                                 "path": path + (f" (part {part_number} of {len(split)})" if len(split) > 1 else "")})
-          # Whole parts packed into pieces within the limits; a generated file's only with others like it.
+          # Whole parts packed into pieces within the limits; a lockfile's only with others like it.
           pieces = []
           for part in parts:
               piece = pieces[-1] if pieces else None
-              if (piece is None or (piece["kinds"] == ["generated"]) != (part["kind"] == "generated")
+              if (piece is None or (piece["kinds"] == ["lockfile"]) != (part["kind"] == "lockfile")
                       or len(piece["content"]) + len(part["content"]) > MAX_PIECE_BYTES
                       or (piece["content"] + part["content"]).count(b"\n") > MAX_PIECE_LINES):
                   piece = {"content": b"", "kinds": [], "parts": []}
@@ -557,7 +562,7 @@ jobs:
               piece["lines"] = piece["content"].count(b"\n")
               with open(os.path.join(folder, piece["name"]), "wb") as file:
                   file.write(piece["content"])
-              if (piece["kinds"] != ["generated"] and len(read) < MAX_READ_PIECES
+              if (piece["kinds"] != ["lockfile"] and len(read) < MAX_READ_PIECES
                       and size + len(piece["content"]) <= MAX_READ_BYTES):
                   read.append(index)
                   size += len(piece["content"])
@@ -584,12 +589,12 @@ jobs:
           unread = [f"{piece['name']} {described(piece)}" for index, piece in enumerate(pieces) if index not in read]
           text = "\n".join(listed) if pieces else "(none: the diff is empty)"
           if unread:
-              text += ("\nNot asked for (lockfiles and generated files, or past what one turn can read): "
+              text += ("\nNot asked for (lockfiles, or past what one turn can read): "
                        + ", ".join(unread) + ".")
           # Pieces of code past the read budget: the answer check adds a finding
           # outside the diff naming them, so the review holds the merge.
           skipped = " ".join(piece["name"] for index, piece in enumerate(pieces)
-                             if index not in read and piece["kinds"] != ["generated"])
+                             if index not in read and piece["kinds"] != ["lockfile"])
           print(f"Split the diff of {len(files)} file(s) into {len(pieces)} piece(s); the prompt asks for {len(read)} "
                 f"({size} bytes).")
           if skipped:
@@ -688,8 +693,8 @@ jobs:
             your Read calls in parallel, at most 24 of them: INDEX, every piece listed above,
             AGENTS.md or CLAUDE.md where present, and with the rest the source files the diff
             touches that matter most and the unchanged code the change calls or is called by
-            that you expect to matter. Skip generated files, lockfiles, snapshots and recorded
-            data. Then answer from what you have read; don't read again. If a piece wasn't
+            that you expect to matter. Beyond the pieces, skip generated files, lockfiles,
+            snapshots and recorded data. Then answer from what you have read; don't read again. If a piece wasn't
             read (one listed as not asked for, or one whose Read failed or came back cut
             short), name it and the files in it in your summary, as not reviewed.
 
@@ -949,10 +954,11 @@ jobs:
         run: |
           # An error result that cost nothing, used no model and names a sign-in
           # failure never reached the model, which a rerun won't fix. A usage or
-          # API limit costs nothing too, so the result's text must say sign-in.
+          # API limit costs nothing too, so the result's text must say sign-in,
+          # with status codes as whole words, and mustn't name a limit.
           # The secret check above only tests that the token isn't empty.
           unreached=$(python3 -I - <<'PY'
-          import json, os
+          import json, os, re
           try:
               with open(os.environ.get("EXECUTION_FILE", ""), encoding="utf-8") as file:
                   messages = json.load(file)
@@ -961,9 +967,10 @@ jobs:
           for message in reversed(messages if isinstance(messages, list) else []):
               if isinstance(message, dict) and message.get("type") == "result":
                   text = str(message.get("result", "")).lower()
+                  limited = re.search(r"limit|overload|\b(429|5\d\d)\b", text)
+                  sign_in = re.search(r"\b(401|403)\b|authenticat|oauth|invalid (api|x-api)[ -]key|/login", text)
                   if (message.get("is_error") and not message.get("total_cost_usd") and not message.get("modelUsage")
-                          and any(sign in text for sign in ("401", "403", "authenticat", "oauth", "invalid api key",
-                                                            "invalid x-api-key", "/login"))):
+                          and sign_in and not limited):
                       print("true")
                   break
           PY

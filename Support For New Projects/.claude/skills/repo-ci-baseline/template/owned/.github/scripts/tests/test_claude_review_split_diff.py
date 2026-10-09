@@ -165,13 +165,15 @@ def check_line_numbers(folder, repo, head):
             path = next(line[6:].decode() for line in lines if line.startswith(b"+++ b/"))
             file = repo.git("show", f"{head}:{path}").split(b"\n")
             new = None
-            for line in lines[1:]:
+            for at, line in enumerate(lines[1:], 1):
                 if line.startswith(b"diff --git "):
                     break
                 if line.startswith(b"@@"):
                     new = int(re.match(rb"@@ -\d+(?:,\d+)? \+(\d+)", line)[1])
                 elif new is not None and line[:1] in (b" ", b"+"):
-                    assert file[new - 1] == line[1:], (name, path, new)
+                    # A long line's first chunk is only the start of it; its later chunks take no number.
+                    cut = at + 1 < len(lines) and lines[at + 1].startswith(b"\\~ ")
+                    assert file[new - 1].startswith(line[1:]) if cut else file[new - 1] == line[1:], (name, path, new)
                     new += 1
 
 
@@ -223,7 +225,8 @@ def test_a_huge_file_is_split_into_parts_with_their_line_numbers(repo, tmp_path)
 
 
 def test_a_long_line_is_cut_into_chunks_within_a_piece(repo, tmp_path):
-    head = repo.commit({"app.min.css": "a{}" * 50_000, "wide.txt": "\u00e9" * 60_000 + "\n"})
+    head = repo.commit({"app.min.css": "a{}" * 30_000, "wide.txt": "\u00e9" * 60_000 + "\n",
+                        "yarn.lock": "x\n" * 10})
     _, folder, diff = repo.split(repo.base, head, tmp_path)
     for name in index(folder):
         content = (folder / name).read_bytes()
@@ -235,12 +238,25 @@ def test_a_long_line_is_cut_into_chunks_within_a_piece(repo, tmp_path):
     first = next(i for i, row in enumerate(rows) if row.startswith(b"+\xc3\xa9"))
     assert all(row.startswith(b"\\~ \xc3\xa9") for row in rows[first + 1:-1])
     check_pieces(folder, diff)
-    # A generated file past the budget isn't code left unread.
+    check_line_numbers(folder, repo, head)
+    # A generated file can hold code, so it's read while it fits; a lockfile never is, and never holds the merge.
     assert repo.skipped == ""
-    assert files_of(folder) == {"wide.txt": ("docs", "read"), "app.min.css": ("generated", "not read")}
-    # A generated file never shares a piece with one the prompt asks for.
+    assert files_of(folder) == {"wide.txt": ("docs", "read"), "app.min.css": ("generated", "read"),
+                                "yarn.lock": ("lockfile", "not read")}
+    # A lockfile never shares a piece with one the prompt asks for.
     for _, read, files in index(folder).values():
-        assert {kind == "generated" for kind, _ in files} == {read == "not read"}
+        assert {kind == "lockfile" for kind, _ in files} == {read == "not read"}
+
+
+def test_lines_after_a_long_line_split_across_parts_keep_their_numbers(repo, tmp_path):
+    # The long line's chunks run past a piece, so a part opens inside it with a "(continued)" header.
+    head = repo.commit({"data.txt": "".join(f"before {n}\n" for n in range(5)) + "x" * 90_000 + "\n"
+                        + "".join(f"after {n}\n" for n in range(20))})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert len(index(folder)) > 1
+    assert any(b"@@ (continued)\n\\~ " in (folder / name).read_bytes() for name in index(folder))
+    check_pieces(folder, diff)
+    check_line_numbers(folder, repo, head)
 
 
 def test_a_rename_a_binary_and_a_deletion(repo, tmp_path):
@@ -301,5 +317,5 @@ def test_past_the_read_budget_the_rest_are_named_and_workflows_come_first(repo, 
     assert all(name in rest for name, (_, flag, _) in pieces.items() if flag == "not read")
     # The unread pieces of code, not the lockfile's, are named for the hold.
     assert repo.skipped.split() == [name for name, (_, flag, files) in pieces.items()
-                                    if flag == "not read" and files[0][0] != "generated"]
+                                    if flag == "not read" and files[0][0] != "lockfile"]
     assert repo.skipped

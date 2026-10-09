@@ -94,24 +94,12 @@ def test_a_baseline_repos_reviewed_pr_is_left_to_its_pr_auto_merge():
     assert fake.calls == []
 
 
-def test_dotfiles_is_armed_only_once_reviewed_threadless_and_green():
-    fake = Fake({"o/dots": [node(contexts=RUNNING)]})
+def test_dotfiles_leaves_a_reviewed_pr_to_its_pr_auto_merge():
+    fake = Fake({"o/dots": [node(reviews=COPILOT, contexts=GREEN)]})
     lander, out, _ = start(fake, {"o/dots": None})
     lander.poll()
-    assert "-> wait (no Copilot or Claude review" in printed(out) and fake.calls == []
-
-    fake.open["o/dots"] = [node(reviews=COPILOT, threads=[False], contexts=RUNNING)]
-    lander.poll()
-    assert "-> wait (1 open thread(s))" in printed(out) and fake.calls == []
-
-    fake.open["o/dots"] = [node(reviews=COPILOT, threads=[True], contexts=RUNNING)]
-    lander.poll()
-    assert "waiting for: Template tests" in printed(out) and fake.calls == []
-
-    fake.open["o/dots"] = [node(reviews=COPILOT, threads=[True], contexts=GREEN)]
-    lander.poll()
-    assert "-> arm auto-merge" in printed(out)
-    assert fake.calls == [f"gh pr merge 7 -R o/dots --auto --squash --match-head-commit {HEAD}"]
+    assert "-> leave to PR Auto-Merge" in printed(out)
+    assert fake.calls == []
 
 
 def test_a_behind_branch_is_updated_and_copilot_asked_again_once_per_head():
@@ -175,13 +163,12 @@ def test_a_copilot_request_that_cant_be_read_back_is_reported_as_failed():
             "https://github.com/o/app/pull/7" in printed(out))
 
 
-def test_dotfiles_is_armed_on_a_claude_review_of_the_head():
+def test_dotfiles_leaves_a_claude_reviewed_pr_to_its_pr_auto_merge():
     fake = Fake({"o/dots": [node(reviews=CLAUDE, contexts=GREEN)]})
     lander, out, _ = start(fake, {"o/dots": None})
     lander.poll()
-    text = printed(out)
-    assert "review:claude" in text and "-> arm auto-merge (Claude reviewed the head" in text
-    assert fake.calls == [f"gh pr merge 7 -R o/dots --auto --squash --match-head-commit {HEAD}"]
+    assert "-> leave to PR Auto-Merge" in printed(out)
+    assert fake.calls == []
 
 
 def test_a_draft_is_marked_ready_only_when_asked():
@@ -229,14 +216,15 @@ def test_a_failed_call_is_reported_and_stops_the_rest_of_that_action():
 
 
 def test_dry_run_prints_the_calls_and_makes_none():
-    fake = Fake({"o/app": [node(merge_state="BEHIND")], "o/dots": [node(reviews=COPILOT, contexts=GREEN)]})
-    lander, out, _ = start(fake, {"o/app": None, "o/dots": None})
+    blog = node(number=8, title="docs: Release notes [skip-release]", branch="docs/release-notes", contexts=GREEN)
+    fake = Fake({"o/app": [node(merge_state="BEHIND"), blog]})
+    lander, out, _ = start(fake, {"o/app": None})
     lander.dry_run = True
     lander.poll()
     text = printed(out)
     assert "  would run: gh pr update-branch 7 -R o/app" in text
     assert "  would run: gh pr edit 7 -R o/app --add-reviewer @copilot" in text
-    assert f"  would run: gh pr merge 7 -R o/dots --auto --squash --match-head-commit {HEAD}" in text
+    assert f"  would run: gh pr merge 8 -R o/app --auto --squash --match-head-commit {HEAD}" in text
     assert fake.calls == [] and fake.read_back == []
     lander.poll()
     assert printed(out) == ""

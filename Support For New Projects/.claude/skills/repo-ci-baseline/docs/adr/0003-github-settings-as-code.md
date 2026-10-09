@@ -29,7 +29,8 @@ So the settings are a standard kept as JSON in the skill, and `github-settings.s
   so `--fix` can run at any point of a Standardize without blocking every PR or dropping the repo's only test gate.
 - **Actions get a read token by default and may create PRs** (the `GITHUB_TOKEN` fallback for release-notes and backfill PRs). Pinned actions are required once all workflows are pinned.
 - **Security:** secret scanning, push protection, Dependabot alerts and security updates on; CodeQL default setup off where the workflow runs CodeQL.
-- **dotfiles gets the merge settings only:** it isn't a Baseline repo, and rulesets need GitHub Pro there.
+- **dotfiles gets the merge settings only:** it isn't a Baseline repo. Since it went public it has a `main-rules` ruleset,
+  made by hand, that requires "Template tests", so its copy of PR Auto-Merge has a check to wait for.
 - **TinyTicket is retired**: it isn't in `repos.txt` and isn't Standardized.
 - **Squad is retired**, so `--fix` deletes `squad*` labels with no flag; the squad-era rulesets still need `--remove-legacy`.
 - **Dependabot bumps are folded into the next Release.** The release queue never counts a Dependabot PR as owed, so a bump gets no Release

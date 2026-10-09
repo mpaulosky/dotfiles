@@ -73,21 +73,12 @@ def test_an_unreadable_repo_is_reported_and_the_rest_still_print():
     assert "app#7" in out.getvalue() and "-> wait (draft)" in out.getvalue()
 
 
-def test_a_repo_settings_only_repo_waits_for_green_checks(monkeypatch):
-    monkeypatch.setattr(st, "read_repo_list", lambda: {"owner/dots": "repo-settings-only"})
-    node = pr_node(reviews=[("Copilot", HEAD)],
-                   contexts=[{"__typename": "CheckRun", "name": "Template tests", "status": "IN_PROGRESS",
-                              "conclusion": None, "startedAt": "2026-10-07T10:00:00Z"}])
-    code, out, _ = run([], {"owner/dots": repo(node)})
-    assert "-> wait (no required checks; waiting for: Template tests)" in out
-
-
-def test_a_baseline_repo_leaves_a_reviewed_pr_to_pr_auto_merge_and_dotfiles_arms(monkeypatch):
+def test_dotfiles_leaves_a_reviewed_pr_to_its_pr_auto_merge_like_a_baseline_repo(monkeypatch):
     monkeypatch.setattr(st, "read_repo_list", lambda: {"owner/app": "full", "owner/dots": "repo-settings-only"})
     reviewed = pr_node(reviews=[("Copilot", HEAD)])
     code, out, _ = run([], {"owner/app": repo(reviewed), "owner/dots": repo(reviewed)})
     app, dots = out.splitlines()
-    assert "-> leave to PR Auto-Merge" in app and "-> arm auto-merge" in dots
+    assert "-> leave to PR Auto-Merge" in app and "-> leave to PR Auto-Merge" in dots
 
 
 def test_a_release_blog_pr_is_told_apart_by_its_branch():
@@ -95,7 +86,7 @@ def test_a_release_blog_pr_is_told_apart_by_its_branch():
     other = st.to_state(dict(pr_node(), headRefName="feat/x"), **st.repo_flags("full"))
     assert blog.release_blog and not other.release_blog
     assert blog.merged_by_workflow and blog.checks_required
-    assert st.repo_flags("repo-settings-only") == {"checks_required": False, "merged_by_workflow": False}
+    assert st.repo_flags("repo-settings-only") == {"checks_required": True, "merged_by_workflow": True}
 
 
 def test_the_review_column_names_the_reviewer_of_the_head():

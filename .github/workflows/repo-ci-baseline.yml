@@ -6,20 +6,16 @@ name: repo-ci-baseline Template
 # This workflow belongs to dotfiles; it isn't part of the Template.
 
 "on":
+  # Every PR, not only the Template's paths: main-rules requires "Template
+  # tests", and PR Auto-Merge counts a required check with no run as pending.
   pull_request:
-    paths:
-      - "Support For New Projects/.claude/skills/repo-ci-baseline/**"
-      - ".github/workflows/repo-ci-baseline.yml"
-      - ".github/workflows/claude-review.yml"
-      - ".github/scripts/post_claude_review.py"
-      - ".github/hooks/**"
-      - "scripts/**"
   push:
     branches: [main]
     paths:
       - "Support For New Projects/.claude/skills/repo-ci-baseline/**"
       - ".github/workflows/repo-ci-baseline.yml"
       - ".github/workflows/claude-review.yml"
+      - ".github/workflows/pr-automerge.yml"
       - ".github/scripts/post_claude_review.py"
       - ".github/hooks/**"
       - "scripts/**"

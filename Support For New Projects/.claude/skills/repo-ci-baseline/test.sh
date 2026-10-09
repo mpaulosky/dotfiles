@@ -128,11 +128,12 @@ if git -C "$ignore_repo" check-ignore -q .env.example; then
 fi
 
 step "dotfiles' copies of Template files"
-# dotfiles isn't a Baseline repo, so it carries Claude Review and the git hooks
-# as copies of the Template's files, which must not drift from them. Its
+# dotfiles isn't a Baseline repo, so it carries Claude Review, PR Auto-Merge
+# and the git hooks as copies of the Template's files, which must not drift
+# from them. Its
 # scripts/gate.sh is its own: it runs this script.
 dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
-for file in .github/workflows/claude-review.yml .github/scripts/post_claude_review.py \
+for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.yml .github/scripts/post_claude_review.py \
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
   # The mode too: a hook that isn't executable doesn't run.

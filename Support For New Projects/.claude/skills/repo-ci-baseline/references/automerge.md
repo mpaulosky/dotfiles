@@ -53,7 +53,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   even when Copilot reviewed the merge: it comes from the newest commit Claude reviewed down the chain of clean merges.
   Claude Review's `merge-from-main` job skips the review of such a head on `synchronize` by the same rule (with `git ls-tree` on its checkout),
   in a job of its own so a skipped run can't cancel a review in progress; the two copies must agree.
-  It reviews anyway when the base's `pr-automerge.yml` lacks the rule (dotfiles has none; a re-Apply PR's `main` has the old one),
+  It reviews anyway when the base's `pr-automerge.yml` lacks the rule (a re-Apply PR's `main` has the old one),
   and skips a run whose head is no longer the PR's, unless the newer head only merges `main` into it
   and no run for it got past the job's condition (an app's or Copilot's push of that merge starts no review, so the older head is reviewed, which covers the merge).
   That review and its post take concurrency groups keyed by the older head, so they can't cancel the newer head's review,
@@ -159,8 +159,9 @@ nothing for a merged, closed or already-armed PR; **report blocker** for a faile
 **arm auto-merge** for a release-blog PR its workflow didn't arm (branch `docs/release-notes` or `docs/backfill-blog-posts`, no review needed, as `release.yml` arms it);
 **update branch and request Copilot** when it's `BEHIND`; **wait** until Copilot or Claude (a marked `github-actions[bot]` review) reviewed the current head and no thread is open;
 then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
-or **arm auto-merge** where there is no such workflow (dotfiles). A repo with no required checks (dotfiles, `repo-settings-only` in `repos.txt`) waits for its checks to finish green first,
-since auto-merge alone wouldn't wait for CI. A cancelled run with a newer run of the same check on the same head is superseded, not a failure:
+or **arm auto-merge** where there is no such workflow. A repo with no required checks waits for its checks to finish green first,
+since auto-merge alone wouldn't wait for CI.
+dotfiles has both: a copy of PR Auto-Merge, which `test.sh` keeps identical, and a `main-rules` of its own. A cancelled run with a newer run of the same check on the same head is superseded, not a failure:
 CI's concurrency cancels runs, and the newest counts. Commands that act on PRs call the same function, so they can't drift from these rules.
 
 ### Landing a round
@@ -176,7 +177,6 @@ and `gh pr merge --auto --squash --match-head-commit <head>`. It has no rules of
 It also watches each release-blog PR that opens in a watched repo, and after a watched Baseline PR merges it waits `--blog-wait` (15) minutes for one.
 It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),
 and exits once every watched PR is merged or closed, or with 1 at `--timeout` (180 minutes).
-On a `CLEAN` dotfiles PR, `gh pr merge --auto` merges at once, which is what arming there means: its checks are already green.
 
 ## Verify live
 

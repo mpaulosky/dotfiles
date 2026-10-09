@@ -11,10 +11,9 @@ and the landing decision's next action (github/landing.py). One GraphQL query
 per repo, read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
 
-A repo whose repos.txt scope is repo-settings-only (dotfiles) has no required
-checks and no PR Auto-Merge, so the decision waits for its checks to go green
-before arming. Any other repo is a Baseline repo, whose PR Auto-Merge merges a
-reviewed PR itself (see repo_flags()).
+Every listed repo requires checks and runs PR Auto-Merge, which merges a
+reviewed PR itself: a Baseline repo through Apply, and dotfiles (repos.txt
+scope repo-settings-only) through its copy and its hand-made main-rules.
 """
 
 import argparse
@@ -71,11 +70,11 @@ def to_check(node):
 def repo_flags(scope):
     """to_state()'s per-repo keywords for a repos.txt scope.
 
-    A Baseline repo ("full") requires checks and runs PR Auto-Merge;
-    repo-settings-only (dotfiles) has neither.
+    A Baseline repo ("full") requires checks and runs PR Auto-Merge, and so
+    does repo-settings-only (dotfiles), with a copy of PR Auto-Merge and a
+    main-rules ruleset of its own.
     """
-    baseline = scope != "repo-settings-only"
-    return {"checks_required": baseline, "merged_by_workflow": baseline}
+    return {"checks_required": True, "merged_by_workflow": True}
 
 
 def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False):

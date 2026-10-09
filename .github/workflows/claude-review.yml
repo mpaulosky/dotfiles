@@ -923,10 +923,34 @@ jobs:
         if: steps.secret.outputs.enabled == 'true' && runner.debug != '1' && steps.claude.outputs.structured_output == ''
         env:
           OUTCOME: ${{ steps.claude.outcome }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: |
-          echo "::warning::Claude Review ended without a review (Review step: ${OUTCOME}), so nothing is posted" \
-            "and the PR waits for a review of its head. Rerun this workflow once a usage limit has reset," \
-            "or remove review:claude and merge by hand."
+          # An error result that cost nothing and used no model never reached
+          # the model: Claude Code failed at sign-in, which a rerun won't fix.
+          # The secret check above only tests that the token isn't empty.
+          unreached=$(python3 -I - <<'PY'
+          import json, os
+          try:
+              with open(os.environ.get("EXECUTION_FILE", ""), encoding="utf-8") as file:
+                  messages = json.load(file)
+          except (OSError, ValueError):
+              messages = []
+          for message in reversed(messages if isinstance(messages, list) else []):
+              if isinstance(message, dict) and message.get("type") == "result":
+                  if message.get("is_error") and not message.get("total_cost_usd") and not message.get("modelUsage"):
+                      print("true")
+                  break
+          PY
+          )
+          if [ "$unreached" = true ]; then
+            echo "::warning::Claude never reached the model (Review step: ${OUTCOME}), so nothing is posted." \
+              "Check CLAUDE_CODE_OAUTH_TOKEN: set it again from claude setup-token, with no trailing newline," \
+              "then rerun this workflow."
+          else
+            echo "::warning::Claude Review ended without a review (Review step: ${OUTCOME}), so nothing is posted" \
+              "and the PR waits for a review of its head. Rerun this workflow once a usage limit has reset," \
+              "or remove review:claude and merge by hand."
+          fi
 
   post:
     name: Post Claude's review

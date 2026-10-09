@@ -25,7 +25,7 @@ A fix made only in a repo is reverted by its next Apply.
 | --- | --- | --- |
 | Git hooks, branch names and worktrees | One branch-name standard, checked by the hook and by CI; every change is committed in a worktree under `../<Repo>-worktrees/`; pushes are gated on the pushed commit | [git-hooks.md](references/git-hooks.md) |
 | Staged-content pre-commit | Commits are linted as they'll be committed | [pre-commit.md](references/pre-commit.md) |
-| Auto-merge after review | A PR merges on its own only once checks pass, Copilot (or Claude, its `review:claude` backup) reviewed its head and every thread is resolved, until the three-round cap; never while handed back with `sandcastle:needs-human` | [automerge.md](references/automerge.md) |
+| Auto-merge after review | A PR merges on its own only once checks pass, Copilot (or Claude, its `review:claude` backup) reviewed its head (until the three-round cap) and every thread is resolved (cap or not); never while handed back with `sandcastle:needs-human` | [automerge.md](references/automerge.md) |
 | Serialized releases | Versions follow merge order, a missed release is retried, one blog PR per run | [release-pipeline.md](references/release-pipeline.md) |
 | PR process | One written process (`docs/PROCESS.md`), a PR template, and PR titles in the commit format, checked by **PR title** | [pr-process.md](references/pr-process.md) |
 | Docs-only CI skip | Docs PRs skip the build and tests while required checks still pass | [docs-only-ci.md](references/docs-only-ci.md) |

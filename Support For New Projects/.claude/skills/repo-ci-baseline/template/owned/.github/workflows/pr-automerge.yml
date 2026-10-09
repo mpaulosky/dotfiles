@@ -14,12 +14,14 @@ name: PR Auto-Merge
 # Both reviewers re-review every push and can find something new each time,
 # so a PR could chase its reviews forever. Once the two together have
 # reviewed COPILOT_REVIEW_CAP distinct non-merge commits, the merge stops
-# waiting for a review of the head and stops counting their unresolved
-# threads. Merges
-# from main don't count: the ruleset keeps branches up to date, so they would
-# use up the cap without a single fix. Threads anyone else opens still hold
-# the merge. A re-Apply PR (chore/reapply-baseline) has no cap: its rounds
-# come from re-Apply commits, and it changes this gate itself.
+# waiting for a review of the head. Merges from main don't count: the ruleset
+# keeps branches up to date, so they would use up the cap without a single
+# fix. Past the cap every unresolved thread still holds the merge, Copilot's
+# and Claude's included, and so do Claude's findings outside the diff on the
+# head's review: the cap only stops the wait for a review that may never come
+# (#146). So a review that arrives after a cap merge comes too late: its
+# findings land on a merged PR. A re-Apply PR (chore/reapply-baseline) has no
+# cap: its rounds come from re-Apply commits, and it changes this gate itself.
 #
 # A merge of main into a reviewed commit needs no new review: the head counts
 # as reviewed when it is a clean merge of main into a commit a reviewer
@@ -120,8 +122,9 @@ jobs:
             // back to a person, who removes it once the PR may merge again.
             const NEEDS_HUMAN = "sandcastle:needs-human";
 
-            // Review rounds, Copilot's and Claude's together, after which
-            // neither reviewer holds the merge (except on a re-Apply PR).
+            // Review rounds, Copilot's and Claude's together, after which the
+            // merge stops waiting for a review of the head (except on a
+            // re-Apply PR). Their threads still hold it.
             // Named for Copilot, the first reviewer: github-settings.sh reads
             // the cap by this name.
             const COPILOT_REVIEW_CAP = 3;
@@ -130,8 +133,6 @@ jobs:
             // come from the re-Apply commits added to it, not from chasing
             // comments, and it changes this gate itself.
             const REAPPLY_BRANCH = "chore/reapply-baseline";
-            // GraphQL reports the bots' logins without the "[bot]" suffix.
-            const COPILOT_LOGIN = "copilot-pull-request-reviewer";
             // Claude Review posts as github-actions[bot]; the marker tells its
             // reviews apart from anything else posted under that login.
             // Accepted limit (repo-ci-baseline's ADR 0004): the marker proves the
@@ -235,18 +236,11 @@ jobs:
                            }
                          }
                        }
-                       # The first comment's author is who opened the thread,
-                       # and its review says whether Claude Review opened it.
+                       # Every unresolved thread holds the merge, whoever opened it.
                        reviewThreads(first: 100) {
                          totalCount
                          nodes {
                            isResolved
-                           comments(first: 1) {
-                             nodes {
-                               author { login }
-                               pullRequestReview { id }
-                             }
-                           }
                          }
                        }
                        labels(first: 100) {
@@ -593,7 +587,6 @@ jobs:
               const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
                 return review.body?.startsWith(CLAUDE_MARKER);
               });
-              const claudeReviewIds = new Set(claudeReviews.map((review) => review.id));
               const reviewed = [...pr.copilotReviews.nodes, ...claudeReviews]
                 .map((review) => review.commit)
                 .filter(Boolean);
@@ -604,18 +597,21 @@ jobs:
               // A re-Apply PR's reviews and threads hold the merge however many
               // rounds it takes.
               const capReached = pr.headRefName !== REAPPLY_BRANCH && reviewRounds.size >= COPILOT_REVIEW_CAP;
-              // Past the cap no review is needed, so don't spend the API calls.
+              // Past the cap a head with no covering review merges anyway, but
+              // a covering review's off-diff findings still hold it below.
               let reviewedHead = reviewedCommits.has(pr.headRefOid) ? pr.headRefOid : null;
-              if (!reviewedHead && !capReached) {
+              if (!reviewedHead) {
                 try {
                   reviewedHead = await reviewCovering(pr.headRefOid, reviewedCommits, pr.baseRefName);
                 } catch (error) {
                   core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
                 }
-                if (!reviewedHead) {
+                if (!reviewedHead && !capReached) {
                   core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);
                   return;
                 }
+              }
+              if (reviewedHead && reviewedHead !== pr.headRefOid) {
                 core.info(
                   `PR #${pullNumber}: ${pr.headRefOid} is a clean merge from main onto ${reviewedHead}, ` +
                   "so the review of that commit covers it."
@@ -629,30 +625,26 @@ jobs:
                 return;
               }
 
-              // A thread with no known author (a deleted account) counts as a
-              // person's, so it keeps holding the merge.
-              const unresolved = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved);
-              const unresolvedCopilot = unresolved.filter((thread) => {
-                return thread.comments?.nodes[0]?.author?.login === COPILOT_LOGIN;
-              }).length;
-              const unresolvedClaude = unresolved.filter((thread) => {
-                return claudeReviewIds.has(thread.comments?.nodes[0]?.pullRequestReview?.id);
-              }).length;
-              const unresolvedReviewers = unresolvedCopilot + unresolvedClaude;
-              const blocking = capReached ? unresolved.length - unresolvedReviewers : unresolved.length;
-              if (blocking > 0) {
-                core.info(`Waiting on PR #${pullNumber}: ${blocking} unresolved review thread(s).`);
+              // Every unresolved thread holds the merge, whoever opened it and
+              // however many rounds there were: the cap only stops the wait for
+              // a review of the head (#146).
+              const unresolved = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
+              if (unresolved > 0) {
+                core.info(`Waiting on PR #${pullNumber}: ${unresolved} unresolved review thread(s).`);
                 return;
               }
 
               // Reviews come oldest first, so the last of the reviewed commit
               // is Claude's latest word on it; a later run on it replaces it.
-              // A merge from main keeps the hold of the commit it covers.
+              // A merge from main keeps the hold of the commit it covers. It
+              // holds past the cap too: the findings are Claude's threads that
+              // couldn't be threads. Unlike a thread it can't be resolved, so
+              // only a push (or a merge by hand) clears it.
               const latestClaudeOfHead = reviewedHead
                 ? claudeReviews.findLast((review) => review.commit?.oid === reviewedHead)
                 : undefined;
               const claudeOffDiff = Boolean(latestClaudeOfHead?.body?.split("\n")[1] === OFF_DIFF_MARKER);
-              if (claudeOffDiff && !capReached) {
+              if (claudeOffDiff) {
                 core.info(
                   `Waiting on PR #${pullNumber}: Claude's review of ${reviewedHead} has findings outside the ` +
                   "diff, which open no thread; push a fix for a fresh review."
@@ -681,28 +673,10 @@ jobs:
 
               // Log only when the cap changed the outcome: without it, this PR
               // would still be waiting on a reviewer.
-              const headReviewed = Boolean(reviewedHead);
-              if (capReached && (!headReviewed || unresolvedReviewers > 0 || claudeOffDiff)) {
-                const bypassed = [];
-                if (!headReviewed) {
-                  bypassed.push(`without a review of ${pr.headRefOid}`);
-                }
-                const threads = [];
-                if (unresolvedCopilot > 0) {
-                  threads.push(`${unresolvedCopilot} unresolved Copilot thread(s)`);
-                }
-                if (unresolvedClaude > 0) {
-                  threads.push(`${unresolvedClaude} unresolved Claude thread(s)`);
-                }
-                if (claudeOffDiff) {
-                  threads.push("Claude's findings outside the diff");
-                }
-                if (threads.length > 0) {
-                  bypassed.push(`past ${threads.join(" and ")}`);
-                }
+              if (capReached && !reviewedHead) {
                 core.info(
                   `Review cap (${COPILOT_REVIEW_CAP}) reached on PR #${pullNumber}: merging ` +
-                  `${bypassed.join(" and ")}.`
+                  `without a review of ${pr.headRefOid}.`
                 );
               }
 

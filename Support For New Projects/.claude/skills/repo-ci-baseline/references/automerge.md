@@ -18,7 +18,7 @@ The Template waits for `CLEAN` on purpose, so a failing optional check such as m
 
 A same-repo PR into `main` squash-merges on its own once its required checks pass, a reviewer has reviewed its head commit, and every review thread is resolved.
 The reviewer is Copilot, or Claude as its backup when a PR carries `review:claude`: see [ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md).
-Nothing merges before the review arrives, until the review cap: see [ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md).
+Nothing merges before the review arrives, until the review cap, and nothing merges past an unresolved thread, cap or not: see [ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md).
 A ready PR that falls `BEHIND` main is brought up to date, and a clean merge from main keeps the review of the commit it merges into:
 see [ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md).
 A PR handed back with `sandcastle:needs-human` never merges while it carries the label.
@@ -36,14 +36,13 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A reviewer must have reviewed the `headRefOid`, or the commit a chain of clean merges from main sits on (below).
   More threads than one page is left to a person.
 - **Review cap.** Each reviewer re-reviews every push and can raise something new each time, so a PR could chase its reviews forever.
-  Once Copilot and Claude between them have reviewed `COPILOT_REVIEW_CAP` (3) distinct non-merge commits, the merge stops waiting for a review of the head
-  and stops counting their unresolved threads.
+  Once Copilot and Claude between them have reviewed `COPILOT_REVIEW_CAP` (3) distinct non-merge commits, the merge stops waiting for a review of the head.
+  Their unresolved threads, and Claude's off-diff findings on its review of the head, still hold it (#146): IssueTracker#236, IssueManager#281 and
+  Articles#314 merged at the cap past open Claude threads. A review that arrives after a cap merge comes too late, so its findings land on a merged PR.
   The constant keeps Copilot's name because `github-settings.sh` reads the cap by it.
   Rounds are counted across both, so a PR can't reset the cap by switching reviewer.
   Merges from `main` aren't rounds: the ruleset keeps branches up to date, so they'd use up the cap without a fix.
-  A thread belongs to whoever wrote its first comment; one with no known author counts as a person's.
-  A `github-actions` thread is Claude's only when its first comment belongs to a marked review, so other workflows' threads still hold.
-  Everything else still holds at the cap, and the log says when the cap let a PR through and past how many Copilot and Claude threads.
+  Everything else still holds at the cap, and the log says when the cap let a PR through without a review of its head.
   A re-Apply PR (`chore/reapply-baseline`) has no cap: its rounds come from the re-Apply commits `reapply.sh` adds to it, not from chasing comments,
   and it changes this gate itself. Articles#298 merged past a real Copilot finding on its third round (#115).
 - **Merges from main keep their review** ([ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)).
@@ -90,8 +89,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.
   A body finding opens no thread, so the review's body carries a second marker, `<!-- claude-review:off-diff -->`, and this workflow holds the merge
-  while that review is Claude's latest of the head (until the review cap, like threads); the post job warns but passes.
-  The hold lives in the review, not the check: a failed check would leave the PR `UNSTABLE`, so it couldn't merge past the cap,
+  while that review is Claude's latest of the head (past the review cap too, like threads); the post job warns but passes.
+  The hold lives in the review, not the check: a failed check would leave the PR `UNSTABLE`, which this workflow never merges,
   and adding another label re-runs Claude Review with its jobs skipped, which would replace a failed check anyway.
   The review is posted with `GITHUB_TOKEN`, which starts no workflows, so PR Auto-Merge follows Claude Review's completion instead of PR Review Submitted.
 - **The schedule** is `7,22,37,52 * * * *`, off the round minutes where GitHub drops the most scheduled runs.

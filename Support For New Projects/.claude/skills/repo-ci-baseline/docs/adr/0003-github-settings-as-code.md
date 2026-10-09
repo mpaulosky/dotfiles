@@ -19,6 +19,7 @@ So the settings are a standard kept as JSON in the skill, and `github-settings.s
 - **No bypass actors.** An emergency is `--suspend`, which every check then reports until `--fix` restores the ruleset.
 - **Review threads hold the merge for at most three Copilot rounds, in every repo.** A ruleset can only require every thread resolved, with no cap,
   so `main-rules` leaves it off, `pr-automerge.yml` enforces the cap (ADR 0002), and the script checks each repo runs that cap.
+  Since #146 the cap no longer releases threads, only the wait for a review of the head; `main-rules` still leaves thread resolution to `pr-automerge.yml`.
   Copilot reviews drafts too: Standardize PRs are drafts.
 - **Nine required checks**, adding `markdownlint` and `yamllint` (both run on every PR) so release-blog and Dependabot PRs, which merge on required checks alone, can't merge broken Markdown or YAML.
   CodeQL stays optional because it skips docs-only PRs.

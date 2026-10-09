@@ -403,7 +403,7 @@ def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
     assert len(index(folder)) == 1 and repo.skipped == ""
     # Inert data holds nothing; the rest of what nobody reads, lockfiles included, holds the merge.
     data = {f"deps/{name}" for name in DATA_NAMES} | {
-        path for glob in ("**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/*")
+        path for glob in ("**/*.log", "**/*.map", "**/coverage/**/*")
         for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
     assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"} - data}
     assert repo.held == len(held_of(folder)) and "holds the merge for a person" in repo.log
@@ -489,6 +489,13 @@ def test_a_changed_svg_holds_the_merge(repo, tmp_path, svg):
     head = repo.commit({"public/logo.svg": svg + "\n"})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert held_of(folder) == {"public/logo.svg": "excluded"}
+
+
+def test_a_notebooks_raw_html_holds_the_merge(repo, tmp_path):
+    # HTML, so it can script like an SVG.
+    head = repo.commit({"notebooks/x.ipynb.raw.html": "<script>x()</script>\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"notebooks/x.ipynb.raw.html": "excluded"}
 
 
 def test_uncommenting_an_svgs_script_holds_the_merge(repo, tmp_path):

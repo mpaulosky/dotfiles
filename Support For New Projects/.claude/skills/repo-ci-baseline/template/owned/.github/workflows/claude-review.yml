@@ -437,7 +437,7 @@ jobs:
           # file, since a folder named coverage can hold a build (pom.xml,
           # package.json) or a page.
           DATA_NAMES = frozenset((".gitignore",))
-          DATA_GLOBS = ("**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/lcov.info",
+          DATA_GLOBS = ("**/*.log", "**/*.map", "**/coverage/**/lcov.info",
                         "**/coverage/**/*.lcov", "**/coverage/**/coverage-final.json",
                         "**/coverage/**/coverage-summary.json", "**/coverage/**/clover.xml",
                         "**/coverage/**/cobertura*.xml", "**/coverage/**/coverage.xml")

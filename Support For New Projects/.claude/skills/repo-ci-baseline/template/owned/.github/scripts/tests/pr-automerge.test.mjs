@@ -946,8 +946,22 @@ test("judges a BEHIND PR's required checks by their newest runs, and only the re
     requiredCheck("Build Solution", { conclusion: "FAILURE", startedAt: "2026-10-08T10:05:00Z" })
   );
 
+  const queuedRerun = checksOn(
+    HEAD,
+    requiredCheck("Build Solution", { conclusion: "SUCCESS", startedAt: "2026-10-08T10:00:00Z" }),
+    requiredCheck("Build Solution", { status: "QUEUED", conclusion: null, startedAt: null })
+  );
+
   assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: rerun }))).updates.length, 1);
   assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: regressed }))).updates.length, 0);
+  assert.equal((await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: queuedRerun }))).updates.length, 0);
+});
+
+test("says so where it shows when a BEHIND PR has no required check at all", async () => {
+  const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND", commits: checksOn(HEAD, requiredCheck("Lint", { isRequired: false })) }));
+
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.startsWith("notice: ") && line.includes("no required check")), logs.join("\n"));
 });
 
 test("takes a 422 from update-branch quietly", async () => {

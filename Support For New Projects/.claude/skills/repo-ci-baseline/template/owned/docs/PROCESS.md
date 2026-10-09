@@ -66,8 +66,9 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   thread is resolved. After three Copilot review rounds it stops waiting for Copilot, so a PR can't chase reviews forever;
   threads anyone else opens still hold it.
 - **A ready PR is kept up to date.** When `main` moves on, PR Auto-Merge merges `main` into a PR that is otherwise ready
-  (Dependabot rebases its own on request), and the merge from `main` needs no new review as long as it changes nothing
-  of its own: a merge that resolves a conflict is reviewed again.
+  (Dependabot rebases its own on request). The merge from `main` needs no new review when no file was changed on both
+  sides; otherwise (a conflict resolved, or a file both sides changed) it waits for a new review: add `review:claude`
+  if Copilot doesn't review it.
 - **A draft is never merged.** Open a PR as a draft to hold it back, and mark it ready when it is.
 - **Merging is squash only.** Nobody merges by hand except a fork's PR, which the maintainer merges, and a Baseline
   Standardize PR.

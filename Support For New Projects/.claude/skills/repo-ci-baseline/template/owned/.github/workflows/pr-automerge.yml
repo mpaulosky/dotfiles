@@ -322,7 +322,10 @@ jobs:
 
             // Why the head's required checks haven't all passed, or null when
             // they have. A check run more than once (a rerun, or one CI's
-            // concurrency cancelled) counts by its newest run.
+            // concurrency cancelled) counts by its newest run, and a run not
+            // yet started is the newest, as in the skill's landing.py.
+            // isRequired reports main-rules' ruleset checks (checked live on
+            // Blazor-Server #183).
             function requiredChecksPending(pr) {
               const commit = pr.commits?.nodes?.[0]?.commit;
               if (!commit || commit.oid !== pr.headRefOid) {
@@ -341,7 +344,7 @@ jobs:
                   continue;
                 }
                 const name = check.name ?? check.context;
-                const at = check.startedAt ?? check.createdAt ?? "";
+                const at = check.startedAt ?? check.createdAt ?? "\uffff";
                 if (!newest.has(name) || at >= newest.get(name).at) {
                   newest.set(name, { at, check });
                 }
@@ -370,7 +373,10 @@ jobs:
               }
               const pending = requiredChecksPending(pr);
               if (pending) {
-                core.info(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
+                // No required check at all on a head means isRequired doesn't
+                // see the ruleset's checks; say so where it shows.
+                const log = pending.startsWith("no required check") ? core.notice : core.info;
+                log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
                 return;
               }
               if (process.env.HAS_RELEASE_PR_PAT !== "true") {

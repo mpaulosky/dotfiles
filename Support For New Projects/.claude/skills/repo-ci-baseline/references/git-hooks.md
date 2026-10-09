@@ -90,7 +90,9 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
      doesn't make the hook a defence against a writable `.git/config`. The hook only runs because the clone's
      config sets `core.hooksPath`, so anything that can write that file can point it elsewhere and turn the hook
      off. The hook is a local convenience; the ruleset and CI are the gate. A Sandcastle repo must keep agents
-     from writing the clone's `.git/config` and `.git/hooks`; see step 7 of the Sandcastle setup in the README.
+     from writing the clone's `.git/config`, and run all host git with hooks off, since the relative `hooksPath`
+     makes each worktree's own `.github/hooks/*` the ones that fire; see step 7 of the Sandcastle setup in the
+     README.
 - **`scripts/gate.sh`**, also safe to run by hand: lint the Markdown, YAML, workflow and shell files changed since
   `origin/main`, using CI's configs, and prefer installed tools with pinned fallbacks. Then build and run each test
   project, where the stack allows it locally. Which steps it runs depends on the repo; what's standard is that

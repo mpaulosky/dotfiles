@@ -189,10 +189,9 @@ into every role's prompt and names Blazor-Server's solution, gate and commit rul
 - Hold back issues whose blockers haven't landed or that already have an open pull request.
 - Run `scripts/gate.sh` in the sandbox after the implementer and again after the reviewer, with a gate-fixer
   role for a red gate, and comment on the issue when it still fails.
-- Record the commit that passed in `git config sandcastle.gatedHead`, so the pre-push hook doesn't run the gate a
-  second time.
-- Push each branch from its own worktree (the pre-push hook refuses a commit other than the checkout's `HEAD`,
-  since its gate tests the working tree) and open a pull request that says `Closes #<id>`.
+- Push the exact commit that passed from the main checkout, with hooks off (`-c core.hooksPath=/dev/null`), since
+  the sandbox can write the clone's hooks and config. Don't record a marker for the pre-push hook to skip its gate;
+  the hook no longer honours one. Open a pull request that says `Closes #<id>`.
 
 Set each role's model, effort and budget in `lib/config.mts` (`ROLE_AGENTS`), and keep the
 `onSandboxReady` hook (`pnpm install --frozen-lockfile --config.confirm-modules-purge=false`) and

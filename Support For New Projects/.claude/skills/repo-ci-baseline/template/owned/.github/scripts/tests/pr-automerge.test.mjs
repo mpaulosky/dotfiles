@@ -151,6 +151,8 @@ function graph(overrides = {}) {
     rev: { parents: ["base0"], files: { app: "app1", lib: "lib0" } },
     merge1: { parents: ["rev", "main1"], files: { app: "app1", lib: "lib1" } },
     merge2: { parents: ["merge1", "main2"], files: { app: "app1", lib: "lib2", docs: "docs2" } },
+    // readyPr()'s head: an ordinary commit, never a merge from main.
+    [HEAD]: { parents: ["rev"], files: { app: "app2", lib: "lib0" } },
     ...overrides
   };
 }
@@ -867,11 +869,11 @@ test("keeps Claude's off-diff hold on the commit a merge from main covers", asyn
   assert.ok(logs.some((line) => line.includes("Claude's review of rev has findings outside the diff")), logs.join("\n"));
 });
 
-test("merges at the cap, with a warning, when the merge check can't read the head", async () => {
+test("waits at the cap, with a warning, when the merge check can't read the head", async () => {
   const pr = mergedPr("missing", { copilotReviews: copilotReviewsOf("one", "two", "three") });
   const { merges, logs } = await evaluate(pr);
 
-  assert.equal(merges.length, 1);
+  assert.deepEqual(merges, []);
   assert.ok(logs.some((line) => line.startsWith("warning: ") && line.includes("clean merge from main")), logs.join("\n"));
 });
 

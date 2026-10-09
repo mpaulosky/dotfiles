@@ -604,7 +604,11 @@ jobs:
                 try {
                   reviewedHead = await reviewCovering(pr.headRefOid, reviewedCommits, pr.baseRefName);
                 } catch (error) {
+                  // Fail closed, cap or not: past the cap the covered commit's
+                  // off-diff hold depends on this. The next event re-checks.
                   core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
+                  core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
+                  return;
                 }
                 if (!reviewedHead && !capReached) {
                   core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);

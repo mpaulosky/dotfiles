@@ -20,9 +20,10 @@ at all (past its end) is Claude citing the wrong number, not a finding
 about unchanged code: it goes on the file's nearest line in the diff, as a
 thread, with a note. A body finding opens no review thread to hold the merge, so the
 body's second line is OFF_DIFF_MARKER, which PR Auto-Merge holds on while
-that review is the latest of the head, up to the review cap. The step
+that review is the latest of the head, past the review cap too. The step
 passes with a warning: a failed check would leave the PR UNSTABLE, which
-PR Auto-Merge never merges, so it couldn't merge past the cap either. Only
+PR Auto-Merge never merges, and a later run with its jobs skipped would
+replace it anyway. Only
 malformed findings, a failed API call or empty findings fail the step: the
 post job runs only once Claude has answered, so empty findings mean the
 answer quoted a secret of the review job and was withheld.
@@ -195,7 +196,7 @@ def build_review(summary, findings, commentable, head, line_count=lambda path: N
         parts.append("No findings.")
     if off_diff:
         parts.append("Findings outside the diff (no thread to resolve, so they hold the merge until the next "
-                     "push gets a fresh review or the review cap is reached):\n\n" + "\n".join(off_diff))
+                     "push gets a fresh review):\n\n" + "\n".join(off_diff))
     body = "\n\n".join(part for part in parts if part)
     markers = f"{MARKER}\n{OFF_DIFF_MARKER}" if off_diff else MARKER
     return {"commit_id": head, "event": "COMMENT", "body": f"{markers}\n{body}", "comments": comments}
@@ -240,7 +241,7 @@ def main(argv=None, gh=None, findings=None):
     if in_body:
         print(
             f"::warning::{in_body} finding(s) outside the diff are in the review body; "
-            "its off-diff marker holds the merge until the next push or the review cap."
+            "its off-diff marker holds the merge until the next push gets a fresh review."
         )
     if redacted:
         print(f"::warning::Redacted {redacted} credential-shaped string(s) from Claude's review. They aren't this "

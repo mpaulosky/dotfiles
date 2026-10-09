@@ -33,6 +33,9 @@ The hold is in the Template, not a per-repo file, because Applying the old Templ
   and the run log says when the cap let a PR through without one.
 - Claude's off-diff findings hold past the cap like threads (they are findings that couldn't be threads), but they can't be resolved:
   only a push, which Claude reviews again while `review:claude` is on, or a merge by hand clears them.
+  An API error while checking whether the head is a clean merge from main waits for the next event, past the cap too.
+  A head the check can't cover (more than five merges from main deep, or a tree listing GitHub truncates) counts as unreviewed:
+  past the cap it merges, so an off-diff hold on the commit underneath it doesn't apply. That's accepted: it takes six merges from main in a row.
 - A re-Apply PR (`chore/reapply-baseline`) has no cap (#115). Its rounds come from the re-Apply commits `reapply.sh` adds to it, not from chasing comments,
   and it changes the Owned CI files and this gate itself: Articles#298 merged past a real Copilot finding on its third round.
   Exempting the branch was chosen over restarting the count on each re-Apply commit, which would need the gate to tell those commits apart,

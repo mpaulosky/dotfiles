@@ -116,7 +116,7 @@ def test_a_finding_off_the_diff_moves_to_the_body():
 
 def test_a_finding_off_the_diff_passes_the_step_with_a_warning(capsys):
     # The marker, not the check, holds the merge: a failed check would leave
-    # the PR UNSTABLE, which PR Auto-Merge never merges, even at the review cap.
+    # the PR UNSTABLE, which PR Auto-Merge never merges.
     gh = run(findings_json(("src/app.py", 2, "On."), ("README.md", 1, "Off.")))
 
     assert len(gh.posted) == 1

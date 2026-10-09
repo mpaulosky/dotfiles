@@ -43,7 +43,7 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   A finding on a changed file at a line the file doesn't have (past its end) is a wrong line number, not unchanged code,
   so it goes on the file's nearest line in the diff as a thread, with a note (#122). When the file's length can't be read, it holds as before.
   The post job warns instead of failing. A failing check couldn't hold the merge on its own: a later run with its jobs skipped (another label added) replaces it.
-  And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges, so the cap couldn't bypass the hold.
+  And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges. The review's marker holds past the review cap too (#146).
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
 - A Review step that fails, times out (its own 25 minutes, under the job's 30) or is refused at the usage limit doesn't fail the job either (#123):
   `continue-on-error` lets a warning step say so, and the post job skips when there's nothing to post (an empty output would fail it as malformed).

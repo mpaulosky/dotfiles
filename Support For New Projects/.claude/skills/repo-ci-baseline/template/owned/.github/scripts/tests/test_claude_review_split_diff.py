@@ -401,18 +401,16 @@ def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
     assert set(excluded_of(folder)) == set(files) - {"src/app.py"}
     assert files_of(folder) == {"src/app.py": ("source", "read")}
     assert len(index(folder)) == 1 and repo.skipped == ""
-    # Recorded data holds nothing; the rest of what nobody reads holds the merge.
+    # Inert data holds nothing; the rest of what nobody reads, lockfiles included, holds the merge.
     data = {f"deps/{name}" for name in DATA_NAMES} | {
-        path for glob in ("**/*.svg", "**/*.log", "**/*.lock", "**/go.sum", "**/*.ipynb.raw.html", "**/*.map",
-                          "**/coverage/**/*") for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
+        path for glob in ("**/*.svg", "**/*.log", "**/*.ipynb.raw.html", "**/*.map", "**/coverage/**/*")
+        for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
     assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"} - data}
     assert repo.held == len(held_of(folder)) and "holds the merge for a person" in repo.log
     check_pieces(folder, diff)
 
 
-DATA_NAMES = [".gitignore", "package-lock.json", "yarn.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock",
-              "Cargo.lock", "go.sum", "paket.lock", "pubspec.lock", "Package.resolved", "mix.lock", "Podfile.lock",
-              "renv.lock", "Manifest.toml"]
+DATA_NAMES = [".gitignore"]
 
 
 def test_the_data_names_are_copilots_and_in_the_workflow():
@@ -441,7 +439,8 @@ def test_copilots_bin_exceptions_and_dotnet_files_are_reviewed(repo, tmp_path):
 
 
 def test_only_excluded_data_leaves_nothing_to_read_and_holds_nothing(repo, tmp_path):
-    head = repo.commit({"yarn.lock": "x\n", "web/logo.svg": "<svg/>\n"})
+    head = repo.commit({"build.log": "x\n", "web/logo.svg": "<svg/>\n", "web/site.min.js.map": "{}\n",
+                        "coverage/index.html": "<html/>\n"})
     text, folder, _ = repo.split(repo.base, head, tmp_path)
     assert text == "(none: every changed file is one Copilot code review excludes)"
     assert index(folder) == {} and repo.listed == "" and repo.skipped == ""
@@ -457,10 +456,53 @@ def test_only_excluded_code_leaves_nothing_to_read_and_holds_the_merge(repo, tmp
 
 
 def test_excluded_data_under_github_holds_the_merge(repo, tmp_path):
-    head = repo.commit({".github/actions/foo/dist/index.js": "run()\n", ".github/actions/foo/yarn.lock": "x\n",
-                        "yarn.lock": "x\n"})
+    head = repo.commit({".github/actions/foo/dist/index.js": "run()\n", ".github/actions/foo/build.log": "x\n",
+                        "build.log": "x\n"})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
-    assert held_of(folder) == {".github/actions/foo/dist/index.js": "excluded", ".github/actions/foo/yarn.lock": "excluded"}
+    assert held_of(folder) == {".github/actions/foo/dist/index.js": "excluded", ".github/actions/foo/build.log": "excluded"}
+
+
+def test_a_lockfile_holds_the_merge(repo, tmp_path):
+    # It decides which dependency code the build installs and runs.
+    head = repo.commit({"package-lock.json": "{}\n", "web/yarn.lock": "x\n", "svc/go.sum": "x\n", "Cargo.lock": "x\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {path: "excluded" for path in ("package-lock.json", "web/yarn.lock", "svc/go.sum",
+                                                             "Cargo.lock")}
+
+
+def test_only_a_coverage_report_is_data(repo, tmp_path):
+    head = repo.commit({"coverage/lcov.info": "x\n", "coverage/report/index.html": "x\n",
+                        "src/app/coverage/policy.rb": "class Policy; end\n", "coverage/run.js": "x\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"src/app/coverage/policy.rb": "excluded", "coverage/run.js": "excluded"}
+
+
+@pytest.mark.parametrize("svg", ['<svg><script>steal()</script></svg>', '<svg onload="steal()"/>',
+                                 '<svg><a href="JavaScript:steal()"/></svg>',
+                                 '<svg>' + ' ' * 20_000 + '<scr' + 'ipt>steal()</script></svg>'],
+                         ids=["script", "handler", "href", "split-long-line"])
+def test_an_svg_that_gains_script_holds_the_merge(repo, tmp_path, svg):
+    head = repo.commit({"public/logo.svg": svg + "\n", "public/icon.svg": '<svg><path d="M0 0"/></svg>\n'})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"public/logo.svg": "excluded"}
+
+
+def test_an_svg_losing_its_script_holds_nothing(repo, tmp_path):
+    repo.base = repo.commit({"public/logo.svg": "<svg><script>x()</script></svg>\n"})
+    head = repo.commit({"public/logo.svg": "<svg/>\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {}
+
+
+def test_deleting_excluded_code_holds_the_merge_but_deleting_data_doesnt(repo, tmp_path):
+    repo.base = repo.commit({"next.config.js": "module.exports = {headers}\n", "dist/app.js": "x\n",
+                             "build.log": "x\n", ".github/actions/foo/build.log": "x\n", "src/app.py": "x\n"})
+    head = repo.commit({"next.config.js": None, "dist/app.js": None, "build.log": None,
+                        ".github/actions/foo/build.log": None, "src/app.py": None})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"next.config.js": "excluded", "dist/app.js": "excluded",
+                               ".github/actions/foo/build.log": "excluded"}
+    assert files_of(folder) == {"src/app.py": ("deleted", "read")}
 
 
 def test_an_excluded_file_past_the_budget_is_never_read(repo, tmp_path):
@@ -470,7 +512,7 @@ def test_an_excluded_file_past_the_budget_is_never_read(repo, tmp_path):
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert list(index(folder)) == ["001.diff"] and repo.listed == "001.diff" and repo.skipped == ""
     assert sorted(excluded_of(folder)) == ["dist/bundle.js", "package-lock.json"]
-    assert held_of(folder) == {"dist/bundle.js": "excluded"}
+    assert held_of(folder) == {"dist/bundle.js": "excluded", "package-lock.json": "excluded"}
 
 
 def test_a_binary_is_reviewed_as_git_shows_it_and_holds_the_merge_unless_its_media(repo, tmp_path):

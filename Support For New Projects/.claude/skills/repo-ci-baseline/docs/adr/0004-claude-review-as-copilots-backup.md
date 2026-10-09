@@ -163,11 +163,13 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     a PR changing only `.github/actions/*/dist/index.js` or a `vendor/*.min.js` merged on a review that read nothing,
     and a PR's own `.gitattributes` (`*.cs -diff`) or a NUL byte in a script made its change show only as "Binary files differ".
     So these hold the merge for a person, listed under `held` in INDEX and in the answer check's log:
-    - an excluded file that isn't recorded data (lockfiles, logs, SVGs, source maps, coverage: `DATA_NAMES`, `DATA_GLOBS`),
-      and any excluded file under `.github/`;
-    - a file git shows only as binary, unless it's inert media (`MEDIA`: images, fonts, audio, video, PDFs).
+    - an excluded file that isn't inert data, deleted or not, and any excluded file under `.github/`.
+      Inert data (`DATA_NAMES`, `DATA_GLOBS`) is `.gitignore`, logs, source maps, coverage reports (not any folder named `coverage`),
+      and SVGs whose added lines carry no `<script`, `on…=` handler or `javascript:`.
+      Lockfiles hold: they decide which dependency code the build installs and runs, and nobody reads them here;
+    - a file git shows only as binary, unless it's inert media (`MEDIA`: images, fonts, audio, video, PDFs) or deleted.
 
-    A deleted file holds nothing. The diff takes attributes from the base (`--attr-source`), so a PR's own `.gitattributes` can't hide its text,
+    The diff takes attributes from the base (`--attr-source`), so a PR's own `.gitattributes` can't hide its text,
     and `--no-textconv` keeps a diff driver from rewriting what the review sees.
   - The prompt asks for at most 8 pieces and 300,000 bytes (about 80,000 tokens), leaving room for source files; the rest are listed as not read,
     and the summary must name them. Each one adds a finding outside the diff, which holds the merge for a person; the log lists its files.

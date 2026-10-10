@@ -693,8 +693,8 @@ jobs:
             // comes off, but taking it off before Claude ever reviewed would
             // leave the person who added it without the review they asked for.
             // Label events are read with GITHUB_TOKEN. When they can't be read,
-            // any Claude review will do, as before #174, so a read that keeps
-            // failing can't keep the label on for good. A Claude Review run
+            // any Claude review on the PR counts, so a read that keeps failing
+            // can't keep the label on once Claude has reviewed. A Claude Review run
             // that posts nothing (a failure, a timeout, a usage limit) leaves
             // the label on until one posts; a run that posts nothing holds no
             // merge, so that costs only the runs.

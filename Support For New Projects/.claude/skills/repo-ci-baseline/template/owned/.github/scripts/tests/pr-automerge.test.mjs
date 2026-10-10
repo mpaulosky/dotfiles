@@ -1619,12 +1619,22 @@ test("a sweep stops when its update hits a rate limit, without trying the next c
   assert.deepEqual(thrown.observed.updates.map((update) => update.pull_number), [7]);
 });
 
+test("a sweep whose update fails tries the next candidate, then fails the run", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const updateError = Object.assign(new Error("Server error"), { status: 502 });
+  const { updates, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8], updateError });
+
+  assert.deepEqual(updates.map((update) => update.pull_number), [7, 8]);
+  assert.ok(logs.some((line) => line.startsWith("failed: ") && line.includes("#7") && line.includes("#8")), logs.join("\n"));
+});
+
 test("a PR event's update that hits a rate limit is only a warning", async () => {
   const updateError = Object.assign(new Error("Too many requests"), { status: 429 });
   const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }), [], { updateError });
 
   assert.equal(updates.length, 1);
   assert.ok(logs.some((line) => line.startsWith("warning: Couldn't bring PR #7 up to date")), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.startsWith("failed: ")), logs.join("\n"));
 });
 
 test("a PR event still brings its own PR up to date", async () => {

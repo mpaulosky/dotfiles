@@ -61,7 +61,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Merges from main keep their review** ([ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)).
   The head counts as reviewed when it is a merge whose first parent is reviewed (or is such a merge, up to `MERGE_CHAIN_LIMIT`, 5, deep),
   whose second parent is on `main`, and whose every file is what a clean merge gives: where only one side changed a file since the merge base,
-  that side's version. Read with the API alone (commits, compare and recursive trees), since the job never checks out PR content.
+  that side's version, compared by mode and blob together, so a mode-only change (`chmod +x`, a file swapped for a symlink) isn't clean (#155).
+  Read with the API alone (commits, compare and recursive trees), since the job never checks out PR content.
   A file both sides changed, a rename across them or any other change needs a fresh review. Claude's off-diff hold on the covered commit still holds,
   even when Copilot reviewed the merge: it comes from the newest commit Claude reviewed down the chain of clean merges.
   Claude Review's `merge-from-main` job skips the review of such a head on `synchronize` by the same rule (with `git ls-tree` on its checkout),
@@ -81,6 +82,17 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   (a marker in the comment names it; only a marker posted by the PAT's account counts).
   Without the PAT the run logs a notice and the PR waits. A 422 (the head moved, or nothing to merge) is logged quietly; any other error is a warning, never a failed run.
   Only ready PRs are updated: an update reruns CI, and a PR waiting on a review or a fix gains nothing from being current.
+  A sweep (a push to `main`, the schedule or a manual run) updates at most one PR, the oldest ready `BEHIND` one, since it lists open PRs oldest first (#155):
+  only the first PR to finish CI can merge, and its merge leaves the rest `BEHIND` again, so updating them all at once costs on the order of N² CI runs.
+  The next merge's push sweeps again for the next one. A 422 doesn't count as the sweep's update, and an event for one PR still updates that PR.
+  The limit holds within one sweep only. A scheduled or manual sweep that runs while an updated PR's CI is still running doesn't see that update,
+  and can start a second one. That's accepted: scheduled sweeps run about an hour apart, far longer than a CI run, and telling an update
+  in flight from an author's push would take a second pass over every open PR. A Dependabot PR already asked to rebase its head doesn't count either,
+  so a Dependabot that never rebases can't hold the sweep.
+  The other cost: when the updated PR doesn't merge (its CI fails, the merge from `main` needs a fresh review, or it picks up a thread),
+  there's no push to `main`, so the other ready `BEHIND` PRs wait for the next scheduled sweep, about an hour, or a manual run.
+  That's accepted too: the sweep then skips the stuck PR, since it's no longer ready, and updates the next one.
+  Updating them all at once instead would cost on the order of N² CI runs on every merge, to save that hour only in the failure case.
 - **Hand-back hold.** A PR labelled `sandcastle:needs-human` (Sandcastle giving up and handing it to a person) is skipped while it carries the label,
   and also when someone other than the repository owner last removed it, since anyone with triage access can remove a label.
   The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues access.

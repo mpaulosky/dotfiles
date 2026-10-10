@@ -144,10 +144,15 @@ jobs:
             // merging none: a merge later in the sweep would leave that PR
             // BEHIND again, and its push sweeps anyway.
             const sweeping = !context.payload.pull_request && !context.payload.workflow_run;
-            // The ready BEHIND PRs a sweep found, oldest first, and the PR it
-            // merged, if any.
+            // While a sweep evaluates its PRs, a ready BEHIND one is only
+            // noted as a candidate; the sweep ends by evaluating those again,
+            // with this off, to make its update.
+            let collectingCandidates = sweeping;
+            // The ready BEHIND PRs a sweep found, oldest first; the PR this
+            // run merged and the one it brought up to date, if any.
             const sweepCandidates = [];
             let mergedThisSweep = null;
+            let updatedThisSweep = null;
 
             // Review rounds, Copilot's and Claude's together, after which the
             // merge stops waiting for a review of the head. Their threads
@@ -509,11 +514,13 @@ jobs:
                 );
                 return;
               }
-              if (sweeping) {
-                sweepCandidates.push({ pullNumber, pr });
+              if (collectingCandidates) {
+                sweepCandidates.push(pullNumber);
                 return;
               }
-              await updateBranchOf(pullNumber, pr);
+              if (await updateBranchOf(pullNumber, pr)) {
+                updatedThisSweep = pullNumber;
+              }
             }
 
             // Updates a PR checked by bringUpToDate. Returns whether it asked
@@ -990,25 +997,43 @@ jobs:
               return;
             }
 
-            for (const pullNumber of pullNumbers) {
-              await mergeIfReady(pullNumber);
+            // One PR's error (a 5xx, a rate limit) doesn't stop the sweep
+            // short of its update; the run still fails once it's done.
+            const failed = [];
+            async function evaluate(pullNumber) {
+              try {
+                await mergeIfReady(pullNumber);
+              } catch (error) {
+                core.warning(`Couldn't evaluate PR #${pullNumber}: ${error.message}`);
+                failed.push(pullNumber);
+              }
             }
 
-            // The sweep's one update, made last (see sweeping): to the oldest
-            // candidate it can update, and only if it merged nothing.
-            let updated = null;
-            for (const { pullNumber, pr } of sweepCandidates) {
+            for (const pullNumber of pullNumbers) {
+              await evaluate(pullNumber);
+            }
+
+            // The sweep's one update, made last (see sweeping), and only if
+            // it merged nothing. Each candidate is evaluated again, since the
+            // sweep took a while: one no longer ready or BEHIND is skipped
+            // (or merged, if it's now CLEAN), and the next is tried.
+            collectingCandidates = false;
+            for (const pullNumber of sweepCandidates) {
               if (mergedThisSweep !== null) {
                 core.info(
                   `Waiting on PR #${pullNumber}: BEHIND main, but this sweep merged PR #${mergedThisSweep}, ` +
                   "whose push sweeps again."
                 );
-              } else if (updated !== null) {
+              } else if (updatedThisSweep !== null) {
                 core.info(
-                  `Waiting on PR #${pullNumber}: BEHIND main, but this sweep already brought PR #${updated} ` +
+                  `Waiting on PR #${pullNumber}: BEHIND main, but this sweep already brought PR #${updatedThisSweep} ` +
                   "up to date, and a sweep updates one PR at a time."
                 );
-              } else if (await updateBranchOf(pullNumber, pr)) {
-                updated = pullNumber;
+              } else {
+                await evaluate(pullNumber);
               }
+            }
+
+            if (failed.length > 0) {
+              core.setFailed(`Couldn't evaluate PR(s) ${failed.map((n) => `#${n}`).join(", ")}; see the warnings above.`);
             }

@@ -36,6 +36,7 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
   while it recomputes, so the run asks again a few times (5 s apart) before leaving the PR to the next event.
   A sweep updates one ready `BEHIND` PR, the oldest (#155): updating every ready PR at once makes them race, and each merge leaves the rest
   `BEHIND` again, so N PRs cost on the order of N² CI runs. One at a time, each merge's push brings the next one up to date.
+  The update comes after the sweep's merges, and only if there were none, so a merge in the same sweep can't undo it.
   The limit is per sweep: a scheduled sweep during an updated PR's CI run can start a second update, which is accepted (schedules run about an hour apart).
   When the updated PR doesn't merge (red CI, a merge that needs a fresh review, a new thread), nothing pushes to `main`, so the other ready PRs
   wait for the next scheduled sweep, which skips the stuck PR and updates the next. That hour's wait, only when the front PR fails, is the accepted price of not spending N² CI runs on every merge.

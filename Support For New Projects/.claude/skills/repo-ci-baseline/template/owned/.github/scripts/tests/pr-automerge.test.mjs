@@ -1500,6 +1500,16 @@ test("a sweep tries the next BEHIND PR when updating the first fails with a 422"
   assert.deepEqual(updates.map((update) => update.pull_number), [7, 8]);
 });
 
+test("a sweep that merges a later PR leaves the earlier BEHIND one for the merge's push", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  // Each PR is read twice (a snapshot, then a fresh one): PR 7 is BEHIND, PR 8 is ready.
+  const { updates, merges, logs } = await evaluate([behind, behind, readyPr(), readyPr()], [], { push: true, openPrs: [7, 8] });
+
+  assert.deepEqual(merges.map((merge) => merge.pull_number), [8]);
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("Waiting on PR #7") && line.includes("this sweep merged PR #8")), logs.join("\n"));
+});
+
 test("a PR event still brings its own PR up to date", async () => {
   const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }));
 

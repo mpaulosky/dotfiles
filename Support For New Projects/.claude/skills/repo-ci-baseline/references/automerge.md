@@ -89,6 +89,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   and can start a second one. That's accepted: scheduled sweeps run about an hour apart, far longer than a CI run, and telling an update
   in flight from an author's push would take a second pass over every open PR. A Dependabot PR already asked to rebase its head doesn't count either,
   so a Dependabot that never rebases can't hold the sweep.
+  The other cost: when the updated PR doesn't merge (its CI fails, the merge from `main` needs a fresh review, or it picks up a thread),
+  there's no push to `main`, so the other ready `BEHIND` PRs wait for the next scheduled sweep, about an hour, or a manual run.
+  That's accepted too: the sweep then skips the stuck PR, since it's no longer ready, and updates the next one.
+  Updating them all at once instead would cost on the order of N² CI runs on every merge, to save that hour only in the failure case.
 - **Hand-back hold.** A PR labelled `sandcastle:needs-human` (Sandcastle giving up and handing it to a person) is skipped while it carries the label,
   and also when someone other than the repository owner last removed it, since anyone with triage access can remove a label.
   The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues access.

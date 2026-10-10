@@ -665,6 +665,25 @@ jobs:
               return covering;
             }
 
+            // The PR's Claude reviews, every commit either reviewer reviewed,
+            // and whether the two have reviewed COPILOT_REVIEW_CAP different
+            // non-merge commits between them. A re-Apply PR's reviews and
+            // threads hold the merge however many rounds it takes.
+            function reviewState(pr) {
+              const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
+                return review.body?.startsWith(CLAUDE_MARKER);
+              });
+              const reviewed = [...pr.copilotReviews.nodes, ...claudeReviews]
+                .map((review) => review.commit)
+                .filter(Boolean);
+              const reviewedCommits = new Set(reviewed.map((commit) => commit.oid));
+              const reviewRounds = new Set(
+                reviewed.filter((commit) => commit.parents?.totalCount === 1).map((commit) => commit.oid)
+              );
+              const capReached = pr.headRefName !== REAPPLY_BRANCH && reviewRounds.size >= COPILOT_REVIEW_CAP;
+              return { claudeReviews, reviewedCommits, capReached };
+            }
+
             // Past the cap, Claude Review would still review every push while
             // review:claude is on, and its threads hold the merge, so the PR
             // would keep chasing them. Taking the label off stops that; threads
@@ -688,6 +707,18 @@ jobs:
 
             async function mergeIfReady(pullNumber) {
               let pr = await getPullRequestStatus(pullNumber);
+              // Before any check that can end this run: a draft, a handed-back
+              // PR or a red one is still reviewed on every push while the
+              // label is on.
+              if (
+                pr?.state === "OPEN" &&
+                !pr.isCrossRepository &&
+                pr.baseRefName === "main" &&
+                pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL) &&
+                reviewState(pr).capReached
+              ) {
+                await removeClaudeLabel(pullNumber);
+              }
               if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
                 return;
               }
@@ -725,22 +756,7 @@ jobs:
               // reviewCovering), until the reviewers have reviewed
               // COPILOT_REVIEW_CAP different non-merge commits between them.
               // A re-Apply PR never reaches the cap.
-              const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
-                return review.body?.startsWith(CLAUDE_MARKER);
-              });
-              const reviewed = [...pr.copilotReviews.nodes, ...claudeReviews]
-                .map((review) => review.commit)
-                .filter(Boolean);
-              const reviewedCommits = new Set(reviewed.map((commit) => commit.oid));
-              const reviewRounds = new Set(
-                reviewed.filter((commit) => commit.parents?.totalCount === 1).map((commit) => commit.oid)
-              );
-              // A re-Apply PR's reviews and threads hold the merge however many
-              // rounds it takes.
-              const capReached = pr.headRefName !== REAPPLY_BRANCH && reviewRounds.size >= COPILOT_REVIEW_CAP;
-              if (capReached && pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
-                await removeClaudeLabel(pullNumber);
-              }
+              const { claudeReviews, reviewedCommits, capReached } = reviewState(pr);
               // Past the cap a head with no covering review merges anyway, but
               // a covering review's off-diff findings still hold it below.
               let reviewedHead = reviewedCommits.has(pr.headRefOid) ? pr.headRefOid : null;

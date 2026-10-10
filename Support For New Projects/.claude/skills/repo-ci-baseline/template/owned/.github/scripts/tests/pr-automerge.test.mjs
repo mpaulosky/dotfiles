@@ -656,6 +656,20 @@ test("still merges at the cap when taking review:claude off fails, warning about
   assert.ok(logs.some((line) => line.startsWith("warning: Couldn't remove review:claude")), logs.join("\n"));
 });
 
+for (const [scenario, overrides] of [
+  ["a draft", { isDraft: true }],
+  ["handed back with " + NEEDS_HUMAN, { labels: labelled(NEEDS_HUMAN, CLAUDE_LABEL) }],
+  ["red on CI", { mergeStateStatus: "UNSTABLE" }]
+]) {
+  test(`takes review:claude off a PR at the review cap that's ${scenario}`, async () => {
+    const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), labels: labelled(CLAUDE_LABEL), ...overrides });
+    const { merges, removedLabels } = await evaluate(pr);
+
+    assert.deepEqual(merges, []);
+    assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
+  });
+}
+
 test("says nothing at the cap when review:claude is already gone (404)", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
   const { merges, logs } = await evaluate(pr, [], { removeLabelError: Object.assign(new Error("Label does not exist"), { status: 404 }) });

@@ -84,6 +84,11 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Only ready PRs are updated: an update reruns CI, and a PR waiting on a review or a fix gains nothing from being current.
   A sweep (a push to `main`, the schedule or a manual run) updates at most one PR, the oldest ready `BEHIND` one, since it lists open PRs oldest first (#155):
   only the first PR to finish CI can merge, and its merge leaves the rest `BEHIND` again, so updating them all at once costs on the order of N² CI runs.
+  The update is the sweep's last step, made only if the sweep merged nothing: a PR it merged after updating an older one
+  would leave that one `BEHIND` again, wasting its CI run (TicketManager #191's review). A merge's push sweeps again anyway.
+  Before updating, the sweep evaluates the candidate again, since it may have changed while the other PRs were checked
+  (a new thread, a hand-back label, closed); one no longer ready is skipped for the next. An error on one PR is logged and the sweep goes on
+  to its update, then fails the run, so one bad PR can't stall every update.
   The next merge's push sweeps again for the next one. A 422 doesn't count as the sweep's update, and an event for one PR still updates that PR.
   The limit holds within one sweep only. A scheduled or manual sweep that runs while an updated PR's CI is still running doesn't see that update,
   and can start a second one. That's accepted: scheduled sweeps run about an hour apart, far longer than a CI run, and telling an update

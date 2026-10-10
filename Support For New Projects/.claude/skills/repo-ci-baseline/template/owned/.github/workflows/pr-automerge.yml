@@ -140,8 +140,18 @@ jobs:
             // reruns CI, and only the first PR to finish can merge: that merge
             // leaves the rest BEHIND again, so updating them all at once costs
             // on the order of N² CI runs (#155). A sweep updates one ready
-            // BEHIND PR, the oldest; the next merge's push sweeps again.
+            // BEHIND PR, the oldest, and only after evaluating every PR and
+            // merging none: a merge later in the sweep would leave that PR
+            // BEHIND again, and its push sweeps anyway.
             const sweeping = !context.payload.pull_request && !context.payload.workflow_run;
+            // While a sweep evaluates its PRs, a ready BEHIND one is only
+            // noted as a candidate; the sweep ends by evaluating those again,
+            // with this off, to make its update.
+            let collectingCandidates = sweeping;
+            // The ready BEHIND PRs a sweep found, oldest first; the PR this
+            // run merged and the one it brought up to date, if any.
+            const sweepCandidates = [];
+            let mergedThisSweep = null;
             let updatedThisSweep = null;
 
             // Review rounds, Copilot's and Claude's together, after which the
@@ -497,13 +507,6 @@ jobs:
                 );
                 return;
               }
-              if (sweeping && updatedThisSweep !== null) {
-                core.info(
-                  `Waiting on PR #${pullNumber}: BEHIND main, but this sweep already brought PR #${updatedThisSweep} ` +
-                  "up to date, and a sweep updates one PR at a time."
-                );
-                return;
-              }
               if (process.env.HAS_RELEASE_PR_PAT !== "true") {
                 core.notice(
                   `PR #${pullNumber} is ready but BEHIND main. RELEASE_PR_PAT is not set, and an update made ` +
@@ -511,6 +514,19 @@ jobs:
                 );
                 return;
               }
+              if (collectingCandidates) {
+                sweepCandidates.push(pullNumber);
+                return;
+              }
+              if (await updateBranchOf(pullNumber, pr)) {
+                updatedThisSweep = pullNumber;
+              }
+            }
+
+            // Updates a PR checked by bringUpToDate. Returns whether it asked
+            // for an update: false when Dependabot was already asked for this
+            // head, or on a 422 or another error.
+            async function updateBranchOf(pullNumber, pr) {
               try {
                 if (DEPENDABOT_PR_AUTHORS.includes(pr.author?.login)) {
                   const commits = await github.paginate(github.rest.pulls.listCommits, {
@@ -522,10 +538,7 @@ jobs:
                   // A merge or a fix someone else pushed would be lost on a
                   // rebase, and Dependabot stops rebasing such a PR anyway.
                   if (commits.length > 0 && commits.every((commit) => commit.author?.login === DEPENDABOT_COMMIT_AUTHOR)) {
-                    if (await askDependabotToRebase(pullNumber, pr)) {
-                      updatedThisSweep = pullNumber;
-                    }
-                    return;
+                    return await askDependabotToRebase(pullNumber, pr);
                   }
                 }
                 // expected_head_sha pins the update to the head checked above:
@@ -538,15 +551,16 @@ jobs:
                   expected_head_sha: pr.headRefOid
                 });
                 core.info(`Bringing PR #${pullNumber} up to date with main from ${pr.headRefOid}.`);
-                updatedThisSweep = pullNumber;
+                return true;
               } catch (error) {
                 // 422: already up to date, or the head moved. A later event
                 // re-evaluates the new head.
                 if (error.status === 422) {
                   core.info(`Not updating PR #${pullNumber}: ${error.message}`);
-                  return;
+                  return false;
                 }
                 core.warning(`Couldn't bring PR #${pullNumber} up to date with main: ${error.message}`);
+                return false;
               }
             }
 
@@ -940,6 +954,7 @@ jobs:
               }
 
               core.info(`Squash-merged PR #${pullNumber} at ${pr.headRefOid}.`);
+              mergedThisSweep ??= pullNumber;
             }
 
             // pull_request_target events carry the PR;
@@ -982,6 +997,43 @@ jobs:
               return;
             }
 
+            // One PR's error (a 5xx, a rate limit) doesn't stop the sweep
+            // short of its update; the run still fails once it's done.
+            const failed = [];
+            async function evaluate(pullNumber) {
+              try {
+                await mergeIfReady(pullNumber);
+              } catch (error) {
+                core.warning(`Couldn't evaluate PR #${pullNumber}: ${error.message}`);
+                failed.push(pullNumber);
+              }
+            }
+
             for (const pullNumber of pullNumbers) {
-              await mergeIfReady(pullNumber);
+              await evaluate(pullNumber);
+            }
+
+            // The sweep's one update, made last (see sweeping), and only if
+            // it merged nothing. Each candidate is evaluated again, since the
+            // sweep took a while: one no longer ready or BEHIND is skipped
+            // (or merged, if it's now CLEAN), and the next is tried.
+            collectingCandidates = false;
+            for (const pullNumber of sweepCandidates) {
+              if (mergedThisSweep !== null) {
+                core.info(
+                  `Waiting on PR #${pullNumber}: BEHIND main, but this sweep merged PR #${mergedThisSweep}, ` +
+                  "whose push sweeps again."
+                );
+              } else if (updatedThisSweep !== null) {
+                core.info(
+                  `Waiting on PR #${pullNumber}: BEHIND main, but this sweep already brought PR #${updatedThisSweep} ` +
+                  "up to date, and a sweep updates one PR at a time."
+                );
+              } else {
+                await evaluate(pullNumber);
+              }
+            }
+
+            if (failed.length > 0) {
+              core.setFailed(`Couldn't evaluate PR(s) ${failed.map((n) => `#${n}`).join(", ")}; see the warnings above.`);
             }

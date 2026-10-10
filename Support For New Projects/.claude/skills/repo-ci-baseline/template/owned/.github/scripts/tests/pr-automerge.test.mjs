@@ -197,7 +197,13 @@ async function evaluate(pr, events = [], options = {}) {
     removeLabelError,
     eventsError,
     // The open PRs a sweep lists, oldest first.
-    openPrs = [7]
+    openPrs = [7],
+    // Snapshots per PR number ({ 7: [...], 8: [...] }), each read in turn
+    // and the last repeated; overrides pr for the numbers it names. An
+    // Error in place of a snapshot is thrown by that read.
+    byNumber = {},
+    // PR numbers whose read throws.
+    readErrors = []
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -211,6 +217,7 @@ async function evaluate(pr, events = [], options = {}) {
   const listRequests = [];
   let graphqlRequests = 0;
   const pullRequests = Array.isArray(pr) ? [...pr] : [pr];
+  const reads = {};
   const eventSets = Array.isArray(events[0]) ? [...events] : [events];
   const rest = {
     pulls: {
@@ -295,8 +302,23 @@ async function evaluate(pr, events = [], options = {}) {
   };
   const github = {
     rest,
-    graphql: async (query) => {
+    graphql: async (query, variables = {}) => {
       queries.push(query);
+      const number = variables.number;
+      if (readErrors.includes(number)) {
+        graphqlRequests++;
+        throw new Error(`Server error reading PR #${number}`);
+      }
+      if (byNumber[number]) {
+        graphqlRequests++;
+        const snapshots = byNumber[number];
+        reads[number] = (reads[number] ?? 0) + 1;
+        const snapshot = snapshots[Math.min(reads[number] - 1, snapshots.length - 1)];
+        if (snapshot instanceof Error) {
+          throw snapshot;
+        }
+        return { repository: { pullRequest: snapshot } };
+      }
       return { repository: { pullRequest: pullRequests[Math.min(graphqlRequests++, pullRequests.length - 1)] } };
     },
     paginate: async (method, params) => {
@@ -357,7 +379,8 @@ async function evaluate(pr, events = [], options = {}) {
   const core = {
     info: (message) => logs.push(message),
     notice: (message) => logs.push("notice: " + message),
-    warning: (message) => logs.push("warning: " + message)
+    warning: (message) => logs.push("warning: " + message),
+    setFailed: (message) => logs.push("failed: " + message)
   };
   const context = {
     repo: { owner: OWNER, repo: "demo" },
@@ -1474,9 +1497,8 @@ test("a sweep brings only one ready BEHIND PR up to date, the first listed (#155
 
 test("a sweep that asks Dependabot to rebase the first BEHIND PR leaves the next one waiting", async () => {
   const behind = readyPr({ mergeStateStatus: "BEHIND" });
-  // Each PR is read twice (a snapshot, then a fresh one): PR 7 is Dependabot's.
-  const prs = [dependabotPr(), dependabotPr(), behind, behind];
-  const { updates, posted, logs } = await evaluate(prs, [], { push: true, openPrs: [7, 8], prCommits: DEPENDABOT_COMMITS });
+  const byNumber = { 7: [dependabotPr()], 8: [behind] };
+  const { updates, posted, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8], prCommits: DEPENDABOT_COMMITS, byNumber });
 
   assert.equal(posted.length, 1);
   assert.deepEqual(updates, []);
@@ -1485,9 +1507,9 @@ test("a sweep that asks Dependabot to rebase the first BEHIND PR leaves the next
 
 test("a sweep moves on to the next BEHIND PR when Dependabot was already asked for the first's head", async () => {
   const behind = readyPr({ mergeStateStatus: "BEHIND" });
-  const prs = [dependabotPr(), dependabotPr(), behind, behind];
+  const byNumber = { 7: [dependabotPr()], 8: [behind] };
   const asked = [{ user: { login: POSTER }, body: `@dependabot rebase\n\n<!-- pr-automerge:dependabot-rebase ${HEAD} -->` }];
-  const { updates, posted } = await evaluate(prs, [], { push: true, openPrs: [7, 8], prCommits: DEPENDABOT_COMMITS, comments: asked });
+  const { updates, posted } = await evaluate(behind, [], { push: true, openPrs: [7, 8], prCommits: DEPENDABOT_COMMITS, comments: asked, byNumber });
 
   assert.deepEqual(posted, []);
   assert.deepEqual(updates.map((update) => update.pull_number), [8]);
@@ -1498,6 +1520,55 @@ test("a sweep tries the next BEHIND PR when updating the first fails with a 422"
   const { updates } = await evaluate(behind, [], { push: true, openPrs: [7, 8], updateError: Object.assign(new Error("head moved"), { status: 422 }) });
 
   assert.deepEqual(updates.map((update) => update.pull_number), [7, 8]);
+});
+
+test("a sweep that merges a later PR leaves the earlier BEHIND one for the merge's push", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const byNumber = { 7: [behind], 8: [readyPr()] };
+  const { updates, merges, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8], byNumber });
+
+  assert.deepEqual(merges.map((merge) => merge.pull_number), [8]);
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("Waiting on PR #7") && line.includes("this sweep merged PR #8")), logs.join("\n"));
+});
+
+test("a sweep reads a candidate again before its update, and skips one no longer ready", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const handedBack = readyPr({ mergeStateStatus: "BEHIND", labels: labelled(NEEDS_HUMAN) });
+  // PR 7 is read twice while the sweep evaluates it, then picks up the hand-back label.
+  const byNumber = { 7: [behind, behind, handedBack], 8: [behind] };
+  const { updates } = await evaluate(behind, [], { push: true, openPrs: [7, 8], byNumber });
+
+  assert.deepEqual(updates.map((update) => update.pull_number), [8]);
+});
+
+test("a sweep merges a candidate that is CLEAN when read again, and updates no other", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  // PR 7 is read twice while the sweep evaluates it, then is CLEAN (someone brought it up to date).
+  const byNumber = { 7: [behind, behind, readyPr()], 8: [behind] };
+  const { merges, updates, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8], byNumber });
+
+  assert.deepEqual(merges.map((merge) => merge.pull_number), [7]);
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("Waiting on PR #8") && line.includes("this sweep merged PR #7")), logs.join("\n"));
+});
+
+test("a sweep updates the next candidate when reading one again throws, then fails the run", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const byNumber = { 7: [behind, behind, new Error("Server error reading PR #7")], 8: [behind] };
+  const { updates, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8], byNumber });
+
+  assert.deepEqual(updates.map((update) => update.pull_number), [8]);
+  assert.ok(logs.some((line) => line.startsWith("failed: ") && line.includes("#7")), logs.join("\n"));
+});
+
+test("a sweep still makes its update when evaluating another PR throws, then fails the run", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const { updates, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8], readErrors: [8] });
+
+  assert.deepEqual(updates.map((update) => update.pull_number), [7]);
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && line.includes("PR #8") && line.includes("Server error")), logs.join("\n"));
+  assert.ok(logs.some((line) => line.startsWith("failed: ") && line.includes("#8")), logs.join("\n"));
 });
 
 test("a PR event still brings its own PR up to date", async () => {

@@ -153,6 +153,9 @@ jobs:
             const sweepCandidates = [];
             let mergedThisSweep = null;
             let updatedThisSweep = null;
+            // The PRs this run couldn't evaluate or update; the run fails once
+            // it's done if there are any.
+            const failedPrs = [];
 
             // Review rounds, Copilot's and Claude's together, after which the
             // merge stops waiting for a review of the head. Their threads
@@ -573,12 +576,17 @@ jobs:
                   core.info(`Not updating PR #${pullNumber}: ${error.message}`);
                   return false;
                 }
-                // A sweep would go on to the next candidate; a PR event has
-                // none, so there it stays a warning.
+                // A sweep goes on to the next candidate, so it stops on an
+                // error that holds for the whole run, and fails once done on
+                // any other. A PR event has no other PR, and its check isn't
+                // failed by an update, so there it stays a warning.
                 if (sweeping && endsRun(error)) {
                   throw error;
                 }
                 core.warning(`Couldn't bring PR #${pullNumber} up to date with main: ${error.message}`);
+                if (sweeping) {
+                  failedPrs.push(pullNumber);
+                }
                 return false;
               }
             }
@@ -1019,7 +1027,6 @@ jobs:
             // One PR's error (a 5xx on one read) doesn't stop the sweep short
             // of its update; the run still fails once it's done. One that
             // holds for the whole run (endsRun) ends it at once.
-            const failed = [];
             async function evaluate(pullNumber) {
               try {
                 await mergeIfReady(pullNumber);
@@ -1028,7 +1035,7 @@ jobs:
                   throw error;
                 }
                 core.warning(`Couldn't evaluate PR #${pullNumber}: ${error.message}`);
-                failed.push(pullNumber);
+                failedPrs.push(pullNumber);
               }
             }
 
@@ -1057,6 +1064,6 @@ jobs:
               }
             }
 
-            if (failed.length > 0) {
-              core.setFailed(`Couldn't evaluate PR(s) ${failed.map((n) => `#${n}`).join(", ")}; see the warnings above.`);
+            if (failedPrs.length > 0) {
+              core.setFailed(`Couldn't evaluate or update PR(s) ${failedPrs.map((n) => `#${n}`).join(", ")}; see the warnings above.`);
             }

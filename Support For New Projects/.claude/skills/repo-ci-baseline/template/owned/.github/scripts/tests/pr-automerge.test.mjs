@@ -390,7 +390,13 @@ async function evaluate(pr, events = [], options = {}) {
   process.env.HAS_RELEASE_PR_PAT = pat ? "true" : "false";
   process.env.EVENTS_TOKEN = "github-token";
   process.env.MERGE_STATE_RETRY_MS = "0";
-  await run(github, context, core, getOctokit);
+  try {
+    await run(github, context, core, getOctokit);
+  } catch (error) {
+    // What the run did before it threw, for tests of a run that ends early.
+    error.observed = { updates, reads, logs };
+    throw error;
+  }
   return { merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests, removedLabels, listRequests };
 }
 
@@ -1573,7 +1579,11 @@ test("a sweep still makes its update when evaluating another PR throws, then fai
 
 for (const [name, error] of [
   ["a 401", Object.assign(new Error("Bad credentials"), { status: 401 })],
-  ["a 403 rate limit", Object.assign(new Error("API rate limit exceeded"), { status: 403 })],
+  [
+    "a 403 rate limit",
+    Object.assign(new Error("You have exceeded a secondary rate limit"), { status: 403, response: { headers: { "retry-after": "60" } } })
+  ],
+  ["a 403 with no requests left", Object.assign(new Error("Forbidden"), { status: 403, response: { headers: { "x-ratelimit-remaining": "0" } } })],
   ["a 429", Object.assign(new Error("Too many requests"), { status: 429 })],
   ["a GraphQL RATE_LIMITED error", Object.assign(new Error("rate limited"), { errors: [{ type: "RATE_LIMITED" }] })]
 ]) {
@@ -1581,12 +1591,23 @@ for (const [name, error] of [
     const behind = readyPr({ mergeStateStatus: "BEHIND" });
     const byNumber = { 7: [behind], 8: [error], 9: [behind] };
 
-    await assert.rejects(
-      evaluate(behind, [], { push: true, openPrs: [7, 8, 9], byNumber }),
-      (thrown) => thrown === error
-    );
+    const thrown = await evaluate(behind, [], { push: true, openPrs: [7, 8, 9], byNumber }).then(() => null, (e) => e);
+
+    assert.equal(thrown, error);
+    assert.equal(thrown.observed.reads[9], undefined, "PR 9 is never read");
+    assert.deepEqual(thrown.observed.updates, [], "no update is made");
   });
 }
+
+test("a sweep treats a 403 that isn't a rate limit as one PR's error, and still makes its update", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const forbidden = Object.assign(new Error("Resource not accessible by integration"), { status: 403, response: { headers: {} } });
+  const byNumber = { 7: [behind], 8: [forbidden] };
+  const { updates, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8], byNumber });
+
+  assert.deepEqual(updates.map((update) => update.pull_number), [7]);
+  assert.ok(logs.some((line) => line.startsWith("failed: ") && line.includes("#8")), logs.join("\n"));
+});
 
 test("a PR event still brings its own PR up to date", async () => {
   const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }));

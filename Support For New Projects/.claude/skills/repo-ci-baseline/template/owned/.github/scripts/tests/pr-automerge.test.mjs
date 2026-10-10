@@ -656,6 +656,14 @@ test("still merges at the cap when taking review:claude off fails, warning about
   assert.ok(logs.some((line) => line.startsWith("warning: Couldn't remove review:claude")), logs.join("\n"));
 });
 
+test("says nothing at the cap when review:claude is already gone (404)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { merges, logs } = await evaluate(pr, [], { removeLabelError: Object.assign(new Error("Label does not exist"), { status: 404 }) });
+
+  assert.equal(merges.length, 1);
+  assert.ok(!logs.some((line) => line.startsWith("warning:") || line.includes("removed review:claude")), logs.join("\n"));
+});
+
 test("merges on a Claude review of the head with no threads", async () => {
   const { merges } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf(HEAD) }));
 

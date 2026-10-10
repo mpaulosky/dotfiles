@@ -1571,6 +1571,23 @@ test("a sweep still makes its update when evaluating another PR throws, then fai
   assert.ok(logs.some((line) => line.startsWith("failed: ") && line.includes("#8")), logs.join("\n"));
 });
 
+for (const [name, error] of [
+  ["a 401", Object.assign(new Error("Bad credentials"), { status: 401 })],
+  ["a 403 rate limit", Object.assign(new Error("API rate limit exceeded"), { status: 403 })],
+  ["a 429", Object.assign(new Error("Too many requests"), { status: 429 })],
+  ["a GraphQL RATE_LIMITED error", Object.assign(new Error("rate limited"), { errors: [{ type: "RATE_LIMITED" }] })]
+]) {
+  test(`a sweep stops at ${name}, which holds for the whole run`, async () => {
+    const behind = readyPr({ mergeStateStatus: "BEHIND" });
+    const byNumber = { 7: [behind], 8: [error], 9: [behind] };
+
+    await assert.rejects(
+      evaluate(behind, [], { push: true, openPrs: [7, 8, 9], byNumber }),
+      (thrown) => thrown === error
+    );
+  });
+}
+
 test("a PR event still brings its own PR up to date", async () => {
   const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }));
 

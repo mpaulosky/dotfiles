@@ -997,13 +997,23 @@ jobs:
               return;
             }
 
-            // One PR's error (a 5xx, a rate limit) doesn't stop the sweep
-            // short of its update; the run still fails once it's done.
+            // One PR's error (a 5xx on one read) doesn't stop the sweep short
+            // of its update; the run still fails once it's done. An error
+            // that holds for the whole run (a bad token, a rate limit) ends
+            // it at once, since every later call would fail the same way and
+            // GitHub asks callers to stop on a rate limit.
             const failed = [];
+            function endsRun(error) {
+              return [401, 403, 429].includes(error.status) ||
+                Boolean(error.errors?.some((e) => e.type === "RATE_LIMITED"));
+            }
             async function evaluate(pullNumber) {
               try {
                 await mergeIfReady(pullNumber);
               } catch (error) {
+                if (endsRun(error)) {
+                  throw error;
+                }
                 core.warning(`Couldn't evaluate PR #${pullNumber}: ${error.message}`);
                 failed.push(pullNumber);
               }

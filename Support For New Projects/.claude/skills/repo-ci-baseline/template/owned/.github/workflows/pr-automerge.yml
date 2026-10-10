@@ -20,11 +20,12 @@ name: PR Auto-Merge
 # and Claude's included, and so do Claude's findings outside the diff on its
 # review covering the head: the cap only stops the wait for a review that may never come
 # (#146). So a review that arrives after a cap merge comes too late: its
-# findings land on a merged PR. A re-Apply PR (chore/reapply-baseline) has no
-# cap: its rounds come from re-Apply commits, and it changes this gate itself.
-# At the cap the run takes review:claude off the PR (#170): Claude Review
-# reviews every push while it's on, and each review can open threads that
-# hold the merge, so the PR would go on chasing them past the cap.
+# findings land on a merged PR. A re-Apply PR (chore/reapply-baseline) is
+# capped like any other (#174).
+# At the cap the run takes review:claude off the PR (#170), once Claude has
+# reviewed it since the label was last added: Claude Review reviews every
+# push while it's on, and each review can open threads that hold the merge,
+# so the PR would go on chasing them past the cap.
 #
 # A merge of main into a reviewed commit needs no new review: the head counts
 # as reviewed when it is a clean merge of main into a commit a reviewer
@@ -132,16 +133,11 @@ jobs:
             const CLAUDE_LABEL = "review:claude";
 
             // Review rounds, Copilot's and Claude's together, after which the
-            // merge stops waiting for a review of the head (except on a
-            // re-Apply PR). Their threads still hold it.
+            // merge stops waiting for a review of the head. Their threads
+            // still hold it.
             // Named for Copilot, the first reviewer: github-settings.sh reads
             // the cap by this name.
             const COPILOT_REVIEW_CAP = 3;
-            // The head branch of a re-Apply PR, as the repo-ci-baseline
-            // skill's reapply.sh names it. Such a PR has no cap: its rounds
-            // come from the re-Apply commits added to it, not from chasing
-            // comments, and it changes this gate itself.
-            const REAPPLY_BRANCH = "chore/reapply-baseline";
             // Claude Review posts as github-actions[bot]; the marker tells its
             // reviews apart from anything else posted under that login.
             // Accepted limit (repo-ci-baseline's ADR 0004): the marker proves the
@@ -184,7 +180,6 @@ jobs:
                        isDraft
                        isCrossRepository
                        baseRefName
-                       headRefName
                        headRefOid
                        mergeable
                        mergeStateStatus
@@ -245,6 +240,7 @@ jobs:
                          nodes {
                            id
                            body
+                           submittedAt
                            commit {
                              oid
                              parents { totalCount }
@@ -321,8 +317,14 @@ jobs:
               return true;
             }
 
+            // An open PR from this repository into main: the PRs this workflow
+            // manages, drafts included.
+            function isOpenSameRepoPrIntoMain(pr) {
+              return Boolean(pr) && pr.state === "OPEN" && !pr.isCrossRepository && pr.baseRefName === "main";
+            }
+
             function isOpenSameRepoPr(pullNumber, pr) {
-              if (!pr || pr.state !== "OPEN" || pr.isDraft || pr.isCrossRepository || pr.baseRefName !== "main") {
+              if (!isOpenSameRepoPrIntoMain(pr) || pr.isDraft) {
                 core.info(`Skipping PR #${pullNumber}: not an open, non-draft, same-repo PR into main.`);
                 return false;
               }
@@ -667,8 +669,7 @@ jobs:
 
             // The PR's Claude reviews, every commit either reviewer reviewed,
             // and whether the two have reviewed COPILOT_REVIEW_CAP different
-            // non-merge commits between them. A re-Apply PR's reviews and
-            // threads hold the merge however many rounds it takes.
+            // non-merge commits between them.
             function reviewState(pr) {
               const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
                 return review.body?.startsWith(CLAUDE_MARKER);
@@ -680,8 +681,35 @@ jobs:
               const reviewRounds = new Set(
                 reviewed.filter((commit) => commit.parents?.totalCount === 1).map((commit) => commit.oid)
               );
-              const capReached = pr.headRefName !== REAPPLY_BRANCH && reviewRounds.size >= COPILOT_REVIEW_CAP;
+              const capReached = reviewRounds.size >= COPILOT_REVIEW_CAP;
               return { claudeReviews, reviewedCommits, capReached };
+            }
+
+            // Whether Claude has reviewed the PR since review:claude was last
+            // added. A cap reached on Copilot's reviews alone, or a label added
+            // again past the cap, keeps the label until Claude's review of it
+            // lands: claude-review.yml decides from the labeled event's payload,
+            // so a review already started runs to the end even after the label
+            // comes off, but taking it off before Claude ever reviewed would
+            // leave the person who added it without the review they asked for.
+            // Label events are read with GITHUB_TOKEN; a failure keeps the
+            // label and is a warning, so the next run tries again.
+            async function claudeReviewedSinceLabel(pullNumber, claudeReviews) {
+              let events;
+              try {
+                events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100
+                });
+              } catch (error) {
+                core.warning(`Couldn't read PR #${pullNumber}'s label events, so ${CLAUDE_LABEL} stays on: ${error.message}`);
+                return false;
+              }
+              const added = events.findLast((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL);
+              const since = added ? Date.parse(added.created_at) : -Infinity;
+              return claudeReviews.some((review) => Date.parse(review.submittedAt) > since);
             }
 
             // Past the cap, Claude Review would still review every push while
@@ -710,14 +738,11 @@ jobs:
               // Before any check that can end this run: a draft, a handed-back
               // PR or a red one is still reviewed on every push while the
               // label is on.
-              if (
-                pr?.state === "OPEN" &&
-                !pr.isCrossRepository &&
-                pr.baseRefName === "main" &&
-                pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL) &&
-                reviewState(pr).capReached
-              ) {
-                await removeClaudeLabel(pullNumber);
+              if (isOpenSameRepoPrIntoMain(pr) && pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+                const { claudeReviews, capReached } = reviewState(pr);
+                if (capReached && (await claudeReviewedSinceLabel(pullNumber, claudeReviews))) {
+                  await removeClaudeLabel(pullNumber);
+                }
               }
               if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
                 return;
@@ -755,7 +780,6 @@ jobs:
               // the commit a chain of clean merges from main sits on (see
               // reviewCovering), until the reviewers have reviewed
               // COPILOT_REVIEW_CAP different non-merge commits between them.
-              // A re-Apply PR never reaches the cap.
               const { claudeReviews, reviewedCommits, capReached } = reviewState(pr);
               // Past the cap a head with no covering review merges anyway, but
               // a covering review's off-diff findings still hold it below.

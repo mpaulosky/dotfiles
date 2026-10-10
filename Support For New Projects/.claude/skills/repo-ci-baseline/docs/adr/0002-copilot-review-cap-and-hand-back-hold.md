@@ -36,12 +36,13 @@ The hold is in the Template, not a per-repo file, because Applying the old Templ
   An API error while checking whether the head is a clean merge from main waits for the next event, past the cap too.
   A head the check can't cover (more than five merges from main deep, or a tree listing GitHub truncates) counts as unreviewed:
   past the cap it merges, so an off-diff hold on the commit underneath it doesn't apply. That's accepted: it takes six merges from main in a row.
-- A re-Apply PR (`chore/reapply-baseline`) has no cap (#115). Its rounds come from the re-Apply commits `reapply.sh` adds to it, not from chasing comments,
+- A re-Apply PR (`chore/reapply-baseline`) had no cap from #115 to #174. Its rounds come from the re-Apply commits `reapply.sh` adds to it,
   and it changes the Owned CI files and this gate itself: Articles#298 merged past a real Copilot finding on its third round.
-  Exempting the branch was chosen over restarting the count on each re-Apply commit, which would need the gate to tell those commits apart,
-  and over a higher cap, which leaves the same gap. A round that keeps drawing comments stalls where someone sees it, since `land.sh` and a person watch every round.
+  #174 dropped the exemption. With Claude reviewing every re-Apply commit across seven repos, a finding fixed in the Template added a commit to
+  every open re-Apply PR and started another review on each, so a round could chase reviews without end (the dotfiles#171 round).
+  A finding on a re-Apply PR now goes into the Template and arrives with the next round, as a finding past the cap does on any PR.
 - Claude Review, Copilot's backup ([ADR 0004](0004-claude-review-as-copilots-backup.md)), shares the cap: rounds from both reviewers count toward it,
   and past it neither reviewer's review of the head is waited for; both reviewers' threads still hold the merge.
-- The cap is one constant, `COPILOT_REVIEW_CAP`, and the exempt branch another, `REAPPLY_BRANCH`. `.github/scripts/tests/pr-automerge.test.mjs` covers the cap and the hold, and CI and `test.sh` run it.
+- The cap is one constant, `COPILOT_REVIEW_CAP`. `.github/scripts/tests/pr-automerge.test.mjs` covers the cap and the hold, and CI and `test.sh` run it.
 - The workflow reads a PR's label events with `GITHUB_TOKEN` and `issues: read`, so `RELEASE_PR_PAT` needs no Issues access,
   and `pull_request_target` gains the `unlabeled` type so the owner removing the label re-evaluates the PR at once.

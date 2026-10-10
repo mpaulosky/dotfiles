@@ -43,14 +43,18 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Rounds are counted across both, so a PR can't reset the cap by switching reviewer.
   At the cap the run also takes `review:claude` off the PR, with `GITHUB_TOKEN` (#170): Claude Review reviews every push while it's on,
   and its threads hold the merge, so the PR would keep chasing them past the cap (Blazor-Server#243 went seven rounds and 26 threads
-  before the label came off by hand). Threads already open still hold; a failed removal is a warning, tried again on the next run.
-  A re-Apply PR keeps the label, since it has no cap. Adding the label again past the cap gets one more Claude review: the `labeled`
-  event starts Claude Review at once, and a removal made with `GITHUB_TOKEN` starts no workflow, so that review isn't cancelled
-  and its threads hold the merge. The next run then takes the label off again, so later pushes get no review.
+  before the label came off by hand). It does so before the draft, hand-back and auto-merge checks, for any open same-repo PR into `main`
+  (one predicate with `isOpenSameRepoPr`), and only once Claude has reviewed the PR since the label was last added (#174):
+  a cap reached on Copilot's reviews alone, or a label added again past the cap, keeps it until Claude's review lands.
+  Threads already open still hold; a failed removal, or label events that can't be read, is a warning, tried again on the next run.
+  A label added again past the cap gets one more Claude review: claude-review.yml decides from the `labeled` event's payload and has
+  no `unlabeled` trigger, and a removal made with `GITHUB_TOKEN` starts no workflow, so that review runs to the end.
+  The merge doesn't wait for it, though: an otherwise-ready PR past the cap can merge before it lands.
   Merges from `main` aren't rounds: the ruleset keeps branches up to date, so they'd use up the cap without a fix.
   Everything else still holds at the cap, and the log says when the cap let a PR through without a review of its head.
-  A re-Apply PR (`chore/reapply-baseline`) has no cap: its rounds come from the re-Apply commits `reapply.sh` adds to it, not from chasing comments,
-  and it changes this gate itself. Articles#298 merged past a real Copilot finding on its third round (#115).
+  A re-Apply PR (`chore/reapply-baseline`) is capped like any other since #174. It was exempt from #115 (Articles#298 merged past
+  a real Copilot finding on its third round), but with Claude reviewing each re-Apply commit across every repo, the exemption let a round
+  chase reviews indefinitely. A finding on a re-Apply PR is fixed in the Template and arrives with the next round.
 - **Merges from main keep their review** ([ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)).
   The head counts as reviewed when it is a merge whose first parent is reviewed (or is such a merge, up to `MERGE_CHAIN_LIMIT`, 5, deep),
   whose second parent is on `main`, and whose every file is what a clean merge gives: where only one side changed a file since the merge base,
@@ -171,7 +175,7 @@ Only once that request for the head didn't register (`copilot_dropped`: `land.sh
 does it **add review:claude**, once the head has at least one check other than Claude Review's own and every such check is green
 (Claude Review's own don't count: a run cancelled when the label came off needs no rerun), never while one runs or is queued, and never after Claude reviewed 2 commits of the PR
 (`MAX_CLAUDE_ROUNDS`, the owner's cost rule), when it waits for the owner.
-Past PR Auto-Merge's review cap (`REVIEW_CAP`, which must match `COPILOT_REVIEW_CAP`: 3 reviewed commits, not on a re-Apply PR) it asks for neither reviewer,
+Past PR Auto-Merge's review cap (`REVIEW_CAP`, which must match `COPILOT_REVIEW_CAP`: 3 reviewed commits, re-Apply PRs included) it asks for neither reviewer,
 and goes on to the threads and checks as PR Auto-Merge does;
 then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
 or **arm auto-merge** where there is no such workflow. A repo with no required checks waits for its checks to finish green first,

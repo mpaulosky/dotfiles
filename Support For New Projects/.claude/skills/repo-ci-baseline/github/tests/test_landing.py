@@ -92,8 +92,7 @@ def test_past_pr_auto_merges_review_cap_neither_reviewer_is_asked_for():
     assert ld.decide(replace(capped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
     # A commit both reviewed counts once: two distinct commits aren't the cap.
     assert ld.decide(replace(capped, claude_reviewed=frozenset({OLD}))).action == ld.REQUEST_COPILOT
-    # A re-Apply PR has no cap, and nor does a repo whose workflow doesn't merge.
-    assert ld.decide(replace(capped, reapply=True)).action == ld.REQUEST_COPILOT
+    # A repo whose workflow doesn't merge has no cap; a re-Apply PR has one (#174).
     assert ld.decide(replace(capped, merged_by_workflow=False)).action == ld.REQUEST_COPILOT
     assert ld.REVIEW_CAP == 3
 
@@ -102,7 +101,6 @@ def test_review_cap_matches_pr_auto_merges():
     workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
     text = workflow.read_text(encoding="utf-8")
     assert f"const COPILOT_REVIEW_CAP = {ld.REVIEW_CAP};" in text
-    assert f'const REAPPLY_BRANCH = "{ld.REAPPLY_BRANCH}";' in text
 
 
 def test_no_checks_at_all_is_not_green():
@@ -173,8 +171,8 @@ def test_an_open_thread_waits():
 
 
 def test_there_is_no_review_cap_so_an_open_thread_waits_after_any_number_of_rounds():
-    # PR Auto-Merge's cap is the gate's alone, and a re-Apply PR doesn't get
-    # even that (#115): the landing decision never arms past a thread.
+    # Past PR Auto-Merge's cap open threads still hold the merge, so the
+    # landing decision never arms past a thread either.
     rounds = replace(READY, copilot_reviewed=frozenset({"c" * 40, "d" * 40, OLD, HEAD}), open_threads=1)
     assert ld.decide(rounds) == ld.Decision(ld.WAIT, "1 open thread(s)")
 

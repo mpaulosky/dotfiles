@@ -19,7 +19,7 @@ skill lands PRs by (references/automerge.md):
   and one of a head that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS
   commits Claude reviewed on the PR: after those the owner decides;
 - past PR Auto-Merge's review cap (REVIEW_CAP distinct reviewed commits, in a
-  repo whose workflow merges and on a PR other than a re-Apply one) neither
+  repo whose workflow merges; re-Apply PRs included, since #174) neither
   reviewer is asked for: the workflow no longer waits for a review of the
   head, so the PR goes on to its threads and checks like a reviewed one;
 - auto-merge is armed only once a reviewer has reviewed the current head and
@@ -73,9 +73,8 @@ MAX_CLAUDE_ROUNDS = 2
 # Template's pr-automerge.yml. Past it, the workflow stops waiting for a review
 # of the head (it still holds on open threads). It counts distinct non-merge
 # commits Copilot and Claude reviewed; this counts every reviewed commit, so it
-# can reach the cap a little early, never late. The re-Apply branch has no cap.
+# can reach the cap a little early, never late.
 REVIEW_CAP = 3
-REAPPLY_BRANCH = "chore/reapply-baseline"
 
 # The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
 RELEASE_BLOG_BRANCHES = frozenset({"docs/release-notes", "docs/backfill-blog-posts"})
@@ -149,7 +148,6 @@ class PrState:
     copilot_requested: bool = False
     claude_requested: bool = False
     copilot_dropped: bool = False
-    reapply: bool = False  # a re-Apply PR (REAPPLY_BRANCH), which PR Auto-Merge never caps
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -177,8 +175,7 @@ class PrState:
     @property
     def past_review_cap(self):
         """PR Auto-Merge no longer waits for a review of the head (see REVIEW_CAP)."""
-        return (self.merged_by_workflow and not self.reapply
-                and len(self.copilot_reviewed | self.claude_reviewed) >= REVIEW_CAP)
+        return self.merged_by_workflow and len(self.copilot_reviewed | self.claude_reviewed) >= REVIEW_CAP
 
 
 @dataclass(frozen=True)

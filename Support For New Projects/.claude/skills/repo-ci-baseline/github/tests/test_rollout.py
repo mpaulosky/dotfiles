@@ -210,11 +210,8 @@ def test_a_merged_reapply_pr_on_the_rest_is_not_offered_to_land():
 
 
 def test_every_copy_of_the_reapply_branch_name_agrees():
-    # PR Auto-Merge exempts this branch from the review cap (#115), and the
-    # Owned workflow can't import it from the skill, so a rename has to reach
-    # all three copies.
+    # rollout.py finds the round's PRs by reapply.sh's branch, so a rename has
+    # to reach both copies.
     skill = Path(__file__).resolve().parents[2]
-    workflow = (skill / "template/owned/.github/workflows/pr-automerge.yml").read_text()
     script = (skill / "reapply.sh").read_text()
-    assert f'const REAPPLY_BRANCH = "{rollout.BRANCH}";' in workflow
     assert f'branch="{rollout.BRANCH}"' in script

@@ -34,6 +34,8 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
 - **A push to `main` sweeps the open PRs.** No existing trigger fired when `main` moved: the `workflow_run`s of `main`'s own CI carry `main`'s head,
   which no open PR has. `push: branches: [main]` runs `main`'s copy, like every other trigger. Right after the push GitHub reports `UNKNOWN`
   while it recomputes, so the run asks again a few times (5 s apart) before leaving the PR to the next event.
+  A sweep updates one ready `BEHIND` PR, the oldest (#155): updating every ready PR at once makes them race, and each merge leaves the rest
+  `BEHIND` again, so N PRs cost on the order of N² CI runs. One at a time, each merge's push brings the next one up to date.
 - **No loops or races.** Each update is pinned to the head it judged, so it happens at most once per head: a second request for that head,
   from a parallel run, is refused with a 422 (or merges nothing new), which is logged quietly. Fork PRs are never touched. An update error is a warning,
   never a failed run: on a `pull_request_target` run that would be a failed check on the PR.

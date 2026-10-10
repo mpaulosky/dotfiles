@@ -22,6 +22,9 @@ name: PR Auto-Merge
 # (#146). So a review that arrives after a cap merge comes too late: its
 # findings land on a merged PR. A re-Apply PR (chore/reapply-baseline) has no
 # cap: its rounds come from re-Apply commits, and it changes this gate itself.
+# At the cap the run takes review:claude off the PR (#170): Claude Review
+# reviews every push while it's on, and each review can open threads that
+# hold the merge, so the PR would go on chasing them past the cap.
 #
 # A merge of main into a reviewed commit needs no new review: the head counts
 # as reviewed when it is a clean merge of main into a commit a reviewer
@@ -89,6 +92,7 @@ permissions:
   contents: write
   # issues: read lets GITHUB_TOKEN list a PR's label events. The script reads
   # them with GITHUB_TOKEN, not the PAT, so the PAT needs no Issues access.
+  # pull-requests: write also lets GITHUB_TOKEN take review:claude off a PR.
   issues: read
   pull-requests: write
 
@@ -103,7 +107,8 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
-          # Scoped by the permissions above; used only to read label events.
+          # Scoped by the permissions above; used only to read label events
+          # and to take review:claude off a PR at the review cap.
           EVENTS_TOKEN: ${{ github.token }}
         with:
           # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
@@ -116,12 +121,15 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             // github authenticates with the PAT when it's set, which may lack
-            // Issues access; label events are read with GITHUB_TOKEN instead.
+            // Issues access; label events are read, and review:claude
+            // removed, with GITHUB_TOKEN instead.
             const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
             // back to a person, who removes it once the PR may merge again.
             const NEEDS_HUMAN = "sandcastle:needs-human";
+            // The label that has Claude Review review a PR (claude-review.yml).
+            const CLAUDE_LABEL = "review:claude";
 
             // Review rounds, Copilot's and Claude's together, after which the
             // merge stops waiting for a review of the head (except on a
@@ -657,6 +665,27 @@ jobs:
               return covering;
             }
 
+            // Past the cap, Claude Review would still review every push while
+            // review:claude is on, and its threads hold the merge, so the PR
+            // would keep chasing them. Taking the label off stops that; threads
+            // already open still hold. Removed with GITHUB_TOKEN (its
+            // pull-requests: write covers a PR's labels), so the PAT needs no
+            // Issues access and the removal starts no workflow. A failure is a
+            // warning: the next run tries again.
+            async function removeClaudeLabel(pullNumber) {
+              try {
+                await eventsClient.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });
+                core.info(
+                  `Review cap (${COPILOT_REVIEW_CAP}) reached on PR #${pullNumber}: removed ${CLAUDE_LABEL}, so Claude Review stops reviewing new pushes.`
+                );
+              } catch (error) {
+                if (error.status === 404) {
+                  return;
+                }
+                core.warning(`Couldn't remove ${CLAUDE_LABEL} from PR #${pullNumber}: ${error.message}`);
+              }
+            }
+
             async function mergeIfReady(pullNumber) {
               let pr = await getPullRequestStatus(pullNumber);
               if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
@@ -709,6 +738,9 @@ jobs:
               // A re-Apply PR's reviews and threads hold the merge however many
               // rounds it takes.
               const capReached = pr.headRefName !== REAPPLY_BRANCH && reviewRounds.size >= COPILOT_REVIEW_CAP;
+              if (capReached && pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+                await removeClaudeLabel(pullNumber);
+              }
               // Past the cap a head with no covering review merges anyway, but
               // a covering review's off-diff findings still hold it below.
               let reviewedHead = reviewedCommits.has(pr.headRefOid) ? pr.headRefOid : null;

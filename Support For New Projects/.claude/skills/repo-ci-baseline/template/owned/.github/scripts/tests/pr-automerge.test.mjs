@@ -194,7 +194,8 @@ async function evaluate(pr, events = [], options = {}) {
     rulesError,
     poster = POSTER,
     workflowRun,
-    associated = []
+    associated = [],
+    removeLabelError
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -204,6 +205,7 @@ async function evaluate(pr, events = [], options = {}) {
   const eventRequests = [];
   const queries = [];
   const eventTokens = [];
+  const removedLabels = [];
   let graphqlRequests = 0;
   const pullRequests = Array.isArray(pr) ? [...pr] : [pr];
   const eventSets = Array.isArray(events[0]) ? [...events] : [events];
@@ -234,6 +236,9 @@ async function evaluate(pr, events = [], options = {}) {
       },
       createComment: async (params) => {
         posted.push(params);
+      },
+      removeLabel: async () => {
+        throw new Error("issues.removeLabel is only called with GITHUB_TOKEN");
       }
     },
     users: {
@@ -309,11 +314,22 @@ async function evaluate(pr, events = [], options = {}) {
       throw new Error("the PAT client must not read label events or comments");
     }
   };
-  // The GITHUB_TOKEN client: it only reads label events.
+  // The GITHUB_TOKEN client: it reads label events and removes review:claude.
   const getOctokit = (token) => {
     eventTokens.push(token);
     return {
-      rest,
+      rest: {
+        ...rest,
+        issues: {
+          ...rest.issues,
+          removeLabel: async (params) => {
+            removedLabels.push(params);
+            if (removeLabelError) {
+              throw removeLabelError;
+            }
+          }
+        }
+      },
       paginate: async (method, params) => {
         if (method === rest.issues.listEvents) {
           eventRequests.push(params);
@@ -340,7 +356,7 @@ async function evaluate(pr, events = [], options = {}) {
   process.env.EVENTS_TOKEN = "github-token";
   process.env.MERGE_STATE_RETRY_MS = "0";
   await run(github, context, core, getOctokit);
-  return { merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests };
+  return { merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests, removedLabels };
 }
 
 test("merges a ready PR at the head it checked", async () => {
@@ -589,6 +605,55 @@ test("waits at the review cap on an unresolved thread even without a review of t
 
   assert.deepEqual(merges, []);
   assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
+});
+
+const CLAUDE_LABEL = "review:claude";
+
+test("takes review:claude off a PR at the review cap, even while a thread holds it", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("one", "two", HEAD),
+    reviewThreads: threadsBy({ login: ACTIONS, review: "claude-3" }),
+    labels: labelled("enhancement", CLAUDE_LABEL)
+  });
+  const { merges, removedLabels, logs } = await evaluate(pr);
+
+  assert.deepEqual(removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("removed review:claude")), logs.join("\n"));
+});
+
+test("leaves review:claude on below the review cap", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { removedLabels } = await evaluate(pr);
+
+  assert.deepEqual(removedLabels, []);
+});
+
+test("leaves review:claude on a re-Apply PR, which has no cap", async () => {
+  const pr = readyPr({
+    headRefName: REAPPLY_BRANCH,
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("one", "two", HEAD),
+    labels: labelled(CLAUDE_LABEL)
+  });
+  const { removedLabels } = await evaluate(pr);
+
+  assert.deepEqual(removedLabels, []);
+});
+
+test("removes nothing at the review cap when the PR doesn't carry review:claude", async () => {
+  const { removedLabels } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD) }));
+
+  assert.deepEqual(removedLabels, []);
+});
+
+test("still merges at the cap when taking review:claude off fails, warning about it", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { merges, logs } = await evaluate(pr, [], { removeLabelError: Object.assign(new Error("Resource not accessible"), { status: 403 }) });
+
+  assert.equal(merges.length, 1);
+  assert.ok(logs.some((line) => line.startsWith("warning: Couldn't remove review:claude")), logs.join("\n"));
 });
 
 test("merges on a Claude review of the head with no threads", async () => {

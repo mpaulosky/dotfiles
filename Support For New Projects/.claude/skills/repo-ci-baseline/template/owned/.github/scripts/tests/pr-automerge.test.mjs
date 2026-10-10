@@ -1609,6 +1609,24 @@ test("a sweep treats a 403 that isn't a rate limit as one PR's error, and still 
   assert.ok(logs.some((line) => line.startsWith("failed: ") && line.includes("#8")), logs.join("\n"));
 });
 
+test("a sweep stops when its update hits a rate limit, without trying the next candidate", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const updateError = Object.assign(new Error("You have exceeded a secondary rate limit"), { status: 403, response: { headers: { "retry-after": "60" } } });
+
+  const thrown = await evaluate(behind, [], { push: true, openPrs: [7, 8], updateError }).then(() => null, (e) => e);
+
+  assert.equal(thrown, updateError);
+  assert.deepEqual(thrown.observed.updates.map((update) => update.pull_number), [7]);
+});
+
+test("a PR event's update that hits a rate limit is only a warning", async () => {
+  const updateError = Object.assign(new Error("Too many requests"), { status: 429 });
+  const { updates, logs } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }), [], { updateError });
+
+  assert.equal(updates.length, 1);
+  assert.ok(logs.some((line) => line.startsWith("warning: Couldn't bring PR #7 up to date")), logs.join("\n"));
+});
+
 test("a PR event still brings its own PR up to date", async () => {
   const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND" }));
 

@@ -1472,6 +1472,27 @@ test("a sweep brings only one ready BEHIND PR up to date, the first listed (#155
   assert.ok(logs.some((line) => line.includes("Waiting on PR #9")), logs.join("\n"));
 });
 
+test("a sweep that asks Dependabot to rebase the first BEHIND PR leaves the next one waiting", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  // Each PR is read twice (a snapshot, then a fresh one): PR 7 is Dependabot's.
+  const prs = [dependabotPr(), dependabotPr(), behind, behind];
+  const { updates, posted, logs } = await evaluate(prs, [], { push: true, openPrs: [7, 8], prCommits: DEPENDABOT_COMMITS });
+
+  assert.equal(posted.length, 1);
+  assert.deepEqual(updates, []);
+  assert.ok(logs.some((line) => line.includes("Waiting on PR #8") && line.includes("already brought PR #7 up to date")), logs.join("\n"));
+});
+
+test("a sweep moves on to the next BEHIND PR when Dependabot was already asked for the first's head", async () => {
+  const behind = readyPr({ mergeStateStatus: "BEHIND" });
+  const prs = [dependabotPr(), dependabotPr(), behind, behind];
+  const asked = [{ user: { login: POSTER }, body: `@dependabot rebase\n\n<!-- pr-automerge:dependabot-rebase ${HEAD} -->` }];
+  const { updates, posted } = await evaluate(prs, [], { push: true, openPrs: [7, 8], prCommits: DEPENDABOT_COMMITS, comments: asked });
+
+  assert.deepEqual(posted, []);
+  assert.deepEqual(updates.map((update) => update.pull_number), [8]);
+});
+
 test("a sweep tries the next BEHIND PR when updating the first fails with a 422", async () => {
   const behind = readyPr({ mergeStateStatus: "BEHIND" });
   const { updates } = await evaluate(behind, [], { push: true, openPrs: [7, 8], updateError: Object.assign(new Error("head moved"), { status: 422 }) });

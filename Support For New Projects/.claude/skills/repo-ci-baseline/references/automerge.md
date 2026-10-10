@@ -85,6 +85,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A sweep (a push to `main`, the schedule or a manual run) updates at most one PR, the oldest ready `BEHIND` one, since it lists open PRs oldest first (#155):
   only the first PR to finish CI can merge, and its merge leaves the rest `BEHIND` again, so updating them all at once costs on the order of N² CI runs.
   The next merge's push sweeps again for the next one. A 422 doesn't count as the sweep's update, and an event for one PR still updates that PR.
+  The limit holds within one sweep only. A scheduled or manual sweep that runs while an updated PR's CI is still running doesn't see that update,
+  and can start a second one. That's accepted: scheduled sweeps run about an hour apart, far longer than a CI run, and telling an update
+  in flight from an author's push would take a second pass over every open PR. A Dependabot PR already asked to rebase its head doesn't count either,
+  so a Dependabot that never rebases can't hold the sweep.
 - **Hand-back hold.** A PR labelled `sandcastle:needs-human` (Sandcastle giving up and handing it to a person) is skipped while it carries the label,
   and also when someone other than the repository owner last removed it, since anyone with triage access can remove a label.
   The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues access.

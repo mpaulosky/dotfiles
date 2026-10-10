@@ -46,7 +46,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   before the label came off by hand). It does so before the draft, hand-back and auto-merge checks, for any open same-repo PR into `main`
   (one predicate with `isOpenSameRepoPr`), and only once Claude has reviewed the PR since the label was last added (#174):
   a cap reached on Copilot's reviews alone, or a label added again past the cap, keeps it until Claude's review lands.
-  Threads already open still hold; a failed removal, or label events that can't be read, is a warning, tried again on the next run.
+  Threads already open still hold; a failed removal is a warning, tried again on the next run.
+  Label events that can't be read are a warning too, and then any Claude review counts, as before #174, so a failing read can't keep the label on.
+  A Claude Review run that posts nothing (a failure, a timeout, a usage limit) leaves the label on until one posts. That's accepted:
+  such a run opens no thread and holds no merge, so it costs only the runs.
   A label added again past the cap gets one more Claude review: claude-review.yml decides from the `labeled` event's payload and has
   no `unlabeled` trigger, and a removal made with `GITHUB_TOKEN` starts no workflow, so that review runs to the end.
   The merge doesn't wait for it, though: an otherwise-ready PR past the cap can merge before it lands.

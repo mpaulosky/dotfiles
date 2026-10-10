@@ -194,7 +194,8 @@ async function evaluate(pr, events = [], options = {}) {
     poster = POSTER,
     workflowRun,
     associated = [],
-    removeLabelError
+    removeLabelError,
+    eventsError
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -332,6 +333,10 @@ async function evaluate(pr, events = [], options = {}) {
       paginate: async (method, params) => {
         if (method === rest.issues.listEvents) {
           eventRequests.push(params);
+          // Only the first read fails, so a later one (the hand-back check) still works.
+          if (eventsError && eventRequests.length === 1) {
+            throw eventsError;
+          }
           return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
         }
         if (method === rest.issues.listComments) {
@@ -661,6 +666,27 @@ test("takes review:claude off past the cap once Claude has reviewed since it was
   const { removedLabels } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z"), claudeLabelled("2026-01-03T00:00:00Z")]);
 
   assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
+});
+
+test("falls back to any Claude review at the cap when the label events can't be read", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { removedLabels, logs } = await evaluate(pr, [], { eventsError: new Error("Server Error") });
+
+  assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
+  assert.ok(logs.some((line) => line.startsWith("warning: Couldn't read PR #7's label events")), logs.join("\n"));
+});
+
+test("keeps review:claude at the cap when the label events can't be read and Claude never reviewed", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { removedLabels } = await evaluate(pr, [], { eventsError: new Error("Server Error") });
+
+  assert.deepEqual(removedLabels, []);
+});
+
+test("asks for when each Claude review was submitted", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.some((query) => /claudeReviews:[\s\S]*\bsubmittedAt\b/.test(query)), queries.join("\n"));
 });
 
 for (const [scenario, overrides] of [

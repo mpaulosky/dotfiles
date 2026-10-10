@@ -41,6 +41,9 @@ The hold is in the Template, not a per-repo file, because Applying the old Templ
   #174 dropped the exemption. With Claude reviewing every re-Apply commit across seven repos, a finding fixed in the Template added a commit to
   every open re-Apply PR and started another review on each, so a round could chase reviews without end (the dotfiles#171 round).
   A finding on a re-Apply PR now goes into the Template and arrives with the next round, as a finding past the cap does on any PR.
+- At the cap PR Auto-Merge takes `review:claude` off (#170), once Claude has reviewed since the label was last added (#174),
+  so a cap reached on Copilot's reviews alone, or a re-added label, still gets Claude's review. The cost accepted: while Claude Review
+  keeps ending without posting a review, the label stays on and each push starts another run. A run that posts nothing holds no merge.
 - Claude Review, Copilot's backup ([ADR 0004](0004-claude-review-as-copilots-backup.md)), shares the cap: rounds from both reviewers count toward it,
   and past it neither reviewer's review of the head is waited for; both reviewers' threads still hold the merge.
 - The cap is one constant, `COPILOT_REVIEW_CAP`. `.github/scripts/tests/pr-automerge.test.mjs` covers the cap and the hold, and CI and `test.sh` run it.

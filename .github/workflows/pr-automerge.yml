@@ -692,8 +692,12 @@ jobs:
             // so a review already started runs to the end even after the label
             // comes off, but taking it off before Claude ever reviewed would
             // leave the person who added it without the review they asked for.
-            // Label events are read with GITHUB_TOKEN; a failure keeps the
-            // label and is a warning, so the next run tries again.
+            // Label events are read with GITHUB_TOKEN. When they can't be read,
+            // any Claude review will do, as before #174, so a read that keeps
+            // failing can't keep the label on for good. A Claude Review run
+            // that posts nothing (a failure, a timeout, a usage limit) leaves
+            // the label on until one posts; a run that posts nothing holds no
+            // merge, so that costs only the runs.
             async function claudeReviewedSinceLabel(pullNumber, claudeReviews) {
               let events;
               try {
@@ -704,8 +708,8 @@ jobs:
                   per_page: 100
                 });
               } catch (error) {
-                core.warning(`Couldn't read PR #${pullNumber}'s label events, so ${CLAUDE_LABEL} stays on: ${error.message}`);
-                return false;
+                core.warning(`Couldn't read PR #${pullNumber}'s label events, so any Claude review counts: ${error.message}`);
+                return claudeReviews.length > 0;
               }
               const added = events.findLast((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL);
               const since = added ? Date.parse(added.created_at) : -Infinity;

@@ -365,18 +365,18 @@ jobs:
       # COPILOT_EXCLUDED_GLOBS) go in no piece and are never read; INDEX lists
       # them as excluded. But Copilot's review is advice and a person merges,
       # while this one gates PR Auto-Merge, so what nobody reads can't merge on
-      # it: an excluded file that isn't inert data (DATA_GLOBS: logs, source
-      # maps and named coverage reports), or any excluded file under .github/,
-      # holds the merge, deleted or not. Lockfiles and .gitignore hold: they
-      # decide what the build installs and what gets committed. An SVG can
-      # script, so one holds unless it's deleted. Unless deleted, these hold
-      # too: a file git shows only as "Binary files differ" that isn't inert
-      # media (MEDIA), a submodule bump (mode 160000: the diff shows only two
-      # commit IDs), a symlink (mode 120000: only its target shows, and it can
-      # make unread content run) and a Git LFS pointer (only the pointer
-      # shows). INDEX
-      # lists them under "held"; the answer check turns them into a finding
-      # that holds the merge for a person. Attributes come
+      # it: every excluded file a PR adds or changes holds the merge, and so
+      # does deleting one, unless it's data nothing runs (DATA_GLOBS: logs,
+      # source maps, SVGs and named coverage reports) outside .github/. No
+      # added or changed file counts as inert: a log can be what a symlink
+      # runs, a lockfile decides what the build installs, .gitignore what gets
+      # committed, and an SVG can script. Unless deleted, these hold too: a
+      # file git shows only as "Binary files differ" that isn't inert media
+      # (MEDIA), a submodule bump (mode 160000: the diff shows only two commit
+      # IDs), a symlink (mode 120000: only its target shows) and a Git LFS
+      # pointer (only the pointer shows). INDEX lists them under "held"; the
+      # answer check turns them into a finding that holds the merge for a
+      # person. Attributes come
       # from the base (--attr-source), so a PR's own .gitattributes can't make
       # its text show as binary, and --no-textconv keeps a driver from
       # rewriting what the review sees. --no-renames shows a rename as the old
@@ -437,17 +437,18 @@ jobs:
           )
           # Files under bin/ that Copilot reviews all the same.
           COPILOT_INCLUDED_GLOBS = ("**/bin/**/*.rs", "**/hybris/bin/custom/**")
-          # The excluded files that are inert data, not code a build or CI runs
-          # nor a pin on what it installs or commits: unread, and they hold
-          # nothing. Every other excluded file holds. Coverage counts only as a
-          # named report file, since a folder named coverage can hold a build
-          # (pom.xml, package.json) or a page.
-          # Matched against a line with its whitespace stripped, as git-lfs reads one.
-          LFS_OID = re.compile(rb"oid sha256:[0-9a-f]{64}\Z")
-          LFS_LINE = re.compile(rb"(version \S+|ext-\d+-\w+ sha256:[0-9a-f]{64}|oid sha256:[0-9a-f]{64}|size \d+)\Z")
-          LFS_VERSION = re.compile(rb"version (https://git-lfs\.github\.com/spec/"
-                                   rb"|https://hawser\.github\.com/spec/v1|http://git-media\.io/v/2)")
-          DATA_GLOBS = ("**/*.log", "**/*.map", "**/coverage/**/lcov.info",
+          # Matched against a line as git-lfs reads one: decoded, with Unicode
+          # whitespace stripped (Go's TrimSpace). git-lfs checks an oid only for
+          # 64 letters or digits at its start.
+          LFS_OID = re.compile(r"oid sha256:[A-Za-z0-9]{64}")
+          LFS_LINE = re.compile(r"(version \S+|ext-\d+-\w+ sha256:[A-Za-z0-9]{64}\S*|oid sha256:[A-Za-z0-9]{64}\S*"
+                                r"|size \d+)\Z")
+          LFS_VERSION = re.compile(r"version (https://git-lfs\.github\.com/spec/"
+                                   r"|https://hawser\.github\.com/spec/v1|http://git-media\.io/v/2)")
+          # The excluded files whose deletion holds nothing: data nothing runs.
+          # Coverage counts only as a named report file, since a folder named
+          # coverage can hold a build (pom.xml, package.json) or a page.
+          DATA_GLOBS = ("**/*.log", "**/*.map", "**/*.svg", "**/coverage/**/lcov.info",
                         "**/coverage/**/*.lcov", "**/coverage/**/coverage-final.json",
                         "**/coverage/**/coverage-summary.json", "**/coverage/**/clover.xml",
                         "**/coverage/**/cobertura*.xml", "**/coverage/**/coverage.xml")
@@ -501,17 +502,18 @@ jobs:
               if not deleted and b"120000" in modes:
                   return "symlink"
               if excluded:
-                  data = any(pattern.match(bare) for pattern in DATA) or deleted and bare.lower().endswith(".svg")
-                  return "excluded" if bare.startswith(".github/") or not data else None
+                  data = any(pattern.match(bare) for pattern in DATA) and not bare.startswith(".github/")
+                  return None if deleted and data else "excluded"
               if deleted:
                   return None
               name = bare.rsplit("/", 1)[-1]
               media = "." in name and name.rsplit(".", 1)[-1].lower() in MEDIA
               # A pointer: every line the hunks show is blank or a pointer line, and one is its oid or a first
               # non-blank line naming any version git-lfs accepts (its older hawser and git-media aliases too), so
-              # a doc quoting one is text. git-lfs trims whitespace, drops a CR and skips blank lines, and so does
-              # this. Media stored in LFS is as inert as media.
-              shown = [(line[1:].strip(), new) for line, _, new, kind in body if kind in ("+", " ")]
+              # a doc quoting one is text. git-lfs trims Unicode whitespace, drops a CR and skips blank lines, and
+              # so does this. Media stored in LFS is as inert as media.
+              shown = [(line[1:].decode("utf-8", "replace").strip(), new) for line, _, new, kind in body
+                       if kind in ("+", " ")]
               blank = {new for line, new in shown if not line}
               if not media and any(line for line, _ in shown) and all(
                       not line or LFS_LINE.match(line) for line, _ in shown) and any(

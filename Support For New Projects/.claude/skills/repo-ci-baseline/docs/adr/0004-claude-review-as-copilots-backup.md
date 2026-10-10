@@ -163,19 +163,20 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     a PR changing only `.github/actions/*/dist/index.js` or a `vendor/*.min.js` merged on a review that read nothing,
     and a PR's own `.gitattributes` (`*.cs -diff`) or a NUL byte in a script made its change show only as "Binary files differ".
     So these hold the merge for a person, listed under `held` in INDEX and in the answer check's log:
-    - an excluded file that isn't inert data, deleted or not, and any excluded file under `.github/`.
-      Inert data (`DATA_GLOBS`) is logs, source maps and named coverage reports (`lcov.info`,
-      `coverage-final.json`, `cobertura*.xml` and the like, not any file under a folder named `coverage`).
-      A changed SVG holds unless it's deleted: it can script in more ways than a pattern lists
-      (a namespace prefix, a character reference, an escaped `srcdoc`, or uncommenting a script already there).
-      Lockfiles hold: they decide which dependency code the build installs and runs, and nobody reads them here.
-      So does `.gitignore`: it decides what gets committed, and dropping `.env` from it would let secrets be staged;
+    - every excluded file a PR adds or changes. No such file counts as inert: a log can be what a symlink already points at,
+      a lockfile decides which dependency code the build installs and runs, `.gitignore` decides what gets committed
+      (dropping `.env` would let secrets be staged), and an SVG can script in more ways than a pattern lists.
+      Successive reviews kept finding a new way around a "data holds nothing" exemption (a rename, a coverage folder holding a build,
+      a symlink to a log), so the exemption is gone for additions and changes;
+    - deleting an excluded file, unless it's data nothing runs (`DATA_GLOBS`: logs, source maps, SVGs and named coverage reports
+      such as `lcov.info` or `cobertura*.xml`) outside `.github/`;
     - unless deleted: a file git shows only as binary that isn't inert media (`MEDIA`: images, fonts, audio, video, PDFs),
       a submodule bump (mode 160000: the diff shows only two commit IDs), a symlink (mode 120000: only its target shows,
       and linking `scripts/build.sh` to an unread `.log` would make it run), and a Git LFS pointer (only the pointer shows)
       that isn't media. A pointer is known when every line its hunks show is a pointer line and one is its `oid sha256:` line
       or a first line naming any version git-lfs accepts, its older `hawser` and `git-media` aliases included;
-      a doc or fixture quoting a pointer is text. Lines are read as git-lfs reads them: whitespace trimmed, a CR dropped, blank lines skipped.
+      a doc or fixture quoting a pointer is text. Lines are read as git-lfs reads them: Unicode whitespace trimmed,
+      a CR dropped, blank lines skipped, and an oid as any 64 letters or digits.
 
     The diff takes attributes from the base (`--attr-source`), so a PR's own `.gitattributes` can't hide its text,
     and `--no-textconv` keeps a diff driver from rewriting what the review sees.

@@ -9,8 +9,6 @@ import { test } from "node:test";
 const WORKFLOW = new URL("../../workflows/pr-automerge.yml", import.meta.url);
 const OWNER = "octo";
 const HEAD = "abc123";
-// reapply.sh's branch, the head of a re-Apply PR.
-const REAPPLY_BRANCH = "chore/reapply-baseline";
 const NEEDS_HUMAN = "sandcastle:needs-human";
 
 // Returns the body of the `script: |` block scalar with its indentation removed.
@@ -40,7 +38,6 @@ function readyPr(overrides = {}) {
     isDraft: false,
     isCrossRepository: false,
     baseRefName: "main",
-    headRefName: "feature/x",
     headRefOid: HEAD,
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
@@ -87,17 +84,19 @@ function copilotReviewsOf(...commits) {
 // Claude Review's reviews (github-actions[bot] with the marker) of each given
 // commit, oldest first, with ids claude-1, claude-2, ... A { oid, merge: true }
 // entry is a merge commit; { oid, marked: false } is a github-actions[bot]
-// review without the marker; { oid, offDiff: true } has findings outside the diff.
+// review without the marker; { oid, offDiff: true } has findings outside the diff;
+// { oid, at } was submitted at that time (default: the Nth minute of 2026-01-02).
 function claudeReviewsOf(...commits) {
   return {
     nodes: commits.map((commit, index) => {
-      const { oid, merge, marked, offDiff } = typeof commit === "string" ? { oid: commit } : commit;
+      const { oid, merge, marked, offDiff, at } = typeof commit === "string" ? { oid: commit } : commit;
       const body = marked === false
         ? "Some other workflow's review."
         : offDiff
           ? CLAUDE_MARKER + "\n" + OFF_DIFF_MARKER + "\n**Claude Review**"
           : CLAUDE_MARKER + "\nNo findings.";
-      return { id: `claude-${index + 1}`, body, commit: { oid, parents: { totalCount: merge ? 2 : 1 } } };
+      const submittedAt = at ?? `2026-01-02T00:${String(index).padStart(2, "0")}:00Z`;
+      return { id: `claude-${index + 1}`, body, submittedAt, commit: { oid, parents: { totalCount: merge ? 2 : 1 } } };
     })
   };
 }
@@ -195,7 +194,8 @@ async function evaluate(pr, events = [], options = {}) {
     poster = POSTER,
     workflowRun,
     associated = [],
-    removeLabelError
+    removeLabelError,
+    eventsError
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -333,6 +333,10 @@ async function evaluate(pr, events = [], options = {}) {
       paginate: async (method, params) => {
         if (method === rest.issues.listEvents) {
           eventRequests.push(params);
+          // Only the first read fails, so a later one (the hand-back check) still works.
+          if (eventsError && eventRequests.length === 1) {
+            throw eventsError;
+          }
           return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
         }
         if (method === rest.issues.listComments) {
@@ -630,17 +634,74 @@ test("leaves review:claude on below the review cap", async () => {
   assert.deepEqual(removedLabels, []);
 });
 
-test("leaves review:claude on a re-Apply PR, which has no cap", async () => {
-  const pr = readyPr({
-    headRefName: REAPPLY_BRANCH,
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("one", "two", HEAD),
-    labels: labelled(CLAUDE_LABEL)
-  });
+test("leaves review:claude on at a cap reached on Copilot's reviews alone", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
   const { removedLabels } = await evaluate(pr);
 
   assert.deepEqual(removedLabels, []);
 });
+
+// A label event: review:claude added at the given time.
+function claudeLabelled(at) {
+  return { event: "labeled", label: { name: CLAUDE_LABEL }, created_at: at, actor: { login: OWNER } };
+}
+
+test("leaves review:claude on past the cap until Claude has reviewed since it was last added", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("one", "two", HEAD),
+    labels: labelled(CLAUDE_LABEL)
+  });
+  const { removedLabels } = await evaluate(pr, [claudeLabelled("2026-01-03T00:00:00Z")]);
+
+  assert.deepEqual(removedLabels, []);
+});
+
+test("takes review:claude off past the cap once Claude has reviewed since it was last added", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf("one", "two"),
+    claudeReviews: claudeReviewsOf({ oid: HEAD, at: "2026-01-03T00:05:00Z" }),
+    labels: labelled(CLAUDE_LABEL)
+  });
+  const { removedLabels } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z"), claudeLabelled("2026-01-03T00:00:00Z")]);
+
+  assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
+});
+
+test("falls back to any Claude review at the cap when the label events can't be read", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { removedLabels, logs } = await evaluate(pr, [], { eventsError: new Error("Server Error") });
+
+  assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
+  assert.ok(logs.some((line) => line.startsWith("warning: Couldn't read PR #7's label events")), logs.join("\n"));
+});
+
+test("keeps review:claude at the cap when the label events can't be read and Claude never reviewed", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { removedLabels } = await evaluate(pr, [], { eventsError: new Error("Server Error") });
+
+  assert.deepEqual(removedLabels, []);
+});
+
+test("asks for when each Claude review was submitted", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.some((query) => /claudeReviews:[\s\S]*\bsubmittedAt\b/.test(query)), queries.join("\n"));
+});
+
+for (const [scenario, overrides] of [
+  ["a fork", { isCrossRepository: true }],
+  ["a PR into another branch", { baseRefName: "release" }],
+  ["a merged PR", { state: "MERGED" }],
+  ["a closed PR", { state: "CLOSED" }]
+]) {
+  test(`leaves review:claude on ${scenario} at the review cap`, async () => {
+    const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL), ...overrides });
+    const { removedLabels } = await evaluate(pr);
+
+    assert.deepEqual(removedLabels, []);
+  });
+}
 
 test("removes nothing at the review cap when the PR doesn't carry review:claude", async () => {
   const { removedLabels } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD) }));
@@ -649,7 +710,7 @@ test("removes nothing at the review cap when the PR doesn't carry review:claude"
 });
 
 test("still merges at the cap when taking review:claude off fails, warning about it", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
   const { merges, logs } = await evaluate(pr, [], { removeLabelError: Object.assign(new Error("Resource not accessible"), { status: 403 }) });
 
   assert.equal(merges.length, 1);
@@ -662,7 +723,7 @@ for (const [scenario, overrides] of [
   ["red on CI", { mergeStateStatus: "UNSTABLE" }]
 ]) {
   test(`takes review:claude off a PR at the review cap that's ${scenario}`, async () => {
-    const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), labels: labelled(CLAUDE_LABEL), ...overrides });
+    const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf("three"), labels: labelled(CLAUDE_LABEL), ...overrides });
     const { merges, removedLabels } = await evaluate(pr);
 
     assert.deepEqual(merges, []);
@@ -671,7 +732,7 @@ for (const [scenario, overrides] of [
 }
 
 test("says nothing at the cap when review:claude is already gone (404)", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
   const { merges, logs } = await evaluate(pr, [], { removeLabelError: Object.assign(new Error("Label does not exist"), { status: 404 }) });
 
   assert.equal(merges.length, 1);
@@ -833,66 +894,12 @@ test("ignores off-diff findings on an older head at the cap", async () => {
   assert.equal(merges.length, 1);
 });
 
-// A re-Apply PR has no review cap: its rounds come from re-Apply commits, not
-// from chasing comments, and it changes the gate itself.
-test("still waits on an unresolved Copilot thread past the cap on a re-Apply PR", async () => {
-  const pr = readyPr({
-    headRefName: REAPPLY_BRANCH,
-    copilotReviews: copilotReviewsOf("one", "two", HEAD),
-    reviewThreads: threadsBy(COPILOT)
-  });
-  const { merges, logs } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-  assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
-});
-
-test("still waits on an unresolved Claude thread past the cap on a re-Apply PR", async () => {
-  const pr = readyPr({
-    headRefName: REAPPLY_BRANCH,
-    copilotReviews: copilotReviewsOf("one", "two"),
-    claudeReviews: claudeReviewsOf(HEAD),
-    reviewThreads: threadsBy({ login: ACTIONS, review: "claude-1" })
-  });
-  const { merges, logs } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-  assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
-});
-
-test("still waits for a review of the head past the cap on a re-Apply PR", async () => {
-  const pr = readyPr({ headRefName: REAPPLY_BRANCH, copilotReviews: copilotReviewsOf("one", "two", "three") });
-  const { merges } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-});
-
-test("still waits on off-diff findings past the cap on a re-Apply PR", async () => {
-  const pr = readyPr({
-    headRefName: REAPPLY_BRANCH,
-    copilotReviews: copilotReviewsOf("one", "two"),
-    claudeReviews: claudeReviewsOf({ oid: HEAD, offDiff: true })
-  });
-  const { merges } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-});
-
-test("merges a re-Apply PR past the cap once its head is reviewed and its threads are resolved", async () => {
-  const pr = readyPr({
-    headRefName: REAPPLY_BRANCH,
-    copilotReviews: copilotReviewsOf("one", "two", HEAD),
-    reviewThreads: threadsBy({ login: COPILOT, resolved: true })
-  });
+// A re-Apply PR is capped like any other (#174).
+test("merges a re-Apply PR past the cap without a review of the head, like any other", async () => {
+  const pr = readyPr({ headRefName: "chore/reapply-baseline", copilotReviews: copilotReviewsOf("one", "two", "three") });
   const { merges } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
-});
-
-test("asks for the head branch's name", async () => {
-  const { queries } = await evaluate(readyPr());
-
-  assert.ok(queries.some((query) => /\bheadRefName\b/.test(query)), queries.join("\n"));
 });
 
 // ── Merges from main onto a reviewed commit ─────────────────────────────────

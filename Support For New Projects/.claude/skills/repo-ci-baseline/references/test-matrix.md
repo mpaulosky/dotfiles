@@ -24,6 +24,9 @@ Tests run on **Microsoft Testing Platform** (`global.json` → `"test": {"runner
 cobertura` for coverage, not VSTest's `--logger` and `--collect`. A test project on VSTest fails under it; moving it is
 an Adapt step ([adapt.md](adapt.md#test-runner)). The coverage job gates on line coverage at the percentage in the Seed
 `.github/ci/coverage-threshold` (80 when the file is missing).
+Codecov's `patch` and `project` checks are informational (`codecov.yml`): they report on every PR but never fail it, so this
+gate is the only one. Their default targets compare against the base (100% on a fully covered repo, no drop at all), and
+PR Auto-Merge holds a PR with any failed check, so they blocked PRs that passed the gate (Blazor-Server #260, #184).
 
 Per-repo setup (publishing a project, pulling images, a build tool) goes in the Seed `.github/ci/prepare.sh`, which
 `ci.yml` calls as `prepare.sh build` and `prepare.sh test <test-name>` after the restore.

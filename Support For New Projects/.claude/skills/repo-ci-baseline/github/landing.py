@@ -57,6 +57,11 @@ ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, REQUEST_COPILOT, REQUEST_CLAUDE, ARM
            NOTHING)
 
 COPILOT = re.compile(r"copilot", re.IGNORECASE)
+# Copilot's review of a head once the account's Copilot code review quota is
+# used up: it reviewed nothing, so it isn't a review. PR Auto-Merge's
+# COPILOT_NO_REVIEW and claude-review.yml skip it the same way.
+# ASCII whitespace spelled out, not \s: gh's gojq (RE2) reads \s as ASCII only, JS and Python as Unicode.
+COPILOT_NO_REVIEW = re.compile(r"[ \t\r\n]*Copilot was unable to review")  # used with match()
 # Claude Review's login (GraphQL drops the "[bot]" suffix, REST keeps it) and
 # the marker its review bodies start with; post_claude_review.py writes both.
 GITHUB_ACTIONS = "github-actions"
@@ -133,6 +138,9 @@ class PrState:
     request didn't register (dropped or refused). Only a caller that asked
     and read it back knows this (land.py); a one-shot read (status.py) never
     sets it, so it shows the Copilot step.
+    copilot_declined: the commit oids Copilot answered with its quota note
+    (see copilot_declined()); on the head it calls in Claude, as a dropped
+    request does.
     want_ready: the caller's say that a draft should be marked ready.
     merged_by_workflow: the repo's own PR Auto-Merge workflow merges it (a
     Baseline repo), so it is left to that workflow rather than armed.
@@ -148,6 +156,7 @@ class PrState:
     copilot_requested: bool = False
     claude_requested: bool = False
     copilot_dropped: bool = False
+    copilot_declined: frozenset[str] = field(default_factory=frozenset)
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -185,8 +194,19 @@ class Decision:
 
 
 def copilot_reviews(reviews):
-    """The commit oids reviewed by Copilot, from (author login, commit oid) pairs."""
-    return frozenset(oid for login, oid in reviews if login and oid and COPILOT.search(login))
+    """The commit oids reviewed by Copilot, from (author login, commit oid, body) triples."""
+    return frozenset(oid for login, oid, body in reviews
+                     if login and oid and COPILOT.search(login) and not COPILOT_NO_REVIEW.match(body or ""))
+
+
+def copilot_declined(reviews):
+    """The commit oids Copilot answered with its quota note, from (author login, commit oid, body) triples.
+
+    Copilot was asked about these heads and can't review them, so asking again
+    only brings another note: decide() calls in Claude instead.
+    """
+    return frozenset(oid for login, oid, body in reviews
+                     if login and oid and COPILOT.search(login) and COPILOT_NO_REVIEW.match(body or ""))
 
 
 def is_claude_review(login, oid, body):
@@ -279,11 +299,14 @@ def decide(pr):
 def review_needed(pr, checks):
     """The decision for an open, current PR whose head no reviewer has reviewed."""
     waiting = f"no Copilot or Claude review of {pr.head[:7]} yet"
-    if pr.copilot_requested:
+    # Copilot answered this head with its quota note, so its request (if it
+    # still shows) brings no review: go on to Claude.
+    declined = pr.head in pr.copilot_declined
+    if pr.copilot_requested and not declined:
         return Decision(WAIT, waiting + "; Copilot is requested")
     if pr.claude_requested:
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
-    if not pr.copilot_dropped:
+    if not pr.copilot_dropped and not declined:
         return Decision(REQUEST_COPILOT, waiting + "; Copilot not requested")
     if len(pr.claude_reviewed) >= MAX_CLAUDE_ROUNDS:
         return Decision(WAIT, waiting + f"; Claude's {MAX_CLAUDE_ROUNDS} review rounds are used, the owner decides")
@@ -295,4 +318,5 @@ def review_needed(pr, checks):
                 if name not in CLAUDE_CHECKS]
     if not reported:  # every listed repo has CI, dotfiles included
         return Decision(WAIT, waiting + "; no checks on the head yet, so Claude waits for CI")
-    return Decision(REQUEST_CLAUDE, waiting + "; Copilot's request didn't register, checks green")
+    why = "Copilot couldn't review (its quota is used up)" if declined else "Copilot's request didn't register"
+    return Decision(REQUEST_CLAUDE, waiting + f"; {why}, checks green")

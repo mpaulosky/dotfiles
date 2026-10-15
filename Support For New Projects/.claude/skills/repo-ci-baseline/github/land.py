@@ -91,6 +91,8 @@ def run_gh(argv):
 
 
 # How many of the PR's review requests and reviews of its head are Copilot's.
+# Copilot's quota note counts here: Copilot was asked about the head and
+# answered, so asking again only brings another note (decide() calls in Claude).
 COPILOT_JQ = ('.headRefOid as $h | [(.reviewRequests[] | .login // .name // ""), '
               '(.reviews[] | select(.commit.oid == $h) | .author.login)] | map(select(test("copilot"; "i"))) | length')
 

@@ -171,6 +171,14 @@ jobs:
             // The second line of a Claude review with findings outside the
             // diff: they open no thread, so the review itself holds the merge.
             const OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->";
+            // Once the account's Copilot code review quota is used up, Copilot
+            // still posts a review of each head, whose body says it reviewed
+            // nothing. It covers no commit and counts toward no review round;
+            // claude-review.yml and the landing scripts skip it the same way
+            // (the start of the body, after any whitespace; github/tests/
+            // test_copilot_no_review.py holds the three together). Copilot's
+            // "wasn't able to review any files" (every file excluded) still counts.
+            const COPILOT_NO_REVIEW = /^[ \t\r\n]*Copilot was unable to review/;
             // How many merges from main in a row a reviewed commit can sit
             // under and still count as reviewed: each one costs a few API
             // calls, and a PR that chased main further gets a fresh review.
@@ -253,6 +261,7 @@ jobs:
                        # about 98 re-reviews of the same two commits.
                        copilotReviews: reviews(last: 100, author: "copilot-pull-request-reviewer[bot]") {
                          nodes {
+                           body
                            commit {
                              oid
                              parents { totalCount }
@@ -739,7 +748,8 @@ jobs:
               const claudeReviews = (pr.claudeReviews?.nodes ?? []).filter((review) => {
                 return review.body?.startsWith(CLAUDE_MARKER);
               });
-              const reviewed = [...pr.copilotReviews.nodes, ...claudeReviews]
+              const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
+              const reviewed = [...copilotReviews, ...claudeReviews]
                 .map((review) => review.commit)
                 .filter(Boolean);
               const reviewedCommits = new Set(reviewed.map((commit) => commit.oid));

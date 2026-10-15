@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, claude_off_diff, claude_reviews,
-                     copilot_reviews, decide, summarize_checks)
+                     copilot_declined, copilot_reviews, decide, summarize_checks)
 from settings import read_repo_list
 
 QUERY = """
@@ -101,7 +101,8 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         state=node["state"],
         draft=node["isDraft"],
         head=node["headRefOid"],
-        copilot_reviewed=copilot_reviews((login, oid) for login, oid, _ in reviews),
+        copilot_reviewed=copilot_reviews(reviews),
+        copilot_declined=copilot_declined(reviews),
         claude_reviewed=claude_reviews(reviews),
         claude_off_diff=claude_off_diff(reviews),
         copilot_requested=any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested),

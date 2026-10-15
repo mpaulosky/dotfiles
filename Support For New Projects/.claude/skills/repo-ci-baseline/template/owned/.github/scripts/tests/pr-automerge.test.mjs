@@ -70,13 +70,19 @@ function requiredCheck(name, overrides = {}) {
   };
 }
 
+// What Copilot posts, as a review of the head, when the account's Copilot
+// code review quota is used up: it reviewed nothing.
+const COPILOT_QUOTA_NOTE =
+  "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
+
 // Copilot reviews of each given commit, oldest first. A { oid, merge: true }
-// entry is a merge commit, such as a merge from main.
+// entry is a merge commit, such as a merge from main; { oid, note: true } is
+// Copilot's quota note rather than a review.
 function copilotReviewsOf(...commits) {
   return {
     nodes: commits.map((commit) => {
-      const { oid, merge } = typeof commit === "string" ? { oid: commit, merge: false } : commit;
-      return { commit: { oid, parents: { totalCount: merge ? 2 : 1 } } };
+      const { oid, merge, note } = typeof commit === "string" ? { oid: commit, merge: false, note: false } : commit;
+      return { body: note ? COPILOT_QUOTA_NOTE : "", commit: { oid, parents: { totalCount: merge ? 2 : 1 } } };
     })
   };
 }
@@ -549,6 +555,31 @@ test("merges without a review of the head once Copilot reviewed three commits", 
     logs.some((line) => line.includes("Review cap (3) reached") && line.includes("without a review of " + HEAD)),
     logs.join("\n")
   );
+});
+
+test("waits when Copilot's only review of the head is its quota note", async () => {
+  const { merges, logs } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", { oid: HEAD, note: true }) }));
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), logs.join("\n"));
+});
+
+test("doesn't count Copilot's quota notes toward the review cap", async () => {
+  const reviews = copilotReviewsOf("one", { oid: "two", note: true }, { oid: "three", note: true });
+  const { merges } = await evaluate(readyPr({ copilotReviews: reviews }));
+
+  assert.deepEqual(merges, []);
+});
+
+test("merges on Claude's review of the head when Copilot only posted its quota note", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf({ oid: HEAD, note: true }),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL)
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
 });
 
 test("counts reviewed commits, not reviews, toward the cap", async () => {

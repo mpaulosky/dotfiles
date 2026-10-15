@@ -33,6 +33,14 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Readiness** comes from one GraphQL query: state, draft, fork, mergeability, `mergeStateStatus`, the auto-merge request, both reviewers' reviews and the review threads.
   The reviews are fetched by author, `copilot-pull-request-reviewer[bot]` and `github-actions[bot]`, so thread replies can't push them off the page.
   A `github-actions[bot]` review counts as Claude's only when its body starts with `<!-- claude-review -->`.
+  A Copilot review counts only when it reviewed something. Once the account's Copilot code review quota is used up, Copilot still posts a review
+  of each head whose body starts "Copilot was unable to review" (`COPILOT_NO_REVIEW`). It covers no commit and counts toward no round.
+  `claude-review.yml`'s reviewed list and the landing scripts (`landing.COPILOT_NO_REVIEW`) skip it the same way: the start of the body, after any
+  whitespace. Copilot's "wasn't able to review any files" note (every changed file is one it excludes) still counts, as before.
+  `github/tests/test_copilot_no_review.py` runs the JS, jq and Python patterns on the same bodies.
+  `land.sh` treats a head Copilot answered with the note as it treats a dropped request: it adds `review:claude` rather than asking Copilot again.
+  Counting it let
+  Blazor-Server#390 merge an unreviewed head and made Claude Review skip that head and Blazor-Server#392's (Blazor-Server#393).
   A reviewer must have reviewed the `headRefOid`, or the commit a chain of clean merges from main sits on (below).
   More threads than one page is left to a person.
 - **Review cap.** Each reviewer re-reviews every push and can raise something new each time, so a PR could chase its reviews forever.

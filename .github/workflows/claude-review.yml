@@ -170,8 +170,11 @@ jobs:
             done < "${RUNNER_TEMP}/run-ids.txt"
           fi
           # Commits Copilot or Claude Review (a marked github-actions[bot] review) reviewed.
+          # Copilot's note that it couldn't review (its quota is used up) covers
+          # nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
           gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --jq '.[]
-            | select(.user.login == "copilot-pull-request-reviewer[bot]"
+            | select((.user.login == "copilot-pull-request-reviewer[bot]"
+                and ((.body // "") | test("\\A[ \\t\\r\\n]*Copilot was unable to review") | not))
               or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))))
             | .commit_id' > "${RUNNER_TEMP}/reviewed.txt"
           python3 -I - <<'PY'
@@ -278,7 +281,10 @@ jobs:
               commit = covering(head, lambda commit: commit in reviewed) if honoured else None
               skip = commit is not None
               if skip:
-                  print(f"::notice::{head} only merges main into {commit}, which was reviewed, so Claude doesn't review it again.")
+                  if commit == head:
+                      print(f"::notice::{head} was reviewed, so Claude doesn't review it again.")
+                  else:
+                      print(f"::notice::{head} only merges main into {commit}, which was reviewed, so Claude doesn't review it again.")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as file:
               file.write(f"skip={'true' if skip else 'false'}\n")
               file.write(f"stale={'true' if current != head and not skip else 'false'}\n")

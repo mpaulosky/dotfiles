@@ -241,8 +241,35 @@ def test_a_merged_or_closed_pr_needs_nothing():
 
 
 def test_copilot_reviews_match_any_copilot_login():
-    reviews = [("copilot-pull-request-reviewer", HEAD), ("Copilot", OLD), ("mpaulosky", "c" * 40), (None, "d" * 40)]
+    reviews = [("copilot-pull-request-reviewer", HEAD, ""), ("Copilot", OLD, None), ("mpaulosky", "c" * 40, ""),
+               (None, "d" * 40, "")]
     assert ld.copilot_reviews(reviews) == frozenset({HEAD, OLD})
+
+
+def test_copilot_reviews_skip_the_quota_note():
+    note = ("Copilot was unable to review this pull request because the user who requested the review has reached "
+            "their quota limit.")
+    reviews = [("copilot-pull-request-reviewer", HEAD, note), ("copilot-pull-request-reviewer", OLD, "## Overview")]
+    assert ld.copilot_reviews(reviews) == frozenset({OLD})
+
+
+def test_copilot_declined_lists_the_heads_copilot_answered_with_its_quota_note():
+    note = "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit."
+    reviews = [("copilot-pull-request-reviewer", HEAD, note), ("copilot-pull-request-reviewer", OLD, "## Overview"),
+               ("mpaulosky", "c" * 40, note)]
+    assert ld.copilot_declined(reviews) == frozenset({HEAD})
+
+
+def test_a_head_copilot_declined_calls_in_claude_rather_than_copilot_again():
+    declined = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_declined=frozenset({HEAD}))
+    decision = ld.decide(declined)
+    assert decision.action == ld.REQUEST_CLAUDE
+    assert "Copilot couldn't review" in decision.reason
+    # A request that still shows after the note doesn't hold it.
+    assert ld.decide(replace(declined, copilot_requested=True)).action == ld.REQUEST_CLAUDE
+    # Copilot's note on an older head doesn't stop it being asked about this one.
+    older = replace(declined, copilot_declined=frozenset({OLD}))
+    assert ld.decide(older).action == ld.REQUEST_COPILOT
 
 
 def test_claude_reviews_are_marked_github_actions_reviews():

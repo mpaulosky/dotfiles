@@ -29,8 +29,8 @@ NOTE = ("Copilot was unable to review this pull request because the user who req
 BODIES = {
     "the quota note": (NOTE, True),
     "the note after leading whitespace": ("\n  " + NOTE, True),
-    "the wasn't-able wording": ("Copilot wasn't able to review any files in this pull request.", True),
-    "a typographic apostrophe": ("Copilot wasn’t able to review any files in this pull request.", True),
+    # Copilot's note when every changed file is one it excludes (a lockfile-only PR) still counts, as it did.
+    "the no-reviewable-files note": ("Copilot wasn't able to review any files in this pull request.", False),
     "a real review": ("## Pull request overview\n\nThis PR fixes the cap.", False),
     "a real review that quotes the note on a later line": (
         "## Pull request overview\n\nCopilot was unable to review 2 files:\n- a.bin", False),

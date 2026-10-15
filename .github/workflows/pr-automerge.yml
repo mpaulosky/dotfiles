@@ -174,8 +174,10 @@ jobs:
             // Once the account's Copilot code review quota is used up, Copilot
             // still posts a review of each head, whose body says it reviewed
             // nothing. It covers no commit and counts toward no review round;
-            // claude-review.yml and the landing scripts skip it the same way.
-            const COPILOT_NO_REVIEW = /^Copilot (?:was unable|wasn't able) to review/;
+            // claude-review.yml and the landing scripts skip it the same way
+            // (the start of the body, after any whitespace, either apostrophe;
+            // github/tests/test_copilot_no_review.py holds the three together).
+            const COPILOT_NO_REVIEW = /^\s*Copilot (?:was unable|wasn['’]t able) to review/;
             // How many merges from main in a row a reviewed commit can sit
             // under and still count as reviewed: each one costs a few API
             // calls, and a PR that chased main further gets a fresh review.

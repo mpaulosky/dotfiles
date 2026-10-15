@@ -91,11 +91,10 @@ def run_gh(argv):
 
 
 # How many of the PR's review requests and reviews of its head are Copilot's.
-# Copilot's note that its quota is used up isn't a review (landing.COPILOT_NO_REVIEW).
+# Copilot's quota note counts here: Copilot was asked about the head and
+# answered, so asking again only brings another note (decide() calls in Claude).
 COPILOT_JQ = ('.headRefOid as $h | [(.reviewRequests[] | .login // .name // ""), '
-              '(.reviews[] | select(.commit.oid == $h) '
-              '| select((.body // "") | test("^Copilot (was unable|wasn\'t able) to review") | not) | .author.login)] '
-              '| map(select(test("copilot"; "i"))) | length')
+              '(.reviews[] | select(.commit.oid == $h) | .author.login)] | map(select(test("copilot"; "i"))) | length')
 
 
 def gh_copilot_requested(repo, number):

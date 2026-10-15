@@ -174,7 +174,7 @@ jobs:
           # nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
           gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --jq '.[]
             | select((.user.login == "copilot-pull-request-reviewer[bot]"
-                and ((.body // "") | test("\\A\\s*Copilot was unable to review") | not))
+                and ((.body // "") | test("\\A[ \\t\\r\\n]*Copilot was unable to review") | not))
               or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))))
             | .commit_id' > "${RUNNER_TEMP}/reviewed.txt"
           python3 -I - <<'PY'

@@ -60,7 +60,8 @@ COPILOT = re.compile(r"copilot", re.IGNORECASE)
 # Copilot's review of a head once the account's Copilot code review quota is
 # used up: it reviewed nothing, so it isn't a review. PR Auto-Merge's
 # COPILOT_NO_REVIEW and claude-review.yml skip it the same way.
-COPILOT_NO_REVIEW = re.compile(r"\s*Copilot was unable to review")  # used with match()
+# ASCII whitespace spelled out, not \s: gh's gojq (RE2) reads \s as ASCII only, JS and Python as Unicode.
+COPILOT_NO_REVIEW = re.compile(r"[ \t\r\n]*Copilot was unable to review")  # used with match()
 # Claude Review's login (GraphQL drops the "[bot]" suffix, REST keeps it) and
 # the marker its review bodies start with; post_claude_review.py writes both.
 GITHUB_ACTIONS = "github-actions"

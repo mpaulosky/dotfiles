@@ -178,7 +178,7 @@ jobs:
             // (the start of the body, after any whitespace; github/tests/
             // test_copilot_no_review.py holds the three together). Copilot's
             // "wasn't able to review any files" (every file excluded) still counts.
-            const COPILOT_NO_REVIEW = /^\s*Copilot was unable to review/;
+            const COPILOT_NO_REVIEW = /^[ \t\r\n]*Copilot was unable to review/;
             // How many merges from main in a row a reviewed commit can sit
             // under and still count as reviewed: each one costs a few API
             // calls, and a PR that chased main further gets a fresh review.

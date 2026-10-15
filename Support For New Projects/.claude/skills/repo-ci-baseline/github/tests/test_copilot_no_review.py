@@ -35,6 +35,8 @@ BODIES = {
     "a real review that quotes the note on a later line": (
         "## Pull request overview\n\nCopilot was unable to review 2 files:\n- a.bin", False),
     "an empty body": ("", False),
+    # Not ASCII whitespace, so every engine reads it the same way: not the note.
+    "the note after a no-break space": ("\u00a0" + NOTE, False),
 }
 
 
@@ -62,10 +64,14 @@ def test_landing_and_pr_automerge_agree(name):
     assert bool(js_pattern().search(body)) is is_note
 
 
-@pytest.mark.skipif(shutil.which("jq") is None, reason="jq isn't installed")
 def test_claude_review_jq_agrees():
+    # claude-review.yml runs the filter through gh api --jq, which embeds gojq (Go's RE2 regexes); prefer it, and
+    # fall back to jq (Oniguruma), which reads these spelled-out patterns the same way.
+    engine = shutil.which("gojq") or shutil.which("jq")
+    if engine is None:
+        pytest.fail("neither gojq nor jq is installed, so claude-review.yml's filter can't be checked")
     reviews = [{"user": {"login": LOGIN}, "body": body, "commit_id": name} for name, (body, _) in BODIES.items()]
-    run = subprocess.run(["jq", "-r", jq_program()], input=json.dumps(reviews), capture_output=True, text=True,
+    run = subprocess.run([engine, "-r", jq_program()], input=json.dumps(reviews), capture_output=True, text=True,
                          check=True)
     counted = set(run.stdout.split("\n")) - {""}
     assert counted == {name for name, (_, is_note) in BODIES.items() if not is_note}

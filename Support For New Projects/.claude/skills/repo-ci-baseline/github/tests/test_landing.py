@@ -241,8 +241,16 @@ def test_a_merged_or_closed_pr_needs_nothing():
 
 
 def test_copilot_reviews_match_any_copilot_login():
-    reviews = [("copilot-pull-request-reviewer", HEAD), ("Copilot", OLD), ("mpaulosky", "c" * 40), (None, "d" * 40)]
+    reviews = [("copilot-pull-request-reviewer", HEAD, ""), ("Copilot", OLD, None), ("mpaulosky", "c" * 40, ""),
+               (None, "d" * 40, "")]
     assert ld.copilot_reviews(reviews) == frozenset({HEAD, OLD})
+
+
+def test_copilot_reviews_skip_the_quota_note():
+    note = ("Copilot was unable to review this pull request because the user who requested the review has reached "
+            "their quota limit.")
+    reviews = [("copilot-pull-request-reviewer", HEAD, note), ("copilot-pull-request-reviewer", OLD, "## Overview")]
+    assert ld.copilot_reviews(reviews) == frozenset({OLD})
 
 
 def test_claude_reviews_are_marked_github_actions_reviews():

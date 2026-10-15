@@ -101,7 +101,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         state=node["state"],
         draft=node["isDraft"],
         head=node["headRefOid"],
-        copilot_reviewed=copilot_reviews((login, oid) for login, oid, _ in reviews),
+        copilot_reviewed=copilot_reviews(reviews),
         claude_reviewed=claude_reviews(reviews),
         claude_off_diff=claude_off_diff(reviews),
         copilot_requested=any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested),

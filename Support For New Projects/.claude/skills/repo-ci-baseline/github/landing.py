@@ -57,6 +57,10 @@ ACTIONS = (WAIT, MARK_READY, UPDATE_BRANCH, REQUEST_COPILOT, REQUEST_CLAUDE, ARM
            NOTHING)
 
 COPILOT = re.compile(r"copilot", re.IGNORECASE)
+# Copilot's review of a head once the account's Copilot code review quota is
+# used up: it reviewed nothing, so it isn't a review. PR Auto-Merge's
+# COPILOT_NO_REVIEW and claude-review.yml skip it the same way.
+COPILOT_NO_REVIEW = re.compile(r"^Copilot (?:was unable|wasn't able) to review")
 # Claude Review's login (GraphQL drops the "[bot]" suffix, REST keeps it) and
 # the marker its review bodies start with; post_claude_review.py writes both.
 GITHUB_ACTIONS = "github-actions"
@@ -185,8 +189,9 @@ class Decision:
 
 
 def copilot_reviews(reviews):
-    """The commit oids reviewed by Copilot, from (author login, commit oid) pairs."""
-    return frozenset(oid for login, oid in reviews if login and oid and COPILOT.search(login))
+    """The commit oids reviewed by Copilot, from (author login, commit oid, body) triples."""
+    return frozenset(oid for login, oid, body in reviews
+                     if login and oid and COPILOT.search(login) and not COPILOT_NO_REVIEW.match(body or ""))
 
 
 def is_claude_review(login, oid, body):

@@ -579,7 +579,7 @@ test("waits when Copilot's only review of the head is its quota note", async () 
   assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), logs.join("\n"));
 });
 
-// Calling in Claude (#190): Copilot's quota note on the head means no review of it is coming.
+// Calling in Claude (mpaulosky/dotfiles#190): Copilot's quota note on the head means no review of it is coming.
 const DECLINED = copilotReviewsOf("one", { oid: HEAD, note: true });
 
 test("calls in Claude with the PAT when Copilot's quota note is the head's only review and its checks passed", async () => {
@@ -833,7 +833,7 @@ test("leaves review:claude on below the review cap and MAX_CLAUDE_ROUNDS", async
   assert.deepEqual(removedLabels, []);
 });
 
-test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits, whoever added it (#190)", async () => {
+test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits, whoever added it (mpaulosky/dotfiles#190)", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", HEAD), labels: labelled(CLAUDE_LABEL) });
   // Claude's reviews are from 2026-01-02, after the label went on.
   const { removedLabels, logs } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z")]);
@@ -1133,7 +1133,7 @@ test("ignores off-diff findings on an older head at the cap", async () => {
   assert.equal(merges.length, 1);
 });
 
-// A re-Apply PR is capped like any other (#174).
+// A re-Apply PR is capped like any other (mpaulosky/dotfiles#174).
 test("merges a re-Apply PR past the cap without a review of the head, like any other", async () => {
   const pr = readyPr({ headRefName: "chore/reapply-baseline", copilotReviews: copilotReviewsOf("one", "two", "three") });
   const { merges } = await evaluate(pr);
@@ -1184,12 +1184,12 @@ test("waits on a merge from main that also changes a file", async () => {
   assertWaitsForReview(await evaluate(mergedPr("merge1"), [], { commits }), "merge1");
 });
 
-test("waits on a merge from main that only changes a file's mode (#155)", async () => {
+test("waits on a merge from main that only changes a file's mode (mpaulosky/dotfiles#155)", async () => {
   const commits = graph({ merge1: { parents: ["rev", "main1"], files: { app: { sha: "app1", mode: "100755" }, lib: "lib1" } } });
   assertWaitsForReview(await evaluate(mergedPr("merge1"), [], { commits }), "merge1");
 });
 
-test("waits on a merge from main that swaps a file for a symlink with the same blob (#155)", async () => {
+test("waits on a merge from main that swaps a file for a symlink with the same blob (mpaulosky/dotfiles#155)", async () => {
   const commits = graph({ merge1: { parents: ["rev", "main1"], files: { app: "app1", lib: { sha: "lib1", mode: "120000" } } } });
   assertWaitsForReview(await evaluate(mergedPr("merge1"), [], { commits }), "merge1");
 });
@@ -1666,7 +1666,7 @@ test("a push to main sweeps the open PRs and brings the ready ones up to date", 
   );
 });
 
-test("a sweep brings only one ready BEHIND PR up to date, the first listed (#155)", async () => {
+test("a sweep brings only one ready BEHIND PR up to date, the first listed (mpaulosky/dotfiles#155)", async () => {
   const behind = readyPr({ mergeStateStatus: "BEHIND" });
   const { updates, logs } = await evaluate(behind, [], { push: true, openPrs: [7, 8, 9] });
 

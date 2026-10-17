@@ -24,7 +24,7 @@ coverage:
     # .github/ci/coverage-threshold; Codecov's default targets compare
     # against the base instead (100% on a fully covered repo), and PR
     # Auto-Merge holds any PR with a failed check, so a red one would
-    # block PRs that pass the repo's gate (#184).
+    # block PRs that pass the repo's gate (mpaulosky/dotfiles#184).
     patch:
       default:
         informational: true

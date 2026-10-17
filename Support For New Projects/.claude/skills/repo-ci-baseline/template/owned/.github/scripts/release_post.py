@@ -386,7 +386,7 @@ def from_column(raw, column):
     """The raw line from a column of its tab-expanded form on, tabs and all.
 
     Columns are only used to find where the code starts; the code itself is
-    the raw text (#58). A tab that straddles the column leaves its remaining
+    the raw text (mpaulosky/dotfiles#58). A tab that straddles the column leaves its remaining
     columns as spaces, as CommonMark does.
     """
     raw = raw.removesuffix("\r")
@@ -442,7 +442,7 @@ def scan_blocks(lines, headings, code=None, blocks=None, continued=None, prefixe
     paragraph, then opens new containers before its content is read. Columns
     are measured with tabs expanded to CommonMark's 4-column stops, and a
     blank line holds only spaces and tabs (a non-breaking space is text). A
-    code block's "content" is taken from the raw lines, tabs and all (#58).
+    code block's "content" is taken from the raw lines, tabs and all (mpaulosky/dotfiles#58).
     """
     code = set() if code is None else code
     continued = set() if continued is None else continued
@@ -619,7 +619,7 @@ def scan_blocks(lines, headings, code=None, blocks=None, continued=None, prefixe
 # re-emitted as a fence both parsers read the same way, and a code span holding
 # anything that's escaped elsewhere becomes <code> with every symbol as an
 # entity. From mpaulosky/dotfiles#48. Code is found first, on the raw text, and
-# everything else is changed only outside it (#58).
+# everything else is changed only outside it (mpaulosky/dotfiles#58).
 
 SAFE_SCHEMES = {"http", "https", "mailto"}
 SCHEME = re.compile(r"([a-z][a-z0-9+.\-]*):")
@@ -842,7 +842,7 @@ def paragraph_breaks(lines, continues=None):
 
     continues[i] says whether lines[i] continues a paragraph, as scan_blocks()
     reports it in `continued`. A caller that scanned the whole document passes
-    it, so a run of its lines is read in its place (#58); without it, the lines
+    it, so a run of its lines is read in its place (mpaulosky/dotfiles#58); without it, the lines
     are scanned on their own.
     """
     if continues is None:
@@ -997,10 +997,10 @@ def inline_code(text, continues=None, html=False, definitions=True, prefixes=Non
     comment's opener, and a comment hides the backticks inside it. A run opens
     a span only where a later run of the same length closes it; a backslash
     escapes a run's first backtick. A span may cross line breaks, but only
-    within its paragraph (#57); `continues` is as for paragraph_breaks(). A
+    within its paragraph (mpaulosky/dotfiles#57); `continues` is as for paragraph_breaks(). A
     comment ends at the first "-->", wherever it is, as the sanitizer has
     always dropped it. A complete inline link's destination and title are
-    skipped, so their backticks open no span (#58). A "](" is a link's only
+    skipped, so their backticks open no span (mpaulosky/dotfiles#58). A "](" is a link's only
     where an unescaped "[" earlier in the paragraph, outside code and
     comments, is still open and active; otherwise it is text and its
     backticks pair. As in CommonMark, a link deactivates the link (not image)
@@ -1138,7 +1138,7 @@ def sanitize_text(text, continues=None, liquid=False, definitions=True):
     """Untrusted Markdown text (no code blocks) made safe to publish; HTML comments are dropped.
 
     Code spans and comments are found first, on the raw text, so code keeps
-    its text (#58). A span holding anything risky becomes <code>; one that
+    its text (mpaulosky/dotfiles#58). A span holding anything risky becomes <code>; one that
     crossed a line break has it as a space, as CommonMark renders it. The rest
     is prose: the comments are dropped from it, so a destination a comment
     split is read whole, then its links are neutralized and its HTML escaped.
@@ -1655,7 +1655,7 @@ def replace_between(text, name, lines):
 
 
 def collapse_blank_lines(markdown):
-    """Markdown with each run of empty lines outside code cut to one; code keeps its own (#58)."""
+    """Markdown with each run of empty lines outside code cut to one; code keeps its own (mpaulosky/dotfiles#58)."""
     lines = markdown.split("\n")
     code = {index for block in code_blocks(lines) for index in range(block["lines"][0], block["lines"][-1] + 1)}
     out = []
@@ -1719,7 +1719,7 @@ def update_index_html(path, entries, posts, repository):
 
 # README.md links by path from the repository root (docs/blogs/post.md,
 # src/Web); copied verbatim into docs/ they would resolve one directory too
-# deep. From TicketManager #104.
+# deep. From TicketManager#104.
 
 # What follows an inline link's destination: an optional "title", 'title' or
 # (title), then the closing parenthesis. As in LINK_SPACE, each space between
@@ -1818,7 +1818,7 @@ def rebase_text_links(lines, continues=None, prefixes=None):
     Links are found as inline_code() finds them: a reference definition is
     read before any code span, so code in its label doesn't hide its
     destination, and so is an inline link's destination and title, so code in
-    its title doesn't either (#58). A "](" with no open label is text, and so
+    its title doesn't either (mpaulosky/dotfiles#58). A "](" with no open label is text, and so
     is a line that only starts like a definition. An inline HTML tag is read
     whole, as GitHub reads it, so a "]" in its attributes closes no label.
     `continues` is as for paragraph_breaks(), and `prefixes` as for

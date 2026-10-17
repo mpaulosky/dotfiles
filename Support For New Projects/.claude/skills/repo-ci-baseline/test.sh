@@ -114,6 +114,40 @@ if grep -rnE '\{\{[A-Z_]+\}\}' "$owned"; then
   fail "Owned files must not carry {{PLACEHOLDER}}s; per-repo values belong in Seed files"
 fi
 
+step "Issue references in Owned files name their repo"
+# Applied into a repo, a bare #N reads as that repo's own issue or PR
+# (mpaulosky/dotfiles#186): write mpaulosky/dotfiles#N, or <Repo>#N for
+# another repo's. A citation in parentheses is checked everywhere, tests
+# included; elsewhere every #N is, outside the tests' fixture data, except
+# HTML entities (&#9;) and the exact examples in EXAMPLES, so an example
+# hides nothing else on its line. Python, not grep -P, which BSD grep lacks.
+python3 -I - "$owned" <<'PY' || fail "write issue references in Owned files as mpaulosky/dotfiles#N (or <Repo>#N), not a bare #N"
+import pathlib, re, sys
+
+CITATION = re.compile(r"\((?:[^()]*, )?#\d+\)")
+BARE = re.compile(r"(?<![\w/&])#\d+\b")
+# Examples, not references: the exact text each one sits in.
+EXAMPLES = ("`Fixes #123`", "`Refs #456`", "Fixes #42", '"1, #3"', '("Fixes #16.")', "so PR #1 doesn't", "release for #10.")
+root = pathlib.Path(sys.argv[1])
+found = []
+for path in sorted(p for p in root.rglob("*") if p.is_file()):
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError:
+        continue
+    in_tests = "tests" in path.relative_to(root).parts
+    for number, line in enumerate(lines, 1):
+        text = line
+        for example in EXAMPLES:
+            # Not followed by a digit, so "Fixes #42" leaves "Fixes #421" whole.
+            text = re.sub(re.escape(example) + r"(?!\d)", "", text)
+        if CITATION.search(line) or (not in_tests and BARE.search(text)):
+            found.append(f"{path.relative_to(root)}:{number}: {line.strip()}")
+if found:
+    print("\n".join(found))
+sys.exit(1 if found else 0)
+PY
+
 step ".gitignore keeps secrets out"
 # Repos keep Auth0 and other secrets in .env, and the Template's .gitignore
 # replaces theirs on every Apply.

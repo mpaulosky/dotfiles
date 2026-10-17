@@ -39,6 +39,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   whitespace. Copilot's "wasn't able to review any files" note (every changed file is one it excludes) still counts, as before.
   `github/tests/test_copilot_no_review.py` runs the JS, jq and Python patterns on the same bodies.
   `land.sh` treats a head Copilot answered with the note as it treats a dropped request: it adds `review:claude` rather than asking Copilot again.
+  PR Auto-Merge does the same (#190), so a PR nobody lands with `land.sh` gets Claude's review too (#189 waited for one that never came).
   Counting it let
   Blazor-Server#390 merge an unreviewed head and made Claude Review skip that head and Blazor-Server#392's (Blazor-Server#393).
   A reviewer must have reviewed the `headRefOid`, or the commit a chain of clean merges from main sits on (below).
@@ -60,6 +61,14 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   such a run opens no thread and holds no merge, so it costs only the runs.
   A label added again past the cap gets one more Claude review: claude-review.yml decides from the `labeled` event's payload and has
   no `unlabeled` trigger, and a removal made with `GITHUB_TOKEN` starts no workflow, so that review runs to the end.
+- **Calling in Claude (#190).** When Copilot's quota note is the only review of the head and no review covers it below the cap,
+  the run adds `review:claude` on `land.sh`'s terms (`landing.review_needed`), whose constants a test holds in step:
+  every check on the head but Claude Review's own and this job's has reported and passed (a required one with no run yet is pending),
+  Claude has reviewed fewer than `MAX_CLAUDE_ROUNDS` (2) of the PR's commits, after which the owner decides, and the label isn't on.
+  A person who took the label off decides for that PR, so it isn't added back; this workflow's own removal at the cap doesn't count.
+  It adds the label with `RELEASE_PR_PAT`, since a label added with `GITHUB_TOKEN` starts no workflow and Claude Review would never run;
+  without the PAT it logs a notice to add it by hand. A failure is a warning, never a failed check.
+  The quota note and CI's completion both reach this workflow (PR Review Submitted, and the CI workflows' `workflow_run`), so whichever comes last adds it.
   The merge doesn't wait for it, though: an otherwise-ready PR past the cap can merge before it lands.
   Merges from `main` aren't rounds: the ruleset keeps branches up to date, so they'd use up the cap without a fix.
   Everything else still holds at the cap, and the log says when the cap let a PR through without a review of its head.
@@ -168,7 +177,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   `gh pr edit` and GraphQL `requestReviewsByLogin` return success with no request, and REST `requested_reviewers` returns 422 "not a collaborator".
   Seen on 2026-10-07 from about 20:30 UTC (#97: TicketManager#131, then every re-Apply PR of the #82 round).
   Until the budget resets no Copilot review comes, which stranded the whole round: nothing merged.
-  Claude Review is the way out now: `review:claude` (added by the tooling, or by hand) gets the head a review this workflow accepts.
+  Claude Review is the way out now: `review:claude` (added by PR Auto-Merge once Copilot posts its quota note on the head, by the tooling, or by hand) gets the head a review this workflow accepts.
   A repo without `CLAUDE_CODE_OAUTH_TOKEN` skips it, so there the choice is still to wait for the reset or review and merge by hand.
   Release-blog PRs don't wait for a review and still land.
 

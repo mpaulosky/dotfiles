@@ -1,5 +1,6 @@
 """Tests for github/landing.py: fixture PR states in, one action out. No GitHub."""
 
+import re
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -101,6 +102,16 @@ def test_review_cap_matches_pr_auto_merges():
     workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
     text = workflow.read_text(encoding="utf-8")
     assert f"const COPILOT_REVIEW_CAP = {ld.REVIEW_CAP};" in text
+
+
+def test_pr_auto_merge_calls_in_claude_on_the_same_terms():
+    # PR Auto-Merge adds review:claude itself when Copilot's quota note is the head's only review (#190).
+    workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
+    text = workflow.read_text(encoding="utf-8")
+    assert f"const MAX_CLAUDE_ROUNDS = {ld.MAX_CLAUDE_ROUNDS};" in text
+    checks = ", ".join(f'"{name}"' for name in sorted(ld.CLAUDE_CHECKS))
+    found = re.search(r"const CLAUDE_CHECKS = \[(.*)\];", text)
+    assert found and ", ".join(sorted(n.strip() for n in found[1].split(","))) == checks
 
 
 def test_no_checks_at_all_is_not_green():

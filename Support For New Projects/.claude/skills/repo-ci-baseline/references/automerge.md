@@ -61,6 +61,12 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   such a run opens no thread and holds no merge, so it costs only the runs.
   A label added again past the cap gets one more Claude review: claude-review.yml decides from the `labeled` event's payload and has
   no `unlabeled` trigger, and a removal made with `GITHUB_TOKEN` starts no workflow, so that review runs to the end.
+  The merge doesn't wait for it, though: an otherwise-ready PR past the cap can merge before it lands.
+  Merges from `main` aren't rounds: the ruleset keeps branches up to date, so they'd use up the cap without a fix.
+  Everything else still holds at the cap, and the log says when the cap let a PR through without a review of its head.
+  A re-Apply PR (`chore/reapply-baseline`) is capped like any other since #174. It was exempt from #115 (Articles#298 merged past
+  a real Copilot finding on its third round), but with Claude reviewing each re-Apply commit across every repo, the exemption let a round
+  chase reviews indefinitely. A finding on a re-Apply PR is fixed in the Template and arrives with the next round.
 - **Calling in Claude (#190).** When Copilot's quota note is the only review of the head and no review covers it below the cap,
   the run adds `review:claude` on `land.sh`'s terms (`landing.review_needed`), whose constants a test holds in step:
   every check on the head but Claude Review's own and this job's has reported and passed (a required one with no run yet is pending),
@@ -68,13 +74,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A person who took the label off decides for that PR, so it isn't added back; this workflow's own removal at the cap doesn't count.
   It adds the label with `RELEASE_PR_PAT`, since a label added with `GITHUB_TOKEN` starts no workflow and Claude Review would never run;
   without the PAT it logs a notice to add it by hand. A failure is a warning, never a failed check.
-  The quota note and CI's completion both reach this workflow (PR Review Submitted, and the CI workflows' `workflow_run`), so whichever comes last adds it.
-  The merge doesn't wait for it, though: an otherwise-ready PR past the cap can merge before it lands.
-  Merges from `main` aren't rounds: the ruleset keeps branches up to date, so they'd use up the cap without a fix.
-  Everything else still holds at the cap, and the log says when the cap let a PR through without a review of its head.
-  A re-Apply PR (`chore/reapply-baseline`) is capped like any other since #174. It was exempt from #115 (Articles#298 merged past
-  a real Copilot finding on its third round), but with Claude reviewing each re-Apply commit across every repo, the exemption let a round
-  chase reviews indefinitely. A finding on a re-Apply PR is fixed in the Template and arrives with the next round.
+  When the quota note comes before CI finishes (as on #189), CI's `workflow_run` adds it.
+  When it comes after, nothing starts this workflow: GitHub holds any run a Copilot review starts at `action_required`
+  (see [Verify live](#verify-live)), so the next scheduled sweep adds it, often an hour or more later. That's accepted:
+  the PR would otherwise wait for a person, and the held run creates no check on the head, so it doesn't hold the label back.
 - **Merges from main keep their review** ([ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)).
   The head counts as reviewed when it is a merge whose first parent is reviewed (or is such a merge, up to `MERGE_CHAIN_LIMIT`, 5, deep),
   whose second parent is on `main`, and whose every file is what a clean merge gives: where only one side changed a file since the merge base,

@@ -619,6 +619,14 @@ test("doesn't call in Claude while a check runs, after one failed, or before CI 
   }
 });
 
+test("doesn't call in Claude for a head with a merge conflict, as landing.decide blocks on it", async () => {
+  for (const conflict of [{ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }, { mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" }]) {
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, ...conflict }));
+    assert.deepEqual(addedLabels, []);
+    assert.ok(logs.some((line) => line.includes("it has a merge conflict with main")), logs.join("\n"));
+  }
+});
+
 test("doesn't call in Claude when Copilot just hasn't reviewed the head, or its note is of an older commit", async () => {
   for (const copilotReviews of [copilotReviewsOf("one"), copilotReviewsOf({ oid: "one", note: true })]) {
     const { addedLabels } = await evaluate(readyPr({ copilotReviews }));

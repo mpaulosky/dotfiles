@@ -826,11 +826,16 @@ jobs:
               }
             }
 
-            // Why calling in Claude waits on the head's checks, or null when
-            // every check but Claude Review's own and this job's has reported
-            // and passed: the required ones, and the rest too, so Claude isn't
-            // spent on a head that needs a fix first.
+            // Why calling in Claude waits, or null when the head can merge
+            // with main and every check but Claude Review's own and this
+            // job's has reported and passed: the required ones, and the rest
+            // too, so Claude isn't spent on a head that needs a fix first.
             async function checksBeforeClaude(pr) {
+              // A conflict is landing.decide's blocker: the head has to change,
+              // and its resolution needs a fresh review anyway.
+              if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
+                return "it has a merge conflict with main";
+              }
               let requiredNames;
               try {
                 requiredNames = await requiredCheckNames(pr.baseRefName);

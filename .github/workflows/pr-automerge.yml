@@ -882,8 +882,9 @@ jobs:
               const head = pr.headRefOid;
               const rounds = claudeRounds(claudeReviews);
               if (rounds >= MAX_CLAUDE_ROUNDS) {
-                core.info(
-                  `Not calling in Claude for PR #${pullNumber}: Copilot couldn't review ${head}, but Claude has ` +
+                // A notice: no review of this head is coming, so the PR waits for its owner.
+                core.notice(
+                  `PR #${pullNumber}: Copilot couldn't review ${head}, but Claude has ` +
                   `already reviewed ${rounds} of its commits (MAX_CLAUDE_ROUNDS), so the owner decides.`
                 );
                 return;

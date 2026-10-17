@@ -396,8 +396,9 @@ jobs:
       # left to choose, and missed what lay outside the diff (mpaulosky/dotfiles#117). They
       # hold the changed files first, then the gatekeeping source (GATEKEEPING:
       # action.yml and its validation, permission, actor, trigger and token
-      # code) of each action a changed workflow pins that this job's runner
-      # downloaded to _actions, then unchanged workflows, scripts, tests
+      # code) of each action a changed workflow pins (one whose diff changes
+      # more than comments) that this job's runner downloaded to _actions,
+      # then unchanged workflows, scripts, tests
       # and code a changed file names, then those that name a changed file
       # (its stem as a whole word, so an import counts), each line after its
       # line number in the file. They're read from git at HEAD_SHA, never the
@@ -442,7 +443,8 @@ jobs:
           MAX_RELATED_FILE_BYTES = MAX_PIECE_BYTES  # an unchanged file around the change: one piece at most
           # In a pinned action's source, the code that decides whether it runs for an event or actor: what a
           # workflow's own conditions and merge gates rely on.
-          GATEKEEPING = re.compile(r"(validat|permission|auth|actor|trigger|token)[^/]*\.(ts|js|mjs|cjs|py|sh)$")
+          # "authoriz", not "auth": a credential helper (checkout's git-auth-helper.ts) gates nothing.
+          GATEKEEPING = re.compile(r"(validat|permission|authoriz|actor|trigger|token)[^/]*\.(ts|js|mjs|cjs|py|sh)$")
           NOT_SOURCE = re.compile(r"(^|/)(\.git|node_modules|dist|lib|tests?|__tests__|examples?)(/|$)|\.(test|spec)\.|\.d\.ts$")
           # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
           SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
@@ -780,16 +782,18 @@ jobs:
               edited = sorted((p for p in (n.decode("utf-8", "replace") for n in changed.split(b"\0") if n)
                                if p in blobs), key=rank)
               chosen = {path: "changed in this PR" for path in edited}
-              actions = []
+              actions, walked = [], {}
               names, named_by = [], []
               for path in edited:
                   if kind_of([], path) == "docs":
                       continue
                   text = (git_out("cat-file", "blob", f"{head}:{path}") or b"").decode("utf-8", "replace")
-                  if kind_of([], path) == "workflow":
-                      actions += [(found, f"source of {owner}/{repo}, which {path} pins")
-                                  for owner, repo, sub, ref in USES.findall(text)
-                                  for found in action_files(owner, repo, sub, ref)]
+                  if kind_of([], path) == "workflow" and changes_more_than_comments(base, head, path):
+                      for pin in dict.fromkeys(USES.findall(text)):
+                          if pin not in walked:  # each action once, credited to the first workflow that pins it
+                              walked[pin] = action_files(*pin)
+                              actions += [(found, f"source of {pin[0]}/{pin[1]}, which {path} pins")
+                                          for found in walked[pin]]
                   for token in dict.fromkeys(re.findall(r"[\w.\-/]+\.\w+", text)):
                       # A leading /, ./ or ../ goes (a path written after an expression, or beside the file), but not
                       # the dot of .github.
@@ -811,14 +815,25 @@ jobs:
               entries = [(path, why, blob_reader(head, path, MAX_CHANGED_FILE_BYTES if why == "changed in this PR"
                                                  else MAX_RELATED_FILE_BYTES, blobs))
                          for path, why in chosen.items()]
-              # A pinned action's gatekeeping code comes after the changed code and before the changed tests
-              # and docs (which the diff shows), then its action.yml, whose inputs the workflow already shows.
+              # A pinned action's gatekeeping code comes after every changed file, so a budget that runs out
+              # cuts it before the changed tests, then its action.yml, whose inputs the workflow already shows.
               seen = set()
               actions = [(label, why, reader) for (label, reader), why in actions
                          if label not in seen and not seen.add(label)]
               actions.sort(key=lambda item: re.search(r"/action\.ya?ml$", item[0]) is not None)
-              code = sum(kind_of([], path) not in ("test", "docs") for path in edited)
-              return entries[:code] + actions + entries[code:]
+              return entries[:len(edited)] + actions + entries[len(edited):]
+
+
+          def changes_more_than_comments(base, head, path):
+              """Whether the PR changes a line of path that isn't blank or a comment: a comment-only edit to a
+              workflow says nothing about the actions it pins."""
+              diff = git_out("diff", "-U0", "--no-renames", f"{base}...{head}", "--", path) or b""
+              for line in diff.decode("utf-8", "replace").splitlines():
+                  if line[:1] in "+-" and not line.startswith(("+++", "---")):
+                      body = line[1:].strip()
+                      if body and not body.startswith("#"):
+                          return True
+              return False
 
 
           def blob_reader(head, path, limit, blobs):

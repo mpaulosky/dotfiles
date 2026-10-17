@@ -71,8 +71,12 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 | Opus 5.5, high, thorough prompt v3 (`thorough-v3.txt`, one sentence edited since) | 3 | ~4 min, ~$1.34 |
 | Opus 5.5, high, the workflow's prompt, reads scoped, pinned actions' source readable (#121, #117) | 4 | ~4–5 min, ~$1.68 |
 | Opus 5.5, high, one turn of reads, `--max-turns 3` (#153), Articles#298 4b90c96 only | 0 of 4 | ~3 min, ~$0.78 |
+| Opus 5.5, high, one turn of reads, split diff, `--max-turns 30` (#156) | 2 | ~3 min, ~$0.58–0.88 |
+| The same, the prompt asking for all 24 Reads | 2 | ~3 min, ~$0.56–0.62 |
+| The same, with context pieces (#117) | 2 | ~3 min, ~$1.36–1.43 |
+| The same, with context pieces and pinned actions' gatekeeping source (#117), what the workflow runs; three runs | 2, 4, 4 | ~3 min, ~$1.39–1.70 |
 
-- **Opus at high effort, held to one turn of reads, on the split diff, is what the workflow runs** (see [One turn of reads](#one-turn-of-reads-153-154)).
+- **Opus at high effort, held to one turn of reads, on the split diff with context pieces, is what the workflow runs** (see [One turn of reads](#one-turn-of-reads-153-154) and [Context pieces](#context-pieces-117)).
   Everything below until that section is how the model, effort and prompt were chosen, uncapped.
 
 - **Opus at high effort with the thorough prompt (v3, edited as below) was chosen, before the turn cap.**
@@ -104,7 +108,7 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
   Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 and v4 runs); the earlier files predate that, and the CLI updated during these runs.
-- **Cost:** about $1.20 to $1.70 a review uncapped, instead of $0.19 at API prices; about $0.30 to $1.10 under the turn cap.
+- **Cost:** about $1.20 to $1.70 a review uncapped, instead of $0.19 at API prices; about $0.40 to $1.70 under the turn cap with context pieces.
   That is acceptable, because the backup only runs while a PR carries `review:claude`.
   In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's Opus allowance, and the plan has to include Opus in Claude Code.
   A run refused at the usage limit posts nothing and warns, and the PR waits for Copilot's review or a rerun after the reset (#123).
@@ -134,10 +138,24 @@ so a second turn of reads leaves none for the answer.
   - With the diff split into pieces (below) a review reads more files by design: on Blazor-Server#190 it read 14 in its one turn and reported 16.
     So the cap is now 30, and the prompt allows at most 24 Reads (about 26 reported). At 30, a review that ignored the prompt could make up to 30 round-trips,
     so `--max-budget-usd 3` caps what one review can spend instead.
-- **Cost under the cap: about $0.30 to $1.10 a review**, against about $1.70 uncapped. On the bench: IssueTracker#197 $0.29, Articles#298 $0.78, Blazor-Server#190 (2,600 lines) $0.93.
-- **Recall under the cap is unmeasured, beyond one run.** On Articles#298 4b90c96, capped at one turn of reads,
-  Claude caught 0 of the 4 required findings (`bench/results/20261009T072452-maxturns3-opus-high.json`; it flagged the optional marker limit), against 2 to 4 uncapped.
-  #117 stays open until the capped recall on Articles#298 is recorded on all three commits, with the split diff.
+- **Cost under the cap: about $0.40 to $1.70 a review with context pieces**, against about $1.70 uncapped; it was $0.30 to $1.10 before them.
+  On the bench: IssueTracker#197 $0.38, IssueManager#249 $0.77, Articles#298 $1.39 to $1.70.
+- **Recall under the cap: 2 of 7 on the split diff alone, and 2, 4 and 4 of 7 with context pieces, against 3 to 4 uncapped.**
+  - On the split diff alone (`bench/results/20261017T115004-capped-split-diff-recall-opus-high.json`, Claude Code 2.1.302),
+    each review made one turn of 5 Reads, well under the 24 the prompt allows, and caught findings 3 and 4 on 4b90c96 only.
+  - Asking for all 24 Reads in the prompt took it to 6 or 7 and changed nothing (`20261017T121258-full-budget-recall-opus-high.json`, 2 of 7):
+    the model decides what to read before it has read anything, so it names the diff and little else.
+  - So the workflow now chooses the reads (see [Context pieces](#context-pieces-117)). With them, each review reads 12 files in its one turn.
+    Context pieces alone caught finding 1 for the first time under the cap (`20261017T122943-context-pieces-recall-opus-high.json`, 2 of 7).
+    With the pinned actions' gatekeeping source as well, three runs caught 2, 4 and 4
+    (`20261017T124620-action-context-recall-opus-high.json`, `20261017T130127-…-run2-…`, `20261017T130132-…-run3-…`):
+    finding 5 in two of the three, from the action's `permissions.ts`, which no capped run had caught; 4 in all three; 3 in two; 1 in none.
+    The optional marker limit came up in every run.
+  - The run that scored 2 also found, from the action's source, that a person with only triage access can add `review:claude`
+    and the action then throws "Actor does not have write permissions", which at those commits left a failing check (#123's `continue-on-error` has since contained it).
+  - A single run varies by two findings either way, so compare setups on more than one run.
+  - So under the cap with context pieces, recall is about where it was uncapped, at about the uncapped cost, within the owner's 3 turns.
+    A Claude-only landing is still a weaker review than one by both, and Copilot stays the first reviewer.
 
 #### The split diff
 
@@ -201,6 +219,26 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
   and a summary that says every piece was read. An earlier run with one piece per file (`20261009T083504-split-diff-large-opus-high.json`)
   read all eleven and made a finding on `pr-automerge.yml`, the last file in the diff, but reported 16 turns, which the action would have rejected at 7.
   The benchmark now records each turn's tool calls and flags a run whose `num_turns` the action would reject.
+
+#### Context pieces (#117)
+
+Left to choose, a review read 5 to 7 files in its one turn and missed what lay outside the diff.
+So the "Write the PR's diff" step also writes context pieces under `$RUNNER_TEMP/claude-review/context/`: whole files, each line after its line number,
+packed into pieces under the same limits as the diff's, and listed in the prompt, which asks for all of them in the one turn.
+
+- **In this order:** the changed workflows, scripts and code; the gatekeeping source of each action a changed workflow pins
+  (its validation, permission, actor, trigger and token files, then its `action.yml`); the changed tests and docs;
+  unchanged workflows, scripts, tests and code a changed file names; then those that name a changed file (its stem as a whole word, so an import counts).
+  A name more than 8 files use is too common to follow, and config and data files aren't followed.
+- **Within a budget:** up to 10 pieces and 240,000 bytes, and with the diff no more than 480,000 bytes (about 130,000 tokens).
+  A changed file over 120,000 bytes or an unchanged one over 40,000 shows only in the diff. A file goes in whole or not at all.
+- **Optional reading:** an unread context piece holds nothing; only the diff's pieces do.
+- **Read safely:** repo files come from git at the head, never the checkout, and only regular text files Copilot reviews.
+  An action's files come from the runner's `_actions`, where it downloads the actions this job uses, and only regular files inside the action's folder,
+  so a symlink in either can't bring in anything else. The runner has only the actions the review job uses,
+  so a finding about another workflow's action still rests on what Claude says it's relying on.
+- **What it bought:** see the recall bullet above. The threads got better too: they cite the other files they depend on by line,
+  and make fewer guesses ("I'm assuming…"). On the ordinary PRs it made 2, 1 and 2 or 3 findings, against Copilot's 3, 1 and 2, none of them nits.
 
 ## Keeping the token out of the review (#121)
 

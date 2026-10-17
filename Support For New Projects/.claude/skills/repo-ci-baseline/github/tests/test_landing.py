@@ -1,5 +1,6 @@
 """Tests for github/landing.py: fixture PR states in, one action out. No GitHub."""
 
+import re
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -103,6 +104,16 @@ def test_review_cap_matches_pr_auto_merges():
     assert f"const COPILOT_REVIEW_CAP = {ld.REVIEW_CAP};" in text
 
 
+def test_pr_auto_merge_calls_in_claude_on_the_same_terms():
+    # PR Auto-Merge adds review:claude itself when Copilot's quota note is the head's only review (#190).
+    workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
+    text = workflow.read_text(encoding="utf-8")
+    assert f"const MAX_CLAUDE_ROUNDS = {ld.MAX_CLAUDE_ROUNDS};" in text
+    checks = ", ".join(f'"{name}"' for name in sorted(ld.CLAUDE_CHECKS))
+    found = re.search(r"const CLAUDE_CHECKS = \[(.*)\];", text)
+    assert found and ", ".join(sorted(n.strip() for n in found[1].split(","))) == checks
+
+
 def test_no_checks_at_all_is_not_green():
     dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True, checks=())
     decision = ld.decide(dropped)
@@ -134,12 +145,15 @@ def test_claude_review_checks_dont_hold_calling_it_in():
     assert ld.decide(replace(unreviewed, checks=(cancelled("Build Solution"),))).action == ld.BLOCKER
 
 
-def test_claude_is_never_called_in_for_a_third_round():
-    two = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40}), copilot_dropped=True)
-    decision = ld.decide(two)
+def test_claude_is_called_in_until_its_rounds_are_used():
+    # A fix for a second round's findings gets a third review (#193); past that the owner decides.
+    # Three reviewed commits are PR Auto-Merge's cap too, so this is a repo whose workflow doesn't merge.
+    three = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40, "d" * 40}),
+                    copilot_dropped=True, merged_by_workflow=False)
+    decision = ld.decide(three)
     assert decision.action == ld.WAIT
-    assert decision.reason.endswith("Claude's 2 review rounds are used, the owner decides")
-    assert ld.decide(replace(two, claude_reviewed=frozenset({OLD}))).action == ld.REQUEST_CLAUDE
+    assert decision.reason.endswith("Claude's 3 review rounds are used, the owner decides")
+    assert ld.decide(replace(three, claude_reviewed=frozenset({OLD, "c" * 40}))).action == ld.REQUEST_CLAUDE
 
 
 def test_a_claude_review_of_the_head_counts_as_reviewed():

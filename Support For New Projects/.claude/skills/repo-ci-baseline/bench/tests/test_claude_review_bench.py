@@ -157,9 +157,12 @@ def test_the_benchmark_can_read_the_template_workflows_review_step():
     pytest.importorskip("yaml")
     prompt, claude_args = bench.review_step(bench.WORKFLOW)
     rendered = shlex.split(bench.render(claude_args, 7, "/tmp/t"))
-    assert "#7" in bench.render(prompt, 7, "/tmp/t", pieces="- /tmp/t/claude-review/diff/001.diff (3 lines: source)")
+    assert "#7" in bench.render(prompt, 7, "/tmp/t", pieces="- /tmp/t/claude-review/diff/001.diff (3 lines: source)",
+                                context="- /tmp/t/claude-review/context/001.txt (9 lines)")
     with pytest.raises(SystemExit):
         bench.render(prompt, 7, "/tmp/t")  # the diff step's pieces must be filled in
+    with pytest.raises(SystemExit):
+        bench.render(prompt, 7, "/tmp/t", pieces="-")  # and its context pieces
     for flag in ("--model", "--effort", "--json-schema"):
         assert flag in rendered, flag
     # The token's guards (#121): no tool granted outright, so reads stay in the
@@ -302,9 +305,11 @@ def test_the_benchmark_splits_the_diff_with_the_workflows_own_step(tmp_path):
     diff = "".join(f"diff --git a/f{i}.py b/f{i}.py\n--- a/f{i}.py\n+++ b/f{i}.py\n@@ -1 +1 @@\n-old\n+new\n"
                    for i in range(3))
     (tmp_path / "claude-review" / "pr.diff").write_text(diff)
-    pieces = bench.split_diff(bench.diff_step(bench.WORKFLOW), tmp_path)
+    # Not a git repo, so there are no files to read whole.
+    pieces, context = bench.split_diff(bench.diff_step(bench.WORKFLOW), tmp_path, tmp_path, "base", "head")
     folder = tmp_path / "claude-review" / "diff"
     assert pieces == f"- {folder}/001.diff (18 lines: source)"
+    assert context == "(none)"
     assert (folder / "001.diff").read_text() == diff
     assert (folder / "INDEX").exists()
 

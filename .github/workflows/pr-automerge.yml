@@ -19,14 +19,28 @@ name: PR Auto-Merge
 # fix. Past the cap every unresolved thread still holds the merge, Copilot's
 # and Claude's included, and so do Claude's findings outside the diff on its
 # review covering the head: the cap only stops the wait for a review that may never come
-# (#146). So a review that arrives after a cap merge comes too late: its
+# (mpaulosky/dotfiles#146). So a review that arrives after a cap merge comes too late: its
 # findings land on a merged PR. A re-Apply PR (chore/reapply-baseline) is
-# capped like any other (#174), though it changes this gate itself: with
+# capped like any other (mpaulosky/dotfiles#174), though it changes this gate itself: with
 # Claude reviewing every re-Apply commit in every repo, the exemption let a
 # round chase reviews without end, and a finding on one is fixed in the
 # Template, where its own PR is reviewed, then arrives with the next round
 # (ADR 0002).
-# At the cap the run takes review:claude off the PR (#170), once Claude has
+# When Copilot's quota is used up it answers a head with a note instead of a
+# review, and no review of that head is coming. The run then calls in Claude
+# Review by adding review:claude (mpaulosky/dotfiles#190), on the terms land.sh uses
+# (github/landing.py): every other check on the head passed, Claude has
+# reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
+# the cap, and no person took the label off. It adds it with RELEASE_PR_PAT,
+# since a label added with GITHUB_TOKEN starts no workflow. Claude Review
+# reviews every push while the label is on, so a fix for its findings is
+# reviewed in turn, until a review comes back clean: no threads and no
+# findings outside the diff, which covers the head and lets the PR merge
+# (mpaulosky/dotfiles#193). The review cap below is where that stops; the run also takes the
+# label off once Claude has reviewed MAX_CLAUDE_ROUNDS (the cap's 3) of the
+# PR's commits, whoever added it, since reviews of merge commits don't count
+# toward the cap: that's the owner's cost rule.
+# At the cap the run takes review:claude off the PR (mpaulosky/dotfiles#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
 # so the PR would go on chasing them past the cap.
@@ -139,7 +153,7 @@ jobs:
             // A push, schedule or manual run sweeps every open PR. Each update
             // reruns CI, and only the first PR to finish can merge: that merge
             // leaves the rest BEHIND again, so updating them all at once costs
-            // on the order of N² CI runs (#155). A sweep updates one ready
+            // on the order of N² CI runs (mpaulosky/dotfiles#155). A sweep updates one ready
             // BEHIND PR, the oldest, and only after evaluating every PR and
             // merging none: a merge later in the sweep would leave that PR
             // BEHIND again, and its push sweeps anyway.
@@ -163,6 +177,14 @@ jobs:
             // Named for Copilot, the first reviewer: github-settings.sh reads
             // the cap by this name.
             const COPILOT_REVIEW_CAP = 3;
+            // The owner's cost rule: the most of a PR's commits Claude reviews.
+            // The review cap's 3, so a fix for a second round's findings is
+            // reviewed too (mpaulosky/dotfiles#193); past it the label comes off and the owner
+            // decides. github/landing.py's MAX_CLAUDE_ROUNDS must match.
+            const MAX_CLAUDE_ROUNDS = 3;
+            // Claude Review's own checks (claude-review.yml's job names): they
+            // don't gate calling it in. github/landing.py's CLAUDE_CHECKS must match.
+            const CLAUDE_CHECKS = ["Check for a merge from main", "Review with Claude", "Post Claude's review"];
             // Claude Review posts as github-actions[bot]; the marker tells its
             // reviews apart from anything else posted under that login.
             // Accepted limit (repo-ci-baseline's ADR 0004): the marker proves the
@@ -414,8 +436,8 @@ jobs:
 
             // Why the head's required checks haven't all passed, or null when
             // they have. Required: what main's rulesets list (requiredNames),
-            // and anything isRequired reports (checked live on Blazor-Server
-            // #183). One with no run on the head yet is pending.
+            // and anything isRequired reports (checked live on
+            // Blazor-Server#183). One with no run on the head yet is pending.
             function requiredChecksPending(pr, requiredNames) {
               const commit = headCommit(pr);
               if (!commit) {
@@ -793,22 +815,119 @@ jobs:
 
             // Past the cap, Claude Review would still review every push while
             // review:claude is on, and its threads hold the merge, so the PR
-            // would keep chasing them. Taking the label off stops that; threads
+            // would keep chasing them; past MAX_CLAUDE_ROUNDS (reviews of merge
+            // commits included, which the cap doesn't count) it would spend
+            // more than the owner's cost rule allows. Taking the label off stops that; threads
             // already open still hold. Removed with GITHUB_TOKEN (its
             // pull-requests: write covers a PR's labels), so the PAT needs no
             // Issues access and the removal starts no workflow. A failure is a
             // warning: the next run tries again.
-            async function removeClaudeLabel(pullNumber) {
+            async function removeClaudeLabel(pullNumber, why) {
               try {
                 await eventsClient.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });
-                core.info(
-                  `Review cap (${COPILOT_REVIEW_CAP}) reached on PR #${pullNumber}: removed ${CLAUDE_LABEL}, so Claude Review stops reviewing new pushes.`
-                );
+                core.info(`${why} on PR #${pullNumber}: removed ${CLAUDE_LABEL}, so Claude Review stops reviewing new pushes.`);
               } catch (error) {
                 if (error.status === 404) {
                   return;
                 }
                 core.warning(`Couldn't remove ${CLAUDE_LABEL} from PR #${pullNumber}: ${error.message}`);
+              }
+            }
+
+            // How many of the PR's commits Claude has reviewed.
+            function claudeRounds(claudeReviews) {
+              return new Set(claudeReviews.map((review) => review.commit?.oid).filter(Boolean)).size;
+            }
+
+            // Why calling in Claude waits, or null when the head can merge
+            // with main, its required checks passed and no check failed but
+            // Claude Review's own: Claude isn't spent on a head that needs a
+            // fix first. A check that isn't required and is still running
+            // doesn't hold it, as it doesn't hold an update: its completion
+            // may never start this workflow (another workflow's, or an app's),
+            // which would leave the PR to the sweep.
+            async function checksBeforeClaude(pr) {
+              // A conflict is landing.decide's blocker: the head has to change,
+              // and its resolution needs a fresh review anyway.
+              if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
+                return "it has a merge conflict with main";
+              }
+              let requiredNames;
+              try {
+                requiredNames = await requiredCheckNames(pr.baseRefName);
+              } catch (error) {
+                return `the checks ${pr.baseRefName}'s rulesets require couldn't be read: ${error.message}`;
+              }
+              const pending = requiredChecksPending(pr, requiredNames);
+              if (pending) {
+                return pending;
+              }
+              const failed = failedChecks(pr).filter((name) => !CLAUDE_CHECKS.includes(name));
+              return failed.length > 0 ? `checks failed: ${failed.join(", ")}` : null;
+            }
+
+            // Copilot answered the head with its quota note, so no review of
+            // it is coming: add review:claude, on land.sh's terms (see the
+            // header). Called only for a head no review covers, below the cap.
+            // Never throws on a PR event, where a failure would be a failed
+            // check on the PR; a sweep stops on an error that holds for the
+            // whole run, as an update does.
+            async function callInClaude(pullNumber, pr, claudeReviews) {
+              const declined = pr.copilotReviews.nodes.some((review) => {
+                return review.commit?.oid === pr.headRefOid && COPILOT_NO_REVIEW.test(review.body ?? "");
+              });
+              if (!declined || pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+                return;
+              }
+              const head = pr.headRefOid;
+              const rounds = claudeRounds(claudeReviews);
+              if (rounds >= MAX_CLAUDE_ROUNDS) {
+                core.info(
+                  `Not calling in Claude for PR #${pullNumber}: Copilot couldn't review ${head}, but Claude has ` +
+                  `already reviewed ${rounds} of its commits (MAX_CLAUDE_ROUNDS), so the owner decides.`
+                );
+                return;
+              }
+              const waiting = await checksBeforeClaude(pr);
+              if (waiting) {
+                core.info(`Not calling in Claude for PR #${pullNumber} yet: Copilot couldn't review ${head}, but ${waiting}.`);
+                return;
+              }
+              if (process.env.HAS_RELEASE_PR_PAT !== "true") {
+                core.notice(
+                  `PR #${pullNumber}: Copilot couldn't review ${head} (its quota is used up). RELEASE_PR_PAT is not ` +
+                  `set, and a label added with GITHUB_TOKEN starts no workflow, so add ${CLAUDE_LABEL} by hand.`
+                );
+                return;
+              }
+              try {
+                // A person who took the label off decided against Claude for
+                // this PR. This workflow takes it off at the cap (as
+                // github-actions), which can't apply here, below the cap.
+                const events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100
+                });
+                const lastChange = events.findLast((event) => {
+                  return (event.event === "labeled" || event.event === "unlabeled") && event.label?.name === CLAUDE_LABEL;
+                });
+                const remover = lastChange?.actor?.login ?? "";
+                if (lastChange?.event === "unlabeled" && remover.replace(/\[bot\]$/, "") !== "github-actions") {
+                  core.info(
+                    `Not calling in Claude for PR #${pullNumber}: Copilot couldn't review ${head}, but ` +
+                    `@${remover || "unknown"} took ${CLAUDE_LABEL} off, so it's theirs to add back.`
+                  );
+                  return;
+                }
+                await github.rest.issues.addLabels({ owner, repo, issue_number: pullNumber, labels: [CLAUDE_LABEL] });
+                core.info(`Copilot couldn't review ${head} (its quota is used up): added ${CLAUDE_LABEL} to PR #${pullNumber}, so Claude Review reviews it.`);
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
+                }
+                core.warning(`Couldn't add ${CLAUDE_LABEL} to PR #${pullNumber}: ${error.message}`);
               }
             }
 
@@ -819,8 +938,11 @@ jobs:
               // label is on.
               if (isOpenSameRepoPrIntoMain(pr) && pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
                 const { claudeReviews, capReached } = reviewState(pr);
-                if (capReached && (await claudeReviewedSinceLabel(pullNumber, claudeReviews))) {
-                  await removeClaudeLabel(pullNumber);
+                const roundsUsed = claudeRounds(claudeReviews) >= MAX_CLAUDE_ROUNDS;
+                if ((capReached || roundsUsed) && (await claudeReviewedSinceLabel(pullNumber, claudeReviews))) {
+                  await removeClaudeLabel(pullNumber, capReached
+                    ? `Review cap (${COPILOT_REVIEW_CAP}) reached`
+                    : `Claude has reviewed ${MAX_CLAUDE_ROUNDS} of its commits (MAX_CLAUDE_ROUNDS)`);
                 }
               }
               if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
@@ -874,6 +996,7 @@ jobs:
                   return;
                 }
                 if (!reviewedHead && !capReached) {
+                  await callInClaude(pullNumber, pr, claudeReviews);
                   core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);
                   return;
                 }
@@ -894,7 +1017,7 @@ jobs:
 
               // Every unresolved thread holds the merge, whoever opened it and
               // however many rounds there were: the cap only stops the wait for
-              // a review of the head (#146).
+              // a review of the head (mpaulosky/dotfiles#146).
               const unresolved = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
               if (unresolved > 0) {
                 core.info(`Waiting on PR #${pullNumber}: ${unresolved} unresolved review thread(s).`);

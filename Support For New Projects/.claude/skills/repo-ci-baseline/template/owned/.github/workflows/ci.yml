@@ -317,7 +317,7 @@ jobs:
         run: python3 .github/scripts/discover_tests.py --output "$GITHUB_OUTPUT"
 
   # Each matrix job restores and builds its own test project. Measured on
-  # #144: sharing the build job's output (with --no-build) saved nothing,
+  # IssueTracker#144: sharing the build job's output (with --no-build) saved nothing,
   # because packing and downloading it costs as much as the build, and one
   # job running every project used 60% fewer runner-minutes but took about
   # 1.5 minutes longer. So the matrix stays, with no build cache.
@@ -397,7 +397,7 @@ jobs:
 
       - name: Install Playwright browsers
         if: ${{ matrix.requires_playwright }}
-        # A hung install held IssueManager #260 for the job's 45 minutes;
+        # A hung install held IssueManager#260 for the job's 45 minutes;
         # it normally takes a minute or two, so fail fast and rerun instead.
         timeout-minutes: 10
         env:

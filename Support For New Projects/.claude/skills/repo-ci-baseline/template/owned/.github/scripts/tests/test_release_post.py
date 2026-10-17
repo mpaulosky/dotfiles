@@ -1240,7 +1240,7 @@ def test_code_spans_may_cross_line_breaks(body, expected):
     assert rp.sanitize_markdown(body) == expected
 
 
-# Each line that starts another block ends the paragraph, so a code span can't cross it (#57).
+# Each line that starts another block ends the paragraph, so a code span can't cross it (mpaulosky/dotfiles#57).
 PARAGRAPH_BOUNDARIES = [
     pytest.param("{a}\n# {b}", id="atx-heading"),
     pytest.param("- {a}\n- {b}", id="list-item-same-level"),
@@ -1299,7 +1299,7 @@ def test_a_reference_label_with_an_escaped_footnote_opener_is_neutralized():
 
 
 # Code is published as written: it's found once, on the raw text, and every prose
-# transformation runs only outside it (#58).
+# transformation runs only outside it (mpaulosky/dotfiles#58).
 
 
 @pytest.mark.parametrize(

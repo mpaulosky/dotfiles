@@ -393,7 +393,7 @@ jobs:
       # Context pieces (context/001.txt and on) hold whole files at the head,
       # so the one turn of reads takes in the code around the change without
       # Claude having to name it first: on the bench it read 5 to 7 files when
-      # left to choose, and missed what lay outside the diff (#117). They
+      # left to choose, and missed what lay outside the diff (mpaulosky/dotfiles#117). They
       # hold the changed files first, then the gatekeeping source (GATEKEEPING:
       # action.yml and its validation, permission, actor, trigger and token
       # code) of each action a changed workflow pins that this job's runner
@@ -974,7 +974,7 @@ jobs:
       # Opus 5.5 at high effort, with read-only tools: it reads the diff and
       # the checked-out code, and answers in the JSON schema below. The prompt
       # and model were chosen on the skill's benchmark (bench/ in the
-      # repo-ci-baseline skill, #117): Sonnet at medium effort caught none of
+      # repo-ci-baseline skill, mpaulosky/dotfiles#117): Sonnet at medium effort caught none of
       # the findings Copilot made on the same commits.
       #
       # The review is posted publicly and the Claude process holds the OAuth
@@ -983,7 +983,7 @@ jobs:
       # about how a pinned action behaves). No tool is granted outright: read
       # tools are then allowed only inside those directories, and Claude Code
       # resolves symlinks and `..` before it checks, so a symlink in the PR or
-      # /dev/fd/../environ can't reach the token (repo-ci-baseline #121, checked
+      # /dev/fd/../environ can't reach the token (mpaulosky/dotfiles#121, checked
       # with Claude Code 2.1.293, the version this action pin installs, and
       # 2.1.294). Read(//proc/**) is denied as well, and so is the checkout's
       # .git: the action writes the job's GITHUB_TOKEN into .git/config as the

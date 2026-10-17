@@ -114,6 +114,17 @@ if grep -rnE '\{\{[A-Z_]+\}\}' "$owned"; then
   fail "Owned files must not carry {{PLACEHOLDER}}s; per-repo values belong in Seed files"
 fi
 
+step "Issue references in Owned files name their repo"
+# Applied into a repo, a bare #N reads as that repo's own issue or PR (#186):
+# write mpaulosky/dotfiles#N, or <Repo>#N for another repo's. A citation in
+# parentheses is checked everywhere, tests included; elsewhere any #N is,
+# except in tests' fixture data, HTML entities (&#9;) and examples.
+example='(Fixes|Refs|Closes|PR) #[0-9]+|release for #10\b|"1, #3"'
+if grep -rnP '\((?:[^()]*, )?#\d+\)' "$owned" \
+  || grep -rnP '(?<![\w/&])#\d+\b' "$owned" --exclude-dir=tests | grep -vE "$example"; then
+  fail "write issue references in Owned files as mpaulosky/dotfiles#N (or <Repo>#N), not a bare #N"
+fi
+
 step ".gitignore keeps secrets out"
 # Repos keep Auth0 and other secrets in .env, and the Template's .gitignore
 # replaces theirs on every Apply.

@@ -19,16 +19,16 @@ name: PR Auto-Merge
 # fix. Past the cap every unresolved thread still holds the merge, Copilot's
 # and Claude's included, and so do Claude's findings outside the diff on its
 # review covering the head: the cap only stops the wait for a review that may never come
-# (#146). So a review that arrives after a cap merge comes too late: its
+# (mpaulosky/dotfiles#146). So a review that arrives after a cap merge comes too late: its
 # findings land on a merged PR. A re-Apply PR (chore/reapply-baseline) is
-# capped like any other (#174), though it changes this gate itself: with
+# capped like any other (mpaulosky/dotfiles#174), though it changes this gate itself: with
 # Claude reviewing every re-Apply commit in every repo, the exemption let a
 # round chase reviews without end, and a finding on one is fixed in the
 # Template, where its own PR is reviewed, then arrives with the next round
 # (ADR 0002).
 # When Copilot's quota is used up it answers a head with a note instead of a
 # review, and no review of that head is coming. The run then calls in Claude
-# Review by adding review:claude (#190), on the terms land.sh uses
+# Review by adding review:claude (mpaulosky/dotfiles#190), on the terms land.sh uses
 # (github/landing.py): every other check on the head passed, Claude has
 # reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
 # the cap, and no person took the label off. It adds it with RELEASE_PR_PAT,
@@ -36,7 +36,7 @@ name: PR Auto-Merge
 # reviews every push while the label is on, so the run takes it off again
 # once Claude has reviewed MAX_CLAUDE_ROUNDS of the PR's commits, as at the
 # cap below, whoever added it: that's the owner's cost rule.
-# At the cap the run takes review:claude off the PR (#170), once Claude has
+# At the cap the run takes review:claude off the PR (mpaulosky/dotfiles#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
 # so the PR would go on chasing them past the cap.
@@ -149,7 +149,7 @@ jobs:
             // A push, schedule or manual run sweeps every open PR. Each update
             // reruns CI, and only the first PR to finish can merge: that merge
             // leaves the rest BEHIND again, so updating them all at once costs
-            // on the order of N² CI runs (#155). A sweep updates one ready
+            // on the order of N² CI runs (mpaulosky/dotfiles#155). A sweep updates one ready
             // BEHIND PR, the oldest, and only after evaluating every PR and
             // merging none: a merge later in the sweep would leave that PR
             // BEHIND again, and its push sweeps anyway.
@@ -431,8 +431,8 @@ jobs:
 
             // Why the head's required checks haven't all passed, or null when
             // they have. Required: what main's rulesets list (requiredNames),
-            // and anything isRequired reports (checked live on Blazor-Server
-            // #183). One with no run on the head yet is pending.
+            // and anything isRequired reports (checked live on
+            // Blazor-Server#183). One with no run on the head yet is pending.
             function requiredChecksPending(pr, requiredNames) {
               const commit = headCommit(pr);
               if (!commit) {
@@ -1011,7 +1011,7 @@ jobs:
 
               // Every unresolved thread holds the merge, whoever opened it and
               // however many rounds there were: the cap only stops the wait for
-              // a review of the head (#146).
+              // a review of the head (mpaulosky/dotfiles#146).
               const unresolved = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
               if (unresolved > 0) {
                 core.info(`Waiting on PR #${pullNumber}: ${unresolved} unresolved review thread(s).`);

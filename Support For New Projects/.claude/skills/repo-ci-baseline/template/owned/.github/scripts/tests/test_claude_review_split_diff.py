@@ -792,6 +792,19 @@ def test_an_unchanged_file_named_by_a_dot_directory_path_is_followed(repo, tmp_p
     ]
 
 
+def test_an_unchanged_file_named_after_an_expression_is_followed(repo, tmp_path):
+    repo.base = repo.commit({"scripts/build.py": "b = 1\n", "tools/run.sh": "echo run\n"})
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  c:\n    steps:\n"
+                                                    "      - run: python3 ${{ github.workspace }}/scripts/build.py\n"
+                                                    "      - run: bash $(git rev-parse --show-toplevel)/tools/run.sh\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [
+        ".github/workflows/ci.yml (changed in this PR)",
+        "tools/run.sh (named by .github/workflows/ci.yml)",
+        "scripts/build.py (named by .github/workflows/ci.yml)",
+    ]
+
+
 def test_line_numbers_count_newlines_only_as_git_does(repo, tmp_path):
     head = repo.commit({"src/app.py": b"a = 'one\rtwo'\r\nb = 2\r\nc = 3\n"})
     repo.split(repo.base, head, tmp_path)

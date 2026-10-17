@@ -202,8 +202,9 @@ def test_claudes_rounds_used_on_a_merge_commit_leave_it_to_the_owner_not_the_cap
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     lander.poll()
-    assert "Claude's 3 review rounds are used, the owner decides" in printed(out)
-    assert "review cap" not in printed(out)
+    text = printed(out)  # printed() empties the buffer, so read it once
+    assert "Claude's 3 review rounds are used, the owner decides" in text
+    assert "review cap" not in text
 
 
 def test_a_failed_review_claude_label_is_reported_as_failed():

@@ -145,12 +145,15 @@ def test_claude_review_checks_dont_hold_calling_it_in():
     assert ld.decide(replace(unreviewed, checks=(cancelled("Build Solution"),))).action == ld.BLOCKER
 
 
-def test_claude_is_never_called_in_for_a_third_round():
-    two = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40}), copilot_dropped=True)
-    decision = ld.decide(two)
+def test_claude_is_called_in_until_its_rounds_are_used():
+    # A fix for a second round's findings gets a third review (#193); past that the owner decides.
+    # Three reviewed commits are PR Auto-Merge's cap too, so this is a repo whose workflow doesn't merge.
+    three = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40, "d" * 40}),
+                    copilot_dropped=True, merged_by_workflow=False)
+    decision = ld.decide(three)
     assert decision.action == ld.WAIT
-    assert decision.reason.endswith("Claude's 2 review rounds are used, the owner decides")
-    assert ld.decide(replace(two, claude_reviewed=frozenset({OLD}))).action == ld.REQUEST_CLAUDE
+    assert decision.reason.endswith("Claude's 3 review rounds are used, the owner decides")
+    assert ld.decide(replace(three, claude_reviewed=frozenset({OLD, "c" * 40}))).action == ld.REQUEST_CLAUDE
 
 
 def test_a_claude_review_of_the_head_counts_as_reviewed():

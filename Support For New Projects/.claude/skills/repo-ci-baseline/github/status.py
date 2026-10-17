@@ -38,7 +38,7 @@ query($owner: String!, $name: String!) {
           ... on User { login }
           ... on Team { name }
         } } }
-        reviews(last: 100) { nodes { author { login } commit { oid } body } }
+        reviews(last: 100) { nodes { author { login } commit { oid parents { totalCount } } body } }
         reviewThreads(first: 100) { nodes { isResolved } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
@@ -103,6 +103,9 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         head=node["headRefOid"],
         copilot_reviewed=copilot_reviews(reviews),
         copilot_declined=copilot_declined(reviews),
+        # Merge commits don't count toward PR Auto-Merge's cap.
+        merge_commits=frozenset(review["commit"]["oid"] for review in node["reviews"]["nodes"]
+                                if ((review.get("commit") or {}).get("parents") or {}).get("totalCount", 1) > 1),
         claude_reviewed=claude_reviews(reviews),
         claude_off_diff=claude_off_diff(reviews),
         copilot_requested=any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested),

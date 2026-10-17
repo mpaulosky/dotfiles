@@ -128,8 +128,8 @@ def test_the_review_column_names_the_reviewer_of_the_head():
     assert "review:no" in second
 
 
-def test_the_query_fetches_review_bodies():
-    assert "author { login } commit { oid } body" in st.QUERY
+def test_the_query_fetches_review_bodies_and_whether_each_commit_is_a_merge():
+    assert "author { login } commit { oid parents { totalCount } } body" in st.QUERY
 
 
 def test_claude_findings_outside_the_diff_hold_the_landing_decision():

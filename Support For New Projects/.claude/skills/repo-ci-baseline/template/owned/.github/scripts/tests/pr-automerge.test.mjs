@@ -647,14 +647,16 @@ test("doesn't add review:claude when it's already on", async () => {
 });
 
 test("stops calling in Claude after MAX_CLAUDE_ROUNDS of its reviews, and leaves it to the owner", async () => {
-  const pr = readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one", "two") });
+  // Three commits Claude reviewed, two of them merges, which the cap doesn't count.
+  const merges = [{ oid: "m1", merge: true }, { oid: "m2", merge: true }];
+  const pr = readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one", ...merges) });
   const { addedLabels, logs } = await evaluate(pr);
 
   assert.deepEqual(addedLabels, []);
   assert.ok(logs.some((line) => line.includes("the owner decides")), logs.join("\n"));
-  // One round is under the limit.
-  const once = await evaluate(readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one") }));
-  assert.equal(once.addedLabels.length, 1);
+  // Two rounds are under the limit (mpaulosky/dotfiles#193).
+  const twice = await evaluate(readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one", "m1") }));
+  assert.equal(twice.addedLabels.length, 1);
 });
 
 test("doesn't put review:claude back after a person took it off, but does after the cap removal", async () => {
@@ -833,8 +835,30 @@ test("leaves review:claude on below the review cap and MAX_CLAUDE_ROUNDS", async
   assert.deepEqual(removedLabels, []);
 });
 
-test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits, whoever added it (mpaulosky/dotfiles#190)", async () => {
+test("keeps review:claude on after a second round with findings, so the fix is reviewed too (mpaulosky/dotfiles#193)", async () => {
+  // Claude reviewed two commits; the second left a thread, and a fix was pushed.
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", "two"), labels: labelled(CLAUDE_LABEL) });
+  const { removedLabels, merges, logs } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z")]);
+
+  assert.deepEqual(removedLabels, []);
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), logs.join("\n"));
+});
+
+test("merges on a clean review of the head after rounds with findings: that's when reviewing is done (mpaulosky/dotfiles#193)", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { merges } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z")]);
+
+  assert.equal(merges.length, 1);
+});
+
+test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits, whoever added it (mpaulosky/dotfiles#190)", async () => {
+  // A merge commit among them keeps the PR below the cap, which doesn't count it.
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("one", { oid: "m1", merge: true }, HEAD),
+    labels: labelled(CLAUDE_LABEL)
+  });
   // Claude's reviews are from 2026-01-02, after the label went on.
   const { removedLabels, logs } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z")]);
 

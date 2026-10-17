@@ -201,6 +201,7 @@ async function evaluate(pr, events = [], options = {}) {
     workflowRun,
     associated = [],
     removeLabelError,
+    addLabelError,
     eventsError,
     // The open PRs a sweep lists, oldest first.
     openPrs = [7],
@@ -220,6 +221,7 @@ async function evaluate(pr, events = [], options = {}) {
   const queries = [];
   const eventTokens = [];
   const removedLabels = [];
+  const addedLabels = [];
   const listRequests = [];
   let graphqlRequests = 0;
   const pullRequests = Array.isArray(pr) ? [...pr] : [pr];
@@ -255,6 +257,13 @@ async function evaluate(pr, events = [], options = {}) {
       },
       removeLabel: async () => {
         throw new Error("issues.removeLabel is only called with GITHUB_TOKEN");
+      },
+      // With the PAT: a label added with GITHUB_TOKEN starts no workflow.
+      addLabels: async (params) => {
+        addedLabels.push(params);
+        if (addLabelError) {
+          throw addLabelError;
+        }
       }
     },
     users: {
@@ -363,6 +372,9 @@ async function evaluate(pr, events = [], options = {}) {
             if (removeLabelError) {
               throw removeLabelError;
             }
+          },
+          addLabels: async () => {
+            throw new Error("issues.addLabels is only called with the PAT");
           }
         }
       },
@@ -403,7 +415,10 @@ async function evaluate(pr, events = [], options = {}) {
     error.observed = { updates, reads, logs };
     throw error;
   }
-  return { merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests, removedLabels, listRequests };
+  return {
+    merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests, removedLabels,
+    addedLabels, listRequests
+  };
 }
 
 test("merges a ready PR at the head it checked", async () => {
@@ -564,6 +579,122 @@ test("waits when Copilot's only review of the head is its quota note", async () 
   assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), logs.join("\n"));
 });
 
+// Calling in Claude (#190): Copilot's quota note on the head means no review of it is coming.
+const DECLINED = copilotReviewsOf("one", { oid: HEAD, note: true });
+
+test("calls in Claude with the PAT when Copilot's quota note is the head's only review and its checks passed", async () => {
+  const { merges, addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED }));
+
+  assert.deepEqual(merges, []);
+  assert.deepEqual(addedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, labels: [CLAUDE_LABEL] }]);
+  assert.ok(logs.some((line) => line.includes(`added ${CLAUDE_LABEL} to PR #7`)), logs.join("\n"));
+});
+
+test("calls in Claude past Claude Review's own failed checks and this job's own", async () => {
+  const pr = readyPr({
+    copilotReviews: DECLINED,
+    headRef: checksOn(
+      HEAD,
+      requiredCheck("Build Solution"),
+      requiredCheck("Review with Claude", { isRequired: false, conclusion: "FAILURE" }),
+      requiredCheck("Merge same-repo PRs when ready", { isRequired: false, status: "IN_PROGRESS", conclusion: null })
+    )
+  });
+  const { addedLabels } = await evaluate(pr);
+
+  assert.equal(addedLabels.length, 1);
+});
+
+test("calls in Claude while a check that isn't required still runs, whose completion may never start this workflow", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("CodeQL", { isRequired: false, status: "IN_PROGRESS", conclusion: null }));
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }));
+
+  assert.equal(addedLabels.length, 1);
+});
+
+test("doesn't call in Claude while a required check runs, after one failed, or before CI reports", async () => {
+  const cases = {
+    failed: checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Lint", { isRequired: false, conclusion: "FAILURE" })),
+    "required not passed": checksOn(HEAD, requiredCheck("Build Solution", { status: "QUEUED", conclusion: null })),
+    "no checks yet": checksOn(HEAD)
+  };
+  for (const [name, headRef] of Object.entries(cases)) {
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }));
+    assert.deepEqual(addedLabels, [], name);
+    assert.ok(logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), `${name}: ${logs.join("\n")}`);
+  }
+});
+
+test("doesn't call in Claude for a head with a merge conflict, as landing.decide blocks on it", async () => {
+  for (const conflict of [{ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }, { mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" }]) {
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, ...conflict }));
+    assert.deepEqual(addedLabels, []);
+    assert.ok(logs.some((line) => line.includes("it has a merge conflict with main")), logs.join("\n"));
+  }
+});
+
+test("doesn't call in Claude when Copilot just hasn't reviewed the head, or its note is of an older commit", async () => {
+  for (const copilotReviews of [copilotReviewsOf("one"), copilotReviewsOf({ oid: "one", note: true })]) {
+    const { addedLabels } = await evaluate(readyPr({ copilotReviews }));
+    assert.deepEqual(addedLabels, []);
+  }
+});
+
+test("doesn't add review:claude when it's already on", async () => {
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, labels: labelled(CLAUDE_LABEL) }));
+
+  assert.deepEqual(addedLabels, []);
+});
+
+test("stops calling in Claude after MAX_CLAUDE_ROUNDS of its reviews, and leaves it to the owner", async () => {
+  const pr = readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one", "two") });
+  const { addedLabels, logs } = await evaluate(pr);
+
+  assert.deepEqual(addedLabels, []);
+  assert.ok(logs.some((line) => line.includes("the owner decides")), logs.join("\n"));
+  // One round is under the limit.
+  const once = await evaluate(readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one") }));
+  assert.equal(once.addedLabels.length, 1);
+});
+
+test("doesn't put review:claude back after a person took it off, but does after the cap removal", async () => {
+  const pr = readyPr({ copilotReviews: DECLINED });
+  const byPerson = await evaluate(pr, [labeledEvent(CLAUDE_LABEL, "octo"), unlabeledEvent(CLAUDE_LABEL, "octo")]);
+  assert.deepEqual(byPerson.addedLabels, []);
+  assert.ok(byPerson.logs.some((line) => line.includes(`@octo took ${CLAUDE_LABEL} off`)), byPerson.logs.join("\n"));
+
+  const byWorkflow = await evaluate(pr, [unlabeledEvent(CLAUDE_LABEL, "github-actions[bot]")]);
+  assert.equal(byWorkflow.addedLabels.length, 1);
+  // Added again by a person since: the latest change counts.
+  const readded = await evaluate(pr, [unlabeledEvent(CLAUDE_LABEL, "octo"), labeledEvent(CLAUDE_LABEL, "octo")]);
+  assert.equal(readded.addedLabels.length, 1);
+});
+
+test("without the PAT, says to add review:claude by hand instead of adding it with GITHUB_TOKEN", async () => {
+  const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED }), [], { pat: false });
+
+  assert.deepEqual(addedLabels, []);
+  assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes("by hand")), logs.join("\n"));
+});
+
+test("a failure to add review:claude is a warning on a PR event, never a failed check", async () => {
+  const { logs } = await evaluate(readyPr({ copilotReviews: DECLINED }), [], {
+    addLabelError: Object.assign(new Error("Resource not accessible by personal access token"), { status: 403 })
+  });
+
+  assert.ok(logs.some((line) => line.startsWith(`warning: Couldn't add ${CLAUDE_LABEL} to PR #7`)), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.startsWith("failed:")), logs.join("\n"));
+});
+
+test("doesn't call in Claude for a draft, a handed-back PR or one past the cap", async () => {
+  const draft = await evaluate(readyPr({ copilotReviews: DECLINED, isDraft: true }));
+  assert.deepEqual(draft.addedLabels, []);
+  const handedBack = await evaluate(readyPr({ copilotReviews: DECLINED, labels: labelled(NEEDS_HUMAN) }));
+  assert.deepEqual(handedBack.addedLabels, []);
+  const capped = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three", { oid: HEAD, note: true }) }));
+  assert.deepEqual(capped.addedLabels, []);
+});
+
 test("doesn't count Copilot's quota notes toward the review cap", async () => {
   const reviews = copilotReviewsOf("one", { oid: "two", note: true }, { oid: "three", note: true });
   const { merges } = await evaluate(readyPr({ copilotReviews: reviews }));
@@ -695,11 +826,23 @@ test("takes review:claude off a PR at the review cap, even while a thread holds 
   assert.ok(logs.some((line) => line.includes("removed review:claude")), logs.join("\n"));
 });
 
-test("leaves review:claude on below the review cap", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", HEAD), labels: labelled(CLAUDE_LABEL) });
+test("leaves review:claude on below the review cap and MAX_CLAUDE_ROUNDS", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
   const { removedLabels } = await evaluate(pr);
 
   assert.deepEqual(removedLabels, []);
+});
+
+test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits, whoever added it (#190)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", HEAD), labels: labelled(CLAUDE_LABEL) });
+  // Claude's reviews are from 2026-01-02, after the label went on.
+  const { removedLabels, logs } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z")]);
+
+  assert.deepEqual(removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
+  assert.ok(logs.some((line) => line.includes("(MAX_CLAUDE_ROUNDS) on PR #7: removed review:claude")), logs.join("\n"));
+  // Added again since Claude's last review: that gets one more review first, as at the cap.
+  const readded = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z"), claudeLabelled("2026-01-03T00:00:00Z")]);
+  assert.deepEqual(readded.removedLabels, []);
 });
 
 test("leaves review:claude on at a cap reached on Copilot's reviews alone", async () => {

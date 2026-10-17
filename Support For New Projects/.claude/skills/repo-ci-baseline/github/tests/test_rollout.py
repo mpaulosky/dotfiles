@@ -12,14 +12,14 @@ import rollout  # noqa: E402
 LISTED = {
     "mpaulosky/TicketManager": "full",
     "mpaulosky/IssueTracker": "full",
-    "mpaulosky/atelier-store": "full",
     "mpaulosky/Blazor-Server": "full",
     "mpaulosky/IssueManager": "full",
     "mpaulosky/Articles": "full",
+    "mpaulosky/SuggestionApp": "full",
     "mpaulosky/dotfiles": "repo-settings-only",
 }
-REST = ("mpaulosky/IssueTracker", "mpaulosky/atelier-store", "mpaulosky/Blazor-Server",
-        "mpaulosky/IssueManager", "mpaulosky/Articles")
+REST = ("mpaulosky/IssueTracker", "mpaulosky/Blazor-Server", "mpaulosky/IssueManager", "mpaulosky/Articles",
+        "mpaulosky/SuggestionApp")
 
 
 # ── The order ───────────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ def test_first_run_applies_ticketmanager_only_and_holds_the_rest():
     assert code == 0
     assert fake.ran == [("#82", "/r/TicketManager")]
     assert "waiting for TicketManager#130 to merge" in out
-    assert "held: IssueTracker, atelier-store, Blazor-Server, IssueManager, Articles" in out
+    assert "held: IssueTracker, Blazor-Server, IssueManager, Articles, SuggestionApp" in out
     assert "land.sh mpaulosky/TicketManager#130" in out
 
 
@@ -130,19 +130,19 @@ def test_once_ticketmanager_merged_the_rest_follow_one_at_a_time_in_order():
     fake = Fake(opens={repo: n for n, repo in enumerate(REST, start=200)})
     code, out, _ = run(["--brings", "#82", "--root", "/r"], fake)
     assert code == 0
-    assert ran_repos(fake) == ["TicketManager", "IssueTracker", "atelier-store", "Blazor-Server", "IssueManager",
-                               "Articles"]
-    assert ("land.sh mpaulosky/IssueTracker#200 mpaulosky/atelier-store#201 mpaulosky/Blazor-Server#202 "
-            "mpaulosky/IssueManager#203 mpaulosky/Articles#204") in out
+    assert ran_repos(fake) == ["TicketManager", "IssueTracker", "Blazor-Server", "IssueManager", "Articles",
+                               "SuggestionApp"]
+    assert ("land.sh mpaulosky/IssueTracker#200 mpaulosky/Blazor-Server#201 mpaulosky/IssueManager#202 "
+            "mpaulosky/Articles#203 mpaulosky/SuggestionApp#204") in out
 
 
 def test_a_failed_repo_is_reported_and_the_rest_still_run():
-    fake = Fake(fail={"mpaulosky/atelier-store"})
+    fake = Fake(fail={"mpaulosky/Blazor-Server"})
     code, out, err = run(["--brings", "#82", "--root", "/r"], fake)
     assert code == 1
-    assert ran_repos(fake)[-3:] == ["Blazor-Server", "IssueManager", "Articles"]
-    assert "failed: atelier-store" in out
-    assert "atelier-store" in err
+    assert ran_repos(fake)[-3:] == ["IssueManager", "Articles", "SuggestionApp"]
+    assert "failed: Blazor-Server" in out
+    assert "Blazor-Server" in err
 
 
 def test_a_failed_ticketmanager_holds_the_round_and_exits_1():
@@ -153,14 +153,32 @@ def test_a_failed_ticketmanager_holds_the_round_and_exits_1():
     assert "reapply failed on TicketManager" in out
 
 
-def test_a_missing_checkout_fails_that_repo_only():
+def test_a_missing_checkout_stops_the_round_before_anything_runs():
     fake = Fake()
-    code, out, err = run(["--brings", "#82", "--root", "/r"], fake, exists=lambda path: path != "/r/IssueManager")
+    missing = {"/r/IssueManager", "/r/Articles"}
+    code, _, err = run(["--brings", "#82", "--root", "/r"], fake, exists=lambda path: path not in missing)
     assert code == 1
-    assert "IssueManager" not in ran_repos(fake)
-    assert ran_repos(fake)[-1] == "Articles"
-    assert "failed: IssueManager" in out
-    assert "no checkout at /r/IssueManager" in err
+    assert fake.ran == []
+    assert "no checkout at /r/IssueManager for mpaulosky/IssueManager" in err
+    assert "no checkout at /r/Articles for mpaulosky/Articles" in err
+    assert "retire it from github/repos.txt" in err
+
+
+def test_a_missing_checkout_stops_a_dry_run_too():
+    fake = Fake()
+    code, out, err = run(["--brings", "#82", "--root", "/r", "--dry-run"], fake,
+                         exists=lambda path: path != "/r/Articles")
+    assert code == 1
+    assert "would run" not in out
+    assert "no checkout at /r/Articles" in err
+
+
+def test_a_repo_settings_only_repo_needs_no_checkout():
+    fake = Fake()
+    code, _, err = run(["--brings", "#82", "--root", "/r", "--dry-run"], fake,
+                       exists=lambda path: path != "/r/dotfiles")
+    assert code == 0
+    assert "dotfiles" not in err
 
 
 def test_dry_run_runs_nothing_and_shows_the_plan_from_the_open_pr():

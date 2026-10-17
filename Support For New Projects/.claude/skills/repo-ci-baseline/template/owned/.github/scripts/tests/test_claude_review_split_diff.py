@@ -868,7 +868,7 @@ def runner_actions(tmp_path, repo, files):
     return root
 
 
-def test_context_holds_a_pinned_actions_gatekeeping_source_after_every_changed_file(repo, tmp_path):
+def test_context_holds_a_pinned_actions_gatekeeping_source_after_the_changed_code_and_tests(repo, tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("TOKEN=hunter2\n")
     root = runner_actions(tmp_path, repo, {
@@ -887,11 +887,11 @@ def test_context_holds_a_pinned_actions_gatekeeping_source_after_every_changed_f
                                                         "      - uses: anthropics/act@v1 # pinned\n"
                                                         "      - uses: someone/absent@v2\n"
                                                         "      - run: python3 src/util.py\n",
-                        "tests/test_review.py": "def test(): pass\n"})
+                        "tests/test_review.py": "def test(): pass\n", "docs/review.md": "# Review\n"})
     repo.split(repo.base, head, tmp_path)
     pins = "source of anthropics/act, which .github/workflows/review.yml pins"
     # The changed tests come before the action's source, which a budget that runs out cuts first
-    # (mpaulosky/dotfiles#199); a credential helper isn't gatekeeping.
+    # (mpaulosky/dotfiles#199), and the changed docs after it; a credential helper isn't gatekeeping.
     assert headers(repo) == [
         ".github/workflows/review.yml (changed in this PR)",
         "tests/test_review.py (changed in this PR)",
@@ -899,6 +899,7 @@ def test_context_holds_a_pinned_actions_gatekeeping_source_after_every_changed_f
         f"_actions/anthropics/act/v1/src/github/token.ts ({pins})",
         f"_actions/anthropics/act/v1/src/github/validation/actor.ts ({pins})",
         f"_actions/anthropics/act/v1/action.yml ({pins})",
+        "docs/review.md (changed in this PR)",
         "src/util.py (named by .github/workflows/review.yml)",
     ]
     text = "".join(context_of(repo).values())
@@ -920,6 +921,17 @@ def test_a_comment_only_edit_to_a_workflow_doesnt_follow_its_pins(repo, tmp_path
         f"_actions/anthropics/act/v1/src/actor.ts ({pins})",
         f"_actions/anthropics/act/v1/action.yml ({pins})",
     ]
+
+
+def test_the_prs_own_gitattributes_cant_hide_a_workflows_change_from_the_pins_check(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps})
+    head = repo.commit({".gitattributes": ".github/** -diff\n",
+                        ".github/workflows/ci.yml": steps + "      - run: echo changed\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)" \
+        in headers(repo)
 
 
 def test_an_action_pinned_by_two_changed_workflows_is_read_once(repo, tmp_path):

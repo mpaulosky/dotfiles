@@ -139,7 +139,8 @@ for path in sorted(p for p in root.rglob("*") if p.is_file()):
     for number, line in enumerate(lines, 1):
         text = line
         for example in EXAMPLES:
-            text = text.replace(example, "")
+            # Not followed by a digit, so "Fixes #42" leaves "Fixes #421" whole.
+            text = re.sub(re.escape(example) + r"(?!\d)", "", text)
         if CITATION.search(line) or (not in_tests and BARE.search(text)):
             found.append(f"{path.relative_to(root)}:{number}: {line.strip()}")
 if found:

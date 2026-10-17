@@ -59,8 +59,7 @@ With squad still installed (`.squad/` or `squad-*` workflows), run the `remove-s
 6. **Record.** A lesson goes into the matching reference; a fix to an Owned file goes into `template/` (Template first).
    Done when the next Standardize wouldn't hit the same surprise.
 
-Order across repos (`github/repos.txt`): TicketManager first, as the live check of each Template change, then IssueTracker, atelier-store, Blazor-Server,
-IssueManager, Articles and SuggestionApp. TinyTicket is retired and not Standardized.
+Order across repos: `github/repos.txt`'s, the one list of the repos (retiring one is deleting its line), with TicketManager first as the live check of each Template change.
 
 ## Change the Baseline
 

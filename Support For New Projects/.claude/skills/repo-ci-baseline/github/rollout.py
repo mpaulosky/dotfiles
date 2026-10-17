@@ -16,7 +16,9 @@ of the Template change. Each run:
    rest get reapply.sh in order, one at a time, so one pre-push gate runs at a
    time. A repo that fails is reported and the round goes on.
 
-Each repo's checkout is <root>/<Repo> (default ~/github). It ends with the
+Each repo's checkout is <root>/<Repo> (default ~/github). A repo in repos.txt
+with no checkout stops the round before anything runs: clone it, or retire it
+from repos.txt. It ends with the
 land.sh command that watches the re-Apply PRs it left open, and exits 1 when
 any reapply failed or the round is held for anything but an open PR.
 --dry-run prints the reapply.sh calls it would make from the PRs as they are
@@ -120,12 +122,19 @@ def main(argv=None, listed=None, reapply=run_reapply, latest_pr=gh_latest_pr, ex
         out.write(text + "\n")
         out.flush()
 
+    def checkout(repo):
+        return os.path.join(args.root, short_name(repo))
+
+    missing = [repo for repo in order if not exists(checkout(repo))]
+    if missing:
+        for repo in missing:
+            err.write(f"rollout.sh: no checkout at {checkout(repo)} for {repo}\n")
+        err.write("rollout.sh: nothing run; clone each one, or retire it from github/repos.txt\n")
+        return 1
+
     def apply(repo):
         """reapply.sh on one repo (or what it would run); whether it went cleanly."""
-        path = os.path.join(args.root, short_name(repo))
-        if not exists(path):
-            err.write(f"rollout.sh: no checkout at {path} for {repo}\n")
-            return False
+        path = checkout(repo)
         if args.dry_run:
             say(f"would run: reapply.sh --brings {shlex.quote(args.brings)} {path}")
             return True

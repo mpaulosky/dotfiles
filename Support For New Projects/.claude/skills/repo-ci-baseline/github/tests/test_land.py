@@ -28,7 +28,9 @@ def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=Fa
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
         "labels": {"nodes": [{"name": label} for label in labels]},
         "reviewRequests": {"nodes": [{"requestedReviewer": {"login": login}} for login in requested]},
-        "reviews": {"nodes": [{"author": {"login": review[0]}, "commit": {"oid": review[1]},
+        # A review is (login, oid[, body[, "merge"]]); "merge" makes its commit a merge commit.
+        "reviews": {"nodes": [{"author": {"login": review[0]},
+                               "commit": {"oid": review[1], "parents": {"totalCount": 2 if review[3:] == ("merge",) else 1}},
                                "body": review[2] if len(review) > 2 else ""} for review in reviews]},
         "reviewThreads": {"nodes": [{"isResolved": resolved} for resolved in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
@@ -189,6 +191,19 @@ def test_claude_is_called_in_for_a_third_round_to_review_a_fix():
     lander.poll()
     lander.poll()
     assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot", "gh pr edit 7 -R o/app --add-label review:claude"]
+
+
+def test_claudes_rounds_used_on_a_merge_commit_leave_it_to_the_owner_not_the_cap():
+    # Claude reviewed two commits and a merge from main; the cap counts the two, so PR Auto-Merge
+    # still waits for a review, and Claude's 3 rounds are used: the owner decides (mpaulosky/dotfiles#193).
+    body = "<!-- claude-review -->\n**Claude Review**"
+    rounds = [("github-actions", "1" * 40, body), ("github-actions", "2" * 40, body, "merge"), ("github-actions", "3" * 40, body)]
+    fake = Fake({"o/app": [node(reviews=rounds, contexts=GREEN)]}, dropped={("o/app", 7)})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    lander.poll()
+    assert "Claude's 3 review rounds are used, the owner decides" in printed(out)
+    assert "review cap" not in printed(out)
 
 
 def test_a_failed_review_claude_label_is_reported_as_failed():

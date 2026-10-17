@@ -83,8 +83,9 @@ MAX_CLAUDE_ROUNDS = 3
 # PR Auto-Merge's shared review cap: must match COPILOT_REVIEW_CAP in the
 # Template's pr-automerge.yml. Past it, the workflow stops waiting for a review
 # of the head (it still holds on open threads). It counts distinct non-merge
-# commits Copilot and Claude reviewed; this counts every reviewed commit, so it
-# can reach the cap a little early, never late.
+# commits Copilot and Claude reviewed, and so does past_review_cap: with
+# MAX_CLAUDE_ROUNDS equal to it, counting merges too would report the cap for a
+# PR the workflow leaves to the owner (mpaulosky/dotfiles#193).
 REVIEW_CAP = 3
 
 # The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
@@ -147,6 +148,8 @@ class PrState:
     copilot_declined: the commit oids Copilot answered with its quota note
     (see copilot_declined()); on the head it calls in Claude, as a dropped
     request does.
+    merge_commits: the reviewed commit oids that are merge commits, which don't
+    count toward the review cap.
     want_ready: the caller's say that a draft should be marked ready.
     merged_by_workflow: the repo's own PR Auto-Merge workflow merges it (a
     Baseline repo), so it is left to that workflow rather than armed.
@@ -163,6 +166,7 @@ class PrState:
     claude_requested: bool = False
     copilot_dropped: bool = False
     copilot_declined: frozenset[str] = field(default_factory=frozenset)
+    merge_commits: frozenset[str] = field(default_factory=frozenset)
     open_threads: int = 0
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -190,7 +194,7 @@ class PrState:
     @property
     def past_review_cap(self):
         """PR Auto-Merge no longer waits for a review of the head (see REVIEW_CAP)."""
-        return self.merged_by_workflow and len(self.copilot_reviewed | self.claude_reviewed) >= REVIEW_CAP
+        return self.merged_by_workflow and len((self.copilot_reviewed | self.claude_reviewed) - self.merge_commits) >= REVIEW_CAP
 
 
 @dataclass(frozen=True)

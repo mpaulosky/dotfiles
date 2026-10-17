@@ -1,0 +1,16 @@
+name: Probe approve
+# Throwaway probe: can GITHUB_TOKEN approve a PR, and does it count toward a required approval?
+on:
+  pull_request:
+    branches: [probe/approve-base]
+permissions:
+  pull-requests: write
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve with GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr review "$PR" --approve --body "Probe approval with GITHUB_TOKEN" -R "$GITHUB_REPOSITORY"

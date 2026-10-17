@@ -72,11 +72,14 @@ REVIEW_CLAUDE = "review:claude"
 # label cancels a run in progress and its next add starts a fresh one, so a
 # cancelled run of these needs no rerun, and they don't gate calling it in.
 CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", "Post Claude's review"})
-# The owner's cost rule: at most this many Claude review rounds on one PR.
-# PR Auto-Merge calls in Claude too, when Copilot's quota note is the head's
-# only review (#190), and takes review:claude off once Claude has reviewed this
-# many commits: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must match these.
-MAX_CLAUDE_ROUNDS = 2
+# The owner's cost rule: at most this many Claude review rounds on one PR. The
+# review cap's 3, so a fix for a second round's findings is reviewed too (#193):
+# Claude reviews every push while review:claude is on, until a review comes
+# back clean. PR Auto-Merge calls in Claude too, when Copilot's quota note is
+# the head's only review (#190), and takes review:claude off once Claude has
+# reviewed this many commits: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must
+# match these.
+MAX_CLAUDE_ROUNDS = 3
 # PR Auto-Merge's shared review cap: must match COPILOT_REVIEW_CAP in the
 # Template's pr-automerge.yml. Past it, the workflow stops waiting for a review
 # of the head (it still holds on open threads). It counts distinct non-merge

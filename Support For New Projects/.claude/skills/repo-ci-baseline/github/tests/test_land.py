@@ -181,14 +181,14 @@ def test_claude_isnt_called_in_while_copilot_is_requested_or_the_label_is_on():
     assert "review:claude is on" in printed(out) and fake.calls == []
 
 
-def test_claude_isnt_called_in_for_a_third_round():
+def test_claude_is_called_in_for_a_third_round_to_review_a_fix():
+    # Two rounds aren't MAX_CLAUDE_ROUNDS (3): a fix for the second's findings is reviewed too (#193).
     rounds = [("github-actions", sha, "<!-- claude-review -->\n**Claude Review**") for sha in ("1" * 40, "2" * 40)]
     fake = Fake({"o/app": [node(reviews=rounds, contexts=GREEN)]}, dropped={("o/app", 7)})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     lander.poll()
-    assert "Claude's 2 review rounds are used, the owner decides" in printed(out)
-    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
+    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot", "gh pr edit 7 -R o/app --add-label review:claude"]
 
 
 def test_a_failed_review_claude_label_is_reported_as_failed():

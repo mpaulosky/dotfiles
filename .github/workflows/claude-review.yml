@@ -444,8 +444,9 @@ jobs:
           # workflow's own conditions and merge gates rely on.
           GATEKEEPING = re.compile(r"(validat|permission|auth|actor|trigger|token)[^/]*\.(ts|js|mjs|cjs|py|sh)$")
           NOT_SOURCE = re.compile(r"(^|/)(\.git|node_modules|dist|lib|tests?|__tests__|examples?)(/|$)|\.(test|spec)\.|\.d\.ts$")
-          # A segment starts with a word character, so none is "." or "..": the action stays inside _actions.
-          USES = re.compile(r"""^\s*-?\s*uses:\s*['"]?(\w[\w.-]*)/(\w[\w.-]*)((?:/\w[\w.-]*)*)@(\w[\w.-]*)""", re.M)
+          # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
+          SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
+          USES = re.compile(rf"""^\s*-?\s*uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""", re.M)
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow
           LONG_LINE = MAX_PIECE_BYTES // 4
           CONTINUED = b"\\~ "  # starts a long line's later chunk: no line of its own, like git's "\ No newline"

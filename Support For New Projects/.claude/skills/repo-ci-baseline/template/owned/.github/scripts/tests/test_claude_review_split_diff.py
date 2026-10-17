@@ -892,6 +892,24 @@ def test_an_action_the_runner_hasnt_downloaded_adds_nothing(repo, tmp_path):
     assert headers(repo) == [".github/workflows/ci.yml (changed in this PR)"]
 
 
+def test_an_action_in_a_dot_named_repo_or_folder_is_followed(repo, tmp_path):
+    repo.workspace = tmp_path / "work" / "repo" / "repo"
+    repo.workspace.mkdir(parents=True)
+    actions = tmp_path / "work" / "_actions"
+    for folder in ("org/.github/v1", "owner/repo/v2/.github/actions/setup"):
+        (actions / folder).mkdir(parents=True)
+        (actions / folder / "action.yml").write_text("runs: {}\n")
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  b:\n    steps:\n      - uses: org/.github@v1\n"
+                                                    "      - uses: owner/repo/.github/actions/setup@v2\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [
+        ".github/workflows/ci.yml (changed in this PR)",
+        "_actions/org/.github/v1/action.yml (source of org/.github, which .github/workflows/ci.yml pins)",
+        "_actions/owner/repo/v2/.github/actions/setup/action.yml "
+        "(source of owner/repo, which .github/workflows/ci.yml pins)",
+    ]
+
+
 def test_a_dot_dot_in_uses_cant_reach_outside_actions(repo, tmp_path):
     runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n"})
     # _actions/../leak/.. is the runner's work folder: walking it would reach a token file outside _actions.

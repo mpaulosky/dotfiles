@@ -444,7 +444,9 @@ jobs:
           # workflow's own conditions and merge gates rely on.
           GATEKEEPING = re.compile(r"(validat|permission|auth|actor|trigger|token)[^/]*\.(ts|js|mjs|cjs|py|sh)$")
           NOT_SOURCE = re.compile(r"(^|/)(\.git|node_modules|dist|lib|tests?|__tests__|examples?)(/|$)|\.(test|spec)\.|\.d\.ts$")
-          USES = re.compile(r"""^\s*-?\s*uses:\s*['"]?([\w.-]+)/([\w.-]+)((?:/[\w.-]+)*)@([\w.-]+)""", re.M)
+          # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
+          SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
+          USES = re.compile(rf"""^\s*-?\s*uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""", re.M)
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow
           LONG_LINE = MAX_PIECE_BYTES // 4
           CONTINUED = b"\\~ "  # starts a long line's later chunk: no line of its own, like git's "\ No newline"
@@ -789,7 +791,9 @@ jobs:
                                   for owner, repo, sub, ref in USES.findall(text)
                                   for found in action_files(owner, repo, sub, ref)]
                   for token in dict.fromkeys(re.findall(r"[\w.\-/]+\.\w+", text)):
-                      token = token.lstrip("./")
+                      # A leading /, ./ or ../ goes (a path written after an expression, or beside the file), but not
+                      # the dot of .github.
+                      token = re.sub(r"^(?:\.{0,2}/)+", "", token)
                       # A path, or a basename only one tracked file has.
                       hits = [token] if token in blobs else by_name.get(token, []) if "/" not in token else []
                       if len(hits) == 1 and hits[0] not in chosen and followed(hits[0]):
@@ -825,9 +829,10 @@ jobs:
               """(label, reader) for a pinned action's action.yml and gatekeeping source, from the runner's _actions,
               where it downloads the actions this job uses. Regular files only, inside the action's own folder:
               nothing a symlink in its source points at."""
-              root = os.path.realpath(os.path.join(os.environ.get("GITHUB_WORKSPACE", "/nonexistent"), "..", "..",
-                                                   "_actions", owner, repo, ref))
-              if not os.path.isdir(root):
+              actions = os.path.realpath(os.path.join(os.environ.get("GITHUB_WORKSPACE", "/nonexistent"), "..", "..",
+                                                      "_actions"))
+              root = os.path.realpath(os.path.join(actions, owner, repo, ref))
+              if not root.startswith(actions + os.sep) or not os.path.isdir(root):
                   return []
 
               def reader(full):
@@ -859,7 +864,12 @@ jobs:
               """The file as context parts within the piece limits, each line after its line number in the file."""
               header = f"==> {path} ({why}) <==\n".encode()
               parts, part, count = [], header, 1
-              for number, line in enumerate(content.splitlines(), 1):
+              # Lines end at \n only, as git and GitHub count them; a lone \r stays inside its line.
+              lines = content.split(b"\n")
+              if lines[-1] == b"":
+                  lines.pop()
+              for number, line in enumerate(lines, 1):
+                  line = line.removesuffix(b"\r")
                   if len(line) > LONG_LINE:
                       line = line[:LONG_LINE] + b" [line cut here]"
                   row = f"{number:>6}\t".encode() + line + b"\n"

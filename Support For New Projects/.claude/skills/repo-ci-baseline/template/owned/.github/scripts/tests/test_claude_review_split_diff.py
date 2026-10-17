@@ -778,6 +778,44 @@ def test_context_reads_git_not_the_checkout_and_skips_links_binaries_and_exclude
     assert "print(1)" in text and "edited" not in text and "hunter2" not in text
 
 
+def test_an_unchanged_file_named_by_a_dot_directory_path_is_followed(repo, tmp_path):
+    repo.base = repo.commit({".github/scripts/detect_changes.py": "def detect():\n    pass\n",
+                             ".config/lint.sh": "echo lint\n"})
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  c:\n    steps:\n"
+                                                    "      - run: python3 .github/scripts/detect_changes.py\n"
+                                                    "      - run: bash ./.config/lint.sh\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [
+        ".github/workflows/ci.yml (changed in this PR)",
+        ".github/scripts/detect_changes.py (named by .github/workflows/ci.yml)",
+        ".config/lint.sh (named by .github/workflows/ci.yml)",
+    ]
+
+
+def test_an_unchanged_file_named_after_an_expression_is_followed(repo, tmp_path):
+    repo.base = repo.commit({"scripts/build.py": "b = 1\n", "tools/run.sh": "echo run\n", "lib/common.sh": "c=1\n"})
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  c:\n    steps:\n"
+                                                    "      - run: python3 ${{ github.workspace }}/scripts/build.py\n"
+                                                    "      - run: bash $(git rev-parse --show-toplevel)/tools/run.sh\n",
+                        "scripts/go.sh": 'source "$(dirname "$0")/../lib/common.sh"\n'})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [
+        ".github/workflows/ci.yml (changed in this PR)",
+        "scripts/go.sh (changed in this PR)",
+        "tools/run.sh (named by .github/workflows/ci.yml)",
+        "lib/common.sh (named by scripts/go.sh)",
+        "scripts/build.py (named by .github/workflows/ci.yml)",
+    ]
+
+
+def test_line_numbers_count_newlines_only_as_git_does(repo, tmp_path):
+    head = repo.commit({"src/app.py": b"a = 'one\rtwo'\r\nb = 2\r\nc = 3\n"})
+    repo.split(repo.base, head, tmp_path)
+    text = "".join(context_of(repo).values())
+    assert "     2\tb = 2\n" in text and "     3\tc = 3\n" in text
+    assert "     4\t" not in text
+
+
 def test_a_file_too_big_for_context_shows_only_in_the_diff(repo, tmp_path):
     big = "".join(f"line {n} {'x' * 70}\n" for n in range(constant("MAX_CHANGED_FILE_BYTES") // 70))
     head = repo.commit({"src/big.py": big, "src/small.py": "y = 2\n"})
@@ -866,5 +904,47 @@ def test_context_holds_a_pinned_actions_gatekeeping_source_after_the_changed_fil
 def test_an_action_the_runner_hasnt_downloaded_adds_nothing(repo, tmp_path):
     runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n"})
     head = repo.commit({".github/workflows/ci.yml": "jobs:\n  b:\n    steps:\n      - uses: actions/checkout@v9\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [".github/workflows/ci.yml (changed in this PR)"]
+
+
+def test_an_action_in_a_dot_named_repo_or_folder_is_followed(repo, tmp_path):
+    repo.workspace = tmp_path / "work" / "repo" / "repo"
+    repo.workspace.mkdir(parents=True)
+    actions = tmp_path / "work" / "_actions"
+    for folder in ("org/.github/v1", "owner/repo/v2/.github/actions/setup"):
+        (actions / folder).mkdir(parents=True)
+        (actions / folder / "action.yml").write_text("runs: {}\n")
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  b:\n    steps:\n      - uses: org/.github@v1\n"
+                                                    "      - uses: owner/repo/.github/actions/setup@v2\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [
+        ".github/workflows/ci.yml (changed in this PR)",
+        "_actions/org/.github/v1/action.yml (source of org/.github, which .github/workflows/ci.yml pins)",
+        "_actions/owner/repo/v2/.github/actions/setup/action.yml "
+        "(source of owner/repo, which .github/workflows/ci.yml pins)",
+    ]
+
+
+def test_a_dot_dot_in_uses_cant_reach_outside_actions(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n"})
+    # _actions/../leak/.. is the runner's work folder: walking it would reach a token file outside _actions.
+    (tmp_path / "work" / "leak").mkdir()
+    (tmp_path / "work" / "leak" / "token.ts").write_text("export const leaked = 1\n")
+    head = repo.commit({".github/actions/x/action.yml": "runs:\n  steps:\n    - uses: ../leak@..\n"
+                                                        "    - uses: anthropics/act/../..@v1\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [".github/actions/x/action.yml (changed in this PR)"]
+    assert "leaked" not in "".join(context_of(repo).values())
+
+
+def test_an_action_whose_folder_links_out_of_actions_adds_nothing(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n"})
+    outside = tmp_path / "outside" / "v1"
+    outside.mkdir(parents=True)
+    (outside / "token.ts").write_text("export const leaked = 1\n")
+    (tmp_path / "work" / "_actions" / "evil").mkdir()
+    os.symlink(tmp_path / "outside", tmp_path / "work" / "_actions" / "evil" / "act")
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  b:\n    steps:\n      - uses: evil/act@v1\n"})
     repo.split(repo.base, head, tmp_path)
     assert headers(repo) == [".github/workflows/ci.yml (changed in this PR)"]

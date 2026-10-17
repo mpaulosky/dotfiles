@@ -28,7 +28,9 @@ keeps it (clones are cached in ~/.cache/claude-review-bench). Claude reads
 only the case's worktree, the diff and that copy, as in CI. Still, only add a
 case whose commits you trust, and read a results file before committing it.
 The diff is split into pieces by the workflow's own "Write the PR's diff"
-step, whose Python this runs, and the prompt gets that step's list of them.
+step, whose Python this runs in the case's worktree, with GITHUB_WORKSPACE
+set so it finds that copy of the actions; the step also writes the context
+pieces, and the prompt gets the step's lists of both.
 Needs PyYAML (for reading the workflow) and git.
 
 It prints each case's findings and which expected findings they caught, and
@@ -76,26 +78,34 @@ def diff_step(workflow):
     return "\n".join(lines[start:end]) + "\n"
 
 
-def split_diff(script, temp):
-    """Run the diff step's Python on temp/claude-review/pr.diff, as the runner does: the pieces under
-    temp/claude-review/diff, and the list of them the prompt gets (its pieces output)."""
+def split_diff(script, temp, tree, base, head):
+    """Run the diff step's Python on temp/claude-review/pr.diff in the case's worktree, as the runner does: the
+    pieces under temp/claude-review/diff and context/, and the lists of them the prompt gets (its pieces and
+    context outputs)."""
     output = Path(temp) / "github-output"
     output.write_text("")
-    subprocess.run([sys.executable, "-I", "-"], input=script, text=True, check=True, capture_output=True,
-                   env={"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(output)})
-    found = re.match(r"pieces<<(EOF_[0-9a-f]+)\n(.*?)\n\1\n", output.read_text(), re.S)
+    subprocess.run([sys.executable, "-I", "-"], input=script, text=True, check=True, capture_output=True, cwd=tree,
+                   env={"PATH": "/usr/bin:/bin", "RUNNER_TEMP": str(temp), "GITHUB_OUTPUT": str(output),
+                        "BASE_SHA": base, "HEAD_SHA": head, "HOME": "/nonexistent",
+                        "GITHUB_WORKSPACE": str(Path(temp) / "work" / "repo" / "repo"),
+                        "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"})
+    written = output.read_text()
+    found = re.match(r"pieces<<(EOF_[0-9a-f]+)\n(.*?)\n\1\n", written, re.S)
     if not found:
-        raise OSError(f"the diff step wrote no pieces output: {output.read_text()[:500]}")
-    return found[2]
+        raise OSError(f"the diff step wrote no pieces output: {written[:500]}")
+    context = re.search(r"^context<<(EOF_[0-9a-f]+)\n(.*?)\n\1\n", written, re.S | re.M)
+    return found[2], context[2] if context else None
 
 
-def render(text, pr, temp, pieces=None):
+def render(text, pr, temp, pieces=None, context=None):
     """Fill in the workflow expressions the prompt and args use; pieces is the diff step's pieces output.
 
     github.workspace is temp/work/repo/repo, so its ../../_actions is temp/work/_actions, laid out as on a runner.
     """
     if pieces is not None:
         text = text.replace("${{ steps.diff.outputs.pieces }}", pieces)
+    if context is not None:
+        text = text.replace("${{ steps.diff.outputs.context }}", context)
     text = text.replace("${{ github.event.pull_request.number }}", str(pr))
     text = text.replace("${{ runner.temp }}", str(temp))
     text = text.replace("${{ github.workspace }}", str(Path(temp) / "work" / "repo" / "repo"))
@@ -229,11 +239,11 @@ def run_case(case, prompt, claude_args, overrides, root, timeout, split=None):
             (temp / "claude-review").mkdir()
             (temp / "claude-review" / "pr.diff").write_text(diff)
             # The workflow's own split of the diff into pieces, and the list the prompt names them in.
-            pieces = split_diff(split, temp) if split else None
+            pieces, context = split_diff(split, temp, tree, case["base"], case["head"]) if split else (None, None)
             args = override(shlex.split(render(claude_args, case["pr"], temp)), *overrides)
             # The runner's user level has no settings; yours mustn't load in its place.
             args = override(args, None, None, None, setting_sources="")
-            argv = ["claude", "-p", render(prompt, case["pr"], temp, pieces), *args,
+            argv = ["claude", "-p", render(prompt, case["pr"], temp, pieces, context), *args,
                     "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--no-session-persistence"]
             done = subprocess.run(argv, cwd=tree, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout)
         except subprocess.TimeoutExpired:

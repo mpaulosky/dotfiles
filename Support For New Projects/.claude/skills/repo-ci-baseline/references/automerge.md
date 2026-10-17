@@ -132,7 +132,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Copilot's, or Claude's on a rerun. The one deliberate failure is a review the post step had to redact a credential from.
   Claude (`anthropics/claude-code-action`; model, effort and prompt in [ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#model-effort-and-prompt-117))
   never holds a write token: its job has read-only permissions,
-  gets the diff against the base, and reads only the checkout, the diff and the runner's `_actions`, with no tool granted outright
+  gets the diff against the base in pieces, with context pieces of whole files around the change and the pinned actions' gatekeeping source
+  ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#context-pieces-117)), all read in one turn,
+  and reads only the checkout, the diff and the runner's `_actions`, with no tool granted outright
   ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#keeping-the-token-out-of-the-review-121)), and answers in a JSON schema.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).

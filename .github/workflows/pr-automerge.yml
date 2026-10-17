@@ -32,7 +32,10 @@ name: PR Auto-Merge
 # (github/landing.py): every other check on the head passed, Claude has
 # reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
 # the cap, and no person took the label off. It adds it with RELEASE_PR_PAT,
-# since a label added with GITHUB_TOKEN starts no workflow.
+# since a label added with GITHUB_TOKEN starts no workflow. Claude Review
+# reviews every push while the label is on, so the run takes it off again
+# once Claude has reviewed MAX_CLAUDE_ROUNDS of the PR's commits, as at the
+# cap below, whoever added it: that's the owner's cost rule.
 # At the cap the run takes review:claude off the PR (#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
@@ -807,17 +810,16 @@ jobs:
 
             // Past the cap, Claude Review would still review every push while
             // review:claude is on, and its threads hold the merge, so the PR
-            // would keep chasing them. Taking the label off stops that; threads
+            // would keep chasing them; past MAX_CLAUDE_ROUNDS it would spend
+            // more than the owner's cost rule allows. Taking the label off stops that; threads
             // already open still hold. Removed with GITHUB_TOKEN (its
             // pull-requests: write covers a PR's labels), so the PAT needs no
             // Issues access and the removal starts no workflow. A failure is a
             // warning: the next run tries again.
-            async function removeClaudeLabel(pullNumber) {
+            async function removeClaudeLabel(pullNumber, why) {
               try {
                 await eventsClient.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });
-                core.info(
-                  `Review cap (${COPILOT_REVIEW_CAP}) reached on PR #${pullNumber}: removed ${CLAUDE_LABEL}, so Claude Review stops reviewing new pushes.`
-                );
+                core.info(`${why} on PR #${pullNumber}: removed ${CLAUDE_LABEL}, so Claude Review stops reviewing new pushes.`);
               } catch (error) {
                 if (error.status === 404) {
                   return;
@@ -826,10 +828,18 @@ jobs:
               }
             }
 
+            // How many of the PR's commits Claude has reviewed.
+            function claudeRounds(claudeReviews) {
+              return new Set(claudeReviews.map((review) => review.commit?.oid).filter(Boolean)).size;
+            }
+
             // Why calling in Claude waits, or null when the head can merge
-            // with main and every check but Claude Review's own and this
-            // job's has reported and passed: the required ones, and the rest
-            // too, so Claude isn't spent on a head that needs a fix first.
+            // with main, its required checks passed and no check failed but
+            // Claude Review's own: Claude isn't spent on a head that needs a
+            // fix first. A check that isn't required and is still running
+            // doesn't hold it, as it doesn't hold an update: its completion
+            // may never start this workflow (another workflow's, or an app's),
+            // which would leave the PR to the sweep.
             async function checksBeforeClaude(pr) {
               // A conflict is landing.decide's blocker: the head has to change,
               // and its resolution needs a fresh review anyway.
@@ -845,18 +855,6 @@ jobs:
               const pending = requiredChecksPending(pr, requiredNames);
               if (pending) {
                 return pending;
-              }
-              const others = [...newestChecks(headCommit(pr).statusCheckRollup.contexts)]
-                .filter(([name]) => name !== SELF_CHECK && !CLAUDE_CHECKS.includes(name));
-              const running = others
-                .filter(([, check]) => {
-                  return check.__typename === "StatusContext"
-                    ? ["PENDING", "EXPECTED"].includes(check.state)
-                    : check.status !== "COMPLETED";
-                })
-                .map(([name]) => name);
-              if (running.length > 0) {
-                return `checks still running: ${running.join(", ")}`;
               }
               const failed = failedChecks(pr).filter((name) => !CLAUDE_CHECKS.includes(name));
               return failed.length > 0 ? `checks failed: ${failed.join(", ")}` : null;
@@ -876,11 +874,11 @@ jobs:
                 return;
               }
               const head = pr.headRefOid;
-              const rounds = new Set(claudeReviews.map((review) => review.commit?.oid).filter(Boolean));
-              if (rounds.size >= MAX_CLAUDE_ROUNDS) {
+              const rounds = claudeRounds(claudeReviews);
+              if (rounds >= MAX_CLAUDE_ROUNDS) {
                 core.info(
                   `Not calling in Claude for PR #${pullNumber}: Copilot couldn't review ${head}, but Claude has ` +
-                  `already reviewed ${rounds.size} of its commits (MAX_CLAUDE_ROUNDS), so the owner decides.`
+                  `already reviewed ${rounds} of its commits (MAX_CLAUDE_ROUNDS), so the owner decides.`
                 );
                 return;
               }
@@ -934,8 +932,11 @@ jobs:
               // label is on.
               if (isOpenSameRepoPrIntoMain(pr) && pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
                 const { claudeReviews, capReached } = reviewState(pr);
-                if (capReached && (await claudeReviewedSinceLabel(pullNumber, claudeReviews))) {
-                  await removeClaudeLabel(pullNumber);
+                const roundsUsed = claudeRounds(claudeReviews) >= MAX_CLAUDE_ROUNDS;
+                if ((capReached || roundsUsed) && (await claudeReviewedSinceLabel(pullNumber, claudeReviews))) {
+                  await removeClaudeLabel(pullNumber, capReached
+                    ? `Review cap (${COPILOT_REVIEW_CAP}) reached`
+                    : `Claude has reviewed ${MAX_CLAUDE_ROUNDS} of its commits (MAX_CLAUDE_ROUNDS)`);
                 }
               }
               if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {

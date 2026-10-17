@@ -605,9 +605,15 @@ test("calls in Claude past Claude Review's own failed checks and this job's own"
   assert.equal(addedLabels.length, 1);
 });
 
-test("doesn't call in Claude while a check runs, after one failed, or before CI reports", async () => {
+test("calls in Claude while a check that isn't required still runs, whose completion may never start this workflow", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("CodeQL", { isRequired: false, status: "IN_PROGRESS", conclusion: null }));
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }));
+
+  assert.equal(addedLabels.length, 1);
+});
+
+test("doesn't call in Claude while a required check runs, after one failed, or before CI reports", async () => {
   const cases = {
-    running: checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Lint", { isRequired: false, status: "IN_PROGRESS", conclusion: null })),
     failed: checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Lint", { isRequired: false, conclusion: "FAILURE" })),
     "required not passed": checksOn(HEAD, requiredCheck("Build Solution", { status: "QUEUED", conclusion: null })),
     "no checks yet": checksOn(HEAD)
@@ -820,11 +826,23 @@ test("takes review:claude off a PR at the review cap, even while a thread holds 
   assert.ok(logs.some((line) => line.includes("removed review:claude")), logs.join("\n"));
 });
 
-test("leaves review:claude on below the review cap", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", HEAD), labels: labelled(CLAUDE_LABEL) });
+test("leaves review:claude on below the review cap and MAX_CLAUDE_ROUNDS", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
   const { removedLabels } = await evaluate(pr);
 
   assert.deepEqual(removedLabels, []);
+});
+
+test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits, whoever added it (#190)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", HEAD), labels: labelled(CLAUDE_LABEL) });
+  // Claude's reviews are from 2026-01-02, after the label went on.
+  const { removedLabels, logs } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z")]);
+
+  assert.deepEqual(removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
+  assert.ok(logs.some((line) => line.includes("(MAX_CLAUDE_ROUNDS) on PR #7: removed review:claude")), logs.join("\n"));
+  // Added again since Claude's last review: that gets one more review first, as at the cap.
+  const readded = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z"), claudeLabelled("2026-01-03T00:00:00Z")]);
+  assert.deepEqual(readded.removedLabels, []);
 });
 
 test("leaves review:claude on at a cap reached on Copilot's reviews alone", async () => {

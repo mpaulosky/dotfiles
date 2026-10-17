@@ -793,14 +793,17 @@ def test_an_unchanged_file_named_by_a_dot_directory_path_is_followed(repo, tmp_p
 
 
 def test_an_unchanged_file_named_after_an_expression_is_followed(repo, tmp_path):
-    repo.base = repo.commit({"scripts/build.py": "b = 1\n", "tools/run.sh": "echo run\n"})
+    repo.base = repo.commit({"scripts/build.py": "b = 1\n", "tools/run.sh": "echo run\n", "lib/common.sh": "c=1\n"})
     head = repo.commit({".github/workflows/ci.yml": "jobs:\n  c:\n    steps:\n"
                                                     "      - run: python3 ${{ github.workspace }}/scripts/build.py\n"
-                                                    "      - run: bash $(git rev-parse --show-toplevel)/tools/run.sh\n"})
+                                                    "      - run: bash $(git rev-parse --show-toplevel)/tools/run.sh\n",
+                        "scripts/go.sh": 'source "$(dirname "$0")/../lib/common.sh"\n'})
     repo.split(repo.base, head, tmp_path)
     assert headers(repo) == [
         ".github/workflows/ci.yml (changed in this PR)",
+        "scripts/go.sh (changed in this PR)",
         "tools/run.sh (named by .github/workflows/ci.yml)",
+        "lib/common.sh (named by scripts/go.sh)",
         "scripts/build.py (named by .github/workflows/ci.yml)",
     ]
 

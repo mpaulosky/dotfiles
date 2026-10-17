@@ -791,8 +791,9 @@ jobs:
                                   for owner, repo, sub, ref in USES.findall(text)
                                   for found in action_files(owner, repo, sub, ref)]
                   for token in dict.fromkeys(re.findall(r"[\w.\-/]+\.\w+", text)):
-                      # A leading / or ./ goes (a path written after an expression), but not the dot of .github.
-                      token = re.sub(r"^(?:\.?/)+", "", token)
+                      # A leading /, ./ or ../ goes (a path written after an expression, or beside the file), but not
+                      # the dot of .github.
+                      token = re.sub(r"^(?:\.{0,2}/)+", "", token)
                       # A path, or a basename only one tracked file has.
                       hits = [token] if token in blobs else by_name.get(token, []) if "/" not in token else []
                       if len(hits) == 1 and hits[0] not in chosen and followed(hits[0]):

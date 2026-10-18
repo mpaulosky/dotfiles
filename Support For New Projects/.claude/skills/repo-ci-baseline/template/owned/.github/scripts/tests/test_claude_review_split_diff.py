@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -806,6 +807,26 @@ def test_an_unchanged_file_named_after_an_expression_is_followed(repo, tmp_path)
         "lib/common.sh (named by scripts/go.sh)",
         "scripts/build.py (named by .github/workflows/ci.yml)",
     ]
+
+
+def test_a_long_run_with_no_dot_doesnt_slow_the_naming_scan(repo, tmp_path):
+    # The scan was quadratic in a run of path characters with no ".ext" after it (mpaulosky/dotfiles#201):
+    # this file took over ten seconds.
+    repo.base = repo.commit({"src/helper.py": "h = 1\n"})
+    blob = "x" * (constant("MAX_CHANGED_FILE_BYTES") - 1000)
+    head = repo.commit({"src/app.py": f"# uses src/helper.py\nDATA = '{blob}'\n"})
+    started = time.monotonic()
+    repo.split(repo.base, head, tmp_path)
+    assert time.monotonic() - started < 5
+    assert "src/helper.py (named by src/app.py)" in headers(repo)
+
+
+def test_a_changed_file_too_big_for_context_isnt_scanned_for_names(repo, tmp_path):
+    repo.base = repo.commit({"src/helper.py": "h = 1\n"})
+    big = "# uses src/helper.py\n" + "".join(f"v{n} = {n}\n" for n in range(constant("MAX_CHANGED_FILE_BYTES") // 8))
+    head = repo.commit({"src/app.py": big})
+    repo.split(repo.base, head, tmp_path)
+    assert "src/helper.py (named by src/app.py)" not in headers(repo)
 
 
 def test_line_numbers_count_newlines_only_as_git_does(repo, tmp_path):

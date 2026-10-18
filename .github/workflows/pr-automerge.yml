@@ -879,6 +879,11 @@ jobs:
               if (!declined || pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
                 return;
               }
+              // Claude Review skips Dependabot's PRs (its merge-from-main job's
+              // condition), so the label would bring no review.
+              if (DEPENDABOT_PR_AUTHORS.includes(pr.author?.login)) {
+                return;
+              }
               const head = pr.headRefOid;
               const rounds = claudeRounds(claudeReviews);
               if (rounds >= MAX_CLAUDE_ROUNDS) {

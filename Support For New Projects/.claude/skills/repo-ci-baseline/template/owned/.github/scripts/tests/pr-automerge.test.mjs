@@ -203,6 +203,12 @@ async function evaluate(pr, events = [], options = {}) {
     removeLabelError,
     addLabelError,
     eventsError,
+    // Which label-events read eventsError fails, counting from 1.
+    eventsErrorAt = 1,
+    // Claude Review's workflow runs for the head, and an error reading them.
+    claudeRuns = [],
+    claudeRunsTotal,
+    claudeRunsError,
     // The open PRs a sweep lists, oldest first.
     openPrs = [7],
     // Snapshots per PR number ({ 7: [...], 8: [...] }), each read in turn
@@ -218,6 +224,7 @@ async function evaluate(pr, events = [], options = {}) {
   const merges = [];
   const logs = [];
   const eventRequests = [];
+  const runRequests = [];
   const queries = [];
   const eventTokens = [];
   const removedLabels = [];
@@ -376,13 +383,22 @@ async function evaluate(pr, events = [], options = {}) {
           addLabels: async () => {
             throw new Error("issues.addLabels is only called with the PAT");
           }
+        },
+        actions: {
+          listWorkflowRuns: async (params) => {
+            runRequests.push(params);
+            if (claudeRunsError) {
+              throw claudeRunsError;
+            }
+            return { data: { total_count: claudeRunsTotal ?? claudeRuns.length, workflow_runs: claudeRuns } };
+          }
         }
       },
       paginate: async (method, params) => {
         if (method === rest.issues.listEvents) {
           eventRequests.push(params);
-          // Only the first read fails, so a later one (the hand-back check) still works.
-          if (eventsError && eventRequests.length === 1) {
+          // Only one read fails (the first, unless eventsErrorAt says), so a later one (the hand-back check) still works.
+          if (eventsError && eventRequests.length === eventsErrorAt) {
             throw eventsError;
           }
           return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
@@ -417,7 +433,7 @@ async function evaluate(pr, events = [], options = {}) {
   }
   return {
     merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests, removedLabels,
-    addedLabels, listRequests
+    addedLabels, listRequests, runRequests
   };
 }
 
@@ -644,6 +660,79 @@ test("doesn't add review:claude when it's already on", async () => {
   const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, labels: labelled(CLAUDE_LABEL) }));
 
   assert.deepEqual(addedLabels, []);
+});
+
+test("says so when review:claude is on but Claude Review won't review the head (mpaulosky/dotfiles#209)", async () => {
+  const labelledAt = "2026-10-18T10:00:00Z";
+  const events = [{ ...labeledEvent(CLAUDE_LABEL, "octo"), created_at: labelledAt }];
+  const run = (login, conclusion, createdAt = "2026-10-18T11:00:00Z", status = "completed", rerunBy = login) => ({
+    status, conclusion, created_at: createdAt, actor: { login }, triggering_actor: { login: rerunBy }
+  });
+  const pr = readyPr({ copilotReviews: DECLINED, labels: labelled(CLAUDE_LABEL) });
+  const notices = (logs) => logs.filter((line) => line.startsWith("notice: PR #7") && line.includes("Claude Review won't"));
+  const check = async (why, claudeRuns, expected, options = {}) => {
+    const { addedLabels, logs, runRequests } = await evaluate(options.pr ?? pr, options.events ?? events, { claudeRuns, ...options });
+    assert.deepEqual(addedLabels, [], why);
+    assert.equal(notices(logs).length, expected ? 1 : 0, `${why}\n${logs.join("\n")}`);
+    return { logs, runRequests };
+  };
+
+  // No review is coming: a Copilot push held for approval, or a skip of a push by a bot or Copilot, since the label.
+  const held = await check("a Copilot push held for approval", [run("Copilot", "action_required")], true);
+  assert.deepEqual(held.runRequests.map(({ workflow_id, head_sha }) => ({ workflow_id, head_sha })),
+    [{ workflow_id: "claude-review.yml", head_sha: HEAD }]);
+  await check("a held run reported by its status", [run("Copilot", null, undefined, "action_required")], true);
+  await check("an app's push skipped", [run("renovate[bot]", "skipped"), run("octo", "skipped", "2026-10-18T09:00:00Z")], true);
+  await check("Copilot's push skipped", [run("Copilot", "skipped")], true);
+  // A person's re-run of a bot's skipped run skips again: Claude Review goes by the original actor.
+  await check("a person's re-run of a bot's skip", [run("renovate[bot]", "skipped", undefined, "completed", "octo")], true);
+  // A bot adding the label starts a run in the same second as the label event.
+  await check("a bot's skip in the label's second", [run("renovate[bot]", "skipped", labelledAt)], true);
+  // With no labeled event read, every skip counts; with several, the last one does.
+  await check("no labeled event", [run("renovate[bot]", "skipped", "2026-10-18T09:00:00Z")], true, { events: [] });
+  await check("relabelled after the bot's push", [run("renovate[bot]", "skipped")], false, {
+    events: [
+      { ...labeledEvent(CLAUDE_LABEL, "octo"), created_at: "2026-10-18T08:00:00Z" },
+      { ...unlabeledEvent(CLAUDE_LABEL, "octo"), created_at: "2026-10-18T09:00:00Z" },
+      { ...labeledEvent(CLAUDE_LABEL, "octo"), created_at: "2026-10-18T12:00:00Z" }
+    ]
+  });
+
+  // A review may still come.
+  await check("a person's skip (another label, a draft)", [run("octo", "skipped")], false);
+  await check("a bot's skip from before the label", [run("renovate[bot]", "skipped", "2026-10-18T09:00:00Z")], false);
+  await check("one run still going", [run("renovate[bot]", "skipped"), run("octo", null, undefined, "in_progress")], false);
+  await check("one run done", [run("renovate[bot]", "skipped"), run("octo", "success")], false);
+  await check("no run yet, or a GITHUB_TOKEN push", [], false);
+  await check("more runs than one page", [run("renovate[bot]", "skipped")], false, { claudeRunsTotal: 101 });
+
+  // A failed read is a warning on a PR event, never a failed check.
+  // This one's label-events read is the PR's third: the two before it are other checks', which would fail first.
+  const ownWarning = (logs) => logs.some((line) => line.startsWith("warning: Couldn't tell whether Claude Review will review"));
+  for (const [why, claudeRuns, options] of [
+    ["a failed runs read", [], { claudeRunsError: Object.assign(new Error("Server Error"), { status: 500 }) }],
+    ["a failed events read", [run("renovate[bot]", "skipped")], { eventsError: Object.assign(new Error("Server Error"), { status: 500 }), eventsErrorAt: 3 }]
+  ]) {
+    const { logs, runRequests } = await check(why, claudeRuns, false, options);
+    assert.equal(runRequests.length, 1, why);
+    assert.ok(ownWarning(logs), `${why}\n${logs.join("\n")}`);
+    assert.ok(!logs.some((line) => line.startsWith("failed: ")), `${why}\n${logs.join("\n")}`);
+  }
+
+  // Dependabot's PR gets the by-hand notice, and its runs aren't read: Claude Review skips it whoever pushes.
+  const dependabot = await check("Dependabot's PR", [run("dependabot[bot]", "skipped")], false, {
+    pr: readyPr({ copilotReviews: DECLINED, labels: labelled(CLAUDE_LABEL), author: { login: "dependabot[bot]" } })
+  });
+  assert.deepEqual(dependabot.runRequests, []);
+  assert.ok(dependabot.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("by hand")), dependabot.logs.join("\n"));
+});
+
+test("a sweep stops when reading Claude Review's runs hits a rate limit (mpaulosky/dotfiles#209)", async () => {
+  const pr = readyPr({ copilotReviews: DECLINED, labels: labelled(CLAUDE_LABEL) });
+  const claudeRunsError = Object.assign(new Error("Too many requests"), { status: 429 });
+  const thrown = await evaluate(pr, [], { push: true, openPrs: [7], claudeRunsError }).then(() => null, (e) => e);
+
+  assert.equal(thrown, claudeRunsError);
 });
 
 test("stops calling in Claude after MAX_CLAUDE_ROUNDS of its reviews, and leaves it to the owner", async () => {

@@ -114,6 +114,8 @@ permissions:
   # pull-requests: write also lets GITHUB_TOKEN take review:claude off a PR.
   issues: read
   pull-requests: write
+  # actions: read lets GITHUB_TOKEN list Claude Review's runs for a head.
+  actions: read
 
 jobs:
   merge-when-ready:
@@ -126,8 +128,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
-          # Scoped by the permissions above; used only to read label events
-          # and to take review:claude off a PR at the review cap.
+          # Scoped by the permissions above; used only to read a PR's label
+          # events and comments and Claude Review's runs for its head, and to
+          # take review:claude off it.
           EVENTS_TOKEN: ${{ github.token }}
         with:
           # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
@@ -140,8 +143,9 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             // github authenticates with the PAT when it's set, which may lack
-            // Issues access; label events are read, and review:claude
-            // removed, with GITHUB_TOKEN instead.
+            // Issues or Actions access; label events, comments and Claude
+            // Review's runs are read, and review:claude removed, with
+            // GITHUB_TOKEN instead (its issues: read and actions: read above).
             const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
@@ -866,6 +870,62 @@ jobs:
               return failed.length > 0 ? `checks failed: ${failed.join(", ")}` : null;
             }
 
+            // Claude Review's runs for the head, read with GITHUB_TOKEN. With
+            // the label on, no review of the head is coming when none of them
+            // ran or is running, and one since the label was last added was
+            // held for approval (as GitHub holds a Copilot push's runs) or
+            // skipped a push by a bot or Copilot (its first job's condition).
+            // A person's skip (adding another label, a push to a draft) doesn't
+            // count, nor one from before the label (the push it came after).
+            // A push with GITHUB_TOKEN starts no run, which looks like one not
+            // started yet, so it gets no notice (mpaulosky/dotfiles#209).
+            async function claudeWontReviewHead(pullNumber, pr) {
+              let runs;
+              let events;
+              try {
+                const { data } = await eventsClient.rest.actions.listWorkflowRuns({
+                  owner,
+                  repo,
+                  workflow_id: "claude-review.yml",
+                  head_sha: pr.headRefOid,
+                  per_page: 100
+                });
+                runs = data.workflow_runs ?? [];
+                // Past one page, a run that ran may be one this can't see.
+                if (runs.length === 0 || data.total_count > runs.length) {
+                  return false;
+                }
+                const held = (run) => run.status === "action_required" || run.conclusion === "action_required";
+                if (!runs.every((run) => held(run) || (run.status === "completed" && run.conclusion === "skipped"))) {
+                  return false;
+                }
+                events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100
+                });
+                const added = events.findLast((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL);
+                const since = added ? Date.parse(added.created_at) : -Infinity;
+                // actor, as Claude Review's condition reads github.actor: on a
+                // re-run it stays the original pusher, where triggering_actor
+                // is whoever re-ran it.
+                const byBot = (run) => {
+                  const login = run.actor?.login ?? run.triggering_actor?.login ?? "";
+                  return login.endsWith("[bot]") || login === "Copilot";
+                };
+                // At or after: GitHub's times are to the second, and a run the
+                // label itself started (a bot adding it) shares its second.
+                return runs.some((run) => Date.parse(run.created_at) >= since && (held(run) || byBot(run)));
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
+                }
+                core.warning(`Couldn't tell whether Claude Review will review ${pr.headRefOid} on PR #${pullNumber}: ${error.message}`);
+                return false;
+              }
+            }
+
             // Copilot answered the head with its quota note, so no review of
             // it is coming: add review:claude, on land.sh's terms (see the
             // header). Called only for a head no review covers, below the cap.
@@ -876,7 +936,7 @@ jobs:
               const declined = pr.copilotReviews.nodes.some((review) => {
                 return review.commit?.oid === pr.headRefOid && COPILOT_NO_REVIEW.test(review.body ?? "");
               });
-              if (!declined || pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+              if (!declined) {
                 return;
               }
               // Claude Review skips Dependabot's PRs (its merge-from-main job's
@@ -887,6 +947,20 @@ jobs:
                   `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review doesn't review ` +
                   `Dependabot's PRs, so review and merge it by hand.`
                 );
+                return;
+              }
+              if (pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+                // The label is on, so Claude Review runs on each push, but not
+                // on every push: a notice when no review of this head is
+                // coming (mpaulosky/dotfiles#209).
+                if (await claudeWontReviewHead(pullNumber, pr)) {
+                  core.notice(
+                    `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review won't: it skips a ` +
+                    `push by a bot or Copilot, and GitHub holds a Copilot push's runs for approval. Unless a review ` +
+                    `of the commit it merges main into is still running, push to it, or take ${CLAUDE_LABEL} off and ` +
+                    `add it back.`
+                  );
+                }
                 return;
               }
               const head = pr.headRefOid;

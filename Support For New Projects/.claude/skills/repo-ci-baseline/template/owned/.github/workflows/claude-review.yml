@@ -449,9 +449,7 @@ jobs:
           # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
           SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
           USES = re.compile(rf"""^\s*-?\s*uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""", re.M)
-          # A line that opens a YAML block scalar: "key: |", "- >-", "run: |2 # note", "prompt: &p |" (an anchor
-          # or a tag may come before the indicator).
-          BLOCK_SCALAR = re.compile(r"(?:^|:|-)[ \t]+(?:[!&][^ \t]*[ \t]+)*[|>][-+0-9]*[ \t]*(?:#.*)?$")
+          BLOCK_INDICATOR = re.compile(r"[|>][-+]?([1-9]?)[-+]?")
           PATH_RUN = re.compile(r"[\w.\-/]+")
           PATH_TAIL = re.compile(r".+\.\w+")  # a character before the dot: *.py names no file
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow
@@ -891,8 +889,37 @@ jobs:
                       if block is not None and indent >= block:
                           inside.add(number)
                           continue
-                  header, block = (indent if BLOCK_SCALAR.search(line) else None), None
+                  header, block = indent, None
+                  opened = block_scalar_header(line)
+                  if opened is None:
+                      header = None
+                  elif opened >= 0:
+                      block = opened
               return inside
+
+
+          def block_scalar_header(line):
+              """Whether line opens a YAML block scalar ("key: |", "- >-", "run: |2 # note", "prompt: &p |": an
+              anchor or a tag may come before the indicator): None if not, else the block's indent when the
+              indicator fixes it (the key's column plus its digit), or -1 when its first line decides. By tokens,
+              not one pattern, which was quadratic in a crafted line."""
+              body = re.split(r"[ \t]#", line, maxsplit=1)[0]
+              tokens = [(match.start(), match.group()) for match in re.finditer(r"[^ \t]+", body)]
+              if not tokens:
+                  return None
+              indicator = BLOCK_INDICATOR.fullmatch(tokens[-1][1])
+              if not indicator:
+                  return None
+              rest = tokens[:-1]
+              while rest and rest[-1][1][:1] in ("!", "&"):
+                  rest.pop()
+              if rest and not (rest[-1][1].endswith(":") or rest[-1][1] == "-"):
+                  return None
+              if not indicator[1]:
+                  return -1
+              # The key's column: the first token that isn't a sequence dash, or the dash itself.
+              key = next((column for column, token in rest if token != "-"), rest[0][0] if rest else 0)
+              return key + int(indicator[1])
 
 
           def blob_reader(head, path, limit, blobs):

@@ -979,6 +979,12 @@ def test_a_hash_line_inside_a_block_scalar_is_content_not_a_comment(repo, tmp_pa
               workflow("## Check", "#count = 0;").replace("prompt: |", "prompt: &p |")),
              (workflow("## Review", "#count = 0;").replace("script: >-", "script: !!str >-"),
               workflow("## Review", "#count = 1;").replace("script: >-", "script: !!str >-")),
+             # An explicit indentation indicator: the block's indent is the key's plus 2, though its first line
+             # starts deeper.
+             ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |2\n"
+              "                deeper first line\n            ## Review\n      # a comment\n",
+              "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |2\n"
+              "                deeper first line\n            ## Check\n      # a comment\n"),
              # CRLF line endings.
              (workflow("## Review", "#count = 0;").replace("\n", "\r\n"),
               workflow("## Check", "#count = 0;").replace("\n", "\r\n"))]
@@ -999,6 +1005,19 @@ def test_a_comment_after_a_block_scalar_ends_is_still_a_comment(repo, tmp_path):
     repo.base = repo.commit({".github/workflows/ci.yml": steps + "      # old note\n"})
     head = repo.commit({".github/workflows/ci.yml": steps + "      # new note\n"})
     repo.split(repo.base, head, tmp_path)
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
+def test_a_long_line_of_anchors_doesnt_slow_the_block_scalar_check(repo, tmp_path):
+    # Finding a block scalar's header was quadratic in a line of "&- " tokens (mpaulosky/dotfiles#203).
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    crafted = "      # " + "&- " * 30000 + "x\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # a\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # b\n"})
+    started = time.monotonic()
+    repo.split(repo.base, head, tmp_path)
+    assert time.monotonic() - started < 5
     assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
 
 

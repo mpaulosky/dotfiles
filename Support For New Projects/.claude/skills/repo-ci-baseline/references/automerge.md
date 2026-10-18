@@ -74,6 +74,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A check that isn't required and is still running doesn't hold it, as it doesn't hold an update: unlike `land.sh`, which polls,
   this workflow waits for an event, and that check's completion may never start it (another workflow's, or an app's like CodeQL's).
   A person who took the label off decides for that PR, so it isn't added back; this workflow's own removals don't count.
+  The run logs a notice naming them, to add it back or review and merge by hand (mpaulosky/dotfiles#215).
   When the label is on but no review of the head is coming, the run logs a notice to push, or to take the label off and add
   it back (mpaulosky/dotfiles#209). It reads Claude Review's workflow runs for the head (`actions: read`): none ran or runs,
   and one since the label was last added was held for approval (as GitHub holds a Copilot push's runs) or skipped a push

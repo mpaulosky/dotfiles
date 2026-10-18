@@ -923,15 +923,15 @@ def test_a_comment_only_edit_to_a_workflow_doesnt_follow_its_pins(repo, tmp_path
     ]
 
 
-def test_the_prs_own_gitattributes_cant_hide_a_workflows_change_from_the_pins_check(repo, tmp_path):
+def test_the_pins_check_reads_a_comment_only_edit_as_text_whatever_the_prs_gitattributes_say(repo, tmp_path):
+    # A diff git shows as binary, or one that fails, counts as a change and follows the pins; so this
+    # comment-only edit is left unfollowed only when the check reads its lines as text.
     runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
     steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
     repo.base = repo.commit({".github/workflows/ci.yml": steps})
-    head = repo.commit({".gitattributes": ".github/** -diff\n",
-                        ".github/workflows/ci.yml": steps + "      - run: echo changed\n"})
+    head = repo.commit({".gitattributes": ".github/** -diff\n", ".github/workflows/ci.yml": steps + "      # note\n"})
     repo.split(repo.base, head, tmp_path)
-    assert "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)" \
-        in headers(repo)
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
 
 
 def test_an_action_pinned_by_two_changed_workflows_is_read_once(repo, tmp_path):

@@ -1,0 +1,8 @@
+{
+  // Merged with the root config. The prompts use a top-level heading per
+  // section, and inline HTML tags to delimit what the agent fills in.
+  "config": {
+    "MD025": false,
+    "MD033": false
+  }
+}

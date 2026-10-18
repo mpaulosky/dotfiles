@@ -319,7 +319,7 @@ query($owner: String!, $name: String!, $cursor: String) {
                   pageInfo { hasNextPage }
                   nodes {
                     __typename
-                    ... on CheckRun { name status conclusion completedAt }
+                    ... on CheckRun { name status conclusion completedAt checkSuite { workflowRun { workflow { name } } } }
                     ... on StatusContext { context state createdAt }
                   }
                 }
@@ -348,7 +348,7 @@ type CheckContext = {
   context?: string;
   state?: string;
   createdAt?: string;
-  checkSuite?: { workflowRun?: { databaseId?: number } | null } | null;
+  checkSuite?: { workflowRun?: { databaseId?: number; workflow?: { name?: string } | null } | null } | null;
 };
 type SweepNode = {
   id: string;
@@ -456,11 +456,13 @@ function checkState(context: CheckContext): CheckState {
       completedAt: context.createdAt ?? null,
     };
   }
+  const workflow = context.checkSuite?.workflowRun?.workflow?.name;
   return {
     name: context.name ?? "",
     completed: context.status === "COMPLETED",
     green: ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(context.conclusion ?? ""),
     completedAt: context.completedAt ?? null,
+    ...(workflow === undefined ? {} : { workflow }),
   };
 }
 
@@ -601,7 +603,7 @@ query($owner: String!, $name: String!, $number: Int!) {
                 pageInfo { hasNextPage }
                 nodes {
                   __typename
-                  ... on CheckRun { name status conclusion completedAt checkSuite { workflowRun { databaseId } } }
+                  ... on CheckRun { name status conclusion completedAt checkSuite { workflowRun { databaseId workflow { name } } } }
                   ... on StatusContext { context state createdAt }
                 }
               }

@@ -286,13 +286,20 @@ export const COPILOT_REVIEWER = "copilot-pull-request-reviewer[bot]";
 export const COPILOT_REREQUEST_AFTER_MS = 60 * 60 * 1000;
 
 // The check run the Sandcastle workflow's own job reports
-// (.github/workflows/sandcastle.yml's `name:` for its one job). A run started
+// (.github/workflows/sandcastle.yml's `name:` for its one job), together with
+// SANDCASTLE_WORKFLOW below. A run started
 // by a pull_request_review or unlabeled event reports it on the head of the
 // PR it sweeps, so the sweep and the follow-up pass leave it out
 // (lib/follow-up.mts#withoutOwnCheck): running, it would hold the PR that
 // started the run, and red after a hand-back, it would send the follow-up
 // role Sandcastle's own job log (#222).
 export const SANDCASTLE_CHECK = "Sandcastle";
+
+// The Sandcastle workflow's name (the top-level `name:` of
+// .github/workflows/sandcastle.yml). The sweep leaves out SANDCASTLE_CHECK
+// only when this workflow reported it, so a check of that name from another
+// workflow still counts.
+export const SANDCASTLE_WORKFLOW = "Sandcastle";
 
 // Marks the follow-up pass's summary PR comment (lib/follow-up-pass.mts), so
 // markerComments can count passes already run toward FOLLOW_UP_PASS_CAP

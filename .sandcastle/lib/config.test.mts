@@ -11,6 +11,7 @@ import {
   ROLE_AGENTS,
   QueueScopeError,
   SANDCASTLE_CHECK,
+  SANDCASTLE_WORKFLOW,
   budgetMinutesFrom,
   queueScopeFrom,
 } from "./config.mts";
@@ -55,13 +56,19 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   });
 });
 
-describe("SANDCASTLE_CHECK", () => {
+describe("SANDCASTLE_CHECK and SANDCASTLE_WORKFLOW", () => {
   // The sweep leaves out the check named SANDCASTLE_CHECK as its own (#222),
   // so renaming the workflow's job without it would bring the bug back.
   it("is the name of the Sandcastle workflow's job", () => {
     const workflow = readFileSync(new URL("../../.github/workflows/sandcastle.yml", import.meta.url), "utf8");
 
     assert.match(workflow, new RegExp(`^jobs:\\n  sandcastle:\\n    name: ${SANDCASTLE_CHECK}\\n`, "m"));
+  });
+
+  it("is the name of the Sandcastle workflow", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/sandcastle.yml", import.meta.url), "utf8");
+
+    assert.match(workflow, new RegExp(`^name: ${SANDCASTLE_WORKFLOW}$`, "m"));
   });
 });
 

@@ -1718,7 +1718,7 @@ describe("runPass's red CI decisions", () => {
   it("re-runs a red check while only Sandcastle's own check is still running", async () => {
     const { passHost, calls } = passHostFake({
       threads: [],
-      checks: [redCheck({ name: "Template tests" }), redCheck({ name: "Sandcastle", runId: 2002, completed: false, completedAt: null })],
+      checks: [redCheck({ name: "Template tests" }), redCheck({ name: "Sandcastle", workflow: "Sandcastle", runId: 2002, completed: false, completedAt: null })],
     });
 
     await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
@@ -1729,7 +1729,7 @@ describe("runPass's red CI decisions", () => {
   // #222: a red Sandcastle check is a hand-back's, with nothing in the PR for
   // the follow-up role to fix from its job log.
   it("doesn't start a pass for Sandcastle's own red check", async () => {
-    const { passHost, calls } = passHostFake({ threads: [], containsBase: true, checks: [redCheck({ name: "Sandcastle", runId: 2002 })] });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: true, checks: [redCheck({ name: "Sandcastle", workflow: "Sandcastle", runId: 2002 })] });
 
     const outcome = await runPass(passTarget({ reasons: [] }), issue, BASE, passHost);
 
@@ -1737,6 +1737,23 @@ describe("runPass's red CI decisions", () => {
     assert.deepEqual(calls.createSandbox, []);
     assert.deepEqual(calls.rerunFailedChecks, []);
     assert.deepEqual(calls.failedCheckLog, []);
+  });
+
+  // A check named Sandcastle from another workflow is a real red check, so
+  // its failed-job log still goes to the follow-up role.
+  it("forwards the failed-job log of a red check named Sandcastle that another workflow reported", async () => {
+    const sandbox = sandboxFake({ gateExitCodes: [0, 0, 0], followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({
+      threads: [],
+      containsBase: true,
+      sandbox,
+      checks: [redCheck({ name: "Sandcastle", workflow: "CI", runId: 2002 })],
+      failedCheckLog: "##[error] something failed",
+    });
+
+    await runPass(passTarget({ reasons: ["check Sandcastle is red"] }), issue, BASE, passHost);
+
+    assert.deepEqual(calls.failedCheckLog, [{ pr: PR_NUMBER, checkNames: ["Sandcastle"], expectedHead: HEAD }]);
   });
 
   // #79's follow-up review: `pull_request` CI checks out the head merged

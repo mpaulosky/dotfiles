@@ -1022,7 +1022,16 @@ describe("openPullRequestsForSweep", () => {
                         statusCheckRollup: {
                           contexts: {
                             pageInfo: { hasNextPage: false },
-                            nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", completedAt: "2026-10-01T00:00:00Z" }],
+                            nodes: [
+                              {
+                                __typename: "CheckRun",
+                                name: "build",
+                                status: "COMPLETED",
+                                conclusion: "SUCCESS",
+                                completedAt: "2026-10-01T00:00:00Z",
+                                checkSuite: { workflowRun: { workflow: { name: "CI" } } },
+                              },
+                            ],
                           },
                         },
                       },
@@ -1054,7 +1063,7 @@ describe("openPullRequestsForSweep", () => {
       { resolved: false, byBot: true, author: "github-advanced-security[bot]" },
       { resolved: false, byBot: false, author: "reviewer" },
     ]);
-    assert.deepEqual(pr!.checks, [{ name: "build", completed: true, green: true, completedAt: "2026-10-01T00:00:00Z" }]);
+    assert.deepEqual(pr!.checks, [{ name: "build", completed: true, green: true, completedAt: "2026-10-01T00:00:00Z", workflow: "CI" }]);
     assert.equal(pr!.truncated, false);
   });
 
@@ -1180,13 +1189,13 @@ describe("reviewThreadsOf", () => {
 describe("head checks and their runs", () => {
   const HEAD_OID = "a".repeat(40);
   type Context = Record<string, unknown>;
-  const checkRun = (name: string, conclusion: string, runId: number | null): Context => ({
+  const checkRun = (name: string, conclusion: string, runId: number | null, workflow?: string): Context => ({
     __typename: "CheckRun",
     name,
     status: "COMPLETED",
     conclusion,
     completedAt: "2026-10-10T09:00:00Z",
-    checkSuite: { workflowRun: runId === null ? null : { databaseId: runId } },
+    checkSuite: { workflowRun: runId === null ? null : { databaseId: runId, workflow: workflow === undefined ? null : { name: workflow } } },
   });
   const page = (contexts: Context[], options: { oid?: string; hasNextPage?: boolean } = {}) =>
     JSON.stringify({
@@ -1239,6 +1248,15 @@ describe("head checks and their runs", () => {
         { name: "Build Solution", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z", runId: 11 },
         { name: "ci/legacy", completed: true, green: true, completedAt: "2026-10-10T09:00:00Z", runId: undefined },
       ]);
+    });
+
+    // #222: the sweep leaves out Sandcastle's own check by the workflow behind it.
+    it("names the workflow behind a check run", () => {
+      const { run } = gh([checkRun("Sandcastle", "FAILURE", 12, "Sandcastle")]);
+
+      const { checks } = headChecksOf(7, run, "o/r");
+
+      assert.deepEqual(checks, [{ name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z", workflow: "Sandcastle", runId: 12 }]);
     });
 
     it("throws when the checks are truncated, rather than deciding from part of them", () => {

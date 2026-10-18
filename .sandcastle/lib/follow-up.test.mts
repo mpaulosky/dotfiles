@@ -191,7 +191,7 @@ describe("decide", () => {
       pr({
         checks: [
           { name: "build", completed: true, green: true, completedAt: "2026-10-10T09:00:00Z" },
-          { name: "Sandcastle", completed: false, green: false, completedAt: null },
+          { name: "Sandcastle", workflow: "Sandcastle", completed: false, green: false, completedAt: null },
         ],
       }),
       NOW,
@@ -205,7 +205,7 @@ describe("decide", () => {
       pr({
         checks: [
           { name: "build", completed: false, green: false, completedAt: null },
-          { name: "Sandcastle", completed: false, green: false, completedAt: null },
+          { name: "Sandcastle", workflow: "Sandcastle", completed: false, green: false, completedAt: null },
         ],
       }),
       NOW,
@@ -219,7 +219,7 @@ describe("decide", () => {
       pr({
         checks: [
           { name: "build", completed: true, green: true, completedAt: "2026-10-10T09:00:00Z" },
-          { name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" },
+          { name: "Sandcastle", workflow: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" },
         ],
       }),
       NOW,
@@ -233,7 +233,7 @@ describe("decide", () => {
       pr({
         checks: [
           { name: "lint", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z" },
-          { name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" },
+          { name: "Sandcastle", workflow: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" },
         ],
       }),
       NOW,
@@ -246,12 +246,24 @@ describe("decide", () => {
     const result = decide(
       pr({
         mergeStateStatus: "DIRTY",
-        checks: [{ name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" }],
+        checks: [{ name: "Sandcastle", workflow: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" }],
       }),
       NOW,
     );
 
     assert.deepEqual(result, { action: "needs-pass", reasons: ["it has merge conflicts"] });
+  });
+
+  // The check is Sandcastle's own only when the Sandcastle workflow reported
+  // it; another workflow's check of that name is a real one.
+  it("still waits for, and flags, a check named Sandcastle that another workflow reported", () => {
+    const running = decide(pr({ checks: [{ name: "Sandcastle", workflow: "CI", completed: false, green: false, completedAt: null }] }), NOW);
+    const red = decide(pr({ checks: [{ name: "Sandcastle", workflow: "CI", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" }] }), NOW);
+    const status = decide(pr({ checks: [{ name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" }] }), NOW);
+
+    assert.deepEqual(running, { action: "wait", reason: "checks are still running" });
+    assert.deepEqual(red, { action: "needs-pass", reasons: ["check Sandcastle is red"] });
+    assert.deepEqual(status, { action: "needs-pass", reasons: ["check Sandcastle is red"] });
   });
 
   it("waits with no checks reported at all", () => {

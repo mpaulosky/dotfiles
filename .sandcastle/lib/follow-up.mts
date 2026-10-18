@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { discardClosedWork, isIssueBranch, type BranchRefs } from "./branches.mts";
-import { COPILOT_REREQUEST_AFTER_MS, PR_MARKER } from "./config.mts";
+import { COPILOT_REREQUEST_AFTER_MS, PR_MARKER, withoutOwnCheck } from "./config.mts";
 import {
   addPullRequestLabel,
   closedPullRequests,
@@ -40,7 +40,12 @@ import { outcomeReport, waitingPrReport, type OutcomeReport, type WaitingPrEntry
 
 // One check run or status on a PR's head commit, normalised from either
 // GraphQL shape (CheckRun or StatusContext) by lib/github.mts#openPullRequestsForSweep.
-export type CheckState = { name: string; completed: boolean; green: boolean; completedAt: string | null };
+// `workflow` is the name of the Actions workflow behind a check run; a status,
+// or a check run another app made, has none.
+export type CheckState = { name: string; completed: boolean; green: boolean; completedAt: string | null; workflow?: string };
+
+// Re-exported so the sweep's callers keep importing it from here.
+export { withoutOwnCheck };
 
 // An open PR with everything the sweep decides from, normalised from one
 // paginated GraphQL query (lib/github.mts#openPullRequestsForSweep).
@@ -135,25 +140,27 @@ export type SweepDecision =
 // #81), wait while Copilot's review is in flight, ask Copilot again once CI
 // has been done for a while with no review or pending request, update a
 // settled PR that's only behind main, or leave a clean or merge-blocked one
-// alone. `isOwner` defaults to never-owner so a caller that doesn't pass it
-// (most tests) sees every non-bot thread as a human's, as before this
-// parameter existed.
+// alone. Sandcastle's own check run counts for none of these
+// (withoutOwnCheck, #222). `isOwner` defaults to never-owner so a caller that
+// doesn't pass it (most tests) sees every non-bot thread as a human's, as
+// before this parameter existed.
 export function decide(pr: SweepPullRequest, now: number, isOwner: IsOwner = () => false): SweepDecision {
+  const checks = withoutOwnCheck(pr.checks);
   // GitHub runs no pull_request workflows on a PR it can't merge, so a head
   // pushed while it conflicts gets no checks: waiting on them would hide the
   // conflict for good.
   if (pr.mergeStateStatus === "DIRTY") {
-    const red = pr.checks.filter((check) => check.completed && !check.green).map((check) => `check ${check.name} is red`);
+    const red = checks.filter((check) => check.completed && !check.green).map((check) => `check ${check.name} is red`);
     return { action: "needs-pass", reasons: ["it has merge conflicts", ...red] };
   }
-  if (pr.checks.length === 0) return { action: "wait", reason: "no checks have reported" };
-  if (pr.checks.some((check) => !check.completed)) return { action: "wait", reason: "checks are still running" };
+  if (checks.length === 0) return { action: "wait", reason: "no checks have reported" };
+  if (checks.some((check) => !check.completed)) return { action: "wait", reason: "checks are still running" };
 
   // Red checks and bot/owner threads don't depend on Copilot reviewing this
   // head, so they're flagged before waiting on it: GitHub can drop the one
   // re-request (Copilot's review budget, ADR 0004), and every update-branch
   // makes a head Copilot hasn't seen, so waiting would hide them for good.
-  const reasons = pr.checks.filter((check) => !check.green).map((check) => `check ${check.name} is red`);
+  const reasons = checks.filter((check) => !check.green).map((check) => `check ${check.name} is red`);
   const botThreads = pr.threads.filter((thread) => !thread.resolved && thread.byBot).length;
   if (botThreads > 0) reasons.push(`${botThreads} unresolved bot thread(s)`);
   // A thread the repository owner opened is the follow-up role's to answer
@@ -166,7 +173,7 @@ export function decide(pr: SweepPullRequest, now: number, isOwner: IsOwner = () 
 
   // A completed check with no time can't say when CI finished, so it leaves
   // ciDoneAt NaN and the PR is never re-requested on a guess.
-  const doneAt = pr.checks.map((check) => (check.completedAt === null ? NaN : timestamp(check.completedAt)));
+  const doneAt = checks.map((check) => (check.completedAt === null ? NaN : timestamp(check.completedAt)));
   const ciDoneAt = Math.max(...doneAt);
   const reviewed = pr.reviews.some((review) => isCopilot(review.author) && review.commitOid === pr.headRefOid);
   if (pr.reviewRequests.some(isCopilot)) return { action: "wait", reason: "Copilot's review is pending" };

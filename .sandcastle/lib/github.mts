@@ -6,7 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { endOf } from "./checkpoint.mts";
-import { COPILOT_REVIEWER, QUEUE_LABEL, SANDCASTLE_LABELS, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { COPILOT_REVIEWER, QUEUE_LABEL, SANDCASTLE_LABELS, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 import { sh } from "./shell.mts";
@@ -319,7 +319,7 @@ query($owner: String!, $name: String!, $cursor: String) {
                   pageInfo { hasNextPage }
                   nodes {
                     __typename
-                    ... on CheckRun { name status conclusion completedAt }
+                    ... on CheckRun { name status conclusion completedAt checkSuite { workflowRun { workflow { name } } } }
                     ... on StatusContext { context state createdAt }
                   }
                 }
@@ -348,7 +348,7 @@ type CheckContext = {
   context?: string;
   state?: string;
   createdAt?: string;
-  checkSuite?: { workflowRun?: { databaseId?: number } | null } | null;
+  checkSuite?: { workflowRun?: { databaseId?: number; workflow?: { name?: string } | null } | null } | null;
 };
 type SweepNode = {
   id: string;
@@ -456,11 +456,13 @@ function checkState(context: CheckContext): CheckState {
       completedAt: context.createdAt ?? null,
     };
   }
+  const workflow = context.checkSuite?.workflowRun?.workflow?.name;
   return {
     name: context.name ?? "",
     completed: context.status === "COMPLETED",
     green: ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(context.conclusion ?? ""),
     completedAt: context.completedAt ?? null,
+    ...(workflow === undefined ? {} : { workflow }),
   };
 }
 
@@ -601,7 +603,7 @@ query($owner: String!, $name: String!, $number: Int!) {
                 pageInfo { hasNextPage }
                 nodes {
                   __typename
-                  ... on CheckRun { name status conclusion completedAt checkSuite { workflowRun { databaseId } } }
+                  ... on CheckRun { name status conclusion completedAt checkSuite { workflowRun { databaseId workflow { name } } } }
                   ... on StatusContext { context state createdAt }
                 }
               }
@@ -671,8 +673,10 @@ function namedRuns(
   // example a workflow triggered by both `push` and `pull_request`: one run
   // green, one red. Keeping only the failed ones here stops a caller from
   // re-running, or reading the failed-job log of, a run that already passed
-  // (#259).
-  const checks = allChecks.filter((check) => names.includes(check.name) && check.completed && !check.green);
+  // (#259). Sandcastle's own check is left out as the sweep leaves it out
+  // (withoutOwnCheck, #222): its run's log isn't for the follow-up role, and
+  // its run isn't one to re-run.
+  const checks = withoutOwnCheck(allChecks).filter((check) => names.includes(check.name) && check.completed && !check.green);
   const runIds = [...new Set(checks.flatMap((check) => (check.runId === undefined ? [] : [check.runId])))];
   return { checks, runIds };
 }

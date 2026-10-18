@@ -76,9 +76,13 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   In a repo where neither main's rulesets nor `isRequired` name a required check, the head's checks must all have finished instead
   (mpaulosky/dotfiles#216), and CI must have reported: the head needs a check other than Claude Review's and PR Auto-Merge's own, and
   no workflow run for the head may still be queued, waiting or in progress, as its jobs may not have created their checks yet
-  (mpaulosky/dotfiles#233). It reads the head's checks again after the runs and waits if they changed, as a run may have finished
-  between the two reads. When everything is quiet but no CI check exists (path filters left out every CI workflow), nothing will
-  start the workflow again, so the run logs a notice to add the label or merge by hand. A failed read of the runs isn't settled.
+  (mpaulosky/dotfiles#233). A CI run held for approval (`action_required` as its status or its conclusion, as GitHub holds a
+  Copilot push's runs) has created no checks either, so the run logs a notice to approve the PR's runs or merge by hand.
+  PR Review Submitted's, Claude Review's and PR Auto-Merge's own held runs don't count: Copilot's review always leaves a PR Review
+  Submitted run held (mpaulosky/dotfiles#236). It reads the head's checks again after the runs and waits if they changed, as a run
+  may have finished between the two reads. When everything is quiet but no CI check exists (path filters left out every CI
+  workflow, or a push with `GITHUB_TOKEN` started none, leaving GraphQL's `statusCheckRollup` null), nothing will start the
+  workflow again, so the run logs a notice to add the label or merge by hand. A failed read of the runs isn't settled.
   As for an update, that holds only off a PR event, where CI may not have created the required checks yet.
   Once the label is added, the run logs a notice that it has no required check.
   A person who took the label off decides for that PR, so it isn't added back; this workflow's own removals don't count.

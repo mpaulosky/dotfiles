@@ -716,9 +716,8 @@ test("doesn't call in Claude with no required check when the head has only Claud
   for (const [name, headRef] of Object.entries(cases)) {
     const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [] });
     assert.deepEqual(addedLabels, [], name);
-    // "no checks at all" waits quietly; the rest are quiet heads CI never reported on, which tell the owner.
-    const noted = logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet") || (line.startsWith("notice: PR #7") && line.includes("no CI check")));
-    assert.ok(noted, `${name}: ${logs.join("\n")}`);
+    // Every one is a quiet head CI never reported on, which tells the owner (mpaulosky/dotfiles#236).
+    assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check")), `${name}: ${logs.join("\n")}`);
     assert.ok(!logs.some((line) => line.includes("no required check") && line.startsWith("notice: ")), `${name}: ${logs.join("\n")}`);
   }
 });
@@ -742,6 +741,114 @@ test("tells the owner when a quiet head has no CI check and no workflow run is a
   assert.deepEqual(running.addedLabels, []);
   assert.ok(!running.logs.some((line) => line.startsWith("notice: PR #7")), running.logs.join("\n"));
   assert.ok(running.logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), running.logs.join("\n"));
+});
+
+// A held run has created no checks yet, so a head with one isn't settled (mpaulosky/dotfiles#236).
+const heldCiRun = (shape, overrides = {}) => ({
+  id: 3,
+  head_sha: HEAD,
+  name: "Build and Test Suite",
+  path: ".github/workflows/ci.yml",
+  ...(shape === "status" ? { status: "action_required", conclusion: null } : { status: "completed", conclusion: "action_required" }),
+  ...overrides
+});
+
+// The job waits, or says the runs need approval; it never calls in Claude.
+function waitsOrAsksForApproval(logs) {
+  return logs.some((line) => {
+    return line.startsWith("Not calling in Claude for PR #7 yet") || (line.startsWith("notice: PR #7") && /approv/i.test(line));
+  });
+}
+
+test("doesn't call in Claude with no required check while a CI run for the head is held for approval (mpaulosky/dotfiles#236)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
+  for (const shape of ["status", "conclusion"]) {
+    const headRuns = [{ id: 1, head_sha: HEAD, status: "completed", conclusion: "success" }, heldCiRun(shape)];
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [], headRuns });
+    assert.deepEqual(addedLabels, [], `held by ${shape}`);
+    assert.ok(waitsOrAsksForApproval(logs), `held by ${shape}: ${logs.join("\n")}`);
+    assert.ok(!logs.some((line) => line.startsWith("notice: ") && line.includes("no required check")), `held by ${shape}: ${logs.join("\n")}`);
+  }
+});
+
+test("doesn't tell the owner there is no CI while a CI run for the head is held for approval (mpaulosky/dotfiles#236)", async () => {
+  const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
+  const headRef = checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false }));
+  for (const shape of ["status", "conclusion"]) {
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], {
+      push: true,
+      requiredChecks: [],
+      headRuns: [heldCiRun(shape)]
+    });
+    assert.deepEqual(addedLabels, [], `held by ${shape}`);
+    assert.ok(waitsOrAsksForApproval(logs), `held by ${shape}: ${logs.join("\n")}`);
+    assert.ok(!logs.some((line) => line.includes("no CI check")), `held by ${shape}: ${logs.join("\n")}`);
+  }
+});
+
+test("doesn't count PR Review Submitted's, Claude Review's or this job's own held runs as held CI (mpaulosky/dotfiles#236)", async () => {
+  const ownRuns = (shape) => [
+    heldCiRun(shape, { id: 4, name: "PR Review Submitted", path: ".github/workflows/pr-review-submitted.yml" }),
+    heldCiRun(shape, { id: 5, name: "Claude Review", path: ".github/workflows/claude-review.yml" }),
+    heldCiRun(shape, { id: 6, name: "PR Auto-Merge", path: ".github/workflows/pr-automerge.yml" })
+  ];
+  const settled = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
+  const quiet = checksOn(HEAD, requiredCheck("Review with Claude", { isRequired: false, conclusion: "SKIPPED" }));
+  for (const shape of ["status", "conclusion"]) {
+    // CI has reported: the held runs of those workflows don't hold Claude back.
+    const called = await evaluate(readyPr({ copilotReviews: DECLINED, headRef: settled }), [], {
+      push: true,
+      requiredChecks: [],
+      headRuns: ownRuns(shape)
+    });
+    assert.equal(called.addedLabels.length, 1, `held by ${shape}: ${called.logs.join("\n")}`);
+
+    // CI has not: the owner is still told there is no CI.
+    const told = await evaluate(readyPr({ copilotReviews: DECLINED, headRef: quiet }), [], {
+      push: true,
+      requiredChecks: [],
+      headRuns: ownRuns(shape)
+    });
+    assert.deepEqual(told.addedLabels, [], `held by ${shape}`);
+    assert.ok(told.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check")), `held by ${shape}: ${told.logs.join("\n")}`);
+  }
+});
+
+// GraphQL returns a null statusCheckRollup for a head no check has reported on, as for one pushed with GITHUB_TOKEN (mpaulosky/dotfiles#236).
+test("tells the owner when a head has no status check rollup and no workflow run is active, outside a PR event (mpaulosky/dotfiles#236)", async () => {
+  const noRollup = { target: { oid: HEAD, statusCheckRollup: null } };
+  const pr = readyPr({ copilotReviews: DECLINED, headRef: noRollup });
+  const options = { push: true, requiredChecks: [] };
+
+  const quiet = await evaluate(pr, [], options);
+  assert.deepEqual(quiet.addedLabels, []);
+  assert.ok(
+    quiet.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check") && line.includes(`add ${CLAUDE_LABEL}`)),
+    quiet.logs.join("\n")
+  );
+  assert.ok(quiet.headRunRequests.length > 0 && quiet.headRunRequests.every((params) => params.head_sha === HEAD), "the runs check");
+
+  // Completed runs are not active runs.
+  const done = await evaluate(pr, [], { ...options, headRuns: [{ id: 1, head_sha: HEAD, status: "completed", conclusion: "skipped" }] });
+  assert.ok(done.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check")), done.logs.join("\n"));
+
+  // A run still active may yet create checks: no notice, and no Claude.
+  const running = await evaluate(pr, [], { ...options, headRuns: [{ id: 1, head_sha: HEAD, status: "queued" }] });
+  assert.deepEqual(running.addedLabels, []);
+  assert.ok(!running.logs.some((line) => line.startsWith("notice: PR #7")), running.logs.join("\n"));
+
+  // A held run is waiting for approval, not absent.
+  for (const shape of ["status", "conclusion"]) {
+    const held = await evaluate(pr, [], { ...options, headRuns: [heldCiRun(shape)] });
+    assert.deepEqual(held.addedLabels, [], `held by ${shape}`);
+    assert.ok(waitsOrAsksForApproval(held.logs), `held by ${shape}: ${held.logs.join("\n")}`);
+    assert.ok(!held.logs.some((line) => line.includes("no CI check")), `held by ${shape}: ${held.logs.join("\n")}`);
+  }
+
+  // On a PR event CI may not have started yet: no notice.
+  const onPr = await evaluate(pr, [], { requiredChecks: [] });
+  assert.deepEqual(onPr.addedLabels, []);
+  assert.ok(!onPr.logs.some((line) => line.includes("no CI check")), onPr.logs.join("\n"));
 });
 
 test("calls in Claude with no required check once a check outside Claude Review's and this job's own has finished (mpaulosky/dotfiles#233)", async () => {

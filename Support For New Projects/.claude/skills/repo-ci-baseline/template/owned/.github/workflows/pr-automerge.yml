@@ -532,11 +532,17 @@ jobs:
                 if (runs.some((run) => ACTIVE_RUN_STATUSES.includes(run.status))) {
                   return "waiting";
                 }
-                // A held run counts only while it is the newest run (highest
-                // id) of its workflow and event: a later run that replaced it
-                // has created the checks it would have (mpaulosky/dotfiles#238).
+                // A held run counts only while no later run (higher id) of its
+                // workflow and event has replaced it. A later run replaces it
+                // only if it ran: one that finished skipped, cancelled or
+                // failed to start created none of the checks the held run
+                // would have (mpaulosky/dotfiles#238).
+                const NOT_RUN = ["skipped", "cancelled", "startup_failure", HELD_RUN];
                 const replaced = (run) => {
-                  return runs.some((other) => other.path === run.path && other.event === run.event && other.id > run.id);
+                  return runs.some((other) => {
+                    return other.path === run.path && other.event === run.event && other.id > run.id &&
+                      other.status === "completed" && !NOT_RUN.includes(other.conclusion);
+                  });
                 };
                 const held = runs.some((run) => {
                   return (run.status === HELD_RUN || run.conclusion === HELD_RUN) &&

@@ -815,6 +815,13 @@ test("doesn't hold the PR for a held run that a later run of the same workflow a
     assert.deepEqual(otherEvent.addedLabels, [], `held by ${shape}`);
     assert.ok(asksForApproval(otherEvent.logs), `held by ${shape}: ${otherEvent.logs.join("\n")}`);
 
+    // A later run that never ran CI doesn't replace it: the PR stays held and the owner is asked to approve.
+    for (const conclusion of ["skipped", "cancelled", "startup_failure"]) {
+      const neverRan = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8, { conclusion })]);
+      assert.deepEqual(neverRan.addedLabels, [], `held by ${shape}, later run ${conclusion}`);
+      assert.ok(asksForApproval(neverRan.logs), `held by ${shape}, later run ${conclusion}: ${neverRan.logs.join("\n")}`);
+    }
+
     // A replacing run that is itself held still holds the PR.
     const stillHeld = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), heldCiRun(shape, { id: 8, ...ci })]);
     assert.deepEqual(stillHeld.addedLabels, [], `held by ${shape}`);

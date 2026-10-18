@@ -72,6 +72,7 @@ function host(
     abortExitCode = 0,
     latestMainError,
     mainWorkflowFiles = [],
+    pushRefusesWorkflowChanges = true,
     gateOutput,
   }: {
     ahead?: number | number[];
@@ -110,6 +111,9 @@ function host(
     // workflowFiles returns when asked about the range ending at latestMain
     // (#223). Empty by default, as when main hasn't changed a workflow.
     mainWorkflowFiles?: string[];
+    // Whether the push token lacks the Workflows permission, as in Actions
+    // (the default); false is a local `Sandcastle:local` run.
+    pushRefusesWorkflowChanges?: boolean;
   } = {},
 ) {
   const steps: string[] = [];
@@ -268,6 +272,7 @@ function host(
     worktreeProblems: () => worktreeProblems,
     publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), () => false),
     limits: new RunLimits(),
+    pushRefusesWorkflowChanges,
     workflowFiles: (from, to) => {
       workflowFileCalls.push({ from, to });
       // The range ending at main is the sync check's (#223); any other range
@@ -879,6 +884,20 @@ describe("buildIssue syncing with main before publishing", () => {
     );
     assert.ok(mainChecks.length <= 1);
     assert.ok(!logs.some((line) => line.includes("merged main in")), logs.join("\n"));
+  });
+
+  it("still merges main in, whatever main changed under .github/workflows/, when the push token can push workflow changes", async () => {
+    const { steps, workflowFileCalls, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mainWorkflowFiles: [".github/workflows/ci.yml"],
+      pushRefusesWorkflowChanges: false,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(steps.includes(`merge '${newerMain}'`), steps.join(", "));
+    assert.ok(!workflowFileCalls.some((call) => call.to === newerMain), JSON.stringify(workflowFileCalls));
   });
 
   it("gates the branch as it is at checkpoint 2 when it leaves main's workflow change unmerged", async () => {

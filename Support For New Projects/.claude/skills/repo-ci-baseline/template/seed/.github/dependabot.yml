@@ -25,6 +25,11 @@ updates:
     # one is usually caught upstream before it reaches a PR here.
     cooldown:
       default-days: 7
+    # The Template pins claude-code-action to the version claude-review.yml's
+    # sandbox notes were checked against. It moves only through the Template,
+    # once they're checked again (mpaulosky/dotfiles#228).
+    ignore:
+      - dependency-name: "anthropics/claude-code-action"
     labels:
       - "github-actions"
       - "dependencies"

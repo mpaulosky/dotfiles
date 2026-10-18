@@ -1022,7 +1022,16 @@ describe("openPullRequestsForSweep", () => {
                         statusCheckRollup: {
                           contexts: {
                             pageInfo: { hasNextPage: false },
-                            nodes: [{ __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "SUCCESS", completedAt: "2026-10-01T00:00:00Z" }],
+                            nodes: [
+                              {
+                                __typename: "CheckRun",
+                                name: "build",
+                                status: "COMPLETED",
+                                conclusion: "SUCCESS",
+                                completedAt: "2026-10-01T00:00:00Z",
+                                checkSuite: { workflowRun: { workflow: { name: "CI" } } },
+                              },
+                            ],
                           },
                         },
                       },
@@ -1054,7 +1063,7 @@ describe("openPullRequestsForSweep", () => {
       { resolved: false, byBot: true, author: "github-advanced-security[bot]" },
       { resolved: false, byBot: false, author: "reviewer" },
     ]);
-    assert.deepEqual(pr!.checks, [{ name: "build", completed: true, green: true, completedAt: "2026-10-01T00:00:00Z" }]);
+    assert.deepEqual(pr!.checks, [{ name: "build", completed: true, green: true, completedAt: "2026-10-01T00:00:00Z", workflow: "CI" }]);
     assert.equal(pr!.truncated, false);
   });
 
@@ -1180,13 +1189,13 @@ describe("reviewThreadsOf", () => {
 describe("head checks and their runs", () => {
   const HEAD_OID = "a".repeat(40);
   type Context = Record<string, unknown>;
-  const checkRun = (name: string, conclusion: string, runId: number | null): Context => ({
+  const checkRun = (name: string, conclusion: string, runId: number | null, workflow?: string): Context => ({
     __typename: "CheckRun",
     name,
     status: "COMPLETED",
     conclusion,
     completedAt: "2026-10-10T09:00:00Z",
-    checkSuite: { workflowRun: runId === null ? null : { databaseId: runId } },
+    checkSuite: { workflowRun: runId === null ? null : { databaseId: runId, workflow: workflow === undefined ? null : { name: workflow } } },
   });
   const page = (contexts: Context[], options: { oid?: string; hasNextPage?: boolean } = {}) =>
     JSON.stringify({
@@ -1241,6 +1250,15 @@ describe("head checks and their runs", () => {
       ]);
     });
 
+    // #222: the sweep leaves out Sandcastle's own check by the workflow behind it.
+    it("names the workflow behind a check run", () => {
+      const { run } = gh([checkRun("Sandcastle", "FAILURE", 12, "Sandcastle")]);
+
+      const { checks } = headChecksOf(7, run, "o/r");
+
+      assert.deepEqual(checks, [{ name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z", workflow: "Sandcastle", runId: 12 }]);
+    });
+
     it("throws when the checks are truncated, rather than deciding from part of them", () => {
       const run = (() => page([], { hasNextPage: true })) as unknown as typeof execFileSync;
 
@@ -1270,6 +1288,18 @@ describe("head checks and their runs", () => {
           ["Tests: A", false],
           ["Tests: B", false],
         ],
+      );
+    });
+
+    // #222
+    it("doesn't re-run Sandcastle's own run, only a check of that name from another workflow", () => {
+      const { calls, run } = gh([checkRun("Sandcastle", "FAILURE", 22, "CI"), checkRun("Sandcastle", "FAILURE", 23, "Sandcastle")]);
+
+      rerunFailedChecksOnce(7, ["Sandcastle"], HEAD_OID, run, "o/r");
+
+      assert.deepEqual(
+        calls.filter((args) => args[0] === "run"),
+        [["run", "rerun", "22", "--failed", "--repo", "o/r"]],
       );
     });
 
@@ -1331,6 +1361,24 @@ describe("head checks and their runs", () => {
       );
       assert.match(log, /Analyze \(csharp\), Analyze \(actions\)/);
       assert.match(log, /##\[error\] CS8600/);
+    });
+
+    // #222: a red `Sandcastle` check from the Sandcastle workflow is its own run's.
+    it("leaves out the log of Sandcastle's own check, keeping a check of that name from another workflow", () => {
+      const { calls, run } = gh(
+        [checkRun("Sandcastle", "FAILURE", 41, "CI"), checkRun("Sandcastle", "FAILURE", 42, "Sandcastle")],
+        {},
+        { 41: "##[error] real failure", 42: "##[error] hand-back" },
+      );
+
+      const log = failedCheckLogs(7, ["Sandcastle"], HEAD_OID, run, "o/r");
+
+      assert.deepEqual(
+        calls.filter((args) => args[0] === "run"),
+        [["run", "view", "41", "--log-failed", "--repo", "o/r"]],
+      );
+      assert.match(log, /real failure/);
+      assert.doesNotMatch(log, /hand-back/);
     });
 
     it("says a check has no Actions log rather than failing the pass", () => {

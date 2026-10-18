@@ -531,8 +531,16 @@ jobs:
                 if (runs.some((run) => ACTIVE_RUN_STATUSES.includes(run.status))) {
                   return "waiting";
                 }
+                // A held run counts only while it is the newest run (highest
+                // id) of its workflow and event: a later run that replaced it
+                // has created the checks it would have (mpaulosky/dotfiles#238).
+                const replaced = (run) => {
+                  return runs.some((other) => other.path === run.path && other.event === run.event && other.id > run.id);
+                };
                 const held = runs.some((run) => {
-                  return (run.status === HELD_RUN || run.conclusion === HELD_RUN) && !NOT_CI_WORKFLOWS.includes(run.path);
+                  return (run.status === HELD_RUN || run.conclusion === HELD_RUN) &&
+                    !NOT_CI_WORKFLOWS.includes(run.path) &&
+                    !replaced(run);
                 });
                 if (held) {
                   return "held";

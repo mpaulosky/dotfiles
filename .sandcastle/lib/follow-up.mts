@@ -33,6 +33,7 @@ import {
   type ClosedPullRequest,
   type IssueEvent,
   type PullRequestIdentity,
+  type ReviewThread,
   type TimelineLabelEvent,
 } from "./github.mts";
 import { labelOriginFixes, loadQueue, ownerCheck, type IsOwner } from "./queue.mts";
@@ -260,6 +261,9 @@ export type FollowUpGitHub = {
   pullRequestEvents(number: number): IssueEvent[];
   // Puts back a PR's hand-back label someone else removed. live: gh pr edit.
   addPullRequestLabel(number: number, label: string): void;
+  // A PR's review threads in full, comments included, so the sweep can tell a
+  // thread the host has answered from one it hasn't (#225).
+  reviewThreads(number: number): ReviewThread[];
 };
 
 export const liveFollowUpGitHub: FollowUpGitHub = {
@@ -274,7 +278,23 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   isOwner: ownerCheck(() => signedInHostLogin(), (login) => pushAccess(login)),
   pullRequestEvents: (number) => issueEvents(number),
   addPullRequestLabel: (number, label) => addPullRequestLabel(number, label),
+  reviewThreads: () => {
+    throw new Error("Not implemented");
+  },
 };
+
+// How a review thread stands with the follow-up pass: the one rule the sweep
+// and the pass share to decide whether a thread starts a pass (#225).
+export type ThreadStanding = "resolved" | "answered" | "bot" | "owner" | "human" | "unknown";
+
+// Stub: the real rule is moved out of lib/follow-up-pass.mts#threadsForRole.
+export function threadStanding(
+  _thread: Pick<ReviewThread, "resolved" | "comments">,
+  _isOwner: IsOwner,
+  _hostLogin: string,
+): ThreadStanding {
+  throw new Error("Not implemented");
+}
 
 // What the sweep found that needs an agent: the numbers of the PRs it logged
 // as needing a follow-up pass (#147's early exit reads this, so a round with

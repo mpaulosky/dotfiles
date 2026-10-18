@@ -992,8 +992,9 @@ def test_two_changed_files_sharing_a_stem_both_get_its_users(repo, tmp_path):
 @pytest.mark.parametrize("data, code", [("a/config.json", "z/config.py"), ("z/config.json", "a/config.py")])
 def test_a_stem_shared_with_a_file_that_isnt_followed_still_gets_its_users_whichever_comes_first(
         repo, tmp_path, data, code):
-    # The followed file's users are the eight unchanged ones; the other file, which no one follows, has the
-    # followed one as a ninth user, so it follows none. Mapping a stem to one file only would lose them in one order.
+    # Neither changed file mentions config, so both get the same eight users, and the first file in the sort takes
+    # their credit (chosen.setdefault keeps it). The followed file sorts first, so the code file gets them whichever
+    # path order the two have; without that sort the data file would take all eight when it comes first.
     users = constant("MAX_CONTEXT_USERS")
     repo.base = repo.commit({f"src/user{n}.py": "import config\n" for n in range(users)})
     head = repo.commit({data: "{}\n", code: "x = 1\n"})
@@ -1038,6 +1039,28 @@ def test_a_grep_that_times_out_in_120_seconds_warns_still_writes_the_diff_and_le
     assert re.search(r"^::warning::.+", repo.log, re.M)
     assert b"src/module_one.py" in diff and "src/module_one.py" in (folder / "INDEX").read_text(encoding="utf-8")
     assert headers(repo) == ["src/module_one.py (changed in this PR)"]
+
+
+def test_a_grep_that_fails_keeps_what_the_changed_files_name(repo, tmp_path):
+    # The files a changed file names don't depend on the grep, so its failure costs only the files that name a change.
+    repo.base = repo.commit({"scripts/helper.sh": "echo hi\n", "lib/user.py": "import module_one\n"})
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  b:\n    steps:\n      - run: scripts/helper.sh\n",
+                        "src/module_one.py": "x = 1\n"})
+    shim = GitShim(tmp_path, mode="fail")
+    repo.split(repo.base, head, tmp_path, env=shim.env)
+    assert len(shim.greps()) == 1
+    assert re.search(r"^::warning::.+", repo.log, re.M)
+    assert headers(repo) == [".github/workflows/ci.yml (changed in this PR)", "src/module_one.py (changed in this PR)",
+                             "scripts/helper.sh (named by .github/workflows/ci.yml)"]
+
+
+def test_git_config_for_grep_output_doesnt_change_which_users_are_found(repo, tmp_path):
+    config = tmp_path / "gitconfig"
+    config.write_text("[grep]\n\tlineNumber = true\n\tcolumn = true\n[color]\n\tgrep = always\n", encoding="utf-8")
+    repo.base = repo.commit({"lib/user.py": "import module_one\n"})
+    head = repo.commit({"src/module_one.py": "x = 1\n"})
+    repo.split(repo.base, head, tmp_path, env={"GIT_CONFIG_GLOBAL": str(config)})
+    assert headers(repo) == ["src/module_one.py (changed in this PR)", "lib/user.py (names src/module_one.py)"]
 
 
 def test_an_empty_diff_has_no_context(repo, tmp_path):

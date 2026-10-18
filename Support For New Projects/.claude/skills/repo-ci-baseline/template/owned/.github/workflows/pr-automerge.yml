@@ -866,6 +866,16 @@ jobs:
               return failed.length > 0 ? `checks failed: ${failed.join(", ")}` : null;
             }
 
+            // Every run of Claude Review's first job on the head skipped it,
+            // as its condition does for a push by a bot or Copilot: no review
+            // of this head is coming while the label stays on.
+            function claudeSkippedHead(pr) {
+              const runs = (headCommit(pr)?.statusCheckRollup?.contexts?.nodes ?? []).filter((check) => {
+                return check.__typename === "CheckRun" && check.name === CLAUDE_CHECKS[0];
+              });
+              return runs.length > 0 && runs.every((check) => check.status === "COMPLETED" && check.conclusion === "SKIPPED");
+            }
+
             // Copilot answered the head with its quota note, so no review of
             // it is coming: add review:claude, on land.sh's terms (see the
             // header). Called only for a head no review covers, below the cap.
@@ -876,7 +886,20 @@ jobs:
               const declined = pr.copilotReviews.nodes.some((review) => {
                 return review.commit?.oid === pr.headRefOid && COPILOT_NO_REVIEW.test(review.body ?? "");
               });
-              if (!declined || pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+              if (!declined) {
+                return;
+              }
+              if (pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+                // The label is on, so Claude Review runs on each push, but its
+                // first job skips a push by a bot or Copilot: a notice, as no
+                // review of this head is coming (mpaulosky/dotfiles#209).
+                if (claudeSkippedHead(pr)) {
+                  core.notice(
+                    `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review skipped it ` +
+                    `(it doesn't review a push by a bot or Copilot), so push to it, or take ${CLAUDE_LABEL} off ` +
+                    `and add it back.`
+                  );
+                }
                 return;
               }
               // Claude Review skips Dependabot's PRs (its merge-from-main job's

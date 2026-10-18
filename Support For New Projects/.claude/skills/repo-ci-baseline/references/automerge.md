@@ -74,6 +74,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A check that isn't required and is still running doesn't hold it, as it doesn't hold an update: unlike `land.sh`, which polls,
   this workflow waits for an event, and that check's completion may never start it (another workflow's, or an app's like CodeQL's).
   A person who took the label off decides for that PR, so it isn't added back; this workflow's own removals don't count.
+  When the label is on but every run of Claude Review's first job on the head skipped it, as it skips a push by a bot or Copilot,
+  no review is coming: the run logs a notice to push, or to take the label off and add it back (mpaulosky/dotfiles#209).
   It adds the label with `RELEASE_PR_PAT`, since a label added with `GITHUB_TOKEN` starts no workflow and Claude Review would never run;
   without the PAT it logs a notice to add it by hand. A failure is a warning, never a failed check.
   When the quota note comes before CI finishes (as on #189), CI's `workflow_run` adds it.

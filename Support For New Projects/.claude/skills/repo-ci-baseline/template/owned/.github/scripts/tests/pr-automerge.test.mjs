@@ -646,6 +646,36 @@ test("doesn't add review:claude when it's already on", async () => {
   assert.deepEqual(addedLabels, []);
 });
 
+test("says so when review:claude is on but Claude Review skipped the head, as it does a bot's push (mpaulosky/dotfiles#209)", async () => {
+  const skipped = { status: "COMPLETED", conclusion: "SKIPPED", isRequired: false };
+  const notices = (logs) => logs.filter((line) => line.startsWith("notice: PR #7") && line.includes("Claude Review skipped it"));
+  const onHead = (...claudeRuns) => readyPr({
+    copilotReviews: DECLINED,
+    labels: labelled(CLAUDE_LABEL),
+    headRef: checksOn(HEAD, requiredCheck("Build Solution"), ...claudeRuns)
+  });
+
+  // A bot's push, and a skip for another label being added: no review is coming.
+  const stalled = await evaluate(onHead(
+    requiredCheck("Check for a merge from main", { ...skipped, databaseId: 2 }),
+    requiredCheck("Check for a merge from main", { ...skipped, databaseId: 3 })
+  ));
+  assert.deepEqual(stalled.addedLabels, []);
+  assert.equal(notices(stalled.logs).length, 1, stalled.logs.join("\n"));
+
+  // One run that didn't skip means a review is on its way, or done; none at all, that Claude Review hasn't started.
+  for (const claudeRuns of [
+    [requiredCheck("Check for a merge from main", { ...skipped, databaseId: 2 }),
+     requiredCheck("Check for a merge from main", { isRequired: false, status: "IN_PROGRESS", conclusion: null, databaseId: 3 })],
+    [requiredCheck("Check for a merge from main", { isRequired: false, databaseId: 2 })],
+    []
+  ]) {
+    const { addedLabels, logs } = await evaluate(onHead(...claudeRuns));
+    assert.deepEqual(addedLabels, []);
+    assert.deepEqual(notices(logs), [], logs.join("\n"));
+  }
+});
+
 test("stops calling in Claude after MAX_CLAUDE_ROUNDS of its reviews, and leaves it to the owner", async () => {
   // Three commits Claude reviewed, two of them merges, which the cap doesn't count.
   const merges = [{ oid: "m1", merge: true }, { oid: "m2", merge: true }];

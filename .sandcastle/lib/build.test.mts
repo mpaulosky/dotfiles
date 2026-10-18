@@ -965,6 +965,23 @@ describe("buildIssue syncing with main before publishing", () => {
     assert.equal(result.outcome, "published");
     assert.ok(logs.some((line) => line.includes("fetching main failed")));
   });
+
+  it("still publishes, without merging, when main's workflow changes can't be listed", async () => {
+    const { steps, logs, pushed, buildHost } = host([0, 0], { latestMain: newerMain, containsMain: false });
+    const listWorkflows = buildHost.workflowFiles;
+    buildHost.workflowFiles = (from, to) => {
+      if (to === newerMain) throw new Error("git log failed");
+      return listWorkflows(from, to);
+    };
+    const reviewed = (3).toString(16).padStart(40, "0");
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!steps.some((step) => step.startsWith("merge")), steps.join(", "));
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(pushed, [{ branch, commit: reviewed }]);
+    assert.ok(logs.some((line) => line.includes("can't be listed")), logs.join("\n"));
+  });
 });
 
 // #147: a role run that hits Claude's usage limit, or a build the time

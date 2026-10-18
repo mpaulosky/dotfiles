@@ -6,3 +6,6 @@ __pycache__/
 
 # JetBrains IDE (Rider) project settings, local to each machine.
 .idea/
+
+# Sandcastle's pnpm packages.
+node_modules/

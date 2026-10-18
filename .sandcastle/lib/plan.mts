@@ -1,0 +1,77 @@
+import * as sandcastle from "@ai-hero/sandcastle";
+import { z } from "zod";
+import { runRole } from "./agents.mts";
+import { hooks, OPTIONAL_ROLES, type OptionalRole } from "./config.mts";
+import type { SandcastleIssue } from "./github.mts";
+import { plannerPromptArgs } from "./prompts.mts";
+import { agentSandbox } from "./skills.mts";
+
+// The planner emits its plan as JSON inside <plan> tags; Output.object extracts
+// and validates it against this schema. We use Zod here, but any Standard
+// Schema validator works just as well — Valibot, ArkType, etc. See
+// https://standardschema.dev. There's no branch field: the host names branches
+// (see branchFor), so a re-plan can't move an issue's work to a new branch.
+// `roles` is left as unknown rather than validated here: an invalid value
+// (not an array, or naming a role resolveRoles doesn't recognise) must fall
+// back to every optional role, not abort the whole plan the way a schema
+// mismatch would (see "Phase 4: Plan" in docs/plans/sandcastle-workflow.md).
+const planSchema = z.object({
+  issues: z.array(z.object({ id: z.string(), title: z.string(), roles: z.unknown().optional() })),
+});
+
+export type PlannedIssue = z.infer<typeof planSchema>["issues"][number];
+
+// The optional roles (architect, scribe) resolveRoles picks for
+// one issue from the planner's raw `roles` field: the recognised ones,
+// deduplicated and in build order, or every optional role when the field is
+// missing, isn't an array, or names anything resolveRoles doesn't recognise
+// (see OPTIONAL_ROLES in lib/config.mts). An empty array is valid on its own:
+// it means the planner deliberately picked none.
+export function resolveRoles(roles: unknown): OptionalRole[] {
+  const known: readonly string[] = OPTIONAL_ROLES;
+  if (!Array.isArray(roles) || !roles.every((role) => typeof role === "string" && known.includes(role))) {
+    return [...OPTIONAL_ROLES];
+  }
+  return OPTIONAL_ROLES.filter((role) => roles.includes(role));
+}
+
+// The planner reads the ready issues, builds a dependency graph, and selects
+// the issues that can be worked in parallel right now (i.e., no blocking
+// dependencies on other open issues). Only issues that passed the blocker gate
+// reach it, and the gate is enforced again in code afterwards, so a
+// hallucinated or stale id can't start work on a blocked issue.
+export async function planRound(ready: SandcastleIssue[]): Promise<PlannedIssue[]> {
+  const plan = await runRole("planner", {
+    hooks,
+    sandbox: agentSandbox(),
+    promptFile: "./.sandcastle/plan-prompt.md",
+    promptArgs: plannerPromptArgs(ready),
+    // Extract and validate the <plan> JSON into a typed object. Throws
+    // StructuredOutputError if the tag is missing, the JSON is malformed, or
+    // validation fails — which aborts the loop.
+    output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
+  });
+
+  return readyPicks(plan.output.issues, ready);
+}
+
+// The planned issues that passed the blocker gate, in the planner's order, each
+// once. A repeated id is dropped: two pipelines on one branch would race each
+// other's sandboxes and pushes.
+export function readyPicks(
+  planned: readonly PlannedIssue[],
+  ready: readonly Pick<SandcastleIssue, "number">[],
+  log: (line: string) => void = console.log,
+): PlannedIssue[] {
+  const readyIds = new Set(ready.map((issue) => String(issue.number)));
+  const picked = new Set<string>();
+  return planned.filter((issue) => {
+    if (!readyIds.has(issue.id)) {
+      log(`  ⏸ Dropping #${issue.id} from the plan: it didn't pass the blocker gate.`);
+      return false;
+    }
+    if (picked.has(issue.id)) return false;
+    picked.add(issue.id);
+    return true;
+  });
+}

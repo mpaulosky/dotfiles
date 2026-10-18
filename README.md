@@ -93,7 +93,8 @@ Files in `.github/instructions/` are reusable Copilot instruction templates:
 picks up open GitHub issues labelled `Sandcastle`, plans them, implements and reviews each one in its own git
 worktree, then pushes the branch and opens a pull request that closes the issue. The reference setup is
 [Blazor-Server's `.sandcastle/`](https://github.com/mpaulosky/Blazor-Server/tree/main/.sandcastle); copy from it
-rather than starting from the stock template.
+rather than starting from the stock template. dotfiles runs Sandcastle too: its `.sandcastle/` is a port for a repo with
+no .NET, whose image carries the repo-ci-baseline skill's test tools instead of the SDK.
 
 ### 1. Prerequisites
 

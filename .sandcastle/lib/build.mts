@@ -8,7 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { isRoleTimeout, runRoleInSandbox } from "./agents.mts";
 import { commitsAhead, fetchMain } from "./branches.mts";
-import { gateFailureComment, headOf, runCheckpoint, runGate, type Checkpoint } from "./checkpoint.mts";
+import { gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
 import {
   BASE_BRANCH,
   BUILD_FAILED_MARKER,
@@ -134,9 +134,14 @@ export async function retryOnServerError<T>(step: () => T, wait: (ms: number) =>
 }
 
 // The issue comment for an architect, tester or backend run that stopped
-// the build.
-function developerFailureComment(failure: string, branch: string): string {
-  return `Sandcastle stopped building this issue: ${failure}, so \`${branch}\` wasn't pushed. The branch keeps its commits.`;
+// the build. `error` is the run's error, already made safe to post (see
+// publicErrorText): it carries claude-code's stderr or last output lines, so
+// it's quoted in a text block, which no mention or reference fires in, with
+// its <!-- broken (see BROKEN_COMMENT_OPEN).
+function developerFailureComment(failure: string, branch: string, error?: string): string {
+  const comment = `Sandcastle stopped building this issue: ${failure}, so \`${branch}\` wasn't pushed. The branch keeps its commits.`;
+  if (error === undefined) return comment;
+  return [comment, "", "The error:", "", textBlock(error.replaceAll("<!--", BROKEN_COMMENT_OPEN))].join("\n");
 }
 
 // GitHub refuses a comment over 65,536 characters; this leaves room for the
@@ -147,6 +152,18 @@ const DESIGN_NOTE_LIMIT = 60_000;
 // the marker, `Closes #n` and the warnings publish() adds around the
 // reviewer's sections (#335).
 export const PR_BODY_LIMIT = 60_000;
+
+// A closing keyword and the issue it names, as GitHub reads one in a PR body:
+// #N, owner/repo#N or an issue URL. GitHub closes that issue when the PR
+// merges, which PR Auto-Merge may do unattended, so only publish()'s own
+// `Closes #n` may name one.
+const PR_BODY_CLOSING_REFERENCE =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+(?:[\w.-]+\/[\w.-]+#\d+|#\d+|https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)/i;
+
+// An @mention of a user or team, which GitHub notifies when the PR opens. An
+// email address or a word right after a backtick doesn't count, so
+// `@copilot` in a code span doesn't hold the body back.
+const PR_BODY_MENTION = /(?<![\w`/.])@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\b/;
 
 // The headings the reviewer's pr-body.md must hold, the ones docs/PROCESS.md
 // ("The PR description") asks every PR description for (#335).
@@ -504,6 +521,8 @@ async function buildMarkedIssue(
     // the host's, not the architect's, so it mustn't count as a failed attempt.
     const roleArgs = developerPromptArgs(role);
     let failure: string;
+    let error: string | undefined;
+    let logged: string | undefined;
     let result: BuildResult;
     try {
       const run = await runRoleInSandbox(
@@ -522,15 +541,18 @@ async function buildMarkedIssue(
       }
       failure = `the ${role} ran out of iterations unfinished`;
       result = unpublished("role failed", failure);
-    } catch (error) {
-      if (error instanceof UncountedStopError) throw error;
-      failure = `the ${role} failed: ${error}`;
-      result = isRoleTimeout(error)
+    } catch (thrown) {
+      if (thrown instanceof UncountedStopError) throw thrown;
+      failure = `the ${role} failed`;
+      // The raw error stays in the run log; the issue gets the public text.
+      logged = `${failure}: ${thrown}`;
+      error = host.publicError(thrown);
+      result = isRoleTimeout(thrown)
         ? unpublished("timed out", `the ${role} timed out`)
         : unpublished("role failed", `the ${role} failed`);
     }
-    console.error(`  ✗ #${issue.number}: ${failure}, so ${branch} isn't published.`);
-    host.recordBuildFailure(issue.number, branch, developerFailureComment(failure, branch));
+    console.error(`  ✗ #${issue.number}: ${logged ?? failure}, so ${branch} isn't published.`);
+    host.recordBuildFailure(issue.number, branch, developerFailureComment(failure, branch, error));
     return result;
   }
 
@@ -562,7 +584,11 @@ async function buildMarkedIssue(
     );
     if (!result.passed || result.head === undefined) {
       console.error(`  ✗ #${issue.number}: the gate is still red at checkpoint ${checkpoint}, so ${branch} isn't published.`);
-      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, result.output));
+      // The gate runs the branch's own scripts, which agents write, in the
+      // sandbox that holds the Claude token, so its output is made safe to
+      // post and its <!-- broken, like a role's error.
+      const output = host.publicError(result.output).replaceAll("<!--", BROKEN_COMMENT_OPEN);
+      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, output));
       return undefined;
     }
     return result.head;
@@ -618,6 +644,8 @@ async function buildMarkedIssue(
       // publicError also strips colour codes and URL credentials. Any change
       // means the file isn't safe to publish as written, so it isn't.
       problem = "holds a secret, a token shape or other text that isn't safe to publish";
+    } else if (PR_BODY_CLOSING_REFERENCE.test(prBody) || PR_BODY_MENTION.test(prBody) || prBody.includes("<!--")) {
+      problem = "closes an issue, mentions someone or quotes a host marker, which GitHub or the host would act on";
     }
     if (problem !== undefined) {
       log(`the reviewer's PR body ${problem}, so the PR gets the generic body`);

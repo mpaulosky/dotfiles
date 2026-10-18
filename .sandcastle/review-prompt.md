@@ -83,7 +83,7 @@ If the code is already clean and well-structured, change nothing.
 
 Either way, write the PR description last, once the branch is final, to `.sandcastle/work/{{TASK_ID}}/pr-body.md`, creating the folder. It's gitignored, so don't commit it:
 the host reads it after your run and publishes it as the PR's body, under its own marker and `Closes #{{TASK_ID}}`. The description is published word for word as the squash
-commit's message, the Release's notes and the release blog post, so follow "The PR description" in `docs/PROCESS.md` and write it for a reader who wasn't there, in plain
+commit's message, the Release's notes and the release blog post, so follow the repo-ci-baseline skill's `references/pr-process.md` and write it for a reader who wasn't there, in plain
 sentences. Use exactly these three headings, in this order, and no others at that level:
 
 ```markdown
@@ -98,6 +98,9 @@ sentences. Use exactly these three headings, in this order, and no others at tha
 - **What changed**: what the branch does, as a short list a reader can check against the diff. Name any departure from the design note.
 - **Verification**: the tests added or changed, by file and what they pin, and the gate checkpoints the branch passed. Claim only checks this run made or the commits record:
   never a manual test, a real-sandbox run or a CI result nobody ran.
+
+Don't name another issue with a closing keyword (`Fixes #12`), @mention anyone, or write `<!--`: GitHub would close the issue or notify the person when the PR merges, and
+the host would read a marker. A body with any of them isn't published, and the PR gets a generic one instead. Refer to another issue without a keyword ("see #12").
 
 Don't add `Closes`, `Fixes`, a marker or a sign-off line: the host adds what it needs. Never put a secret, a token or a credential in it. When the file is missing, lacks a heading
 or looks like it holds a secret, the host publishes a generic body instead.

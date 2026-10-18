@@ -114,17 +114,21 @@ export function endOf(text: string, limit: number): string {
 
 // The issue comment for a checkpoint that stayed red past the fixer's attempts.
 export function gateFailureComment(checkpoint: Checkpoint, branch: string, output: string): string {
-  const quoted = tail(output, GATE_COMMENT_LINES);
-  const longestRun = Math.max(0, ...[...quoted.matchAll(/`+/g)].map((match) => match[0].length));
-  const fence = "`".repeat(Math.max(3, longestRun + 1));
   return [
     `Sandcastle stopped building this issue: \`scripts/gate.sh\` is still red at checkpoint ${checkpoint} ` +
       `after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts, so \`${branch}\` wasn't pushed. The branch keeps its commits.`,
     "",
     `The last ${GATE_COMMENT_LINES} lines of the gate output:`,
     "",
-    `${fence}text`,
-    quoted,
-    fence,
+    textBlock(tail(output, GATE_COMMENT_LINES)),
   ].join("\n");
+}
+
+// `text` in a fenced text block longer than any backtick run in it, so it
+// renders as written and nothing in it can mention anyone or cross-reference
+// an issue.
+export function textBlock(text: string): string {
+  const longestRun = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return [`${fence}text`, text, fence].join("\n");
 }

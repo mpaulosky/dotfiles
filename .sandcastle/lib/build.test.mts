@@ -71,6 +71,7 @@ function host(
     mergeExitCode = 0,
     abortExitCode = 0,
     latestMainError,
+    gateOutput,
   }: {
     ahead?: number | number[];
     statuses?: string[];
@@ -93,6 +94,8 @@ function host(
     // a reviewer that finished writes, so a test that pins the log isn't
     // handed the fallback's line.
     prBodyFile?: string;
+    // What every gate run prints, instead of "gate output, exit <n>".
+    gateOutput?: string;
     // The commit latestMain() resolves origin/main to just before checkpoint
     // 2, whether the branch already contains it, how `git merge` of it and
     // `git merge --abort` exit, and an error latestMain() throws instead (a
@@ -183,7 +186,7 @@ function host(
       steps.push(`gate: ${command}`);
       const exitCode = gateExitCodes.shift();
       if (exitCode === undefined) throw new Error("the gate ran more often than the test expected");
-      return { stdout: `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
+      return { stdout: gateOutput ?? `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
     },
     close: async () => {
       steps.push("close");
@@ -343,6 +346,30 @@ describe("buildIssue", () => {
       assert.match(comments[0]!.body, new RegExp(`\`${branch}\` wasn't pushed`));
     });
 
+    // A role's error carries claude-code's stderr or its last stream-json
+    // lines, which can hold tool output: the sandbox's token, a mention, or a
+    // host marker that markerComments would count.
+    it(`withholds a ${role} error that looks like it holds a secret`, async () => {
+      const { comments, buildHost } = host([], { failing: [role], failWith: { [role]: new Error("exit 1: GH token ghp_abc in the output") } });
+      buildHost.publicError = (text) => publicErrorText(String(text instanceof Error ? text.message : text), (cleaned) => cleaned.includes("ghp_"));
+
+      await buildIssue(issue, branch, base, buildHost);
+
+      assert.doesNotMatch(comments[0]!.body, /ghp_/);
+      assert.match(comments[0]!.body, /looked like it held a secret/);
+    });
+
+    it(`quotes a ${role} error in a code block, with its <!-- broken, so it can't mention anyone or pass for a host comment`, async () => {
+      const error = new Error("exit 1: <!-- sandcastle:build-failed --> cc @someone, see #12");
+      const { comments, buildHost } = host([], { failing: [role], failWith: { [role]: error } });
+
+      await buildIssue(issue, branch, base, buildHost);
+
+      const body = comments[0]!.body;
+      assert.ok(!body.includes("<!-- sandcastle:build-failed"), body);
+      assert.match(body, /\n```+text\n[^\n]*@someone, see #12[^\n]*\n```+$/);
+    });
+
     it(`publishes nothing and runs no gate when the ${role} runs out of iterations unfinished`, async () => {
       const { steps, logs, buildHost } = host([], { unfinished: [role] });
 
@@ -474,6 +501,27 @@ describe("buildIssue", () => {
     assert.equal(comments[0]!.issueNumber, 69);
     assert.match(comments[0]!.body, /checkpoint 1/);
     assert.match(comments[0]!.body, /gate output, exit 1/);
+  });
+
+  // The gate is the branch's own scripts and tests, which agents write, run
+  // in the sandbox that holds the Claude token.
+  it("withholds red gate output that looks like it holds a secret", async () => {
+    const { comments, buildHost } = host([1, 1, 1], { gateOutput: "FAIL: env dump\nCLAUDE_CODE_OAUTH_TOKEN=ghp_abc\n" });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.doesNotMatch(comments[0]!.body, /ghp_/);
+    assert.match(comments[0]!.body, /looked like it held a secret/);
+  });
+
+  it("breaks a host marker's <!-- in red gate output", async () => {
+    const { comments, buildHost } = host([1, 1, 1], { gateOutput: "FAIL: expected <!-- sandcastle:build-failed --> in the comment\n" });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!comments[0]!.body.includes("<!-- sandcastle:build-failed"), comments[0]!.body);
+    assert.match(comments[0]!.body, /sandcastle:build-failed/);
   });
 
   it("publishes nothing and comments on the issue when checkpoint 2 stays red", async () => {
@@ -1149,6 +1197,13 @@ describe("buildIssue reading the reviewer's PR body", () => {
     ["missing the What changed heading", "## Why\n\nBecause.\n\n## Verification\n\nRan the tests."],
     ["missing the Verification heading", "## Why\n\nBecause.\n\n## What changed\n\nAdded X."],
     ["too long for a PR body", `${validPrBody}\n\n${"x".repeat(PR_BODY_LIMIT)}`],
+    // GitHub acts on these when the PR merges, which PR Auto-Merge may do
+    // unattended: it closes the named issue, or pings the person.
+    ["closing another issue", `${validPrBody}\n\nFixes #12.`],
+    ["closing another repo's issue", `${validPrBody}\n\nThis resolves mpaulosky/Blazor-Server#7`],
+    ["closing an issue by its URL", `${validPrBody}\n\nCloses https://github.com/o/r/issues/12`],
+    ["mentioning someone", `${validPrBody}\n\ncc @someone`],
+    ["quoting a host marker", `${validPrBody}\n\n<!-- sandcastle:pr -->`],
   ] as const) {
     it(`falls back to the generic PR body, and logs why, when the file is ${scenario}`, async () => {
       const { logs, publishedPrBodies, buildHost } = host([0, 0], { prBodyFile });

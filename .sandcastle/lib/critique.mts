@@ -12,6 +12,7 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { z } from "zod";
 import { runRole } from "./agents.mts";
+import { publicErrorText } from "./build.mts";
 import { hooks } from "./config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { bodyBlockers, liveGitHub as gateGitHub, type Blocker } from "./gate.mts";
@@ -23,8 +24,10 @@ import {
   type OpenPullRequest,
   type SandcastleIssue,
 } from "./github.mts";
+import { plainText } from "./intake.mts";
 import { critiquePromptArgs, type CritiquePromptArgs } from "./prompts.mts";
 import { outcomeReport, type OutcomeReport } from "./report.mts";
+import { containsSandboxSecret } from "./sandbox-env.mts";
 import { agentSandbox } from "./skills.mts";
 
 const critiqueSchema = z.object({
@@ -88,10 +91,15 @@ const runCritique: CritiqueRun = async (promptArgs) => {
   return critique.output.verdicts;
 };
 
+// The comment on an issue the critique deferred behind #blocker. The reason
+// is model text posted by the host's login, so it's made safe to post (see
+// publicErrorText) and plain (see plainText): no mention or reference fires,
+// and a quoted host marker's < is escaped, so markerComments can't count the
+// comment as that marker's (#228).
 export function deferralComment(blocker: number, reason: string): string {
   return [
     `Sandcastle's plan critique deferred this issue behind #${blocker}, so it won't be built until #${blocker} lands.`,
-    `**Reason:** ${reason}`,
+    `**Reason:** ${plainText(publicErrorText(reason, containsSandboxSecret))}`,
     `To override, delete the "blocked by #${blocker}" link on this issue.`,
   ].join("\n\n");
 }

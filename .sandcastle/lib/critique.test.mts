@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Blocker } from "./gate.mts";
 import type { SandcastleIssue } from "./github.mts";
-import { applyVerdicts, critiqueRound, type CritiqueGitHub, type CritiqueVerdict } from "./critique.mts";
+import { applyVerdicts, critiqueRound, deferralComment, type CritiqueGitHub, type CritiqueVerdict } from "./critique.mts";
 import { UncountedStopError } from "./errors.mts";
 import type { CritiquePromptArgs } from "./prompts.mts";
 import { OutcomeReport } from "./report.mts";
@@ -44,6 +44,28 @@ const capture = () => {
 
 const defer = (id: number, blockedBy: number | undefined, reason = "both edit lib/plan.mts"): CritiqueVerdict =>
   ({ id: String(id), verdict: "defer", ...(blockedBy === undefined ? {} : { blockedBy: String(blockedBy) }), reason });
+
+// The critique's reason is model text posted on a public issue by the host's
+// login, so it's made safe as intake's reasons are.
+describe("deferralComment", () => {
+  it("breaks mentions and cross-references in the reason", () => {
+    const body = deferralComment(4, "cc @someone: both change #12's files");
+
+    assert.doesNotMatch(body, /(^|[^\w])@someone\b/);
+    assert.doesNotMatch(body, /(^|[^\w&])#12\b/);
+  });
+
+  it("breaks a host marker the reason quotes, so markerComments can't count the comment as that marker's", () => {
+    assert.ok(!deferralComment(4, "Both touch <!-- sandcastle:build-failed --> handling.").includes("<!--"));
+  });
+
+  it("withholds a reason that looks like it holds a secret", () => {
+    const body = deferralComment(4, `Both read ghp_${"a".repeat(36)}.`);
+
+    assert.doesNotMatch(body, /ghp_/);
+    assert.match(body, /looked like it held a secret/);
+  });
+});
 
 describe("applyVerdicts", () => {
   it("links a deferred issue to its blocker, comments once, and leaves it out of the round", () => {

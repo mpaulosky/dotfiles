@@ -281,7 +281,7 @@ export type BuildHost = {
   // a token shape, or undefined when nothing matches. Carries only where the
   // match sits and what kind it is, never the matched text, so logging or
   // reporting it never risks the secret itself (#324).
-  leaksSecret(base: string, commit: string): SecretMatch | undefined;
+  leaksSecret(base: string, commit: string, mergedMain?: string): SecretMatch | undefined;
   // Deletes the refs of `branch` that still hold the work of the issue's
   // latest Sandcastle PR, when that PR was closed without merging and a
   // person has since re-queued the issue, so the build starts from main
@@ -306,7 +306,7 @@ export type BuildHost = {
   limits: RunLimits;
   // The .github/workflows/ files the commits from `base` to `commit` touch,
   // for the hand-back comment of a push GitHub refused for them.
-  workflowFiles(base: string, commit: string): string[];
+  workflowFiles(base: string, commit: string, mergedMain?: string): string[];
   // Hands the issue back with sandcastle:needs-human after a push GitHub
   // refused for a .github/workflows/** change (lib/handback.mts#handBackWorkflowChange).
   // `detail` is the publicError text of the push's error; `change` names the
@@ -329,7 +329,7 @@ export function publicErrorText(text: string, holdsSecret: (text: string) => boo
 // creates or updates a workflow file, even one a later commit reverts, so the
 // files come from the commits (a two-dot range: the branch side only), not
 // from the net diff, which would list nothing for an edit and its revert.
-export function workflowLogArgs(from: string, to: string): string[] {
+export function workflowLogArgs(from: string, to: string, _mergedMain?: string): string[] {
   return ["log", "--name-only", "--format=", `${from}..${to}`, "--", ".github/workflows/"];
 }
 

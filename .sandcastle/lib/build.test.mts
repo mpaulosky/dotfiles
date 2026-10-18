@@ -61,6 +61,7 @@ function host(
     failWith = {},
     unfinished = [],
     leaksSecret,
+    leaksOnlyInMergedMain,
     worktreeProblems = [],
     publishError,
     designNote,
@@ -79,6 +80,10 @@ function host(
     failWith?: Record<string, Error>;
     unfinished?: string[];
     leaksSecret?: SecretMatch;
+    // A match that sits only in the commits main gained since `base`, so
+    // leaksSecret returns it unless the scan excludes the merged main
+    // commit's history, as the live scan does.
+    leaksOnlyInMergedMain?: SecretMatch;
     worktreeProblems?: string[];
     publishError?: string;
     // What latestDesignNote returns for the architect's prompt: the body of
@@ -127,6 +132,8 @@ function host(
   const aheadBases: string[] = [];
   const scanned: string[] = [];
   const scannedBases: string[] = [];
+  const scannedExclusions: (string | undefined)[] = [];
+  const listedExclusions: (string | undefined)[] = [];
   const mainChecks: string[] = [];
   const pushed: { branch: string; commit: string }[] = [];
   // Each command on .sandcastle/work/ (the design note), with how many role
@@ -242,10 +249,11 @@ function host(
       return designNote;
     },
     log: (line) => void logs.push(line),
-    leaksSecret: (scanBase, commit) => {
+    leaksSecret: (scanBase, commit, mergedMain) => {
       scannedBases.push(scanBase);
       scanned.push(commit);
-      return leaksSecret;
+      scannedExclusions.push(mergedMain);
+      return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
     publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody) => {
       if (publishError) throw new Error(publishError);
@@ -262,13 +270,16 @@ function host(
     worktreeProblems: () => worktreeProblems,
     publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), () => false),
     limits: new RunLimits(),
-    workflowFiles: (from, to) => [`.github/workflows/${from.slice(0, 4)}-${to.slice(0, 4)}.yml`],
+    workflowFiles: (from, to, mergedMain) => {
+      listedExclusions.push(mergedMain);
+      return [`.github/workflows/${from.slice(0, 4)}-${to.slice(0, 4)}.yml`];
+    },
     handBackWorkflowChange: (issueNumber, failureBranch, detail, change) => {
       handBackWorkflowChangeCalls.push({ issueNumber, branch: failureBranch, detail, change });
     },
   };
   return {
-    steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
+    steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, scannedExclusions, listedExclusions, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks,
   };
@@ -834,6 +845,94 @@ describe("buildIssue syncing with main before publishing", () => {
     assert.ok(logs.some((line) => line.includes("main broke the gate once merged in")));
     assert.deepEqual(recordBuildFailureCalls, []);
     assert.deepEqual(comments, []);
+  });
+
+  // #224: after the merge, `gated` holds the commits main gained since
+  // `base`, which aren't the branch's work.
+  it("leaves the main commit it merged out of the secret scan", async () => {
+    const { scanned, scannedBases, scannedExclusions, head, buildHost } = host([0, 0], { latestMain: newerMain, containsMain: false });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(scanned, [head()]);
+    assert.deepEqual(scannedBases, [base]);
+    assert.deepEqual(scannedExclusions, [newerMain]);
+  });
+
+  it("publishes when a token-shaped string is only in main's newly merged commits", async () => {
+    const { pushed, comments, logs, head, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      leaksOnlyInMergedMain: sampleSecretMatch,
+    });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(pushed, [{ branch, commit: head() }]);
+    assert.deepEqual(comments, []);
+    assert.ok(!logs.some((line) => line.includes("holds a secret")));
+  });
+
+  it("still doesn't publish when a token-shaped string is in the branch's own commits, with main merged in", async () => {
+    const { pushed, comments, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      leaksSecret: sampleSecretMatch,
+    });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.deepEqual(pushed, []);
+    assert.equal(comments.length, 1);
+  });
+
+  it("leaves the main commit it merged out of the workflow listing for a refused push", async () => {
+    const { listedExclusions, handBackWorkflowChangeCalls, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      publishError:
+        "git push failed:\n ! [remote rejected] (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)",
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(handBackWorkflowChangeCalls.length, 1);
+    assert.deepEqual(listedExclusions, [newerMain]);
+  });
+
+  it("excludes no main commit from the scan or the listing when the merge conflicted", async () => {
+    const { scannedExclusions, listedExclusions, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mergeExitCode: 1,
+      publishError: "refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml`",
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(scannedExclusions, [undefined]);
+    assert.deepEqual(listedExclusions, [undefined]);
+  });
+
+  it("excludes no main commit from the scan when the merged tree failed the gate and the branch went back to the reviewed commit", async () => {
+    const { scannedExclusions, buildHost } = host([0, 1, 0], { latestMain: newerMain, containsMain: false });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(scannedExclusions, [undefined]);
+  });
+
+  it("excludes no main commit from the scan when the branch already contains main or fetching main failed", async () => {
+    const contained = host([0, 0], { latestMain: newerMain });
+    const failedFetch = host([0, 0], { latestMainError: "could not resolve host" });
+
+    await buildIssue(issue, branch, base, contained.buildHost);
+    await buildIssue(issue, branch, base, failedFetch.buildHost);
+
+    assert.deepEqual(contained.scannedExclusions, [undefined]);
+    assert.deepEqual(failedFetch.scannedExclusions, [undefined]);
   });
 
   it("still publishes, without merging, when fetching main fails", async () => {
@@ -1753,6 +1852,15 @@ describe("workflowLogArgs", () => {
   it("lists the workflow files each commit on the branch side touches", () => {
     assert.deepEqual(workflowLogArgs("origin/main", "abc123"), [
       "log", "--name-only", "--format=", "origin/main..abc123", "--", ".github/workflows/",
+    ]);
+  });
+});
+
+// #224: main's commits merged in after `base` aren't the branch's work.
+describe("workflowLogArgs with a merged main commit", () => {
+  it("excludes the history of the main commit that was merged in", () => {
+    assert.deepEqual(workflowLogArgs("origin/main", "abc123", "def456"), [
+      "log", "--name-only", "--format=", "origin/main..abc123", "^def456", "--", ".github/workflows/",
     ]);
   });
 });

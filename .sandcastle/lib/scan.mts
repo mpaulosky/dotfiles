@@ -109,6 +109,7 @@ export function firstSecretMatch(
   commit: string,
   secrets: ReadonlyMap<string, string>,
   run: (...args: string[]) => string = git,
+  _mergedMain?: string,
 ): SecretMatch | undefined {
   for (const sha of run("rev-list", "--reverse", `${base}..${commit}`).split("\n").filter(Boolean)) {
     const [author = "", committer = "", message = ""] = run("log", "-1", "--format=%an <%ae>%x00%cn <%ce>%x00%B", sha).split("\0");

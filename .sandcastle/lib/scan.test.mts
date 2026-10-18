@@ -264,3 +264,76 @@ describe("describeSecretMatch", () => {
     }
   });
 });
+
+// #224: with the latest main merged into the branch, `base..commit` also holds
+// the commits main gained after `base`, which the branch didn't write.
+describe("firstSecretMatch with a merged main commit", () => {
+  // Built at run time, so this test file isn't itself flagged as a leak.
+  const githubShaped = `${"gh"}p_${"A".repeat(36)}`;
+
+  // `base`, then a branch commit and a main commit on top of it, then main
+  // merged into the branch. Each commit adds one file with the given content.
+  function mergedRepo({ branchContent, mainContent }: { branchContent: string; mainContent: string }) {
+    const { repo, raw, base, hostGit } = buildRepo();
+    const trunk = raw("rev-parse", "--abbrev-ref", "HEAD");
+    raw("checkout", "--quiet", "-b", "feature", base);
+    writeFileSync(join(repo, "branch.txt"), branchContent);
+    raw("add", ".");
+    raw("commit", "--quiet", "-m", "branch work");
+    raw("checkout", "--quiet", trunk);
+    raw("reset", "--quiet", "--hard", base);
+    writeFileSync(join(repo, "main.txt"), mainContent);
+    raw("add", ".");
+    raw("commit", "--quiet", "-m", "main work");
+    const main = raw("rev-parse", "HEAD");
+    raw("checkout", "--quiet", "feature");
+    raw("merge", "--quiet", "--no-edit", "-m", "Merge main", main);
+    const merged = raw("rev-parse", "HEAD");
+    return { repo, raw, base, main, merged, hostGit };
+  }
+
+  it("reports a token-shaped string in main's commits when the merged main commit isn't excluded", () => {
+    const { repo, base, main, merged, hostGit } = mergedRepo({ branchContent: "plain\n", mainContent: `${githubShaped}\n` });
+    try {
+      assert.deepEqual(firstSecretMatch(base, merged, new Map(), hostGit)?.location, { commit: main, field: "line", path: "main.txt", line: 1 });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reports nothing for a token-shaped string only in the main commit that was merged in", () => {
+    const { repo, base, main, merged, hostGit } = mergedRepo({ branchContent: "plain\n", mainContent: `${githubShaped}\n` });
+    try {
+      assert.equal(firstSecretMatch(base, merged, new Map(), hostGit, main), undefined);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("still reports a token-shaped string in the branch's own commits when main is excluded", () => {
+    const { repo, base, main, merged, hostGit } = mergedRepo({ branchContent: `${githubShaped}\n`, mainContent: "plain\n" });
+    try {
+      const match = firstSecretMatch(base, merged, new Map(), hostGit, main);
+
+      assert.equal(match?.location.field, "line");
+      assert.equal(match?.location.field === "line" ? match.location.path : undefined, "branch.txt");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("still reports a sandbox secret in the branch's own commit message when main is excluded", () => {
+    const secretValue = "fake-secret-branch-message-value";
+    const { repo, raw, base, main, hostGit } = mergedRepo({ branchContent: "plain\n", mainContent: "plain\n" });
+    try {
+      raw("commit", "--quiet", "--allow-empty", "-m", `uses ${secretValue}`);
+      const tip = raw("rev-parse", "HEAD");
+
+      const match = firstSecretMatch(base, tip, new Map([["ANTHROPIC_API_KEY", secretValue]]), hostGit, main);
+
+      assert.deepEqual(match, { location: { commit: tip, field: "message" }, kind: { type: "secret", envKey: "ANTHROPIC_API_KEY" } });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});

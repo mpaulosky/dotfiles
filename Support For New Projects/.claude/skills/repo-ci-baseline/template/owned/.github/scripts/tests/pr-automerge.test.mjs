@@ -753,10 +753,18 @@ test("doesn't put review:claude back after a person took it off, but does after 
   const pr = readyPr({ copilotReviews: DECLINED });
   const byPerson = await evaluate(pr, [labeledEvent(CLAUDE_LABEL, "octo"), unlabeledEvent(CLAUDE_LABEL, "octo")]);
   assert.deepEqual(byPerson.addedLabels, []);
-  assert.ok(byPerson.logs.some((line) => line.includes(`@octo took ${CLAUDE_LABEL} off`)), byPerson.logs.join("\n"));
+  // A notice, so the stalled PR shows on the run, not only in its log (mpaulosky/dotfiles#215).
+  assert.ok(
+    byPerson.logs.some((line) => {
+      return line.startsWith("notice: PR #7") && line.includes("Copilot couldn't review") &&
+        line.includes(`@octo took ${CLAUDE_LABEL} off`) && line.includes("by hand");
+    }),
+    byPerson.logs.join("\n")
+  );
 
   const byWorkflow = await evaluate(pr, [unlabeledEvent(CLAUDE_LABEL, "github-actions[bot]")]);
   assert.equal(byWorkflow.addedLabels.length, 1);
+  assert.ok(!byWorkflow.logs.some((line) => line.includes("took")), byWorkflow.logs.join("\n"));
   // Added again by a person since: the latest change counts.
   const readded = await evaluate(pr, [unlabeledEvent(CLAUDE_LABEL, "octo"), labeledEvent(CLAUDE_LABEL, "octo")]);
   assert.equal(readded.addedLabels.length, 1);

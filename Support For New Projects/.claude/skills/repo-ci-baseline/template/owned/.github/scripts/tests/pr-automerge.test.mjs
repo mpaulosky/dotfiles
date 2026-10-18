@@ -203,6 +203,8 @@ async function evaluate(pr, events = [], options = {}) {
     removeLabelError,
     addLabelError,
     eventsError,
+    // Which label-events read eventsError fails, counting from 1.
+    eventsErrorAt = 1,
     // Claude Review's workflow runs for the head, and an error reading them.
     claudeRuns = [],
     claudeRunsTotal,
@@ -395,8 +397,8 @@ async function evaluate(pr, events = [], options = {}) {
       paginate: async (method, params) => {
         if (method === rest.issues.listEvents) {
           eventRequests.push(params);
-          // Only the first read fails, so a later one (the hand-back check) still works.
-          if (eventsError && eventRequests.length === 1) {
+          // Only one read fails (the first, unless eventsErrorAt says), so a later one (the hand-back check) still works.
+          if (eventsError && eventRequests.length === eventsErrorAt) {
             throw eventsError;
           }
           return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
@@ -701,12 +703,17 @@ test("says so when review:claude is on but Claude Review won't review the head (
   await check("more runs than one page", [run("renovate[bot]", "skipped")], false, { claudeRunsTotal: 101 });
 
   // A failed read is a warning on a PR event, never a failed check.
-  const failed = await check("a failed read", [], false, { claudeRunsError: Object.assign(new Error("Server Error"), { status: 500 }) });
-  assert.ok(failed.logs.some((line) => line.startsWith("warning: ") && line.includes("Server Error")), failed.logs.join("\n"));
-  const eventsFailed = await check("a failed events read", [run("renovate[bot]", "skipped")], false, {
-    eventsError: Object.assign(new Error("Server Error"), { status: 500 })
-  });
-  assert.ok(eventsFailed.logs.some((line) => line.startsWith("warning: ")), eventsFailed.logs.join("\n"));
+  // This one's label-events read is the PR's third: the two before it are other checks', which would fail first.
+  const ownWarning = (logs) => logs.some((line) => line.startsWith("warning: Couldn't tell whether Claude Review will review"));
+  for (const [why, claudeRuns, options] of [
+    ["a failed runs read", [], { claudeRunsError: Object.assign(new Error("Server Error"), { status: 500 }) }],
+    ["a failed events read", [run("renovate[bot]", "skipped")], { eventsError: Object.assign(new Error("Server Error"), { status: 500 }), eventsErrorAt: 3 }]
+  ]) {
+    const { logs, runRequests } = await check(why, claudeRuns, false, options);
+    assert.equal(runRequests.length, 1, why);
+    assert.ok(ownWarning(logs), `${why}\n${logs.join("\n")}`);
+    assert.ok(!logs.some((line) => line.startsWith("failed: ")), `${why}\n${logs.join("\n")}`);
+  }
 
   // Dependabot's PR gets the by-hand notice, and its runs aren't read: Claude Review skips it whoever pushes.
   const dependabot = await check("Dependabot's PR", [run("dependabot[bot]", "skipped")], false, {

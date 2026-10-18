@@ -128,8 +128,9 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
-          # Scoped by the permissions above; used only to read label events
-          # and to take review:claude off a PR at the review cap.
+          # Scoped by the permissions above; used only to read a PR's label
+          # events and comments and Claude Review's runs for its head, and to
+          # take review:claude off it.
           EVENTS_TOKEN: ${{ github.token }}
         with:
           # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
@@ -142,8 +143,9 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             // github authenticates with the PAT when it's set, which may lack
-            // Issues access; label events are read, and review:claude
-            // removed, with GITHUB_TOKEN instead.
+            // Issues or Actions access; label events, comments and Claude
+            // Review's runs are read, and review:claude removed, with
+            // GITHUB_TOKEN instead (its issues: read and actions: read above).
             const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it

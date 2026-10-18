@@ -143,9 +143,10 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             // github authenticates with the PAT when it's set, which may lack
-            // Issues or Actions access; label events, comments and Claude
-            // Review's runs are read, and review:claude removed, with
-            // GITHUB_TOKEN instead (its issues: read and actions: read above).
+            // Issues or Actions access; label events, comments and workflow
+            // runs (Claude Review's, and the head's) are read, and
+            // review:claude removed, with GITHUB_TOKEN instead (its
+            // issues: read and actions: read above).
             const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
@@ -499,11 +500,11 @@ jobs:
                   ? !["PENDING", "EXPECTED"].includes(check.state)
                   : check.status === "COMPLETED";
               });
-              const fromCi = contexts.some((check) => {
+              const reportedByCi = contexts.some((check) => {
                 const name = check.name ?? check.context;
                 return name !== SELF_CHECK && !CLAUDE_CHECKS.includes(name);
               });
-              if (!finished || !fromCi) {
+              if (!finished || !reportedByCi) {
                 return false;
               }
               try {

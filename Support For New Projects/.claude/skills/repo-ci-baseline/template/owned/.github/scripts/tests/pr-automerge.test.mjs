@@ -371,7 +371,7 @@ async function evaluate(pr, events = [], options = {}) {
       throw new Error("the PAT client must not read label events or comments");
     }
   };
-  // The GITHUB_TOKEN client: it reads label events and removes review:claude.
+  // The head's runs, filtered as GitHub filters them by head_sha and status.
   const headRunsFor = (params) => {
     return headRuns.filter((run) => {
       return (params.head_sha === undefined || run.head_sha === params.head_sha) &&
@@ -388,9 +388,11 @@ async function evaluate(pr, events = [], options = {}) {
     },
     listWorkflowRunsForRepo: async (params) => {
       headRunRequests.push(params);
-      return { data: { total_count: headRunsFor(params).length, workflow_runs: headRunsFor(params) } };
+      const runs = headRunsFor(params);
+      return { data: { total_count: runs.length, workflow_runs: runs } };
     }
   };
+  // The GITHUB_TOKEN client: it reads label events and removes review:claude.
   const getOctokit = (token) => {
     eventTokens.push(token);
     return {

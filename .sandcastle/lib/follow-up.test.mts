@@ -184,6 +184,76 @@ describe("decide", () => {
     assert.deepEqual(result, { action: "wait", reason: "checks are still running" });
   });
 
+  // The Sandcastle workflow's own run (a pull_request_review or unlabeled
+  // event) reports a check named Sandcastle on the head it sweeps.
+  it("doesn't wait for Sandcastle's own check run while it's in progress", () => {
+    const result = decide(
+      pr({
+        checks: [
+          { name: "build", completed: true, green: true, completedAt: "2026-10-10T09:00:00Z" },
+          { name: "Sandcastle", completed: false, green: false, completedAt: null },
+        ],
+      }),
+      NOW,
+    );
+
+    assert.deepEqual(result, { action: "leave", reason: "it's settled and CLEAN" });
+  });
+
+  it("still waits for another check that's running beside Sandcastle's own", () => {
+    const result = decide(
+      pr({
+        checks: [
+          { name: "build", completed: false, green: false, completedAt: null },
+          { name: "Sandcastle", completed: false, green: false, completedAt: null },
+        ],
+      }),
+      NOW,
+    );
+
+    assert.deepEqual(result, { action: "wait", reason: "checks are still running" });
+  });
+
+  it("doesn't flag a PR as needing a follow-up pass for Sandcastle's own red check", () => {
+    const result = decide(
+      pr({
+        checks: [
+          { name: "build", completed: true, green: true, completedAt: "2026-10-10T09:00:00Z" },
+          { name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" },
+        ],
+      }),
+      NOW,
+    );
+
+    assert.deepEqual(result, { action: "leave", reason: "it's settled and CLEAN" });
+  });
+
+  it("flags only the other red checks, not Sandcastle's own, as needing a follow-up pass", () => {
+    const result = decide(
+      pr({
+        checks: [
+          { name: "lint", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z" },
+          { name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" },
+        ],
+      }),
+      NOW,
+    );
+
+    assert.deepEqual(result, { action: "needs-pass", reasons: ["check lint is red"] });
+  });
+
+  it("doesn't name Sandcastle's own red check among a dirty PR's reasons", () => {
+    const result = decide(
+      pr({
+        mergeStateStatus: "DIRTY",
+        checks: [{ name: "Sandcastle", completed: true, green: false, completedAt: "2026-10-10T09:30:00Z" }],
+      }),
+      NOW,
+    );
+
+    assert.deepEqual(result, { action: "needs-pass", reasons: ["it has merge conflicts"] });
+  });
+
   it("waits with no checks reported at all", () => {
     const result = decide(pr({ checks: [] }), NOW);
 

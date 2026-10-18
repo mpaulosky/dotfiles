@@ -20,7 +20,7 @@ describe("roleOptions", () => {
   it("runs the role's model at its effort", () => {
     const { command } = roleOptions("scribe").agent.buildPrintCommand({ prompt: "", dangerouslySkipPermissions: true });
 
-    assert.match(command, /--model 'claude-sonnet-5'/);
+    assert.match(command, /--model 'claude-sonnet-5-5'/);
     assert.match(command, /--effort medium/);
   });
 

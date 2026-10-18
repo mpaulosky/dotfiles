@@ -14,7 +14,7 @@ import {
 } from "./config.mts";
 
 const opus = "claude-opus-5-5";
-const sonnet = "claude-sonnet-5";
+const sonnet = "claude-sonnet-5-5";
 
 describe("ROLE_AGENTS", () => {
   it("configures every role with the spec's model, effort, iterations and timeout", () => {

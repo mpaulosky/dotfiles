@@ -29,7 +29,7 @@ permissions:
 env:
   # Model for the AI Summary in the posts (used only when the
   # ANTHROPIC_API_KEY secret is set). Same as release.yml.
-  ANTHROPIC_MODEL: claude-sonnet-5
+  ANTHROPIC_MODEL: claude-sonnet-5-5
   BRANCH: docs/backfill-blog-posts
 
 concurrency:

@@ -29,7 +29,7 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MODEL = "claude-sonnet-5-5"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 API_TIMEOUT_SECONDS = 60
 DIFF_LIMIT = 60_000

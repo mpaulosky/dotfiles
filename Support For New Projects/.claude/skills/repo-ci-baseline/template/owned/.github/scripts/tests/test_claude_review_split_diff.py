@@ -80,14 +80,13 @@ class Repo:
         runner_temp.mkdir()
         output = runner_temp / "output"
         output.write_text("")
-        extra = env
-        env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output),
-               "BASE_SHA": base, "HEAD_SHA": head}
+        step_env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output),
+                    "BASE_SHA": base, "HEAD_SHA": head}
         if getattr(self, "workspace", None):
-            env["GITHUB_WORKSPACE"] = str(self.workspace)
-        env.update(extra or {})
-        done = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script or step_script()], cwd=self.path, env=env,
-                              check=True, capture_output=True)
+            step_env["GITHUB_WORKSPACE"] = str(self.workspace)
+        step_env.update(env or {})
+        done = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script or step_script()], cwd=self.path,
+                              env=step_env, check=True, capture_output=True)
         found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\nlisted=(.*)\nheld=(\d+)\n"
                              r"context<<\1\n(.*)\n\1\n", output.read_text(), re.S)
         assert found, output.read_text()

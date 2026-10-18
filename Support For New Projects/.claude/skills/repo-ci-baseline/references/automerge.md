@@ -80,8 +80,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Copilot push's runs) has created no checks either, so the run logs a notice to approve the PR's runs or merge by hand.
   PR Review Submitted's, Claude Review's and PR Auto-Merge's own held runs don't count: Copilot's review always leaves a PR Review
   Submitted run held (mpaulosky/dotfiles#236). Nor does a held run that a later run (higher `id`) of the same workflow `path` and
-  `event` has replaced, as when the owner starts the workflow again on the head (mpaulosky/dotfiles#238). It reads the head's checks again after the runs and waits if they changed, as a run
-  may have finished between the two reads. When everything is quiet but no CI check exists (path filters left out every CI
+  `event` has replaced, as when the owner starts the workflow again on the head (mpaulosky/dotfiles#238). It reads the head's
+  checks again after the runs and waits if they changed, as a run may have finished between the two reads. When everything is quiet but no CI check exists (path filters left out every CI
   workflow, or a push with `GITHUB_TOKEN` started none, leaving GraphQL's `statusCheckRollup` null), nothing will start the
   workflow again, so the run logs a notice to add the label or merge by hand. A failed read of the runs isn't settled.
   As for an update, that holds only off a PR event, where CI may not have created the required checks yet.

@@ -788,35 +788,35 @@ test("doesn't tell the owner there is no CI while a CI run for the head is held 
 test("doesn't hold the PR for a held run that a later run of the same workflow and event has replaced (mpaulosky/dotfiles#238)", async () => {
   const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
   const ci = { path: ".github/workflows/ci.yml", event: "push" };
-  const done = (id, overrides = {}) => ({ id, head_sha: HEAD, ...ci, status: "completed", conclusion: "success", ...overrides });
-  const run = (headRuns) => evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [], headRuns });
+  const completedRun = (id, overrides = {}) => ({ id, head_sha: HEAD, ...ci, status: "completed", conclusion: "success", ...overrides });
+  const evaluateHeadRuns = (headRuns) => evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [], headRuns });
   for (const shape of ["status", "conclusion"]) {
     // A held run followed by a completed run of the same workflow: the PR isn't held, and Claude is called in.
-    const replaced = await run([heldCiRun(shape, { id: 3, ...ci }), done(8)]);
+    const replaced = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8)]);
     assert.equal(replaced.addedLabels.length, 1, `held by ${shape}: ${replaced.logs.join("\n")}`);
     assert.ok(!asksForApproval(replaced.logs), `held by ${shape}: ${replaced.logs.join("\n")}`);
 
     // The order of the runs in the response doesn't matter, only their ids.
-    const reversed = await run([done(8), heldCiRun(shape, { id: 3, ...ci })]);
+    const reversed = await evaluateHeadRuns([completedRun(8), heldCiRun(shape, { id: 3, ...ci })]);
     assert.equal(reversed.addedLabels.length, 1, `held by ${shape}: ${reversed.logs.join("\n")}`);
 
     // A held run that is the newest of its workflow and event still holds the PR.
-    const newest = await run([done(2), heldCiRun(shape, { id: 3, ...ci })]);
+    const newest = await evaluateHeadRuns([completedRun(2), heldCiRun(shape, { id: 3, ...ci })]);
     assert.deepEqual(newest.addedLabels, [], `held by ${shape}`);
     assert.ok(asksForApproval(newest.logs), `held by ${shape}: ${newest.logs.join("\n")}`);
 
     // A later run of another workflow doesn't replace it.
-    const otherPath = await run([heldCiRun(shape, { id: 3, ...ci }), done(8, { path: ".github/workflows/lint.yml" })]);
+    const otherPath = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8, { path: ".github/workflows/lint.yml" })]);
     assert.deepEqual(otherPath.addedLabels, [], `held by ${shape}`);
     assert.ok(asksForApproval(otherPath.logs), `held by ${shape}: ${otherPath.logs.join("\n")}`);
 
     // Nor does a later run of the same workflow for another event.
-    const otherEvent = await run([heldCiRun(shape, { id: 3, ...ci }), done(8, { event: "pull_request" })]);
+    const otherEvent = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8, { event: "pull_request" })]);
     assert.deepEqual(otherEvent.addedLabels, [], `held by ${shape}`);
     assert.ok(asksForApproval(otherEvent.logs), `held by ${shape}: ${otherEvent.logs.join("\n")}`);
 
     // A replacing run that is itself held still holds the PR.
-    const stillHeld = await run([heldCiRun(shape, { id: 3, ...ci }), heldCiRun(shape, { id: 8, ...ci })]);
+    const stillHeld = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), heldCiRun(shape, { id: 8, ...ci })]);
     assert.deepEqual(stillHeld.addedLabels, [], `held by ${shape}`);
     assert.ok(asksForApproval(stillHeld.logs), `held by ${shape}: ${stillHeld.logs.join("\n")}`);
   }

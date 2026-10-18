@@ -117,8 +117,8 @@ export function firstSecretMatch(
   run: (...args: string[]) => string = git,
   mergedMain?: string,
 ): SecretMatch | undefined {
-  const range = [`${base}..${commit}`, ...(mergedMain === undefined ? [] : [`^${mergedMain}`])];
-  for (const sha of run("rev-list", "--reverse", ...range).split("\n").filter(Boolean)) {
+  const exclude = mergedMain === undefined ? [] : [`^${mergedMain}`];
+  for (const sha of run("rev-list", "--reverse", `${base}..${commit}`, ...exclude).split("\n").filter(Boolean)) {
     const [author = "", committer = "", message = ""] = run("log", "-1", "--format=%an <%ae>%x00%cn <%ce>%x00%B", sha).split("\0");
     for (const [field, text] of [["author", author], ["committer", committer], ["message", message]] as const) {
       const kind = secretKindIn(text, secrets);

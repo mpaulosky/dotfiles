@@ -712,8 +712,9 @@ async function buildMarkedIssue(
   // workflow listing can leave main's own commits out (#224), or undefined
   // when nothing was merged. A merge that conflicts is aborted and the branch
   // published as it is: the follow-up pass (lib/follow-up-pass.mts) merges
-  // main into a conflicted PR with a role to resolve it. A failed fetch publishes without the merge too, since the
-  // work is already reviewed and the follow-up pass updates a PR behind main.
+  // main into a conflicted PR with a role to resolve it. A failed fetch
+  // publishes without the merge too, since the work is already reviewed and
+  // the follow-up pass updates a PR behind main.
   // Throws when an aborted merge can't be undone.
   async function syncWithMain(): Promise<{ reviewedHead: string; mergedMain: string } | undefined> {
     let main: string;

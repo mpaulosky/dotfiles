@@ -279,9 +279,9 @@ function host(
     },
   };
   return {
-    steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, scannedExclusions, listedExclusions, pushed, head,
+    steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
-    mainChecks,
+    mainChecks, scannedExclusions, listedExclusions,
   };
 }
 

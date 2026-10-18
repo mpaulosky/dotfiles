@@ -613,7 +613,7 @@ test("calls in Claude past Claude Review's own failed checks and this job's own"
       HEAD,
       requiredCheck("Build Solution"),
       requiredCheck("Review with Claude", { isRequired: false, conclusion: "FAILURE" }),
-      requiredCheck("Merge same-repo PRs when ready", { isRequired: false, status: "IN_PROGRESS", conclusion: null })
+      requiredCheck("Merge same-repo PRs when ready", { isRequired: false, conclusion: "FAILURE" })
     )
   });
   const { addedLabels } = await evaluate(pr);

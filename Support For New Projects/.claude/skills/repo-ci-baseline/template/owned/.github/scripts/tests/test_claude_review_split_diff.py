@@ -1005,12 +1005,22 @@ def test_a_stem_shared_with_a_file_that_isnt_followed_still_gets_its_users_which
                              + [f"src/user{n}.py (names {code})" for n in range(users)])
 
 
+def test_a_binary_file_holding_a_stem_doesnt_hide_the_user_after_it(repo, tmp_path):
+    # Unless told to read it as text, git grep says "Binary file ... matches" for a binary file, with no \0 after
+    # its name.
+    repo.base = repo.commit({"assets/logo.bin": b"\0module_one\0", "lib/user.py": "import module_one\n"})
+    head = repo.commit({"src/module_one.py": "x = 1\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == ["src/module_one.py (changed in this PR)", "lib/user.py (names src/module_one.py)"]
+
+
 def test_a_grep_that_fails_still_writes_the_diff_and_leaves_the_changed_files(repo, tmp_path):
     repo.base = repo.commit({"lib/user.py": "import module_one\n"})
     head = repo.commit({"src/module_one.py": "x = 1\n"})
     shim = GitShim(tmp_path, mode="fail")
     _, folder, diff = repo.split(repo.base, head, tmp_path, env=shim.env)
     assert len(shim.greps()) == 1
+    assert re.search(r"^::warning::.+", repo.log, re.M)
     assert b"src/module_one.py" in diff and "src/module_one.py" in (folder / "INDEX").read_text(encoding="utf-8")
     assert headers(repo) == ["src/module_one.py (changed in this PR)"]
 

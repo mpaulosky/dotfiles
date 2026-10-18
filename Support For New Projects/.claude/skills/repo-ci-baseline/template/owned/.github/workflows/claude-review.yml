@@ -449,6 +449,8 @@ jobs:
           # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
           SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
           USES = re.compile(rf"""^\s*-?\s*uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""", re.M)
+          PATH_RUN = re.compile(r"[\w.\-/]+")
+          PATH_TAIL = re.compile(r".+\.\w+")  # a character before the dot: *.py names no file
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow
           LONG_LINE = MAX_PIECE_BYTES // 4
           CONTINUED = b"\\~ "  # starts a long line's later chunk: no line of its own, like git's "\ No newline"
@@ -787,6 +789,8 @@ jobs:
               for path in edited:
                   if kind_of([], path) == "docs":
                       continue
+                  # Read whatever its size: the scans are linear, and a workflow too big for context is where its
+                  # pinned actions' source matters most.
                   text = (git_out("cat-file", "blob", f"{head}:{path}") or b"").decode("utf-8", "replace")
                   if kind_of([], path) == "workflow" and changes_more_than_comments(base, head, path):
                       for pin in dict.fromkeys(USES.findall(text)):
@@ -794,7 +798,7 @@ jobs:
                               walked[pin] = action_files(*pin)
                               actions += [(found, f"source of {pin[0]}/{pin[1]}, which {path} pins")
                                           for found in walked[pin]]
-                  for token in dict.fromkeys(re.findall(r"[\w.\-/]+\.\w+", text)):
+                  for token in dict.fromkeys(named_in(text)):
                       # A leading /, ./ or ../ goes (a path written after an expression, or beside the file), but not
                       # the dot of .github.
                       token = re.sub(r"^(?:\.{0,2}/)+", "", token)
@@ -824,6 +828,14 @@ jobs:
               actions.sort(key=lambda item: re.search(r"/action\.ya?ml$", item[0]) is not None)
               code = sum(kind_of([], path) != "docs" for path in edited)
               return entries[:code] + actions + entries[code:]
+
+
+          def named_in(text):
+              """The paths text names: each run of path characters (PATH_RUN) up to its last ".ext" (PATH_TAIL).
+              The same tokens one pattern for both found, without its backtracking, which was quadratic in a
+              long run with no dot."""
+              found = (PATH_TAIL.match(run) for run in PATH_RUN.findall(text))
+              return [match.group() for match in found if match]
 
 
           def changes_more_than_comments(base, head, path):

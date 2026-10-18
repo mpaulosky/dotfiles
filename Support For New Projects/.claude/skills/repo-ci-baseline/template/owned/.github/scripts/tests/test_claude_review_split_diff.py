@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -806,6 +807,37 @@ def test_an_unchanged_file_named_after_an_expression_is_followed(repo, tmp_path)
         "lib/common.sh (named by scripts/go.sh)",
         "scripts/build.py (named by .github/workflows/ci.yml)",
     ]
+
+
+def test_a_long_run_with_no_dot_doesnt_slow_the_naming_scan(repo, tmp_path):
+    # The scan was quadratic in a run of path characters with no ".ext" after it (mpaulosky/dotfiles#201):
+    # this file took over ten seconds.
+    repo.base = repo.commit({"src/helper.py": "h = 1\n"})
+    blob = "x" * (constant("MAX_CHANGED_FILE_BYTES") - 1000)
+    head = repo.commit({"src/app.py": f"# uses src/helper.py\nDATA = '{blob}'\n"})
+    started = time.monotonic()
+    repo.split(repo.base, head, tmp_path)
+    assert time.monotonic() - started < 5
+    assert "src/helper.py (named by src/app.py)" in headers(repo)
+
+
+def test_a_changed_workflow_too_big_for_context_still_has_its_pins_followed(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "".join(f"      - run: echo {n:07d}\n" for n in range(constant("MAX_CHANGED_FILE_BYTES") // 25))
+    head = repo.commit({".github/workflows/big.yml": "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n" + steps})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [
+        "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/big.yml pins)",
+        "_actions/anthropics/act/v1/action.yml (source of anthropics/act, which .github/workflows/big.yml pins)",
+    ]
+
+
+def test_a_run_that_starts_with_its_only_dot_names_nothing(repo, tmp_path):
+    # As the one pattern the scan replaced: a path needs a character before its ".ext", so *.py isn't a file.
+    repo.base = repo.commit({"src/.py": "x = 1\n"})
+    head = repo.commit({"src/app.py": "# globs *.py\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == ["src/app.py (changed in this PR)"]
 
 
 def test_line_numbers_count_newlines_only_as_git_does(repo, tmp_path):

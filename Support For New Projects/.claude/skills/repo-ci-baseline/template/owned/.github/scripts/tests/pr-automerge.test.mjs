@@ -698,6 +698,15 @@ test("doesn't call in Claude for a draft, a handed-back PR or one past the cap",
   assert.deepEqual(capped.addedLabels, []);
 });
 
+test("doesn't call in Claude for Dependabot's PR, which Claude Review never reviews (mpaulosky/dotfiles#201)", async () => {
+  for (const login of ["dependabot", "dependabot[bot]"]) {
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, author: { login } }));
+    assert.deepEqual(addedLabels, [], login);
+    // A notice: no review of this head is coming, so the owner reviews and merges it.
+    assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes("by hand")), logs.join("\n"));
+  }
+});
+
 test("doesn't count Copilot's quota notes toward the review cap", async () => {
   const reviews = copilotReviewsOf("one", { oid: "two", note: true }, { oid: "three", note: true });
   const { merges } = await evaluate(readyPr({ copilotReviews: reviews }));

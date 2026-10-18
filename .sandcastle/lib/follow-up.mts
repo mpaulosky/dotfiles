@@ -10,8 +10,8 @@
 // that's only behind main, and handing an issue back when its latest PR
 // closed without merging. A PR that needs more than that (DIRTY, a red
 // check, an unresolved bot or owner thread the host hasn't answered) is
-// logged here and returned as a PassTarget: the agent pass that fixes it lives in lib/follow-up-pass.mts
-// (#78).
+// logged here and returned as a PassTarget: the agent pass that fixes it
+// lives in lib/follow-up-pass.mts (#78).
 // ---------------------------------------------------------------------------
 
 import { discardClosedWork, isIssueBranch, type BranchRefs } from "./branches.mts";
@@ -360,8 +360,9 @@ export type SweepResult = { needsPass: number[]; passes: PassTarget[] };
 // for each PR either skips it (sweepSkipReason) or applies `decide`, logging
 // what happened. A PR with an unresolved bot or owner thread has its threads
 // read in full first, and the ones the host has answered are left out
-// (withoutAnsweredThreads, #225). A PR whose sandcastle:needs-human someone other than the
-// repository owner removed gets it back instead, and is left alone (#146).
+// (withoutAnsweredThreads, #225). A PR whose sandcastle:needs-human someone
+// other than the repository owner removed gets it back instead, and is left
+// alone (#146).
 // Each PR runs in its own try/catch, so one failure doesn't stop the rest.
 // An updated PR reaches `outcomes` as "updated", and every PR that reached
 // `decide` with unresolved threads opened by someone other than the
@@ -406,11 +407,11 @@ export function sweepPullRequests(
         log(`  ✋ PR #${pr.number}: ${restore.reason}, so it isn't swept.`);
         continue;
       }
+      const swept = withoutAnsweredThreads(pr, github, host);
       // Not a bot's and not confirmed as the repository owner's: an owner
       // thread is the follow-up role's to answer (threadsForRole, and now
       // `decide` below), not left waiting on a person the way this count and
       // the run report's "waiting on a person" section describe it.
-      const swept = withoutAnsweredThreads(pr, github, host);
       const humanThreads = swept.threads.filter((thread) => !thread.resolved && !thread.byBot && github.isOwner(thread.author) !== true).length;
       if (humanThreads > 0) waitingPrs.push({ pr: pr.number, threads: humanThreads });
       const decision = decide(swept, now, github.isOwner);

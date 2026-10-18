@@ -112,8 +112,8 @@ export function threadsForRole(
   const leftForHuman: ReviewThread[] = [];
   const unknown: ReviewThread[] = [];
   for (const thread of threads) {
-    const from = threadStanding(thread, isOwner, hostLogin);
-    switch (from) {
+    const standing = threadStanding(thread, isOwner, hostLogin);
+    switch (standing) {
       case "resolved":
       case "answered":
         continue;
@@ -127,7 +127,7 @@ export function threadsForRole(
       case "owner":
         forRole.push({
           threadId: thread.id,
-          from,
+          from: standing,
           path: thread.path,
           line: thread.line,
           outdated: thread.outdated,

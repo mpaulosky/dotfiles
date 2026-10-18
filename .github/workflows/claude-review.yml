@@ -407,8 +407,8 @@ jobs:
       # its folder, so a symlink can't bring in anything else, and only regular
       # text files Copilot reviews go in. They fit what's left of the read
       # budget after the diff, and are optional: an unread one holds nothing,
-      # and a failure finding them (one git grep for all the stems, under a
-      # timeout) warns and leaves the changed files only.
+      # and a failure finding them warns and leaves the changed files only (the
+      # one git grep for all the stems, under a timeout, costs just the files that name a changed one).
       #
       # Pieces are named by number only (001.diff): a PR's paths are its
       # author's, so none becomes a file name or reaches the prompt. The
@@ -826,7 +826,13 @@ jobs:
                       if len(stem) >= 5 and "\n" not in stem:
                           stems.append((path, stem))
                   # One grep for all the stems, not one each: a PR of hundreds of files ran hundreds (mpaulosky/dotfiles#212).
-                  found = users_of(head, {stem for _, stem in stems})
+                  # Its failure loses the users only, not the actions and names found above.
+                  try:
+                      found = users_of(head, {stem for _, stem in stems})
+                  except Exception as error:
+                      print(f"::warning::Couldn't find the files that name the changed ones ({type(error).__name__}), so "
+                            "the review leaves them out.")
+                      found = {}
                   # A user is credited to a followed changed file before one no one follows: "import config" names
                   # config.py, not config.json beside it.
                   for path, stem in sorted(stems, key=lambda item: not followed(item[0])):
@@ -857,14 +863,18 @@ jobs:
               """For each stem, the files at head that hold it as a whole word, from one git grep: with -F -w, each
               -o match is exactly one stem. The stems go in a file, so thousands of them fit. A binary file is read
               as text (-a), as git otherwise says "Binary file ... matches" for it, with no \\0 after its name.
-              Raises on a failed or timed-out grep."""
+              The output format is pinned on the command line, so no git config (grep.lineNumber and the like)
+              changes it. Git reports only the earliest (on a tie, longest) match on a line and carries on after
+              its end, so a stem whose only use in a file starts inside another changed stem's match is missed:
+              with foo-bar and bar-baz changed, foo-bar-baz credits foo-bar only. That also keeps string-utils
+              from naming utils.py. Raises on a failed or timed-out grep."""
               if not stems:
                   return {}
               with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".stems") as patterns:
                   patterns.write("".join(f"{stem}\n" for stem in stems))
                   patterns.flush()
                   done = subprocess.run(["git", "-c", "core.quotePath=false", "grep", "-a", "-o", "-z", "-w", "-F", "-f",
-                                         patterns.name, head, "--"], capture_output=True, timeout=USERS_TIMEOUT)
+                                         patterns.name, "--no-line-number", "--no-column", "--no-color", head, "--"], capture_output=True, timeout=USERS_TIMEOUT)
               if done.returncode == 1:  # nothing matched
                   return {}
               if done.returncode != 0:

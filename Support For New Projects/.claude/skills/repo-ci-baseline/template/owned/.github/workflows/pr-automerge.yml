@@ -114,7 +114,8 @@ permissions:
   # pull-requests: write also lets GITHUB_TOKEN take review:claude off a PR.
   issues: read
   pull-requests: write
-  # actions: read lets GITHUB_TOKEN list Claude Review's runs for a head.
+  # actions: read lets GITHUB_TOKEN list the workflow runs for a head, Claude
+  # Review's among them.
   actions: read
 
 jobs:
@@ -129,8 +130,8 @@ jobs:
         env:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
           # Scoped by the permissions above; used only to read a PR's label
-          # events and comments and Claude Review's runs for its head, and to
-          # take review:claude off it.
+          # events and comments and the workflow runs for its head (Claude
+          # Review's among them), and to take review:claude off it.
           EVENTS_TOKEN: ${{ github.token }}
         with:
           # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
@@ -143,9 +144,10 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             // github authenticates with the PAT when it's set, which may lack
-            // Issues or Actions access; label events, comments and Claude
-            // Review's runs are read, and review:claude removed, with
-            // GITHUB_TOKEN instead (its issues: read and actions: read above).
+            // Issues or Actions access; label events, comments and workflow
+            // runs (Claude Review's, and the head's) are read, and
+            // review:claude removed, with GITHUB_TOKEN instead (its
+            // issues: read and actions: read above).
             const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
@@ -225,6 +227,9 @@ jobs:
             // the head, and a transient failure there is replaced only by
             // another PR event, so it never holds an update.
             const SELF_CHECK = "Merge same-repo PRs when ready";
+            // A workflow run's statuses before it completes: its jobs may not
+            // have created their check runs on the head yet.
+            const ACTIVE_RUN_STATUSES = ["requested", "queued", "pending", "waiting", "in_progress"];
 
             async function getPullRequestStatus(pullNumber) {
               const status = await github.graphql(
@@ -477,21 +482,63 @@ jobs:
               return notPassed.length > 0 ? `required checks not passed: ${notPassed.join(", ")}` : null;
             }
 
-            // Whether pending says no check is required at all, on a head
-            // whose checks have all finished: neither the rulesets nor
-            // isRequired name one. While any check is still running, or on a
-            // PR event, CI may not have created the required ones yet (a job's
-            // check run appears only once the job is queued).
-            function settledWithNoRequiredCheck(pr, pending) {
+            // Where a head stands when pending says no check is required at
+            // all (neither the rulesets nor isRequired name one), judged only
+            // on a head whose checks have all finished: while any check is
+            // still running, or on a PR event, CI may not have created the
+            // required ones yet (a job's check run appears only once the job
+            // is queued). Null: not that case. "waiting": checks still
+            // running, a workflow run for the head still queued, waiting or in
+            // progress (its jobs may not have created their checks yet), the
+            // head's checks changed while the runs were read, or the runs
+            // couldn't be read. "no CI": everything is quiet, but no check
+            // outside Claude Review's and this job's own exists, as when path
+            // filters leave out every CI workflow. "settled": CI has reported
+            // (mpaulosky/dotfiles#233).
+            async function noRequiredCheckState(pullNumber, pr, pending) {
               if (!pending.startsWith("no required check") || context.payload.pull_request) {
-                return false;
+                return null;
               }
               const contexts = headCommit(pr)?.statusCheckRollup?.contexts?.nodes ?? [];
-              return contexts.every((check) => {
+              const finished = contexts.every((check) => {
                 return check.__typename === "StatusContext"
                   ? !["PENDING", "EXPECTED"].includes(check.state)
                   : check.status === "COMPLETED";
               });
+              if (!finished) {
+                return "waiting";
+              }
+              try {
+                const runs = await eventsClient.paginate(eventsClient.rest.actions.listWorkflowRunsForRepo, {
+                  owner,
+                  repo,
+                  head_sha: pr.headRefOid,
+                  per_page: 100
+                });
+                if (runs.some((run) => ACTIVE_RUN_STATUSES.includes(run.status))) {
+                  return "waiting";
+                }
+                // The snapshot in pr is older than the runs. A run that queued
+                // and finished between the two has checks pr lacks, so read the
+                // checks again: unchanged means every completed run's checks
+                // are in pr.
+                const fresh = await getPullRequestStatus(pullNumber);
+                const nodes = (status) => JSON.stringify(headCommit(status)?.statusCheckRollup?.contexts?.nodes ?? null);
+                if (!fresh || fresh.headRefOid !== pr.headRefOid || nodes(fresh) !== nodes(pr)) {
+                  return "waiting";
+                }
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
+                }
+                core.warning(`Couldn't read the workflow runs for ${pr.headRefOid} on PR #${pullNumber}: ${error.message}`);
+                return "waiting";
+              }
+              const reportedByCi = contexts.some((check) => {
+                const name = check.name ?? check.context;
+                return name !== SELF_CHECK && !CLAUDE_CHECKS.includes(name);
+              });
+              return reportedByCi ? "settled" : "no CI";
             }
 
             // The head's checks, required or not, whose newest run failed.
@@ -537,7 +584,7 @@ jobs:
               }
               const pending = requiredChecksPending(pr, requiredNames);
               if (pending) {
-                const log = settledWithNoRequiredCheck(pr, pending) ? core.notice : core.info;
+                const log = (await noRequiredCheckState(pullNumber, pr, pending)) === "settled" ? core.notice : core.info;
                 log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
                 return;
               }
@@ -848,44 +895,51 @@ jobs:
               return new Set(claudeReviews.map((review) => review.commit?.oid).filter(Boolean)).size;
             }
 
-            // Why calling in Claude waits, or null when the head can merge
-            // with main, its required checks passed and no check failed but
-            // Claude Review's own: Claude isn't spent on a head that needs a
-            // fix first. A check that isn't required and is still running
-            // doesn't hold it, as it doesn't hold an update: its completion
-            // may never start this workflow (another workflow's, or an app's),
-            // which would leave the PR to the sweep. With no check required at
-            // all, the head's checks must all have finished instead
-            // (mpaulosky/dotfiles#216).
+            // Why calling in Claude waits (waiting, or null when the head can
+            // merge with main, its required checks passed and no check failed
+            // but Claude Review's own), and whether that's with no check
+            // required at all (noneRequired): Claude isn't spent on a head
+            // that needs a fix first. A check that isn't required and is still
+            // running doesn't hold it, as it doesn't hold an update: its
+            // completion may never start this workflow (another workflow's, or
+            // an app's), which would leave the PR to the sweep. With no check
+            // required at all, CI must have reported and the head's checks
+            // must all have finished instead (mpaulosky/dotfiles#216). When
+            // everything is quiet and no CI check exists (noCiCheck), nothing
+            // will start this workflow again, so the owner is told.
             async function checksBeforeClaude(pullNumber, pr) {
               // A conflict is landing.decide's blocker: the head has to change,
               // and its resolution needs a fresh review anyway.
               if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
-                return "it has a merge conflict with main";
+                return { waiting: "it has a merge conflict with main", noneRequired: false };
               }
               let requiredNames;
               try {
                 requiredNames = await requiredCheckNames(pr.baseRefName);
               } catch (error) {
-                return `the checks ${pr.baseRefName}'s rulesets require couldn't be read: ${error.message}`;
+                return {
+                  waiting: `the checks ${pr.baseRefName}'s rulesets require couldn't be read: ${error.message}`,
+                  noneRequired: false
+                };
               }
               const pending = requiredChecksPending(pr, requiredNames);
-              const noneRequired = pending !== null && settledWithNoRequiredCheck(pr, pending);
+              const state = pending === null ? null : await noRequiredCheckState(pullNumber, pr, pending);
+              const noneRequired = state === "settled";
+              if (state === "no CI") {
+                return {
+                  waiting: "no CI check has reported on the head, and no workflow run for it is active",
+                  noneRequired,
+                  noCiCheck: true
+                };
+              }
               if (pending && !noneRequired) {
-                return pending;
+                return { waiting: pending, noneRequired };
               }
               const failed = failedChecks(pr).filter((name) => !CLAUDE_CHECKS.includes(name));
               if (failed.length > 0) {
-                return `checks failed: ${failed.join(", ")}`;
+                return { waiting: `checks failed: ${failed.join(", ")}`, noneRequired };
               }
-              if (noneRequired) {
-                // A notice, as the rulesets may be missing a required check.
-                core.notice(
-                  `PR #${pullNumber} has no required check: neither ${pr.baseRefName}'s rulesets nor isRequired ` +
-                  "name one, so Claude is called in now the head's checks have all finished and none failed but Claude Review's own."
-                );
-              }
-              return null;
+              return { waiting: null, noneRequired };
             }
 
             // Claude Review's runs for the head, read with GITHUB_TOKEN. With
@@ -991,7 +1045,16 @@ jobs:
                 );
                 return;
               }
-              const waiting = await checksBeforeClaude(pullNumber, pr);
+              const { waiting, noneRequired, noCiCheck } = await checksBeforeClaude(pullNumber, pr);
+              if (noCiCheck) {
+                // A notice: nothing will start this workflow again for the
+                // head, so the PR waits for its owner (mpaulosky/dotfiles#233).
+                core.notice(
+                  `PR #${pullNumber}: Copilot couldn't review ${head}, but ${waiting}, so Claude isn't called in. ` +
+                  `If CI skips this PR, add ${CLAUDE_LABEL} or review and merge it by hand.`
+                );
+                return;
+              }
               if (waiting) {
                 core.info(`Not calling in Claude for PR #${pullNumber} yet: Copilot couldn't review ${head}, but ${waiting}.`);
                 return;
@@ -1028,6 +1091,15 @@ jobs:
                 }
                 await github.rest.issues.addLabels({ owner, repo, issue_number: pullNumber, labels: [CLAUDE_LABEL] });
                 core.info(`Copilot couldn't review ${head} (its quota is used up): added ${CLAUDE_LABEL} to PR #${pullNumber}, so Claude Review reviews it.`);
+                if (noneRequired) {
+                  // A notice, as the rulesets may be missing a required check.
+                  // Only now: it says Claude was called in (mpaulosky/dotfiles#233).
+                  core.notice(
+                    `PR #${pullNumber} has no required check: neither ${pr.baseRefName}'s rulesets nor isRequired ` +
+                    `name one, so ${CLAUDE_LABEL} was added once CI reported, the head's checks had all finished and ` +
+                    "none failed but Claude Review's own."
+                  );
+                }
               } catch (error) {
                 if (sweeping && endsRun(error)) {
                   throw error;

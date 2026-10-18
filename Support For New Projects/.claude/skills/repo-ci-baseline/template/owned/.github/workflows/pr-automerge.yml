@@ -35,12 +35,12 @@ name: PR Auto-Merge
 # since a label added with GITHUB_TOKEN starts no workflow, so the PAT needs
 # Pull requests (or Issues) write. Claude Review reviews every push while the
 # label is on, so a fix for its findings is reviewed in turn, until a review
-# comes back clean: no threads and no
-# findings outside the diff, which covers the head and lets the PR merge
-# (mpaulosky/dotfiles#193). The review cap below is where that stops; the run also takes the
-# label off once Claude has reviewed MAX_CLAUDE_ROUNDS (the cap's 3) of the
-# PR's commits, whoever added it, since reviews of merge commits don't count
-# toward the cap: that's the owner's cost rule.
+# comes back clean: no threads and no findings outside the diff, which covers
+# the head and lets the PR merge (mpaulosky/dotfiles#193). The review cap
+# below is where that stops; the run also takes the label off once Claude has
+# reviewed MAX_CLAUDE_ROUNDS (the cap's 3) of the PR's commits, whoever added
+# it, since reviews of merge commits don't count toward the cap: that's the
+# owner's cost rule.
 # At the cap the run takes review:claude off the PR (mpaulosky/dotfiles#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
@@ -147,8 +147,8 @@ jobs:
           github-token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            // github authenticates with the PAT when it's set. It adds
-            // review:claude (callInClaude), since a label added with
+            // github authenticates with the PAT when it's set. callInClaude
+            // adds review:claude with it, since a label added with
             // GITHUB_TOKEN starts no workflow, so the PAT needs Pull requests
             // (or Issues) write; without it Claude is never called in, and
             // each run only warns. The PAT may lack Issues read or Actions

@@ -868,13 +868,15 @@ def runner_actions(tmp_path, repo, files):
     return root
 
 
-def test_context_holds_a_pinned_actions_gatekeeping_source_after_the_changed_files(repo, tmp_path):
+def test_context_holds_a_pinned_actions_gatekeeping_source_after_the_changed_code_and_tests(repo, tmp_path):
     secret = tmp_path / "secret.txt"
     secret.write_text("TOKEN=hunter2\n")
     root = runner_actions(tmp_path, repo, {
         "action.yml": "runs:\n  using: node24\n",
         "src/github/validation/actor.ts": "export function checkHumanActor() {}\n",
         "src/github/token.ts": "export const token = 1\n",
+        "src/github/authorize.ts": "export function authorize() {}\n",
+        "src/git-auth-helper.ts": "export function configureCredentials() {}\n",
         "src/other.ts": "x\n",
         "src/github/validation/actor.test.ts": "test\n",
         "dist/actor.js": "bundle\n",
@@ -885,20 +887,61 @@ def test_context_holds_a_pinned_actions_gatekeeping_source_after_the_changed_fil
                                                         "      - uses: anthropics/act@v1 # pinned\n"
                                                         "      - uses: someone/absent@v2\n"
                                                         "      - run: python3 src/util.py\n",
-                        "tests/test_review.py": "def test(): pass\n"})
+                        "tests/test_review.py": "def test(): pass\n", "docs/review.md": "# Review\n"})
     repo.split(repo.base, head, tmp_path)
     pins = "source of anthropics/act, which .github/workflows/review.yml pins"
+    # The changed tests come before the action's source, which a budget that runs out cuts first
+    # (mpaulosky/dotfiles#199), and the changed docs after it; a credential helper isn't gatekeeping.
     assert headers(repo) == [
         ".github/workflows/review.yml (changed in this PR)",
+        "tests/test_review.py (changed in this PR)",
+        f"_actions/anthropics/act/v1/src/github/authorize.ts ({pins})",
         f"_actions/anthropics/act/v1/src/github/token.ts ({pins})",
         f"_actions/anthropics/act/v1/src/github/validation/actor.ts ({pins})",
         f"_actions/anthropics/act/v1/action.yml ({pins})",
-        "tests/test_review.py (changed in this PR)",
+        "docs/review.md (changed in this PR)",
         "src/util.py (named by .github/workflows/review.yml)",
     ]
     text = "".join(context_of(repo).values())
     assert "     1\texport function checkHumanActor() {}\n" in text
-    assert "hunter2" not in text and "bundle" not in text
+    assert "hunter2" not in text and "bundle" not in text and "configureCredentials" not in text
+
+
+def test_a_comment_only_edit_to_a_workflow_doesnt_follow_its_pins(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps, ".github/workflows/lint.yml": steps})
+    head = repo.commit({".github/workflows/ci.yml": "# Builds the app.\n\n" + steps + "      # then tests\n",
+                        ".github/workflows/lint.yml": steps + "      - run: echo lint\n"})
+    repo.split(repo.base, head, tmp_path)
+    pins = "source of anthropics/act, which .github/workflows/lint.yml pins"
+    assert headers(repo) == [
+        ".github/workflows/ci.yml (changed in this PR)",
+        ".github/workflows/lint.yml (changed in this PR)",
+        f"_actions/anthropics/act/v1/src/actor.ts ({pins})",
+        f"_actions/anthropics/act/v1/action.yml ({pins})",
+    ]
+
+
+def test_the_pins_check_reads_a_comment_only_edit_as_text_whatever_the_prs_gitattributes_say(repo, tmp_path):
+    # A diff git shows as binary, or one that fails, counts as a change and follows the pins; so this
+    # comment-only edit is left unfollowed only when the check reads its lines as text.
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps})
+    head = repo.commit({".gitattributes": ".github/** -diff\n", ".github/workflows/ci.yml": steps + "      # note\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
+def test_an_action_pinned_by_two_changed_workflows_is_listed_once_credited_to_the_first(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n      - uses: anthropics/act@v1\n"
+    head = repo.commit({".github/workflows/a.yml": steps, ".github/workflows/b.yml": steps})
+    repo.split(repo.base, head, tmp_path)
+    found = [header for header in headers(repo) if header.startswith("_actions/")]
+    assert found == ["_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/a.yml pins)",
+                     "_actions/anthropics/act/v1/action.yml (source of anthropics/act, which .github/workflows/a.yml pins)"]
 
 
 def test_an_action_the_runner_hasnt_downloaded_adds_nothing(repo, tmp_path):

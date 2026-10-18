@@ -504,10 +504,10 @@ jobs:
             // head's checks changed while the runs were read, or the runs
             // couldn't be read. "held": a CI run for the head is held for
             // approval, so its checks come only once someone approves it
-            // (mpaulosky/dotfiles#236). "no CI": everything is quiet, but no check
-            // outside Claude Review's and this job's own exists, as when path
-            // filters leave out every CI workflow. "settled": CI has reported
-            // (mpaulosky/dotfiles#233).
+            // (mpaulosky/dotfiles#236). "no CI": everything is quiet, but no
+            // check outside Claude Review's and this job's own exists, as when
+            // path filters leave out every CI workflow. "settled": CI has
+            // reported (mpaulosky/dotfiles#233).
             async function noRequiredCheckState(pullNumber, pr, pending) {
               if (!pending.startsWith("no required check") || context.payload.pull_request) {
                 return null;

@@ -1123,6 +1123,13 @@ jobs:
       # Skipped when debug logging is on: at this pin the action then logs
       # every Claude message whatever show_full_output says, and the runner
       # logs step outputs, so the answer would be public before it's checked.
+      #
+      # The pin stays at the version the Read restrictions and FileReadTool
+      # limits above were checked against, and dependabot.yml ignores it, so
+      # Dependabot's auto-merged bumps can't move it: move it only after
+      # checking them again on the Claude Code version the new pin installs,
+      # then update those notes and the Template, so a re-Apply doesn't take
+      # a repo back.
       - name: Review
         id: claude
         if: steps.secret.outputs.enabled == 'true' && runner.debug != '1'

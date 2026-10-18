@@ -477,6 +477,23 @@ jobs:
               return notPassed.length > 0 ? `required checks not passed: ${notPassed.join(", ")}` : null;
             }
 
+            // Whether pending says no check is required at all, on a head
+            // whose checks have all finished: neither the rulesets nor
+            // isRequired name one. While any check is still running, or on a
+            // PR event, CI may not have created the required ones yet (a job's
+            // check run appears only once the job is queued).
+            function settledWithNoRequiredCheck(pr, pending) {
+              if (!pending.startsWith("no required check") || context.payload.pull_request) {
+                return false;
+              }
+              const contexts = headCommit(pr)?.statusCheckRollup?.contexts?.nodes ?? [];
+              return contexts.every((check) => {
+                return check.__typename === "StatusContext"
+                  ? !["PENDING", "EXPECTED"].includes(check.state)
+                  : check.status === "COMPLETED";
+              });
+            }
+
             // The head's checks, required or not, whose newest run failed.
             // Claude Review's post and answer-check jobs fail on purpose to
             // leave a PR UNSTABLE; an update would start a new head without
@@ -520,19 +537,7 @@ jobs:
               }
               const pending = requiredChecksPending(pr, requiredNames);
               if (pending) {
-                // No required check at all on a head whose checks have all
-                // finished means neither the rulesets nor isRequired name one;
-                // say so where it shows. While any check is still running, or
-                // on a PR event, CI may not have created the required ones yet
-                // (a job's check run appears only once the job is queued).
-                const contexts = headCommit(pr)?.statusCheckRollup?.contexts?.nodes ?? [];
-                const settled = contexts.every((check) => {
-                  return check.__typename === "StatusContext"
-                    ? !["PENDING", "EXPECTED"].includes(check.state)
-                    : check.status === "COMPLETED";
-                });
-                const misconfigured = pending.startsWith("no required check") && settled && !context.payload.pull_request;
-                const log = misconfigured ? core.notice : core.info;
+                const log = settledWithNoRequiredCheck(pr, pending) ? core.notice : core.info;
                 log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
                 return;
               }
@@ -849,8 +854,10 @@ jobs:
             // fix first. A check that isn't required and is still running
             // doesn't hold it, as it doesn't hold an update: its completion
             // may never start this workflow (another workflow's, or an app's),
-            // which would leave the PR to the sweep.
-            async function checksBeforeClaude(pr) {
+            // which would leave the PR to the sweep. With no check required at
+            // all, the head's checks must all have finished instead
+            // (mpaulosky/dotfiles#216).
+            async function checksBeforeClaude(pullNumber, pr) {
               // A conflict is landing.decide's blocker: the head has to change,
               // and its resolution needs a fresh review anyway.
               if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
@@ -863,11 +870,22 @@ jobs:
                 return `the checks ${pr.baseRefName}'s rulesets require couldn't be read: ${error.message}`;
               }
               const pending = requiredChecksPending(pr, requiredNames);
-              if (pending) {
+              const noneRequired = pending !== null && settledWithNoRequiredCheck(pr, pending);
+              if (pending && !noneRequired) {
                 return pending;
               }
               const failed = failedChecks(pr).filter((name) => !CLAUDE_CHECKS.includes(name));
-              return failed.length > 0 ? `checks failed: ${failed.join(", ")}` : null;
+              if (failed.length > 0) {
+                return `checks failed: ${failed.join(", ")}`;
+              }
+              if (noneRequired) {
+                // A notice, as the rulesets may be missing a required check.
+                core.notice(
+                  `PR #${pullNumber} has no required check: neither ${pr.baseRefName}'s rulesets nor isRequired ` +
+                  "name one, so Claude is called in now the head's checks have all finished and none failed but Claude Review's own."
+                );
+              }
+              return null;
             }
 
             // Claude Review's runs for the head, read with GITHUB_TOKEN. With
@@ -973,7 +991,7 @@ jobs:
                 );
                 return;
               }
-              const waiting = await checksBeforeClaude(pr);
+              const waiting = await checksBeforeClaude(pullNumber, pr);
               if (waiting) {
                 core.info(`Not calling in Claude for PR #${pullNumber} yet: Copilot couldn't review ${head}, but ${waiting}.`);
                 return;

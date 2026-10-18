@@ -641,6 +641,39 @@ test("doesn't call in Claude while a required check runs, after one failed, or b
   }
 });
 
+test("calls in Claude, with a notice, when no check is required and the head's checks have all settled (mpaulosky/dotfiles#216)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }), requiredCheck("Docs", { isRequired: false }));
+  const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [] });
+
+  assert.deepEqual(addedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, labels: [CLAUDE_LABEL] }]);
+  assert.ok(logs.some((line) => line.startsWith("notice: ") && line.includes("no required check")), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), logs.join("\n"));
+});
+
+test("calls in Claude with no required check when the settled head's only failure is Claude Review's own (mpaulosky/dotfiles#216)", async () => {
+  const headRef = checksOn(
+    HEAD,
+    requiredCheck("Lint", { isRequired: false }),
+    requiredCheck("Review with Claude", { isRequired: false, conclusion: "FAILURE" })
+  );
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [] });
+
+  assert.equal(addedLabels.length, 1);
+});
+
+test("doesn't call in Claude with no required check while a check is still running or one failed (mpaulosky/dotfiles#216)", async () => {
+  const cases = {
+    "a check running": checksOn(HEAD, requiredCheck("Lint", { isRequired: false }), requiredCheck("Detect Changes", { isRequired: false, status: "IN_PROGRESS", conclusion: null })),
+    "a status pending": checksOn(HEAD, requiredCheck("Lint", { isRequired: false }), { __typename: "StatusContext", context: "ci/legacy", state: "PENDING", createdAt: "2026-01-01T00:00:00Z" }),
+    "a failed check": checksOn(HEAD, requiredCheck("Lint", { isRequired: false, conclusion: "FAILURE" }))
+  };
+  for (const [name, headRef] of Object.entries(cases)) {
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [] });
+    assert.deepEqual(addedLabels, [], name);
+    assert.ok(logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), `${name}: ${logs.join("\n")}`);
+  }
+});
+
 test("doesn't call in Claude for a head with a merge conflict, as landing.decide blocks on it", async () => {
   for (const conflict of [{ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }, { mergeable: "UNKNOWN", mergeStateStatus: "DIRTY" }]) {
     const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, ...conflict }));

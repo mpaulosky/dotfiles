@@ -449,9 +449,10 @@ jobs:
           NOT_SOURCE = re.compile(r"(^|/)(\.git|node_modules|dist|lib|tests?|__tests__|examples?)(/|$)|\.(test|spec)\.|\.d\.ts$")
           # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
           SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
-          # Blanks within a line only: a \s* crosses newlines under re.M, and two of them were cubic in a run of
-          # blank lines (mpaulosky/dotfiles#210).
-          USES = re.compile(rf"""^[ \t]*(?:-[ \t]*)?uses:[ \t]*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""",
+          # Blanks within a line before uses:, as a \s* crosses newlines under re.M and two of them were cubic in a
+          # run of blank lines (mpaulosky/dotfiles#210). The \s* after it runs only once uses: has matched, so it
+          # stays linear, and still finds a value on the next line.
+          USES = re.compile(rf"""^[ \t]*(?:-[ \t]*)?uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""",
                             re.M)
           BLOCK_INDICATOR = re.compile(r"[|>][-+]?([1-9]?)[-+]?")
           PATH_RUN = re.compile(r"[\w.\-/]+")
@@ -972,8 +973,10 @@ jobs:
 
           def numbered(path, why, content):
               """The file as context parts within the piece limits, each line after its line number in the file."""
-              # Escaped whole: a why can hold another file's path, and a path can hold a newline (mpaulosky/dotfiles#210).
-              header = f"==> {printable(path)} ({printable(why)}) <==\n".encode()
+              # Escaped whole, in every part: a why can hold another file's path, and a path can hold a newline
+              # (mpaulosky/dotfiles#210).
+              shown = printable(path)
+              header = f"==> {shown} ({printable(why)}) <==\n".encode()
               parts, part, count = [], header, 1
               # Lines end at \n only, as git and GitHub count them; a lone \r stays inside its line.
               lines = content.split(b"\n")
@@ -986,7 +989,7 @@ jobs:
                   row = f"{number:>6}\t".encode() + line + b"\n"
                   if len(part) + len(row) > MAX_PIECE_BYTES or count + 1 > MAX_PIECE_LINES:
                       parts.append(part)
-                      part, count = f"==> {path} (continued) <==\n".encode(), 1
+                      part, count = f"==> {shown} (continued) <==\n".encode(), 1
                   part += row
                   count += 1
               return parts + [part]

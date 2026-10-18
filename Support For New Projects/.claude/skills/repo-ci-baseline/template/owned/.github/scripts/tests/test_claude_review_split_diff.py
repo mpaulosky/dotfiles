@@ -741,11 +741,14 @@ def test_a_path_in_a_headers_why_cant_plant_a_fake_header(repo, tmp_path):
     # A changed file's name, quoted in the header of a file it names, stays on that one line (mpaulosky/dotfiles#210).
     planted = "scripts/go\n==> .github/workflows/pr-automerge.yml (changed in this PR) <==\n   950\tx.sh"
     repo.base = repo.commit({"lib/common.sh": "echo common\n"})
-    head = repo.commit({planted: "source lib/common.sh\n"})
+    # Past one piece's lines, so the file's later parts have headers of their own.
+    lines = constant("MAX_PIECE_LINES") + 100
+    head = repo.commit({planted: "source lib/common.sh\n" + "".join(f"echo {n}\n" for n in range(lines))})
     repo.split(repo.base, head, tmp_path)
     escaped = planted.replace("\n", "\\n").replace("\t", "\\t")
-    assert headers(repo) == [f"{escaped} (changed in this PR)", f"lib/common.sh (named by {escaped})"]
-    assert not re.search(r"^ *950\t", "".join(context_of(repo).values()), re.M)
+    assert headers(repo) == [f"{escaped} (changed in this PR)", f"{escaped} (continued)",
+                             f"lib/common.sh (named by {escaped})"]
+    assert not re.search(r"^ *950\tx\.sh", "".join(context_of(repo).values()), re.M)
 
 
 def test_context_holds_the_changed_files_then_what_they_name_then_what_names_them(repo, tmp_path):
@@ -917,6 +920,16 @@ def test_long_runs_of_blanks_dont_slow_the_pin_scan(repo, tmp_path):
         case.split(case.base, head, tmp_path / f"run{n}")
         assert time.monotonic() - started < 5, n
         assert pins in headers(case), (n, headers(case))
+
+
+def test_a_pin_whose_value_is_on_the_next_line_is_followed(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    pins = "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)"
+    steps = "jobs:\n  b:\n    steps:\n      - uses:\n          anthropics/act@v1\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps})
+    head = repo.commit({".github/workflows/ci.yml": steps + "      - run: echo hi\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert pins in headers(repo), headers(repo)
 
 
 def runner_actions(tmp_path, repo, files):

@@ -1012,13 +1012,19 @@ def test_a_long_line_of_anchors_doesnt_slow_the_block_scalar_check(repo, tmp_pat
     # Finding a block scalar's header was quadratic in a line of "&- " tokens (mpaulosky/dotfiles#203).
     runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
     steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
-    crafted = "      # " + "&- " * 30000 + "x\n"
-    repo.base = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # a\n"})
-    head = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # b\n"})
-    started = time.monotonic()
-    repo.split(repo.base, head, tmp_path)
-    assert time.monotonic() - started < 5
-    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+    # A comment line, and a real header whose anchors and tags reach the loop that pops them.
+    crafted = ["      # " + "&- " * 30000 + "x\n",
+               "      key: " + "&a !t " * 15000 + "|\n        text\n"]
+    for n, line in enumerate(crafted):
+        case = Repo(tmp_path / f"case{n}")
+        case.workspace = repo.workspace
+        case.base = case.commit({".github/workflows/ci.yml": steps + line + "      # a\n"})
+        head = case.commit({".github/workflows/ci.yml": steps + line + "      # b\n"})
+        (tmp_path / f"run{n}").mkdir()
+        started = time.monotonic()
+        case.split(case.base, head, tmp_path / f"run{n}")
+        assert time.monotonic() - started < 5, n
+        assert not [header for header in headers(case) if header.startswith("_actions/")], (n, headers(case))
 
 
 def test_a_comment_after_a_list_items_block_scalar_is_still_a_comment(repo, tmp_path):

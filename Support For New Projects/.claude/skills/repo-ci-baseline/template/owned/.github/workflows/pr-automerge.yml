@@ -1000,9 +1000,11 @@ jobs:
                 });
                 const remover = lastChange?.actor?.login ?? "";
                 if (lastChange?.event === "unlabeled" && remover.replace(/\[bot\]$/, "") !== "github-actions") {
-                  core.info(
-                    `Not calling in Claude for PR #${pullNumber}: Copilot couldn't review ${head}, but ` +
-                    `@${remover || "unknown"} took ${CLAUDE_LABEL} off, so it's theirs to add back.`
+                  // A notice: no review of this head is coming, so the PR
+                  // waits for its owner (mpaulosky/dotfiles#215).
+                  core.notice(
+                    `PR #${pullNumber}: Copilot couldn't review ${head}, and @${remover || "unknown"} took ` +
+                    `${CLAUDE_LABEL} off, so add it back or review and merge it by hand.`
                   );
                   return;
                 }

@@ -37,7 +37,7 @@ import {
   GATE_FIXER_ATTEMPTS,
 } from "./config.mts";
 import { UncountedStopError } from "./errors.mts";
-import type { CheckState, PassTarget } from "./follow-up.mts";
+import { withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
   failedCheckLogs,
@@ -800,10 +800,11 @@ function planPass(
   // with nothing behind it to act on, and sending it to the follow-up role
   // anyway would only start a run with no log to fix from, over and over
   // every sweep (#79). A thread about the same alert, if the owner or a bot
-  // opens one, still reaches the role as a bot or owner thread.
+  // opens one, still reaches the role as a bot or owner thread. Sandcastle's
+  // own check is left out as the sweep leaves it out (withoutOwnCheck, #222).
   const checksRead = host.checks(target.number);
   if (checksRead.headRefOid !== target.headRefOid) return skip("its checks were read from a commit other than its head");
-  const checks = checksRead.checks;
+  const checks = withoutOwnCheck(checksRead.checks);
   const redChecks = checks.some((check) => !check.completed) ? [] : checks.filter((check) => !check.green && check.runId !== undefined);
   // Only a needed merge, a bot thread or a red check starts a pass. One with
   // only owner threads keeps the sweep's rule that human threads alone don't

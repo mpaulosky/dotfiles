@@ -290,7 +290,7 @@ export const COPILOT_REREQUEST_AFTER_MS = 60 * 60 * 1000;
 // SANDCASTLE_WORKFLOW below. A run started
 // by a pull_request_review or unlabeled event reports it on the head of the
 // PR it sweeps, so the sweep and the follow-up pass leave it out
-// (lib/follow-up.mts#withoutOwnCheck): running, it would hold the PR that
+// (withoutOwnCheck below): running, it would hold the PR that
 // started the run, and red after a hand-back, it would send the follow-up
 // role Sandcastle's own job log (#222).
 export const SANDCASTLE_CHECK = "Sandcastle";
@@ -300,6 +300,16 @@ export const SANDCASTLE_CHECK = "Sandcastle";
 // only when this workflow reported it, so a check of that name from another
 // workflow still counts.
 export const SANDCASTLE_WORKFLOW = "Sandcastle";
+
+// `checks` without the Sandcastle workflow's own check run (SANDCASTLE_CHECK),
+// which a run started by a PR event reports on the head it sweeps. Counting
+// it, the sweep would wait on the very run deciding, and after a red run
+// would flag the PR for a pass that's handed Sandcastle's own job log, with
+// nothing in the PR to fix (#222). A check of that name from any other
+// workflow is a real one and stays.
+export function withoutOwnCheck<T extends { name: string; workflow?: string }>(checks: readonly T[]): T[] {
+  return checks.filter((check) => !(check.name === SANDCASTLE_CHECK && check.workflow === SANDCASTLE_WORKFLOW));
+}
 
 // Marks the follow-up pass's summary PR comment (lib/follow-up-pass.mts), so
 // markerComments can count passes already run toward FOLLOW_UP_PASS_CAP

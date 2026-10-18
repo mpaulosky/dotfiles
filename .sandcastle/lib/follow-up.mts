@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { discardClosedWork, isIssueBranch, type BranchRefs } from "./branches.mts";
-import { COPILOT_REREQUEST_AFTER_MS, PR_MARKER, SANDCASTLE_CHECK, SANDCASTLE_WORKFLOW } from "./config.mts";
+import { COPILOT_REREQUEST_AFTER_MS, PR_MARKER, withoutOwnCheck } from "./config.mts";
 import {
   addPullRequestLabel,
   closedPullRequests,
@@ -44,15 +44,8 @@ import { outcomeReport, waitingPrReport, type OutcomeReport, type WaitingPrEntry
 // or a check run another app made, has none.
 export type CheckState = { name: string; completed: boolean; green: boolean; completedAt: string | null; workflow?: string };
 
-// `checks` without the Sandcastle workflow's own check run (SANDCASTLE_CHECK),
-// which a run started by a PR event reports on the head it sweeps. Counting
-// it, the sweep would wait on the very run deciding, and after a red run
-// would flag the PR for a pass that's handed Sandcastle's own job log, with
-// nothing in the PR to fix (#222). A check of that name from any other
-// workflow is a real one and stays.
-export function withoutOwnCheck<T extends { name: string; workflow?: string }>(checks: readonly T[]): T[] {
-  return checks.filter((check) => !(check.name === SANDCASTLE_CHECK && check.workflow === SANDCASTLE_WORKFLOW));
-}
+// Re-exported so the sweep's callers keep importing it from here.
+export { withoutOwnCheck };
 
 // An open PR with everything the sweep decides from, normalised from one
 // paginated GraphQL query (lib/github.mts#openPullRequestsForSweep).

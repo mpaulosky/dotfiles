@@ -1291,6 +1291,18 @@ describe("head checks and their runs", () => {
       );
     });
 
+    // #222
+    it("doesn't re-run Sandcastle's own run, only a check of that name from another workflow", () => {
+      const { calls, run } = gh([checkRun("Sandcastle", "FAILURE", 22, "CI"), checkRun("Sandcastle", "FAILURE", 23, "Sandcastle")]);
+
+      rerunFailedChecksOnce(7, ["Sandcastle"], HEAD_OID, run, "o/r");
+
+      assert.deepEqual(
+        calls.filter((args) => args[0] === "run"),
+        [["run", "rerun", "22", "--failed", "--repo", "o/r"]],
+      );
+    });
+
     it("doesn't re-run a run already on a later attempt: its checks are reported as they stand", () => {
       const { calls, run } = gh([checkRun("Tests: A", "FAILURE", 21)], { 21: 2 });
 
@@ -1349,6 +1361,24 @@ describe("head checks and their runs", () => {
       );
       assert.match(log, /Analyze \(csharp\), Analyze \(actions\)/);
       assert.match(log, /##\[error\] CS8600/);
+    });
+
+    // #222: a red `Sandcastle` check from the Sandcastle workflow is its own run's.
+    it("leaves out the log of Sandcastle's own check, keeping a check of that name from another workflow", () => {
+      const { calls, run } = gh(
+        [checkRun("Sandcastle", "FAILURE", 41, "CI"), checkRun("Sandcastle", "FAILURE", 42, "Sandcastle")],
+        {},
+        { 41: "##[error] real failure", 42: "##[error] hand-back" },
+      );
+
+      const log = failedCheckLogs(7, ["Sandcastle"], HEAD_OID, run, "o/r");
+
+      assert.deepEqual(
+        calls.filter((args) => args[0] === "run"),
+        [["run", "view", "41", "--log-failed", "--repo", "o/r"]],
+      );
+      assert.match(log, /real failure/);
+      assert.doesNotMatch(log, /hand-back/);
     });
 
     it("says a check has no Actions log rather than failing the pass", () => {

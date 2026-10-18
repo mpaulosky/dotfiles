@@ -934,7 +934,7 @@ def test_the_pins_check_reads_a_comment_only_edit_as_text_whatever_the_prs_gitat
     assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
 
 
-def test_an_action_pinned_by_two_changed_workflows_is_read_once(repo, tmp_path):
+def test_an_action_pinned_by_two_changed_workflows_is_listed_once_credited_to_the_first(repo, tmp_path):
     runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
     steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n      - uses: anthropics/act@v1\n"
     head = repo.commit({".github/workflows/a.yml": steps, ".github/workflows/b.yml": steps})

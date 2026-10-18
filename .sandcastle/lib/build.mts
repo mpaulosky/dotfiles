@@ -280,7 +280,8 @@ export type BuildHost = {
   // from `base` to `commit` publish, against one of the sandbox's secrets or
   // a token shape, or undefined when nothing matches. Carries only where the
   // match sits and what kind it is, never the matched text, so logging or
-  // reporting it never risks the secret itself (#324).
+  // reporting it never risks the secret itself (#324). `mergedMain` is the
+  // main commit syncWithMain merged in, whose history isn't scanned (#224).
   leaksSecret(base: string, commit: string, mergedMain?: string): SecretMatch | undefined;
   // Deletes the refs of `branch` that still hold the work of the issue's
   // latest Sandcastle PR, when that PR was closed without merging and a
@@ -305,7 +306,8 @@ export type BuildHost = {
   // runRoleInSandbox(..., host.limits), and checks it before publishing.
   limits: RunLimits;
   // The .github/workflows/ files the commits from `base` to `commit` touch,
-  // for the hand-back comment of a push GitHub refused for them.
+  // for the hand-back comment of a push GitHub refused for them, leaving out
+  // the history of `mergedMain`, the main commit syncWithMain merged in (#224).
   workflowFiles(base: string, commit: string, mergedMain?: string): string[];
   // Hands the issue back with sandcastle:needs-human after a push GitHub
   // refused for a .github/workflows/** change (lib/handback.mts#handBackWorkflowChange).
@@ -329,8 +331,11 @@ export function publicErrorText(text: string, holdsSecret: (text: string) => boo
 // creates or updates a workflow file, even one a later commit reverts, so the
 // files come from the commits (a two-dot range: the branch side only), not
 // from the net diff, which would list nothing for an edit and its revert.
-export function workflowLogArgs(from: string, to: string, _mergedMain?: string): string[] {
-  return ["log", "--name-only", "--format=", `${from}..${to}`, "--", ".github/workflows/"];
+// With `mergedMain`, the main commit merged into the branch after `from`, its
+// history is left out too: main's workflow changes aren't the branch's (#224).
+export function workflowLogArgs(from: string, to: string, mergedMain?: string): string[] {
+  const exclude = mergedMain === undefined ? [] : [`^${mergedMain}`];
+  return ["log", "--name-only", "--format=", `${from}..${to}`, ...exclude, "--", ".github/workflows/"];
 }
 
 // The files in workflowLogArgs' output, each once, in first-seen order.
@@ -386,7 +391,7 @@ const liveHost: BuildHost = {
   latestDesignNote: (issueNumber) => latestDesignNote(issueNumber),
   markBuilding: (issueNumber) => claimBuildingLabel(issueNumber),
   unmarkBuilding: (issueNumber) => releaseBuildingLabel(issueNumber),
-  leaksSecret: (base, commit) => firstSecretMatch(base, commit, sandboxSecrets()),
+  leaksSecret: (base, commit, mergedMain) => firstSecretMatch(base, commit, sandboxSecrets(), git, mergedMain),
   startFromMain: (issueNumber, branch, base) => sweepStartFromMain(issueNumber, branch, base),
   publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), containsSandboxSecret),
   publish,
@@ -394,7 +399,7 @@ const liveHost: BuildHost = {
   worktreeProblems,
   log: console.log,
   limits: runLimits,
-  workflowFiles: (from, to) => workflowFilesFrom(git(...workflowLogArgs(from, to))),
+  workflowFiles: (from, to, mergedMain) => workflowFilesFrom(git(...workflowLogArgs(from, to, mergedMain))),
   handBackWorkflowChange: (issueNumber, branch, detail, change) => handBackWorkflowChange(issueNumber, branch, detail, change),
 };
 
@@ -703,13 +708,15 @@ async function buildMarkedIssue(
   // already behind it: a build can take an hour, and Sandcastle pushes with
   // hooks off, so the pre-push hook's behind-main check never runs on it.
   // Returns the reviewed commit the merge went onto, so checkpoint 2 can fall
-  // back to it, or undefined when nothing was merged. A merge that conflicts
+  // back to it, and the main commit it merged, so the secret scan and the
+  // workflow listing can leave main's own commits out (#224), or undefined
+  // when nothing was merged. A merge that conflicts
   // is aborted and the branch published as it is: the follow-up pass
   // (lib/follow-up-pass.mts) merges main into a conflicted PR with a role to
   // resolve it. A failed fetch publishes without the merge too, since the
   // work is already reviewed and the follow-up pass updates a PR behind main.
   // Throws when an aborted merge can't be undone.
-  async function syncWithMain(): Promise<string | undefined> {
+  async function syncWithMain(): Promise<{ reviewedHead: string; mergedMain: string } | undefined> {
     let main: string;
     try {
       main = host.latestMain();
@@ -728,7 +735,7 @@ async function buildMarkedIssue(
     const merge = await sandbox.exec(`git merge --no-edit -m ${shellWord(`Merge main into ${branch}`)} ${shellWord(main)}`);
     if (merge.exitCode === 0) {
       log("merged main in before checkpoint 2");
-      return reviewedHead;
+      return { reviewedHead, mergedMain: main };
     }
     if (!(await restoredTo(reviewedHead, "git merge --abort"))) {
       throw new Error(`the conflicting merge of main couldn't be undone, so ${branch} isn't back at ${reviewedHead}`);
@@ -742,19 +749,23 @@ async function buildMarkedIssue(
   // would publish unreviewed edits to repair what main broke, and a red main
   // would fail every build that ends while it's red. When that run is red,
   // the branch goes back to the reviewed commit and is gated as it would have
-  // been without the merge, leaving main to the follow-up pass.
-  async function checkpoint2Passes(): Promise<string | undefined> {
-    const reviewedHead = await syncWithMain();
-    if (reviewedHead !== undefined) {
+  // been without the merge, leaving main to the follow-up pass. Returns the
+  // commit the gate passed on, with the main commit merged into it when the
+  // merge stayed, or undefined when the gate failed.
+  async function checkpoint2Passes(): Promise<{ gated: string; mergedMain?: string } | undefined> {
+    const synced = await syncWithMain();
+    if (synced !== undefined) {
+      const { reviewedHead, mergedMain } = synced;
       const merged = await runGate(sandbox);
       log(`checkpoint 2: gate ${merged.passed ? "passed" : "failed"} with main merged in`);
-      if (merged.passed) return merged.head;
+      if (merged.passed) return merged.head === undefined ? undefined : { gated: merged.head, mergedMain };
       if (!(await restoredTo(reviewedHead, `git reset --hard ${shellWord(reviewedHead)}`))) {
         throw new Error(`the merge of main couldn't be undone, so ${branch} isn't back at ${reviewedHead}`);
       }
       log("main broke the gate once merged in, so it's left for the follow-up pass and the branch is gated without it");
     }
-    return gatePasses(2);
+    const gated = await gatePasses(2);
+    return gated === undefined ? undefined : { gated };
   }
 
   try {
@@ -816,15 +827,16 @@ async function buildMarkedIssue(
       reviewed = false;
     }
 
-    const gated = await checkpoint2Passes();
-    if (gated === undefined) return unpublished("gate failed", "checkpoint 2");
+    const checkpoint2 = await checkpoint2Passes();
+    if (checkpoint2 === undefined) return unpublished("gate failed", "checkpoint 2");
+    const { gated, mergedMain } = checkpoint2;
 
     // The push is public, and the sandbox holds the Claude token or API key.
     // The comment doesn't say where the secret is, since the issue is public
     // too. The log and the run report do (#324): the location names no part
     // of the secret, and without it nobody can tell a leak from a false
     // positive once the runner, the only holder of the commit, is gone.
-    const leak = host.leaksSecret(base, gated);
+    const leak = host.leaksSecret(base, gated, mergedMain);
     if (leak !== undefined) {
       const where = describeSecretMatch(leak);
       log(`✗ a commit holds a secret (${where}), so ${branch} isn't published.`);
@@ -862,7 +874,7 @@ async function buildMarkedIssue(
           // directory rather than each file.
           let files: string[] = [];
           try {
-            files = host.workflowFiles(base, gated);
+            files = host.workflowFiles(base, gated, mergedMain);
           } catch (listError) {
             console.error(`  ⚠ #${issue.number}: listing the workflow files ${branch} changes failed: ${listError}`);
           }

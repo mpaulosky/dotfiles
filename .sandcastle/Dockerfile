@@ -1,4 +1,6 @@
-FROM node:22-bookworm
+# trixie, not bookworm: the Template's Claude Review tests run git --attr-source,
+# which needs git 2.40 or later, and bookworm has 2.39.
+FROM node:22-trixie
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \

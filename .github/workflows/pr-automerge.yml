@@ -907,11 +907,16 @@ jobs:
                 });
                 const added = events.findLast((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL);
                 const since = added ? Date.parse(added.created_at) : -Infinity;
+                // actor, as Claude Review's condition reads github.actor: on a
+                // re-run it stays the original pusher, where triggering_actor
+                // is whoever re-ran it.
                 const byBot = (run) => {
-                  const login = run.triggering_actor?.login ?? run.actor?.login ?? "";
+                  const login = run.actor?.login ?? run.triggering_actor?.login ?? "";
                   return login.endsWith("[bot]") || login === "Copilot";
                 };
-                return runs.some((run) => Date.parse(run.created_at) > since && (held(run) || byBot(run)));
+                // At or after: GitHub's times are to the second, and a run the
+                // label itself started (a bot adding it) shares its second.
+                return runs.some((run) => Date.parse(run.created_at) >= since && (held(run) || byBot(run)));
               } catch (error) {
                 if (sweeping && endsRun(error)) {
                   throw error;

@@ -665,8 +665,8 @@ test("doesn't add review:claude when it's already on", async () => {
 test("says so when review:claude is on but Claude Review won't review the head (mpaulosky/dotfiles#209)", async () => {
   const labelledAt = "2026-10-18T10:00:00Z";
   const events = [{ ...labeledEvent(CLAUDE_LABEL, "octo"), created_at: labelledAt }];
-  const run = (login, conclusion, createdAt = "2026-10-18T11:00:00Z", status = "completed") => ({
-    status, conclusion, created_at: createdAt, triggering_actor: { login }
+  const run = (login, conclusion, createdAt = "2026-10-18T11:00:00Z", status = "completed", rerunBy = login) => ({
+    status, conclusion, created_at: createdAt, actor: { login }, triggering_actor: { login: rerunBy }
   });
   const pr = readyPr({ copilotReviews: DECLINED, labels: labelled(CLAUDE_LABEL) });
   const notices = (logs) => logs.filter((line) => line.startsWith("notice: PR #7") && line.includes("Claude Review won't"));
@@ -684,6 +684,10 @@ test("says so when review:claude is on but Claude Review won't review the head (
   await check("a held run reported by its status", [run("Copilot", null, undefined, "action_required")], true);
   await check("an app's push skipped", [run("renovate[bot]", "skipped"), run("octo", "skipped", "2026-10-18T09:00:00Z")], true);
   await check("Copilot's push skipped", [run("Copilot", "skipped")], true);
+  // A person's re-run of a bot's skipped run skips again: Claude Review goes by the original actor.
+  await check("a person's re-run of a bot's skip", [run("renovate[bot]", "skipped", undefined, "completed", "octo")], true);
+  // A bot adding the label starts a run in the same second as the label event.
+  await check("a bot's skip in the label's second", [run("renovate[bot]", "skipped", labelledAt)], true);
   // With no labeled event read, every skip counts; with several, the last one does.
   await check("no labeled event", [run("renovate[bot]", "skipped", "2026-10-18T09:00:00Z")], true, { events: [] });
   await check("relabelled after the bot's push", [run("renovate[bot]", "skipped")], false, {

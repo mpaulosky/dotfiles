@@ -873,7 +873,7 @@ def test_header_names_pr_automerge_among_what_adds_review_claude():
     """The header lists what adds review:claude. PR Auto-Merge does too, with the PAT."""
     header = []
     for line in WORKFLOW.read_text().splitlines():
-        if line.startswith("on:"):
+        if line.startswith(('"on":', "on:")):
             break
         if line.startswith("#"):
             header.append(line.lstrip("#").strip())

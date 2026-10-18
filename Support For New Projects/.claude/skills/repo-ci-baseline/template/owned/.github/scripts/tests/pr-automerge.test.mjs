@@ -2346,7 +2346,8 @@ test("runs on a push to main", () => {
 
 // The comments that say what the PAT and GITHUB_TOKEN do (mpaulosky/dotfiles#214).
 // A repo's owner sets up RELEASE_PR_PAT from them, so they must say the PAT
-// adds and removes review:claude and needs write access to do it.
+// adds review:claude and needs Pull requests (or Issues) write to do it, and
+// that GITHUB_TOKEN takes the label off.
 
 // The comment lines directly above the first line matching `anchor`, as one
 // string with the comment markers and line breaks removed.

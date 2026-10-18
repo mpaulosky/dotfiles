@@ -449,6 +449,7 @@ jobs:
           # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
           SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
           USES = re.compile(rf"""^\s*-?\s*uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""", re.M)
+          BLOCK_INDICATOR = re.compile(r"[|>][-+]?([1-9]?)[-+]?")
           PATH_RUN = re.compile(r"[\w.\-/]+")
           PATH_TAIL = re.compile(r".+\.\w+")  # a character before the dot: *.py names no file
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow
@@ -840,16 +841,85 @@ jobs:
 
           def changes_more_than_comments(base, head, path):
               """Whether the PR changes a line of path that isn't blank or a comment: a comment-only edit to a
-              workflow says nothing about the actions it pins. Attributes come from the base, as in the diff
-              above, so the PR's own .gitattributes can't hide its change; a diff with no lines to judge counts
-              as a change."""
+              workflow says nothing about the actions it pins. A # line inside a block scalar (a prompt's
+              heading, a script's private field) is content, judged by its own side of the diff. Attributes
+              come from the base, as in the diff above, so the PR's own .gitattributes can't hide its change;
+              a diff with no lines to judge counts as a change."""
               diff = git_out("--attr-source", base, "diff", "-U0", "--text", "--no-textconv", "--no-ext-diff",
                              "--no-renames", f"{base}...{head}", "--", path)
-              lines = [line for line in (diff or b"").decode("utf-8", "replace").splitlines()
-                       if line[:1] in ("+", "-") and not line.startswith(("+++", "---"))]
-              if not lines:
-                  return True
-              return any(line[1:].strip() and not line[1:].strip().startswith("#") for line in lines)
+              fork = (git_out("merge-base", base, head) or b"").decode().strip()
+              # No merge base, no base lines to place (an empty commit would read the index instead).
+              inside = {"-": block_scalar_lines(fork, path) if fork else set(), "+": block_scalar_lines(head, path)}
+              number, judged, in_hunk = {"-": 0, "+": 0}, False, False
+              # Lines end at \n only, as git numbers them; "+++" and "---" are headers only before the first hunk
+              # (a removed "---" document marker shows as "----").
+              for line in (diff or b"").decode("utf-8", "replace").split("\n"):
+                  line = line.removesuffix("\r")
+                  hunk = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+                  if hunk:
+                      number, in_hunk = {"-": int(hunk[1]), "+": int(hunk[2])}, True
+                      continue
+                  side = line[:1]
+                  if not in_hunk or side not in ("+", "-"):
+                      continue
+                  judged = True
+                  body = line[1:].strip()
+                  if body and (not body.startswith("#") or number[side] in inside[side]):
+                      return True
+                  number[side] += 1
+              return not judged
+
+
+          def block_scalar_lines(commit, path):
+              """The numbers of path's lines at commit that sit inside a YAML block scalar (key: | or key: >):
+              after its header, every line that is blank or indented at least as far as its first non-blank
+              line, which must be deeper than the header's line. As YAML has it, so in "- run: |" a sibling
+              key's line is outside."""
+              text = (git_out("cat-file", "blob", f"{commit}:{path}") or b"").decode("utf-8", "replace")
+              inside, header, block = set(), None, None
+              for number, line in enumerate(text.split("\n"), 1):
+                  line = line.removesuffix("\r")
+                  indent = len(line) - len(line.lstrip(" \t"))
+                  if header is not None:
+                      if not line.strip():
+                          inside.add(number)
+                          continue
+                      if block is None and indent > header:
+                          block = indent
+                      if block is not None and indent >= block:
+                          inside.add(number)
+                          continue
+                  header, block = indent, None
+                  opened = block_scalar_header(line)
+                  if opened is None:
+                      header = None
+                  elif opened >= 0:
+                      block = opened
+              return inside
+
+
+          def block_scalar_header(line):
+              """Whether line opens a YAML block scalar ("key: |", "- >-", "run: |2 # note", "prompt: &p |": an
+              anchor or a tag may come before the indicator): None if not, else the block's indent when the
+              indicator fixes it (the key's column plus its digit), or -1 when its first line decides. By tokens,
+              not one pattern, which was quadratic in a crafted line."""
+              body = re.split(r"[ \t]#", line, maxsplit=1)[0]
+              tokens = [(match.start(), match.group()) for match in re.finditer(r"[^ \t]+", body)]
+              if not tokens:
+                  return None
+              indicator = BLOCK_INDICATOR.fullmatch(tokens[-1][1])
+              if not indicator:
+                  return None
+              rest = tokens[:-1]
+              while rest and rest[-1][1][:1] in ("!", "&"):
+                  rest.pop()
+              if rest and not (rest[-1][1].endswith(":") or rest[-1][1] == "-"):
+                  return None
+              if not indicator[1]:
+                  return -1
+              # The key's column: the first token that isn't a sequence dash, or the dash itself.
+              key = next((column for column, token in rest if token != "-"), rest[0][0] if rest else 0)
+              return key + int(indicator[1])
 
 
           def blob_reader(head, path, limit, blobs):

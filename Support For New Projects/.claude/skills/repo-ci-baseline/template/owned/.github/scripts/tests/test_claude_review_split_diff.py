@@ -955,6 +955,100 @@ def test_a_comment_only_edit_to_a_workflow_doesnt_follow_its_pins(repo, tmp_path
     ]
 
 
+def test_a_hash_line_inside_a_block_scalar_is_content_not_a_comment(repo, tmp_path):
+    # A heading in a prompt, a private field in a script, a line of a heredoc: what the action is given
+    # (mpaulosky/dotfiles#203), on whichever side of the diff the line is.
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    pins = "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)"
+
+    def workflow(prompt, script):
+        return ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n"
+                f"          prompt: |\n            {prompt}\n            Review it.\n"
+                f"          script: >-\n            {script}\n      # a comment\n")
+
+    cases = [(workflow("## Review", "#count = 0;"), workflow("## Check", "#count = 0;")),
+             (workflow("## Review", "#count = 0;"), workflow("## Review", "#count = 1;")),
+             # A pure deletion of the prompt's last line: only the base side is judged, and on the head side
+             # that line number is outside the block.
+             ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |\n"
+              "            Review it.\n            ## Review\n      # a comment\n",
+              "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |\n"
+              "            Review it.\n      # a comment\n"),
+             # An anchor or a tag before the indicator.
+             (workflow("## Review", "#count = 0;").replace("prompt: |", "prompt: &p |"),
+              workflow("## Check", "#count = 0;").replace("prompt: |", "prompt: &p |")),
+             (workflow("## Review", "#count = 0;").replace("script: >-", "script: !!str >-"),
+              workflow("## Review", "#count = 1;").replace("script: >-", "script: !!str >-")),
+             # An explicit indentation indicator: the block's indent is the key's plus 2, though its first line
+             # starts deeper.
+             ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |2\n"
+              "                deeper first line\n            ## Review\n      # a comment\n",
+              "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |2\n"
+              "                deeper first line\n            ## Check\n      # a comment\n"),
+             # CRLF line endings.
+             (workflow("## Review", "#count = 0;").replace("\n", "\r\n"),
+              workflow("## Check", "#count = 0;").replace("\n", "\r\n"))]
+    for n, (old, new) in enumerate(cases):
+        case = Repo(tmp_path / f"case{n}")
+        case.workspace = repo.workspace
+        case.base = case.commit({".github/workflows/ci.yml": old.encode()})
+        head = case.commit({".github/workflows/ci.yml": new.encode()})
+        (tmp_path / f"run{n}").mkdir()
+        case.split(case.base, head, tmp_path / f"run{n}")
+        assert pins in headers(case), (n, headers(case))
+
+
+def test_a_comment_after_a_block_scalar_ends_is_still_a_comment(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n"
+             "          prompt: |\n            Review it.\n")
+    repo.base = repo.commit({".github/workflows/ci.yml": steps + "      # old note\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + "      # new note\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
+def test_a_long_line_of_anchors_doesnt_slow_the_block_scalar_check(repo, tmp_path):
+    # Finding a block scalar's header was quadratic in a line of "&- " tokens (mpaulosky/dotfiles#203).
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    crafted = "      # " + "&- " * 30000 + "x\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # a\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # b\n"})
+    started = time.monotonic()
+    repo.split(repo.base, head, tmp_path)
+    assert time.monotonic() - started < 5
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
+def test_a_comment_after_a_list_items_block_scalar_is_still_a_comment(repo, tmp_path):
+    # In "- run: |" the block's indent is its first line's, not the dash's: a sibling's note is outside it.
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n      - run: |\n          echo hi\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps + "        # note about env\n        env:\n          A: 1\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + "        # new note\n        env:\n          A: 1\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
+def test_the_comment_check_reads_the_diff_by_newline_and_counts_a_removed_document_marker(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    # A comment holding U+0085, which str.splitlines() breaks at, before "-x": still only a comment.
+    one = Repo(tmp_path / "one")
+    one.workspace = repo.workspace
+    one.base = one.commit({".github/workflows/ci.yml": steps + "      # a\n"})
+    head = one.commit({".github/workflows/ci.yml": steps + "      # a\u0085-x\n"})
+    (tmp_path / "run1").mkdir()
+    one.split(one.base, head, tmp_path / "run1")
+    assert not [header for header in headers(one) if header.startswith("_actions/")], headers(one)
+    # Removing the "---" document marker shows as "----": a change, not a file header.
+    repo.base = repo.commit({".github/workflows/ci.yml": "---\n" + steps + "      # a\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + "      # b\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert any(header.startswith("_actions/") for header in headers(repo)), headers(repo)
+
+
 def test_the_pins_check_reads_a_comment_only_edit_as_text_whatever_the_prs_gitattributes_say(repo, tmp_path):
     # A diff git shows as binary, or one that fails, counts as a change and follows the pins; so this
     # comment-only edit is left unfollowed only when the check reads its lines as text.

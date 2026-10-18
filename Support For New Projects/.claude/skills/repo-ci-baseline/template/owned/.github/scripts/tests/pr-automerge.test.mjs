@@ -786,15 +786,16 @@ test("doesn't tell the owner there is no CI while a CI run for the head is held 
   }
 });
 
-test("doesn't count PR Review Submitted's or Claude Review's own held runs as held CI (mpaulosky/dotfiles#236)", async () => {
+test("doesn't count PR Review Submitted's, Claude Review's or this job's own held runs as held CI (mpaulosky/dotfiles#236)", async () => {
   const ownRuns = (shape) => [
     heldCiRun(shape, { id: 4, name: "PR Review Submitted", path: ".github/workflows/pr-review-submitted.yml" }),
-    heldCiRun(shape, { id: 5, name: "Claude Review", path: ".github/workflows/claude-review.yml" })
+    heldCiRun(shape, { id: 5, name: "Claude Review", path: ".github/workflows/claude-review.yml" }),
+    heldCiRun(shape, { id: 6, name: "PR Auto-Merge", path: ".github/workflows/pr-automerge.yml" })
   ];
   const settled = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
   const quiet = checksOn(HEAD, requiredCheck("Review with Claude", { isRequired: false, conclusion: "SKIPPED" }));
   for (const shape of ["status", "conclusion"]) {
-    // CI has reported: the held runs of those two workflows don't hold Claude back.
+    // CI has reported: the held runs of those workflows don't hold Claude back.
     const called = await evaluate(readyPr({ copilotReviews: DECLINED, headRef: settled }), [], {
       push: true,
       requiredChecks: [],

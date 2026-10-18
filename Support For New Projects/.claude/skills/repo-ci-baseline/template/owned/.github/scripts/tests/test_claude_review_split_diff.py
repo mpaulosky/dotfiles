@@ -974,6 +974,11 @@ def test_a_hash_line_inside_a_block_scalar_is_content_not_a_comment(repo, tmp_pa
               "            Review it.\n            ## Review\n      # a comment\n",
               "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |\n"
               "            Review it.\n      # a comment\n"),
+             # An anchor or a tag before the indicator.
+             (workflow("## Review", "#count = 0;").replace("prompt: |", "prompt: &p |"),
+              workflow("## Check", "#count = 0;").replace("prompt: |", "prompt: &p |")),
+             (workflow("## Review", "#count = 0;").replace("script: >-", "script: !!str >-"),
+              workflow("## Review", "#count = 1;").replace("script: >-", "script: !!str >-")),
              # CRLF line endings.
              (workflow("## Review", "#count = 0;").replace("\n", "\r\n"),
               workflow("## Check", "#count = 0;").replace("\n", "\r\n"))]

@@ -449,8 +449,9 @@ jobs:
           # No segment is "." or ".." (".github" is fine), so the action stays inside _actions.
           SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
           USES = re.compile(rf"""^\s*-?\s*uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""", re.M)
-          # A line that opens a YAML block scalar: "key: |", "- >-", "run: |2 # note".
-          BLOCK_SCALAR = re.compile(r"(?:^|:|-)[ \t]+[|>][-+0-9]*[ \t]*(?:#.*)?$")
+          # A line that opens a YAML block scalar: "key: |", "- >-", "run: |2 # note", "prompt: &p |" (an anchor
+          # or a tag may come before the indicator).
+          BLOCK_SCALAR = re.compile(r"(?:^|:|-)[ \t]+(?:[!&][^ \t]*[ \t]+)*[|>][-+0-9]*[ \t]*(?:#.*)?$")
           PATH_RUN = re.compile(r"[\w.\-/]+")
           PATH_TAIL = re.compile(r".+\.\w+")  # a character before the dot: *.py names no file
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow

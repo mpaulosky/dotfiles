@@ -827,7 +827,9 @@ jobs:
                           stems.append((path, stem))
                   # One grep for all the stems, not one each: a PR of hundreds of files ran hundreds (mpaulosky/dotfiles#212).
                   found = users_of(head, {stem for _, stem in stems})
-                  for path, stem in stems:
+                  # A user is credited to a followed changed file before one no one follows: "import config" names
+                  # config.py, not config.json beside it.
+                  for path, stem in sorted(stems, key=lambda item: not followed(item[0])):
                       users = [p for p in found.get(stem, []) if p in blobs and p != path and followed(p)]
                       if len(users) <= MAX_CONTEXT_USERS:  # more, and the name is too common to say anything
                           named_by += [(user, f"names {path}") for user in users]

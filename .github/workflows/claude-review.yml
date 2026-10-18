@@ -855,14 +855,15 @@ jobs:
 
           def users_of(head, stems):
               """For each stem, the files at head that hold it as a whole word, from one git grep: with -F -w, each
-              -o match is exactly one stem. The stems go in a file, so thousands of them fit. Raises on a failed or
-              timed-out grep."""
+              -o match is exactly one stem. The stems go in a file, so thousands of them fit. A binary file is read
+              as text (-a), as git otherwise says "Binary file ... matches" for it, with no \\0 after its name.
+              Raises on a failed or timed-out grep."""
               if not stems:
                   return {}
               with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".stems") as patterns:
                   patterns.write("".join(f"{stem}\n" for stem in stems))
                   patterns.flush()
-                  done = subprocess.run(["git", "-c", "core.quotePath=false", "grep", "-o", "-z", "-w", "-F", "-f",
+                  done = subprocess.run(["git", "-c", "core.quotePath=false", "grep", "-a", "-o", "-z", "-w", "-F", "-f",
                                          patterns.name, head, "--"], capture_output=True, timeout=USERS_TIMEOUT)
               if done.returncode == 1:  # nothing matched
                   return {}

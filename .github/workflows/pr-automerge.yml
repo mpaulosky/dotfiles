@@ -261,6 +261,7 @@ jobs:
                                      name
                                      status
                                      conclusion
+                                     completedAt
                                      isRequired(pullRequestNumber: $number)
                                    }
                                    ... on StatusContext {
@@ -866,14 +867,37 @@ jobs:
               return failed.length > 0 ? `checks failed: ${failed.join(", ")}` : null;
             }
 
-            // Every run of Claude Review's first job on the head skipped it,
-            // as its condition does for a push by a bot or Copilot: no review
-            // of this head is coming while the label stays on.
-            function claudeSkippedHead(pr) {
+            // Every run of Claude Review's first job on the head skipped it, as
+            // its condition does for a push by a bot or Copilot, and one did
+            // since the label was last added: no review of this head is coming
+            // while the label stays on. A skip from before then (the push the
+            // label came after) doesn't count, as the labeled run's check may
+            // not show yet.
+            async function claudeSkippedSinceLabel(pullNumber, pr) {
               const runs = (headCommit(pr)?.statusCheckRollup?.contexts?.nodes ?? []).filter((check) => {
                 return check.__typename === "CheckRun" && check.name === CLAUDE_CHECKS[0];
               });
-              return runs.length > 0 && runs.every((check) => check.status === "COMPLETED" && check.conclusion === "SKIPPED");
+              if (runs.length === 0 || !runs.every((check) => check.status === "COMPLETED" && check.conclusion === "SKIPPED")) {
+                return false;
+              }
+              let events;
+              try {
+                events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100
+                });
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
+                }
+                core.warning(`Couldn't read PR #${pullNumber}'s label events, so can't tell whether Claude Review skipped it: ${error.message}`);
+                return false;
+              }
+              const added = events.findLast((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL);
+              const since = added ? Date.parse(added.created_at) : -Infinity;
+              return runs.some((check) => Date.parse(check.completedAt ?? "") > since);
             }
 
             // Copilot answered the head with its quota note, so no review of
@@ -889,19 +913,6 @@ jobs:
               if (!declined) {
                 return;
               }
-              if (pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
-                // The label is on, so Claude Review runs on each push, but its
-                // first job skips a push by a bot or Copilot: a notice, as no
-                // review of this head is coming (mpaulosky/dotfiles#209).
-                if (claudeSkippedHead(pr)) {
-                  core.notice(
-                    `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review skipped it ` +
-                    `(it doesn't review a push by a bot or Copilot), so push to it, or take ${CLAUDE_LABEL} off ` +
-                    `and add it back.`
-                  );
-                }
-                return;
-              }
               // Claude Review skips Dependabot's PRs (its merge-from-main job's
               // condition), so the label would bring no review: a notice, as no
               // review of this head is coming and the PR waits for its owner.
@@ -910,6 +921,19 @@ jobs:
                   `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review doesn't review ` +
                   `Dependabot's PRs, so review and merge it by hand.`
                 );
+                return;
+              }
+              if (pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+                // The label is on, so Claude Review runs on each push, but its
+                // first job skips a push by a bot or Copilot: a notice, as no
+                // review of this head is coming (mpaulosky/dotfiles#209).
+                if (await claudeSkippedSinceLabel(pullNumber, pr)) {
+                  core.notice(
+                    `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review skipped it ` +
+                    `(it doesn't review a push by a bot or Copilot), so push to it, or take ${CLAUDE_LABEL} off ` +
+                    `and add it back.`
+                  );
+                }
                 return;
               }
               const head = pr.headRefOid;

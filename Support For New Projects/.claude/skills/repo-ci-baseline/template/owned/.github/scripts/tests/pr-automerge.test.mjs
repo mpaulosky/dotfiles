@@ -646,34 +646,44 @@ test("doesn't add review:claude when it's already on", async () => {
   assert.deepEqual(addedLabels, []);
 });
 
-test("says so when review:claude is on but Claude Review skipped the head, as it does a bot's push (mpaulosky/dotfiles#209)", async () => {
-  const skipped = { status: "COMPLETED", conclusion: "SKIPPED", isRequired: false };
+test("says so when review:claude is on but Claude Review skipped the head since, as it does a bot's push (mpaulosky/dotfiles#209)", async () => {
+  const labelledAt = "2026-10-18T10:00:00Z";
+  const events = [{ ...labeledEvent(CLAUDE_LABEL, "octo"), created_at: labelledAt }];
+  const skipped = (at, databaseId) => requiredCheck("Check for a merge from main", {
+    status: "COMPLETED", conclusion: "SKIPPED", isRequired: false, completedAt: at, databaseId
+  });
   const notices = (logs) => logs.filter((line) => line.startsWith("notice: PR #7") && line.includes("Claude Review skipped it"));
-  const onHead = (...claudeRuns) => readyPr({
+  const onHead = (claudeRuns, overrides = {}) => readyPr({
     copilotReviews: DECLINED,
     labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution"), ...claudeRuns)
+    headRef: checksOn(HEAD, requiredCheck("Build Solution"), ...claudeRuns),
+    ...overrides
   });
 
-  // A bot's push, and a skip for another label being added: no review is coming.
-  const stalled = await evaluate(onHead(
-    requiredCheck("Check for a merge from main", { ...skipped, databaseId: 2 }),
-    requiredCheck("Check for a merge from main", { ...skipped, databaseId: 3 })
-  ));
+  // A bot's push after the label went on, beside the skip from the push it came after: no review is coming.
+  const stalled = await evaluate(onHead([skipped("2026-10-18T09:00:00Z", 2), skipped("2026-10-18T11:00:00Z", 3)]), events);
   assert.deepEqual(stalled.addedLabels, []);
   assert.equal(notices(stalled.logs).length, 1, stalled.logs.join("\n"));
 
-  // One run that didn't skip means a review is on its way, or done; none at all, that Claude Review hasn't started.
-  for (const claudeRuns of [
-    [requiredCheck("Check for a merge from main", { ...skipped, databaseId: 2 }),
-     requiredCheck("Check for a merge from main", { isRequired: false, status: "IN_PROGRESS", conclusion: null, databaseId: 3 })],
-    [requiredCheck("Check for a merge from main", { isRequired: false, databaseId: 2 })],
-    []
+  for (const [why, claudeRuns] of [
+    // Only the skip from before the label: the labeled run's check may not show yet.
+    ["skipped only before the label", [skipped("2026-10-18T09:00:00Z", 2)]],
+    // One run that didn't skip: a review is on its way, or done.
+    ["one run still going", [skipped("2026-10-18T11:00:00Z", 2),
+      requiredCheck("Check for a merge from main", { isRequired: false, status: "IN_PROGRESS", conclusion: null, databaseId: 3 })]],
+    ["one run done", [requiredCheck("Check for a merge from main", { isRequired: false, databaseId: 2 })]],
+    // No run at all: Claude Review hasn't started.
+    ["no run yet", []]
   ]) {
-    const { addedLabels, logs } = await evaluate(onHead(...claudeRuns));
-    assert.deepEqual(addedLabels, []);
-    assert.deepEqual(notices(logs), [], logs.join("\n"));
+    const { addedLabels, logs } = await evaluate(onHead(claudeRuns), events);
+    assert.deepEqual(addedLabels, [], why);
+    assert.deepEqual(notices(logs), [], `${why}\n${logs.join("\n")}`);
   }
+
+  // Dependabot's PR gets the by-hand notice instead: Claude Review skips it whoever pushes or relabels it.
+  const dependabot = await evaluate(onHead([skipped("2026-10-18T11:00:00Z", 2)], { author: { login: "dependabot[bot]" } }), events);
+  assert.deepEqual(notices(dependabot.logs), [], dependabot.logs.join("\n"));
+  assert.ok(dependabot.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("by hand")), dependabot.logs.join("\n"));
 });
 
 test("stops calling in Claude after MAX_CLAUDE_ROUNDS of its reviews, and leaves it to the owner", async () => {

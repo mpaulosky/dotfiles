@@ -690,22 +690,21 @@ async function fixesInPush(
   return { kept, unverified };
 }
 
-// Whether `checkName` is a job scripts/gate.sh actually runs: the build and
-// test jobs in ci.yml ("Build Solution", and "Tests: <project>" for each
-// matrix entry) and the lint jobs in lint-markdown.yml ("markdownlint") and
-// lint-yaml.yml ("yamllint"). Every other check on a PR's head, CodeQL's
-// "Analyze" jobs included, isn't: the gate never runs it, so a pass can't
-// tell whether it's a real failure or a flaky one by gating alone (see "Red
-// CI" in docs/plans/sandcastle-workflow.md). ci.yml's "Test Suite" counts
-// as covered too: it only reports the test jobs' results, so it's red exactly
-// when one of them is, and `gh run rerun --failed` re-runs it with them.
+// Whether `checkName` is a job scripts/gate.sh actually runs: dotfiles'
+// "Template tests" in repo-ci-baseline.yml, which runs test.sh and the
+// Sandcastle check, as the gate does. Every other check on a PR's head
+// (Claude Review's and PR Auto-Merge's jobs, code scanning's) isn't: the gate
+// never runs it, so a pass can't tell whether it's a real failure or a flaky
+// one by gating alone (see "Red CI" in Blazor-Server's
+// docs/plans/sandcastle-workflow.md).
 export function isGateCovered(checkName: string): boolean {
-  return GATE_COVERED_CHECKS.has(checkName) || /^Tests: \S/.test(checkName);
+  return GATE_COVERED_CHECKS.has(checkName);
 }
 
-// The check names isGateCovered matches exactly; ci.yml's test matrix jobs
-// ("Tests: <project>") are matched by their prefix.
-const GATE_COVERED_CHECKS = new Set(["Build Solution", "Test Suite", "markdownlint", "yamllint"]);
+// The check names isGateCovered matches. Blazor-Server's are its own build,
+// test and lint jobs; a rename of the job in repo-ci-baseline.yml must
+// change this too.
+const GATE_COVERED_CHECKS = new Set(["Template tests"]);
 
 // What a pass does about a PR's red checks (planPass's `redChecks`),
 // decided from whether `scripts/gate.sh` reproduced a failure on the head

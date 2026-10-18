@@ -65,7 +65,7 @@ function passTarget(overrides: Partial<PassTarget> = {}): PassTarget {
 // override just the fields their scenario needs. A check's runId is what a
 // pass can re-run or forward (see runlessCheck for one with none, #79).
 function redCheck(overrides: Partial<HeadCheck> = {}): HeadCheck {
-  return { name: "Build Solution", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z", runId: 1001, ...overrides };
+  return { name: "Template tests", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z", runId: 1001, ...overrides };
 }
 
 // A red check with no Actions run behind it, such as code scanning's own
@@ -574,13 +574,23 @@ describe("giveUpComment", () => {
 // Acceptance criterion: "The decision between fix, re-run and CodeQL is unit
 // tested with stubbed check data."
 describe("isGateCovered", () => {
-  for (const name of ["Build Solution", "Tests: Domain.Tests.Unit", "Tests: Architecture.Tests", "markdownlint", "yamllint"]) {
-    it(`treats "${name}" as a job scripts/gate.sh reproduces`, () => {
-      assert.equal(isGateCovered(name), true);
-    });
-  }
+  it(`treats "Template tests" as the job scripts/gate.sh reproduces`, () => {
+    assert.equal(isGateCovered("Template tests"), true);
+  });
 
-  for (const name of ["Analyze (csharp)", "Analyze (actions)", "Analyze", "Python tests", "Hook tests", "Docs-only label"]) {
+  // Blazor-Server's jobs, which dotfiles hasn't got, and dotfiles' checks
+  // that gate.sh doesn't run.
+  for (const name of [
+    "Build Solution",
+    "Tests: Domain.Tests.Unit",
+    "Test Suite",
+    "markdownlint",
+    "yamllint",
+    "Review with Claude",
+    "Check for a merge from main",
+    "Merge same-repo PRs when ready",
+    "Analyze (actions)",
+  ]) {
     it(`treats "${name}" as a check scripts/gate.sh doesn't reproduce`, () => {
       assert.equal(isGateCovered(name), false);
     });
@@ -589,7 +599,7 @@ describe("isGateCovered", () => {
 
 describe("planRedCi", () => {
   it("fixes a build the gate reproduces, regardless of which checks are red", () => {
-    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Build Solution" })]);
+    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Template tests" })]);
 
     assert.deepEqual(plan, { fix: true, rerun: [], forward: [] });
   });
@@ -601,9 +611,9 @@ describe("planRedCi", () => {
   });
 
   it("re-runs a gate-covered check once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Tests: Domain.Tests.Unit" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" })]);
 
-    assert.deepEqual(plan, { fix: false, rerun: ["Tests: Domain.Tests.Unit"], forward: [] });
+    assert.deepEqual(plan, { fix: false, rerun: ["Template tests"], forward: [] });
   });
 
   it("forwards a check the gate doesn't cover once the gate is green", () => {
@@ -613,9 +623,9 @@ describe("planRedCi", () => {
   });
 
   it("sorts red checks of both kinds into rerun and forward once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Build Solution" }), redCheck({ name: "Analyze (csharp)" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" }), redCheck({ name: "Analyze (csharp)" })]);
 
-    assert.deepEqual(plan, { fix: false, rerun: ["Build Solution"], forward: ["Analyze (csharp)"] });
+    assert.deepEqual(plan, { fix: false, rerun: ["Template tests"], forward: ["Analyze (csharp)"] });
   });
 
   it("does nothing when the gate is green and no check is red", () => {
@@ -1557,10 +1567,10 @@ describe("runPass's red CI handling", () => {
       threads: [],
       containsBase: true,
       sandbox,
-      checks: [redCheck({ name: "Build Solution" })],
+      checks: [redCheck({ name: "Template tests" })],
     });
 
-    const outcome = await runPass(passTarget({ reasons: ["check Build Solution is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
 
     assert.equal(outcome.kind, "passed");
     assert.ok(sandbox.runs.some((run) => run.name === "gate-fixer"), "the gate-fixer ran");
@@ -1575,14 +1585,14 @@ describe("runPass's red CI handling", () => {
       threads: [],
       containsBase: true,
       sandbox,
-      checks: [redCheck({ name: "Tests: Domain.Tests.Unit" })],
-      rerunResult: [redCheck({ name: "Tests: Domain.Tests.Unit", green: true })],
+      checks: [redCheck({ name: "Template tests" })],
+      rerunResult: [redCheck({ name: "Template tests", green: true })],
     });
 
-    const outcome = await runPass(passTarget({ reasons: ["check Tests: Domain.Tests.Unit is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
 
     assert.deepEqual(outcome, { kind: "passed", pushed: undefined });
-    assert.deepEqual(calls.rerunFailedChecks, [{ pr: PR_NUMBER, checkNames: ["Tests: Domain.Tests.Unit"], expectedHead: HEAD }]);
+    assert.deepEqual(calls.rerunFailedChecks, [{ pr: PR_NUMBER, checkNames: ["Template tests"], expectedHead: HEAD }]);
     assert.equal(sandbox.runs.length, 0, "no role ran: nothing in the branch needed changing");
     assert.deepEqual(calls.push, []);
   });
@@ -1595,16 +1605,16 @@ describe("runPass's red CI handling", () => {
       threads: [],
       containsBase: true,
       sandbox,
-      checks: [redCheck({ name: "Tests: Domain.Tests.Unit" })],
-      rerunResult: [redCheck({ name: "Tests: Domain.Tests.Unit" })],
+      checks: [redCheck({ name: "Template tests" })],
+      rerunResult: [redCheck({ name: "Template tests" })],
     });
 
-    const outcome = await runPass(passTarget({ reasons: ["check Tests: Domain.Tests.Unit is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
 
     assert.equal(outcome.kind, "gave-up");
     assert.equal(calls.handBack.length, 1);
     const handBack = calls.handBack[0]!;
-    assert.match(`${handBack.reason}\n${handBack.body}`, /Tests: Domain\.Tests\.Unit/);
+    assert.match(`${handBack.reason}\n${handBack.body}`, /Template tests/);
     assert.deepEqual(calls.push, []);
   });
 
@@ -1679,11 +1689,11 @@ describe("runPass's red CI decisions", () => {
     const { passHost, calls } = passHostFake({
       threads: [],
       containsBase: true,
-      checks: [redCheck({ name: "Build Solution" })],
+      checks: [redCheck({ name: "Template tests" })],
       checksHeadRefOid: "f".repeat(40),
     });
 
-    const outcome = await runPass(passTarget({ reasons: ["check Build Solution is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
 
     assert.equal(outcome.kind, "skipped");
     assert.deepEqual(calls.createSandbox, []);
@@ -1692,10 +1702,10 @@ describe("runPass's red CI decisions", () => {
   it("leaves a PR alone while any of its checks is still running, red ones included", async () => {
     const { passHost, calls } = passHostFake({
       threads: [],
-      checks: [redCheck({ name: "Tests: Domain.Tests.Unit" }), redCheck({ name: "Analyze (csharp)", completed: false, completedAt: null })],
+      checks: [redCheck({ name: "Template tests" }), redCheck({ name: "Analyze (csharp)", completed: false, completedAt: null })],
     });
 
-    const outcome = await runPass(passTarget({ reasons: ["check Tests: Domain.Tests.Unit is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
 
     assert.equal(outcome.kind, "skipped");
     assert.deepEqual(calls.markBuilding, []);
@@ -1713,10 +1723,10 @@ describe("runPass's red CI decisions", () => {
       threads: [],
       containsBase: false,
       sandbox,
-      checks: [redCheck({ name: "Build Solution" })],
+      checks: [redCheck({ name: "Template tests" })],
     });
 
-    const outcome = await runPass(passTarget({ conflicted: false, reasons: ["check Build Solution is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ conflicted: false, reasons: ["check Template tests is red"] }), issue, BASE, passHost);
 
     const mergeIndex = sandbox.steps.findIndex((step) => step.startsWith("git merge "));
     const gateIndex = sandbox.steps.findIndex((step) => step === "scripts/gate.sh 2>&1");
@@ -1738,10 +1748,10 @@ describe("runPass's red CI decisions", () => {
       threads: [],
       containsBase: false,
       sandbox,
-      checks: [redCheck({ name: "Build Solution" })],
+      checks: [redCheck({ name: "Template tests" })],
     });
 
-    const outcome = await runPass(passTarget({ conflicted: false, reasons: ["check Build Solution is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ conflicted: false, reasons: ["check Template tests is red"] }), issue, BASE, passHost);
 
     const firstMergeIndex = sandbox.steps.findIndex((step) => step.startsWith("git merge "));
     const abortIndex = sandbox.steps.findIndex((step) => step === "git merge --abort");
@@ -1771,7 +1781,7 @@ describe("runPass's red CI decisions", () => {
       gateExitCodes: [0, 0],
       followUpJson: JSON.stringify([{ threadId: "RT_bot", verdict: "fixed", reason: "Done.", commit: ROLE_COMMIT }]),
     });
-    const { passHost, calls } = passHostFake({ threads: [botThread()], sandbox, checks: [redCheck({ name: "Tests: Domain.Tests.Unit" })] });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], sandbox, checks: [redCheck({ name: "Template tests" })] });
 
     const outcome = await runPass(passTarget(), issue, BASE, passHost);
 
@@ -1784,24 +1794,24 @@ describe("runPass's red CI decisions", () => {
     const { passHost, calls } = passHostFake({
       threads: [],
       sandbox,
-      checks: [redCheck({ name: "Tests: Domain.Tests.Unit" })],
-      rerunResult: [redCheck({ name: "Tests: Domain.Tests.Unit", completed: false, completedAt: null })],
+      checks: [redCheck({ name: "Template tests" })],
+      rerunResult: [redCheck({ name: "Template tests", completed: false, completedAt: null })],
     });
 
     await runPass(passTarget(), issue, BASE, passHost);
 
     assert.equal(calls.commentOnPullRequest.length, 1);
-    assert.match(calls.commentOnPullRequest[0]!.body, /Re-ran the failed jobs of Tests: Domain\.Tests\.Unit once/);
+    assert.match(calls.commentOnPullRequest[0]!.body, /Re-ran the failed jobs of Template tests once/);
   });
 
   it("gives up on a re-run check the answer leaves out, rather than taking it as green", async () => {
     const sandbox = sandboxFake({ gateExitCodes: [0] });
-    const { passHost, calls } = passHostFake({ threads: [], sandbox, checks: [redCheck({ name: "Build Solution" })], rerunResult: [] });
+    const { passHost, calls } = passHostFake({ threads: [], sandbox, checks: [redCheck({ name: "Template tests" })], rerunResult: [] });
 
     const outcome = await runPass(passTarget(), issue, BASE, passHost);
 
     assert.equal(outcome.kind, "gave-up");
-    assert.match(calls.handBack[0]!.reason, /Build Solution/);
+    assert.match(calls.handBack[0]!.reason, /Template tests/);
   });
 
   it("gives the follow-up role only the end of a failed-job log too long for a prompt", async () => {
@@ -1847,8 +1857,8 @@ describe("runPass's red CI decisions", () => {
     const { passHost, calls } = passHostFake({
       threads: [botThread()],
       sandbox,
-      checks: [redCheck({ name: "Tests: Domain.Tests.Unit" })],
-      rerunResult: [redCheck({ name: "Tests: Domain.Tests.Unit" })],
+      checks: [redCheck({ name: "Template tests" })],
+      rerunResult: [redCheck({ name: "Template tests" })],
     });
 
     const outcome = await runPass(passTarget(), issue, BASE, passHost);
@@ -1868,7 +1878,7 @@ describe("runPass's red CI decisions", () => {
     const { passHost, calls } = passHostFake({
       threads: [botThread()],
       sandbox,
-      checks: [redCheck({ name: "Tests: Domain.Tests.Unit" })],
+      checks: [redCheck({ name: "Template tests" })],
     });
     passHost.rerunFailedChecks = () => {
       throw new Error("gh run rerun failed");
@@ -1877,7 +1887,7 @@ describe("runPass's red CI decisions", () => {
     const outcome = await runPass(passTarget(), issue, BASE, passHost);
 
     assert.equal(outcome.kind, "gave-up");
-    assert.match(calls.handBack[0]!.reason, /Tests: Domain\.Tests\.Unit/);
+    assert.match(calls.handBack[0]!.reason, /Template tests/);
     assert.equal(calls.replyToThread.length, 1);
     assert.deepEqual(calls.resolveThread, ["RT_bot"]);
   });

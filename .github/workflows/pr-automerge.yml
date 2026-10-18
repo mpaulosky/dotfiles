@@ -230,6 +230,18 @@ jobs:
             // A workflow run's statuses before it completes: its jobs may not
             // have created their check runs on the head yet.
             const ACTIVE_RUN_STATUSES = ["requested", "queued", "pending", "waiting", "in_progress"];
+            // A run GitHub holds for approval (as it holds a Copilot push's)
+            // shows action_required as its status or its conclusion, and has
+            // created no checks yet (mpaulosky/dotfiles#236).
+            const HELD_RUN = "action_required";
+            // The workflows whose held runs say nothing of CI: Copilot's
+            // review always leaves a PR Review Submitted run held, and Claude
+            // Review's and this job's own create none of CI's checks.
+            const NOT_CI_WORKFLOWS = [
+              ".github/workflows/pr-review-submitted.yml",
+              ".github/workflows/claude-review.yml",
+              ".github/workflows/pr-automerge.yml"
+            ];
 
             async function getPullRequestStatus(pullNumber) {
               const status = await github.graphql(
@@ -452,10 +464,9 @@ jobs:
               if (!commit) {
                 return "the head's checks aren't reported yet";
               }
-              const contexts = commit.statusCheckRollup?.contexts;
-              if (!contexts) {
-                return "no check has reported on the head yet";
-              }
+              // GraphQL returns a null rollup for a head no check has reported
+              // on, as for one pushed with GITHUB_TOKEN (mpaulosky/dotfiles#236).
+              const contexts = commit.statusCheckRollup?.contexts ?? { totalCount: 0, nodes: [] };
               if (contexts.totalCount > contexts.nodes.length) {
                 return "more checks than one page";
               }
@@ -491,7 +502,9 @@ jobs:
             // running, a workflow run for the head still queued, waiting or in
             // progress (its jobs may not have created their checks yet), the
             // head's checks changed while the runs were read, or the runs
-            // couldn't be read. "no CI": everything is quiet, but no check
+            // couldn't be read. "held": a CI run for the head is held for
+            // approval, so its checks come only once someone approves it
+            // (mpaulosky/dotfiles#236). "no CI": everything is quiet, but no check
             // outside Claude Review's and this job's own exists, as when path
             // filters leave out every CI workflow. "settled": CI has reported
             // (mpaulosky/dotfiles#233).
@@ -517,6 +530,12 @@ jobs:
                 });
                 if (runs.some((run) => ACTIVE_RUN_STATUSES.includes(run.status))) {
                   return "waiting";
+                }
+                const held = runs.some((run) => {
+                  return (run.status === HELD_RUN || run.conclusion === HELD_RUN) && !NOT_CI_WORKFLOWS.includes(run.path);
+                });
+                if (held) {
+                  return "held";
                 }
                 // The snapshot in pr is older than the runs. A run that queued
                 // and finished between the two has checks pr lacks, so read the
@@ -905,8 +924,9 @@ jobs:
             // an app's), which would leave the PR to the sweep. With no check
             // required at all, CI must have reported and the head's checks
             // must all have finished instead (mpaulosky/dotfiles#216). When
-            // everything is quiet and no CI check exists (noCiCheck), nothing
-            // will start this workflow again, so the owner is told.
+            // everything is quiet and no CI check exists (noCiCheck), or a CI
+            // run is held for approval (heldForApproval), nothing will start
+            // this workflow again until someone acts, so the owner is told.
             async function checksBeforeClaude(pullNumber, pr) {
               // A conflict is landing.decide's blocker: the head has to change,
               // and its resolution needs a fresh review anyway.
@@ -931,6 +951,9 @@ jobs:
                   noneRequired,
                   noCiCheck: true
                 };
+              }
+              if (state === "held") {
+                return { waiting: "a CI run for the head is held for approval", noneRequired, heldForApproval: true };
               }
               if (pending && !noneRequired) {
                 return { waiting: pending, noneRequired };
@@ -1045,13 +1068,23 @@ jobs:
                 );
                 return;
               }
-              const { waiting, noneRequired, noCiCheck } = await checksBeforeClaude(pullNumber, pr);
+              const { waiting, noneRequired, noCiCheck, heldForApproval } = await checksBeforeClaude(pullNumber, pr);
               if (noCiCheck) {
                 // A notice: nothing will start this workflow again for the
                 // head, so the PR waits for its owner (mpaulosky/dotfiles#233).
                 core.notice(
                   `PR #${pullNumber}: Copilot couldn't review ${head}, but ${waiting}, so Claude isn't called in. ` +
                   `If CI skips this PR, add ${CLAUDE_LABEL} or review and merge it by hand.`
+                );
+                return;
+              }
+              if (heldForApproval) {
+                // A notice: the held run's checks, and its completion that
+                // would start this workflow, wait for a person
+                // (mpaulosky/dotfiles#236).
+                core.notice(
+                  `PR #${pullNumber}: Copilot couldn't review ${head}, but ${waiting}, so Claude isn't called in ` +
+                  "until CI reports. Approve the PR's workflow runs, or review and merge it by hand."
                 );
                 return;
               }

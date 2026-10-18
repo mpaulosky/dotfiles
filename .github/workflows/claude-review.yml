@@ -869,13 +869,15 @@ jobs:
                   return {}
               if done.returncode != 0:
                   raise RuntimeError(f"git grep exited {done.returncode}")
-              # name\0match\n for each match, where a name (head:path) may hold a newline but a match can't.
-              users, fields = {}, done.stdout.split(b"\0")
-              for index in range(1, len(fields)):
-                  match = fields[index].split(b"\n", 1)[0].decode("utf-8", "replace")
-                  name = fields[index - 1] if index == 1 else fields[index - 1].split(b"\n", 1)[-1]
+              # name\0match\n for each match, where a name (head:path) may hold a newline but a match can't: split on
+              # \0, the first record is a name and each later one a match, then the next name after its first newline.
+              users = {}
+              name, *records = done.stdout.split(b"\0")
+              for record in records:
+                  match, _, next_name = record.partition(b"\n")
                   path = name.decode("utf-8", "replace").split(":", 1)[-1]
-                  users.setdefault(match, {})[path] = None
+                  users.setdefault(match.decode("utf-8", "replace"), {})[path] = None
+                  name = next_name
               return {stem: list(paths) for stem, paths in users.items()}
 
 

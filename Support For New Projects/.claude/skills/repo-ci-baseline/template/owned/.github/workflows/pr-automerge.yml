@@ -482,7 +482,7 @@ jobs:
             // isRequired name one. While any check is still running, or on a
             // PR event, CI may not have created the required ones yet (a job's
             // check run appears only once the job is queued).
-            function noCheckRequired(pr, pending) {
+            function settledWithNoRequiredCheck(pr, pending) {
               if (!pending.startsWith("no required check") || context.payload.pull_request) {
                 return false;
               }
@@ -537,7 +537,7 @@ jobs:
               }
               const pending = requiredChecksPending(pr, requiredNames);
               if (pending) {
-                const log = noCheckRequired(pr, pending) ? core.notice : core.info;
+                const log = settledWithNoRequiredCheck(pr, pending) ? core.notice : core.info;
                 log(`Waiting on PR #${pullNumber}: BEHIND main, but ${pending}.`);
                 return;
               }
@@ -870,14 +870,15 @@ jobs:
                 return `the checks ${pr.baseRefName}'s rulesets require couldn't be read: ${error.message}`;
               }
               const pending = requiredChecksPending(pr, requiredNames);
-              if (pending && !noCheckRequired(pr, pending)) {
+              const noneRequired = pending !== null && settledWithNoRequiredCheck(pr, pending);
+              if (pending && !noneRequired) {
                 return pending;
               }
               const failed = failedChecks(pr).filter((name) => !CLAUDE_CHECKS.includes(name));
               if (failed.length > 0) {
                 return `checks failed: ${failed.join(", ")}`;
               }
-              if (pending) {
+              if (noneRequired) {
                 // A notice, as the rulesets may be missing a required check.
                 core.notice(
                   `PR #${pullNumber} has no required check: neither ${pr.baseRefName}'s rulesets nor isRequired ` +

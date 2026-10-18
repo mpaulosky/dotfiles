@@ -19,7 +19,7 @@ permissions: {}
 env:
   # Model for the AI Summary in release blog posts (used only when the
   # ANTHROPIC_API_KEY secret is set).
-  ANTHROPIC_MODEL: claude-sonnet-5
+  ANTHROPIC_MODEL: claude-sonnet-5-5
 
 # One group for every run that can release, so releases never overlap and
 # versions follow merge order. GitHub keeps only the newest pending run in a

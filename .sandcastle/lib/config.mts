@@ -5,7 +5,7 @@
 import type { ClaudeCodeOptions } from "@ai-hero/sandcastle";
 
 const opus = "claude-opus-5-5";
-const sonnet = "claude-sonnet-5";
+const sonnet = "claude-sonnet-5-5";
 
 export type RoleAgent = {
   model: string;

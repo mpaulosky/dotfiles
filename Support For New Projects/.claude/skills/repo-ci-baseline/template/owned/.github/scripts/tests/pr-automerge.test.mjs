@@ -209,6 +209,10 @@ async function evaluate(pr, events = [], options = {}) {
     claudeRuns = [],
     claudeRunsTotal,
     claudeRunsError,
+    // Every workflow run for the head, whatever its workflow, as
+    // actions.listWorkflowRunsForRepo reads them ({ status, ... }), filtered by
+    // the request's head_sha and status.
+    headRuns = [],
     // The open PRs a sweep lists, oldest first.
     openPrs = [7],
     // Snapshots per PR number ({ 7: [...], 8: [...] }), each read in turn
@@ -225,6 +229,7 @@ async function evaluate(pr, events = [], options = {}) {
   const logs = [];
   const eventRequests = [];
   const runRequests = [];
+  const headRunRequests = [];
   const queries = [];
   const eventTokens = [];
   const removedLabels = [];
@@ -367,6 +372,25 @@ async function evaluate(pr, events = [], options = {}) {
     }
   };
   // The GITHUB_TOKEN client: it reads label events and removes review:claude.
+  const headRunsFor = (params) => {
+    return headRuns.filter((run) => {
+      return (params.head_sha === undefined || run.head_sha === params.head_sha) &&
+        (params.status === undefined || run.status === params.status);
+    });
+  };
+  const octokitActions = {
+    listWorkflowRuns: async (params) => {
+      runRequests.push(params);
+      if (claudeRunsError) {
+        throw claudeRunsError;
+      }
+      return { data: { total_count: claudeRunsTotal ?? claudeRuns.length, workflow_runs: claudeRuns } };
+    },
+    listWorkflowRunsForRepo: async (params) => {
+      headRunRequests.push(params);
+      return { data: { total_count: headRunsFor(params).length, workflow_runs: headRunsFor(params) } };
+    }
+  };
   const getOctokit = (token) => {
     eventTokens.push(token);
     return {
@@ -384,15 +408,7 @@ async function evaluate(pr, events = [], options = {}) {
             throw new Error("issues.addLabels is only called with the PAT");
           }
         },
-        actions: {
-          listWorkflowRuns: async (params) => {
-            runRequests.push(params);
-            if (claudeRunsError) {
-              throw claudeRunsError;
-            }
-            return { data: { total_count: claudeRunsTotal ?? claudeRuns.length, workflow_runs: claudeRuns } };
-          }
-        }
+        actions: octokitActions
       },
       paginate: async (method, params) => {
         if (method === rest.issues.listEvents) {
@@ -405,6 +421,10 @@ async function evaluate(pr, events = [], options = {}) {
         }
         if (method === rest.issues.listComments) {
           return comments;
+        }
+        if (method === octokitActions.listWorkflowRunsForRepo) {
+          headRunRequests.push(params);
+          return headRunsFor(params);
         }
         throw new Error("unexpected paginate call");
       }
@@ -433,7 +453,7 @@ async function evaluate(pr, events = [], options = {}) {
   }
   return {
     merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests, removedLabels,
-    addedLabels, listRequests, runRequests
+    addedLabels, listRequests, runRequests, headRunRequests
   };
 }
 
@@ -672,6 +692,96 @@ test("doesn't call in Claude with no required check while a check is still runni
     assert.deepEqual(addedLabels, [], name);
     assert.ok(logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), `${name}: ${logs.join("\n")}`);
   }
+});
+
+// A head whose only checks are Claude Review's, or this job's own, says nothing of CI (mpaulosky/dotfiles#233).
+test("doesn't call in Claude with no required check when the head has only Claude Review's SKIPPED checks (mpaulosky/dotfiles#233)", async () => {
+  const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
+  const cases = {
+    "Claude Review's skipped checks": checksOn(HEAD, skipped("Check for a merge from main"), skipped("Review with Claude"), skipped("Post Claude's review")),
+    "this job's own check": checksOn(HEAD, requiredCheck("Merge same-repo PRs when ready", { isRequired: false })),
+    "Claude Review's checks and this job's own": checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false })),
+    "no checks at all": checksOn(HEAD)
+  };
+  for (const [name, headRef] of Object.entries(cases)) {
+    const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [] });
+    assert.deepEqual(addedLabels, [], name);
+    assert.ok(logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), `${name}: ${logs.join("\n")}`);
+    assert.ok(!logs.some((line) => line.includes("no required check") && line.startsWith("notice: ")), `${name}: ${logs.join("\n")}`);
+  }
+});
+
+test("calls in Claude with no required check once a check outside Claude Review's and this job's own has finished (mpaulosky/dotfiles#233)", async () => {
+  const headRef = checksOn(
+    HEAD,
+    requiredCheck("Review with Claude", { isRequired: false, conclusion: "SKIPPED" }),
+    requiredCheck("Merge same-repo PRs when ready", { isRequired: false }),
+    requiredCheck("Lint", { isRequired: false, conclusion: "SKIPPED" })
+  );
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [] });
+
+  assert.equal(addedLabels.length, 1);
+});
+
+test("doesn't call in Claude with no required check while a workflow run for the head is queued, waiting or in progress (mpaulosky/dotfiles#233)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
+  for (const status of ["queued", "waiting", "in_progress"]) {
+    const headRuns = [{ id: 1, head_sha: HEAD, status: "completed", conclusion: "success" }, { id: 2, head_sha: HEAD, status }];
+    const { addedLabels, logs, headRunRequests } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], {
+      push: true,
+      requiredChecks: [],
+      headRuns
+    });
+    assert.deepEqual(addedLabels, [], status);
+    assert.ok(logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), `${status}: ${logs.join("\n")}`);
+    assert.ok(headRunRequests.length > 0 && headRunRequests.every((params) => params.head_sha === HEAD), status);
+  }
+});
+
+test("calls in Claude with no required check when the head's workflow runs have all completed, or a run is for another head (mpaulosky/dotfiles#233)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
+  const headRuns = [
+    { id: 1, head_sha: HEAD, status: "completed", conclusion: "success" },
+    { id: 2, head_sha: HEAD, status: "completed", conclusion: "skipped" },
+    { id: 3, head_sha: "older", status: "in_progress" }
+  ];
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [], headRuns });
+
+  assert.equal(addedLabels.length, 1);
+});
+
+// The notice follows the decision (mpaulosky/dotfiles#233): it says Claude is called in, so it comes after addLabels succeeds.
+test("logs the no-required-check notice only once review:claude is added (mpaulosky/dotfiles#233)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
+  const pr = readyPr({ copilotReviews: DECLINED, headRef });
+  const noticed = (logs) => logs.some((line) => line.startsWith("notice: ") && line.includes("no required check"));
+  const options = { push: true, requiredChecks: [] };
+
+  const added = await evaluate(pr, [], options);
+  assert.equal(added.addedLabels.length, 1);
+  assert.ok(noticed(added.logs), added.logs.join("\n"));
+
+  // addLabels fails.
+  const failed = await evaluate(pr, [], { ...options, addLabelError: Object.assign(new Error("Resource not accessible by personal access token"), { status: 403 }) });
+  assert.ok(failed.logs.some((line) => line.startsWith(`warning: Couldn't add ${CLAUDE_LABEL} to PR #7`)), failed.logs.join("\n"));
+  assert.ok(!noticed(failed.logs), failed.logs.join("\n"));
+
+  // No PAT, so nothing is added.
+  const noPat = await evaluate(pr, [], { ...options, pat: false });
+  assert.deepEqual(noPat.addedLabels, []);
+  assert.ok(!noticed(noPat.logs), noPat.logs.join("\n"));
+});
+
+test("with no required check, doesn't log the notice when a person took review:claude off (mpaulosky/dotfiles#233)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
+  const pr = readyPr({ copilotReviews: DECLINED, headRef });
+  const events = [labeledEvent(CLAUDE_LABEL, "octo"), unlabeledEvent(CLAUDE_LABEL, "octo")];
+  const { addedLabels, logs } = await evaluate(pr, events, { push: true, requiredChecks: [] });
+
+  assert.deepEqual(addedLabels, []);
+  assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes(`@octo took ${CLAUDE_LABEL} off`)), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.includes("no required check")), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.includes("called in")), logs.join("\n"));
 });
 
 test("doesn't call in Claude for a head with a merge conflict, as landing.decide blocks on it", async () => {

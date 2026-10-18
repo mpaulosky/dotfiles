@@ -32,9 +32,10 @@ name: PR Auto-Merge
 # (github/landing.py): every other check on the head passed, Claude has
 # reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
 # the cap, and no person took the label off. It adds it with RELEASE_PR_PAT,
-# since a label added with GITHUB_TOKEN starts no workflow. Claude Review
-# reviews every push while the label is on, so a fix for its findings is
-# reviewed in turn, until a review comes back clean: no threads and no
+# since a label added with GITHUB_TOKEN starts no workflow, so the PAT needs
+# Pull requests (or Issues) write. Claude Review reviews every push while the
+# label is on, so a fix for its findings is reviewed in turn, until a review
+# comes back clean: no threads and no
 # findings outside the diff, which covers the head and lets the PR merge
 # (mpaulosky/dotfiles#193). The review cap below is where that stops; the run also takes the
 # label off once Claude has reviewed MAX_CLAUDE_ROUNDS (the cap's 3) of the
@@ -110,7 +111,8 @@ name: PR Auto-Merge
 permissions:
   contents: write
   # issues: read lets GITHUB_TOKEN list a PR's label events. The script reads
-  # them with GITHUB_TOKEN, not the PAT, so the PAT needs no Issues access.
+  # them with GITHUB_TOKEN, not the PAT, so the PAT needs no Issues read. It
+  # still adds review:claude, which takes Pull requests (or Issues) write.
   # pull-requests: write also lets GITHUB_TOKEN take review:claude off a PR.
   issues: read
   pull-requests: write
@@ -131,7 +133,9 @@ jobs:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
           # Scoped by the permissions above; used only to read a PR's label
           # events and comments and the workflow runs for its head (Claude
-          # Review's among them), and to take review:claude off it.
+          # Review's among them), and to take review:claude off it at the
+          # review cap and once Claude has reviewed MAX_CLAUDE_ROUNDS of its
+          # commits.
           EVENTS_TOKEN: ${{ github.token }}
         with:
           # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
@@ -143,11 +147,15 @@ jobs:
           github-token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            // github authenticates with the PAT when it's set, which may lack
-            // Issues or Actions access; label events, comments and workflow
-            // runs (Claude Review's, and the head's) are read, and
-            // review:claude removed, with GITHUB_TOKEN instead (its
-            // issues: read and actions: read above).
+            // github authenticates with the PAT when it's set. It adds
+            // review:claude (callInClaude), since a label added with
+            // GITHUB_TOKEN starts no workflow, so the PAT needs Pull requests
+            // (or Issues) write; without it Claude is never called in, and
+            // each run only warns. The PAT may lack Issues read or Actions
+            // access: label events, comments and workflow runs (Claude
+            // Review's, and the head's) are read, and review:claude removed,
+            // with GITHUB_TOKEN instead (its issues: read, actions: read and
+            // pull-requests: write above).
             const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
@@ -894,9 +902,9 @@ jobs:
             // commits included, which the cap doesn't count) it would spend
             // more than the owner's cost rule allows. Taking the label off stops that; threads
             // already open still hold. Removed with GITHUB_TOKEN (its
-            // pull-requests: write covers a PR's labels), so the PAT needs no
-            // Issues access and the removal starts no workflow. A failure is a
-            // warning: the next run tries again.
+            // pull-requests: write covers a PR's labels), so the removal
+            // starts no workflow. A failure is a warning: the next run tries
+            // again.
             async function removeClaudeLabel(pullNumber, why) {
               try {
                 await eventsClient.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });

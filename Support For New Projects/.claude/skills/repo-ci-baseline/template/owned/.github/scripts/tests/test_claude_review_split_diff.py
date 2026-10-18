@@ -955,6 +955,40 @@ def test_a_comment_only_edit_to_a_workflow_doesnt_follow_its_pins(repo, tmp_path
     ]
 
 
+def test_a_hash_line_inside_a_block_scalar_is_content_not_a_comment(repo, tmp_path):
+    # A heading in a prompt, a private field in a script, a line of a heredoc: what the action is given
+    # (mpaulosky/dotfiles#203), on whichever side of the diff the line is.
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    pins = "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)"
+
+    def workflow(prompt, script):
+        return ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n"
+                f"          prompt: |\n            {prompt}\n            Review it.\n"
+                f"          script: >-\n            {script}\n      # a comment\n")
+
+    cases = [("## Review", "#count = 0;", "## Check", "#count = 0;"),
+             ("## Review", "#count = 0;", "## Review", "#count = 1;"),
+             ("## Review", "#count = 0;", "Plain", "#count = 0;")]
+    for n, (old_prompt, old_script, new_prompt, new_script) in enumerate(cases):
+        case = Repo(tmp_path / f"case{n}")
+        case.workspace = repo.workspace
+        case.base = case.commit({".github/workflows/ci.yml": workflow(old_prompt, old_script)})
+        head = case.commit({".github/workflows/ci.yml": workflow(new_prompt, new_script)})
+        (tmp_path / f"run{n}").mkdir()
+        case.split(case.base, head, tmp_path / f"run{n}")
+        assert pins in headers(case), (n, headers(case))
+
+
+def test_a_comment_after_a_block_scalar_ends_is_still_a_comment(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n"
+             "          prompt: |\n            Review it.\n")
+    repo.base = repo.commit({".github/workflows/ci.yml": steps + "      # old note\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + "      # new note\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
 def test_the_pins_check_reads_a_comment_only_edit_as_text_whatever_the_prs_gitattributes_say(repo, tmp_path):
     # A diff git shows as binary, or one that fails, counts as a change and follows the pins; so this
     # comment-only edit is left unfollowed only when the check reads its lines as text.

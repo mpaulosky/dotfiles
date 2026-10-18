@@ -952,6 +952,62 @@ describe("sweepPullRequests", () => {
     assert.deepEqual(reviewThreadCalls, []);
   });
 
+  it("reads no review threads for a conflicted PR, which is flagged without looking at them", () => {
+    const { github, reviewThreadCalls } = stubGithub({
+      prs: [pr({ mergeStateStatus: "DIRTY", threads: [{ resolved: false, byBot: false, author: "owner" }] })],
+      isOwner: ownerIs("owner"),
+    });
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, [101]);
+    assert.deepEqual(reviewThreadCalls, []);
+  });
+
+  it("reads no review threads for a PR whose checks are still running", () => {
+    const { github, reviewThreadCalls } = stubGithub({
+      prs: [
+        pr({
+          checks: [{ name: "build", completed: false, green: false, completedAt: null }],
+          threads: [{ resolved: false, byBot: false, author: "owner" }],
+        }),
+      ],
+      isOwner: ownerIs("owner"),
+    });
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, []);
+    assert.deepEqual(reviewThreadCalls, []);
+  });
+
+  it("still flags a conflicted PR when its review threads can't be read", () => {
+    const { github } = stubGithub({
+      prs: [pr({ mergeStateStatus: "DIRTY", threads: [{ resolved: false, byBot: true, author: COPILOT_REVIEWER }] })],
+      reviewThreads: () => {
+        throw new Error("gh api failed: HTTP 502");
+      },
+    });
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, [101]);
+  });
+
+  it("lists a PR on the waiting list for an owner thread the host has answered", () => {
+    const { github } = stubGithub({
+      prs: [pr({ threads: [{ resolved: false, byBot: false, author: "owner" }] })],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
+    });
+    const waiting = new WaitingPrReport();
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW, undefined, waiting);
+
+    assert.deepEqual(needsPass, []);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 0, answered: 1 }]);
+  });
+
   it("leaves a PR alone this round when its review threads can't be read, and still sweeps the rest", () => {
     const unreadable = pr({ number: 101, mergeStateStatus: "BEHIND", threads: [{ resolved: false, byBot: false, author: "owner" }] });
     const other = pr({
@@ -1204,7 +1260,7 @@ describe("sweepPullRequests", () => {
 
     sweepPullRequests(github, () => {}, NOW, undefined, waiting);
 
-    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 1 }]);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 1, answered: 0 }]);
   });
 
   // The waiting count must match lib/follow-up-pass.mts#threadsForRole's

@@ -110,7 +110,9 @@ export const handBackReport = new HandBackReport();
 // opened by someone other than the repository owner or a bot (the same test
 // lib/follow-up-pass.mts#threadsForRole uses for "leftForHuman"): an owner's
 // own thread is the follow-up role's to answer, not a person's to wait on.
-export type WaitingPrEntry = { pr: number; threads: number };
+// `answered` counts the bot or owner threads the host has replied to that are
+// still open: they wait on the owner now, so the PR shows here too (#225).
+export type WaitingPrEntry = { pr: number; threads: number; answered?: number };
 
 // Every PR the latest follow-up sweep found waiting on a person, replaced
 // whole each sweep (see WaitingPrReport.replace), so the report shows the
@@ -289,15 +291,19 @@ function waitingLines(
   humanThreads: readonly HumanThreadEntry[],
   link: (target: ReportTarget) => string,
 ): string[] {
-  const counts = new Map(waitingPrs.map(({ pr, threads }) => [pr, threads]));
+  const counts = new Map(waitingPrs.map(({ pr, threads, answered = 0 }) => [pr, { threads, answered }]));
   const prs = [...new Set([...waitingPrs.map(({ pr }) => pr), ...humanThreads.map(({ pr }) => pr)])];
   if (prs.length === 0) return ["None."];
   return prs.flatMap((pr) => {
-    const threads = counts.get(pr);
-    let count = "";
-    if (threads !== undefined) {
-      count = `: ${threads} unresolved review ${threads === 1 ? "thread" : "threads"} opened by people`;
+    const found = counts.get(pr);
+    const parts: string[] = [];
+    if (found !== undefined && found.threads > 0) {
+      parts.push(`${found.threads} unresolved review ${found.threads === 1 ? "thread" : "threads"} opened by people`);
     }
+    if (found !== undefined && found.answered > 0) {
+      parts.push(`${found.answered} answered ${found.answered === 1 ? "thread" : "threads"} left open for the owner`);
+    }
+    const count = parts.length > 0 ? `: ${parts.join(", ")}` : "";
     return [
       `- ${link({ kind: "pr", number: pr })}${count}`,
       ...humanThreads

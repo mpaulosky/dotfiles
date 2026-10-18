@@ -961,7 +961,10 @@ def test_one_git_grep_covers_the_stems_of_all_the_changed_files(repo, tmp_path):
     # The stems of 5 or more characters of the changed files that aren't docs.
     assert shim.stems() == [{f"module_{n:03d}" for n in range(count)}]
     # Each match maps back to its stem: every user is credited to the file whose stem it names.
-    assert headers(repo) == ([f"src/module_{n:03d}.py (changed in this PR)" for n in range(count)]
+    # A changed file is always in the context, so the short-stemmed src/ab.py and the doc come with the modules.
+    assert headers(repo) == (["src/ab.py (changed in this PR)"]
+                             + [f"src/module_{n:03d}.py (changed in this PR)" for n in range(count)]
+                             + ["docs/notes_on_docs.md (changed in this PR)"]
                              + [f"lib/user_{n:03d}.py (names src/module_{n:03d}.py)" for n in range(count)])
     assert "::warning::" not in repo.log
 

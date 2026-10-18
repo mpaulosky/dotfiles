@@ -1712,6 +1712,33 @@ describe("runPass's red CI decisions", () => {
     assert.deepEqual(calls.rerunFailedChecks, []);
   });
 
+  // #222: a Sandcastle run started by a PR event reports its own running
+  // check on the head it sweeps, which would otherwise hold every pass it
+  // claims.
+  it("re-runs a red check while only Sandcastle's own check is still running", async () => {
+    const { passHost, calls } = passHostFake({
+      threads: [],
+      checks: [redCheck({ name: "Template tests" }), redCheck({ name: "Sandcastle", runId: 2002, completed: false, completedAt: null })],
+    });
+
+    await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
+
+    assert.deepEqual(calls.rerunFailedChecks.map((call) => call.checkNames), [["Template tests"]]);
+  });
+
+  // #222: a red Sandcastle check is a hand-back's, with nothing in the PR for
+  // the follow-up role to fix from its job log.
+  it("doesn't start a pass for Sandcastle's own red check", async () => {
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: true, checks: [redCheck({ name: "Sandcastle", runId: 2002 })] });
+
+    const outcome = await runPass(passTarget({ reasons: [] }), issue, BASE, passHost);
+
+    assert.equal(outcome.kind, "skipped");
+    assert.deepEqual(calls.createSandbox, []);
+    assert.deepEqual(calls.rerunFailedChecks, []);
+    assert.deepEqual(calls.failedCheckLog, []);
+  });
+
   // #79's follow-up review: `pull_request` CI checks out the head merged
   // with main, so a PR that's merely behind main (not conflicted) has its
   // checks run against a commit the bare head's gate never sees. Merging

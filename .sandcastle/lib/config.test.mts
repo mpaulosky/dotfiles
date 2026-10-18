@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   BUILD_ROLES,
@@ -9,6 +10,7 @@ import {
   QUEUE_SCOPE_USAGE,
   ROLE_AGENTS,
   QueueScopeError,
+  SANDCASTLE_CHECK,
   budgetMinutesFrom,
   queueScopeFrom,
 } from "./config.mts";
@@ -50,6 +52,16 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
       (minutes + hour) * 60_000 <= BUILDING_LABEL_MAX_AGE_MS,
       `the longest build takes ${minutes} minutes plus an hour, past BUILDING_LABEL_MAX_AGE_MS`,
     );
+  });
+});
+
+describe("SANDCASTLE_CHECK", () => {
+  // The sweep leaves out the check named SANDCASTLE_CHECK as its own (#222),
+  // so renaming the workflow's job without it would bring the bug back.
+  it("is the name of the Sandcastle workflow's job", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/sandcastle.yml", import.meta.url), "utf8");
+
+    assert.match(workflow, new RegExp(`^jobs:\\n  sandcastle:\\n    name: ${SANDCASTLE_CHECK}\\n`, "m"));
   });
 });
 

@@ -1012,13 +1012,23 @@ def test_a_long_line_of_anchors_doesnt_slow_the_block_scalar_check(repo, tmp_pat
     # Finding a block scalar's header was quadratic in a line of "&- " tokens (mpaulosky/dotfiles#203).
     runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
     steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
-    crafted = "      # " + "&- " * 30000 + "x\n"
-    repo.base = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # a\n"})
-    head = repo.commit({".github/workflows/ci.yml": steps + crafted + "      # b\n"})
-    started = time.monotonic()
-    repo.split(repo.base, head, tmp_path)
-    assert time.monotonic() - started < 5
-    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+    pins = "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)"
+    header = "      key: " + "&a !t " * 15000 + "|\n"
+    # A comment line; a real header, with a note after its block; and the same header with the edit
+    # inside its block, where following the pins shows the header was walked to its "|".
+    cases = [("      # " + "&- " * 30000 + "x\n", "      ", False),
+             (header + "        text\n", "      ", False),
+             (header, "        ", True)]
+    for n, (line, indent, followed) in enumerate(cases):
+        case = Repo(tmp_path / f"case{n}")
+        case.workspace = repo.workspace
+        case.base = case.commit({".github/workflows/ci.yml": steps + line + indent + "# a\n"})
+        head = case.commit({".github/workflows/ci.yml": steps + line + indent + "# b\n"})
+        (tmp_path / f"run{n}").mkdir()
+        started = time.monotonic()
+        case.split(case.base, head, tmp_path / f"run{n}")
+        assert time.monotonic() - started < 5, n
+        assert (pins in headers(case)) == followed, (n, headers(case))
 
 
 def test_a_comment_after_a_list_items_block_scalar_is_still_a_comment(repo, tmp_path):

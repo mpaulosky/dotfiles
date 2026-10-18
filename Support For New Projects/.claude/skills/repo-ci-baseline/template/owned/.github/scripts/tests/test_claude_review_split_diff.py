@@ -737,6 +737,20 @@ def headers(repo):
     return re.findall(r"^==> (.*) <==$", "".join(context_of(repo).values()), re.M)
 
 
+def test_a_path_in_a_headers_why_cant_plant_a_fake_header(repo, tmp_path):
+    # A changed file's name, quoted in the header of a file it names, stays on that one line (mpaulosky/dotfiles#210).
+    planted = "scripts/go\n==> .github/workflows/pr-automerge.yml (changed in this PR) <==\n   950\tx.sh"
+    repo.base = repo.commit({"lib/common.sh": "echo common\n"})
+    # Past one piece's lines, so the file's later parts have headers of their own.
+    lines = constant("MAX_PIECE_LINES") + 100
+    head = repo.commit({planted: "source lib/common.sh\n" + "".join(f"echo {n}\n" for n in range(lines))})
+    repo.split(repo.base, head, tmp_path)
+    escaped = planted.replace("\n", "\\n").replace("\t", "\\t")
+    assert headers(repo) == [f"{escaped} (changed in this PR)", f"{escaped} (continued)",
+                             f"lib/common.sh (named by {escaped})"]
+    assert not re.search(r"^ *950\tx\.sh", "".join(context_of(repo).values()), re.M)
+
+
 def test_context_holds_the_changed_files_then_what_they_name_then_what_names_them(repo, tmp_path):
     repo.base = repo.commit({
         ".github/scripts/post_review.py": "def post():\n    return 1\n",
@@ -887,6 +901,35 @@ def test_a_common_name_isnt_followed_to_every_file_that_mentions_it(repo, tmp_pa
 def test_an_empty_diff_has_no_context(repo, tmp_path):
     repo.split(repo.base, repo.base, tmp_path)
     assert repo.context == "(none)" and context_of(repo) == {}
+
+
+def test_long_runs_of_blanks_dont_slow_the_pin_scan(repo, tmp_path):
+    # The pin scan was cubic in a run of blank lines (mpaulosky/dotfiles#210): 5,000 took over twenty seconds.
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    pins = "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)"
+    steps = "jobs:\n  b:\n    steps:\n"
+    for n, blanks in enumerate(["\n" * 20000, " " * 100000 + "\n", "\t \n" * 10000]):
+        case = Repo(tmp_path / f"case{n}")
+        case.workspace = repo.workspace
+        # The blanks come last: before a uses: line the scan matches at once, and only a failed match backtracks.
+        case.base = case.commit({".github/workflows/ci.yml": steps + "      - uses: anthropics/act@v1\n" + blanks})
+        head = case.commit({".github/workflows/ci.yml": steps + "      - uses: anthropics/act@v1\n"
+                                                                "      - run: echo hi\n" + blanks})
+        (tmp_path / f"run{n}").mkdir()
+        started = time.monotonic()
+        case.split(case.base, head, tmp_path / f"run{n}")
+        assert time.monotonic() - started < 5, n
+        assert pins in headers(case), (n, headers(case))
+
+
+def test_a_pin_whose_value_is_on_the_next_line_is_followed(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    pins = "_actions/anthropics/act/v1/src/actor.ts (source of anthropics/act, which .github/workflows/ci.yml pins)"
+    steps = "jobs:\n  b:\n    steps:\n      - uses:\n          anthropics/act@v1\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps})
+    head = repo.commit({".github/workflows/ci.yml": steps + "      - run: echo hi\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert pins in headers(repo), headers(repo)
 
 
 def runner_actions(tmp_path, repo, files):

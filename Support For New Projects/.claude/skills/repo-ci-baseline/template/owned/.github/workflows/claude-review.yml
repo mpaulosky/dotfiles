@@ -450,7 +450,7 @@ jobs:
           SEGMENT = r"(?!\.\.?(?![\w.-]))[\w.-]+"
           USES = re.compile(rf"""^\s*-?\s*uses:\s*['"]?({SEGMENT})/({SEGMENT})((?:/{SEGMENT})*)@({SEGMENT})""", re.M)
           PATH_RUN = re.compile(r"[\w.\-/]+")
-          PATH_TAIL = re.compile(r".*\.\w+")
+          PATH_TAIL = re.compile(r".+\.\w+")  # a character before the dot: *.py names no file
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow
           LONG_LINE = MAX_PIECE_BYTES // 4
           CONTINUED = b"\\~ "  # starts a long line's later chunk: no line of its own, like git's "\ No newline"
@@ -789,9 +789,9 @@ jobs:
               for path in edited:
                   if kind_of([], path) == "docs":
                       continue
-                  # A file too big for context isn't read or scanned either: only its name is followed below.
-                  text = ((git_out("cat-file", "blob", f"{head}:{path}") or b"").decode("utf-8", "replace")
-                          if blobs[path] <= MAX_CHANGED_FILE_BYTES else "")
+                  # Read whatever its size: the scans are linear, and a workflow too big for context is where its
+                  # pinned actions' source matters most.
+                  text = (git_out("cat-file", "blob", f"{head}:{path}") or b"").decode("utf-8", "replace")
                   if kind_of([], path) == "workflow" and changes_more_than_comments(base, head, path):
                       for pin in dict.fromkeys(USES.findall(text)):
                           if pin not in walked:  # each action once, credited to the first workflow that pins it

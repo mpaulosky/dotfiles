@@ -880,8 +880,13 @@ jobs:
                 return;
               }
               // Claude Review skips Dependabot's PRs (its merge-from-main job's
-              // condition), so the label would bring no review.
+              // condition), so the label would bring no review: a notice, as no
+              // review of this head is coming and the PR waits for its owner.
               if (DEPENDABOT_PR_AUTHORS.includes(pr.author?.login)) {
+                core.notice(
+                  `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review doesn't review ` +
+                  `Dependabot's PRs, so review and merge it by hand.`
+                );
                 return;
               }
               const head = pr.headRefOid;

@@ -74,8 +74,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A check that isn't required and is still running doesn't hold it, as it doesn't hold an update: unlike `land.sh`, which polls,
   this workflow waits for an event, and that check's completion may never start it (another workflow's, or an app's like CodeQL's).
   In a repo where neither main's rulesets nor `isRequired` name a required check, the head's checks must all have finished instead,
-  and the run logs a notice that it has no required check (mpaulosky/dotfiles#216). As for an update, that holds only off a PR event,
-  where CI may not have created the required checks yet.
+  and once the label is added the run logs a notice that it has no required check (mpaulosky/dotfiles#216). As for an update, that holds
+  only off a PR event, where CI may not have created the required checks yet. CI must also have reported: the head needs a check other
+  than Claude Review's and PR Auto-Merge's own, and no workflow run for the head may still be queued, waiting or in progress, as its jobs
+  may not have created their checks yet (mpaulosky/dotfiles#233).
   A person who took the label off decides for that PR, so it isn't added back; this workflow's own removals don't count.
   The run logs a notice naming them, to add it back or review and merge by hand (mpaulosky/dotfiles#215).
   When the label is on but no review of the head is coming, the run logs a notice to push, or to take the label off and add

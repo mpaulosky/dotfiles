@@ -709,7 +709,8 @@ async function buildMarkedIssue(
   // (lib/follow-up-pass.mts) merges main into a conflicted PR with a role to
   // resolve it. A failed fetch publishes without the merge too, since the
   // work is already reviewed and the follow-up pass updates a PR behind main.
-  // So does a main that changed a workflow file since the branch's head.
+  // So does a main that changed a workflow file since the branch's head, but
+  // there nothing in Actions can bring main in afterwards (see below).
   // Throws when an aborted merge can't be undone.
   async function syncWithMain(): Promise<string | undefined> {
     let main: string;
@@ -729,9 +730,14 @@ async function buildMarkedIssue(
     }
     // The merge commit would carry main's own workflow change, and GitHub
     // refuses Sandcastle's push of it for lack of the Workflows permission,
-    // handing the issue back for a change it never made (#223). The follow-up
-    // pass or the PR's update brings main in instead. When the files can't be
-    // listed, the merge is skipped too: publishing without main is safe.
+    // handing the issue back for a change it never made (#223). The merge is
+    // left undone, not promised to anyone: the follow-up pass runs in Actions
+    // with the same token, so its own push of main's workflow change is
+    // refused the same way and it hands the PR to a person, as does an
+    // update-branch call made with that token. A person, or a local
+    // `Sandcastle:local` run, has to bring main's workflow change in. When
+    // the files can't be listed, the merge is skipped too: publishing without
+    // main is safe.
     let mainWorkflowFiles: string[];
     try {
       mainWorkflowFiles = host.workflowFiles(reviewedHead, main);

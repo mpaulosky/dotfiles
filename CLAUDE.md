@@ -28,6 +28,14 @@ SANDCASTLE_ISSUE=<n> pnpm run sandcastle       # build one issue (and its PR) lo
 SANDCASTLE_LABEL=<label> pnpm run sandcastle   # work the issues labelled <label>
 ```
 
+## Which Sandcastle label
+
+The Sandcastle workflow in GitHub Actions works the issues labelled `Sandcastle`. Its token has no Workflows permission, so GitHub
+refuses its push of any change under `.github/workflows/`. Here that's most changes to Claude Review or PR Auto-Merge, since
+dotfiles' copies of those Template files must match. Label such an issue `Sandcastle:local` instead: Actions never builds it, and
+`SANDCASTLE_LABEL=Sandcastle:local pnpm run sandcastle` builds it from the main checkout, pushing with your own `gh` login. Its PR's
+follow-up passes then run locally too.
+
 ## Git workflow
 
 Branches are `feature/{issue}-{slug}`, `fix/{issue}-{slug}`, `hotfix/{issue}-{slug}` or `chore/{slug}` (`scripts/check-branch-name.sh`).

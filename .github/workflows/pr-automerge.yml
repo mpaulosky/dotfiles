@@ -874,7 +874,12 @@ jobs:
             // label came after) doesn't count, as the labeled run's check may
             // not show yet.
             async function claudeSkippedSinceLabel(pullNumber, pr) {
-              const runs = (headCommit(pr)?.statusCheckRollup?.contexts?.nodes ?? []).filter((check) => {
+              const contexts = headCommit(pr)?.statusCheckRollup?.contexts;
+              // Past one page, a run that didn't skip may be one this can't see.
+              if (!contexts || contexts.totalCount > contexts.nodes.length) {
+                return false;
+              }
+              const runs = contexts.nodes.filter((check) => {
                 return check.__typename === "CheckRun" && check.name === CLAUDE_CHECKS[0];
               });
               if (runs.length === 0 || !runs.every((check) => check.status === "COMPLETED" && check.conclusion === "SKIPPED")) {
@@ -930,8 +935,8 @@ jobs:
                 if (await claudeSkippedSinceLabel(pullNumber, pr)) {
                   core.notice(
                     `PR #${pullNumber}: Copilot couldn't review ${pr.headRefOid}, and Claude Review skipped it ` +
-                    `(it doesn't review a push by a bot or Copilot), so push to it, or take ${CLAUDE_LABEL} off ` +
-                    `and add it back.`
+                    `(it doesn't review a push by a bot or Copilot). Unless a review of the commit it merges main ` +
+                    `into is still running, push to it, or take ${CLAUDE_LABEL} off and add it back.`
                   );
                 }
                 return;

@@ -680,6 +680,16 @@ test("says so when review:claude is on but Claude Review skipped the head since,
     assert.deepEqual(notices(logs), [], `${why}\n${logs.join("\n")}`);
   }
 
+  // More checks than one page: a run that didn't skip may be past it.
+  {
+    const pr = onHead([skipped("2026-10-18T11:00:00Z", 2)]);
+    pr.headRef.target.statusCheckRollup.contexts.totalCount = 101;
+    const { addedLabels, logs } = await evaluate(pr, events);
+    const why = "more checks than one page";
+    assert.deepEqual(addedLabels, [], why);
+    assert.deepEqual(notices(logs), [], `${why}\n${logs.join("\n")}`);
+  }
+
   // Dependabot's PR gets the by-hand notice instead: Claude Review skips it whoever pushes or relabels it.
   const dependabot = await evaluate(onHead([skipped("2026-10-18T11:00:00Z", 2)], { author: { login: "dependabot[bot]" } }), events);
   assert.deepEqual(notices(dependabot.logs), [], dependabot.logs.join("\n"));

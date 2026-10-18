@@ -966,14 +966,22 @@ def test_a_hash_line_inside_a_block_scalar_is_content_not_a_comment(repo, tmp_pa
                 f"          prompt: |\n            {prompt}\n            Review it.\n"
                 f"          script: >-\n            {script}\n      # a comment\n")
 
-    cases = [("## Review", "#count = 0;", "## Check", "#count = 0;"),
-             ("## Review", "#count = 0;", "## Review", "#count = 1;"),
-             ("## Review", "#count = 0;", "Plain", "#count = 0;")]
-    for n, (old_prompt, old_script, new_prompt, new_script) in enumerate(cases):
+    cases = [(workflow("## Review", "#count = 0;"), workflow("## Check", "#count = 0;")),
+             (workflow("## Review", "#count = 0;"), workflow("## Review", "#count = 1;")),
+             # A pure deletion of the prompt's last line: only the base side is judged, and on the head side
+             # that line number is outside the block.
+             ("jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |\n"
+              "            Review it.\n            ## Review\n      # a comment\n",
+              "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n        with:\n          prompt: |\n"
+              "            Review it.\n      # a comment\n"),
+             # CRLF line endings.
+             (workflow("## Review", "#count = 0;").replace("\n", "\r\n"),
+              workflow("## Check", "#count = 0;").replace("\n", "\r\n"))]
+    for n, (old, new) in enumerate(cases):
         case = Repo(tmp_path / f"case{n}")
         case.workspace = repo.workspace
-        case.base = case.commit({".github/workflows/ci.yml": workflow(old_prompt, old_script)})
-        head = case.commit({".github/workflows/ci.yml": workflow(new_prompt, new_script)})
+        case.base = case.commit({".github/workflows/ci.yml": old.encode()})
+        head = case.commit({".github/workflows/ci.yml": new.encode()})
         (tmp_path / f"run{n}").mkdir()
         case.split(case.base, head, tmp_path / f"run{n}")
         assert pins in headers(case), (n, headers(case))
@@ -987,6 +995,34 @@ def test_a_comment_after_a_block_scalar_ends_is_still_a_comment(repo, tmp_path):
     head = repo.commit({".github/workflows/ci.yml": steps + "      # new note\n"})
     repo.split(repo.base, head, tmp_path)
     assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
+def test_a_comment_after_a_list_items_block_scalar_is_still_a_comment(repo, tmp_path):
+    # In "- run: |" the block's indent is its first line's, not the dash's: a sibling's note is outside it.
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n      - run: |\n          echo hi\n"
+    repo.base = repo.commit({".github/workflows/ci.yml": steps + "        # note about env\n        env:\n          A: 1\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + "        # new note\n        env:\n          A: 1\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert not [header for header in headers(repo) if header.startswith("_actions/")], headers(repo)
+
+
+def test_the_comment_check_reads_the_diff_by_newline_and_counts_a_removed_document_marker(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    # A comment holding U+0085, which str.splitlines() breaks at, before "-x": still only a comment.
+    one = Repo(tmp_path / "one")
+    one.workspace = repo.workspace
+    one.base = one.commit({".github/workflows/ci.yml": steps + "      # a\n"})
+    head = one.commit({".github/workflows/ci.yml": steps + "      # a\u0085-x\n"})
+    (tmp_path / "run1").mkdir()
+    one.split(one.base, head, tmp_path / "run1")
+    assert not [header for header in headers(one) if header.startswith("_actions/")], headers(one)
+    # Removing the "---" document marker shows as "----": a change, not a file header.
+    repo.base = repo.commit({".github/workflows/ci.yml": "---\n" + steps + "      # a\n"})
+    head = repo.commit({".github/workflows/ci.yml": steps + "      # b\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert any(header.startswith("_actions/") for header in headers(repo)), headers(repo)
 
 
 def test_the_pins_check_reads_a_comment_only_edit_as_text_whatever_the_prs_gitattributes_say(repo, tmp_path):

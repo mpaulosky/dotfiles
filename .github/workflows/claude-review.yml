@@ -851,14 +851,17 @@ jobs:
               fork = (git_out("merge-base", base, head) or b"").decode().strip()
               # No merge base, no base lines to place (an empty commit would read the index instead).
               inside = {"-": block_scalar_lines(fork, path) if fork else set(), "+": block_scalar_lines(head, path)}
-              number, judged = {"-": 0, "+": 0}, False
-              for line in (diff or b"").decode("utf-8", "replace").splitlines():
+              number, judged, in_hunk = {"-": 0, "+": 0}, False, False
+              # Lines end at \n only, as git numbers them; "+++" and "---" are headers only before the first hunk
+              # (a removed "---" document marker shows as "----").
+              for line in (diff or b"").decode("utf-8", "replace").split("\n"):
+                  line = line.removesuffix("\r")
                   hunk = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)", line)
                   if hunk:
-                      number = {"-": int(hunk[1]), "+": int(hunk[2])}
+                      number, in_hunk = {"-": int(hunk[1]), "+": int(hunk[2])}, True
                       continue
                   side = line[:1]
-                  if side not in ("+", "-") or line.startswith(("+++", "---")):
+                  if not in_hunk or side not in ("+", "-"):
                       continue
                   judged = True
                   body = line[1:].strip()
@@ -870,15 +873,24 @@ jobs:
 
           def block_scalar_lines(commit, path):
               """The numbers of path's lines at commit that sit inside a YAML block scalar (key: | or key: >):
-              every line after its header that is blank or indented deeper than the header's line."""
+              after its header, every line that is blank or indented at least as far as its first non-blank
+              line, which must be deeper than the header's line. As YAML has it, so in "- run: |" a sibling
+              key's line is outside."""
               text = (git_out("cat-file", "blob", f"{commit}:{path}") or b"").decode("utf-8", "replace")
-              inside, header = set(), None
+              inside, header, block = set(), None, None
               for number, line in enumerate(text.split("\n"), 1):
+                  line = line.removesuffix("\r")
                   indent = len(line) - len(line.lstrip(" \t"))
-                  if header is not None and (not line.strip() or indent > header):
-                      inside.add(number)
-                      continue
-                  header = indent if BLOCK_SCALAR.search(line) else None
+                  if header is not None:
+                      if not line.strip():
+                          inside.add(number)
+                          continue
+                      if block is None and indent > header:
+                          block = indent
+                      if block is not None and indent >= block:
+                          inside.add(number)
+                          continue
+                  header, block = (indent if BLOCK_SCALAR.search(line) else None), None
               return inside
 
 

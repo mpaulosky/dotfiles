@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
-import { COPILOT_REVIEWER, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
+import { COPILOT_REVIEWER, LOCAL_QUEUE_LABEL, LOCAL_QUEUE_LABEL_DEFINITION, SANDCASTLE_LABELS } from "./config.mts";
 import {
   addIssueLabel,
   addPullRequestLabel,
@@ -529,6 +529,12 @@ describe("ensureLabels", () => {
 
     const created = calls.filter((call) => call.args[1] === "create").map((call) => call.args[2]);
     assert.deepEqual(created, [...SANDCASTLE_LABELS.map((label) => label.name), LOCAL_QUEUE_LABEL]);
+  });
+
+  it("gives every label it creates by default a description GitHub accepts, at most 100 characters", () => {
+    for (const label of [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION]) {
+      assert.ok(label.description.length <= 100, `${label.name}'s description is ${label.description.length} characters`);
+    }
   });
 
   // Two runs starting together can both see a label missing; the second

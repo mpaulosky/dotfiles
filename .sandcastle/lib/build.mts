@@ -1143,12 +1143,28 @@ async function buildMarkedIssue(
         // A failed listing still hands back: the comment then names the
         // directory rather than each file.
         let files: string[] = [];
+        let listed = true;
         try {
           files = host.workflowFiles(base, gated, mergedMain);
         } catch (listError) {
+          listed = false;
           console.error(`  ⚠ #${issue.number}: listing the workflow files ${branch} changes failed: ${listError}`);
         }
         const change = { head: gated, files };
+        // The build's commits touch no workflow and the branch was pushed as a
+        // new one, so GitHub refused it only for main's change since `base`.
+        // The next round builds from the new main, which holds that change, and
+        // its push goes through: no local run is needed (#253).
+        if (branchAtBase !== undefined && !branchAtBase.created && listed && files.length === 0) {
+          log(`GitHub refused ${branch} only for a workflow change main made since ${base}, so the issue stays in the queue for the next round`);
+          return {
+            commits,
+            prUrl: undefined,
+            publishFailed: true,
+            outcome: "not published",
+            detail: "GitHub refused its push for a workflow change main made since the build started, so the next round builds it again",
+          };
+        }
         if (branchAtBase !== undefined) {
           // The refused push left the branch at base with no commits and no
           // PR; a stray one would send the next round down the existing-branch
@@ -1160,8 +1176,10 @@ async function buildMarkedIssue(
               console.error(`  ⚠ #${issue.number}: deleting the stray ${branch} at ${base} failed: ${deleteError}`);
             }
           }
+          let moved = false;
           try {
             host.moveToLocal(issue.number, branch, detail, change, branchAtBase.created);
+            moved = true;
             log(`GitHub refused the push even as an update from ${base}, so the issue moved to Sandcastle:local`);
           } catch (moveError) {
             console.error(
@@ -1173,7 +1191,9 @@ async function buildMarkedIssue(
             prUrl: undefined,
             publishFailed: true,
             outcome: "not published",
-            detail: "GitHub refused its push for a .github/workflows change, so it moved to Sandcastle:local",
+            detail: moved
+              ? "GitHub refused its push for a .github/workflows change, so it moved to Sandcastle:local"
+              : "GitHub refused its push for a .github/workflows change; moving it to Sandcastle:local failed",
           };
         }
         try {

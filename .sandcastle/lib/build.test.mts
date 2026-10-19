@@ -1572,6 +1572,79 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
     assert.equal(handBackWorkflowChangeCalls.length, 1);
   });
 
+  it("leaves the issue in the queue when the push of a new branch is refused only for main's workflow change", async () => {
+    const { moveToLocalCalls, handBackWorkflowChangeCalls, comments, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      createBranchError: "git push failed",
+      publishError: refusal,
+    });
+    buildHost.workflowFiles = (_from, to) => (to === newerMain ? mainChangedWorkflow.mainWorkflowFiles : []);
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(moveToLocalCalls, []);
+    assert.deepEqual(handBackWorkflowChangeCalls, []);
+    assert.deepEqual(comments, []);
+    assert.equal(result.publishFailed, true);
+    assert.equal(result.outcome, "not published");
+  });
+
+  it("moves the issue to Sandcastle:local when the branch was created at base, even if the build touches no workflow", async () => {
+    const { moveToLocalCalls, buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: refusal });
+    buildHost.workflowFiles = (_from, to) => (to === newerMain ? mainChangedWorkflow.mainWorkflowFiles : []);
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(moveToLocalCalls.length, 1);
+  });
+
+  it("moves the issue to Sandcastle:local when the build's own workflow files can't be listed", async () => {
+    const { moveToLocalCalls, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      createBranchError: "git push failed",
+      publishError: refusal,
+    });
+    buildHost.workflowFiles = (_from, to) => {
+      if (to === newerMain) return mainChangedWorkflow.mainWorkflowFiles;
+      throw new Error("git diff failed");
+    };
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(moveToLocalCalls.length, 1);
+  });
+
+  it("moves the issue to Sandcastle:local when the build itself changes a workflow and the branch wasn't created", async () => {
+    const { moveToLocalCalls, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      createBranchError: "git push failed",
+      publishError: refusal,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(moveToLocalCalls.length, 1);
+  });
+
+  it("reports in the run's detail that moving the issue failed, rather than that it moved", async () => {
+    const { buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: refusal });
+    buildHost.moveToLocal = () => {
+      throw new Error("gh issue edit failed: HTTP 502");
+    };
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.match(result.detail, /moving it to Sandcastle:local failed/);
+  });
+
+  it("reports in the run's detail that the issue moved when the move worked", async () => {
+    const { buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: refusal });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.match(result.detail, /so it moved to Sandcastle:local/);
+  });
+
   it("still resolves when moving the issue to Sandcastle:local itself fails", async () => {
     const { buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: refusal });
     buildHost.moveToLocal = () => {

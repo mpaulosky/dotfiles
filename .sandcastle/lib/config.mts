@@ -154,11 +154,12 @@ export const LOCAL_QUEUE_LABEL = "Sandcastle:local";
 
 // How the host creates LOCAL_QUEUE_LABEL at startup, apart from SANDCASTLE_LABELS,
 // so the move to it (lib/handback.mts#moveToLocalQueue) never finds the label
-// missing after it has already commented (#253).
+// missing after it has already commented (#253). GitHub refuses a label
+// description over 100 characters, which would fail every run at startup.
 export const LOCAL_QUEUE_LABEL_DEFINITION: SandcastleLabel = {
   name: LOCAL_QUEUE_LABEL,
   color: "5319E7",
-  description: "Sandcastle can't push this from GitHub Actions. Run it locally: SANDCASTLE_LABEL=Sandcastle:local pnpm run sandcastle.",
+  description: "Sandcastle can't push this from Actions. Run: SANDCASTLE_LABEL=Sandcastle:local pnpm run sandcastle",
 };
 
 // What a run builds from, resolved once at startup (see queueScopeFrom):

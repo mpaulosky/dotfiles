@@ -20,7 +20,7 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
@@ -400,6 +400,10 @@ async function setGitIdentity(sandbox: sandcastle.Sandbox, identity: HostIdentit
   }
 }
 
+const tamperedWorktreeComment = (branch: string) =>
+  `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
+  "person to look at. Don't run git in it.";
+
 const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktreePath, repoGitDir());
 
 // The live sandbox for `branch`, for a build and a follow-up pass
@@ -412,7 +416,8 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // follow-up pass holds an agent-written branch, so the worktree is checked
 // again before that close: Sandcastle's close() runs git in it, and one that
 // no longer points at this repository is left in place, with its sandbox, and
-// its problems added to the error.
+// its problems added to the error, a TamperedWorktreeError for the caller to
+// report. A check that itself fails counts as a tampered worktree.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
@@ -434,11 +439,20 @@ export async function createCheckedSandbox(
   try {
     await setGitIdentity(sandbox, hostIdentity());
   } catch (error) {
-    const tampered = checkWorktree(sandbox.worktreePath);
+    const reason = error instanceof Error ? error.message : String(error);
+    // The check itself can fail (the worktree gone, git failing). Then the
+    // worktree can't be vouched for, so it's treated as tampered with and the
+    // sandbox is left in place, with the check's failure added to the error.
+    let tampered: string[];
+    try {
+      tampered = checkWorktree(sandbox.worktreePath);
+    } catch (checkError) {
+      tampered = [`checking the worktree failed: ${checkError instanceof Error ? checkError.message : String(checkError)}`];
+    }
     if (tampered.length > 0) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(
+      throw new TamperedWorktreeError(
         `${reason}; left ${sandbox.worktreePath} and its sandbox in place, as the worktree was tampered with: ${tampered.join("; ")}`,
+        sandbox.worktreePath,
       );
     }
     await sandbox.close().catch(() => undefined);
@@ -566,7 +580,18 @@ async function buildMarkedIssue(
     host.log(`  #${issue.number} PR #${fresh.pr} was closed without merging, so the build starts from main: deleted ${fresh.deleted.join(", ")}`);
   }
 
-  const sandbox = await host.createSandbox(branch);
+  let sandbox: sandcastle.Sandbox;
+  try {
+    sandbox = await host.createSandbox(branch);
+  } catch (error) {
+    // The sandbox was left in place for a person, as the finally below does
+    // for a worktree it finds tampered with, so the issue says so too.
+    if (error instanceof TamperedWorktreeError) {
+      console.error(`  ✗ #${issue.number}: ${error.message}`);
+      host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
+    }
+    throw error;
+  }
 
   const promptArgs = issuePromptArgs(issue, branch);
   const commits: { sha: string }[] = [];
@@ -1010,11 +1035,7 @@ async function buildMarkedIssue(
     const problems = host.worktreeProblems(sandbox.worktreePath);
     if (problems.length > 0) {
       console.error(`  ✗ #${issue.number}: left ${sandbox.worktreePath} and its sandbox in place: ${problems.join("; ")}`);
-      host.commentOnIssue(
-        issue.number,
-        `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
-          "person to look at. Don't run git in it.",
-      );
+      host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
     } else {
       await sandbox.close();
     }

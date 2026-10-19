@@ -29,6 +29,7 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
+import { TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
@@ -731,6 +732,20 @@ describe("buildIssue publishing", () => {
 
     assert.equal(failed.publishFailed, true);
     assert.equal(nothingToPublish.publishFailed, false);
+  });
+
+  it("says so on the issue, and stops the round, when the sandbox was left in place for a tampered worktree", async () => {
+    const { comments, buildHost } = host([0, 0]);
+    const tampered: BuildHost = {
+      ...buildHost,
+      createSandbox: async () => {
+        throw new TamperedWorktreeError("setting the identity failed; left /work/tree in place", "/work/tree");
+      },
+    };
+
+    await assert.rejects(buildIssue(issue, branch, base, tampered), TamperedWorktreeError);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0]!.body, /no longer points at this repository/);
   });
 
   it("closes the sandbox when its worktree still points at this repository", async () => {
@@ -2047,10 +2062,40 @@ describe("createCheckedSandbox's git identity", () => {
           return worktreePath === "/work/tree" ? ["its .git doesn't point into this repository"] : [];
         },
       ),
-      /could not lock config file.*left \/work\/tree.*doesn't point into this repository/s,
+      (error: unknown) =>
+        error instanceof TamperedWorktreeError &&
+        error.worktreePath === "/work/tree" &&
+        /could not lock config file.*left \/work\/tree.*doesn't point into this repository/s.test(error.message),
     );
     assert.equal(closed, 0);
     assert.ok(checked.includes("/work/tree"));
+  });
+
+  it("leaves the sandbox in place, and keeps the identity error, when checking the worktree throws", async () => {
+    let closed = 0;
+    const sandbox = {
+      worktreePath: "/work/tree",
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: async () => {
+        closed += 1;
+        return {};
+      },
+    } as unknown as Sandbox;
+
+    await assert.rejects(
+      createCheckedSandbox(
+        "feature",
+        async () => sandbox,
+        () => ({ name: "Host Person" }),
+        (worktreePath) => {
+          if (worktreePath === "/work/tree") throw new Error("git rev-parse failed");
+          return [];
+        },
+      ),
+      (error: unknown) =>
+        error instanceof TamperedWorktreeError && /could not lock config file.*checking the worktree failed: git rev-parse failed/s.test(error.message),
+    );
+    assert.equal(closed, 0);
   });
 });
 

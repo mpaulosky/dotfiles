@@ -273,7 +273,11 @@ describe("lastingHolds", () => {
 // for a file is still one of the open ready issues it has to see, marked as held.
 describe("critiqueUnpicked", () => {
   const issue = (number: number) => pick(number, []);
-  const noteOf = (unpicked: object[], number: number) => (unpicked.find((i) => (i as { number: number }).number === number) as { heldNote?: unknown });
+  const noteOf = (unpicked: ReturnType<typeof critiqueUnpicked>, number: number) => {
+    const found = unpicked.find((i) => i.number === number);
+    assert.ok(found, `#${number} isn't among the unpicked issues`);
+    return found.heldNote;
+  };
 
   it("passes on every ready issue that was not kept, the issues held back for a file included", () => {
     const ready = [1, 2, 3, 4, 5].map(issue);
@@ -287,23 +291,23 @@ describe("critiqueUnpicked", () => {
     const unpicked = critiqueUnpicked([1, 2, 3, 4].map(issue), [{ number: 1 }], new Set([2, 4]));
 
     for (const number of [2, 4]) {
-      const note = noteOf(unpicked, number).heldNote;
-      assert.equal(typeof note, "string", `#${number} has no heldNote`);
-      assert.match(note as string, /held/i);
+      const note = noteOf(unpicked, number);
+      assert.ok(typeof note === "string", `#${number} has no heldNote`);
+      assert.match(note, /held/i);
     }
   });
 
   it("gives no note to an issue that is not held", () => {
     const unpicked = critiqueUnpicked([1, 2, 3].map(issue), [{ number: 1 }], new Set([2]));
 
-    assert.equal(noteOf(unpicked, 3).heldNote, undefined);
+    assert.equal(noteOf(unpicked, 3), undefined);
   });
 
   it("passes on every ready issue that was not kept, with no note, when none is held back", () => {
     const unpicked = critiqueUnpicked([1, 2, 3].map(issue), [{ number: 2 }], new Set());
 
     assert.deepEqual(unpicked.map((i) => i.number), [1, 3]);
-    assert.deepEqual(unpicked.map((i) => (i as { heldNote?: unknown }).heldNote), [undefined, undefined]);
+    assert.deepEqual(unpicked.map((i) => i.heldNote), [undefined, undefined]);
   });
 
   it("leaves a kept pick out even when it is also in the held set", () => {

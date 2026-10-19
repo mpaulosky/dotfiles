@@ -408,7 +408,7 @@ export function sweepPullRequests(
   // is the follow-up role's to answer (threadsForRole, and now `decide`
   // below), not left waiting on a person the way this count and the run
   // report's "waiting on a person" section describe it.
-  const humanThreads = (threads: SweepPullRequest["threads"]) =>
+  const countHumanThreads = (threads: SweepPullRequest["threads"]) =>
     threads.filter((thread) => !thread.resolved && !thread.byBot && github.isOwner(thread.author) !== true).length;
 
   for (const pr of openPrs) {
@@ -438,12 +438,12 @@ export function sweepPullRequests(
         // The PR is left alone this round, but its people's threads still
         // wait on them, so it stays listed, counted from the sweep's own
         // threads (#249).
-        const threads = humanThreads(pr.threads);
-        if (threads > 0) waitingPrs.push({ pr: pr.number, threads, answered: 0 });
+        const waitingThreads = countHumanThreads(pr.threads);
+        if (waitingThreads > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered: 0 });
         throw error;
       }
       const { pr: swept, answered } = thinned;
-      const waitingThreads = humanThreads(swept.threads);
+      const waitingThreads = countHumanThreads(swept.threads);
       if (waitingThreads > 0 || answered > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered });
       const decision = decide(swept, now, github.isOwner);
       followUp(swept, decision, github, log, outcomes);

@@ -139,6 +139,13 @@ describe("file overlap prompts", () => {
     assert.match(prompt, /`files`/);
     assert.match(prompt, /already held back/);
   });
+
+  // #254: the held issues reach the critique again, and the prompt says how to read their note.
+  it("tells the critique that an unpicked issue with a heldNote is held back and still counts for the dependency check", () => {
+    const prompt = read("critique-prompt.md");
+
+    assert.match(prompt, /`heldNote`/);
+  });
 });
 
 // #78: the follow-up role resolves a PR's merge conflicts and review

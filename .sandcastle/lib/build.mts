@@ -367,30 +367,71 @@ function commandOutput(error: unknown): string {
 // user.email, each undefined when the host has none.
 export type HostIdentity = { name?: string; email?: string };
 
+// The host's git identity, read in the main checkout as Sandcastle reads it
+// when a role starts. git exits non-zero for a key that isn't set, which
+// leaves that half undefined.
+export function liveHostIdentity(read: (...args: string[]) => string = git): HostIdentity {
+  const value = (key: string) => {
+    try {
+      return read("config", key) || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return { name: value("user.name"), email: value("user.email") };
+}
+
+// Set the host's identity as the sandbox's global git config. Sandcastle does
+// this only when a role starts, so a git command the host runs in a new
+// sandbox before any role, such as the follow-up pass's merge of main, had no
+// committer and failed with "Committer identity unknown" (#242). Each half is
+// set only when the host has it.
+async function setGitIdentity(sandbox: sandcastle.Sandbox, identity: HostIdentity): Promise<void> {
+  const settings: [string, string | undefined][] = [
+    ["user.name", identity.name],
+    ["user.email", identity.email],
+  ];
+  for (const [key, value] of settings) {
+    if (!value) continue;
+    const result = await sandbox.exec(`git config --global ${key} ${shellWord(value)}`);
+    if (result.exitCode !== 0) {
+      throw new Error(`setting the sandbox's git ${key} failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    }
+  }
+}
+
 const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktreePath, repoGitDir());
 
 // The live sandbox for `branch`, for a build and a follow-up pass
 // (lib/follow-up-pass.mts) alike. Sandcastle reuses a branch's worktree
 // that's still there, running git in it first, so that one is checked before
 // it's handed over.
+// The sandbox is handed over with the host's git identity already set (see
+// setGitIdentity). If setting it fails, the sandbox is closed and the error
+// thrown, so the caller doesn't run git in a sandbox that can't commit.
 //
 // `create` (what makes the sandbox, once the worktree is checked) and
 // `hostIdentity` (the host's git identity) are injected so tests can stand in
 // for Sandcastle, Docker and the host's git config.
-export function createCheckedSandbox(
+export async function createCheckedSandbox(
   branch: string,
   create: (branch: string) => Promise<sandcastle.Sandbox> = (name) =>
     sandcastle.createSandbox({ branch: name, sandbox: agentSandbox(), hooks, copyToWorktree }),
-  hostIdentity: () => HostIdentity = () => {
-    throw new Error("Not implemented");
-  },
+  hostIdentity: () => HostIdentity = liveHostIdentity,
 ): Promise<sandcastle.Sandbox> {
   const existing = worktreePathFor(process.cwd(), branch);
   const problems = existsSync(existing) ? worktreeProblems(existing) : [];
   if (problems.length > 0) {
-    return Promise.reject(new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`));
+    throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
-  return create(branch);
+  const sandbox = await create(branch);
+  try {
+    await setGitIdentity(sandbox, hostIdentity());
+  } catch (error) {
+    await sandbox.close().catch(() => undefined);
+    throw error;
+  }
+  return sandbox;
 }
 
 const liveHost: BuildHost = {
@@ -421,7 +462,8 @@ const liveHost: BuildHost = {
 };
 
 // `value` as one single-quoted shell word, for the commit and branch names
-// buildIssue puts in a sandbox command.
+// buildIssue puts in a sandbox command and the git identity setGitIdentity
+// does.
 function shellWord(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }

@@ -8,6 +8,7 @@ import {
   designComment,
   designNoteIn,
   latestDesignNote,
+  liveHostIdentity,
   isGitHubServerError,
   isWorkflowPushRejection,
   PR_BODY_LIMIT,
@@ -1998,11 +1999,55 @@ describe("createCheckedSandbox's git identity", () => {
     assert.equal((await sandbox.exec("git config --global user.name")).exitCode, 1);
   });
 
+  it("closes the sandbox and rejects when setting the identity fails", async () => {
+    let closed = 0;
+    const sandbox = {
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: async () => {
+        closed += 1;
+        return {};
+      },
+    } as unknown as Sandbox;
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" })),
+      /setting the sandbox's git user\.name failed: could not lock config file/,
+    );
+    assert.equal(closed, 1);
+  });
+
   it("sets only the name when the host has a name and no email", async (t) => {
     const { fake, sandbox } = await sandboxFor({ name: "Host Person" });
     t.after(() => fake.cleanup());
 
     assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), "Host Person");
     assert.equal((await sandbox.exec("git config --global user.email")).exitCode, 1);
+  });
+});
+
+describe("liveHostIdentity", () => {
+  it("reads the host's user.name and user.email with git config", () => {
+    const calls: string[][] = [];
+    const values: Record<string, string> = { "user.name": "Host Person", "user.email": "host@example.com" };
+    const identity = liveHostIdentity((...args) => {
+      calls.push(args);
+      return values[args[1] ?? ""] ?? "";
+    });
+
+    assert.deepEqual(identity, { name: "Host Person", email: "host@example.com" });
+    assert.deepEqual(calls, [["config", "user.name"], ["config", "user.email"]]);
+  });
+
+  it("leaves out a key git config fails on, as it does for one that isn't set", () => {
+    const identity = liveHostIdentity((...args) => {
+      if (args[1] === "user.name") throw new Error("git config user.name failed");
+      return "host@example.com";
+    });
+
+    assert.deepEqual(identity, { name: undefined, email: "host@example.com" });
+  });
+
+  it("leaves out a key git config reads as empty", () => {
+    assert.deepEqual(liveHostIdentity(() => ""), { name: undefined, email: undefined });
   });
 });

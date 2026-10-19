@@ -2019,10 +2019,38 @@ describe("createCheckedSandbox's git identity", () => {
     } as unknown as Sandbox;
 
     await assert.rejects(
-      createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" })),
+      createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" }), () => []),
       /setting the sandbox's git user\.name failed: could not lock config file/,
     );
     assert.equal(closed, 1);
+  });
+
+  it("leaves the sandbox in place and reports the problems when setting the identity fails in a tampered worktree", async () => {
+    let closed = 0;
+    const sandbox = {
+      worktreePath: "/work/tree",
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: async () => {
+        closed += 1;
+        return {};
+      },
+    } as unknown as Sandbox;
+    const checked: string[] = [];
+
+    await assert.rejects(
+      createCheckedSandbox(
+        "feature",
+        async () => sandbox,
+        () => ({ name: "Host Person" }),
+        (worktreePath) => {
+          checked.push(worktreePath);
+          return worktreePath === "/work/tree" ? ["its .git doesn't point into this repository"] : [];
+        },
+      ),
+      /could not lock config file.*left \/work\/tree.*doesn't point into this repository/s,
+    );
+    assert.equal(closed, 0);
+    assert.ok(checked.includes("/work/tree"));
   });
 });
 

@@ -408,19 +408,25 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // it's handed over. The sandbox is handed over with the host's git identity
 // already set (see setGitIdentity); if setting it fails, the sandbox is closed
 // and the error thrown, so the caller doesn't run git in a sandbox that can't
-// commit.
+// commit. Creating the sandbox runs hooks over the worktree, which on a
+// follow-up pass holds an agent-written branch, so the worktree is checked
+// again before that close: Sandcastle's close() runs git in it, and one that
+// no longer points at this repository is left in place, with its sandbox, and
+// its problems added to the error.
 //
-// `create` (what makes the sandbox, once the worktree is checked) and
-// `hostIdentity` (the host's git identity) are injected so tests can stand in
-// for Sandcastle, Docker and the host's git config.
+// `create` (what makes the sandbox, once the worktree is checked),
+// `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
+// link check) are injected so tests can stand in for Sandcastle, Docker, the
+// host's git config and the main checkout.
 export async function createCheckedSandbox(
   branch: string,
   create: (branch: string) => Promise<sandcastle.Sandbox> = (name) =>
     sandcastle.createSandbox({ branch: name, sandbox: agentSandbox(), hooks, copyToWorktree }),
   hostIdentity: () => HostIdentity = liveHostIdentity,
+  checkWorktree: (worktreePath: string) => string[] = worktreeProblems,
 ): Promise<sandcastle.Sandbox> {
   const existing = worktreePathFor(process.cwd(), branch);
-  const problems = existsSync(existing) ? worktreeProblems(existing) : [];
+  const problems = existsSync(existing) ? checkWorktree(existing) : [];
   if (problems.length > 0) {
     throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
@@ -428,6 +434,13 @@ export async function createCheckedSandbox(
   try {
     await setGitIdentity(sandbox, hostIdentity());
   } catch (error) {
+    const tampered = checkWorktree(sandbox.worktreePath);
+    if (tampered.length > 0) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `${reason}; left ${sandbox.worktreePath} and its sandbox in place, as the worktree was tampered with: ${tampered.join("; ")}`,
+      );
+    }
     await sandbox.close().catch(() => undefined);
     throw error;
   }

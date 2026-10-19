@@ -280,8 +280,9 @@ export type BuildHost = {
   // from `base` to `commit` publish, against one of the sandbox's secrets or
   // a token shape, or undefined when nothing matches. Carries only where the
   // match sits and what kind it is, never the matched text, so logging or
-  // reporting it never risks the secret itself (#324).
-  leaksSecret(base: string, commit: string): SecretMatch | undefined;
+  // reporting it never risks the secret itself (#324). `mergedMain` is the
+  // main commit syncWithMain merged in, whose history isn't scanned (#224).
+  leaksSecret(base: string, commit: string, mergedMain?: string): SecretMatch | undefined;
   // Deletes the refs of `branch` that still hold the work of the issue's
   // latest Sandcastle PR, when that PR was closed without merging and a
   // person has since re-queued the issue, so the build starts from main
@@ -294,6 +295,12 @@ export type BuildHost = {
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main
   // while it ran. Throws when the fetch fails.
   latestMain(): string;
+  // Whether `commit` is the commit GitHub's main names right now, asked of
+  // the remote itself (git ls-remote against origin, whose URL is in the
+  // read-only .git/config) rather than read from refs/remotes/origin/main,
+  // which agents can write. buildIssue leaves a merged main's history out of
+  // the secret scan only when this holds (#224). Throws when it can't ask.
+  isRemoteMain(commit: string): boolean;
   // What's wrong with how the worktree finds its repository (see
   // lib/host-safety.mts); empty when nothing is.
   worktreeProblems(worktreePath: string): string[];
@@ -306,8 +313,10 @@ export type BuildHost = {
   limits: RunLimits;
   // The .github/workflows/ files the commits from `base` to `commit` touch,
   // for the hand-back comment of a push GitHub refused for them, and to tell
-  // whether merging main in would bring in a workflow change (#223).
-  workflowFiles(base: string, commit: string): string[];
+  // whether merging main in would bring in a workflow change (#223), leaving
+  // out the history of `mergedMain`, the main commit syncWithMain merged in
+  // (#224).
+  workflowFiles(base: string, commit: string, mergedMain?: string): string[];
   // Whether the token that pushes the branch lacks the Workflows permission,
   // so GitHub refuses a push carrying a workflow change. True in GitHub
   // Actions; a local `Sandcastle:local` run pushes with the owner's own `gh`
@@ -335,8 +344,11 @@ export function publicErrorText(text: string, holdsSecret: (text: string) => boo
 // creates or updates a workflow file, even one a later commit reverts, so the
 // files come from the commits (a two-dot range: the branch side only), not
 // from the net diff, which would list nothing for an edit and its revert.
-export function workflowLogArgs(from: string, to: string): string[] {
-  return ["log", "--name-only", "--format=", `${from}..${to}`, "--", ".github/workflows/"];
+// With `mergedMain`, the main commit merged into the branch after `from`, its
+// history is left out too: main's workflow changes aren't the branch's (#224).
+export function workflowLogArgs(from: string, to: string, mergedMain?: string): string[] {
+  const exclude = mergedMain === undefined ? [] : [`^${mergedMain}`];
+  return ["log", "--name-only", "--format=", `${from}..${to}`, ...exclude, "--", ".github/workflows/"];
 }
 
 // The files in workflowLogArgs' output, each once, in first-seen order.
@@ -461,6 +473,20 @@ export async function createCheckedSandbox(
   return sandbox;
 }
 
+// Whether origin's main is `commit` now, by its answer to git ls-remote. Only
+// equality with that tip is trusted: whether a commit is an ancestor of it
+// would be read from the shared .git (commit-graph, loose objects), which
+// agents can write. ls-remote matches refs by their tail, so the line is
+// picked by its exact ref name: a branch like a/refs/heads/main also matches
+// and can sort first.
+export function remoteMainIs(commit: string, run: (...args: string[]) => string = git): boolean {
+  const tip = run("ls-remote", "origin", "refs/heads/main")
+    .split("\n")
+    .map((line) => line.split(/\s+/))
+    .find(([, ref]) => ref === "refs/heads/main")?.[0];
+  return tip !== undefined && tip !== "" && tip === commit;
+}
+
 const liveHost: BuildHost = {
   createSandbox: createCheckedSandbox,
   commitsAhead,
@@ -475,15 +501,16 @@ const liveHost: BuildHost = {
   latestDesignNote: (issueNumber) => latestDesignNote(issueNumber),
   markBuilding: (issueNumber) => claimBuildingLabel(issueNumber),
   unmarkBuilding: (issueNumber) => releaseBuildingLabel(issueNumber),
-  leaksSecret: (base, commit) => firstSecretMatch(base, commit, sandboxSecrets()),
+  leaksSecret: (base, commit, mergedMain) => firstSecretMatch(base, commit, sandboxSecrets(), git, mergedMain),
   startFromMain: (issueNumber, branch, base) => sweepStartFromMain(issueNumber, branch, base),
   publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), containsSandboxSecret),
   publish,
   latestMain: fetchMain,
+  isRemoteMain: (commit) => remoteMainIs(commit),
   worktreeProblems,
   log: console.log,
   limits: runLimits,
-  workflowFiles: (from, to) => workflowFilesFrom(git(...workflowLogArgs(from, to))),
+  workflowFiles: (from, to, mergedMain) => workflowFilesFrom(git(...workflowLogArgs(from, to, mergedMain))),
   pushRefusesWorkflowChanges: process.env.GITHUB_ACTIONS === "true",
   handBackWorkflowChange: (issueNumber, branch, detail, change) => handBackWorkflowChange(issueNumber, branch, detail, change),
 };
@@ -801,19 +828,40 @@ async function buildMarkedIssue(
     return cleanAt();
   }
 
+  // The merged main commit, kept only when GitHub's main is that commit right
+  // now, asked of the remote rather than read from the origin/main ref in the
+  // shared .git, which agents can write: a ref they moved onto a commit of
+  // their own would otherwise hide a leak in it from the scan, and the
+  // pinned `base` can't protect a range the exclusion shrinks (#224). When
+  // main has moved on (PR Auto-Merge landing another PR during the gate), or
+  // the remote can't be asked, nothing is left out and the scan reads
+  // everything past `base`, as it did before.
+  function trustedMergedMain(mergedMain: string | undefined): string | undefined {
+    if (mergedMain === undefined) return undefined;
+    try {
+      if (host.isRemoteMain(mergedMain)) return mergedMain;
+      log("the merged main commit is no longer GitHub's main, so the scan reads main's commits too");
+    } catch (error) {
+      console.error(`  ⚠ #${issue.number}: asking GitHub for main failed, so the scan reads main's commits too: ${error}`);
+    }
+    return undefined;
+  }
+
   // Merge in what landed on main while the roles ran, so the PR doesn't open
   // already behind it: a build can take an hour, and Sandcastle pushes with
   // hooks off, so the pre-push hook's behind-main check never runs on it.
   // Returns the reviewed commit the merge went onto, so checkpoint 2 can fall
-  // back to it, or undefined when nothing was merged. A merge that conflicts
-  // is aborted and the branch published as it is: the follow-up pass
-  // (lib/follow-up-pass.mts) merges main into a conflicted PR with a role to
-  // resolve it. A failed fetch publishes without the merge too, since the
-  // work is already reviewed and the follow-up pass updates a PR behind main.
-  // So does a main that changed a workflow file since the branch's head, but
-  // there nothing in Actions can bring main in afterwards (see below).
+  // back to it, and the main commit it merged, so the secret scan and the
+  // workflow listing can leave main's own commits out (#224), or undefined
+  // when nothing was merged. A merge that conflicts is aborted and the branch
+  // published as it is: the follow-up pass (lib/follow-up-pass.mts) merges
+  // main into a conflicted PR with a role to resolve it. A failed fetch
+  // publishes without the merge too, since the work is already reviewed and
+  // the follow-up pass updates a PR behind main. So does a main that changed
+  // a workflow file since the branch's head, but there nothing in Actions can
+  // bring main in afterwards (see below).
   // Throws when an aborted merge can't be undone.
-  async function syncWithMain(): Promise<string | undefined> {
+  async function syncWithMain(): Promise<{ reviewedHead: string; mergedMain: string } | undefined> {
     let main: string;
     try {
       main = host.latestMain();
@@ -857,7 +905,7 @@ async function buildMarkedIssue(
     const merge = await sandbox.exec(`git merge --no-edit -m ${shellWord(`Merge main into ${branch}`)} ${shellWord(main)}`);
     if (merge.exitCode === 0) {
       log("merged main in before checkpoint 2");
-      return reviewedHead;
+      return { reviewedHead, mergedMain: main };
     }
     if (!(await restoredTo(reviewedHead, "git merge --abort"))) {
       throw new Error(`the conflicting merge of main couldn't be undone, so ${branch} isn't back at ${reviewedHead}`);
@@ -871,19 +919,23 @@ async function buildMarkedIssue(
   // would publish unreviewed edits to repair what main broke, and a red main
   // would fail every build that ends while it's red. When that run is red,
   // the branch goes back to the reviewed commit and is gated as it would have
-  // been without the merge, leaving main to the follow-up pass.
-  async function checkpoint2Passes(): Promise<string | undefined> {
-    const reviewedHead = await syncWithMain();
-    if (reviewedHead !== undefined) {
+  // been without the merge, leaving main to the follow-up pass. Returns the
+  // commit the gate passed on, with the main commit merged into it when the
+  // merge stayed, or undefined when the gate failed.
+  async function checkpoint2Passes(): Promise<{ gated: string; mergedMain?: string } | undefined> {
+    const synced = await syncWithMain();
+    if (synced !== undefined) {
+      const { reviewedHead, mergedMain } = synced;
       const merged = await runGate(sandbox);
       log(`checkpoint 2: gate ${merged.passed ? "passed" : "failed"} with main merged in`);
-      if (merged.passed) return merged.head;
+      if (merged.passed) return merged.head === undefined ? undefined : { gated: merged.head, mergedMain };
       if (!(await restoredTo(reviewedHead, `git reset --hard ${shellWord(reviewedHead)}`))) {
         throw new Error(`the merge of main couldn't be undone, so ${branch} isn't back at ${reviewedHead}`);
       }
       log("main broke the gate once merged in, so it's left for the follow-up pass and the branch is gated without it");
     }
-    return gatePasses(2);
+    const gated = await gatePasses(2);
+    return gated === undefined ? undefined : { gated };
   }
 
   try {
@@ -945,15 +997,17 @@ async function buildMarkedIssue(
       reviewed = false;
     }
 
-    const gated = await checkpoint2Passes();
-    if (gated === undefined) return unpublished("gate failed", "checkpoint 2");
+    const checkpoint2 = await checkpoint2Passes();
+    if (checkpoint2 === undefined) return unpublished("gate failed", "checkpoint 2");
+    const { gated } = checkpoint2;
+    const mergedMain = trustedMergedMain(checkpoint2.mergedMain);
 
     // The push is public, and the sandbox holds the Claude token or API key.
     // The comment doesn't say where the secret is, since the issue is public
     // too. The log and the run report do (#324): the location names no part
     // of the secret, and without it nobody can tell a leak from a false
     // positive once the runner, the only holder of the commit, is gone.
-    const leak = host.leaksSecret(base, gated);
+    const leak = host.leaksSecret(base, gated, mergedMain);
     if (leak !== undefined) {
       const where = describeSecretMatch(leak);
       log(`✗ a commit holds a secret (${where}), so ${branch} isn't published.`);
@@ -991,7 +1045,7 @@ async function buildMarkedIssue(
           // directory rather than each file.
           let files: string[] = [];
           try {
-            files = host.workflowFiles(base, gated);
+            files = host.workflowFiles(base, gated, mergedMain);
           } catch (listError) {
             console.error(`  ⚠ #${issue.number}: listing the workflow files ${branch} changes failed: ${listError}`);
           }

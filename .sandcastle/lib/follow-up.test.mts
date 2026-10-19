@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BranchRefs } from "./branches.mts";
-import { COPILOT_REVIEWER, PR_MARKER } from "./config.mts";
-import type { ClosedPullRequest, IssueEvent, PullRequestIdentity, TimelineLabelEvent } from "./github.mts";
+import { COPILOT_REVIEWER, FOLLOW_UP_REPLY_MARKER, PR_MARKER } from "./config.mts";
+import type { ClosedPullRequest, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent } from "./github.mts";
 import {
   closedPrHandBackComment,
   closedWithoutMerging,
@@ -14,6 +14,7 @@ import {
   startFromMain,
   sweepPullRequests,
   sweepSkipReason,
+  threadStanding,
   type FollowUpGitHub,
   type SweepPullRequest,
 } from "./follow-up.mts";
@@ -549,6 +550,7 @@ function stubGithub({
   timelines = {},
   isOwner = () => true,
   pullRequestEvents = () => [],
+  reviewThreads,
 }: {
   prs?: SweepPullRequest[];
   closed?: ClosedPullRequest[];
@@ -557,7 +559,12 @@ function stubGithub({
   timelines?: Record<number, TimelineLabelEvent[]>;
   isOwner?: (login: string | null) => boolean | undefined;
   pullRequestEvents?: (number: number) => IssueEvent[];
+  // By default each PR's full threads are built from its summaries, one
+  // comment each, so a sweep test that doesn't care about replies sees the
+  // threads it set up.
+  reviewThreads?: (number: number) => ReviewThread[];
 } = {}) {
+  const reviewThreadCalls: number[] = [];
   const requestedReviews: string[] = [];
   const updatedBranches: { number: number; expectedHeadSha: string }[] = [];
   const handBacks: { issueNumber: number; reason: string; body: string }[] = [];
@@ -578,9 +585,81 @@ function stubGithub({
     isOwner,
     pullRequestEvents,
     addPullRequestLabel: (number, label) => void addedPrLabels.push({ number, label }),
+    reviewThreads: (number) => {
+      reviewThreadCalls.push(number);
+      if (reviewThreads !== undefined) return reviewThreads(number);
+      return (prs.find((candidate) => candidate.number === number)?.threads ?? []).map((thread, index) => ({
+        id: `RT_${number}_${index}`,
+        resolved: thread.resolved,
+        outdated: false,
+        path: null,
+        line: null,
+        comments: [{ author: thread.author ?? "", byBot: thread.byBot, body: "", url: "" }],
+      }));
+    },
   };
-  return { github, requestedReviews, updatedBranches, handBacks, closedCalls, addedPrLabels };
+  return { github, requestedReviews, updatedBranches, handBacks, closedCalls, addedPrLabels, reviewThreadCalls };
 }
+
+// A thread of review comments, the first by `author`. `byBot` marks a bot's
+// comment.
+function thread(author: string, byBot: boolean, more: { author: string; body: string }[] = [], resolved = false): ReviewThread {
+  return {
+    id: "RT_1",
+    resolved,
+    outdated: false,
+    path: null,
+    line: null,
+    comments: [
+      { author, byBot, body: "Please change this.", url: "" },
+      ...more.map((comment) => ({ ...comment, byBot: false, url: "" })),
+    ],
+  };
+}
+
+const hostReply = { author: HOST, body: `${FOLLOW_UP_REPLY_MARKER}\nDeclined: it reads better as it is.` };
+const ownerIs = (owner: string) => (login: string | null) => (login === null ? false : login === owner);
+
+// #225: the one rule the sweep and the pass share to decide whether a thread
+// starts a pass.
+describe("threadStanding", () => {
+  it("is \"resolved\" for a resolved thread", () => {
+    assert.equal(threadStanding(thread("owner", false, [], true), ownerIs("owner"), HOST), "resolved");
+  });
+
+  it("is \"bot\" for an unresolved thread a bot opened", () => {
+    assert.equal(threadStanding(thread(COPILOT_REVIEWER, true), ownerIs("owner"), HOST), "bot");
+  });
+
+  it("is \"answered\" for a bot thread whose last word is the host's marker reply", () => {
+    assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [hostReply]), ownerIs("owner"), HOST), "answered");
+  });
+
+  it("is \"owner\" for an unresolved thread the owner opened", () => {
+    assert.equal(threadStanding(thread("owner", false), ownerIs("owner"), HOST), "owner");
+  });
+
+  it("is \"answered\" for an owner thread whose last word is the host's marker reply", () => {
+    assert.equal(threadStanding(thread("owner", false, [hostReply]), ownerIs("owner"), HOST), "answered");
+  });
+
+  it("is \"owner\" again once the owner replies after the host's answer", () => {
+    assert.equal(threadStanding(thread("owner", false, [hostReply, { author: "owner", body: "Still not convinced." }]), ownerIs("owner"), HOST), "owner");
+  });
+
+  it("is \"owner\" when a stranger quotes the marker after the owner", () => {
+    const spoofed = { author: "stranger", body: `${FOLLOW_UP_REPLY_MARKER}\nDeclined.` };
+    assert.equal(threadStanding(thread("owner", false, [spoofed]), ownerIs("owner"), HOST), "owner");
+  });
+
+  it("is \"human\" for a thread a stranger opened", () => {
+    assert.equal(threadStanding(thread("stranger", false), ownerIs("owner"), HOST), "human");
+  });
+
+  it("is \"unknown\" when the first author can't be confirmed as the owner or not", () => {
+    assert.equal(threadStanding(thread("maybe-owner", false), () => undefined, HOST), "unknown");
+  });
+});
 
 describe("sweepPullRequests", () => {
   it("skips a PR a collaborator opened from a matching branch, touching nothing", () => {
@@ -744,6 +823,7 @@ describe("sweepPullRequests", () => {
       isOwner: () => true,
       pullRequestEvents: () => [],
       addPullRequestLabel: () => {},
+      reviewThreads: () => [],
     };
 
     sweepPullRequests(github, () => {}, NOW);
@@ -790,6 +870,183 @@ describe("sweepPullRequests", () => {
     assert.equal(passes[0]?.number, 101);
   });
 
+  // #225: the sweep read only each thread's first comment, so a thread the
+  // host had answered still counted as open. Such a PR was flagged every
+  // round, and `decide` returns needs-pass before its update-branch and
+  // Copilot re-request branches, so it was never updated or re-reviewed.
+  it("doesn't flag a PR whose only open owner thread the host has answered, and updates it from main", () => {
+    const { github, updatedBranches } = stubGithub({
+      prs: [pr({ mergeStateStatus: "BEHIND", threads: [{ resolved: false, byBot: false, author: "owner" }] })],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
+    });
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, []);
+    assert.deepEqual(updatedBranches, [{ number: 101, expectedHeadSha: "a".repeat(40) }]);
+  });
+
+  it("asks Copilot again for a PR whose only open owner thread the host has answered", () => {
+    const completedAt = new Date(NOW - 61 * 60 * 1000).toISOString();
+    const { github, requestedReviews } = stubGithub({
+      prs: [
+        pr({
+          reviews: [],
+          reviewRequests: [],
+          checks: [{ name: "build", completed: true, green: true, completedAt }],
+          threads: [{ resolved: false, byBot: false, author: "owner" }],
+        }),
+      ],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
+    });
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, []);
+    assert.deepEqual(requestedReviews, ["PR_101"]);
+  });
+
+  it("doesn't flag a PR for a bot thread the host answered but couldn't resolve", () => {
+    const { github } = stubGithub({
+      prs: [pr({ threads: [{ resolved: false, byBot: true, author: COPILOT_REVIEWER }] })],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread(COPILOT_REVIEWER, true, [hostReply])],
+    });
+
+    const { needsPass, passes } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, []);
+    assert.deepEqual(passes, []);
+  });
+
+  it("flags a PR again once the owner replies after the host's answer", () => {
+    const { github } = stubGithub({
+      prs: [pr({ threads: [{ resolved: false, byBot: false, author: "owner" }] })],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply, { author: "owner", body: "Still not convinced." }])],
+    });
+
+    const { needsPass, passes } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, [101]);
+    assert.match(passes[0]?.reasons.join("\n") ?? "", /1 unresolved owner thread\(s\)/);
+  });
+
+  it("reads no review threads for a PR with no unresolved bot or owner thread", () => {
+    const { github, reviewThreadCalls } = stubGithub({
+      prs: [
+        pr({
+          threads: [
+            { resolved: false, byBot: false, author: "stranger" },
+            { resolved: true, byBot: true, author: COPILOT_REVIEWER },
+          ],
+        }),
+      ],
+      isOwner: ownerIs("owner"),
+    });
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(reviewThreadCalls, []);
+  });
+
+  it("lists a conflicted PR waiting on the owner's answered thread, and flags it for the conflict", () => {
+    const { github, reviewThreadCalls } = stubGithub({
+      prs: [pr({ mergeStateStatus: "DIRTY", threads: [{ resolved: false, byBot: false, author: "owner" }] })],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
+    });
+    const waiting = new WaitingPrReport();
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW, undefined, waiting);
+
+    assert.deepEqual(needsPass, [101]);
+    assert.deepEqual(reviewThreadCalls, [101]);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 0, answered: 1 }]);
+  });
+
+  // The PR's own update from main starts new checks, so the round after it
+  // `decide` waits; the PR still has to show as waiting on the owner.
+  it("lists a PR waiting on the owner's answered thread while its checks are still running", () => {
+    const { github, reviewThreadCalls } = stubGithub({
+      prs: [
+        pr({
+          checks: [{ name: "build", completed: false, green: false, completedAt: null }],
+          threads: [{ resolved: false, byBot: false, author: "owner" }],
+        }),
+      ],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
+    });
+    const waiting = new WaitingPrReport();
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW, undefined, waiting);
+
+    assert.deepEqual(needsPass, []);
+    assert.deepEqual(reviewThreadCalls, [101]);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 0, answered: 1 }]);
+  });
+
+  it("still flags a conflicted PR when its review threads can't be read", () => {
+    const { github } = stubGithub({
+      prs: [pr({ mergeStateStatus: "DIRTY", threads: [{ resolved: false, byBot: true, author: COPILOT_REVIEWER }] })],
+      reviewThreads: () => {
+        throw new Error("gh api failed: HTTP 502");
+      },
+    });
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(needsPass, [101]);
+  });
+
+  it("lists a PR on the waiting list for an owner thread the host has answered", () => {
+    const { github } = stubGithub({
+      prs: [pr({ threads: [{ resolved: false, byBot: false, author: "owner" }] })],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
+    });
+    const waiting = new WaitingPrReport();
+
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW, undefined, waiting);
+
+    assert.deepEqual(needsPass, []);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 0, answered: 1 }]);
+  });
+
+  it("leaves a PR alone this round when its review threads can't be read, and still sweeps the rest", () => {
+    const unreadable = pr({ number: 101, mergeStateStatus: "BEHIND", threads: [{ resolved: false, byBot: false, author: "owner" }] });
+    const other = pr({
+      number: 102,
+      id: "PR_102",
+      headRefOid: "b".repeat(40),
+      headRefName: "feature/43-add-sorting",
+      mergeStateStatus: "BEHIND",
+      reviews: [{ author: COPILOT_REVIEWER, commitOid: "b".repeat(40) }],
+    });
+    const { github, updatedBranches } = stubGithub({
+      prs: [unreadable, other],
+      issues: [
+        { number: 42, labels: [] },
+        { number: 43, labels: [] },
+      ],
+      isOwner: ownerIs("owner"),
+      reviewThreads: (number) => {
+        if (number === 101) throw new Error("gh api failed: HTTP 502");
+        return [];
+      },
+    });
+    const lines: string[] = [];
+
+    const { needsPass } = sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+    assert.ok(lines.some((line) => line.includes("Couldn't follow up PR #101")), lines.join("\n"));
+    assert.ok(!needsPass.includes(101));
+    assert.deepEqual(updatedBranches, [{ number: 102, expectedHeadSha: "b".repeat(40) }]);
+  });
+
   it("still updates the next PR when one PR's update fails", () => {
     const failing = pr({ number: 101, mergeStateStatus: "BEHIND" });
     const ok = pr({
@@ -819,6 +1076,7 @@ describe("sweepPullRequests", () => {
       isOwner: () => true,
       pullRequestEvents: () => [],
       addPullRequestLabel: () => {},
+      reviewThreads: () => [],
     };
     const lines: string[] = [];
 
@@ -982,6 +1240,7 @@ describe("sweepPullRequests", () => {
       isOwner: () => true,
       pullRequestEvents: () => [],
       addPullRequestLabel: () => {},
+      reviewThreads: () => [],
     };
     const outcomes = new OutcomeReport();
 
@@ -1009,7 +1268,7 @@ describe("sweepPullRequests", () => {
 
     sweepPullRequests(github, () => {}, NOW, undefined, waiting);
 
-    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 1 }]);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 1, answered: 0 }]);
   });
 
   // The waiting count must match lib/follow-up-pass.mts#threadsForRole's

@@ -37,7 +37,7 @@ import {
   GATE_FIXER_ATTEMPTS,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import { withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
+import { threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
   failedCheckLogs,
@@ -94,25 +94,15 @@ export type PromptThread = {
 };
 
 // Sorts a PR's open review threads for the follow-up role (runPass's step
-// 2). A resolved thread is dropped outright. A thread whose first comment's
-// author is a bot goes to the role as "bot". A thread the repository owner
-// opened goes to the role as "owner", unless the last comment by the owner or
-// `hostLogin` is the host's own reply (by `hostLogin`, opening with
-// FOLLOW_UP_REPLY_MARKER, lib/config.mts): that means the host already
-// answered it and is waiting on the owner, so it's dropped from every list
-// rather than handed to the role again. Comments by anyone else don't count
-// either way, so a stranger can neither hide an owner thread by quoting the
-// marker nor reopen one by replying after the host. A bot thread whose last
-// comment by a bot, the owner or the host is the host's own reply is dropped
-// too: it's open again only because resolving it failed (the pass summary
-// says so) or the owner unresolved it, and either way it's a person's now,
-// not the role's to answer twice. Any other thread,
-// including one with no author at all, goes to `leftForHuman`
-// (lib/report.mts#recordHumanThread records each one). A thread whose first
-// author `isOwner` can't answer for goes to `unknown`, so a pass never
-// decides from partial information: runPass skips the round when `unknown`
-// isn't empty. Inside a kept thread, a comment by neither a bot nor the
-// owner is dropped before the thread reaches the role.
+// 2) by their threadStanding (lib/follow-up.mts), the rule the sweep flags
+// a PR by too. A resolved thread, or one the host has already answered, is
+// dropped outright. A bot's or the repository owner's thread goes to the
+// role as "bot" or "owner". Any other thread, including one with no author
+// at all, goes to `leftForHuman` (lib/report.mts#recordHumanThread records
+// each one). A thread whose first author `isOwner` can't answer for goes to
+// `unknown`, so a pass never decides from partial information: runPass skips
+// the round when `unknown` isn't empty. Inside a kept thread, a comment by
+// neither a bot nor the owner is dropped before the thread reaches the role.
 export function threadsForRole(
   threads: readonly ReviewThread[],
   isOwner: IsOwner,
@@ -121,44 +111,35 @@ export function threadsForRole(
   const forRole: PromptThread[] = [];
   const leftForHuman: ReviewThread[] = [];
   const unknown: ReviewThread[] = [];
-  const hostReply = (comment: ReviewThread["comments"][number] | undefined) =>
-    comment?.author === hostLogin && comment.body.startsWith(FOLLOW_UP_REPLY_MARKER);
   for (const thread of threads) {
-    if (thread.resolved) continue;
-    const first = thread.comments[0];
-    let from: PromptThread["from"];
-    if (first?.byBot === true) {
-      const last = thread.comments.findLast(
-        (comment) => comment.byBot || comment.author === hostLogin || isOwner(comment.author) === true,
-      );
-      if (hostReply(last)) continue;
-      from = "bot";
-    } else {
-      const owner = first === undefined ? false : isOwner(first.author);
-      if (owner === undefined) {
+    const standing = threadStanding(thread, isOwner, hostLogin);
+    switch (standing) {
+      case "resolved":
+      case "answered":
+        continue;
+      case "unknown":
         unknown.push(thread);
         continue;
-      }
-      if (!owner) {
+      case "human":
         leftForHuman.push(thread);
         continue;
-      }
-      const last = thread.comments.findLast((comment) => comment.author === hostLogin || isOwner(comment.author) === true);
-      if (hostReply(last)) continue;
-      from = "owner";
+      case "bot":
+      case "owner":
+        forRole.push({
+          threadId: thread.id,
+          from: standing,
+          path: thread.path,
+          line: thread.line,
+          outdated: thread.outdated,
+          // A comment whose author's ownership can't be confirmed is dropped
+          // too: only what's known to be a bot's or the owner's reaches the
+          // role.
+          comments: thread.comments
+            .filter((comment) => comment.byBot || isOwner(comment.author) === true)
+            .map((comment) => ({ author: comment.author, body: comment.body })),
+        });
+        continue;
     }
-    forRole.push({
-      threadId: thread.id,
-      from,
-      path: thread.path,
-      line: thread.line,
-      outdated: thread.outdated,
-      // A comment whose author's ownership can't be confirmed is dropped too:
-      // only what's known to be a bot's or the owner's reaches the role.
-      comments: thread.comments
-        .filter((comment) => comment.byBot || isOwner(comment.author) === true)
-        .map((comment) => ({ author: comment.author, body: comment.body })),
-    });
   }
   return { forRole, leftForHuman, unknown };
 }
@@ -806,10 +787,12 @@ function planPass(
   if (checksRead.headRefOid !== target.headRefOid) return skip("its checks were read from a commit other than its head");
   const checks = withoutOwnCheck(checksRead.checks);
   const redChecks = checks.some((check) => !check.completed) ? [] : checks.filter((check) => !check.green && check.runId !== undefined);
-  // Only a needed merge, a bot thread or a red check starts a pass. One with
-  // only owner threads keeps the sweep's rule that human threads alone don't
-  // start a pass, so an owner thread is answered only alongside one of the
-  // others. A merge is needed when the PR conflicts with main, or, since
+  // A needed merge, a red check, or any thread the role is given (a bot's or
+  // the owner's) starts a pass. An owner thread alone counts: the sweep flags
+  // a PR for one (#81), and skipping it left the PR flagged and skipped every
+  // round with the thread never answered (#225). A thread the host has
+  // already answered isn't in forRole, so it doesn't start another pass. A
+  // merge is needed when the PR conflicts with main, or, since
   // `pull_request` CI builds the head merged with main, when a settled red
   // check sits on a head that's merely behind it: gating the bare head would
   // then judge a commit CI never built, possibly misreading a real failure
@@ -818,7 +801,7 @@ function planPass(
   // instead, so a clean PR doesn't spend a counted pass merging every time
   // main moves.
   const needsMerge = !host.contains(target.headRefOid, base) && (target.conflicted || redChecks.length > 0);
-  if (!needsMerge && redChecks.length === 0 && !sorted.forRole.some((thread) => thread.from === "bot")) {
+  if (!needsMerge && redChecks.length === 0 && sorted.forRole.length === 0) {
     return skip("there's nothing a follow-up pass handles yet");
   }
 

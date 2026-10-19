@@ -234,6 +234,15 @@ describe("renderSummary", () => {
     assert.ok(section.includes("a deleted account"));
   });
 
+  it("lists a PR waiting only on the owner's reply to answered threads, without a count of people's threads", () => {
+    const summary = renderSummary({ ...fullInput, waitingPrs: [{ pr: 18, threads: 0, answered: 2 }], humanThreads: [] });
+
+    const section = summary.slice(summary.indexOf("### Pull requests waiting on a person"));
+    assert.ok(section.includes(`[PR #18](${targetUrl("o/r", { kind: "pr", number: 18 })})`));
+    assert.match(section, /2 answered threads left open for the owner/);
+    assert.ok(!section.includes("opened by people"));
+  });
+
   it("lists each role's token usage with a total row", () => {
     const summary = renderSummary(fullInput);
 

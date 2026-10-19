@@ -332,6 +332,32 @@ describe("critiqueRound", () => {
     assert.deepEqual(JSON.parse(args!.UNPICKED_JSON).map((i: SandcastleIssue) => i.number), [3]);
   });
 
+  // #251: critique-prompt.md says each pick carries `files`; they must reach the prompt.
+  it("passes each pick's files to the critique", async () => {
+    const picks: (SandcastleIssue & { files: string[] })[] = [
+      { ...issue(1), files: ["lib/a.mts"] },
+      { ...issue(2), files: [] },
+    ];
+    const { log } = capture();
+    let args: CritiquePromptArgs | undefined;
+
+    await critiqueRound(
+      { picks, inFlight: [], unpicked: [] },
+      async (promptArgs) => {
+        args = promptArgs;
+        return [
+          { id: "1", verdict: "keep", reason: "fine" },
+          { id: "2", verdict: "keep", reason: "fine" },
+        ];
+      },
+      github().stub,
+      log,
+    );
+
+    const passed = JSON.parse(args!.PICKED_JSON) as { number: number; files: string[] }[];
+    assert.deepEqual(passed.map(({ number, files }) => [number, files]), [[1, ["lib/a.mts"]], [2, []]]);
+  });
+
   it("applies the critique's verdicts to the picks", async () => {
     const gh = github();
     const { log } = capture();

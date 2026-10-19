@@ -82,3 +82,20 @@ export function roundOutcomes(
       : [{ ...target, outcome: "not published", detail: "the build stopped on an error; see the run log" }];
   });
 }
+
+// The numbers of the issues whose build opened a PR, from the round's `work`
+// and its `settled` builds, in the same order. lib/overlap.mts#lastingHolds
+// keeps a hold behind a pick for the rest of the run only when that pick is
+// here (#251): a build that threw, stopped or opened no PR leaves nothing
+// open for the held pick to conflict with.
+export function publishedIssues(
+  work: readonly { issue: { number: number } }[],
+  settled: readonly PromiseSettledResult<BuildResult>[],
+): Set<number> {
+  return new Set(
+    work.flatMap(({ issue }, i) => {
+      const outcome = settled[i];
+      return outcome?.status === "fulfilled" && outcome.value.prUrl ? [issue.number] : [];
+    }),
+  );
+}

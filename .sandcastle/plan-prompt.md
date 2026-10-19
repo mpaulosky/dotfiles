@@ -39,11 +39,12 @@ An empty list, `[]`, means the issue needs none of them. If you leave `roles` ou
 # FILES
 
 For each issue you pick, also list in `files` the repo-relative path of every file the issue will add, change, delete or rename (both names for a rename). Find them by reading
-the repo, not by guessing from the title. Give paths only: no globs and no directories, unless the issue adds files under a new directory, in which case name the directory with a
-trailing `/`.
+the repo, not by guessing from the title. Give paths only: no globs and no directories, unless the issue adds files under a new directory, in which case name the directory, which
+covers every path under it.
 
 This list matters. Sandcastle won't build two picks that name the same file in one round, or a pick that names a file an open pull request changes, and it builds a pick with no
-`files` only when that pick is alone and no pull request is open. A file you leave out risks a merge conflict; a file you list needlessly holds the pick back a round.
+`files` only when no pull request is open and it's the only pick it builds that round. A file you leave out risks a merge conflict; a file you list needlessly holds the
+pick back a round.
 
 # OUTPUT
 

@@ -339,8 +339,8 @@ export function threadStanding(
 // the owner too, so the count can't depend on the decision. A DIRTY PR is
 // read the same way, for the count only: `decide` flags it whatever its
 // threads are, so a failed read there leaves it flagged with nothing counted.
-// For any other PR a failed read throws, and the sweep's per-PR catch leaves
-// it alone this round.
+// For any other PR a failed read throws, and the sweep leaves it alone this
+// round, still listing it as waiting on its people's threads (#249).
 function withoutAnsweredThreads(
   pr: SweepPullRequest,
   github: FollowUpGitHub,
@@ -384,8 +384,9 @@ export type SweepResult = { needsPass: number[]; passes: PassTarget[] };
 // An updated PR reaches `outcomes` as "updated", and every PR that reached
 // `decide` with unresolved threads opened by someone other than the
 // repository owner or a bot (the same test lib/follow-up-pass.mts#threadsForRole
-// uses) replaces `waiting`'s list, so the run report shows the latest sweep's
-// view. Once that's done, hands
+// uses), or that is left alone because its threads couldn't be read in full
+// while such a thread is open (#249), replaces `waiting`'s list, so the run
+// report shows the latest sweep's view. Once that's done, hands
 // back any in-scope issue, not labelled sandcastle:needs-human and with no
 // open PR, whose latest Sandcastle PR closed without merging
 // (closedWithoutMerging), each in its own try/catch too.
@@ -403,6 +404,12 @@ export function sweepPullRequests(
   const needsPass: number[] = [];
   const passes: PassTarget[] = [];
   const waitingPrs: WaitingPrEntry[] = [];
+  // Not a bot's and not confirmed as the repository owner's: an owner thread
+  // is the follow-up role's to answer (threadsForRole, and now `decide`
+  // below), not left waiting on a person the way this count and the run
+  // report's "waiting on a person" section describe it.
+  const humanThreads = (threads: SweepPullRequest["threads"]) =>
+    threads.filter((thread) => !thread.resolved && !thread.byBot && github.isOwner(thread.author) !== true).length;
 
   for (const pr of openPrs) {
     try {
@@ -424,13 +431,20 @@ export function sweepPullRequests(
         log(`  ✋ PR #${pr.number}: ${restore.reason}, so it isn't swept.`);
         continue;
       }
-      const { pr: swept, answered } = withoutAnsweredThreads(pr, github, host);
-      // Not a bot's and not confirmed as the repository owner's: an owner
-      // thread is the follow-up role's to answer (threadsForRole, and now
-      // `decide` below), not left waiting on a person the way this count and
-      // the run report's "waiting on a person" section describe it.
-      const humanThreads = swept.threads.filter((thread) => !thread.resolved && !thread.byBot && github.isOwner(thread.author) !== true).length;
-      if (humanThreads > 0 || answered > 0) waitingPrs.push({ pr: pr.number, threads: humanThreads, answered });
+      let thinned: ReturnType<typeof withoutAnsweredThreads>;
+      try {
+        thinned = withoutAnsweredThreads(pr, github, host);
+      } catch (error) {
+        // The PR is left alone this round, but its people's threads still
+        // wait on them, so it stays listed, counted from the sweep's own
+        // threads (#249).
+        const threads = humanThreads(pr.threads);
+        if (threads > 0) waitingPrs.push({ pr: pr.number, threads, answered: 0 });
+        throw error;
+      }
+      const { pr: swept, answered } = thinned;
+      const waitingThreads = humanThreads(swept.threads);
+      if (waitingThreads > 0 || answered > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered });
       const decision = decide(swept, now, github.isOwner);
       followUp(swept, decision, github, log, outcomes);
       if (decision.action === "needs-pass") {

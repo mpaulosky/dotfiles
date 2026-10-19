@@ -363,19 +363,34 @@ function commandOutput(error: unknown): string {
   return outputStart === -1 ? message : message.slice(outputStart + "failed:\n".length);
 }
 
+// The committer identity the host's git has configured: git's user.name and
+// user.email, each undefined when the host has none.
+export type HostIdentity = { name?: string; email?: string };
+
 const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktreePath, repoGitDir());
 
 // The live sandbox for `branch`, for a build and a follow-up pass
 // (lib/follow-up-pass.mts) alike. Sandcastle reuses a branch's worktree
 // that's still there, running git in it first, so that one is checked before
 // it's handed over.
-export function createCheckedSandbox(branch: string): Promise<sandcastle.Sandbox> {
+//
+// `create` (what makes the sandbox, once the worktree is checked) and
+// `hostIdentity` (the host's git identity) are injected so tests can stand in
+// for Sandcastle, Docker and the host's git config.
+export function createCheckedSandbox(
+  branch: string,
+  create: (branch: string) => Promise<sandcastle.Sandbox> = (name) =>
+    sandcastle.createSandbox({ branch: name, sandbox: agentSandbox(), hooks, copyToWorktree }),
+  hostIdentity: () => HostIdentity = () => {
+    throw new Error("Not implemented");
+  },
+): Promise<sandcastle.Sandbox> {
   const existing = worktreePathFor(process.cwd(), branch);
   const problems = existsSync(existing) ? worktreeProblems(existing) : [];
   if (problems.length > 0) {
     return Promise.reject(new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`));
   }
-  return sandcastle.createSandbox({ branch, sandbox: agentSandbox(), hooks, copyToWorktree });
+  return create(branch);
 }
 
 const liveHost: BuildHost = {

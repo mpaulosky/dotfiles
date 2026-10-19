@@ -4,6 +4,7 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { execFileSync } from "node:child_process";
 import {
   buildIssue,
+  createCheckedSandbox,
   designComment,
   designNoteIn,
   latestDesignNote,
@@ -26,6 +27,7 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
+import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
 
@@ -1918,5 +1920,89 @@ describe("workflowFilesFrom", () => {
     const output = "\n.github/workflows/ci.yml\n\n.github/workflows/release.yml\n.github/workflows/ci.yml\n";
 
     assert.deepEqual(workflowFilesFrom(output), [".github/workflows/ci.yml", ".github/workflows/release.yml"]);
+  });
+});
+
+describe("createCheckedSandbox's git identity", () => {
+  const MERGE = "git merge --no-edit -m 'Merge main into feature' main";
+
+  // The sandbox createCheckedSandbox hands over, made over a scratch git
+  // repository whose global config is empty, as a fresh sandbox's is.
+  async function sandboxFor(identity: { name?: string; email?: string }) {
+    const fake = gitSandboxFake();
+    const sandbox = await createCheckedSandbox("feature", fake.create, () => identity);
+    return { fake, sandbox };
+  }
+
+  // Acceptance criterion: "A test pins that a sandbox from
+  // `createCheckedSandbox` gets the host's identity before the host's first
+  // `git merge`."
+  it("gives the sandbox the host's identity, so the host's first git merge can commit (#242)", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person", email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    const merge = await sandbox.exec(MERGE);
+
+    assert.equal(merge.exitCode, 0, `${merge.stdout}\n${merge.stderr}`);
+    assert.equal(fake.headIdentity(), "Host Person <host@example.com>|Host Person <host@example.com>");
+  });
+
+  // Acceptance criterion: "`createCheckedSandbox` sets the host's `git config
+  // user.name` and `user.email` in the sandbox (`git config --global`)."
+  it("sets the host's user.name and user.email as the sandbox's global git config", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person", email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), "Host Person");
+    assert.equal((await sandbox.exec("git config --global user.email")).stdout.trim(), "host@example.com");
+  });
+
+  it("sets the identity before the sandbox is handed over, ahead of any command the caller runs", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person", email: "host@example.com" });
+    t.after(() => fake.cleanup());
+    const setUp = [...fake.execs];
+
+    await sandbox.exec(MERGE);
+
+    assert.ok(setUp.some((command) => /git config --global user\.name/.test(command)), setUp.join("\n"));
+    assert.ok(setUp.some((command) => /git config --global user\.email/.test(command)), setUp.join("\n"));
+    assert.ok(!setUp.some((command) => command.startsWith("git merge")), setUp.join("\n"));
+  });
+
+  it("keeps a name with quotes and spaces intact", async (t) => {
+    const name = `Host "Quoted" O'Neil`;
+    const { fake, sandbox } = await sandboxFor({ name, email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), name);
+  });
+
+  // Acceptance criterion: "If the host has neither, the sandbox is left as it
+  // is."
+  it("leaves the sandbox as it is when the host has neither a name nor an email", async (t) => {
+    const fake = gitSandboxFake();
+    t.after(() => fake.cleanup());
+    const before = fake.globalConfig();
+
+    await createCheckedSandbox("feature", fake.create, () => ({}));
+
+    assert.deepEqual(fake.execs.filter((command) => /user\.(name|email)/.test(command)), []);
+    assert.equal(fake.globalConfig(), before);
+  });
+
+  it("sets only the email when the host has an email and no name", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.email")).stdout.trim(), "host@example.com");
+    assert.equal((await sandbox.exec("git config --global user.name")).exitCode, 1);
+  });
+
+  it("sets only the name when the host has a name and no email", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), "Host Person");
+    assert.equal((await sandbox.exec("git config --global user.email")).exitCode, 1);
   });
 });

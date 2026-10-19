@@ -1036,14 +1036,45 @@ describe("runPass", () => {
     assert.deepEqual(calls.createSandbox, []);
   });
 
-  it("skips a PR whose only threads for the role are owner threads and that needs no merge, without creating a sandbox", async () => {
-    const { passHost, calls } = passHostFake({ threads: [ownerThread()], containsBase: true });
+  // Acceptance criteria: "`planPass` starts a pass for a settled PR whose
+  // only open threads are the owner's, and hands those threads to the
+  // follow-up role" and "A test pins that such a PR gets a pass rather than a
+  // skip" (#225).
+  it("gives a pass to a settled PR whose only open thread is the owner's, handing that thread to the follow-up role", async () => {
+    const sandbox = sandboxFake({ followUpJson: JSON.stringify([{ threadId: "RT_owner", verdict: "declined", reason: "Pattern matching reads worse here." }]) });
+    const { passHost, calls } = passHostFake({ threads: [ownerThread()], containsBase: true, sandbox });
 
-    const outcome = await runPass(passTarget({ reasons: ["CI is red"] }), issue, BASE, passHost);
+    const outcome = await runPass(passTarget({ reasons: ["1 unresolved owner thread(s)"] }), issue, BASE, passHost);
 
-    assert.equal(outcome.kind, "skipped");
-    assert.deepEqual(calls.createSandbox, []);
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.markBuilding, [ISSUE_NUMBER]);
+    const roleRun = sandbox.runs.find((run) => run.name === "follow-up");
+    assert.ok(roleRun !== undefined, "the owner's thread starts the follow-up role");
+    const handed = String(roleRun?.promptArgs?.THREADS_JSON ?? "");
+    assert.ok(handed.includes("RT_owner"), handed);
+    assert.match(handed, /"from":\s*"owner"/);
+    assert.deepEqual(
+      calls.replyToThread.map((reply) => reply.threadId),
+      ["RT_owner"],
+    );
+    assert.deepEqual(calls.resolveThread, []);
+    assert.equal(calls.commentOnPullRequest.length, 1);
   });
+
+  // Acceptance criterion: "A test pins that a PR with no open thread, no merge
+  // to make and no red check still gets no pass" (#225).
+  for (const containsBase of [true, false]) {
+    it(`skips a PR with no open thread, no merge to make and no red check, without claiming its issue (main ${containsBase ? "merged in" : "not merged in, but no conflict"})`, async () => {
+      const { passHost, calls } = passHostFake({ threads: [], checks: [], containsBase });
+
+      const outcome = await runPass(passTarget({ reasons: ["CI is red"] }), issue, BASE, passHost);
+
+      assert.equal(outcome.kind, "skipped");
+      assert.match(outcome.kind === "skipped" ? outcome.reason : "", /nothing a follow-up pass handles/);
+      assert.deepEqual(calls.markBuilding, []);
+      assert.deepEqual(calls.createSandbox, []);
+    });
+  }
 
   it("doesn't run the follow-up role when GitHub's conflict merges in cleanly here and no thread is left for it, but still gates and pushes the merge", async () => {
     const sandbox = sandboxFake();

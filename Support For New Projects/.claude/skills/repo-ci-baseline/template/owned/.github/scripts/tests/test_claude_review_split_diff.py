@@ -7,6 +7,7 @@ bash, as the other inline steps' tests do.
 
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 import time
@@ -72,18 +73,20 @@ class Repo:
         self.git("commit", "-q", "--allow-empty", "-m", "change")
         return self.git("rev-parse", "HEAD").decode().strip()
 
-    def split(self, base, head, tmp_path):
-        """Run the step; return (its output's pieces text, the diff folder, the pr.diff bytes)."""
+    def split(self, base, head, tmp_path, env=None, script=None):
+        """Run the step; return (its output's pieces text, the diff folder, the pr.diff bytes). env adds to the
+        step's environment (a PATH in front of GIT_ENV's, say), and script replaces the step's run script."""
         runner_temp = tmp_path / "runner"
         runner_temp.mkdir()
         output = runner_temp / "output"
         output.write_text("")
-        env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output),
-               "BASE_SHA": base, "HEAD_SHA": head}
+        step_env = {**GIT_ENV, "RUNNER_TEMP": str(runner_temp), "GITHUB_OUTPUT": str(output),
+                    "BASE_SHA": base, "HEAD_SHA": head}
         if getattr(self, "workspace", None):
-            env["GITHUB_WORKSPACE"] = str(self.workspace)
-        done = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step_script()], cwd=self.path, env=env, check=True,
-                              capture_output=True)
+            step_env["GITHUB_WORKSPACE"] = str(self.workspace)
+        step_env.update(env or {})
+        done = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script or step_script()], cwd=self.path,
+                              env=step_env, check=True, capture_output=True)
         found = re.fullmatch(r"pieces<<(EOF_[0-9a-f]{16})\n(.*)\n\1\nskipped=(.*)\nlisted=(.*)\nheld=(\d+)\n"
                              r"context<<\1\n(.*)\n\1\n", output.read_text(), re.S)
         assert found, output.read_text()
@@ -896,6 +899,168 @@ def test_a_common_name_isnt_followed_to_every_file_that_mentions_it(repo, tmp_pa
     head = repo.commit({"config.py": "a = 2\n"})
     repo.split(repo.base, head, tmp_path)
     assert headers(repo) == ["config.py (changed in this PR)"]
+
+
+SHIM = """#!/bin/bash
+# A git that records each grep (its arguments, and the file named by -f) and answers it as SHIM_MODE says:
+# pass (run it), fail (exit 2) or hang. Every other git command runs as is.
+args=("$@")
+i=0
+while [ "${args[$i]:-}" = "-c" ]; do i=$((i + 2)); done
+if [ "${args[$i]:-}" != "grep" ]; then
+    exec "$REAL_GIT" "$@"
+fi
+n=$(find "$SHIM_DIR" -name 'grep.*' | wc -l)
+printf '%s\\n' "${args[@]:$((i + 1))}" > "$SHIM_DIR/grep.$n"
+for ((j = i + 1; j < ${#args[@]}; j++)); do
+    if [ "${args[$j]}" = "-f" ]; then cp "${args[$((j + 1))]}" "$SHIM_DIR/stems.$n"; fi
+done
+case "$SHIM_MODE" in
+    fail) echo "fatal: boom" >&2; exit 2 ;;
+    hang) exec sleep 60 ;;
+    *) exec "$REAL_GIT" "$@" ;;
+esac
+"""
+
+
+class GitShim:
+    """A git in front of PATH that records the greps the step runs and can make them fail or hang."""
+
+    def __init__(self, tmp_path, mode="pass"):
+        self.folder = tmp_path / "shim"
+        self.folder.mkdir()
+        (self.folder / "git").write_text(SHIM)
+        (self.folder / "git").chmod(0o755)
+        self.env = {"PATH": f"{self.folder}:{GIT_ENV['PATH']}", "SHIM_DIR": str(self.folder), "SHIM_MODE": mode,
+                    "REAL_GIT": shutil.which("git")}
+
+    def greps(self):
+        """Each grep's arguments, in the order they were run."""
+        found = sorted(self.folder.glob("grep.*"), key=lambda path: int(path.suffix[1:]))
+        return [path.read_text(encoding="utf-8").split("\n")[:-1] for path in found]
+
+    def stems(self):
+        """The stems each grep's -f file held, as sets, in the order the greps ran."""
+        found = sorted(self.folder.glob("stems.*"), key=lambda path: int(path.suffix[1:]))
+        return [set(path.read_text(encoding="utf-8").split("\n")) - {""} for path in found]
+
+
+def test_one_git_grep_covers_the_stems_of_all_the_changed_files(repo, tmp_path):
+    count = 60
+    repo.base = repo.commit({f"lib/user_{n:03d}.py": f"import module_{n:03d}\n" for n in range(count)}
+                            | {"docs/guide.md": "read notes_on_docs\n", "lib/uses_short.py": "import ab\n"})
+    head = repo.commit({f"src/module_{n:03d}.py": f"x = {n}\n" for n in range(count)}
+                       | {"docs/notes_on_docs.md": "notes\n", "src/ab.py": "y = 1\n"})
+    shim = GitShim(tmp_path)
+    repo.split(repo.base, head, tmp_path, env=shim.env)
+    (grep,) = shim.greps()
+    # The stems go in a file, not in the arguments: -f, and no -e for each of thousands of them.
+    assert "-e" not in grep and "-f" in grep and not any(re.search(r"module_\d", arg) for arg in grep)
+    assert {"-o", "-z", "-w", "-F"} <= set(grep[:grep.index("-f")])
+    # The stems of 5 or more characters of the changed files that aren't docs.
+    assert shim.stems() == [{f"module_{n:03d}" for n in range(count)}]
+    # Each match maps back to its stem: every user is credited to the file whose stem it names.
+    # A changed file is always in the context, so the short-stemmed src/ab.py and the doc come with the modules.
+    assert headers(repo) == (["src/ab.py (changed in this PR)"]
+                             + [f"src/module_{n:03d}.py (changed in this PR)" for n in range(count)]
+                             + ["docs/notes_on_docs.md (changed in this PR)"]
+                             + [f"lib/user_{n:03d}.py (names src/module_{n:03d}.py)" for n in range(count)])
+    assert "::warning::" not in repo.log
+
+
+def test_a_grep_that_finds_no_user_isnt_a_failure(repo, tmp_path):
+    # git grep exits 1 when nothing matches: the usual case, so no warning.
+    head = repo.commit({"src/module_one.py": "x = 1\n", "src/module_two.py": "x = 2\n"})
+    shim = GitShim(tmp_path)
+    repo.split(repo.base, head, tmp_path, env=shim.env)
+    assert len(shim.greps()) == 1
+    assert headers(repo) == ["src/module_one.py (changed in this PR)", "src/module_two.py (changed in this PR)"]
+    assert "::warning::" not in repo.log
+
+
+def test_two_changed_files_sharing_a_stem_both_get_its_users(repo, tmp_path):
+    repo.base = repo.commit({"lib/first.py": "import config\n", "lib/second.py": "import config\n"})
+    head = repo.commit({"src/a/config.py": "x = 1\n", "src/b/config.py": "x = 2\n"})
+    shim = GitShim(tmp_path)
+    repo.split(repo.base, head, tmp_path, env=shim.env)
+    assert len(shim.greps()) == 1
+    assert shim.stems() == [{"config"}]
+    assert headers(repo) == ["src/a/config.py (changed in this PR)", "src/b/config.py (changed in this PR)",
+                             "lib/first.py (names src/a/config.py)", "lib/second.py (names src/a/config.py)"]
+
+
+@pytest.mark.parametrize("data, code", [("a/config.json", "z/config.py"), ("z/config.json", "a/config.py")])
+def test_a_stem_shared_with_a_file_that_isnt_followed_still_gets_its_users_whichever_comes_first(
+        repo, tmp_path, data, code):
+    # Neither changed file mentions config, so both get the same eight users, and the first file in the sort takes
+    # their credit (chosen.setdefault keeps it). The followed file sorts first, so the code file gets them whichever
+    # path order the two have; without that sort the data file would take all eight when it comes first.
+    users = constant("MAX_CONTEXT_USERS")
+    repo.base = repo.commit({f"src/user{n}.py": "import config\n" for n in range(users)})
+    head = repo.commit({data: "{}\n", code: "x = 1\n"})
+    shim = GitShim(tmp_path)
+    repo.split(repo.base, head, tmp_path, env=shim.env)
+    assert len(shim.greps()) == 1
+    assert headers(repo) == ([f"{path} (changed in this PR)" for path in sorted((data, code))]
+                             + [f"src/user{n}.py (names {code})" for n in range(users)])
+
+
+def test_a_binary_file_holding_a_stem_doesnt_hide_the_user_after_it(repo, tmp_path):
+    # Unless told to read it as text, git grep says "Binary file ... matches" for a binary file, with no \0 after
+    # its name.
+    repo.base = repo.commit({"assets/logo.bin": b"\0module_one\0", "lib/user.py": "import module_one\n"})
+    head = repo.commit({"src/module_one.py": "x = 1\n"})
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == ["src/module_one.py (changed in this PR)", "lib/user.py (names src/module_one.py)"]
+
+
+def test_a_grep_that_fails_still_writes_the_diff_and_leaves_the_changed_files(repo, tmp_path):
+    repo.base = repo.commit({"lib/user.py": "import module_one\n"})
+    head = repo.commit({"src/module_one.py": "x = 1\n"})
+    shim = GitShim(tmp_path, mode="fail")
+    _, folder, diff = repo.split(repo.base, head, tmp_path, env=shim.env)
+    assert len(shim.greps()) == 1
+    assert re.search(r"^::warning::.+", repo.log, re.M)
+    assert b"src/module_one.py" in diff and "src/module_one.py" in (folder / "INDEX").read_text(encoding="utf-8")
+    assert headers(repo) == ["src/module_one.py (changed in this PR)"]
+
+
+def test_a_grep_that_times_out_in_120_seconds_warns_still_writes_the_diff_and_leaves_the_changed_files(repo, tmp_path):
+    repo.base = repo.commit({"lib/user.py": "import module_one\n"})
+    head = repo.commit({"src/module_one.py": "x = 1\n"})
+    script = step_script()
+    assert re.search(r"\b120\b", script), "the grep's timeout is 120 seconds"
+    # The same step with a one-second timeout, so the test needn't wait two minutes.
+    shim = GitShim(tmp_path, mode="hang")
+    started = time.monotonic()
+    _, folder, diff = repo.split(repo.base, head, tmp_path, env=shim.env, script=re.sub(r"\b120\b", "1", script))
+    assert time.monotonic() - started < 30
+    assert len(shim.greps()) == 1
+    assert re.search(r"^::warning::.+", repo.log, re.M)
+    assert b"src/module_one.py" in diff and "src/module_one.py" in (folder / "INDEX").read_text(encoding="utf-8")
+    assert headers(repo) == ["src/module_one.py (changed in this PR)"]
+
+
+def test_a_grep_that_fails_keeps_what_the_changed_files_name(repo, tmp_path):
+    # The files a changed file names don't depend on the grep, so its failure costs only the files that name a change.
+    repo.base = repo.commit({"scripts/helper.sh": "echo hi\n", "lib/user.py": "import module_one\n"})
+    head = repo.commit({".github/workflows/ci.yml": "jobs:\n  b:\n    steps:\n      - run: scripts/helper.sh\n",
+                        "src/module_one.py": "x = 1\n"})
+    shim = GitShim(tmp_path, mode="fail")
+    repo.split(repo.base, head, tmp_path, env=shim.env)
+    assert len(shim.greps()) == 1
+    assert re.search(r"^::warning::.+", repo.log, re.M)
+    assert headers(repo) == [".github/workflows/ci.yml (changed in this PR)", "src/module_one.py (changed in this PR)",
+                             "scripts/helper.sh (named by .github/workflows/ci.yml)"]
+
+
+def test_git_config_for_grep_output_doesnt_change_which_users_are_found(repo, tmp_path):
+    config = tmp_path / "gitconfig"
+    config.write_text("[grep]\n\tlineNumber = true\n\tcolumn = true\n[color]\n\tgrep = always\n", encoding="utf-8")
+    repo.base = repo.commit({"lib/user.py": "import module_one\n"})
+    head = repo.commit({"src/module_one.py": "x = 1\n"})
+    repo.split(repo.base, head, tmp_path, env={"GIT_CONFIG_GLOBAL": str(config)})
+    assert headers(repo) == ["src/module_one.py (changed in this PR)", "lib/user.py (names src/module_one.py)"]
 
 
 def test_an_empty_diff_has_no_context(repo, tmp_path):

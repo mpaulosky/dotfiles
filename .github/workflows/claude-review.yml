@@ -409,7 +409,9 @@ jobs:
       # checkout, and an action's files only when they're regular files inside
       # its folder, so a symlink can't bring in anything else, and only regular
       # text files Copilot reviews go in. They fit what's left of the read
-      # budget after the diff, and are optional: an unread one holds nothing.
+      # budget after the diff, and are optional: an unread one holds nothing,
+      # and a failure finding them warns and leaves the changed files only (the
+      # one git grep for all the stems, under a timeout, costs just the files that name a changed one).
       #
       # Pieces are named by number only (001.diff): a PR's paths are its
       # author's, so none becomes a file name or reaches the prompt. The
@@ -432,7 +434,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/claude-review"
           git --attr-source="${BASE_SHA}" -c core.quotePath=true diff --no-color --no-ext-diff --no-textconv --no-renames "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
           python3 -I - <<'PY'
-          import os, re, subprocess
+          import os, re, subprocess, tempfile
 
           MAX_PIECE_BYTES = 40_000  # about 10,000 tokens of code; a Read returns up to 25,000
           MAX_PIECE_LINES = 1_500   # a Read returns up to 2,000
@@ -461,6 +463,9 @@ jobs:
           PATH_RUN = re.compile(r"[\w.\-/]+")
           PATH_TAIL = re.compile(r".+\.\w+")  # a character before the dot: *.py names no file
           MAX_CONTEXT_USERS = 8  # a changed file named by more files than this has too common a name to follow
+          # Seconds for the one git grep that finds every changed file's users: "Write the PR's diff" has no timeout
+          # of its own, and shares the job's with the review (mpaulosky/dotfiles#212).
+          USERS_TIMEOUT = 120
           LONG_LINE = MAX_PIECE_BYTES // 4
           CONTINUED = b"\\~ "  # starts a long line's later chunk: no line of its own, like git's "\ No newline"
           # In the order the prompt asks for them.
@@ -795,35 +800,52 @@ jobs:
                                if p in blobs), key=rank)
               chosen = {path: "changed in this PR" for path in edited}
               actions, walked = [], {}
-              names, named_by = [], []
-              for path in edited:
-                  if kind_of([], path) == "docs":
-                      continue
-                  # Read whatever its size: the scans are linear, and a workflow too big for context is where its
-                  # pinned actions' source matters most.
-                  text = (git_out("cat-file", "blob", f"{head}:{path}") or b"").decode("utf-8", "replace")
-                  if kind_of([], path) == "workflow" and changes_more_than_comments(base, head, path):
-                      for pin in dict.fromkeys(USES.findall(text)):
-                          if pin not in walked:  # each action once, credited to the first workflow that pins it
-                              walked[pin] = action_files(*pin)
-                              actions += [(found, f"source of {pin[0]}/{pin[1]}, which {path} pins")
-                                          for found in walked[pin]]
-                  for token in dict.fromkeys(named_in(text)):
-                      # A leading /, ./ or ../ goes (a path written after an expression, or beside the file), but not
-                      # the dot of .github.
-                      token = re.sub(r"^(?:\.{0,2}/)+", "", token)
-                      # A path, or a basename only one tracked file has.
-                      hits = [token] if token in blobs else by_name.get(token, []) if "/" not in token else []
-                      if len(hits) == 1 and hits[0] not in chosen and followed(hits[0]):
-                          names.append((hits[0], f"named by {path}"))
-                  # The file's name without its extension, as a whole word: a path, or an import of a module.
-                  stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-                  if len(stem) >= 5:
-                      found = git_out("grep", "-l", "-z", "-w", "-F", "-e", stem, head, "--") or b""
-                      users = [p for p in (f.decode("utf-8", "replace").split(":", 1)[-1] for f in found.split(b"\0") if f)
-                               if p in blobs and p != path and followed(p)]
+              names, named_by, stems = [], [], []
+              # The files around the change are optional, so no failure finding them fails the step.
+              try:
+                  for path in edited:
+                      if kind_of([], path) == "docs":
+                          continue
+                      # Read whatever its size: the scans are linear, and a workflow too big for context is where its
+                      # pinned actions' source matters most.
+                      text = (git_out("cat-file", "blob", f"{head}:{path}") or b"").decode("utf-8", "replace")
+                      if kind_of([], path) == "workflow" and changes_more_than_comments(base, head, path):
+                          for pin in dict.fromkeys(USES.findall(text)):
+                              if pin not in walked:  # each action once, credited to the first workflow that pins it
+                                  walked[pin] = action_files(*pin)
+                                  actions += [(found, f"source of {pin[0]}/{pin[1]}, which {path} pins")
+                                              for found in walked[pin]]
+                      for token in dict.fromkeys(named_in(text)):
+                          # A leading /, ./ or ../ goes (a path written after an expression, or beside the file), but not
+                          # the dot of .github.
+                          token = re.sub(r"^(?:\.{0,2}/)+", "", token)
+                          # A path, or a basename only one tracked file has.
+                          hits = [token] if token in blobs else by_name.get(token, []) if "/" not in token else []
+                          if len(hits) == 1 and hits[0] not in chosen and followed(hits[0]):
+                              names.append((hits[0], f"named by {path}"))
+                      # The file's name without its extension, as a whole word: a path, or an import of a module. A
+                      # newline would split it into two patterns.
+                      stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+                      if len(stem) >= 5 and "\n" not in stem:
+                          stems.append((path, stem))
+                  # One grep for all the stems, not one each: a PR of hundreds of files ran hundreds (mpaulosky/dotfiles#212).
+                  # Its failure loses the users only, not the actions and names found above.
+                  try:
+                      found = users_of(head, {stem for _, stem in stems})
+                  except Exception as error:
+                      print(f"::warning::Couldn't find the files that name the changed ones ({type(error).__name__}), so "
+                            "the review leaves them out.")
+                      found = {}
+                  # A user is credited to a followed changed file before one no one follows: "import config" names
+                  # config.py, not config.json beside it.
+                  for path, stem in sorted(stems, key=lambda item: not followed(item[0])):
+                      users = [p for p in found.get(stem, []) if p in blobs and p != path and followed(p)]
                       if len(users) <= MAX_CONTEXT_USERS:  # more, and the name is too common to say anything
                           named_by += [(user, f"names {path}") for user in users]
+              except Exception as error:
+                  print(f"::warning::Couldn't find the files around the change ({type(error).__name__}), so the review "
+                        "reads the changed files only.")
+                  actions, names, named_by = [], [], []
               for path, why in sorted(names, key=lambda item: rank(item[0])) + sorted(named_by, key=lambda item: rank(item[0])):
                   chosen.setdefault(path, why)
               entries = [(path, why, blob_reader(head, path, MAX_CHANGED_FILE_BYTES if why == "changed in this PR"
@@ -838,6 +860,38 @@ jobs:
               actions.sort(key=lambda item: re.search(r"/action\.ya?ml$", item[0]) is not None)
               code = sum(kind_of([], path) != "docs" for path in edited)
               return entries[:code] + actions + entries[code:]
+
+
+          def users_of(head, stems):
+              """For each stem, the files at head that hold it as a whole word, from one git grep: with -F -w, each
+              -o match is exactly one stem. The stems go in a file, so thousands of them fit. A binary file is read
+              as text (-a), as git otherwise says "Binary file ... matches" for it, with no \\0 after its name.
+              The output format is pinned on the command line, so no git config (grep.lineNumber and the like)
+              changes it. Git reports only the earliest (on a tie, longest) match on a line and carries on after
+              its end, so a stem whose only use in a file starts inside another changed stem's match is missed:
+              with foo-bar and bar-baz changed, foo-bar-baz credits foo-bar only. That also keeps string-utils
+              from naming utils.py. Raises on a failed or timed-out grep."""
+              if not stems:
+                  return {}
+              with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".stems") as patterns:
+                  patterns.write("".join(f"{stem}\n" for stem in stems))
+                  patterns.flush()
+                  done = subprocess.run(["git", "-c", "core.quotePath=false", "grep", "-a", "-o", "-z", "-w", "-F", "-f",
+                                         patterns.name, "--no-line-number", "--no-column", "--no-color", head, "--"], capture_output=True, timeout=USERS_TIMEOUT)
+              if done.returncode == 1:  # nothing matched
+                  return {}
+              if done.returncode != 0:
+                  raise RuntimeError(f"git grep exited {done.returncode}")
+              # name\0match\n for each match, where a name (head:path) may hold a newline but a match can't: split on
+              # \0, the first record is a name and each later one a match, then the next name after its first newline.
+              users = {}
+              name, *records = done.stdout.split(b"\0")
+              for record in records:
+                  match, _, next_name = record.partition(b"\n")
+                  path = name.decode("utf-8", "replace").split(":", 1)[-1]
+                  users.setdefault(match.decode("utf-8", "replace"), {})[path] = None
+                  name = next_name
+              return {stem: list(paths) for stem, paths in users.items()}
 
 
           def named_in(text):

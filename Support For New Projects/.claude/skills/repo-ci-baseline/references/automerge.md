@@ -79,8 +79,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   (mpaulosky/dotfiles#233). A CI run held for approval (`action_required` as its status or its conclusion, as GitHub holds a
   Copilot push's runs) has created no checks either, so the run logs a notice to approve the PR's runs or merge by hand.
   PR Review Submitted's, Claude Review's and PR Auto-Merge's own held runs don't count: Copilot's review always leaves a PR Review
-  Submitted run held (mpaulosky/dotfiles#236). It reads the head's checks again after the runs and waits if they changed, as a run
-  may have finished between the two reads. When everything is quiet but no CI check exists (path filters left out every CI
+  Submitted run held (mpaulosky/dotfiles#236). Nor does a held run that a later run (higher `id`) of the same workflow `path` and
+  `event` has replaced, as when the owner starts the workflow again on the head (mpaulosky/dotfiles#238). It reads the head's
+  checks again after the runs and waits if they changed, as a run may have finished between the two reads. When everything is quiet but no CI check exists (path filters left out every CI
   workflow, or a push with `GITHUB_TOKEN` started none, leaving GraphQL's `statusCheckRollup` null), nothing will start the
   workflow again, so the run logs a notice to add the label or merge by hand. A failed read of the runs isn't settled.
   As for an update, that holds only off a PR event, where CI may not have created the required checks yet.
@@ -92,8 +93,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   and one since the label was last added was held for approval (as GitHub holds a Copilot push's runs) or skipped a push
   by a bot or Copilot. A person's skip (another label, a draft) doesn't count. A push with `GITHUB_TOKEN` starts no run,
   which looks like one not started yet, so it gets none. A Dependabot PR gets its own notice first, as nothing brings it a review.
-  It adds the label with `RELEASE_PR_PAT`, since a label added with `GITHUB_TOKEN` starts no workflow and Claude Review would never run;
-  without the PAT it logs a notice to add it by hand. A failure is a warning, never a failed check.
+  It adds the label with `RELEASE_PR_PAT`, since a label added with `GITHUB_TOKEN` starts no workflow and Claude Review would never run,
+  so the PAT needs Pull requests (or Issues) write; without it every run only warns that adding the label failed.
+  Without the PAT it logs a notice to add it by hand. A failure is a warning, never a failed check.
   When the quota note comes before CI finishes (as on #189), CI's `workflow_run` adds it.
   When it comes after, nothing starts this workflow: GitHub holds any run a Copilot review starts at `action_required`
   (see [Verify live](#verify-live)), so the next scheduled sweep adds it, often an hour or more later. That's accepted:
@@ -152,7 +154,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Updating them all at once instead would cost on the order of N² CI runs on every merge, to save that hour only in the failure case.
 - **Hand-back hold.** A PR labelled `sandcastle:needs-human` (Sandcastle giving up and handing it to a person) is skipped while it carries the label,
   and also when someone other than the repository owner last removed it, since anyone with triage access can remove a label.
-  The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues access.
+  The removal comes from the PR's paginated issue events, read with `GITHUB_TOKEN` (`issues: read`), so `RELEASE_PR_PAT` needs no Issues read.
   Both checks run again on a fresh snapshot, and every later check reads that snapshot, so a thread, head or check that changed meanwhile counts.
   More labels than one page is left to a person. A repo that never applies the label is unaffected.
 - **The merge** is `pulls.merge` with `sha: headRefOid`, so a push landing between the check and the merge fails the merge instead of merging unreviewed code.

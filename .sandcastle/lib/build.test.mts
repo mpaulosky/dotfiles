@@ -4,16 +4,19 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { execFileSync } from "node:child_process";
 import {
   buildIssue,
+  createCheckedSandbox,
   designComment,
   designNoteIn,
   latestDesignNote,
   isGitHubServerError,
   isWorkflowPushRejection,
+  liveHostIdentity,
   PR_BODY_LIMIT,
   publicErrorText,
   publish,
   UncountedStopError,
   type BuildHost,
+  type HostIdentity,
   workflowFilesFrom,
   workflowLogArgs,
 } from "./build.mts";
@@ -26,6 +29,8 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
+import { TamperedWorktreeError } from "./errors.mts";
+import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
 
@@ -727,6 +732,20 @@ describe("buildIssue publishing", () => {
 
     assert.equal(failed.publishFailed, true);
     assert.equal(nothingToPublish.publishFailed, false);
+  });
+
+  it("says so on the issue, and stops the round, when the sandbox was left in place for a tampered worktree", async () => {
+    const { comments, buildHost } = host([0, 0]);
+    const tampered: BuildHost = {
+      ...buildHost,
+      createSandbox: async () => {
+        throw new TamperedWorktreeError("setting the identity failed; left /work/tree in place", "/work/tree");
+      },
+    };
+
+    await assert.rejects(buildIssue(issue, branch, base, tampered), TamperedWorktreeError);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0]!.body, /no longer points at this repository/);
   });
 
   it("closes the sandbox when its worktree still points at this repository", async () => {
@@ -1918,5 +1937,191 @@ describe("workflowFilesFrom", () => {
     const output = "\n.github/workflows/ci.yml\n\n.github/workflows/release.yml\n.github/workflows/ci.yml\n";
 
     assert.deepEqual(workflowFilesFrom(output), [".github/workflows/ci.yml", ".github/workflows/release.yml"]);
+  });
+});
+
+describe("createCheckedSandbox's git identity", () => {
+  const MERGE = "git merge --no-edit -m 'Merge main into feature' main";
+
+  // The sandbox createCheckedSandbox hands over, made over a scratch git
+  // repository whose global config has no identity, as a fresh sandbox's hasn't.
+  async function sandboxFor(identity: HostIdentity) {
+    const fake = gitSandboxFake();
+    const sandbox = await createCheckedSandbox("feature", fake.create, () => identity);
+    return { fake, sandbox };
+  }
+
+  // Acceptance criterion: "A test pins that a sandbox from
+  // `createCheckedSandbox` gets the host's identity before the host's first
+  // `git merge`."
+  it("gives the sandbox the host's identity, so the host's first git merge can commit (#242)", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person", email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    const merge = await sandbox.exec(MERGE);
+
+    assert.equal(merge.exitCode, 0, `${merge.stdout}\n${merge.stderr}`);
+    assert.equal(fake.headIdentity(), "Host Person <host@example.com>|Host Person <host@example.com>");
+  });
+
+  // Acceptance criterion: "`createCheckedSandbox` sets the host's `git config
+  // user.name` and `user.email` in the sandbox (`git config --global`)."
+  it("sets the host's user.name and user.email as the sandbox's global git config", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person", email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), "Host Person");
+    assert.equal((await sandbox.exec("git config --global user.email")).stdout.trim(), "host@example.com");
+  });
+
+  it("sets the identity before the sandbox is handed over, ahead of any command the caller runs", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person", email: "host@example.com" });
+    t.after(() => fake.cleanup());
+    const setUp = [...fake.execs];
+
+    await sandbox.exec(MERGE);
+
+    assert.ok(setUp.some((command) => /git config --global user\.name/.test(command)), setUp.join("\n"));
+    assert.ok(setUp.some((command) => /git config --global user\.email/.test(command)), setUp.join("\n"));
+    assert.ok(!setUp.some((command) => command.startsWith("git merge")), setUp.join("\n"));
+  });
+
+  it("keeps a name with quotes and spaces intact", async (t) => {
+    const name = `Host "Quoted" O'Neil`;
+    const { fake, sandbox } = await sandboxFor({ name, email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), name);
+  });
+
+  // Acceptance criterion: "If the host has neither, the sandbox is left as it
+  // is."
+  it("leaves the sandbox as it is when the host has neither a name nor an email", async (t) => {
+    const fake = gitSandboxFake();
+    t.after(() => fake.cleanup());
+    const before = fake.globalConfig();
+
+    await createCheckedSandbox("feature", fake.create, () => ({}));
+
+    assert.deepEqual(fake.execs.filter((command) => /user\.(name|email)/.test(command)), []);
+    assert.equal(fake.globalConfig(), before);
+  });
+
+  it("sets only the email when the host has an email and no name", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ email: "host@example.com" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.email")).stdout.trim(), "host@example.com");
+    assert.equal((await sandbox.exec("git config --global user.name")).exitCode, 1);
+  });
+
+  it("sets only the name when the host has a name and no email", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), "Host Person");
+    assert.equal((await sandbox.exec("git config --global user.email")).exitCode, 1);
+  });
+
+  it("closes the sandbox and rejects when setting the identity fails", async () => {
+    let closed = 0;
+    const sandbox = {
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: async () => {
+        closed += 1;
+        return {};
+      },
+    } as unknown as Sandbox;
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" }), () => []),
+      /setting the sandbox's git user\.name failed: could not lock config file/,
+    );
+    assert.equal(closed, 1);
+  });
+
+  it("leaves the sandbox in place and reports the problems when setting the identity fails in a tampered worktree", async () => {
+    let closed = 0;
+    const sandbox = {
+      worktreePath: "/work/tree",
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: async () => {
+        closed += 1;
+        return {};
+      },
+    } as unknown as Sandbox;
+    const checked: string[] = [];
+
+    await assert.rejects(
+      createCheckedSandbox(
+        "feature",
+        async () => sandbox,
+        () => ({ name: "Host Person" }),
+        (worktreePath) => {
+          checked.push(worktreePath);
+          return worktreePath === "/work/tree" ? ["its .git doesn't point into this repository"] : [];
+        },
+      ),
+      (error: unknown) =>
+        error instanceof TamperedWorktreeError &&
+        error.worktreePath === "/work/tree" &&
+        /could not lock config file.*left \/work\/tree.*doesn't point into this repository/s.test(error.message),
+    );
+    assert.equal(closed, 0);
+    assert.ok(checked.includes("/work/tree"));
+  });
+
+  it("leaves the sandbox in place, and keeps the identity error, when checking the worktree throws", async () => {
+    let closed = 0;
+    const sandbox = {
+      worktreePath: "/work/tree",
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: async () => {
+        closed += 1;
+        return {};
+      },
+    } as unknown as Sandbox;
+
+    await assert.rejects(
+      createCheckedSandbox(
+        "feature",
+        async () => sandbox,
+        () => ({ name: "Host Person" }),
+        (worktreePath) => {
+          if (worktreePath === "/work/tree") throw new Error("git rev-parse failed");
+          return [];
+        },
+      ),
+      (error: unknown) =>
+        error instanceof TamperedWorktreeError && /could not lock config file.*checking the worktree failed: git rev-parse failed/s.test(error.message),
+    );
+    assert.equal(closed, 0);
+  });
+});
+
+describe("liveHostIdentity", () => {
+  it("reads the host's user.name and user.email with git config", () => {
+    const calls: string[][] = [];
+    const values: Record<string, string> = { "user.name": "Host Person", "user.email": "host@example.com" };
+    const identity = liveHostIdentity((...args) => {
+      calls.push(args);
+      return values[args[1] ?? ""] ?? "";
+    });
+
+    assert.deepEqual(identity, { name: "Host Person", email: "host@example.com" });
+    assert.deepEqual(calls, [["config", "user.name"], ["config", "user.email"]]);
+  });
+
+  it("leaves out a key git config fails on, as it does for one that isn't set", () => {
+    const identity = liveHostIdentity((...args) => {
+      if (args[1] === "user.name") throw new Error("git config user.name failed");
+      return "host@example.com";
+    });
+
+    assert.deepEqual(identity, { name: undefined, email: "host@example.com" });
+  });
+
+  it("leaves out a key git config reads as empty", () => {
+    assert.deepEqual(liveHostIdentity(() => ""), { name: undefined, email: undefined });
   });
 });

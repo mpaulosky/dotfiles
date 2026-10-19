@@ -32,14 +32,15 @@ name: PR Auto-Merge
 # (github/landing.py): every other check on the head passed, Claude has
 # reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
 # the cap, and no person took the label off. It adds it with RELEASE_PR_PAT,
-# since a label added with GITHUB_TOKEN starts no workflow. Claude Review
-# reviews every push while the label is on, so a fix for its findings is
-# reviewed in turn, until a review comes back clean: no threads and no
-# findings outside the diff, which covers the head and lets the PR merge
-# (mpaulosky/dotfiles#193). The review cap below is where that stops; the run also takes the
-# label off once Claude has reviewed MAX_CLAUDE_ROUNDS (the cap's 3) of the
-# PR's commits, whoever added it, since reviews of merge commits don't count
-# toward the cap: that's the owner's cost rule.
+# since a label added with GITHUB_TOKEN starts no workflow, so the PAT needs
+# Pull requests (or Issues) write. Claude Review reviews every push while the
+# label is on, so a fix for its findings is reviewed in turn, until a review
+# comes back clean: no threads and no findings outside the diff, which covers
+# the head and lets the PR merge (mpaulosky/dotfiles#193). The review cap
+# below is where that stops; the run also takes the label off once Claude has
+# reviewed MAX_CLAUDE_ROUNDS (the cap's 3) of the PR's commits, whoever added
+# it, since reviews of merge commits don't count toward the cap: that's the
+# owner's cost rule.
 # At the cap the run takes review:claude off the PR (mpaulosky/dotfiles#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
@@ -110,7 +111,8 @@ name: PR Auto-Merge
 permissions:
   contents: write
   # issues: read lets GITHUB_TOKEN list a PR's label events. The script reads
-  # them with GITHUB_TOKEN, not the PAT, so the PAT needs no Issues access.
+  # them with GITHUB_TOKEN, not the PAT, so the PAT needs no Issues read. It
+  # still adds review:claude, which takes Pull requests (or Issues) write.
   # pull-requests: write also lets GITHUB_TOKEN take review:claude off a PR.
   issues: read
   pull-requests: write
@@ -131,7 +133,9 @@ jobs:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
           # Scoped by the permissions above; used only to read a PR's label
           # events and comments and the workflow runs for its head (Claude
-          # Review's among them), and to take review:claude off it.
+          # Review's among them), and to take review:claude off it at the
+          # review cap and once Claude has reviewed MAX_CLAUDE_ROUNDS of its
+          # commits.
           EVENTS_TOKEN: ${{ github.token }}
         with:
           # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
@@ -143,11 +147,15 @@ jobs:
           github-token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            // github authenticates with the PAT when it's set, which may lack
-            // Issues or Actions access; label events, comments and workflow
-            // runs (Claude Review's, and the head's) are read, and
-            // review:claude removed, with GITHUB_TOKEN instead (its
-            // issues: read and actions: read above).
+            // github authenticates with the PAT when it's set. callInClaude
+            // adds review:claude with it, since a label added with
+            // GITHUB_TOKEN starts no workflow, so the PAT needs Pull requests
+            // (or Issues) write; without it Claude is never called in, and
+            // each run only warns. The PAT may lack Issues read or Actions
+            // access: label events, comments and workflow runs (Claude
+            // Review's, and the head's) are read, and review:claude removed,
+            // with GITHUB_TOKEN instead (its issues: read, actions: read and
+            // pull-requests: write above).
             const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
@@ -503,11 +511,12 @@ jobs:
             // progress (its jobs may not have created their checks yet), the
             // head's checks changed while the runs were read, or the runs
             // couldn't be read. "held": a CI run for the head is held for
-            // approval, so its checks come only once someone approves it
-            // (mpaulosky/dotfiles#236). "no CI": everything is quiet, but no
-            // check outside Claude Review's and this job's own exists, as when
-            // path filters leave out every CI workflow. "settled": CI has
-            // reported (mpaulosky/dotfiles#233).
+            // approval and no later run has replaced it, so its checks come
+            // only once someone approves it (mpaulosky/dotfiles#236).
+            // "no CI": everything is quiet, but no check outside Claude
+            // Review's and this job's own exists, as when path filters leave
+            // out every CI workflow. "settled": CI has reported
+            // (mpaulosky/dotfiles#233).
             async function noRequiredCheckState(pullNumber, pr, pending) {
               if (!pending.startsWith("no required check") || context.payload.pull_request) {
                 return null;
@@ -531,8 +540,22 @@ jobs:
                 if (runs.some((run) => ACTIVE_RUN_STATUSES.includes(run.status))) {
                   return "waiting";
                 }
+                // A held run counts only while no later run (higher id) of its
+                // workflow and event has replaced it. A later run replaces it
+                // only if it ran: one that finished skipped, cancelled or
+                // failed to start created none of the checks the held run
+                // would have (mpaulosky/dotfiles#238).
+                const NOT_RUN = ["skipped", "cancelled", "startup_failure", HELD_RUN];
+                const replaced = (run) => {
+                  return runs.some((other) => {
+                    return other.path === run.path && other.event === run.event && other.id > run.id &&
+                      other.status === "completed" && !NOT_RUN.includes(other.conclusion);
+                  });
+                };
                 const held = runs.some((run) => {
-                  return (run.status === HELD_RUN || run.conclusion === HELD_RUN) && !NOT_CI_WORKFLOWS.includes(run.path);
+                  return (run.status === HELD_RUN || run.conclusion === HELD_RUN) &&
+                    !NOT_CI_WORKFLOWS.includes(run.path) &&
+                    !replaced(run);
                 });
                 if (held) {
                   return "held";
@@ -894,9 +917,9 @@ jobs:
             // commits included, which the cap doesn't count) it would spend
             // more than the owner's cost rule allows. Taking the label off stops that; threads
             // already open still hold. Removed with GITHUB_TOKEN (its
-            // pull-requests: write covers a PR's labels), so the PAT needs no
-            // Issues access and the removal starts no workflow. A failure is a
-            // warning: the next run tries again.
+            // pull-requests: write covers a PR's labels), so the removal
+            // starts no workflow. A failure is a warning: the next run tries
+            // again.
             async function removeClaudeLabel(pullNumber, why) {
               try {
                 await eventsClient.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });

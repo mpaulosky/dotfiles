@@ -753,11 +753,10 @@ const heldCiRun = (shape, overrides = {}) => ({
   ...overrides
 });
 
-// The job waits, or says the runs need approval; it never calls in Claude.
-function waitsOrAsksForApproval(logs) {
-  return logs.some((line) => {
-    return line.startsWith("Not calling in Claude for PR #7 yet") || (line.startsWith("notice: PR #7") && /approv/i.test(line));
-  });
+// A held run gets the notice that asks the owner to approve the PR's workflow runs; the quiet
+// "Not calling in Claude yet" info line isn't enough (mpaulosky/dotfiles#238).
+function asksForApproval(logs) {
+  return logs.some((line) => line.startsWith("notice: PR #7") && /approve the PR's workflow runs/i.test(line));
 }
 
 test("doesn't call in Claude with no required check while a CI run for the head is held for approval (mpaulosky/dotfiles#236)", async () => {
@@ -766,7 +765,7 @@ test("doesn't call in Claude with no required check while a CI run for the head 
     const headRuns = [{ id: 1, head_sha: HEAD, status: "completed", conclusion: "success" }, heldCiRun(shape)];
     const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [], headRuns });
     assert.deepEqual(addedLabels, [], `held by ${shape}`);
-    assert.ok(waitsOrAsksForApproval(logs), `held by ${shape}: ${logs.join("\n")}`);
+    assert.ok(asksForApproval(logs), `held by ${shape}: ${logs.join("\n")}`);
     assert.ok(!logs.some((line) => line.startsWith("notice: ") && line.includes("no required check")), `held by ${shape}: ${logs.join("\n")}`);
   }
 });
@@ -781,8 +780,52 @@ test("doesn't tell the owner there is no CI while a CI run for the head is held 
       headRuns: [heldCiRun(shape)]
     });
     assert.deepEqual(addedLabels, [], `held by ${shape}`);
-    assert.ok(waitsOrAsksForApproval(logs), `held by ${shape}: ${logs.join("\n")}`);
+    assert.ok(asksForApproval(logs), `held by ${shape}: ${logs.join("\n")}`);
     assert.ok(!logs.some((line) => line.includes("no CI check")), `held by ${shape}: ${logs.join("\n")}`);
+  }
+});
+
+test("doesn't hold the PR for a held run that a later run of the same workflow and event has replaced (mpaulosky/dotfiles#238)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Lint", { isRequired: false }));
+  const ci = { path: ".github/workflows/ci.yml", event: "push" };
+  const completedRun = (id, overrides = {}) => ({ id, head_sha: HEAD, ...ci, status: "completed", conclusion: "success", ...overrides });
+  const evaluateHeadRuns = (headRuns) => evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [], headRuns });
+  for (const shape of ["status", "conclusion"]) {
+    // A held run followed by a completed run of the same workflow: the PR isn't held, and Claude is called in.
+    const replaced = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8)]);
+    assert.equal(replaced.addedLabels.length, 1, `held by ${shape}: ${replaced.logs.join("\n")}`);
+    assert.ok(!asksForApproval(replaced.logs), `held by ${shape}: ${replaced.logs.join("\n")}`);
+
+    // The order of the runs in the response doesn't matter, only their ids.
+    const reversed = await evaluateHeadRuns([completedRun(8), heldCiRun(shape, { id: 3, ...ci })]);
+    assert.equal(reversed.addedLabels.length, 1, `held by ${shape}: ${reversed.logs.join("\n")}`);
+
+    // A held run that is the newest of its workflow and event still holds the PR.
+    const newest = await evaluateHeadRuns([completedRun(2), heldCiRun(shape, { id: 3, ...ci })]);
+    assert.deepEqual(newest.addedLabels, [], `held by ${shape}`);
+    assert.ok(asksForApproval(newest.logs), `held by ${shape}: ${newest.logs.join("\n")}`);
+
+    // A later run of another workflow doesn't replace it.
+    const otherPath = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8, { path: ".github/workflows/lint.yml" })]);
+    assert.deepEqual(otherPath.addedLabels, [], `held by ${shape}`);
+    assert.ok(asksForApproval(otherPath.logs), `held by ${shape}: ${otherPath.logs.join("\n")}`);
+
+    // Nor does a later run of the same workflow for another event.
+    const otherEvent = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8, { event: "pull_request" })]);
+    assert.deepEqual(otherEvent.addedLabels, [], `held by ${shape}`);
+    assert.ok(asksForApproval(otherEvent.logs), `held by ${shape}: ${otherEvent.logs.join("\n")}`);
+
+    // A later run that never ran CI doesn't replace it: the PR stays held and the owner is asked to approve.
+    for (const conclusion of ["skipped", "cancelled", "startup_failure"]) {
+      const neverRan = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), completedRun(8, { conclusion })]);
+      assert.deepEqual(neverRan.addedLabels, [], `held by ${shape}, later run ${conclusion}`);
+      assert.ok(asksForApproval(neverRan.logs), `held by ${shape}, later run ${conclusion}: ${neverRan.logs.join("\n")}`);
+    }
+
+    // A replacing run that is itself held still holds the PR.
+    const stillHeld = await evaluateHeadRuns([heldCiRun(shape, { id: 3, ...ci }), heldCiRun(shape, { id: 8, ...ci })]);
+    assert.deepEqual(stillHeld.addedLabels, [], `held by ${shape}`);
+    assert.ok(asksForApproval(stillHeld.logs), `held by ${shape}: ${stillHeld.logs.join("\n")}`);
   }
 });
 
@@ -841,7 +884,7 @@ test("tells the owner when a head has no status check rollup and no workflow run
   for (const shape of ["status", "conclusion"]) {
     const held = await evaluate(pr, [], { ...options, headRuns: [heldCiRun(shape)] });
     assert.deepEqual(held.addedLabels, [], `held by ${shape}`);
-    assert.ok(waitsOrAsksForApproval(held.logs), `held by ${shape}: ${held.logs.join("\n")}`);
+    assert.ok(asksForApproval(held.logs), `held by ${shape}: ${held.logs.join("\n")}`);
     assert.ok(!held.logs.some((line) => line.includes("no CI check")), `held by ${shape}: ${held.logs.join("\n")}`);
   }
 
@@ -2299,4 +2342,38 @@ test("runs on a push to main", () => {
   const workflow = readFileSync(WORKFLOW, "utf8");
 
   assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]\n/);
+});
+
+// The comments that say what the PAT and GITHUB_TOKEN do (mpaulosky/dotfiles#214).
+// A repo's owner sets up RELEASE_PR_PAT from them, so they must say the PAT
+// adds review:claude and needs Pull requests (or Issues) write to do it, and
+// that GITHUB_TOKEN takes the label off.
+
+// The comment lines directly above the first line matching `anchor`, as one
+// string with the comment markers and line breaks removed.
+function commentAbove(anchor) {
+  const lines = readFileSync(WORKFLOW, "utf8").split("\n");
+  const at = lines.findIndex((line) => anchor.test(line));
+  assert.notEqual(at, -1, `pr-automerge.yml has no line matching ${anchor}`);
+  const block = [];
+  for (let i = at - 1; i >= 0 && /^\s*(#|\/\/)/.test(lines[i]); i--) {
+    block.unshift(lines[i].replace(/^\s*(#|\/\/)\s?/, "").trim());
+  }
+  return block.join(" ").replace(/\s+/g, " ");
+}
+
+test("says in EVENTS_TOKEN's comment that it also takes review:claude off at MAX_CLAUDE_ROUNDS", () => {
+  const comment = commentAbove(/^\s*EVENTS_TOKEN:/);
+
+  assert.match(comment, /review:claude/);
+  assert.match(comment, /MAX_CLAUDE_ROUNDS/);
+});
+
+test("says in the eventsClient comment that the PAT adds review:claude and needs Pull requests (or Issues) write", () => {
+  const comment = commentAbove(/^\s*const eventsClient = /);
+
+  assert.match(comment, /\badd(s|ed)?\b[^.]*review:claude|review:claude[^.]*\badd(s|ed)?\b/);
+  assert.match(comment, /RELEASE_PR_PAT|\bthe PAT\b/);
+  assert.match(comment, /pull[ -]requests/i);
+  assert.match(comment, /\bwrite\b/i);
 });

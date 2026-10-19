@@ -3,10 +3,13 @@ name: Claude Review
 
 # Claude reviews a PR as a backup to Copilot, whose review requests GitHub
 # drops without a word once the account's Copilot code review budget is used
-# up. It runs only on request: while the PR carries review:claude, which the
-# repo-ci-baseline skill's reapply.sh and land.sh (in mpaulosky/dotfiles, not
-# this repo) add when Copilot's request didn't register, and a person can add
-# at any time. It reviews every new head while the label is on.
+# up. It runs only on request: while the PR carries review:claude, which PR
+# Auto-Merge adds (with RELEASE_PR_PAT) when Copilot's quota note answers a
+# head, the repo-ci-baseline skill's reapply.sh and land.sh (in
+# mpaulosky/dotfiles, not this repo) add when Copilot's request didn't
+# register, and a person can add at any time. PR Auto-Merge also takes it off
+# at the review cap and at MAX_CLAUDE_ROUNDS. It reviews every new head while
+# the label is on.
 #
 # Claude never holds a write token. The review job checks the PR out with a
 # read-only token, gives Claude the diff against the base and read-only tools,

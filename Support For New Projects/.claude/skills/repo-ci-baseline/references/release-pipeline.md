@@ -136,7 +136,8 @@ directory up, with the text unchanged. Add a shape to its grid whenever a review
 
 **Permissions:** workflow-level `permissions: {}`, with each job granting only what it needs. The docs and release
 checkouts use `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`, so the blog PR's own checks start without a manual
-approval.
+approval. The blog PR's lookups and its `docs-only` label use `GITHUB_TOKEN`, which has an allowance of its own
+([tokens.md](tokens.md)).
 
 ## Adapting
 

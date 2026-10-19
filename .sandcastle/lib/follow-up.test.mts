@@ -1017,7 +1017,14 @@ describe("sweepPullRequests", () => {
   });
 
   it("leaves a PR alone this round when its review threads can't be read, and still sweeps the rest", () => {
-    const unreadable = pr({ number: 101, mergeStateStatus: "BEHIND", threads: [{ resolved: false, byBot: false, author: "owner" }] });
+    const unreadable = pr({
+      number: 101,
+      mergeStateStatus: "BEHIND",
+      threads: [
+        { resolved: false, byBot: false, author: "owner" },
+        { resolved: false, byBot: false, author: "stranger" },
+      ],
+    });
     const other = pr({
       number: 102,
       id: "PR_102",
@@ -1039,12 +1046,56 @@ describe("sweepPullRequests", () => {
       },
     });
     const lines: string[] = [];
+    const waiting = new WaitingPrReport();
 
-    const { needsPass } = sweepPullRequests(github, (line) => lines.push(line), NOW);
+    const { needsPass } = sweepPullRequests(github, (line) => lines.push(line), NOW, undefined, waiting);
 
     assert.ok(lines.some((line) => line.includes("Couldn't follow up PR #101")), lines.join("\n"));
     assert.ok(!needsPass.includes(101));
     assert.deepEqual(updatedBranches, [{ number: 102, expectedHeadSha: "b".repeat(40) }]);
+    // #249: the stranger's thread still waits on a person, so the PR stays listed.
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 1, answered: 0 }]);
+  });
+
+  it("keeps a PR on the waiting list, counted from the sweep's own threads, when its review threads can't be read", () => {
+    const { github } = stubGithub({
+      prs: [
+        pr({
+          threads: [
+            { resolved: false, byBot: false, author: "stranger" },
+            { resolved: false, byBot: true, author: COPILOT_REVIEWER },
+            { resolved: true, byBot: false, author: "stranger" },
+          ],
+        }),
+      ],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => {
+        throw new Error("gh api failed: HTTP 502");
+      },
+    });
+    const waiting = new WaitingPrReport();
+    const lines: string[] = [];
+
+    const { needsPass } = sweepPullRequests(github, (line) => lines.push(line), NOW, undefined, waiting);
+
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 1, answered: 0 }]);
+    assert.ok(lines.some((line) => line.includes("Couldn't follow up PR #101") && line.includes("HTTP 502")), lines.join("\n"));
+    assert.deepEqual(needsPass, []);
+  });
+
+  it("lists nothing for a PR whose review threads can't be read when no thread waits on a person", () => {
+    const { github } = stubGithub({
+      prs: [pr({ threads: [{ resolved: false, byBot: true, author: COPILOT_REVIEWER }] })],
+      isOwner: ownerIs("owner"),
+      reviewThreads: () => {
+        throw new Error("gh api failed: HTTP 502");
+      },
+    });
+    const waiting = new WaitingPrReport();
+
+    sweepPullRequests(github, () => {}, NOW, undefined, waiting);
+
+    assert.deepEqual(waiting.items(), []);
   });
 
   it("still updates the next PR when one PR's update fails", () => {

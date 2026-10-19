@@ -192,3 +192,26 @@ export function handBackWorkflowChange(
     report,
   );
 }
+
+// The comment for a push GitHub refused for a .github/workflows/** change even
+// as an update to a branch created at the build's base (#253). Says the issue
+// moved from the `Sandcastle` queue to `Sandcastle:local`, why, and how to run it
+// there; names the branch, the workflow files and the head commit like
+// workflowHandBackComment. Not a hand-back, so no `sandcastle:needs-human`, and no
+// BUILD_FAILED_MARKER.
+export function workflowLocalComment(_branch: string, _detail: string, _change: WorkflowChange): string {
+  throw new Error("Not implemented");
+}
+
+// Moves the issue `issueNumber` from the `Sandcastle` queue to
+// `Sandcastle:local` with workflowLocalComment, instead of handing it back.
+export function moveToLocalQueue(
+  _issueNumber: number,
+  _branch: string,
+  _detail: string,
+  _change: WorkflowChange,
+  _run: typeof execFileSync = execFileSync,
+  _repo: string = repoName(),
+): void {
+  throw new Error("Not implemented");
+}

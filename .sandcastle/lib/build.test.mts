@@ -82,6 +82,8 @@ function host(
     remoteMainError,
     mainWorkflowFiles = [],
     pushRefusesWorkflowChanges = true,
+    branchOnOrigin = false,
+    createBranchError,
     gateOutput,
   }: {
     ahead?: number | number[];
@@ -132,6 +134,10 @@ function host(
     // Whether the push token lacks the Workflows permission, as in Actions
     // (the default); false is a local `Sandcastle:local` run.
     pushRefusesWorkflowChanges?: boolean;
+    // Whether origin already has the issue's branch (an earlier round pushed
+    // it), and an error creating it at `base` throws (#253).
+    branchOnOrigin?: boolean;
+    createBranchError?: string;
   } = {},
 ) {
   const steps: string[] = [];
@@ -233,6 +239,11 @@ function host(
   const publishedPrBodies: (string | undefined)[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
   const handBackWorkflowChangeCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];
+  const moveToLocalCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];
+  const createdBranches: { branch: string; commit: string }[] = [];
+  // "create-branch" and "publish" in the order the host did them, kept apart
+  // from `steps` so the existing assertions on its exact list don't change (#253).
+  const publishEvents: string[] = [];
   const buildHost: BuildHost = {
     createSandbox: async () => {
       order.push("create");
@@ -281,6 +292,7 @@ function host(
     publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody) => {
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
+      publishEvents.push("publish");
       publishCalls.push({ reviewed, docsFailed });
       publishedPrBodies.push(prBody);
       steps.push(`publish${reviewed ? "" : " unreviewed"}${docsFailed ? " docs-failed" : ""}`);
@@ -310,11 +322,20 @@ function host(
     handBackWorkflowChange: (issueNumber, failureBranch, detail, change) => {
       handBackWorkflowChangeCalls.push({ issueNumber, branch: failureBranch, detail, change });
     },
+    remoteBranchExists: () => branchOnOrigin,
+    createBranchAt: (createdBranch, commit) => {
+      if (createBranchError !== undefined) throw new Error(createBranchError);
+      createdBranches.push({ branch: createdBranch, commit });
+      publishEvents.push("create-branch");
+    },
+    moveToLocal: (issueNumber, failureBranch, detail, change) => {
+      moveToLocalCalls.push({ issueNumber, branch: failureBranch, detail, change });
+    },
   };
   return {
     steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
-    mainChecks, scannedExclusions, listedExclusions, workflowFileCalls,
+    mainChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, publishEvents,
   };
 }
 
@@ -1110,10 +1131,13 @@ describe("buildIssue syncing with main before publishing", () => {
     assert.equal(result.publishFailed, true);
   });
 
+  // On a branch origin already has, the push is an update judged against the
+  // branch's own tip, so main's workflow change isn't what GitHub refuses (#253).
   it("hands the issue back for the branch's own workflow change, listing only its files, when main's workflow change is left unmerged", async () => {
     const { handBackWorkflowChangeCalls, steps, buildHost } = host([0, 0], {
       latestMain: newerMain,
       containsMain: false,
+      branchOnOrigin: true,
       mainWorkflowFiles: [".github/workflows/release.yml"],
       publishError:
         "git push --quiet origin abc:refs/heads/x failed:\n ! [remote rejected] abc -> x (refusing to allow a GitHub App to " +
@@ -1258,6 +1282,148 @@ describe("buildIssue publishing a workflow file", () => {
   it("still resolves when the hand-back for a workflow-file rejection itself fails", async () => {
     const { buildHost } = host([0, 0], { publishError: workflowRejection });
     buildHost.handBackWorkflowChange = () => {
+      throw new Error("gh issue edit failed: HTTP 502");
+    };
+
+    await assert.doesNotReject(() => buildIssue(issue, branch, base, buildHost));
+  });
+});
+
+// #253: GitHub judges the push of a branch it doesn't have yet against main's
+// current tip, so a build cut before main changed a workflow "changes" that
+// workflow back, and the push is refused. The host creates the branch at `base`
+// first, then pushes the build's commits as an update to it.
+describe("buildIssue publishing a new branch after main changed a workflow", () => {
+  // The commit origin/main has moved on to since the round started.
+  const newerMain = "a".repeat(40);
+  const mainChangedWorkflow = {
+    latestMain: newerMain,
+    containsMain: false,
+    mainWorkflowFiles: [".github/workflows/claude-review.yml"],
+  };
+  const refusal =
+    "git push --quiet origin abc:refs/heads/x failed:\n ! [remote rejected] abc -> x (refusing to allow a Personal Access Token to " +
+    "create or update workflow `.github/workflows/claude-review.yml` without `workflow` scope)";
+
+  it("creates the branch at base before pushing the build's commits to it, when main changed a workflow since base", async () => {
+    const { createdBranches, publishEvents, pushed, workflowFileCalls, head, buildHost } = host([0, 0], mainChangedWorkflow);
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, [{ branch, commit: base }]);
+    assert.deepEqual(publishEvents, ["create-branch", "publish"]);
+    assert.deepEqual(pushed, [{ branch, commit: head() }]);
+    assert.equal(result.outcome, "published");
+    // The check asks about base..latest main, the range GitHub judges a new branch by.
+    assert.ok(
+      workflowFileCalls.some((call) => call.from === base && call.to === newerMain),
+      JSON.stringify(workflowFileCalls),
+    );
+  });
+
+  it("publishes as today, creating no branch first, when main changed no workflow since base", async () => {
+    const { createdBranches, publishEvents, pushed, head, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mainWorkflowFiles: [],
+    });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+    assert.deepEqual(pushed, [{ branch, commit: head() }]);
+    assert.equal(result.outcome, "published");
+  });
+
+  it("publishes as today when main is still the commit the build started from", async () => {
+    const { createdBranches, publishEvents, buildHost } = host([0, 0]);
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+  });
+
+  it("creates no branch when origin already has it, since the push is then an update", async () => {
+    const { createdBranches, publishEvents, buildHost } = host([0, 0], { ...mainChangedWorkflow, branchOnOrigin: true });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+  });
+
+  it("creates no branch in a local run, whose push token can push a workflow change", async () => {
+    const { createdBranches, workflowFileCalls, publishEvents, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      pushRefusesWorkflowChanges: false,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+    assert.ok(!workflowFileCalls.some((call) => call.from === base && call.to === newerMain), JSON.stringify(workflowFileCalls));
+  });
+
+  it("publishes as today when main's workflow files since base can't be listed", async () => {
+    const { createdBranches, publishEvents, buildHost } = host([0, 0], mainChangedWorkflow);
+    const listWorkflows = buildHost.workflowFiles;
+    buildHost.workflowFiles = (from, to, mergedMain) => {
+      if (from === base && to === newerMain) throw new Error("git log failed");
+      return listWorkflows(from, to, mergedMain);
+    };
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+    assert.equal(result.outcome, "published");
+  });
+
+  it("moves the issue to Sandcastle:local, not to needs-human, when the push is still refused after the branch was created", async () => {
+    const { moveToLocalCalls, handBackWorkflowChangeCalls, comments, recordBuildFailureCalls, createdBranches, buildHost } = host(
+      [0, 0],
+      { ...mainChangedWorkflow, publishError: refusal },
+    );
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(createdBranches.length, 1);
+    assert.equal(moveToLocalCalls.length, 1);
+    assert.equal(moveToLocalCalls[0]!.issueNumber, issue.number);
+    assert.equal(moveToLocalCalls[0]!.branch, branch);
+    assert.match(moveToLocalCalls[0]!.detail, /refusing to allow/);
+    // The head and files are the build's own: base..the commit the gate passed.
+    const { head, files } = moveToLocalCalls[0]!.change;
+    assert.notEqual(head, base);
+    assert.deepEqual(files, [`.github/workflows/${base.slice(0, 4)}-${head.slice(0, 4)}.yml`]);
+    assert.deepEqual(handBackWorkflowChangeCalls, []);
+    assert.deepEqual(comments, []);
+    assert.deepEqual(recordBuildFailureCalls, []);
+    assert.equal(result.prUrl, undefined);
+    assert.equal(result.publishFailed, true);
+    assert.equal(result.outcome, "not published");
+  });
+
+  it("still hands the issue back for a refused push when no branch was created first", async () => {
+    const { moveToLocalCalls, handBackWorkflowChangeCalls, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mainWorkflowFiles: [],
+      publishError: refusal,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(moveToLocalCalls, []);
+    assert.equal(handBackWorkflowChangeCalls.length, 1);
+  });
+
+  it("still resolves when moving the issue to Sandcastle:local itself fails", async () => {
+    const { buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: refusal });
+    buildHost.moveToLocal = () => {
       throw new Error("gh issue edit failed: HTTP 502");
     };
 

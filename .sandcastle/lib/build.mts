@@ -327,6 +327,18 @@ export type BuildHost = {
   // `detail` is the publicError text of the push's error; `change` names the
   // refused head and its workflow files.
   handBackWorkflowChange(issueNumber: number, branch: string, detail: string, change: WorkflowChange): void;
+  // Whether origin already has `branch` (#253), asked of the remote itself.
+  // A branch that exists is pushed to as an update, which GitHub judges
+  // against the branch's own tip.
+  remoteBranchExists(branch: string): boolean;
+  // Creates `branch` on origin at `commit`, a commit GitHub already has, so
+  // the build's commits can then be pushed as an update to it (#253).
+  createBranchAt(branch: string, commit: string): void;
+  // Moves the issue from the Sandcastle queue to `Sandcastle:local` with a
+  // comment saying why, after a push GitHub refused for a workflow change
+  // even as an update to a branch created at `base` (#253). A local run
+  // pushes with the owner's own `gh` login, which can push it.
+  moveToLocal(issueNumber: number, branch: string, detail: string, change: WorkflowChange): void;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no
@@ -513,6 +525,15 @@ const liveHost: BuildHost = {
   workflowFiles: (from, to, mergedMain) => workflowFilesFrom(git(...workflowLogArgs(from, to, mergedMain))),
   pushRefusesWorkflowChanges: process.env.GITHUB_ACTIONS === "true",
   handBackWorkflowChange: (issueNumber, branch, detail, change) => handBackWorkflowChange(issueNumber, branch, detail, change),
+  remoteBranchExists: () => {
+    throw new Error("Not implemented");
+  },
+  createBranchAt: () => {
+    throw new Error("Not implemented");
+  },
+  moveToLocal: () => {
+    throw new Error("Not implemented");
+  },
 };
 
 // `value` as one single-quoted shell word, for the commit and branch names

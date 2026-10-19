@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
 import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP } from "./config.mts";
-import { buildFailedComment, handBackWorkflowChange, needsHumanComment, recordFailedAttempt, workflowHandBackComment } from "./handback.mts";
+import {
+  buildFailedComment,
+  handBackWorkflowChange,
+  moveToLocalQueue,
+  needsHumanComment,
+  recordFailedAttempt,
+  workflowHandBackComment,
+  workflowLocalComment,
+} from "./handback.mts";
 import { HandBackReport, targetUrl } from "./report.mts";
 
 // A gh stub recording every call's args and stdin input.
@@ -228,5 +236,93 @@ describe("handBackWorkflowChange", () => {
     assert.equal(report.items()[0]!.label, "sandcastle:needs-human");
     assert.match(report.items()[0]!.reason, /\.github\/workflows/);
     assert.equal(report.items()[0]!.url, targetUrl("o/r", { kind: "issue", number: 69 }));
+  });
+});
+
+// #253: a push GitHub still refuses for a workflow change, after the branch was
+// created at base, moves the issue to Sandcastle:local instead of handing it
+// back: a local run pushes with the owner's own gh login.
+describe("workflowLocalComment", () => {
+  const change = { head: "abc1234def5678abc1234def5678abc1234def56", files: [".github/workflows/ci.yml"] };
+  const detail = "! [remote rejected] abc -> x (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)";
+
+  it("names the branch, the workflow file and the head commit, and fences the detail", () => {
+    const comment = workflowLocalComment("fix/253-publish", detail, change);
+
+    assert.match(comment, /`fix\/253-publish`/);
+    assert.match(comment, /`\.github\/workflows\/ci\.yml`/);
+    assert.match(comment, /abc1234def5678abc1234def5678abc1234def56/);
+    assert.match(comment, /```\n[\s\S]*refusing to allow[\s\S]*\n```/);
+  });
+
+  it("says the issue moved to Sandcastle:local and why, and not that a person must make the change", () => {
+    const comment = workflowLocalComment("fix/253-publish", detail, change);
+
+    assert.match(comment, /Sandcastle:local/);
+    assert.match(comment, /SANDCASTLE_LABEL=Sandcastle:local/);
+    assert.match(comment, /Workflows permission/);
+    assert.doesNotMatch(comment, /needs-human/);
+  });
+
+  it("says GitHub doesn't have this attempt's commits", () => {
+    const comment = workflowLocalComment("fix/253-publish", detail, change);
+
+    assert.match(comment, /GitHub doesn't have/);
+  });
+
+  it("keeps a file name with backticks inside its code span", () => {
+    const hostile = ".github/workflows/x` @org/team [link](https://example.com) `.yml";
+    const comment = workflowLocalComment("fix/253-publish", detail, { head: change.head, files: [hostile] });
+
+    assert.ok(comment.includes(`\`\` ${hostile} \`\``), comment);
+  });
+
+  it("still reads when the workflow files couldn't be listed", () => {
+    const comment = workflowLocalComment("fix/253-publish", detail, { head: change.head, files: [] });
+
+    assert.match(comment, /a file under `\.github\/workflows\/`/);
+  });
+
+  it("carries no BUILD_FAILED_MARKER, since this isn't a failed attempt", () => {
+    const comment = workflowLocalComment("fix/253-publish", "refusing to allow", change);
+
+    assert.equal(comment.includes(BUILD_FAILED_MARKER), false);
+  });
+});
+
+describe("moveToLocalQueue", () => {
+  const change = { head: "a".repeat(40), files: [".github/workflows/ci.yml"] };
+
+  it("comments on the issue, then adds Sandcastle:local and removes Sandcastle, without needs-human", () => {
+    const { calls, run } = recordingGh();
+
+    moveToLocalQueue(253, "fix/253-publish", "refusing to allow a Personal Access Token to create or update workflow", change, run, "o/r");
+
+    const comments = calls.filter((call) => call.args[1] === "comment");
+    const edits = calls.filter((call) => call.args[1] === "edit");
+    assert.equal(comments.length, 1);
+    assert.deepEqual(comments[0]!.args.slice(0, 5), ["issue", "comment", "253", "--repo", "o/r"]);
+    assert.match(String(comments[0]!.input), /Sandcastle:local/);
+    // The comment goes first: a comment GitHub rejects leaves the labels alone.
+    assert.ok(calls.indexOf(comments[0]!) < calls.indexOf(edits[0]!));
+    const args = edits.flatMap((edit) => [...edit.args]);
+    assert.deepEqual(args.slice(0, 5), ["issue", "edit", "253", "--repo", "o/r"]);
+    assert.ok(args.join(" ").includes("--add-label Sandcastle:local"), args.join(" "));
+    assert.ok(args.join(" ").includes("--remove-label Sandcastle"), args.join(" "));
+    assert.ok(!args.includes("sandcastle:needs-human"), args.join(" "));
+  });
+
+  it("leaves the labels alone when the comment fails", () => {
+    const calls: string[][] = [];
+    const run = ((_cmd: string, args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[1] === "comment") throw new Error("HTTP 502");
+      return "";
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => moveToLocalQueue(253, "fix/253-publish", "refusing", change, run, "o/r"));
+
+    assert.equal(calls.length, 1, JSON.stringify(calls));
+    assert.equal(calls[0]![1], "comment");
   });
 });

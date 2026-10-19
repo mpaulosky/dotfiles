@@ -295,6 +295,12 @@ export type BuildHost = {
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main
   // while it ran. Throws when the fetch fails.
   latestMain(): string;
+  // Whether `commit` is the commit GitHub's main names right now, asked of
+  // the remote itself (git ls-remote against origin, whose URL is in the
+  // read-only .git/config) rather than read from refs/remotes/origin/main,
+  // which agents can write. buildIssue leaves a merged main's history out of
+  // the secret scan only when this holds (#224). Throws when it can't ask.
+  isRemoteMain(commit: string): boolean;
   // What's wrong with how the worktree finds its repository (see
   // lib/host-safety.mts); empty when nothing is.
   worktreeProblems(worktreePath: string): string[];
@@ -384,6 +390,12 @@ export function createCheckedSandbox(branch: string): Promise<sandcastle.Sandbox
   return sandcastle.createSandbox({ branch, sandbox: agentSandbox(), hooks, copyToWorktree });
 }
 
+// Whether origin's main is `commit` now, by its answer to git ls-remote.
+export function remoteMainIs(commit: string, run: (...args: string[]) => string = git): boolean {
+  const [sha] = run("ls-remote", "origin", "refs/heads/main").split(/\s/);
+  return sha !== undefined && sha !== "" && sha === commit;
+}
+
 const liveHost: BuildHost = {
   createSandbox: createCheckedSandbox,
   commitsAhead,
@@ -403,6 +415,7 @@ const liveHost: BuildHost = {
   publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), containsSandboxSecret),
   publish,
   latestMain: fetchMain,
+  isRemoteMain: (commit) => remoteMainIs(commit),
   worktreeProblems,
   log: console.log,
   limits: runLimits,
@@ -712,6 +725,24 @@ async function buildMarkedIssue(
     return cleanAt();
   }
 
+  // The merged main commit, kept only when GitHub's main is that commit right
+  // now, asked of the remote rather than read from the origin/main ref in the
+  // shared .git, which agents can write: a ref they moved onto a commit of
+  // their own would otherwise hide a leak in it from the scan, and the
+  // pinned `base` can't protect a range the exclusion shrinks (#224). When
+  // main has moved on since, or the remote can't be asked, nothing is left
+  // out and the scan reads everything past `base`, as it did before.
+  function trustedMergedMain(mergedMain: string | undefined): string | undefined {
+    if (mergedMain === undefined) return undefined;
+    try {
+      if (host.isRemoteMain(mergedMain)) return mergedMain;
+      log("the merged main commit is no longer GitHub's main, so the scan reads main's commits too");
+    } catch (error) {
+      console.error(`  ⚠ #${issue.number}: asking GitHub for main failed, so the scan reads main's commits too: ${error}`);
+    }
+    return undefined;
+  }
+
   // Merge in what landed on main while the roles ran, so the PR doesn't open
   // already behind it: a build can take an hour, and Sandcastle pushes with
   // hooks off, so the pre-push hook's behind-main check never runs on it.
@@ -864,7 +895,8 @@ async function buildMarkedIssue(
 
     const checkpoint2 = await checkpoint2Passes();
     if (checkpoint2 === undefined) return unpublished("gate failed", "checkpoint 2");
-    const { gated, mergedMain } = checkpoint2;
+    const { gated } = checkpoint2;
+    const mergedMain = trustedMergedMain(checkpoint2.mergedMain);
 
     // The push is public, and the sandbox holds the Claude token or API key.
     // The comment doesn't say where the secret is, since the issue is public

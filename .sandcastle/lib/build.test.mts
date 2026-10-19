@@ -12,6 +12,7 @@ import {
   PR_BODY_LIMIT,
   publicErrorText,
   publish,
+  remoteMainIs,
   UncountedStopError,
   type BuildHost,
   workflowFilesFrom,
@@ -72,6 +73,8 @@ function host(
     mergeExitCode = 0,
     abortExitCode = 0,
     latestMainError,
+    remoteMain,
+    remoteMainError,
     mainWorkflowFiles = [],
     pushRefusesWorkflowChanges = true,
     gateOutput,
@@ -112,6 +115,11 @@ function host(
     mergeExitCode?: number;
     abortExitCode?: number;
     latestMainError?: string;
+    // What the remote says main is when buildIssue asks (isRemoteMain), for
+    // the check that the merged main commit is really GitHub's (#224): the
+    // latestMain commit by default, and an error it throws instead.
+    remoteMain?: string;
+    remoteMainError?: string;
     // The workflow files `<branch head>..<latest main>` touches: what
     // workflowFiles returns when asked about the range ending at latestMain
     // (#223). Empty by default, as when main hasn't changed a workflow.
@@ -276,6 +284,10 @@ function host(
     latestMain: () => {
       if (latestMainError !== undefined) throw new Error(latestMainError);
       return latestMain;
+    },
+    isRemoteMain: (commit) => {
+      if (remoteMainError !== undefined) throw new Error(remoteMainError);
+      return commit === (remoteMain ?? latestMain);
     },
     worktreeProblems: () => worktreeProblems,
     publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), () => false),
@@ -916,6 +928,35 @@ describe("buildIssue syncing with main before publishing", () => {
 
     assert.equal(handBackWorkflowChangeCalls.length, 1);
     assert.deepEqual(listedExclusions, [newerMain]);
+  });
+
+  it("excludes no main commit from the scan or the listing when GitHub's main isn't the merged commit", async () => {
+    const { scannedExclusions, listedExclusions, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      remoteMain: "f".repeat(40),
+      publishError: "refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml`",
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(scannedExclusions, [undefined]);
+    assert.deepEqual(listedExclusions, [undefined]);
+  });
+
+  it("blocks a token-shaped string in main's commits when GitHub's main can't be asked", async () => {
+    const { pushed, scannedExclusions, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      remoteMainError: "could not resolve host",
+      leaksOnlyInMergedMain: sampleSecretMatch,
+    });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.deepEqual(pushed, []);
+    assert.deepEqual(scannedExclusions, [undefined]);
   });
 
   it("excludes no main commit from the scan or the listing when the merge conflicted", async () => {
@@ -2017,6 +2058,26 @@ describe("workflowLogArgs with a merged main commit", () => {
     assert.deepEqual(workflowLogArgs("origin/main", "abc123", "def456"), [
       "log", "--name-only", "--format=", "origin/main..abc123", "^def456", "--", ".github/workflows/",
     ]);
+  });
+});
+
+describe("remoteMainIs", () => {
+  const sha = "a".repeat(40);
+
+  it("asks origin for refs/heads/main and compares the commit it names", () => {
+    const asked: string[][] = [];
+    const run = (...args: string[]) => {
+      asked.push(args);
+      return `${sha}\trefs/heads/main\n`;
+    };
+
+    assert.equal(remoteMainIs(sha, run), true);
+    assert.equal(remoteMainIs("b".repeat(40), run), false);
+    assert.deepEqual(asked[0], ["ls-remote", "origin", "refs/heads/main"]);
+  });
+
+  it("is false when origin names no main", () => {
+    assert.equal(remoteMainIs(sha, () => ""), false);
   });
 });
 

@@ -322,6 +322,22 @@ describe("firstSecretMatch with a merged main commit", () => {
     }
   });
 
+  it("still reports a token-shaped string written into the merge commit itself when main is excluded", () => {
+    const { repo, raw, base, main, hostGit } = mergedRepo({ branchContent: "plain\n", mainContent: "plain\n" });
+    try {
+      writeFileSync(join(repo, "resolved.txt"), `${githubShaped}\n`);
+      raw("add", ".");
+      raw("commit", "--quiet", "--amend", "--no-edit");
+      const mergeCommit = raw("rev-parse", "HEAD");
+
+      const match = firstSecretMatch(base, mergeCommit, new Map(), hostGit, main);
+
+      assert.deepEqual(match?.location, { commit: mergeCommit, field: "line", path: "resolved.txt", line: 1 });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("still reports a sandbox secret in the branch's own commit message when main is excluded", () => {
     const secretValue = "fake-secret-branch-message-value";
     const { repo, raw, base, main, hostGit } = mergedRepo({ branchContent: "plain\n", mainContent: "plain\n" });

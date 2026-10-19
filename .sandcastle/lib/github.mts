@@ -6,7 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { endOf } from "./checkpoint.mts";
-import { BASE_BRANCH, COPILOT_REVIEWER, QUEUE_LABEL, SANDCASTLE_LABELS, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { BASE_BRANCH, COPILOT_REVIEWER, LOCAL_QUEUE_LABEL_DEFINITION, QUEUE_LABEL, SANDCASTLE_LABELS, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 import { sh } from "./shell.mts";
@@ -974,9 +974,11 @@ export function commentOnIssue(
 // Creates any of `labels` this repository doesn't already have, with its
 // colour and description. Run once at the host's startup, before the first
 // round, so a fresh repository (or one whose labels were deleted) always has
-// them (see docs/plans/sandcastle-workflow.md, "Labels").
+// them (see docs/plans/sandcastle-workflow.md, "Labels"). By default that's
+// SANDCASTLE_LABELS and `Sandcastle:local`, which isn't one of them but must
+// exist before an issue moves to it (#253).
 export function ensureLabels(
-  labels: readonly SandcastleLabel[] = SANDCASTLE_LABELS,
+  labels: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION],
   run: typeof execFileSync = execFileSync,
   repo: string = repoName(),
 ): void {
@@ -1020,6 +1022,18 @@ export function removeIssueLabel(
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["issue", "edit", String(number), "--repo", repo, "--remove-label", label]);
+}
+
+// Replaces `from` with `to` on the issue `number`, in one edit so the issue
+// never carries both or neither.
+export function replaceIssueLabel(
+  number: number,
+  from: string,
+  to: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): void {
+  ghWithStderr(run, ["issue", "edit", String(number), "--repo", repo, "--add-label", to, "--remove-label", from]);
 }
 
 // Adds `label` to the pull request `number`: gh issue edit refuses a PR

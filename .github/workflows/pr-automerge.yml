@@ -108,17 +108,22 @@ name: PR Auto-Merge
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
+# GITHUB_TOKEN makes every read (mpaulosky/dotfiles#231): issues: read for a
+# PR's label events and comments, actions: read for the workflow runs for a
+# head (Claude Review's among them), and checks: read and statuses: read for
+# the head's check runs and commit statuses in the GraphQL read. pull-requests:
+# write also lets it take review:claude off a PR. contents: write and
+# pull-requests: write let it merge and update a PR when RELEASE_PR_PAT isn't
+# set. The PAT makes only the calls that must start a workflow or come from a
+# person, so it needs no read access beyond those, but it still adds
+# review:claude, which takes Pull requests (or Issues) write.
 permissions:
   contents: write
-  # issues: read lets GITHUB_TOKEN list a PR's label events. The script reads
-  # them with GITHUB_TOKEN, not the PAT, so the PAT needs no Issues read. It
-  # still adds review:claude, which takes Pull requests (or Issues) write.
-  # pull-requests: write also lets GITHUB_TOKEN take review:claude off a PR.
   issues: read
   pull-requests: write
-  # actions: read lets GITHUB_TOKEN list the workflow runs for a head, Claude
-  # Review's among them.
   actions: read
+  checks: read
+  statuses: read
 
 jobs:
   merge-when-ready:
@@ -131,32 +136,39 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
-          # Scoped by the permissions above; used only to read a PR's label
-          # events and comments and the workflow runs for its head (Claude
-          # Review's among them), and to take review:claude off it at the
-          # review cap and once Claude has reviewed MAX_CLAUDE_ROUNDS of its
-          # commits.
-          EVENTS_TOKEN: ${{ github.token }}
+          # patClient's token. A merge made with GITHUB_TOKEN starts no
+          # workflows, so release.yml (on: pull_request closed) would never
+          # run for it. Merge with the PAT when it's set, the same fallback
+          # the release workflow uses. The same goes for update-branch, whose
+          # merge from main must start CI, for adding review:claude, which
+          # Claude Review must see, and for `@dependabot rebase`, which
+          # Dependabot takes from a person (the PAT's own login, read once,
+          # tells its rebase requests apart). Every trigger runs main's copy
+          # of this file, never a PR's.
+          PAT_TOKEN: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
         with:
-          # A merge made with GITHUB_TOKEN starts no workflows, so release.yml
-          # (on: pull_request closed) would never run for it. Merge with the
-          # PAT when it's set, the same fallback the release workflow uses.
-          # The same goes for update-branch, whose merge from main must start
-          # CI, and for `@dependabot rebase`, which Dependabot takes from a
-          # person. Every trigger runs main's copy of this file, never a PR's.
-          github-token: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
+          # github's token, scoped by the permissions above. GITHUB_TOKEN makes
+          # every read, and takes review:claude off at the review cap and once
+          # Claude has reviewed MAX_CLAUDE_ROUNDS of a PR's commits. Its rate
+          # limit is this repo's own, while the PAT's is shared by everything
+          # acting as its owner (mpaulosky/dotfiles#231).
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            // github authenticates with the PAT when it's set. callInClaude
-            // adds review:claude with it, since a label added with
-            // GITHUB_TOKEN starts no workflow, so the PAT needs Pull requests
-            // (or Issues) write; without it Claude is never called in, and
-            // each run only warns. The PAT may lack Issues read or Actions
-            // access: label events, comments and workflow runs (Claude
-            // Review's, and the head's) are read, and review:claude removed,
-            // with GITHUB_TOKEN instead (its issues: read, actions: read and
-            // pull-requests: write above).
-            const eventsClient = getOctokit(process.env.EVENTS_TOKEN);
+            // github authenticates with GITHUB_TOKEN and makes every read:
+            // the PRs, their checks, reviews and threads, label events,
+            // comments, commits and workflow runs. It also takes review:claude
+            // off, which should start no workflow. patClient authenticates
+            // with RELEASE_PR_PAT, when it's set, and makes only the calls
+            // GitHub must treat as a person's (mpaulosky/dotfiles#231): the
+            // merge, which release.yml must follow; update-branch, whose merge
+            // must start CI; review:claude, which callInClaude adds and
+            // Claude Review must see, so the PAT needs Pull requests (or
+            // Issues) write (without it Claude is never called in, and each
+            // run only warns); and `@dependabot rebase`, which Dependabot
+            // takes only from a person. repo-ci-baseline's
+            // references/tokens.md lists every call and why.
+            const patClient = getOctokit(process.env.PAT_TOKEN);
 
             // Sandcastle adds this label when it gives up on a PR and hands it
             // back to a person, who removes it once the PR may merge again.
@@ -375,7 +387,7 @@ jobs:
               // removal only from the repository owner. Events come oldest
               // first, and every page is read, so the last change to this
               // label is the latest one.
-              const events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+              const events = await github.paginate(github.rest.issues.listEvents, {
                 owner,
                 repo,
                 issue_number: pullNumber,
@@ -531,7 +543,7 @@ jobs:
                 return "waiting";
               }
               try {
-                const runs = await eventsClient.paginate(eventsClient.rest.actions.listWorkflowRunsForRepo, {
+                const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, {
                   owner,
                   repo,
                   head_sha: pr.headRefOid,
@@ -690,7 +702,7 @@ jobs:
                 // expected_head_sha pins the update to the head checked above:
                 // a request for a head that has moved on (a push, or a parallel
                 // run's update) gets a 422 and changes nothing.
-                await github.rest.pulls.updateBranch({
+                await patClient.rest.pulls.updateBranch({
                   owner,
                   repo,
                   pull_number: pullNumber,
@@ -720,11 +732,11 @@ jobs:
               }
             }
 
-            // The login comments posted with github (the PAT) appear under,
+            // The login comments posted with patClient (the PAT) appear under,
             // read once a run.
             let poster;
             function posterLogin() {
-              poster ??= github.rest.users.getAuthenticated().then(({ data }) => data.login);
+              poster ??= patClient.rest.users.getAuthenticated().then(({ data }) => data.login);
               return poster;
             }
 
@@ -737,7 +749,7 @@ jobs:
             async function askDependabotToRebase(pullNumber, pr) {
               const marker = rebaseMarker(pr.headRefOid);
               const login = await posterLogin();
-              const comments = await eventsClient.paginate(eventsClient.rest.issues.listComments, {
+              const comments = await github.paginate(github.rest.issues.listComments, {
                 owner,
                 repo,
                 issue_number: pullNumber,
@@ -747,7 +759,7 @@ jobs:
                 core.info(`Waiting on PR #${pullNumber}: Dependabot was already asked to rebase ${pr.headRefOid}.`);
                 return false;
               }
-              await github.rest.issues.createComment({
+              await patClient.rest.issues.createComment({
                 owner,
                 repo,
                 issue_number: pullNumber,
@@ -896,7 +908,7 @@ jobs:
             async function claudeReviewedSinceLabel(pullNumber, claudeReviews) {
               let events;
               try {
-                events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+                events = await github.paginate(github.rest.issues.listEvents, {
                   owner,
                   repo,
                   issue_number: pullNumber,
@@ -922,7 +934,7 @@ jobs:
             // again.
             async function removeClaudeLabel(pullNumber, why) {
               try {
-                await eventsClient.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });
                 core.info(`${why} on PR #${pullNumber}: removed ${CLAUDE_LABEL}, so Claude Review stops reviewing new pushes.`);
               } catch (error) {
                 if (error.status === 404) {
@@ -1001,7 +1013,7 @@ jobs:
               let runs;
               let events;
               try {
-                const { data } = await eventsClient.rest.actions.listWorkflowRuns({
+                const { data } = await github.rest.actions.listWorkflowRuns({
                   owner,
                   repo,
                   workflow_id: "claude-review.yml",
@@ -1017,7 +1029,7 @@ jobs:
                 if (!runs.every((run) => held(run) || (run.status === "completed" && run.conclusion === "skipped"))) {
                   return false;
                 }
-                events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+                events = await github.paginate(github.rest.issues.listEvents, {
                   owner,
                   repo,
                   issue_number: pullNumber,
@@ -1126,7 +1138,7 @@ jobs:
                 // A person who took the label off decided against Claude for
                 // this PR. This workflow takes it off at the cap (as
                 // github-actions), which can't apply here, below the cap.
-                const events = await eventsClient.paginate(eventsClient.rest.issues.listEvents, {
+                const events = await github.paginate(github.rest.issues.listEvents, {
                   owner,
                   repo,
                   issue_number: pullNumber,
@@ -1145,7 +1157,7 @@ jobs:
                   );
                   return;
                 }
-                await github.rest.issues.addLabels({ owner, repo, issue_number: pullNumber, labels: [CLAUDE_LABEL] });
+                await patClient.rest.issues.addLabels({ owner, repo, issue_number: pullNumber, labels: [CLAUDE_LABEL] });
                 core.info(`Copilot couldn't review ${head} (its quota is used up): added ${CLAUDE_LABEL} to PR #${pullNumber}, so Claude Review reviews it.`);
                 if (noneRequired) {
                   // A notice, as the rulesets may be missing a required check.
@@ -1329,7 +1341,7 @@ jobs:
                 // sha pins the merge to the commit that was checked above, so
                 // a push that lands in between makes the merge fail instead of
                 // merging unreviewed code.
-                await github.rest.pulls.merge({
+                await patClient.rest.pulls.merge({
                   owner,
                   repo,
                   pull_number: pullNumber,

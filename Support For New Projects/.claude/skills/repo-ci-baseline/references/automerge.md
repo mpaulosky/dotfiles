@@ -191,9 +191,12 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   GitHub still runs it far less often than asked: IssueTracker's sweeps after #201 ran about 70 minutes apart. Treat it as the fallback, never the expected path.
 - **Safety:** `pull_request_target` runs main's copy of the file and never checks out PR code, so a PR can't edit what decides whether it merges.
   `pull_request_review` is never a trigger here: it would run the PR's own copy with write access. It reaches this workflow only through PR Review Submitted.
-- **Token:** `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`.
+- **Token:** every read goes through `GITHUB_TOKEN` (the script's `github`), whose rate limit is the repo's own,
+  and so does taking `review:claude` off. Only the calls GitHub must treat as a person's go through `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`
+  (the script's `patClient`): the merge, update-branch, adding `review:claude` and `@dependabot rebase`, plus one read of the PAT's own login.
   A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip; an update would start no CI.
   The PAT also posts `@dependabot rebase`, which Dependabot takes from a person.
+  [tokens.md](tokens.md) lists every call, which client makes it and why, and the allowance the PAT shares with everything acting as its owner.
 
 ## Landing
 
@@ -273,6 +276,8 @@ and `gh pr merge --auto --squash --match-head-commit <head>`. It has no rules of
 It also watches each release-blog PR that opens in a watched repo, and after a watched Baseline PR merges it waits `--blog-wait` (15) minutes for one.
 It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),
 and exits once every watched PR is merged or closed, or with 1 at `--timeout` (180 minutes).
+A quiet round costs one GraphQL query per repo (about 3 points), and each action a call or three, all on the owner's `gh` login,
+which spends almost only GraphQL points (of the account's 5,000 an hour) and leaves the REST allowance to the PAT and Sandcastle: [tokens.md](tokens.md#landsh-and-the-shared-allowance) gives the numbers.
 
 ## Verify live
 

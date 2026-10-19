@@ -2068,6 +2068,7 @@ describe("remoteMainIs", () => {
     const asked: string[][] = [];
     const run = (...args: string[]) => {
       asked.push(args);
+      if (args[0] !== "ls-remote") throw new Error("not an ancestor");
       return `${sha}\trefs/heads/main\n`;
     };
 
@@ -2078,6 +2079,41 @@ describe("remoteMainIs", () => {
 
   it("is false when origin names no main", () => {
     assert.equal(remoteMainIs(sha, () => ""), false);
+  });
+
+  it("takes the line whose ref is exactly refs/heads/main, not a branch that matches by its tail", () => {
+    const other = "c".repeat(40);
+    const run = (...args: string[]) => {
+      if (args[0] !== "ls-remote") throw new Error("not an ancestor");
+      return `${other}\trefs/heads/a/refs/heads/main\n${sha}\trefs/heads/main\n`;
+    };
+
+    assert.equal(remoteMainIs(sha, run), true);
+    assert.equal(remoteMainIs(other, run), false);
+  });
+
+  it("keeps a commit that main has moved past, once fetched and found to be an ancestor", () => {
+    const tip = "d".repeat(40);
+    const asked: string[][] = [];
+    const run = (...args: string[]) => {
+      asked.push(args);
+      return args[0] === "ls-remote" ? `${tip}\trefs/heads/main\n` : "";
+    };
+
+    assert.equal(remoteMainIs(sha, run), true);
+    assert.deepEqual(asked[1], ["fetch", "--quiet", "origin", tip]);
+    assert.deepEqual(asked[2], ["merge-base", "--is-ancestor", sha, tip]);
+  });
+
+  it("is false when main has moved on without the commit", () => {
+    const tip = "d".repeat(40);
+    const run = (...args: string[]) => {
+      if (args[0] === "ls-remote") return `${tip}\trefs/heads/main\n`;
+      if (args[0] === "merge-base") throw new Error("exit 1");
+      return "";
+    };
+
+    assert.equal(remoteMainIs(sha, run), false);
   });
 });
 

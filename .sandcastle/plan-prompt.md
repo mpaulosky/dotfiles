@@ -36,12 +36,21 @@ when the issue needs it: each one costs a run.
 
 An empty list, `[]`, means the issue needs none of them. If you leave `roles` out, every optional role runs.
 
+# FILES
+
+For each issue you pick, also list in `files` the repo-relative path of every file the issue will add, change, delete or rename (both names for a rename). Find them by reading
+the repo, not by guessing from the title. Give paths only: no globs and no directories, unless the issue adds files under a new directory, in which case name the directory with a
+trailing `/`.
+
+This list matters. Sandcastle won't build two picks that name the same file in one round, or a pick that names a file an open pull request changes, and it builds a pick with no
+`files` only when that pick is alone and no pull request is open. A file you leave out risks a merge conflict; a file you list needlessly holds the pick back a round.
+
 # OUTPUT
 
 Output your plan as a JSON object wrapped in `<plan>` tags:
 
 <plan>
-{"issues": [{"id": "42", "title": "Fix the pre-push hook's dev check", "roles": []}, {"id": "43", "title": "Add a release queue", "roles": ["architect", "scribe"]}]}
+{"issues": [{"id": "42", "title": "Fix the pre-push hook's dev check", "roles": [], "files": ["Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.github/hooks/pre-push", ".github/hooks/pre-push"]}, {"id": "43", "title": "Add a release queue", "roles": ["architect", "scribe"], "files": ["Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.github/workflows/release.yml", "Support For New Projects/.claude/skills/repo-ci-baseline/references/release-pipeline.md"]}]}
 </plan>
 
 Include only unblocked issues. If every issue is blocked, include the single highest-priority candidate (the one with the fewest or weakest dependencies).

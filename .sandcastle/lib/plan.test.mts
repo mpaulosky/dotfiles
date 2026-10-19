@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { OPTIONAL_ROLES } from "./config.mts";
-import { readyPicks, resolveRoles } from "./plan.mts";
+import { readyPicks, resolveFiles, resolveRoles } from "./plan.mts";
 
 describe("readyPicks", () => {
   const ready = [{ number: 4 }, { number: 5 }];
@@ -33,6 +33,12 @@ describe("readyPicks", () => {
     const picks = readyPicks([{ id: "4", title: "A", roles: ["scribe"] }], ready, () => {});
 
     assert.deepEqual(picks[0]?.roles, ["scribe"]);
+  });
+
+  it("keeps a pick's files field unchanged", () => {
+    const picks = readyPicks([{ id: "4", title: "A", files: ["lib/a.mts"] }], ready, () => {});
+
+    assert.deepEqual(picks[0]?.files, ["lib/a.mts"]);
   });
 });
 
@@ -67,5 +73,56 @@ describe("resolveRoles", () => {
 
   it("drops a repeated role rather than running it twice", () => {
     assert.deepEqual(resolveRoles(["scribe", "scribe"]), ["scribe"]);
+  });
+});
+
+// Issue #248: resolveFiles is what main.mts asks for each pick's files. The
+// plan schema leaves the field unknown so a bad value means "no files" (the
+// pick is held back unless it's alone) rather than aborting the whole plan.
+describe("resolveFiles", () => {
+  it("is empty when the field is missing", () => {
+    assert.deepEqual(resolveFiles(undefined), []);
+  });
+
+  it("is empty when the field isn't an array", () => {
+    assert.deepEqual(resolveFiles("lib/a.mts"), []);
+    assert.deepEqual(resolveFiles(null), []);
+    assert.deepEqual(resolveFiles({ "lib/a.mts": true }), []);
+  });
+
+  it("is empty when any entry isn't a string", () => {
+    assert.deepEqual(resolveFiles(["lib/a.mts", 4]), []);
+    assert.deepEqual(resolveFiles([null]), []);
+  });
+
+  it("is empty when any entry holds a glob, which can't be compared", () => {
+    assert.deepEqual(resolveFiles(["lib/a.mts", "lib/*.mts"]), []);
+    assert.deepEqual(resolveFiles(["lib/?.mts"]), []);
+  });
+
+  it("keeps the paths as named, in order", () => {
+    assert.deepEqual(resolveFiles(["lib/b.mts", "lib/a.mts"]), ["lib/b.mts", "lib/a.mts"]);
+  });
+
+  it("trims entries, turns backslashes into slashes and strips leading ./ and /", () => {
+    assert.deepEqual(resolveFiles(["  lib/a.mts  ", "lib\\b.mts", "./lib/c.mts", "/lib/d.mts", "././/lib/e.mts"]), [
+      "lib/a.mts",
+      "lib/b.mts",
+      "lib/c.mts",
+      "lib/d.mts",
+      "lib/e.mts",
+    ]);
+  });
+
+  it("drops empty entries and repeats, keeping the first", () => {
+    assert.deepEqual(resolveFiles(["lib/a.mts", "", "  ", "./", "lib/b.mts", "./lib/a.mts"]), ["lib/a.mts", "lib/b.mts"]);
+  });
+
+  it("keeps a trailing slash, which marks a directory", () => {
+    assert.deepEqual(resolveFiles(["lib/new/"]), ["lib/new/"]);
+  });
+
+  it("deliberately naming none is an empty list", () => {
+    assert.deepEqual(resolveFiles([]), []);
   });
 });

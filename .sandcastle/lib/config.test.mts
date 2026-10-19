@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   BUILD_ROLES,
@@ -12,6 +12,8 @@ import {
   QueueScopeError,
   SANDCASTLE_CHECK,
   SANDCASTLE_WORKFLOW,
+  TEMPLATE_OWNED_DIR,
+  TEMPLATE_ROOT_COPIES,
   budgetMinutesFrom,
   queueScopeFrom,
 } from "./config.mts";
@@ -170,5 +172,27 @@ describe("budgetMinutesFrom", () => {
   // GitHub Actions too.
   it("accepts the variable when GITHUB_ACTIONS is set", () => {
     assert.equal(budgetMinutesFrom({ GITHUB_ACTIONS: "true", SANDCASTLE_BUDGET_MINUTES: "90" }), 90);
+  });
+});
+
+// lib/overlap.mts counts each Owned file and its root copy as one path (#248),
+// so the list must be the one test.sh's copy check walks.
+describe("TEMPLATE_ROOT_COPIES", () => {
+  const root = new URL("../../", import.meta.url);
+
+  it("is the list test.sh's copy check of dotfiles' root copies walks", () => {
+    const testSh = readFileSync(new URL(`${TEMPLATE_OWNED_DIR.replace("/template/owned", "")}/test.sh`, root), "utf8");
+    const loop = /for file in ((?:.|\n)*?); do/.exec(testSh.slice(testSh.indexOf("dotfiles' copies of Template files")));
+
+    assert.ok(loop, "test.sh has no copy-check loop");
+    const listed = loop[1]!.replace(/\\\n/g, " ").split(/\s+/).filter(Boolean);
+    assert.deepEqual([...TEMPLATE_ROOT_COPIES], listed);
+  });
+
+  it("names a file that exists under the Template's owned folder and at the root", () => {
+    for (const file of TEMPLATE_ROOT_COPIES) {
+      assert.ok(existsSync(new URL(`${TEMPLATE_OWNED_DIR}/${file}`, root)), `${TEMPLATE_OWNED_DIR}/${file}`);
+      assert.ok(existsSync(new URL(file, root)), file);
+    }
   });
 });

@@ -2,7 +2,8 @@
 
 A planner has picked the issues below to build in parallel this round, each on its own branch from `main`.
 
-The picked issues:
+The picked issues. Each one's `files` lists the paths the planner expects it to change. The host has already held back every pick whose `files` share a path with another pick's
+or with any open pull request's, so no two picks below name the same file:
 
 <picked-json>
 
@@ -32,7 +33,9 @@ The repository is checked out in your working directory at `main`. Read it to se
 
 Check whether the picked issues are safe to build in parallel. Check only these two things:
 
-1. **Overlap.** A pick would change the same files or modules as another pick, or as an in-flight issue's pull request, so the branches would likely conflict.
+1. **Overlap.** A pick would change the same files or modules as another pick, or as an in-flight issue's pull request, so the branches would likely conflict. The shared file
+   paths in `files` were already held back, so look for what that check can't see: the same module or code reached through different files, or a file the planner likely
+   missed.
 2. **Dependency.** A pick needs an API, a type, a file or a decision that another open issue (a pick, an in-flight issue or an unpicked ready issue) will establish, so building it now
    would mean guessing at that work.
 

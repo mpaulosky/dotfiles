@@ -6,7 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { endOf } from "./checkpoint.mts";
-import { COPILOT_REVIEWER, QUEUE_LABEL, SANDCASTLE_LABELS, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { BASE_BRANCH, COPILOT_REVIEWER, QUEUE_LABEL, SANDCASTLE_LABELS, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 import { sh } from "./shell.mts";
@@ -207,9 +207,21 @@ export function openPullRequests(): OpenPullRequest[] {
   return sameRepository(listed).map(({ number, headRefName }) => ({ number, headRefName }));
 }
 
-// The open pull requests into main from this repository's branches, whoever opened them. Not implemented yet.
+// The open pull requests into main from this repository's branches, from any
+// author or queue: a person's PR, or one another queue's run opened, conflicts
+// with a pick just as this queue's own does. For lib/overlap.mts (#248), which
+// reads each one's files with pullRequestFiles. Fork PRs are left out, as
+// sameRepository explains: counting them would let anyone with a fork hold the
+// whole queue back.
 export function openPullRequestsIntoMain(): OpenPullRequest[] {
-  throw new Error("Not implemented");
+  const listed = JSON.parse(
+    sh(
+      process.cwd(), "gh", "pr", "list", "--repo", repoName(), "--state", "open",
+      "--base", BASE_BRANCH.replace(/^origin\//, ""), "--limit", "1000",
+      "--json", "number,headRefName,isCrossRepository",
+    ),
+  ) as ListedPullRequest[];
+  return sameRepository(listed).map(({ number, headRefName }) => ({ number, headRefName }));
 }
 
 // The open pull request from this repository's `branch`, or a new one for it

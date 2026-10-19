@@ -15,6 +15,9 @@ import { agentSandbox } from "./skills.mts";
 // (not an array, or naming a role resolveRoles doesn't recognise) must fall
 // back to every optional role, not abort the whole plan the way a schema
 // mismatch would (see "Phase 4: Plan" in docs/plans/sandcastle-workflow.md).
+// `files` is left unknown for the same reason: a bad value falls back to "no
+// files" (resolveFiles), which lib/overlap.mts holds back unless the pick is
+// alone, rather than aborting the plan.
 const planSchema = z.object({
   issues: z.array(z.object({ id: z.string(), title: z.string(), roles: z.unknown().optional(), files: z.unknown().optional() })),
 });
@@ -36,10 +39,18 @@ export function resolveRoles(roles: unknown): OptionalRole[] {
 }
 
 // The paths the planner expects one issue to change, from its raw `files`
-// field, cleaned up for lib/overlap.mts. Not implemented yet.
+// field, cleaned up for lib/overlap.mts (#248): trimmed, with backslashes as
+// slashes and leading "./" and "/" removed, empty entries and repeats
+// dropped. A trailing "/" is kept, since it marks a directory. The list is
+// empty, meaning "no files", when the field isn't an array, when an entry
+// isn't a string, or when an entry holds a glob (`*` or `?`), which can't be
+// compared with a path.
 export function resolveFiles(files: unknown): string[] {
-  void files;
-  throw new Error("Not implemented");
+  if (!Array.isArray(files) || !files.every((file) => typeof file === "string" && !/[*?]/.test(file))) {
+    return [];
+  }
+  const paths = (files as string[]).map((file) => file.trim().replace(/\\/g, "/").replace(/^(\.?\/)+/, ""));
+  return [...new Set(paths.filter((path) => path !== ""))];
 }
 
 // The planner reads the ready issues, builds a dependency graph, and selects

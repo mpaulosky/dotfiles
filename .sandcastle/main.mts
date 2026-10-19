@@ -44,12 +44,19 @@
 //                               sandcastle:needs-human).
 //   Phase 1 (Plan):             The planner analyzes the ready issues, builds
 //                               a dependency graph, and outputs a <plan> JSON
-//                               listing unblocked issues.
-//   Phase 1b (Critique):        A second run checks whether the picks are safe
-//                               to build in parallel and defers the ones that
-//                               aren't behind a native "blocked by" link. The
-//                               host names each remaining pick's branch and
-//                               fetches it if it exists.
+//                               listing unblocked issues and the files each
+//                               one is expected to change.
+//   Phase 1b (Overlap):         With no agent involved, the host holds back
+//                               for the rest of the run each pick whose files
+//                               share a path with a pick kept earlier in the
+//                               planner's order or with any open PR into main,
+//                               and each pick that named no files unless it's
+//                               alone and no PR is open (lib/overlap.mts).
+//   Phase 1c (Critique):        A second run checks whether the remaining
+//                               picks are safe to build in parallel and defers
+//                               the ones that aren't behind a native "blocked
+//                               by" link. The host names each remaining pick's
+//                               branch and fetches it if it exists.
 //   Phase 2 (Execute + Review): For each issue, a sandbox is created via
 //                               createSandbox(), and the issue carries
 //                               sandcastle:building until its build ends,
@@ -83,7 +90,8 @@
 //
 // The outer loop repeats up to MAX_ITERATIONS times so that newly unblocked
 // issues are picked up after each round. The loop stops early when a round
-// opens no pull request, but not when the critique defers every pick.
+// opens no pull request, but not when the overlap check holds back or the
+// critique defers every pick.
 //
 // The run also stops cleanly, exiting 0, once it can't finish more work
 // (lib/limits.mts, #147): no new round or role run starts after
@@ -133,7 +141,8 @@ import { cacheHostLogin, ensureLabels, openPullRequests, repoName } from "./lib/
 import { protectHostGit } from "./lib/host-safety.mts";
 import { intakePhase } from "./lib/intake.mts";
 import { runLimits } from "./lib/limits.mts";
-import { planRound, resolveRoles } from "./lib/plan.mts";
+import { holdOverlappingPicks } from "./lib/overlap.mts";
+import { planRound, resolveFiles, resolveRoles } from "./lib/plan.mts";
 import { loadQueue, startQueueRound, useQueueScope } from "./lib/queue.mts";
 import {
   handBackReport,
@@ -236,6 +245,12 @@ try {
 
   startedUp = true;
 
+  // The issues the overlap check held back this run, which the planner doesn't
+  // see again until the next run. A held pick gets no "blocked by" link, so
+  // the gate wouldn't hold it back: without this, a round where every pick is
+  // held would re-plan the same picks, up to MAX_ITERATIONS planner runs.
+  const heldForFiles = new Set<number>();
+
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // No new round once the budget has passed or the usage limit was hit.
     const stopReason = runLimits.stopReason();
@@ -317,7 +332,14 @@ try {
     // -----------------------------------------------------------------------
     // Phase 1: Plan
     // -----------------------------------------------------------------------
-    const planned = await planRound(ready);
+    const plannable = ready.filter((issue) => !heldForFiles.has(issue.number));
+    if (plannable.length === 0) {
+      console.log(
+        "Every ready issue is held back this run: each changes a file another build or an open pull request changes. Exiting.",
+      );
+      break;
+    }
+    const planned = await planRound(plannable);
 
     if (planned.length === 0) {
       // No unblocked work — either everything is done or everything is blocked.
@@ -329,23 +351,47 @@ try {
     // Each pick's optional roles (lib/config.mts#OptionalRole) come from the
     // planner's raw roles field, resolved to a safe list by resolveRoles
     // (lib/plan.mts), which falls back to every optional role when it's
-    // missing or invalid.
+    // missing or invalid. Its files come from the raw files field, resolved
+    // by resolveFiles, which gives [] ("touches anything") when it's missing
+    // or invalid.
     const readyById = new Map(ready.map((issue) => [String(issue.number), issue]));
-    const picks = planned.map((issue) => ({ ...readyById.get(issue.id)!, roles: resolveRoles(issue.roles) }));
+    const picks = planned.map((issue) => ({
+      ...readyById.get(issue.id)!,
+      roles: resolveRoles(issue.roles),
+      files: resolveFiles(issue.files),
+    }));
 
     // -----------------------------------------------------------------------
-    // Phase 1b: Critique
+    // Phase 1b: Overlap
     // -----------------------------------------------------------------------
+    // See lib/overlap.mts#holdOverlappingPicks. A failed read of the open PRs
+    // ends the run red, as a failed gate read does.
+    const { kept, held } = holdOverlappingPicks(picks);
+    for (const issue of held) {
+      heldForFiles.add(issue.number);
+    }
+
+    if (kept.length === 0) {
+      console.log("Every pick changes a file another pick or an open pull request changes. Moving on to the next round.");
+      continue;
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 1c: Critique
+    // -----------------------------------------------------------------------
+    // It still runs on the kept picks, for dependencies and for overlaps of
+    // modules rather than paths. The held picks go to it as unpicked, so it
+    // can see a dependency on one.
     // critiqueRound only filters the picks, so its SandcastleIssue[] return
     // type is narrower than what it's given; put each kept pick's roles back
     // by issue number rather than widen the critique's own types for a field
     // it never reads.
-    const rolesByNumber = new Map(picks.map((issue) => [issue.number, issue.roles]));
-    const pickedNumbers = new Set(picks.map((issue) => issue.number));
+    const rolesByNumber = new Map(kept.map((issue) => [issue.number, issue.roles]));
+    const keptNumbers = new Set(kept.map((issue) => issue.number));
     const critiqued = await critiqueRound({
-      picks,
+      picks: kept,
       inFlight: blocked.flatMap(({ issue, pr }) => (pr ? [{ issue, pr }] : [])),
-      unpicked: ready.filter((issue) => !pickedNumbers.has(issue.number)),
+      unpicked: ready.filter((issue) => !keptNumbers.has(issue.number)),
     });
     const issues = critiqued.map((issue) => ({ ...issue, roles: rolesByNumber.get(issue.number)! }));
 

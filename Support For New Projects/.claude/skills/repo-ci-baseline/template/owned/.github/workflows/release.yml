@@ -436,6 +436,10 @@ jobs:
           # Same PAT-with-fallback as the checkout step; gh pr create authors
           # the PR as whichever identity this token belongs to.
           GH_TOKEN: ${{ secrets.RELEASE_PR_PAT || secrets.GITHUB_TOKEN }}
+          # The PR lookups and the docs-only label need no PAT, so they use
+          # GITHUB_TOKEN, whose rate limit is this repo's own rather than the
+          # PAT owner's shared one (mpaulosky/dotfiles#231).
+          JOB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HAS_RELEASE_PR_PAT: ${{ secrets.RELEASE_PR_PAT != '' }}
           PRS: ${{ steps.docs.outputs.prs }}
         run: |
@@ -473,7 +477,7 @@ jobs:
             echo "::notice::RELEASE_PR_PAT is not set, so $BRANCH is pushed and opened with GITHUB_TOKEN. Its pull_request workflow runs (lint, CodeQL) need a manual \"Approve and run\" before they start, and auto-merge waits on them. Set RELEASE_PR_PAT to avoid this."
           fi
 
-          EXISTING=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          EXISTING=$(GH_TOKEN="$JOB_TOKEN" gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
             gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
             echo "Updated the open blog PR #${EXISTING}." | tee -a "$GITHUB_STEP_SUMMARY"
@@ -484,8 +488,8 @@ jobs:
           # For visibility only (CI's Docs-only label job sets it too), so a
           # missing label never fails the release.
           # || keeps a failed lookup from ending the step under bash -e.
-          NUMBER=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty') || NUMBER=""
-          if [ -z "$NUMBER" ] || ! gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/labels" -f "labels[]=docs-only" > /dev/null; then
+          NUMBER=$(GH_TOKEN="$JOB_TOKEN" gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty') || NUMBER=""
+          if [ -z "$NUMBER" ] || ! GH_TOKEN="$JOB_TOKEN" gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${NUMBER}/labels" -f "labels[]=docs-only" > /dev/null; then
             echo "::warning::Couldn't add the docs-only label to the blog PR."
           fi
 

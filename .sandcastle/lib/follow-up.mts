@@ -337,18 +337,26 @@ export function threadStanding(
 // in full, whatever `decide` would say of it unfiltered: a PR whose checks are
 // still running (as after its own update from main) has to show as waiting on
 // the owner too, so the count can't depend on the decision. A DIRTY PR is
-// flagged without looking at threads, so it costs no read. A read that fails
-// throws, and the sweep's per-PR catch leaves the PR alone this round.
+// read the same way, for the count only: `decide` flags it whatever its
+// threads are, so a failed read there leaves it flagged with nothing counted.
+// For any other PR a failed read throws, and the sweep's per-PR catch leaves
+// it alone this round.
 function withoutAnsweredThreads(
   pr: SweepPullRequest,
   github: FollowUpGitHub,
   host: string,
 ): { pr: SweepPullRequest; answered: number } {
   const mayFlag = pr.threads.some((thread) => !thread.resolved && (thread.byBot || github.isOwner(thread.author) === true));
-  if (!mayFlag || pr.mergeStateStatus === "DIRTY") {
+  if (!mayFlag) {
     return { pr, answered: 0 };
   }
-  const full = github.reviewThreads(pr.number);
+  let full: ReviewThread[];
+  try {
+    full = github.reviewThreads(pr.number);
+  } catch (error) {
+    if (pr.mergeStateStatus === "DIRTY") return { pr, answered: 0 };
+    throw error;
+  }
   const open = full.filter((thread) => threadStanding(thread, github.isOwner, host) !== "answered");
   const threads = open.map((thread) => ({
     resolved: thread.resolved,

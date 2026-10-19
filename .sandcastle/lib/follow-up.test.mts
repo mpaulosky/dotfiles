@@ -952,16 +952,19 @@ describe("sweepPullRequests", () => {
     assert.deepEqual(reviewThreadCalls, []);
   });
 
-  it("reads no review threads for a conflicted PR, which is flagged without looking at them", () => {
+  it("lists a conflicted PR waiting on the owner's answered thread, and flags it for the conflict", () => {
     const { github, reviewThreadCalls } = stubGithub({
       prs: [pr({ mergeStateStatus: "DIRTY", threads: [{ resolved: false, byBot: false, author: "owner" }] })],
       isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
     });
+    const waiting = new WaitingPrReport();
 
-    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW, undefined, waiting);
 
     assert.deepEqual(needsPass, [101]);
-    assert.deepEqual(reviewThreadCalls, []);
+    assert.deepEqual(reviewThreadCalls, [101]);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 0, answered: 1 }]);
   });
 
   // The PR's own update from main starts new checks, so the round after it

@@ -207,6 +207,11 @@ export function openPullRequests(): OpenPullRequest[] {
   return sameRepository(listed).map(({ number, headRefName }) => ({ number, headRefName }));
 }
 
+// The open pull requests into main from this repository's branches, whoever opened them. Not implemented yet.
+export function openPullRequestsIntoMain(): OpenPullRequest[] {
+  throw new Error("Not implemented");
+}
+
 // The open pull request from this repository's `branch`, or a new one for it
 // with the title and body, as its URL. A fork's PR from a branch of the same
 // name doesn't count.

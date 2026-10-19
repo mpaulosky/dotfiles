@@ -352,3 +352,40 @@ describe(".sandcastle/.env.example budget", () => {
     }
   });
 });
+
+// #248: before the critique, the host holds back picks whose planned files
+// share a path with an earlier pick or an open PR into main.
+describe("main.mts's file overlap wiring", () => {
+  it("holds overlapping picks back after planning and before the critique", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const loop = mainMts.indexOf("for (let iteration = 1;");
+    const planCall = mainMts.indexOf("planRound(", loop);
+    const holdCall = mainMts.indexOf("holdOverlappingPicks(", loop);
+    const critiqueCall = mainMts.indexOf("critiqueRound(", loop);
+
+    assert.notEqual(holdCall, -1, "main.mts doesn't call holdOverlappingPicks(");
+    assert.ok(planCall < holdCall && holdCall < critiqueCall, "main.mts doesn't hold picks back between planning and the critique");
+  });
+
+  it("gives each pick the files the planner named", () => {
+    assert.match(read(".sandcastle/main.mts"), /files: resolveFiles\(/);
+  });
+
+  it("gives the critique only the picks that were kept, and the held ones as unpicked", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const critiqueCall = mainMts.indexOf("critiqueRound(", mainMts.indexOf("holdOverlappingPicks("));
+    const call = mainMts.slice(critiqueCall, mainMts.indexOf("});", critiqueCall));
+
+    assert.match(call, /picks: kept/);
+    assert.doesNotMatch(call, /picks,/);
+  });
+
+  it("doesn't plan again the issues it held back this run", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const loop = mainMts.indexOf("for (let iteration = 1;");
+
+    assert.match(mainMts, /new Set<number>\(\)/);
+    assert.match(mainMts, /heldForFiles/);
+    assert.doesNotMatch(mainMts.slice(loop), /planRound\(ready\)/);
+  });
+});

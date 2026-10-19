@@ -115,6 +115,32 @@ describe("optional role prompts", () => {
   });
 });
 
+// #248: the planner names each pick's files, and the host holds back picks
+// that share one before the critique looks at the rest.
+describe("file overlap prompts", () => {
+  it("asks the planner for a files field in the plan's example and in a rule of its own", () => {
+    const prompt = read("plan-prompt.md");
+
+    assert.match(prompt, /"files": \[/);
+    assert.match(prompt, /`files`/);
+    assert.match(prompt, /open pull request/);
+  });
+
+  it("gives both of the planner's example picks a files list", () => {
+    const example = /<plan>\n([\s\S]*?)\n<\/plan>/.exec(read("plan-prompt.md"))?.[1];
+
+    assert.ok(example, "plan-prompt.md has no example plan");
+    assert.equal(example.match(/"files": \[/g)?.length, 2);
+  });
+
+  it("tells the critique that the host already held back picks that share a path", () => {
+    const prompt = read("critique-prompt.md");
+
+    assert.match(prompt, /`files`/);
+    assert.match(prompt, /already held back/);
+  });
+});
+
 // #78: the follow-up role resolves a PR's merge conflicts and review
 // threads, writing its verdicts to a file the host reads back, never
 // rewriting history itself.

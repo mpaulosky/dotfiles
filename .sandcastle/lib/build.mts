@@ -295,7 +295,7 @@ export type BuildHost = {
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main
   // while it ran. Throws when the fetch fails.
   latestMain(): string;
-  // Whether `commit` is on GitHub's main right now (its tip or an ancestor of it), asked of
+  // Whether `commit` is the commit GitHub's main names right now, asked of
   // the remote itself (git ls-remote against origin, whose URL is in the
   // read-only .git/config) rather than read from refs/remotes/origin/main,
   // which agents can write. buildIssue leaves a merged main's history out of
@@ -390,28 +390,18 @@ export function createCheckedSandbox(branch: string): Promise<sandcastle.Sandbox
   return sandcastle.createSandbox({ branch, sandbox: agentSandbox(), hooks, copyToWorktree });
 }
 
-// Whether `commit` is public on origin's main now: main's tip by its answer to
-// git ls-remote, or, when main has moved on since (PR Auto-Merge lands PRs
-// while a build's gate runs), a commit that tip descends from, which is then
-// fetched so the ancestry can be checked. ls-remote matches refs by their
-// tail, so the line is picked by its exact ref name: a branch like
-// a/refs/heads/main also matches and can sort first.
+// Whether origin's main is `commit` now, by its answer to git ls-remote. Only
+// equality with that tip is trusted: whether a commit is an ancestor of it
+// would be read from the shared .git (commit-graph, loose objects), which
+// agents can write. ls-remote matches refs by their tail, so the line is
+// picked by its exact ref name: a branch like a/refs/heads/main also matches
+// and can sort first.
 export function remoteMainIs(commit: string, run: (...args: string[]) => string = git): boolean {
   const tip = run("ls-remote", "origin", "refs/heads/main")
     .split("\n")
     .map((line) => line.split(/\s+/))
     .find(([, ref]) => ref === "refs/heads/main")?.[0];
-  if (tip === undefined || tip === "" || commit === "") return false;
-  if (tip === commit) return true;
-  try {
-    run("fetch", "--quiet", "origin", tip);
-    run("merge-base", "--is-ancestor", commit, tip);
-    return true;
-  } catch {
-    // Exit 1 means "not an ancestor"; a failed fetch or any other failure is
-    // treated the same, since the scan then just reads more.
-    return false;
-  }
+  return tip !== undefined && tip !== "" && tip === commit;
 }
 
 const liveHost: BuildHost = {
@@ -748,13 +738,14 @@ async function buildMarkedIssue(
   // shared .git, which agents can write: a ref they moved onto a commit of
   // their own would otherwise hide a leak in it from the scan, and the
   // pinned `base` can't protect a range the exclusion shrinks (#224). When
-  // main no longer contains it, or the remote can't be asked, nothing is left
-  // out and the scan reads everything past `base`, as it did before.
+  // main has moved on (PR Auto-Merge landing another PR during the gate), or
+  // the remote can't be asked, nothing is left out and the scan reads
+  // everything past `base`, as it did before.
   function trustedMergedMain(mergedMain: string | undefined): string | undefined {
     if (mergedMain === undefined) return undefined;
     try {
       if (host.isRemoteMain(mergedMain)) return mergedMain;
-      log("the merged main commit isn't on GitHub's main, so the scan reads main's commits too");
+      log("the merged main commit is no longer GitHub's main, so the scan reads main's commits too");
     } catch (error) {
       console.error(`  ⚠ #${issue.number}: asking GitHub for main failed, so the scan reads main's commits too: ${error}`);
     }

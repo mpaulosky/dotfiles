@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
+import { createCheckedSandbox } from "./build.mts";
 import { FOLLOW_UP_MARKER, FOLLOW_UP_PASS_CAP, FOLLOW_UP_REPLY_MARKER } from "./config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, PassTarget } from "./follow-up.mts";
+import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
   followUpPassPhase,
   giveUpComment,
@@ -1110,6 +1112,19 @@ describe("runPass", () => {
     assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
   });
 
+  it("says so on the PR, and hands it back, when the sandbox was left in place for a tampered worktree", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => {
+      throw new TamperedWorktreeError("setting the identity failed; left /work/tree in place", "/work/tree");
+    };
+
+    const outcome = await runPass(passTarget(), issue, BASE, passHost);
+
+    assert.equal(outcome.kind, "gave-up");
+    assert.ok(calls.commentOnPullRequest.some((c) => /no longer points at this repository/.test(c.body)));
+    assert.equal(calls.handBack.length, 1);
+  });
+
   it("skips a PR that needs no merge and has no thread for the role, without creating a sandbox", async () => {
     const { passHost, calls } = passHostFake({ threads: [], containsBase: true });
 
@@ -1966,5 +1981,57 @@ describe("followUpPassPhase's skips", () => {
     assert.deepEqual(outcomes.map((outcome) => outcome.kind), ["skipped", "skipped"]);
     assert.match((outcomes[0] as { reason: string }).reason, /fetch/);
     assert.match((outcomes[1] as { reason: string }).reason, /nothing a follow-up pass handles/);
+  });
+});
+
+describe("runPass's merge of main in a sandbox from createCheckedSandbox", () => {
+  const hostIdentity = () => ({ name: "Host Person", email: "host@example.com" });
+
+  // The pass's sandbox is made by the real createCheckedSandbox over a scratch
+  // git repository that has no committer identity until one is set (#242).
+  function realSandboxPass(options: { conflicted: boolean; checks: HeadCheck[] }) {
+    const fake = gitSandboxFake();
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, checks: options.checks, headRefOid: fake.head });
+    passHost.createSandbox = (branch) => createCheckedSandbox(branch, fake.create, hostIdentity);
+    const target = passTarget({ headRefOid: fake.head, conflicted: options.conflicted, reasons: ["it is behind main"] });
+    return { fake, passHost, calls, target };
+  }
+
+  // Acceptance criterion: "A test pins that the follow-up pass's clean merge
+  // of main succeeds before any role has run." The merge comes before the
+  // gate, since the PR's red check was built on the head merged with main.
+  it("merges main in cleanly before any role has run, when a settled red check is why the PR needs the merge", async (t) => {
+    const { fake, passHost, calls, target } = realSandboxPass({ conflicted: false, checks: [redCheck()] });
+    t.after(() => fake.cleanup());
+
+    const outcome = await runPass(target, issue, fake.main, passHost);
+
+    assert.equal(outcome.kind, "passed", JSON.stringify(outcome));
+    assert.deepEqual(calls.handBack, []);
+    assert.equal(calls.push.length, 1);
+    assert.equal(fake.headIdentity(), "Host Person <host@example.com>|Host Person <host@example.com>");
+    assert.ok(fake.execs.some((command) => command.startsWith("git merge ")), fake.execs.join("\n"));
+  });
+
+  it("merges main in cleanly before any role has run, when GitHub reports the PR as conflicted but the merge is clean", async (t) => {
+    const { fake, passHost, calls, target } = realSandboxPass({ conflicted: true, checks: [] });
+    t.after(() => fake.cleanup());
+
+    const outcome = await runPass(target, issue, fake.main, passHost);
+
+    assert.equal(outcome.kind, "passed", JSON.stringify(outcome));
+    assert.deepEqual(calls.handBack, []);
+    assert.equal(calls.push.length, 1);
+    assert.equal(fake.headIdentity(), "Host Person <host@example.com>|Host Person <host@example.com>");
+  });
+
+  it("doesn't hand the PR back for \"merging main into the branch failed\"", async (t) => {
+    const { fake, passHost, calls, target } = realSandboxPass({ conflicted: false, checks: [redCheck()] });
+    t.after(() => fake.cleanup());
+
+    await runPass(target, issue, fake.main, passHost);
+
+    assert.ok(!calls.log.some((line) => /merging main into the branch failed/.test(line)), calls.log.join("\n"));
+    assert.ok(!calls.handBack.some((handBack) => /Committer identity unknown/.test(handBack.body)));
   });
 });

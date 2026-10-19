@@ -198,24 +198,30 @@ export function handBackWorkflowChange(
   );
 }
 
-// The comment for a push GitHub refused for a .github/workflows/** change even
-// as an update to a branch created at the build's base (#253). Says the issue
+// The comment for a push GitHub refused for a .github/workflows/** change
+// after main changed a workflow since the build's base (#253). `createdAtBase`
+// is whether the branch was created at the base first, so the push was an
+// update to it; when that creation failed, the push was of a new branch, and
+// the comment says so. Says the issue
 // moved from the `Sandcastle` queue to `Sandcastle:local`, why, and how to run it
 // there; names the branch, the workflow files and the head commit like
 // workflowHandBackComment. Not a hand-back, so no `sandcastle:needs-human`, and no
 // BUILD_FAILED_MARKER. `change.files` are the build's own (base..head), so they're
 // empty when the refusal came from main's workflow change alone.
-export function workflowLocalComment(branch: string, detail: string, change: WorkflowChange): string {
+export function workflowLocalComment(branch: string, detail: string, change: WorkflowChange, createdAtBase: boolean): string {
   const fence = fenceFor(detail);
   const what =
     change.files.length > 0
       ? `its commits touch ${change.files.map(codeSpan).join(", ")}`
       : "GitHub counts it as changing a file under `.github/workflows/`";
+  const how = createdAtBase
+    ? `the push was refused even as an update to \`${branch}\` created at the commit the build started from`
+    : `the push of \`${branch}\` as a new branch was refused, and creating it at the commit the build started from ` +
+      "first had failed";
   return (
     `Sandcastle couldn't push \`${branch}\` from GitHub Actions: ${what}, and GitHub refuses that change without ` +
     "the Workflows permission, which Sandcastle's token in Actions doesn't have. Main changed a workflow after this " +
-    `build started, and the push was refused even as an update to \`${branch}\` created at the commit the build ` +
-    `started from. A local run pushes with the owner's own \`gh\` login, which can push it, so the issue moved from ` +
+    `build started, and ${how}. A local run pushes with the owner's own \`gh\` login, which can push it, so the issue moved from ` +
     `the \`${QUEUE_LABEL}\` queue to \`${LOCAL_QUEUE_LABEL}\`.\n\n` +
     `GitHub doesn't have this attempt's commits (head \`${change.head}\`): the push was refused, so \`${branch}\` ` +
     "on GitHub doesn't hold them, and they're gone once this run's checkout is. The local run builds the issue again.\n\n" +
@@ -241,11 +247,12 @@ export function moveToLocalQueue(
   branch: string,
   detail: string,
   change: WorkflowChange,
+  createdAtBase: boolean,
   run: typeof execFileSync = execFileSync,
   repo: string = repoName(),
   report: HandBackReport = handBackReport,
 ): void {
-  commentOnIssue(issueNumber, workflowLocalComment(branch, detail, change), run, repo);
+  commentOnIssue(issueNumber, workflowLocalComment(branch, detail, change, createdAtBase), run, repo);
   replaceIssueLabel(issueNumber, QUEUE_LABEL, LOCAL_QUEUE_LABEL, run, repo);
   report.record({
     kind: "issue",

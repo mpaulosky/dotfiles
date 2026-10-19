@@ -247,7 +247,7 @@ describe("workflowLocalComment", () => {
   const detail = "! [remote rejected] abc -> x (refusing to allow a Personal Access Token to create or update workflow `.github/workflows/ci.yml` without `workflow` scope)";
 
   it("names the branch, the workflow file and the head commit, and fences the detail", () => {
-    const comment = workflowLocalComment("fix/253-publish", detail, change);
+    const comment = workflowLocalComment("fix/253-publish", detail, change, true);
 
     assert.match(comment, /`fix\/253-publish`/);
     assert.match(comment, /`\.github\/workflows\/ci\.yml`/);
@@ -256,7 +256,7 @@ describe("workflowLocalComment", () => {
   });
 
   it("says the issue moved to Sandcastle:local and why, and not that a person must make the change", () => {
-    const comment = workflowLocalComment("fix/253-publish", detail, change);
+    const comment = workflowLocalComment("fix/253-publish", detail, change, true);
 
     assert.match(comment, /Sandcastle:local/);
     assert.match(comment, /SANDCASTLE_LABEL=Sandcastle:local/);
@@ -265,26 +265,39 @@ describe("workflowLocalComment", () => {
   });
 
   it("says GitHub doesn't have this attempt's commits", () => {
-    const comment = workflowLocalComment("fix/253-publish", detail, change);
+    const comment = workflowLocalComment("fix/253-publish", detail, change, true);
 
     assert.match(comment, /GitHub doesn't have/);
   });
 
   it("keeps a file name with backticks inside its code span", () => {
     const hostile = ".github/workflows/x` @org/team [link](https://example.com) `.yml";
-    const comment = workflowLocalComment("fix/253-publish", detail, { head: change.head, files: [hostile] });
+    const comment = workflowLocalComment("fix/253-publish", detail, { head: change.head, files: [hostile] }, true);
 
     assert.ok(comment.includes(`\`\` ${hostile} \`\``), comment);
   });
 
   it("still reads when the workflow files couldn't be listed", () => {
-    const comment = workflowLocalComment("fix/253-publish", detail, { head: change.head, files: [] });
+    const comment = workflowLocalComment("fix/253-publish", detail, { head: change.head, files: [] }, true);
 
     assert.match(comment, /a file under `\.github\/workflows\/`/);
   });
 
+  it("says the push was of a new branch when creating it at the base failed", () => {
+    const comment = workflowLocalComment("fix/253-publish", detail, change, false);
+
+    assert.match(comment, /as a new branch was refused/);
+    assert.doesNotMatch(comment, /even as an update/);
+  });
+
+  it("says the push was an update to the branch created at the base when that worked", () => {
+    const comment = workflowLocalComment("fix/253-publish", detail, change, true);
+
+    assert.match(comment, /even as an update to `fix\/253-publish` created at the commit the build started from/);
+  });
+
   it("carries no BUILD_FAILED_MARKER, since this isn't a failed attempt", () => {
-    const comment = workflowLocalComment("fix/253-publish", "refusing to allow", change);
+    const comment = workflowLocalComment("fix/253-publish", "refusing to allow", change, true);
 
     assert.equal(comment.includes(BUILD_FAILED_MARKER), false);
   });
@@ -296,7 +309,7 @@ describe("moveToLocalQueue", () => {
   it("comments on the issue, then adds Sandcastle:local and removes Sandcastle, without needs-human", () => {
     const { calls, run } = recordingGh();
 
-    moveToLocalQueue(253, "fix/253-publish", "refusing to allow a Personal Access Token to create or update workflow", change, run, "o/r");
+    moveToLocalQueue(253, "fix/253-publish", "refusing to allow a Personal Access Token to create or update workflow", change, true, run, "o/r");
 
     const comments = calls.filter((call) => call.args[1] === "comment");
     const edits = calls.filter((call) => call.args[1] === "edit");
@@ -316,7 +329,7 @@ describe("moveToLocalQueue", () => {
     const { run } = recordingGh();
     const report = new HandBackReport();
 
-    moveToLocalQueue(253, "fix/253-publish", "refusing", change, run, "o/r", report);
+    moveToLocalQueue(253, "fix/253-publish", "refusing", change, true, run, "o/r", report);
 
     assert.deepEqual(report.items(), [
       {
@@ -336,7 +349,7 @@ describe("moveToLocalQueue", () => {
     }) as unknown as typeof execFileSync;
     const report = new HandBackReport();
 
-    assert.throws(() => moveToLocalQueue(253, "fix/253-publish", "refusing", change, run, "o/r", report));
+    assert.throws(() => moveToLocalQueue(253, "fix/253-publish", "refusing", change, true, run, "o/r", report));
 
     assert.deepEqual(report.items(), []);
   });
@@ -349,7 +362,7 @@ describe("moveToLocalQueue", () => {
       return "";
     }) as unknown as typeof execFileSync;
 
-    assert.throws(() => moveToLocalQueue(253, "fix/253-publish", "refusing", change, run, "o/r"));
+    assert.throws(() => moveToLocalQueue(253, "fix/253-publish", "refusing", change, true, run, "o/r"));
 
     assert.equal(calls.length, 1, JSON.stringify(calls));
     assert.equal(calls[0]![1], "comment");

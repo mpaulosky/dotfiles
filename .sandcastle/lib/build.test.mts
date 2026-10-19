@@ -85,6 +85,8 @@ function host(
     pushRefusesWorkflowChanges = true,
     branchOnOrigin = false,
     createBranchError,
+    deleteBranchError,
+    baseExecError,
     baseIsAncestor = true,
     gateOutput,
   }: {
@@ -140,6 +142,8 @@ function host(
     // it), and an error creating it at `base` throws (#253).
     branchOnOrigin?: boolean;
     createBranchError?: string;
+    deleteBranchError?: string;
+    baseExecError?: string;
     // Whether `base` is an ancestor of the commit the gate passed on; false
     // when an earlier round's branch was built on an older main (#253).
     baseIsAncestor?: boolean;
@@ -200,6 +204,7 @@ function host(
       }
       if (command.startsWith(`git merge-base --is-ancestor '${base}'`)) {
         baseChecks.push(command);
+        if (baseExecError !== undefined) throw new Error(baseExecError);
         return { stdout: "", stderr: "", exitCode: baseIsAncestor ? 0 : 1 };
       }
       if (command.startsWith("git merge-base --is-ancestor")) {
@@ -249,9 +254,16 @@ function host(
   const publishedPrBodies: (string | undefined)[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
   const handBackWorkflowChangeCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];
-  const moveToLocalCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];
+  const moveToLocalCalls: {
+    issueNumber: number;
+    branch: string;
+    detail: string;
+    change: { head: string; files: string[] };
+    createdAtBase: boolean;
+  }[] = [];
+  const deletedBranches: { branch: string; commit: string }[] = [];
   const createdBranches: { branch: string; commit: string }[] = [];
-  // "create-branch" and "publish" in the order the host did them, kept apart
+  // "create-branch", "publish", "delete-branch" and "move-to-local" in the order the host did them, kept apart
   // from `steps` so the existing assertions on its exact list don't change (#253).
   const publishEvents: string[] = [];
   const buildHost: BuildHost = {
@@ -338,14 +350,20 @@ function host(
       createdBranches.push({ branch: createdBranch, commit });
       publishEvents.push("create-branch");
     },
-    moveToLocal: (issueNumber, failureBranch, detail, change) => {
-      moveToLocalCalls.push({ issueNumber, branch: failureBranch, detail, change });
+    moveToLocal: (issueNumber, failureBranch, detail, change, createdAtBase) => {
+      publishEvents.push("move-to-local");
+      moveToLocalCalls.push({ issueNumber, branch: failureBranch, detail, change, createdAtBase });
+    },
+    deleteBranchAt: (deletedBranch, commit) => {
+      if (deleteBranchError !== undefined) throw new Error(deleteBranchError);
+      publishEvents.push("delete-branch");
+      deletedBranches.push({ branch: deletedBranch, commit });
     },
   };
   return {
     steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
-    mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, publishEvents,
+    mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
   };
 }
 
@@ -1478,6 +1496,66 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
     assert.equal(result.prUrl, undefined);
     assert.equal(result.publishFailed, true);
     assert.equal(result.outcome, "not published");
+  });
+
+  it("deletes the branch it created at base, before moving the issue, when the push is still refused", async () => {
+    const { deletedBranches, publishEvents, buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: refusal });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(deletedBranches, [{ branch, commit: base }]);
+    assert.deepEqual(publishEvents, ["create-branch", "delete-branch", "move-to-local"]);
+  });
+
+  it("still moves the issue to Sandcastle:local when deleting the stray branch fails", async () => {
+    const { moveToLocalCalls, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      publishError: refusal,
+      deleteBranchError: "git push failed",
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(moveToLocalCalls.length, 1);
+  });
+
+  it("deletes no branch when creating it at base failed, since none is there", async () => {
+    const { deletedBranches, moveToLocalCalls, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      createBranchError: "git push failed",
+      publishError: refusal,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(deletedBranches, []);
+    assert.equal(moveToLocalCalls[0]!.createdAtBase, false);
+  });
+
+  it("tells the move whether the branch was created at base", async () => {
+    const { moveToLocalCalls, buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: refusal });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(moveToLocalCalls[0]!.createdAtBase, true);
+  });
+
+  it("deletes no branch when the publish fails for any other reason, since the push may have landed", async () => {
+    const { deletedBranches, buildHost } = host([0, 0], { ...mainChangedWorkflow, publishError: "HTTP 502 from gh pr create" });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(deletedBranches, []);
+  });
+
+  it("publishes as today when checking that base is an ancestor throws", async () => {
+    const { createdBranches, publishEvents, buildHost } = host([0, 0], { ...mainChangedWorkflow, baseExecError: "container died" });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+    assert.equal(result.outcome, "published");
   });
 
   it("still hands the issue back for a refused push when no branch was created first", async () => {

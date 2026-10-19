@@ -72,6 +72,8 @@ function host(
     mergeExitCode = 0,
     abortExitCode = 0,
     latestMainError,
+    mainWorkflowFiles = [],
+    pushRefusesWorkflowChanges = true,
     gateOutput,
   }: {
     ahead?: number | number[];
@@ -110,6 +112,13 @@ function host(
     mergeExitCode?: number;
     abortExitCode?: number;
     latestMainError?: string;
+    // The workflow files `<branch head>..<latest main>` touches: what
+    // workflowFiles returns when asked about the range ending at latestMain
+    // (#223). Empty by default, as when main hasn't changed a workflow.
+    mainWorkflowFiles?: string[];
+    // Whether the push token lacks the Workflows permission, as in Actions
+    // (the default); false is a local `Sandcastle:local` run.
+    pushRefusesWorkflowChanges?: boolean;
   } = {},
 ) {
   const steps: string[] = [];
@@ -135,6 +144,7 @@ function host(
   const scannedExclusions: (string | undefined)[] = [];
   const listedExclusions: (string | undefined)[] = [];
   const mainChecks: string[] = [];
+  const workflowFileCalls: { from: string; to: string }[] = [];
   const pushed: { branch: string; commit: string }[] = [];
   // Each command on .sandcastle/work/ (the design note), with how many role
   // runs came before it.
@@ -270,7 +280,13 @@ function host(
     worktreeProblems: () => worktreeProblems,
     publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), () => false),
     limits: new RunLimits(),
+    pushRefusesWorkflowChanges,
     workflowFiles: (from, to, mergedMain) => {
+      workflowFileCalls.push({ from, to });
+      // The range ending at main is the sync check's (#223); any other range
+      // is the base..gated one the hand-back lists, which leaves out the main
+      // commit syncWithMain merged (#224).
+      if (to === latestMain) return mainWorkflowFiles;
       listedExclusions.push(mergedMain);
       return [`.github/workflows/${from.slice(0, 4)}-${to.slice(0, 4)}.yml`];
     },
@@ -281,7 +297,7 @@ function host(
   return {
     steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
-    mainChecks, scannedExclusions, listedExclusions,
+    mainChecks, scannedExclusions, listedExclusions, workflowFileCalls,
   };
 }
 
@@ -935,6 +951,128 @@ describe("buildIssue syncing with main before publishing", () => {
     assert.deepEqual(failedFetch.scannedExclusions, [undefined]);
   });
 
+  // #223: main's own workflow change would ride into the branch on the merge
+  // commit, and the push of it is refused for lack of Workflows permission,
+  // handing the issue back for a change the issue never made.
+  it("doesn't merge main in when the branch head..latest main touches .github/workflows/, and publishes the gated head", async () => {
+    const { steps, mainChecks, logs, pushed, head, workflowFileCalls, handBackWorkflowChangeCalls, comments, recordBuildFailureCalls, buildHost } =
+      host([0, 0], {
+        latestMain: newerMain,
+        containsMain: false,
+        mainWorkflowFiles: [".github/workflows/ci.yml"],
+      });
+    const reviewed = (3).toString(16).padStart(40, "0");
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!steps.some((step) => step.startsWith("merge")), steps.join(", "));
+    assert.equal(result.outcome, "published");
+    assert.equal(result.publishFailed, false);
+    // tester, backend and reviewer each committed once, and nothing merged.
+    assert.equal(head(), reviewed);
+    assert.deepEqual(pushed, [{ branch, commit: reviewed }]);
+    assert.deepEqual(handBackWorkflowChangeCalls, []);
+    assert.deepEqual(comments, []);
+    assert.deepEqual(recordBuildFailureCalls, []);
+    // Main is checked for the workflow change from the branch's head, the
+    // range the issue names.
+    assert.ok(
+      workflowFileCalls.some((call) => call.from === reviewed && call.to === newerMain),
+      JSON.stringify(workflowFileCalls),
+    );
+    assert.ok(mainChecks.length <= 1);
+    assert.ok(!logs.some((line) => line.includes("merged main in")), logs.join("\n"));
+  });
+
+  it("still merges main in, whatever main changed under .github/workflows/, when the push token can push workflow changes", async () => {
+    const { steps, workflowFileCalls, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mainWorkflowFiles: [".github/workflows/ci.yml"],
+      pushRefusesWorkflowChanges: false,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(steps.includes(`merge '${newerMain}'`), steps.join(", "));
+    assert.ok(!workflowFileCalls.some((call) => call.to === newerMain), JSON.stringify(workflowFileCalls));
+  });
+
+  it("gates the branch as it is at checkpoint 2 when it leaves main's workflow change unmerged", async () => {
+    const { steps, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mainWorkflowFiles: [".github/workflows/release.yml"],
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(steps, [
+      "tester",
+      "backend",
+      "gate: scripts/gate.sh 2>&1",
+      "reviewer",
+      "gate: scripts/gate.sh 2>&1",
+      "publish",
+      "close",
+    ]);
+  });
+
+  it("still merges main in when the branch head..latest main touches no workflow file", async () => {
+    const { steps, workflowFileCalls, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mainWorkflowFiles: [],
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(steps.includes(`merge '${newerMain}'`), steps.join(", "));
+    assert.ok(workflowFileCalls.some((call) => call.to === newerMain));
+  });
+
+  it("still hands the issue back for the branch's own workflow change when main is merged in", async () => {
+    const { handBackWorkflowChangeCalls, steps, comments, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      publishError:
+        "git push --quiet origin abc:refs/heads/x failed:\n ! [remote rejected] abc -> x (refusing to allow a GitHub App to " +
+        "create or update workflow `.github/workflows/ci.yml` without `workflows` permission)",
+    });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(steps.includes(`merge '${newerMain}'`), steps.join(", "));
+    assert.equal(handBackWorkflowChangeCalls.length, 1);
+    const { head, files } = handBackWorkflowChangeCalls[0]!.change;
+    assert.deepEqual(files, [`.github/workflows/${base.slice(0, 4)}-${head.slice(0, 4)}.yml`]);
+    assert.deepEqual(comments, []);
+    assert.equal(result.publishFailed, true);
+  });
+
+  it("hands the issue back for the branch's own workflow change, listing only its files, when main's workflow change is left unmerged", async () => {
+    const { handBackWorkflowChangeCalls, steps, buildHost } = host([0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      mainWorkflowFiles: [".github/workflows/release.yml"],
+      publishError:
+        "git push --quiet origin abc:refs/heads/x failed:\n ! [remote rejected] abc -> x (refusing to allow a GitHub App to " +
+        "create or update workflow `.github/workflows/ci.yml` without `workflows` permission)",
+    });
+    const reviewed = (3).toString(16).padStart(40, "0");
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!steps.some((step) => step.startsWith("merge")), steps.join(", "));
+    assert.equal(handBackWorkflowChangeCalls.length, 1);
+    // The files and head are the branch's own: base..reviewed head, with no
+    // file of main's.
+    const { head, files } = handBackWorkflowChangeCalls[0]!.change;
+    assert.equal(head, reviewed);
+    assert.deepEqual(files, [`.github/workflows/${base.slice(0, 4)}-${reviewed.slice(0, 4)}.yml`]);
+    assert.equal(result.publishFailed, true);
+  });
+
   it("still publishes, without merging, when fetching main fails", async () => {
     const { steps, logs, buildHost } = host([0, 0], { latestMainError: "could not resolve host" });
 
@@ -943,6 +1081,23 @@ describe("buildIssue syncing with main before publishing", () => {
     assert.ok(!steps.some((step) => step.startsWith("merge")));
     assert.equal(result.outcome, "published");
     assert.ok(logs.some((line) => line.includes("fetching main failed")));
+  });
+
+  it("still publishes, without merging, when main's workflow changes can't be listed", async () => {
+    const { steps, logs, pushed, buildHost } = host([0, 0], { latestMain: newerMain, containsMain: false });
+    const listWorkflows = buildHost.workflowFiles;
+    buildHost.workflowFiles = (from, to) => {
+      if (to === newerMain) throw new Error("git log failed");
+      return listWorkflows(from, to);
+    };
+    const reviewed = (3).toString(16).padStart(40, "0");
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!steps.some((step) => step.startsWith("merge")), steps.join(", "));
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(pushed, [{ branch, commit: reviewed }]);
+    assert.ok(logs.some((line) => line.includes("can't be listed")), logs.join("\n"));
   });
 });
 

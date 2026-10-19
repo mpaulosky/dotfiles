@@ -503,11 +503,12 @@ jobs:
             // progress (its jobs may not have created their checks yet), the
             // head's checks changed while the runs were read, or the runs
             // couldn't be read. "held": a CI run for the head is held for
-            // approval, so its checks come only once someone approves it
-            // (mpaulosky/dotfiles#236). "no CI": everything is quiet, but no
-            // check outside Claude Review's and this job's own exists, as when
-            // path filters leave out every CI workflow. "settled": CI has
-            // reported (mpaulosky/dotfiles#233).
+            // approval and no later run has replaced it, so its checks come
+            // only once someone approves it (mpaulosky/dotfiles#236).
+            // "no CI": everything is quiet, but no check outside Claude
+            // Review's and this job's own exists, as when path filters leave
+            // out every CI workflow. "settled": CI has reported
+            // (mpaulosky/dotfiles#233).
             async function noRequiredCheckState(pullNumber, pr, pending) {
               if (!pending.startsWith("no required check") || context.payload.pull_request) {
                 return null;
@@ -531,8 +532,22 @@ jobs:
                 if (runs.some((run) => ACTIVE_RUN_STATUSES.includes(run.status))) {
                   return "waiting";
                 }
+                // A held run counts only while no later run (higher id) of its
+                // workflow and event has replaced it. A later run replaces it
+                // only if it ran: one that finished skipped, cancelled or
+                // failed to start created none of the checks the held run
+                // would have (mpaulosky/dotfiles#238).
+                const NOT_RUN = ["skipped", "cancelled", "startup_failure", HELD_RUN];
+                const replaced = (run) => {
+                  return runs.some((other) => {
+                    return other.path === run.path && other.event === run.event && other.id > run.id &&
+                      other.status === "completed" && !NOT_RUN.includes(other.conclusion);
+                  });
+                };
                 const held = runs.some((run) => {
-                  return (run.status === HELD_RUN || run.conclusion === HELD_RUN) && !NOT_CI_WORKFLOWS.includes(run.path);
+                  return (run.status === HELD_RUN || run.conclusion === HELD_RUN) &&
+                    !NOT_CI_WORKFLOWS.includes(run.path) &&
+                    !replaced(run);
                 });
                 if (held) {
                   return "held";

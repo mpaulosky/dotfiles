@@ -306,9 +306,16 @@ export type BuildHost = {
   // runRoleInSandbox(..., host.limits), and checks it before publishing.
   limits: RunLimits;
   // The .github/workflows/ files the commits from `base` to `commit` touch,
-  // for the hand-back comment of a push GitHub refused for them, leaving out
-  // the history of `mergedMain`, the main commit syncWithMain merged in (#224).
+  // for the hand-back comment of a push GitHub refused for them, and to tell
+  // whether merging main in would bring in a workflow change (#223), leaving
+  // out the history of `mergedMain`, the main commit syncWithMain merged in
+  // (#224).
   workflowFiles(base: string, commit: string, mergedMain?: string): string[];
+  // Whether the token that pushes the branch lacks the Workflows permission,
+  // so GitHub refuses a push carrying a workflow change. True in GitHub
+  // Actions; a local `Sandcastle:local` run pushes with the owner's own `gh`
+  // login, which can push one.
+  pushRefusesWorkflowChanges: boolean;
   // Hands the issue back with sandcastle:needs-human after a push GitHub
   // refused for a .github/workflows/** change (lib/handback.mts#handBackWorkflowChange).
   // `detail` is the publicError text of the push's error; `change` names the
@@ -400,6 +407,7 @@ const liveHost: BuildHost = {
   log: console.log,
   limits: runLimits,
   workflowFiles: (from, to, mergedMain) => workflowFilesFrom(git(...workflowLogArgs(from, to, mergedMain))),
+  pushRefusesWorkflowChanges: process.env.GITHUB_ACTIONS === "true",
   handBackWorkflowChange: (issueNumber, branch, detail, change) => handBackWorkflowChange(issueNumber, branch, detail, change),
 };
 
@@ -714,7 +722,9 @@ async function buildMarkedIssue(
   // published as it is: the follow-up pass (lib/follow-up-pass.mts) merges
   // main into a conflicted PR with a role to resolve it. A failed fetch
   // publishes without the merge too, since the work is already reviewed and
-  // the follow-up pass updates a PR behind main.
+  // the follow-up pass updates a PR behind main. So does a main that changed
+  // a workflow file since the branch's head, but there nothing in Actions can
+  // bring main in afterwards (see below).
   // Throws when an aborted merge can't be undone.
   async function syncWithMain(): Promise<{ reviewedHead: string; mergedMain: string } | undefined> {
     let main: string;
@@ -731,6 +741,31 @@ async function buildMarkedIssue(
     if (reviewedHead === undefined) {
       log("HEAD can't be read, so main isn't merged in");
       return undefined;
+    }
+    // In Actions, the merge commit would carry main's own workflow change,
+    // and GitHub refuses Sandcastle's push of it for lack of the Workflows
+    // permission, handing the issue back for a change it never made (#223).
+    // The merge is left undone, not promised to anyone: the follow-up pass
+    // runs in Actions with the same token, so its own push of main's workflow
+    // change is refused the same way and it hands the PR to a person, as does
+    // an update-branch call made with that token. A person, or a local
+    // `Sandcastle:local` run, has to bring main's workflow change in. A local
+    // run pushes with the owner's login, so it merges main as usual. When the
+    // files can't be listed, the merge is skipped too: publishing without
+    // main is safe.
+    if (host.pushRefusesWorkflowChanges) {
+      let mainWorkflowFiles: string[];
+      try {
+        mainWorkflowFiles = host.workflowFiles(reviewedHead, main);
+      } catch (error) {
+        console.error(`  ⚠ #${issue.number}: listing the workflow files main changes failed: ${error}`);
+        log("main's workflow changes can't be listed, so main isn't merged in");
+        return undefined;
+      }
+      if (mainWorkflowFiles.length > 0) {
+        log(`main changed ${mainWorkflowFiles.join(", ")}, so it isn't merged in and the branch is published as it is`);
+        return undefined;
+      }
     }
     const merge = await sandbox.exec(`git merge --no-edit -m ${shellWord(`Merge main into ${branch}`)} ${shellWord(main)}`);
     if (merge.exitCode === 0) {

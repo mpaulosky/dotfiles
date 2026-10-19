@@ -34,7 +34,8 @@ The Sandcastle workflow in GitHub Actions works the issues labelled `Sandcastle`
 refuses its push of any change under `.github/workflows/`. Here that's most changes to Claude Review or PR Auto-Merge, since
 dotfiles' copies of those Template files must match. Label such an issue `Sandcastle:local` instead: Actions never builds it, and
 `SANDCASTLE_LABEL=Sandcastle:local pnpm run sandcastle` builds it from the main checkout, pushing with your own `gh` login. Its PR's
-follow-up passes then run locally too.
+follow-up passes then run locally too. When GitHub refuses Actions' push of a new branch for a workflow change main made after the
+build started, Sandcastle moves the issue to `Sandcastle:local` itself, with a comment saying why.
 
 ## Git workflow
 

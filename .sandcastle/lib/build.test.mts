@@ -14,6 +14,7 @@ import {
   PR_BODY_LIMIT,
   publicErrorText,
   publish,
+  remoteBranchIsOnOrigin,
   remoteMainIs,
   UncountedStopError,
   type BuildHost,
@@ -2283,6 +2284,39 @@ describe("remoteMainIs", () => {
 
     assert.equal(remoteMainIs(sha, run), false);
     assert.deepEqual(asked, [["ls-remote", "origin", "refs/heads/main"]]);
+  });
+});
+
+describe("remoteBranchIsOnOrigin", () => {
+  const branch = "fix/253-publish";
+
+  it("asks origin for the branch's ref and is true when it names it", () => {
+    const asked: string[][] = [];
+    const run = (...args: string[]) => {
+      asked.push(args);
+      return `${"a".repeat(40)}\trefs/heads/${branch}\n`;
+    };
+
+    assert.equal(remoteBranchIsOnOrigin(branch, run), true);
+    assert.deepEqual(asked, [["ls-remote", "origin", `refs/heads/${branch}`]]);
+  });
+
+  it("is false when origin has no such branch", () => {
+    assert.equal(remoteBranchIsOnOrigin(branch, () => ""), false);
+  });
+
+  it("is false when only a branch that matches by its tail exists", () => {
+    const run = () => `${"c".repeat(40)}\trefs/heads/a/refs/heads/${branch}\n`;
+
+    assert.equal(remoteBranchIsOnOrigin(branch, run), false);
+  });
+
+  it("throws when origin can't be asked", () => {
+    const run = (): string => {
+      throw new Error("git ls-remote failed");
+    };
+
+    assert.throws(() => remoteBranchIsOnOrigin(branch, run), /ls-remote failed/);
   });
 });
 

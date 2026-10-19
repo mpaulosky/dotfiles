@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Blocker } from "./gate.mts";
 import type { SandcastleIssue } from "./github.mts";
+import { critiqueUnpicked } from "./overlap.mts";
 import { applyVerdicts, critiqueRound, deferralComment, type CritiqueGitHub, type CritiqueVerdict } from "./critique.mts";
 import { UncountedStopError } from "./errors.mts";
 import type { CritiquePromptArgs } from "./prompts.mts";
@@ -330,6 +331,55 @@ describe("critiqueRound", () => {
       { number: 5, title: "Issue 5", body: "Body of 5", pr: 90, branch: "feature/5-thing", files: ["src/A.cs", "src/B.cs"] },
     ]);
     assert.deepEqual(JSON.parse(args!.UNPICKED_JSON).map((i: SandcastleIssue) => i.number), [3]);
+  });
+
+  // #254: #1 and #2 name the same file and #2 is held behind #1; #3 depends on #2. The critique has to see #2 to
+  // defer #3 behind it, or #3 is built before the issue it depends on.
+  it("shows the critique an overlap-held issue as unpicked, with a note that it is held", async () => {
+    const gh = github();
+    const { log } = capture();
+    let args: CritiquePromptArgs | undefined;
+    const ready = [1, 2, 3].map(issue);
+    const unpicked = critiqueUnpicked(ready, [{ number: 1 }, { number: 3 }], new Set([2]));
+
+    await critiqueRound(
+      { picks: [issue(1), issue(3)], inFlight: [], unpicked },
+      async (promptArgs) => {
+        args = promptArgs;
+        return [{ id: "1", verdict: "keep", reason: "ok" }, { id: "3", verdict: "keep", reason: "ok" }];
+      },
+      gh.stub,
+      log,
+    );
+
+    const sent = JSON.parse(args!.UNPICKED_JSON) as { number: number; heldNote?: string }[];
+    assert.deepEqual(sent.map((i) => i.number), [2]);
+    assert.match(sent[0]!.heldNote ?? "", /held/i);
+  });
+
+  it("defers a pick that depends on an overlap-held issue behind it", async () => {
+    const gh = github();
+    const { log } = capture();
+    const unpicked = critiqueUnpicked([1, 2, 3].map(issue), [{ number: 1 }, { number: 3 }], new Set([2]));
+
+    const kept = await critiqueRound(
+      { picks: [issue(1), issue(3)], inFlight: [], unpicked },
+      // Defers #3 only when the prompt shows #2 as held, as a critique has to see it to do so.
+      async (promptArgs) => {
+        const sent = JSON.parse(promptArgs.UNPICKED_JSON) as { number: number; heldNote?: string }[];
+        const sawHeld = sent.some((i) => i.number === 2 && typeof i.heldNote === "string");
+        return [
+          { id: "1", verdict: "keep", reason: "independent" },
+          sawHeld ? defer(3, 2, "needs the API #2 adds") : { id: "3", verdict: "keep", reason: "independent" },
+        ];
+      },
+      gh.stub,
+      log,
+      new OutcomeReport(),
+    );
+
+    assert.deepEqual(kept.map((i) => i.number), [1]);
+    assert.deepEqual(gh.links, [[3, 2]]);
   });
 
   // #251: critique-prompt.md says each pick carries `files`; they must reach the prompt.

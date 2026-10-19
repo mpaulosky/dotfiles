@@ -19,7 +19,7 @@ The in-flight issues. Each one already has an open pull request waiting for revi
 
 </in-flight-json>
 
-The ready issues the planner didn't pick this round:
+The ready issues the planner didn't pick this round. One with a `heldNote` was held back by the host, for a reason the note doesn't give. It won't be built this round, but it's still an open issue, so count it in the dependency check below like any other unpicked ready issue:
 
 <unpicked-json>
 

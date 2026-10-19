@@ -269,22 +269,58 @@ describe("lastingHolds", () => {
   });
 });
 
-// #251: a pick held back for sharing a file isn't one of the issues the critique is told were left unpicked.
+// #254: the critique's dependency check is the safety net for a dependency the planner missed, so a pick held back
+// for a file is still one of the open ready issues it has to see, marked as held.
 describe("critiqueUnpicked", () => {
   const issue = (number: number) => pick(number, []);
+  const noteOf = (unpicked: ReturnType<typeof critiqueUnpicked>, number: number) => {
+    const found = unpicked.find((i) => i.number === number);
+    assert.ok(found, `#${number} isn't among the unpicked issues`);
+    return found.heldNote;
+  };
 
-  it("leaves out the kept picks and the issues held back for a file, and passes on the rest of the ready issues", () => {
+  it("passes on every ready issue that was not kept, the issues held back for a file included", () => {
     const ready = [1, 2, 3, 4, 5].map(issue);
 
     const unpicked = critiqueUnpicked(ready, [{ number: 1 }], new Set([2, 4]));
 
-    assert.deepEqual(unpicked.map((i) => i.number), [3, 5]);
+    assert.deepEqual(unpicked.map((i) => i.number), [2, 3, 4, 5]);
   });
 
-  it("passes on every ready issue that was not kept when none is held back", () => {
+  it("marks each held issue with a note that says it is held", () => {
+    const unpicked = critiqueUnpicked([1, 2, 3, 4].map(issue), [{ number: 1 }], new Set([2, 4]));
+
+    for (const number of [2, 4]) {
+      const note = noteOf(unpicked, number);
+      assert.ok(typeof note === "string", `#${number} has no heldNote`);
+      assert.match(note, /held/i);
+    }
+  });
+
+  it("gives no note to an issue that is not held", () => {
+    const unpicked = critiqueUnpicked([1, 2, 3].map(issue), [{ number: 1 }], new Set([2]));
+
+    assert.equal(noteOf(unpicked, 3), undefined);
+  });
+
+  it("passes on every ready issue that was not kept, with no note, when none is held back", () => {
     const unpicked = critiqueUnpicked([1, 2, 3].map(issue), [{ number: 2 }], new Set());
 
     assert.deepEqual(unpicked.map((i) => i.number), [1, 3]);
+    assert.deepEqual(unpicked.map((i) => i.heldNote), [undefined, undefined]);
+  });
+
+  it("leaves a kept pick out even when it is also in the held set", () => {
+    const unpicked = critiqueUnpicked([1, 2].map(issue), [{ number: 1 }], new Set([1, 2]));
+
+    assert.deepEqual(unpicked.map((i) => i.number), [2]);
+  });
+
+  it("keeps the held issue's own fields, so the critique can read its title and body", () => {
+    const [held] = critiqueUnpicked([issue(2)], [], new Set([2]));
+
+    assert.equal(held!.title, "Issue 2");
+    assert.equal(held!.body, "Body of 2");
   });
 });
 

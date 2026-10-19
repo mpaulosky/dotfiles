@@ -311,17 +311,28 @@ export function lastingHolds(overlaps: ReadonlyMap<number, Overlap>, published: 
   });
 }
 
-// The ready issues the critique sees as unpicked: those neither kept nor held
-// back for sharing a file. A held pick isn't built this round, and telling
-// the critique it's simply unpicked would ask it to judge an issue the host
-// has already ruled on (#251).
+// The note critiqueUnpicked puts on an issue the host held back, which
+// critique-prompt.md tells the critique how to read. It says only what is true
+// of every hold (a shared file, no files named, or a hold from an earlier
+// round), so it doesn't name a reason.
+export const HELD_NOTE =
+  "Held back by the host, so it won't be built this round. It is still an open issue, so a pick that depends on it must wait for it.";
+
+// The ready issues the critique sees as unpicked: every one that wasn't kept.
+// An issue the host held back is among them, marked with
+// HELD_NOTE. The critique's dependency check is the safety net for a
+// dependency the planner missed, so it has to see a held issue: when #2 is
+// held behind #1 and the kept #3 depends on #2, the critique can only defer
+// #3 behind #2 if #2 is in front of it (#254).
 export function critiqueUnpicked(
   ready: readonly SandcastleIssue[],
   kept: readonly { number: number }[],
   heldForFiles: ReadonlySet<number>,
-): SandcastleIssue[] {
+): (SandcastleIssue & { heldNote?: string })[] {
   const keptNumbers = new Set(kept.map((pick) => pick.number));
-  return ready.filter((issue) => !keptNumbers.has(issue.number) && !heldForFiles.has(issue.number));
+  return ready
+    .filter((issue) => !keptNumbers.has(issue.number))
+    .map((issue) => (heldForFiles.has(issue.number) ? { ...issue, heldNote: HELD_NOTE } : issue));
 }
 
 const liveGitHub: OverlapGitHub = { openPullRequestsIntoMain, pullRequestFiles, comment: commentOnIssue };

@@ -964,7 +964,9 @@ describe("sweepPullRequests", () => {
     assert.deepEqual(reviewThreadCalls, []);
   });
 
-  it("reads no review threads for a PR whose checks are still running", () => {
+  // The PR's own update from main starts new checks, so the round after it
+  // `decide` waits; the PR still has to show as waiting on the owner.
+  it("lists a PR waiting on the owner's answered thread while its checks are still running", () => {
     const { github, reviewThreadCalls } = stubGithub({
       prs: [
         pr({
@@ -973,12 +975,15 @@ describe("sweepPullRequests", () => {
         }),
       ],
       isOwner: ownerIs("owner"),
+      reviewThreads: () => [thread("owner", false, [hostReply])],
     });
+    const waiting = new WaitingPrReport();
 
-    const { needsPass } = sweepPullRequests(github, () => {}, NOW);
+    const { needsPass } = sweepPullRequests(github, () => {}, NOW, undefined, waiting);
 
     assert.deepEqual(needsPass, []);
-    assert.deepEqual(reviewThreadCalls, []);
+    assert.deepEqual(reviewThreadCalls, [101]);
+    assert.deepEqual(waiting.items(), [{ pr: 101, threads: 0, answered: 1 }]);
   });
 
   it("still flags a conflicted PR when its review threads can't be read", () => {

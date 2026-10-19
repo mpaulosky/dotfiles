@@ -333,18 +333,19 @@ export function threadStanding(
 // answered (threadStanding), which the sweep's batch query can't tell apart
 // since it reads only each thread's first comment (#225). Also counts them,
 // since a PR blocked on them waits on the owner and the run report says so.
-// Only a PR `decide` flags for a bot or owner thread costs a read of its
-// threads in full: a DIRTY PR is flagged without looking at threads, and
-// dropping threads can't turn any other decision into a flag. A read that
-// fails throws, and the sweep's per-PR catch leaves the PR alone this round.
+// Only a PR with an unresolved bot or owner thread costs a read of its threads
+// in full, whatever `decide` would say of it unfiltered: a PR whose checks are
+// still running (as after its own update from main) has to show as waiting on
+// the owner too, so the count can't depend on the decision. A DIRTY PR is
+// flagged without looking at threads, so it costs no read. A read that fails
+// throws, and the sweep's per-PR catch leaves the PR alone this round.
 function withoutAnsweredThreads(
   pr: SweepPullRequest,
   github: FollowUpGitHub,
   host: string,
-  now: number,
 ): { pr: SweepPullRequest; answered: number } {
   const mayFlag = pr.threads.some((thread) => !thread.resolved && (thread.byBot || github.isOwner(thread.author) === true));
-  if (!mayFlag || pr.mergeStateStatus === "DIRTY" || decide(pr, now, github.isOwner).action !== "needs-pass") {
+  if (!mayFlag || pr.mergeStateStatus === "DIRTY") {
     return { pr, answered: 0 };
   }
   const full = github.reviewThreads(pr.number);
@@ -366,12 +367,11 @@ export type SweepResult = { needsPass: number[]; passes: PassTarget[] };
 
 // Reads the host's login, the in-scope issues and the open PRs once, then
 // for each PR either skips it (sweepSkipReason) or applies `decide`, logging
-// what happened. A PR `decide` would flag for an unresolved bot or owner
-// thread has its threads read in full first, and the ones the host has
-// answered are left out and counted for `waiting` (withoutAnsweredThreads,
-// #225). A PR whose sandcastle:needs-human someone
-// other than the repository owner removed gets it back instead, and is left
-// alone (#146).
+// what happened. A PR with an unresolved bot or owner thread has its threads
+// read in full first, and the ones the host has answered are left out and
+// counted for `waiting` (withoutAnsweredThreads, #225). A PR whose
+// sandcastle:needs-human someone other than the repository owner removed gets
+// it back instead, and is left alone (#146).
 // Each PR runs in its own try/catch, so one failure doesn't stop the rest.
 // An updated PR reaches `outcomes` as "updated", and every PR that reached
 // `decide` with unresolved threads opened by someone other than the
@@ -416,7 +416,7 @@ export function sweepPullRequests(
         log(`  ✋ PR #${pr.number}: ${restore.reason}, so it isn't swept.`);
         continue;
       }
-      const { pr: swept, answered } = withoutAnsweredThreads(pr, github, host, now);
+      const { pr: swept, answered } = withoutAnsweredThreads(pr, github, host);
       // Not a bot's and not confirmed as the repository owner's: an owner
       // thread is the follow-up role's to answer (threadsForRole, and now
       // `decide` below), not left waiting on a person the way this count and

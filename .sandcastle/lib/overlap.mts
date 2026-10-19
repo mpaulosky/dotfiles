@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { publicErrorText } from "./build.mts";
-import { TEMPLATE_OWNED_DIR, TEMPLATE_ROOT_COPIES } from "./config.mts";
+import { OVERLAP_MARKER, TEMPLATE_OWNED_DIR, TEMPLATE_ROOT_COPIES } from "./config.mts";
 import {
   commentOnIssue,
   openPullRequestsIntoMain,
@@ -62,23 +62,36 @@ export function pathKey(path: string): string {
   return ROOT_COPIES.has(rest) ? rest : path;
 }
 
-// Whether two paths are the same file, or one is a directory (ending in "/")
-// that holds the other.
+// Whether two paths are the same file, or one is a folder that holds the
+// other, with or without a trailing "/" (#251: resolveFiles drops it). Each
+// path is compared under every name it goes by: a root copy is also its
+// Template file, so a folder holding either holds both.
 function sharesPath(a: string, b: string): boolean {
-  const [left, right] = [pathKey(a), pathKey(b)];
-  return left === right || (left.endsWith("/") && right.startsWith(left)) || (right.endsWith("/") && left.startsWith(right));
+  const covers = (folder: string, path: string) => path === folder || path.startsWith(`${folder}/`);
+  return aliases(a).some((left) => aliases(b).some((right) => covers(left, right) || covers(right, left)));
 }
 
-// The picks to hold back, and why, keyed by issue number. Pure, so the rules
-// are pinned without GitHub. The picks are walked in the planner's order:
-// - A pick with no files counts as changing every file. It's kept only when
-//   it's the round's only pick and no PR into main is open; otherwise it waits
-//   on the first other pick, or, with none, the lowest-numbered PR.
+// The names `path` goes by, without a trailing "/": itself, and for a
+// Template file dotfiles carries a root copy of, the other one of the pair.
+function aliases(path: string): string[] {
+  const trimmed = path.replace(/\/+$/, "");
+  const key = pathKey(trimmed);
+  if (key !== trimmed) return [trimmed, key];
+  return ROOT_COPIES.has(trimmed) ? [trimmed, `${TEMPLATE_OWNED_DIR}/${trimmed}`] : [trimmed];
+}
+
+// The picks to hold back, and why, keyed by issue number in the planner's
+// order. Pure, so the rules are pinned without GitHub:
 // - A pick with files is held on the first of its own paths that overlaps
 //   something: behind the earliest kept pick that claims it, or else the
-//   lowest-numbered PR that changes it.
+//   lowest-numbered PR that changes it. The picks with files are walked in
+//   the planner's order.
 // - A kept pick claims its paths. A held one claims nothing, since it isn't
 //   built this round, so a pick behind it can still be.
+// - A pick with no files counts as changing every file, so it waits on the
+//   lowest-numbered open PR, or else the first kept pick with files. With
+//   neither, the first pick with no files is built and the others wait on it:
+//   two such picks never wait on each other, which would build neither (#251).
 export function findOverlaps(
   picks: readonly FilePick[],
   pullRequests: readonly ChangingPullRequest[],
@@ -88,12 +101,7 @@ export function findOverlaps(
   const held = new Map<number, Overlap>();
 
   for (const pick of picks) {
-    if (pick.files.length === 0) {
-      const waitsOn = noFilesBlocker(pick, picks, byNumber);
-      if (waitsOn) held.set(pick.number, { kind: "no files", waitsOn });
-      continue;
-    }
-
+    if (pick.files.length === 0) continue;
     const overlap = firstOverlap(pick.files, claimed, byNumber);
     if (overlap) {
       held.set(pick.number, overlap);
@@ -101,22 +109,35 @@ export function findOverlaps(
       claimed.push(...pick.files.map((path) => ({ number: pick.number, path })));
     }
   }
-  return held;
+
+  const noFiles = picks.filter((pick) => pick.files.length === 0);
+  const blocker = noFilesBlocker(byNumber, claimed, noFiles);
+  for (const pick of noFiles) {
+    if (blocker && !(blocker.kind === "pick" && blocker.number === pick.number)) {
+      held.set(pick.number, { kind: "no files", waitsOn: blocker });
+    }
+  }
+
+  return new Map(picks.flatMap((pick) => {
+    const overlap = held.get(pick.number);
+    return overlap ? [[pick.number, overlap] as const] : [];
+  }));
 }
 
-// What a pick with no files waits on: the first other pick in the planner's
-// order, or else the first of `pullRequests`. Undefined when it's the round's
-// only pick and no PR is open, so it's built.
+// What the picks with no files wait on: the lowest-numbered open PR, or else
+// the first kept pick with files, or else the first pick with no files, which
+// is itself built. Undefined when there's none of these.
 function noFilesBlocker(
-  pick: FilePick,
-  picks: readonly FilePick[],
   pullRequests: readonly ChangingPullRequest[],
+  claimed: readonly Claim[],
+  noFiles: readonly FilePick[],
 ): { kind: "pick" | "pr"; number: number } | undefined {
-  const otherPick = picks.find((other) => other.number !== pick.number);
-  if (otherPick) return { kind: "pick", number: otherPick.number };
   const [pullRequest] = pullRequests;
   if (pullRequest) return { kind: "pr", number: pullRequest.number };
-  return undefined;
+  const [kept] = claimed;
+  if (kept) return { kind: "pick", number: kept.number };
+  const [first] = noFiles;
+  return first && { kind: "pick", number: first.number };
 }
 
 // The overlap of the first of `files` that a kept pick claims or a PR changes,
@@ -136,10 +157,17 @@ function firstOverlap(
 }
 
 // The comment on a held pick, naming the file and the pick or PR it waits on,
-// like the critique's deferral comment. The path comes from the planner, so it
-// goes through publicErrorText and plainText: no secret, mention or
-// cross-reference reaches a public issue. The blocker's "#N" stays live.
+// like the critique's deferral comment, after OVERLAP_MARKER, which is how a
+// later run sees it's already there (#251). The path comes from the planner,
+// so it goes through publicErrorText and plainText: no secret, mention,
+// cross-reference or forged marker reaches a public issue. The blocker's "#N"
+// stays live.
 export function overlapComment(overlap: Overlap): string {
+  return `${OVERLAP_MARKER}\n${overlapReason(overlap)}`;
+}
+
+// overlapComment's text.
+function overlapReason(overlap: Overlap): string {
   switch (overlap.kind) {
     case "pick": {
       const path = publicPath(overlap.path);
@@ -163,8 +191,8 @@ export function overlapComment(overlap: Overlap): string {
       const ref = kind === "pick" ? `#${number}` : `pull request #${number}`;
       return (
         "Sandcastle held this issue back this round: the planner didn't name the files it expects the issue to change, so it counts as " +
-        "changing every file. Such an issue is built only when it's the round's only pick and no pull request into main is open; this " +
-        `round it would wait on ${ref}.`
+        "changing every file. Such an issue is built only when no pull request into main is open and it's the only pick built that " +
+        `round; this round it would wait on ${ref}.`
       );
     }
   }
@@ -176,9 +204,12 @@ function publicPath(path: string): string {
 }
 
 // Splits the round's picks into those to build and those held back, both in
-// the planner's order, before the critique runs. Each held pick is logged,
-// reaches the run report as "deferred", and gets overlapComment unless the
-// issue already carries it (each Actions run would post it again otherwise).
+// the planner's order, before the critique runs, and says why each was held,
+// by issue number. Each held pick is logged, reaches the run report as
+// "deferred", and gets overlapComment unless the issue already carries one,
+// found by OVERLAP_MARKER whatever path or blocker it named: a pick behind an
+// open PR is held again every run until the PR closes, and each run would
+// post another otherwise (#251).
 // A failed read of the open PRs or of one PR's files throws, ending the run
 // red: building without knowing what's open is the unsafe direction. A
 // failed comment is only logged, and the pick stays held.
@@ -202,10 +233,9 @@ export function holdOverlappingPicks<T extends FilePick>(
     log(`  ⏸ Holding ${ref} back this round: ${overlapLog(overlap)}.`);
     report.record({ kind: "issue", number: pick.number, outcome: "deferred", detail: overlapDetail(overlap) });
 
-    const body = overlapComment(overlap);
-    if (pick.comments.some((comment) => comment.trim() === body.trim())) continue;
+    if (pick.comments.some((comment) => comment.includes(OVERLAP_MARKER))) continue;
     try {
-      github.comment(pick.number, body);
+      github.comment(pick.number, overlapComment(overlap));
     } catch (error) {
       log(`  ⚠ ${ref} is held back, but the comment explaining why couldn't be posted (${error}).`);
     }
@@ -218,16 +248,23 @@ export function holdOverlappingPicks<T extends FilePick>(
   };
 }
 
-// Why a pick is held, for the host's log, with the raw path.
+// Why a pick is held, for the host's log, with the path's control characters
+// escaped: a PR's path can hold a line break, and a log line starting "::" is
+// a workflow command in Actions (#251).
 function overlapLog(overlap: Overlap): string {
   switch (overlap.kind) {
     case "pick":
-      return `it and #${overlap.blocker} both change ${overlap.path}`;
+      return `it and #${overlap.blocker} both change ${logPath(overlap.path)}`;
     case "pr":
-      return `it and PR #${overlap.blocker} both change ${overlap.path}`;
+      return `it and PR #${overlap.blocker} both change ${logPath(overlap.path)}`;
     case "no files":
       return "the planner named no files for it";
   }
+}
+
+// `path` with each control character, line break included, written as \uXXXX.
+function logPath(path: string): string {
+  return path.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 // Why a pick is held, for the run report: host text only, never the path,
@@ -245,17 +282,28 @@ function overlapDetail(overlap: Overlap): string {
 
 const liveGitHub: OverlapGitHub = { openPullRequestsIntoMain, pullRequestFiles, comment: commentOnIssue };
 
-// The numbers of the held picks whose hold lasts the rest of the run: those behind an open PR, and those behind a pick
-// in `published`, which opened one. A hold behind any other pick is released (#251).
-export function lastingHolds(_overlaps: ReadonlyMap<number, Overlap>, _published: ReadonlySet<number>): number[] {
-  throw new Error("Not implemented");
+// The numbers of the held picks whose hold lasts the rest of the run: those
+// behind an open PR, and those behind a pick in `published`, which opened one
+// and so stays open for the next round's check to see. holdOverlappingPicks
+// decides before the critique and the build, so a hold behind a pick the
+// critique deferred, or whose build opened no PR, is released, and the held
+// pick can be planned again next round (#251).
+export function lastingHolds(overlaps: ReadonlyMap<number, Overlap>, published: ReadonlySet<number>): number[] {
+  return [...overlaps].flatMap(([number, overlap]) => {
+    const waitsOn = overlap.kind === "no files" ? overlap.waitsOn : { kind: overlap.kind, number: overlap.blocker };
+    return waitsOn.kind === "pr" || published.has(waitsOn.number) ? [number] : [];
+  });
 }
 
-// The ready issues the critique sees as unpicked: those neither kept nor held back for sharing a file (#251).
+// The ready issues the critique sees as unpicked: those neither kept nor held
+// back for sharing a file. A held pick isn't built this round, and telling
+// the critique it's simply unpicked would ask it to judge an issue the host
+// has already ruled on (#251).
 export function critiqueUnpicked(
-  _ready: readonly SandcastleIssue[],
-  _kept: readonly { number: number }[],
-  _heldForFiles: ReadonlySet<number>,
+  ready: readonly SandcastleIssue[],
+  kept: readonly { number: number }[],
+  heldForFiles: ReadonlySet<number>,
 ): SandcastleIssue[] {
-  throw new Error("Not implemented");
+  const keptNumbers = new Set(kept.map((pick) => pick.number));
+  return ready.filter((issue) => !keptNumbers.has(issue.number) && !heldForFiles.has(issue.number));
 }

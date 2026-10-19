@@ -804,9 +804,15 @@ export function commentOnPullRequest(
   ghWithStderr(run, ["pr", "comment", String(number), "--repo", repo, "--body-file", "-"], body);
 }
 
-// Every path an open PR changes, paged through in full (#251).
-export function pullRequestFiles(_pr: number, _run: typeof execFileSync = execFileSync, _repo: string = repoName()): string[] {
-  throw new Error("Not implemented");
+// Every path an open PR changes, for lib/overlap.mts. It reads the REST list
+// with --paginate rather than `gh pr view --json files`, which can stop at
+// 100 paths and so leave the check blind to the rest (#251). Each path comes
+// out as one JSON string per line, so a path with a line break stays whole.
+// A failed read throws rather than return part of the list.
+export function pullRequestFiles(pr: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): string[] {
+  return jsonLines(
+    ghWithStderr(run, ["api", "--paginate", `repos/${repo}/pulls/${pr}/files`, "--jq", ".[].filename | @json"]),
+  ) as string[];
 }
 
 // Any issue's body, or "" when it has none.

@@ -141,7 +141,7 @@ import { cacheHostLogin, ensureLabels, openPullRequests, repoName } from "./lib/
 import { protectHostGit } from "./lib/host-safety.mts";
 import { intakePhase } from "./lib/intake.mts";
 import { runLimits } from "./lib/limits.mts";
-import { holdOverlappingPicks } from "./lib/overlap.mts";
+import { critiqueUnpicked, holdOverlappingPicks, lastingHolds } from "./lib/overlap.mts";
 import { planRound, resolveFiles, resolveRoles } from "./lib/plan.mts";
 import { loadQueue, startQueueRound, useQueueScope } from "./lib/queue.mts";
 import {
@@ -157,7 +157,7 @@ import {
   writeRunReport,
   type RunEnding,
 } from "./lib/report.mts";
-import { roundOutcomes, roundSummary } from "./lib/round.mts";
+import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
 import { umbrellaPhase } from "./lib/umbrella.mts";
@@ -248,7 +248,10 @@ try {
   // The issues the overlap check held back this run, which the planner doesn't
   // see again until the next run. A held pick gets no "blocked by" link, so
   // the gate wouldn't hold it back: without this, a round where every pick is
-  // held would re-plan the same picks, up to MAX_ITERATIONS planner runs.
+  // held would re-plan the same picks, up to MAX_ITERATIONS planner runs. Only
+  // a hold behind an open PR, or behind a pick that opened one, lasts the run
+  // (lib/overlap.mts#lastingHolds): a hold behind a pick the critique deferred
+  // or whose build opened no PR is released once that's known (#251).
   const heldForFiles = new Set<number>();
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
@@ -366,12 +369,12 @@ try {
     // -----------------------------------------------------------------------
     // See lib/overlap.mts#holdOverlappingPicks. A failed read of the open PRs
     // ends the run red, as a failed gate read does.
-    const { kept, held } = holdOverlappingPicks(picks);
-    for (const issue of held) {
-      heldForFiles.add(issue.number);
-    }
+    const { kept, overlaps } = holdOverlappingPicks(picks);
+    const heldThisRound = new Set([...heldForFiles, ...overlaps.keys()]);
 
     if (kept.length === 0) {
+      // With no pick kept, every hold is behind an open PR.
+      for (const number of lastingHolds(overlaps, new Set())) heldForFiles.add(number);
       console.log("Every pick changes a file another pick or an open pull request changes. Moving on to the next round.");
       continue;
     }
@@ -380,24 +383,25 @@ try {
     // Phase 1c: Critique
     // -----------------------------------------------------------------------
     // It still runs on the kept picks, for dependencies and for overlaps of
-    // modules rather than paths. The held picks go to it as unpicked, so it
-    // can see a dependency on one.
+    // modules rather than paths. The held picks aren't passed to it, not even
+    // as unpicked: the host has already ruled on them this round (#251).
     // critiqueRound only filters the picks, so its SandcastleIssue[] return
     // type is narrower than what it's given; put each kept pick's roles back
     // by issue number rather than widen the critique's own types for a field
     // it never reads.
     const rolesByNumber = new Map(kept.map((issue) => [issue.number, issue.roles]));
-    const keptNumbers = new Set(kept.map((issue) => issue.number));
     const critiqued = await critiqueRound({
       picks: kept,
       inFlight: blocked.flatMap(({ issue, pr }) => (pr ? [{ issue, pr }] : [])),
-      unpicked: ready.filter((issue) => !keptNumbers.has(issue.number)),
+      unpicked: critiqueUnpicked(ready, kept, heldThisRound),
     });
     const issues = critiqued.map((issue) => ({ ...issue, roles: rolesByNumber.get(issue.number)! }));
 
     if (issues.length === 0) {
       // Each deferral added a "blocked by" link, so the next round's gate
       // holds those issues back and the planner picks from what's left.
+      // No kept pick opens a PR, so only the holds behind an open PR last.
+      for (const number of lastingHolds(overlaps, new Set())) heldForFiles.add(number);
       console.log("The critique deferred every pick. Moving on to the next round.");
       continue;
     }
@@ -439,6 +443,7 @@ try {
     for (const entry of roundOutcomes(work, settled)) {
       outcomeReport.record(entry);
     }
+    for (const number of lastingHolds(overlaps, publishedIssues(work, settled))) heldForFiles.add(number);
 
     if (summary.stop !== undefined) {
       // Nothing reached a PR, so the next plan would pick the same issues and

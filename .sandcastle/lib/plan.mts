@@ -38,17 +38,38 @@ export function resolveRoles(roles: unknown): OptionalRole[] {
   return OPTIONAL_ROLES.filter((role) => roles.includes(role));
 }
 
+// Where the repository is checked out inside the sandbox the planner runs in.
+const SANDBOX_REPO_ROOT = "/home/agent/workspace";
+
+// C0 and C1 control characters, DEL, and Unicode's line and paragraph separators.
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
 // The paths the planner expects one issue to change, from its raw `files`
 // field, cleaned up for lib/overlap.mts (#248): trimmed, with backslashes as
-// slashes and leading "./" and "/" removed, empty entries and repeats
-// dropped. A trailing "/" is kept, since it marks a directory. The list is
-// empty, meaning "no files", when the field isn't an array, when an entry
-// isn't a string, or when an entry holds a glob (`*` or `?`), which can't be
-// compared with a path.
-export function resolveFiles(files: unknown, _repoRoot: string = "/home/agent/workspace"): string[] {
+// slashes, and empty, "." and repeated slashes' segments dropped, so "./x",
+// "x/" and "x//" are all "x". A folder is a path like any other, which
+// lib/overlap.mts treats as covering what's under it. The planner works in
+// the sandbox, so an absolute path under `repoRoot` (the sandbox's checkout)
+// is made relative to it; any other leading "/" is dropped (#251). Entries
+// that come out empty, such as the root itself, and repeats are dropped, and
+// so is an entry with a control character or line break: it names no real
+// file the planner meant, and it would reach the host's log, where a line
+// starting "::" is a workflow command in Actions. The list is empty, meaning
+// "no files", when the field isn't an array, when an entry isn't a string,
+// or when an entry holds a glob (`*` or `?`), which can't be compared with a
+// path.
+export function resolveFiles(files: unknown, repoRoot: string = SANDBOX_REPO_ROOT): string[] {
   const isPath = (file: unknown): file is string => typeof file === "string" && !/[*?]/.test(file);
   if (!Array.isArray(files) || !files.every(isPath)) return [];
-  const paths = files.map((file) => file.trim().replace(/\\/g, "/").replace(/^(\.?\/)+/, ""));
+  const segments = (path: string) => path.split("/").filter((segment) => segment !== "" && segment !== ".");
+  const root = segments(repoRoot.replace(/\\/g, "/"));
+  const paths = files.flatMap((file) => {
+    const path = file.trim().replace(/\\/g, "/");
+    if (CONTROL_CHARACTER.test(path)) return [];
+    const parts = segments(path);
+    const underRoot = path.startsWith("/") && root.length > 0 && root.every((segment, i) => parts[i] === segment);
+    return [(underRoot ? parts.slice(root.length) : parts).join("/")];
+  });
   return [...new Set(paths.filter((path) => path !== ""))];
 }
 

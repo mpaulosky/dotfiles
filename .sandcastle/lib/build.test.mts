@@ -8,14 +8,15 @@ import {
   designComment,
   designNoteIn,
   latestDesignNote,
-  liveHostIdentity,
   isGitHubServerError,
   isWorkflowPushRejection,
+  liveHostIdentity,
   PR_BODY_LIMIT,
   publicErrorText,
   publish,
   UncountedStopError,
   type BuildHost,
+  type HostIdentity,
   workflowFilesFrom,
   workflowLogArgs,
 } from "./build.mts";
@@ -1928,8 +1929,8 @@ describe("createCheckedSandbox's git identity", () => {
   const MERGE = "git merge --no-edit -m 'Merge main into feature' main";
 
   // The sandbox createCheckedSandbox hands over, made over a scratch git
-  // repository whose global config is empty, as a fresh sandbox's is.
-  async function sandboxFor(identity: { name?: string; email?: string }) {
+  // repository whose global config has no identity, as a fresh sandbox's hasn't.
+  async function sandboxFor(identity: HostIdentity) {
     const fake = gitSandboxFake();
     const sandbox = await createCheckedSandbox("feature", fake.create, () => identity);
     return { fake, sandbox };
@@ -1999,6 +2000,14 @@ describe("createCheckedSandbox's git identity", () => {
     assert.equal((await sandbox.exec("git config --global user.name")).exitCode, 1);
   });
 
+  it("sets only the name when the host has a name and no email", async (t) => {
+    const { fake, sandbox } = await sandboxFor({ name: "Host Person" });
+    t.after(() => fake.cleanup());
+
+    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), "Host Person");
+    assert.equal((await sandbox.exec("git config --global user.email")).exitCode, 1);
+  });
+
   it("closes the sandbox and rejects when setting the identity fails", async () => {
     let closed = 0;
     const sandbox = {
@@ -2014,14 +2023,6 @@ describe("createCheckedSandbox's git identity", () => {
       /setting the sandbox's git user\.name failed: could not lock config file/,
     );
     assert.equal(closed, 1);
-  });
-
-  it("sets only the name when the host has a name and no email", async (t) => {
-    const { fake, sandbox } = await sandboxFor({ name: "Host Person" });
-    t.after(() => fake.cleanup());
-
-    assert.equal((await sandbox.exec("git config --global user.name")).stdout.trim(), "Host Person");
-    assert.equal((await sandbox.exec("git config --global user.email")).exitCode, 1);
   });
 });
 

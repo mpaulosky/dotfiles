@@ -12,8 +12,6 @@ import type * as sandcastle from "@ai-hero/sandcastle";
 export type GitSandboxFake = {
   // Stands in for what makes the sandbox: resolves to the fake sandbox.
   create: (branch: string) => Promise<sandcastle.Sandbox>;
-  // The sandbox as `create` returns it.
-  sandbox: sandcastle.Sandbox;
   // Every command run through `sandbox.exec`, in order.
   execs: string[];
   // The commit the branch is at, and the commit `main` is at: main has moved
@@ -49,7 +47,9 @@ export function gitSandboxFake(): GitSandboxFake {
     GIT_CONFIG_GLOBAL: globalConfigPath,
     GIT_CONFIG_NOSYSTEM: "1",
   };
-  const run = (command: string, cwd: string = repo) => execFileSync("sh", ["-c", command], { cwd, env, encoding: "utf8" }).trim();
+  const shell = (command: string, cwd: string) =>
+    execFileSync("sh", ["-c", command], { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const run = (command: string) => shell(command, repo).trim();
   // Setup commits carry an identity of their own, given per command, so the
   // global config stays what a fresh sandbox has.
   const setupCommit = (message: string) =>
@@ -81,7 +81,7 @@ export function gitSandboxFake(): GitSandboxFake {
     exec: async (command: string, options?: { cwd?: string }) => {
       execs.push(command);
       try {
-        return { stdout: execFileSync("sh", ["-c", command], { cwd: options?.cwd ?? repo, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }), stderr: "", exitCode: 0 };
+        return { stdout: shell(command, options?.cwd ?? repo), stderr: "", exitCode: 0 };
       } catch (error) {
         const failed = error as { stdout?: string; stderr?: string; status?: number | null };
         return { stdout: failed.stdout ?? "", stderr: failed.stderr ?? "", exitCode: failed.status ?? 1 };
@@ -95,7 +95,6 @@ export function gitSandboxFake(): GitSandboxFake {
 
   return {
     create: async () => sandbox,
-    sandbox,
     execs,
     head,
     main,

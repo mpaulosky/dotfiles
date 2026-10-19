@@ -405,10 +405,10 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // The live sandbox for `branch`, for a build and a follow-up pass
 // (lib/follow-up-pass.mts) alike. Sandcastle reuses a branch's worktree
 // that's still there, running git in it first, so that one is checked before
-// it's handed over.
-// The sandbox is handed over with the host's git identity already set (see
-// setGitIdentity). If setting it fails, the sandbox is closed and the error
-// thrown, so the caller doesn't run git in a sandbox that can't commit.
+// it's handed over. The sandbox is handed over with the host's git identity
+// already set (see setGitIdentity); if setting it fails, the sandbox is closed
+// and the error thrown, so the caller doesn't run git in a sandbox that can't
+// commit.
 //
 // `create` (what makes the sandbox, once the worktree is checked) and
 // `hostIdentity` (the host's git identity) are injected so tests can stand in

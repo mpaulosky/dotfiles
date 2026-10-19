@@ -1997,8 +1997,7 @@ describe("runPass's merge of main in a sandbox from createCheckedSandbox", () =>
     assert.deepEqual(calls.handBack, []);
     assert.equal(calls.push.length, 1);
     assert.equal(fake.headIdentity(), "Host Person <host@example.com>|Host Person <host@example.com>");
-    const merge = fake.execs.findIndex((command) => command.startsWith("git merge "));
-    assert.ok(merge !== -1, fake.execs.join("\n"));
+    assert.ok(fake.execs.some((command) => command.startsWith("git merge ")), fake.execs.join("\n"));
   });
 
   it("merges main in cleanly before any role has run, when GitHub reports the PR as conflicted but the merge is clean", async (t) => {

@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { createCheckedSandbox } from "./build.mts";
 import { FOLLOW_UP_MARKER, FOLLOW_UP_PASS_CAP, FOLLOW_UP_REPLY_MARKER } from "./config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
@@ -1110,6 +1110,19 @@ describe("runPass", () => {
     assert.match(calls.handBack[0]!.reason, /creating the sandbox failed/);
     assert.match(calls.handBack[0]!.body, /no longer points at this repository/);
     assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
+  });
+
+  it("says so on the PR, and hands it back, when the sandbox was left in place for a tampered worktree", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => {
+      throw new TamperedWorktreeError("setting the identity failed; left /work/tree in place", "/work/tree");
+    };
+
+    const outcome = await runPass(passTarget(), issue, BASE, passHost);
+
+    assert.equal(outcome.kind, "gave-up");
+    assert.ok(calls.commentOnPullRequest.some((c) => /no longer points at this repository/.test(c.body)));
+    assert.equal(calls.handBack.length, 1);
   });
 
   it("skips a PR that needs no merge and has no thread for the role, without creating a sandbox", async () => {

@@ -2343,3 +2343,37 @@ test("runs on a push to main", () => {
 
   assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]\n/);
 });
+
+// The comments that say what the PAT and GITHUB_TOKEN do (mpaulosky/dotfiles#214).
+// A repo's owner sets up RELEASE_PR_PAT from them, so they must say the PAT
+// adds review:claude and needs Pull requests (or Issues) write to do it, and
+// that GITHUB_TOKEN takes the label off.
+
+// The comment lines directly above the first line matching `anchor`, as one
+// string with the comment markers and line breaks removed.
+function commentAbove(anchor) {
+  const lines = readFileSync(WORKFLOW, "utf8").split("\n");
+  const at = lines.findIndex((line) => anchor.test(line));
+  assert.notEqual(at, -1, `pr-automerge.yml has no line matching ${anchor}`);
+  const block = [];
+  for (let i = at - 1; i >= 0 && /^\s*(#|\/\/)/.test(lines[i]); i--) {
+    block.unshift(lines[i].replace(/^\s*(#|\/\/)\s?/, "").trim());
+  }
+  return block.join(" ").replace(/\s+/g, " ");
+}
+
+test("says in EVENTS_TOKEN's comment that it also takes review:claude off at MAX_CLAUDE_ROUNDS", () => {
+  const comment = commentAbove(/^\s*EVENTS_TOKEN:/);
+
+  assert.match(comment, /review:claude/);
+  assert.match(comment, /MAX_CLAUDE_ROUNDS/);
+});
+
+test("says in the eventsClient comment that the PAT adds review:claude and needs Pull requests (or Issues) write", () => {
+  const comment = commentAbove(/^\s*const eventsClient = /);
+
+  assert.match(comment, /\badd(s|ed)?\b[^.]*review:claude|review:claude[^.]*\badd(s|ed)?\b/);
+  assert.match(comment, /RELEASE_PR_PAT|\bthe PAT\b/);
+  assert.match(comment, /pull[ -]requests/i);
+  assert.match(comment, /\bwrite\b/i);
+});

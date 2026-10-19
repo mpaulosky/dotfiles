@@ -864,3 +864,20 @@ def test_the_warning_survives_a_missing_execution_file(tmp_path):
     done = subprocess.run(["bash", "-e", "-c", warn_script()], capture_output=True, text=True,
                           env={"PATH": os.environ["PATH"], "OUTCOME": "failure", "EXECUTION_FILE": str(tmp_path / "x")})
     assert done.returncode == 0 and "once a usage limit has reset" in done.stdout
+
+
+# The comments at the top of claude-review.yml (mpaulosky/dotfiles#214)
+
+
+def test_header_names_pr_automerge_among_what_adds_review_claude():
+    """The header lists what adds review:claude. PR Auto-Merge does too, with the PAT."""
+    header = []
+    for line in WORKFLOW.read_text().splitlines():
+        if line.startswith(('"on":', "on:")):
+            break
+        if line.startswith("#"):
+            header.append(line.lstrip("#").strip())
+    sentences = re.split(r"(?<=[.!?])\s+", " ".join(header))
+    adders = [s for s in sentences if re.search(r"\badds?\b", s) and "review:claude" in s]
+    assert adders, "the header has no sentence about what adds review:claude"
+    assert any("PR Auto-Merge" in s for s in adders), adders

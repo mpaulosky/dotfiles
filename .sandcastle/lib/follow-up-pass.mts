@@ -36,7 +36,7 @@ import {
   GATE_COMMENT_LINES,
   GATE_FIXER_ATTEMPTS,
 } from "./config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
@@ -817,6 +817,12 @@ function planPass(
   return { forRole: sorted.forRole, leftForHuman: sorted.leftForHuman.length, needsMerge, redChecks, passCount };
 }
 
+// What the PR is told when a worktree was left in place, with its sandbox,
+// because it no longer points at this repository.
+const tamperedWorktreeComment = (branch: string) =>
+  `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
+  "person to look at. Don't run git in it.";
+
 // Hands the PR back with sandcastle:needs-human (see giveUpComment), quoting
 // `output` once it's safe to post. `privateDetail`, when given, is added to
 // the reason in the run log and the run report but left out of the PR comment,
@@ -862,6 +868,17 @@ async function passOnMarkedIssue(
   try {
     sandbox = await host.createSandbox(branch);
   } catch (error) {
+    // The sandbox and its worktree were left in place for a person, as the
+    // finally below does for a worktree it finds tampered with, so the PR
+    // says so too.
+    if (error instanceof TamperedWorktreeError) {
+      console.error(`  ✗ PR #${target.number}: ${error.message}`);
+      try {
+        host.commentOnPullRequest(target.number, tamperedWorktreeComment(branch));
+      } catch (commentError) {
+        console.error(`  ⚠ PR #${target.number}: commenting on the tampered worktree failed: ${commentError}`);
+      }
+    }
     // Such as a leftover worktree that no longer points at this repository:
     // it fails the same way every round, so it goes to a person.
     return stop("creating the sandbox failed", String(error));
@@ -1144,11 +1161,7 @@ async function passOnMarkedIssue(
     if (problems.length > 0) {
       console.error(`  ✗ PR #${target.number}: left ${sandbox.worktreePath} and its sandbox in place: ${problems.join("; ")}`);
       try {
-        host.commentOnPullRequest(
-          target.number,
-          `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
-            "person to look at. Don't run git in it.",
-        );
+        host.commentOnPullRequest(target.number, tamperedWorktreeComment(branch));
       } catch (error) {
         console.error(`  ⚠ PR #${target.number}: commenting on the tampered worktree failed: ${error}`);
       }

@@ -371,14 +371,14 @@ describe("main.mts's file overlap wiring", () => {
     assert.match(read(".sandcastle/main.mts"), /files: resolveFiles\(/);
   });
 
-  it("gives the critique only the picks that were kept, and not the held ones as unpicked", () => {
+  it("gives the critique the kept picks, and the rest of the ready issues, held ones included, through critiqueUnpicked", () => {
     const mainMts = read(".sandcastle/main.mts");
     const critiqueCall = mainMts.indexOf("critiqueRound(", mainMts.indexOf("holdOverlappingPicks("));
     const call = mainMts.slice(critiqueCall, mainMts.indexOf("});", critiqueCall));
 
     assert.match(call, /picks: kept/);
     assert.doesNotMatch(call, /picks,/);
-    assert.match(call, /unpicked: critiqueUnpicked\(/);
+    assert.match(call, /unpicked: critiqueUnpicked\(ready, kept, heldThisRound\)/);
     assert.doesNotMatch(call, /unpicked: ready\.filter/);
   });
 

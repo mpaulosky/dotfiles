@@ -364,10 +364,15 @@ describe("critiqueRound", () => {
 
     const kept = await critiqueRound(
       { picks: [issue(1), issue(3)], inFlight: [], unpicked },
-      async () => [
-        { id: "1", verdict: "keep", reason: "independent" },
-        defer(3, 2, "needs the API #2 adds"),
-      ],
+      // Defers #3 only when the prompt shows #2 as held, as a critique has to see it to do so.
+      async (promptArgs) => {
+        const sent = JSON.parse(promptArgs.UNPICKED_JSON) as { number: number; heldNote?: string }[];
+        const sawHeld = sent.some((i) => i.number === 2 && typeof i.heldNote === "string");
+        return [
+          { id: "1", verdict: "keep", reason: "independent" },
+          sawHeld ? defer(3, 2, "needs the API #2 adds") : { id: "3", verdict: "keep", reason: "independent" },
+        ];
+      },
       gh.stub,
       log,
       new OutcomeReport(),

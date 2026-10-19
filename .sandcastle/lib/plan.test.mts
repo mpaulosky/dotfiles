@@ -78,7 +78,7 @@ describe("resolveRoles", () => {
 
 // Issue #248: resolveFiles is what main.mts asks for each pick's files. The
 // plan schema leaves the field unknown so a bad value means "no files" (the
-// pick is held back unless it's alone) rather than aborting the whole plan.
+// pick is held behind an open PR or another pick, unless it's the first) rather than aborting the whole plan.
 describe("resolveFiles", () => {
   it("is empty when the field is missing", () => {
     assert.deepEqual(resolveFiles(undefined), []);
@@ -118,11 +118,63 @@ describe("resolveFiles", () => {
     assert.deepEqual(resolveFiles(["lib/a.mts", "", "  ", "./", "lib/b.mts", "./lib/a.mts"]), ["lib/a.mts", "lib/b.mts"]);
   });
 
-  it("keeps a trailing slash, which marks a directory", () => {
-    assert.deepEqual(resolveFiles(["lib/new/"]), ["lib/new/"]);
+  // #251: a folder is a path like any other, and overlap treats it as covering what's under it.
+  it("drops a trailing slash, so a folder and the same folder with a slash are one path", () => {
+    assert.deepEqual(resolveFiles(["lib/new/", "lib/new", "lib/other//"]), ["lib/new", "lib/other"]);
   });
 
   it("deliberately naming none is an empty list", () => {
     assert.deepEqual(resolveFiles([]), []);
   });
 });
+
+// Issue #251: the planner works in the sandbox, where the repository is at /home/agent/workspace, and may name a path from there.
+describe("resolveFiles paths from the sandbox", () => {
+  it("turns an absolute path under the repository root into a repo-relative one", () => {
+    assert.deepEqual(resolveFiles(["/home/agent/workspace/.sandcastle/lib/build.mts"]), [".sandcastle/lib/build.mts"]);
+  });
+
+  it("treats an absolute path and the same path written relatively as one path", () => {
+    assert.deepEqual(resolveFiles(["/home/agent/workspace/lib/a.mts", "lib/a.mts", "./lib/a.mts"]), ["lib/a.mts"]);
+  });
+
+  it("turns an absolute path to a folder under the root into a folder, without the trailing slash", () => {
+    assert.deepEqual(resolveFiles(["/home/agent/workspace/.sandcastle/lib/"]), [".sandcastle/lib"]);
+  });
+
+  it("drops the repository root itself, which names no file", () => {
+    assert.deepEqual(resolveFiles(["/home/agent/workspace", "/home/agent/workspace/", "lib/a.mts"]), ["lib/a.mts"]);
+  });
+
+  it("doesn't treat a path that only shares the root's prefix as under the root", () => {
+    assert.deepEqual(resolveFiles(["/home/agent/workspace-other/x.mts"]), ["home/agent/workspace-other/x.mts"]);
+  });
+
+  it("takes the repository root as its second argument", () => {
+    assert.deepEqual(resolveFiles(["/srv/repo/lib/a.mts", "/srv/repo/"], "/srv/repo"), ["lib/a.mts"]);
+  });
+
+  it("drops ./ and trailing spaces", () => {
+    assert.deepEqual(resolveFiles(["./lib/a.mts ", " ./lib/b.mts\t"]), ["lib/a.mts", "lib/b.mts"]);
+  });
+
+  it("drops entries that are blank, or only ./ or slashes", () => {
+    assert.deepEqual(resolveFiles(["", "   ", "./", "/", "//", "lib/a.mts"]), ["lib/a.mts"]);
+  });
+
+  it("drops an entry with a line break, keeping the other entries", () => {
+    assert.deepEqual(resolveFiles(["lib/a.mts", "lib/b.mts\n::error::injected", "lib/c\r.mts"]), ["lib/a.mts"]);
+  });
+
+  it("drops an entry with a control character, keeping the other entries", () => {
+    assert.deepEqual(
+      resolveFiles(["lib/a.mts", "lib/\u0000b.mts", "lib/\u001b[31mc.mts", "lib/d\u007f.mts", "lib/e\u0085.mts", "lib/f.mts"]),
+      ["lib/a.mts", "lib/f.mts"],
+    );
+  });
+
+  it("is empty when every entry was dropped", () => {
+    assert.deepEqual(resolveFiles(["x\ny", ""]), []);
+  });
+});
+

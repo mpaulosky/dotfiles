@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { UncountedStopError } from "./errors.mts";
-import { roundOutcomes, roundSummary } from "./round.mts";
+import { publishedIssues, roundOutcomes, roundSummary } from "./round.mts";
 
 const work = [
   { issue: { number: 71 }, branch: "feature/71-a" },
@@ -103,5 +103,28 @@ describe("roundOutcomes", () => {
     ]);
 
     assert.deepEqual(outcomes[0], { kind: "issue", number: 71, outcome: "not published", detail: "the build stopped on an error; see the run log" });
+  });
+});
+
+// Issue #251: a hold behind a pick lasts the run only when that pick's build opened a PR.
+describe("publishedIssues", () => {
+  it("names the issues whose build opened a PR", () => {
+    assert.deepEqual([...publishedIssues(work, [built("https://github.com/o/r/pull/1"), built("https://github.com/o/r/pull/2")])], [71, 72]);
+  });
+
+  it("leaves out a build that opened no PR, even one whose branch was gated and stranded", () => {
+    assert.deepEqual([...publishedIssues(work, [built(undefined), built(undefined, true)])], []);
+  });
+
+  it("leaves out a build that threw", () => {
+    const settled = [{ status: "rejected", reason: new Error("sandbox crashed") } as const, built("https://github.com/o/r/pull/2")];
+
+    assert.deepEqual([...publishedIssues(work, settled)], [72]);
+  });
+
+  it("leaves out a build that stopped on the time budget", () => {
+    const settled = [{ status: "rejected", reason: new UncountedStopError("budget") } as const, built(undefined)];
+
+    assert.deepEqual([...publishedIssues(work, settled)], []);
   });
 });

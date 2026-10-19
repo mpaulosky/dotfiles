@@ -969,13 +969,14 @@ async function buildMarkedIssue(
   // Actions' token, without the Workflows permission, can't push it. So the
   // branch is first created at `base`, which GitHub already has, and the
   // build's commits are then pushed as an update to it, judged against
-  // `base`. Returns whether this path was taken, so a push GitHub still
-  // refuses moves the issue to Sandcastle:local instead of handing it back.
-  // A local run's push can carry a workflow change, and an existing branch
-  // is already judged against its own tip, so neither needs it. When main or
-  // its workflow files can't be read, or origin can't be asked for the
-  // branch, the build publishes as it did before this check.
-  function createdBranchAtBase(): boolean {
+  // `base`. Returns whether this path was taken, even when the creation
+  // failed, so a push GitHub still refuses moves the issue to
+  // Sandcastle:local instead of handing it back. A local run's push can
+  // carry a workflow change, and an existing branch is already judged
+  // against its own tip, so neither needs it. When main or its workflow
+  // files can't be read, or origin can't be asked for the branch, the build
+  // publishes as it did before this check.
+  function triedCreatingBranchAtBase(): boolean {
     if (!host.pushRefusesWorkflowChanges) return false;
     let mainWorkflowFiles: string[];
     try {
@@ -1101,7 +1102,7 @@ async function buildMarkedIssue(
     // pushed) or any other git or gh failure. Whatever still fails needs a
     // person, so the issue gets git's or gh's error rather than only the run log.
     const prBody = await reviewerPrBody();
-    const atBase = createdBranchAtBase();
+    const triedBranchAtBase = triedCreatingBranchAtBase();
     try {
       const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody);
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
@@ -1121,7 +1122,7 @@ async function buildMarkedIssue(
           console.error(`  ⚠ #${issue.number}: listing the workflow files ${branch} changes failed: ${listError}`);
         }
         const change = { head: gated, files };
-        if (atBase) {
+        if (triedBranchAtBase) {
           try {
             host.moveToLocal(issue.number, branch, detail, change);
             log(`GitHub refused the push even as an update from ${base}, so the issue moved to Sandcastle:local`);

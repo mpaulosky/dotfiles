@@ -559,6 +559,35 @@ describe("holdOverlappingPicks's comment once", () => {
     assert.deepEqual(report.items().map((item) => [item.number, item.outcome]), [[1, "deferred"]]);
   });
 
+  it("comments again when the newest overlap comment names another blocker", () => {
+    const gh = github({ 30: ["lib/b.mts"] });
+    const earlier = overlapComment({ kind: "pr", blocker: 9, path: "lib/a.mts" });
+
+    holdOverlappingPicks([pick(1, ["lib/b.mts"], [earlier])], gh.stub, () => {}, new OutcomeReport());
+
+    assert.deepEqual(gh.comments.map(([issue]) => issue), [1]);
+    assert.ok(gh.comments[0]![1].includes("pull request #30"));
+  });
+
+  it("comments again when an older comment named this blocker but the newest names another", () => {
+    const gh = github({ 9: ["lib/a.mts"] });
+    const first = overlapComment({ kind: "pr", blocker: 9, path: "lib/a.mts" });
+    const second = overlapComment({ kind: "pr", blocker: 30, path: "lib/b.mts" });
+
+    holdOverlappingPicks([pick(1, ["lib/a.mts"], [first, second])], gh.stub, () => {}, new OutcomeReport());
+
+    assert.deepEqual(gh.comments.map(([issue]) => issue), [1]);
+  });
+
+  it("comments again when a pick that named files now names none", () => {
+    const gh = github({ 9: ["lib/a.mts"] });
+    const earlier = overlapComment({ kind: "pr", blocker: 9, path: "lib/a.mts" });
+
+    holdOverlappingPicks([pick(1, [], [earlier])], gh.stub, () => {}, new OutcomeReport());
+
+    assert.deepEqual(gh.comments.map(([issue]) => issue), [1]);
+  });
+
   it("comments on a held pick whose comments carry no overlap marker", () => {
     const gh = github({ 9: ["lib/build.mts"] });
 

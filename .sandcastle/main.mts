@@ -47,11 +47,16 @@
 //                               listing unblocked issues and the files each
 //                               one is expected to change.
 //   Phase 1b (Overlap):         With no agent involved, the host holds back
-//                               for the rest of the run each pick whose files
-//                               share a path with a pick kept earlier in the
-//                               planner's order or with any open PR into main,
-//                               and each pick that named no files unless it's
-//                               alone and no PR is open (lib/overlap.mts).
+//                               each pick whose files share a path with a pick
+//                               kept earlier in the planner's order or with
+//                               any open PR into main, and each pick that
+//                               named no files unless it's the first such
+//                               pick and no PR is open and no pick naming
+//                               files is kept (lib/overlap.mts). A hold lasts
+//                               the run only behind an open PR or a pick that
+//                               opened one; one behind a pick the critique
+//                               deferred, or whose build opened no PR, is
+//                               released.
 //   Phase 1c (Critique):        A second run checks whether the remaining
 //                               picks are safe to build in parallel and defers
 //                               the ones that aren't behind a native "blocked

@@ -167,7 +167,16 @@ function firstOverlap(
 // cross-reference or forged marker reaches a public issue. The blocker's "#N"
 // stays live.
 export function overlapComment(overlap: Overlap): string {
-  return `${OVERLAP_MARKER}\n${overlapReason(overlap)}`;
+  return `${overlapMarker(overlap)}\n${overlapReason(overlap)}`;
+}
+
+// The marker of overlapComment: OVERLAP_MARKER and what the hold waits on, so
+// holdOverlappingPicks posts again when the blocker changes, not when only the
+// path does. The numbers come from the host, never the planner.
+export function overlapMarker(overlap: Overlap): string {
+  const waitsOn = overlap.kind === "no files" ? overlap.waitsOn : { kind: overlap.kind, number: overlap.blocker };
+  const why = overlap.kind === "no files" ? "no-files " : "";
+  return `${OVERLAP_MARKER} ${why}${waitsOn.kind}#${waitsOn.number} -->`;
 }
 
 // overlapComment's text.
@@ -195,8 +204,8 @@ function overlapReason(overlap: Overlap): string {
       const ref = kind === "pick" ? `#${number}` : `pull request #${number}`;
       return (
         "Sandcastle held this issue back this round: the planner didn't name the files it expects the issue to change, so it counts as " +
-        "changing every file. Such an issue is built only when no pull request into main is open and it's the only pick built that " +
-        `round; this round it would wait on ${ref}.`
+        "changing every file. Such an issue is built only when no pull request into main is open and no other pick that names files " +
+        `is built that round, and then only the first of them; this round it would wait on ${ref}.`
       );
     }
   }
@@ -210,10 +219,11 @@ function publicPath(path: string): string {
 // Splits the round's picks into those to build and those held back, both in
 // the planner's order, before the critique runs, and says why each was held,
 // by issue number. Each held pick is logged, reaches the run report as
-// "deferred", and gets overlapComment unless the issue already carries one,
-// found by OVERLAP_MARKER whatever path or blocker it named: a pick behind an
-// open PR is held again every run until the PR closes, and each run would
-// post another otherwise (#251).
+// "deferred", and gets overlapComment unless the newest comment with an
+// OVERLAP_MARKER on the issue has this hold's overlapMarker, whatever path it
+// named: a pick behind an open PR is held again every run until the PR
+// closes, and each run would post another otherwise (#251). A later hold
+// behind another blocker has another marker, so it is explained too.
 // A failed read of the open PRs or of one PR's files throws, ending the run
 // red: building without knowing what's open is the unsafe direction. A
 // failed comment is only logged, and the pick stays held.
@@ -237,7 +247,8 @@ export function holdOverlappingPicks<T extends FilePick>(
     log(`  ⏸ Holding ${ref} back this round: ${overlapLog(overlap)}.`);
     report.record({ kind: "issue", number: pick.number, outcome: "deferred", detail: overlapDetail(overlap) });
 
-    if (pick.comments.some((comment) => comment.includes(OVERLAP_MARKER))) continue;
+    const newest = pick.comments.findLast((comment) => comment.includes(OVERLAP_MARKER));
+    if (newest?.includes(overlapMarker(overlap))) continue;
     try {
       github.comment(pick.number, overlapComment(overlap));
     } catch (error) {

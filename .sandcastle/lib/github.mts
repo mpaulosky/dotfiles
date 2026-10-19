@@ -804,15 +804,28 @@ export function commentOnPullRequest(
   ghWithStderr(run, ["pr", "comment", String(number), "--repo", repo, "--body-file", "-"], body);
 }
 
-// Every path an open PR changes, for lib/overlap.mts. It reads the REST list
-// with --paginate rather than `gh pr view --json files`, which can stop at
-// 100 paths and so leave the check blind to the rest (#251). Each path comes
-// out as one JSON string per line, so a path with a line break stays whole.
-// A failed read throws rather than return part of the list.
+// GitHub's cap on the files the REST list returns for one PR.
+const PULL_REQUEST_FILES_CAP = 3000;
+
+// Every path an open PR changes, for lib/overlap.mts, a renamed file's old
+// path included, since a pick that names either would conflict. It reads the
+// REST list with --paginate rather than `gh pr view --json files`, which can
+// stop at 100 paths and so leave the check blind to the rest (#251). Each path
+// comes out as one JSON string per line, so a path with a line break stays
+// whole. A failed read throws rather than return part of the list, and so does
+// a list at GitHub's 3000-file cap, which may be cut short.
 export function pullRequestFiles(pr: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): string[] {
-  return jsonLines(
-    ghWithStderr(run, ["api", "--paginate", `repos/${repo}/pulls/${pr}/files`, "--jq", ".[].filename | @json"]),
-  ) as string[];
+  const files = jsonLines(
+    ghWithStderr(run, [
+      "api", "--paginate", `repos/${repo}/pulls/${pr}/files`,
+      "--jq", ".[] | [.filename, .previous_filename // empty] | @json",
+    ]),
+  ) as string[][];
+  const paths = files.flat();
+  if (files.length >= PULL_REQUEST_FILES_CAP) {
+    throw new Error(`PR #${pr} changes ${PULL_REQUEST_FILES_CAP} files or more, which is GitHub's cap on its file list, so the list may be incomplete`);
+  }
+  return paths;
 }
 
 // Any issue's body, or "" when it has none.

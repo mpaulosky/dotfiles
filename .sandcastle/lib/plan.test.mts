@@ -78,7 +78,7 @@ describe("resolveRoles", () => {
 
 // Issue #248: resolveFiles is what main.mts asks for each pick's files. The
 // plan schema leaves the field unknown so a bad value means "no files" (the
-// pick is held back unless it's alone) rather than aborting the whole plan.
+// pick is held behind an open PR or another pick, unless it's the first) rather than aborting the whole plan.
 describe("resolveFiles", () => {
   it("is empty when the field is missing", () => {
     assert.deepEqual(resolveFiles(undefined), []);

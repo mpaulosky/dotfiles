@@ -267,9 +267,10 @@ export const BUILD_FAILURE_CAP = 2;
 // round finds it again to check whether every child has finished.
 export const UMBRELLA_MARKER = "<!-- sandcastle:umbrella -->";
 
-// The HTML comment marking the comment that says a pick was held back for sharing a file
-// (lib/overlap.mts#overlapComment), so a later run finds it and doesn't post another (#251).
-export const OVERLAP_MARKER = "<!-- sandcastle:overlap -->";
+// The start of the HTML comment marking the comment that says a pick was held back for sharing a file
+// (lib/overlap.mts#overlapComment), so a later run finds it and doesn't post another (#251). The marker
+// ends with what the hold waits on (lib/overlap.mts#overlapMarker), so a new blocker gets its own comment.
+export const OVERLAP_MARKER = "<!-- sandcastle:overlap";
 
 // Hooks run inside the sandbox before the agent starts each iteration.
 // pnpm install ensures the sandbox always has fresh dependencies. The copied

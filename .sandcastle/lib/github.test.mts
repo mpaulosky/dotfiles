@@ -1564,7 +1564,7 @@ describe("addPullRequestLabel", () => {
 // Issue #251: gh pr view --json files can stop at 100 paths, so a PR's files come from the REST list, paged in full.
 describe("pullRequestFiles", () => {
   it("reads the PR's files from the paginated REST list", () => {
-    const { calls, run } = recordingGh([`${JSON.stringify("lib/a.mts")}\n${JSON.stringify("lib/b.mts")}\n`]);
+    const { calls, run } = recordingGh([`${JSON.stringify(["lib/a.mts"])}\n${JSON.stringify(["lib/b.mts"])}\n`]);
 
     const files = pullRequestFiles(7, run, "o/r");
 
@@ -1575,13 +1575,13 @@ describe("pullRequestFiles", () => {
 
   it("returns every path of a PR that changes more than 100", () => {
     const paths = Array.from({ length: 250 }, (_, i) => `src/file-${i}.mts`);
-    const { run } = recordingGh([paths.map((path) => JSON.stringify(path)).join("\n") + "\n"]);
+    const { run } = recordingGh([paths.map((path) => JSON.stringify([path])).join("\n") + "\n"]);
 
     assert.deepEqual(pullRequestFiles(7, run, "o/r"), paths);
   });
 
   it("keeps a path with a line break whole, as one path", () => {
-    const { run } = recordingGh([`${JSON.stringify("odd\nname.mts")}\n`]);
+    const { run } = recordingGh([`${JSON.stringify(["odd\nname.mts"])}\n`]);
 
     assert.deepEqual(pullRequestFiles(7, run, "o/r"), ["odd\nname.mts"]);
   });
@@ -1590,6 +1590,20 @@ describe("pullRequestFiles", () => {
     const { run } = recordingGh([""]);
 
     assert.deepEqual(pullRequestFiles(7, run, "o/r"), []);
+  });
+
+  it("returns a renamed file's old path as well as its new one", () => {
+    const { calls, run } = recordingGh([`${JSON.stringify(["lib/b.mts", "lib/a.mts"])}\n${JSON.stringify(["lib/c.mts"])}\n`]);
+
+    assert.deepEqual(pullRequestFiles(7, run, "o/r"), ["lib/b.mts", "lib/a.mts", "lib/c.mts"]);
+    assert.match(calls[0]!.args.join(" "), /previous_filename/);
+  });
+
+  it("throws for a list at GitHub's 3000-file cap, which may be cut short", () => {
+    const paths = Array.from({ length: 3000 }, (_, i) => `src/file-${i}.mts`);
+    const { run } = recordingGh([paths.map((path) => JSON.stringify([path])).join("\n") + "\n"]);
+
+    assert.throws(() => pullRequestFiles(7, run, "o/r"), /3000/);
   });
 
   it("throws when gh fails, rather than return part of the list", () => {

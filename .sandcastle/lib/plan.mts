@@ -17,7 +17,8 @@ import { agentSandbox } from "./skills.mts";
 // mismatch would (see "Phase 4: Plan" in docs/plans/sandcastle-workflow.md).
 // `files` is left unknown for the same reason: a bad value falls back to "no
 // files" (resolveFiles), which lib/overlap.mts holds back unless no PR is
-// open and it's the only pick built that round, rather than aborting the plan.
+// open and no other pick naming files is built, and it's the first such pick,
+// rather than aborting the plan.
 const planSchema = z.object({
   issues: z.array(z.object({ id: z.string(), title: z.string(), roles: z.unknown().optional(), files: z.unknown().optional() })),
 });

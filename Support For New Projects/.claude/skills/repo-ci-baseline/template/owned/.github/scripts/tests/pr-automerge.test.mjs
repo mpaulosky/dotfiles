@@ -249,8 +249,8 @@ async function evaluate(pr, events = [], options = {}) {
     methodNames.set(wrapped, call);
     return wrapped;
   };
-  // A call that must go through the PAT: GITHUB_TOKEN's client throws.
-  const viaPat = (call) => {
+  // A call that must go through the PAT: GITHUB_TOKEN's client records it and throws.
+  const refusedByToken = (call) => {
     return async () => {
       clientCall("token", call);
       throw new Error(`${call} goes through the PAT client`);
@@ -265,8 +265,8 @@ async function evaluate(pr, events = [], options = {}) {
   const eventSets = Array.isArray(events[0]) ? [...events] : [events];
   const rest = {
     pulls: {
-      merge: viaPat("pulls.merge"),
-      updateBranch: viaPat("pulls.updateBranch"),
+      merge: refusedByToken("pulls.merge"),
+      updateBranch: refusedByToken("pulls.updateBranch"),
       list: viaToken("pulls.list", async () => {
         throw new Error("pulls.list is only called through paginate");
       }),
@@ -281,7 +281,7 @@ async function evaluate(pr, events = [], options = {}) {
       listComments: viaToken("issues.listComments", async () => {
         throw new Error("issues.listComments is only called through paginate");
       }),
-      createComment: viaPat("issues.createComment"),
+      createComment: refusedByToken("issues.createComment"),
       // GITHUB_TOKEN: a removal that starts no workflow is what's wanted.
       removeLabel: viaToken("issues.removeLabel", async (params) => {
         removedLabels.push(params);
@@ -290,10 +290,10 @@ async function evaluate(pr, events = [], options = {}) {
         }
       }),
       // With the PAT: a label added with GITHUB_TOKEN starts no workflow.
-      addLabels: viaPat("issues.addLabels")
+      addLabels: refusedByToken("issues.addLabels")
     },
     users: {
-      getAuthenticated: viaPat("users.getAuthenticated")
+      getAuthenticated: refusedByToken("users.getAuthenticated")
     },
     git: {
       getCommit: viaToken("git.getCommit", async ({ commit_sha: sha }) => {
@@ -431,7 +431,7 @@ async function evaluate(pr, events = [], options = {}) {
   };
   // The PAT client has only the calls GitHub must treat as a person's. Any
   // other property is a read or write that belongs to GITHUB_TOKEN.
-  const guard = (path, target) => {
+  const patOnly = (path, target) => {
     return new Proxy(target, {
       get(object, property) {
         if (property in object || typeof property === "symbol" || property === "then") {
@@ -442,39 +442,40 @@ async function evaluate(pr, events = [], options = {}) {
       }
     });
   };
-  const viaPatClient = (call, method) => {
+  // A PAT method, recorded as the PAT's call.
+  const viaPat = (call, method) => {
     return async (...args) => {
       clientCall("pat", call);
       return method(...args);
     };
   };
-  const patClient = guard("patClient", {
-    rest: guard("patClient.rest", {
-      pulls: guard("patClient.rest.pulls", {
-        merge: viaPatClient("pulls.merge", async (params) => {
+  const patClient = patOnly("patClient", {
+    rest: patOnly("patClient.rest", {
+      pulls: patOnly("patClient.rest.pulls", {
+        merge: viaPat("pulls.merge", async (params) => {
           merges.push(params);
         }),
-        updateBranch: viaPatClient("pulls.updateBranch", async (params) => {
+        updateBranch: viaPat("pulls.updateBranch", async (params) => {
           updates.push(params);
           if (updateError) {
             throw updateError;
           }
         })
       }),
-      issues: guard("patClient.rest.issues", {
-        createComment: viaPatClient("issues.createComment", async (params) => {
+      issues: patOnly("patClient.rest.issues", {
+        createComment: viaPat("issues.createComment", async (params) => {
           posted.push(params);
         }),
         // A label added with GITHUB_TOKEN starts no workflow.
-        addLabels: viaPatClient("issues.addLabels", async (params) => {
+        addLabels: viaPat("issues.addLabels", async (params) => {
           addedLabels.push(params);
           if (addLabelError) {
             throw addLabelError;
           }
         })
       }),
-      users: guard("patClient.rest.users", {
-        getAuthenticated: viaPatClient("users.getAuthenticated", async () => ({ data: { login: poster } }))
+      users: patOnly("patClient.rest.users", {
+        getAuthenticated: viaPat("users.getAuthenticated", async () => ({ data: { login: poster } }))
       })
     })
   });
@@ -496,7 +497,6 @@ async function evaluate(pr, events = [], options = {}) {
 
   process.env.HAS_RELEASE_PR_PAT = pat ? "true" : "false";
   process.env.PAT_TOKEN = PAT_TOKEN;
-  delete process.env.EVENTS_TOKEN;
   process.env.MERGE_STATE_RETRY_MS = "0";
   try {
     await run(github, context, core, getOctokit);

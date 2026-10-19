@@ -85,6 +85,7 @@ function host(
     pushRefusesWorkflowChanges = true,
     branchOnOrigin = false,
     createBranchError,
+    baseIsAncestor = true,
     gateOutput,
   }: {
     ahead?: number | number[];
@@ -139,6 +140,9 @@ function host(
     // it), and an error creating it at `base` throws (#253).
     branchOnOrigin?: boolean;
     createBranchError?: string;
+    // Whether `base` is an ancestor of the commit the gate passed on; false
+    // when an earlier round's branch was built on an older main (#253).
+    baseIsAncestor?: boolean;
   } = {},
 ) {
   const steps: string[] = [];
@@ -164,6 +168,7 @@ function host(
   const scannedExclusions: (string | undefined)[] = [];
   const listedExclusions: (string | undefined)[] = [];
   const mainChecks: string[] = [];
+  const baseChecks: string[] = [];
   const workflowFileCalls: { from: string; to: string }[] = [];
   const pushed: { branch: string; commit: string }[] = [];
   // Each command on .sandcastle/work/ (the design note), with how many role
@@ -192,6 +197,10 @@ function host(
       }
       if (command === "git rev-parse HEAD") {
         return { stdout: `${head()}\n`, stderr: "", exitCode: 0 };
+      }
+      if (command.startsWith(`git merge-base --is-ancestor '${base}'`)) {
+        baseChecks.push(command);
+        return { stdout: "", stderr: "", exitCode: baseIsAncestor ? 0 : 1 };
       }
       if (command.startsWith("git merge-base --is-ancestor")) {
         mainChecks.push(command);
@@ -336,7 +345,7 @@ function host(
   return {
     steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
-    mainChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, publishEvents,
+    mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, publishEvents,
   };
 }
 
@@ -1344,6 +1353,34 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
 
     assert.deepEqual(createdBranches, []);
     assert.deepEqual(publishEvents, ["publish"]);
+  });
+
+  it("creates no branch when base isn't an ancestor of the commit the gate passed on, since the push would not fast-forward", async () => {
+    const { createdBranches, publishEvents, baseChecks, head, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      baseIsAncestor: false,
+    });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(baseChecks.length, 1);
+    assert.equal(baseChecks[0], `git merge-base --is-ancestor '${base}' '${head()}'`);
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+    assert.equal(result.outcome, "published");
+  });
+
+  it("hands the issue back, not to Sandcastle:local, when base isn't an ancestor and the push is refused", async () => {
+    const { moveToLocalCalls, handBackWorkflowChangeCalls, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      baseIsAncestor: false,
+      publishError: refusal,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(moveToLocalCalls, []);
+    assert.equal(handBackWorkflowChangeCalls.length, 1);
   });
 
   it("creates no branch when origin already has it, since the push is then an update", async () => {

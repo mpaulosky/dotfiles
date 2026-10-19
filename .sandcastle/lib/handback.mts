@@ -6,7 +6,7 @@
 import { execFileSync } from "node:child_process";
 import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP, LOCAL_QUEUE_LABEL, QUEUE_LABEL } from "./config.mts";
 import { commentOnIssue, handBack, replaceIssueLabel, repoName } from "./github.mts";
-import { handBackReport, type HandBackReport } from "./report.mts";
+import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 
 // The comment for a failed build attempt under the cap: carries
 // BUILD_FAILED_MARKER, so a restart can still count it (see
@@ -230,8 +230,12 @@ export function workflowLocalComment(branch: string, detail: string, change: Wor
 // Workflows permission (#253). The comment goes first, so a comment GitHub
 // rejects leaves the issue in the queue rather than moved without a word; the
 // labels change in one edit, so the issue is never in both queues or neither.
-// The repository must already have `Sandcastle:local`, as dotfiles does.
-// `sandcastle:ready` stays, so the local run builds it without intake.
+// Records the move in `report`, so the run ends red and Actions emails the
+// owner: GitHub doesn't notify anyone about the PAT's own labels and comments,
+// and the issue now waits for a local run nothing in Actions starts.
+// The repository must already have `Sandcastle:local`: the host creates it at
+// startup (LOCAL_QUEUE_LABEL_DEFINITION). `sandcastle:ready` stays, so the
+// local run builds it without intake.
 export function moveToLocalQueue(
   issueNumber: number,
   branch: string,
@@ -239,7 +243,15 @@ export function moveToLocalQueue(
   change: WorkflowChange,
   run: typeof execFileSync = execFileSync,
   repo: string = repoName(),
+  report: HandBackReport = handBackReport,
 ): void {
   commentOnIssue(issueNumber, workflowLocalComment(branch, detail, change), run, repo);
   replaceIssueLabel(issueNumber, QUEUE_LABEL, LOCAL_QUEUE_LABEL, run, repo);
+  report.record({
+    kind: "issue",
+    number: issueNumber,
+    label: LOCAL_QUEUE_LABEL,
+    reason: `a push to ${branch} touched .github/workflows/**, so a local run has to build it`,
+    url: targetUrl(repo, { kind: "issue", number: issueNumber }),
+  });
 }

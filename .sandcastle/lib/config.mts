@@ -152,6 +152,15 @@ export const QUEUE_LABEL = "Sandcastle";
 // SANDCASTLE_LABELS, which a local run can't name as its queue.
 export const LOCAL_QUEUE_LABEL = "Sandcastle:local";
 
+// How the host creates LOCAL_QUEUE_LABEL at startup, apart from SANDCASTLE_LABELS,
+// so the move to it (lib/handback.mts#moveToLocalQueue) never finds the label
+// missing after it has already commented (#253).
+export const LOCAL_QUEUE_LABEL_DEFINITION: SandcastleLabel = {
+  name: LOCAL_QUEUE_LABEL,
+  color: "5319E7",
+  description: "Sandcastle can't push this from GitHub Actions. Run it locally: SANDCASTLE_LABEL=Sandcastle:local pnpm run sandcastle.",
+};
+
 // What a run builds from, resolved once at startup (see queueScopeFrom):
 // every open issue carrying `label` (GitHub Actions always uses QUEUE_LABEL),
 // or just one `number` and its pull request, for a local run that mustn't

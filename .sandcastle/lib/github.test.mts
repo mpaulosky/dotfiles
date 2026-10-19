@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
-import { COPILOT_REVIEWER, SANDCASTLE_LABELS } from "./config.mts";
+import { COPILOT_REVIEWER, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
 import {
   addIssueLabel,
   addPullRequestLabel,
@@ -520,6 +520,15 @@ describe("ensureLabels", () => {
       const call = created.find((candidate) => candidate.args[2] === label.name)!;
       assert.deepEqual(call.args, ["label", "create", label.name, "--repo", "o/r", "--color", label.color, "--description", label.description]);
     }
+  });
+
+  it("creates Sandcastle:local by default, which the move of an issue to the local queue needs (#253)", () => {
+    const { calls, run } = recordingGh(["[]"]);
+
+    ensureLabels(undefined, run, "o/r");
+
+    const created = calls.filter((call) => call.args[1] === "create").map((call) => call.args[2]);
+    assert.deepEqual(created, [...SANDCASTLE_LABELS.map((label) => label.name), LOCAL_QUEUE_LABEL]);
   });
 
   // Two runs starting together can both see a label missing; the second

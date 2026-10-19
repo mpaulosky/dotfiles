@@ -975,8 +975,12 @@ async function buildMarkedIssue(
   // carry a workflow change, and an existing branch is already judged
   // against its own tip, so neither needs it. When main or its workflow
   // files can't be read, or origin can't be asked for the branch, the build
-  // publishes as it did before this check.
-  function triedCreatingBranchAtBase(): boolean {
+  // publishes as it did before this check. `gated` must descend from `base`:
+  // an issue whose earlier round failed the gate keeps its branch, built on
+  // an older main than this round's `base`, and a branch created at `base`
+  // would then reject the push of `gated` as a non-fast-forward, leaving a
+  // stray branch with no PR on origin.
+  async function triedCreatingBranchAtBase(gated: string): Promise<boolean> {
     if (!host.pushRefusesWorkflowChanges) return false;
     let mainWorkflowFiles: string[];
     try {
@@ -994,6 +998,11 @@ async function buildMarkedIssue(
     } catch (error) {
       console.error(`  ⚠ #${issue.number}: asking GitHub whether ${branch} exists failed: ${error}`);
       log(`GitHub can't be asked whether ${branch} exists, so it's published as usual`);
+      return false;
+    }
+    const descends = await sandbox.exec(`git merge-base --is-ancestor ${shellWord(base)} ${shellWord(gated)}`);
+    if (descends.exitCode !== 0) {
+      log(`${base} isn't an ancestor of the commit the gate passed on (or can't be checked), so ${branch} is published as usual`);
       return false;
     }
     // A failed creation still pushes: GitHub may take it, and if it refuses
@@ -1102,7 +1111,7 @@ async function buildMarkedIssue(
     // pushed) or any other git or gh failure. Whatever still fails needs a
     // person, so the issue gets git's or gh's error rather than only the run log.
     const prBody = await reviewerPrBody();
-    const triedBranchAtBase = triedCreatingBranchAtBase();
+    const triedBranchAtBase = await triedCreatingBranchAtBase(gated);
     try {
       const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody);
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };

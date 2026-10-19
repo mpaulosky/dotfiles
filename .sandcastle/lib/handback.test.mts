@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
-import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP } from "./config.mts";
+import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP, LOCAL_QUEUE_LABEL } from "./config.mts";
 import {
   buildFailedComment,
   handBackWorkflowChange,
@@ -310,6 +310,35 @@ describe("moveToLocalQueue", () => {
     assert.ok(args.join(" ").includes("--add-label Sandcastle:local"), args.join(" "));
     assert.ok(args.join(" ").includes("--remove-label Sandcastle"), args.join(" "));
     assert.ok(!args.includes("sandcastle:needs-human"), args.join(" "));
+  });
+
+  it("records the move in the report, so the run ends red and the owner is told", () => {
+    const { run } = recordingGh();
+    const report = new HandBackReport();
+
+    moveToLocalQueue(253, "fix/253-publish", "refusing", change, run, "o/r", report);
+
+    assert.deepEqual(report.items(), [
+      {
+        kind: "issue",
+        number: 253,
+        label: LOCAL_QUEUE_LABEL,
+        reason: "a push to fix/253-publish touched .github/workflows/**, so a local run has to build it",
+        url: targetUrl("o/r", { kind: "issue", number: 253 }),
+      },
+    ]);
+  });
+
+  it("records nothing when moving the labels fails", () => {
+    const run = ((_cmd: string, args: readonly string[]) => {
+      if (args[1] === "edit") throw new Error("HTTP 422 label not found");
+      return "";
+    }) as unknown as typeof execFileSync;
+    const report = new HandBackReport();
+
+    assert.throws(() => moveToLocalQueue(253, "fix/253-publish", "refusing", change, run, "o/r", report));
+
+    assert.deepEqual(report.items(), []);
   });
 
   it("leaves the labels alone when the comment fails", () => {

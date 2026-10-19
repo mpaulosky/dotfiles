@@ -24,7 +24,7 @@ import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
-import { handBackWorkflowChange, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
+import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { architectPromptArgs, gateFixerPromptArgs, issuePromptArgs } from "./prompts.mts";
@@ -327,6 +327,24 @@ export type BuildHost = {
   // `detail` is the publicError text of the push's error; `change` names the
   // refused head and its workflow files.
   handBackWorkflowChange(issueNumber: number, branch: string, detail: string, change: WorkflowChange): void;
+  // Whether origin already has `branch` (#253), asked of the remote itself.
+  // A branch that exists is pushed to as an update, which GitHub judges
+  // against the branch's own tip.
+  remoteBranchExists(branch: string): boolean;
+  // Creates `branch` on origin at `commit`, a commit GitHub already has, so
+  // the build's commits can then be pushed as an update to it (#253).
+  createBranchAt(branch: string, commit: string): void;
+  // Moves the issue from the Sandcastle queue to `Sandcastle:local` with a
+  // comment saying why, after a push GitHub refused for a workflow change
+  // even as an update to a branch created at `base` (#253). A local run
+  // pushes with the owner's own `gh` login, which can push it.
+  // `createdAtBase` is whether creating the branch at `base` worked, so the
+  // comment says how the push was made.
+  moveToLocal(issueNumber: number, branch: string, detail: string, change: WorkflowChange, createdAtBase: boolean): void;
+  // Deletes `branch` from origin if it's still at `commit`, the stray branch
+  // createBranchAt left when the push of the build's commits was then refused
+  // (#253). A branch that moved is left alone.
+  deleteBranchAt(branch: string, commit: string): void;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no
@@ -487,6 +505,16 @@ export function remoteMainIs(commit: string, run: (...args: string[]) => string 
   return tip !== undefined && tip !== "" && tip === commit;
 }
 
+// Whether origin has `branch` now, by its answer to git ls-remote, picking the
+// line by its exact ref name as remoteMainIs does: ls-remote matches refs by
+// their tail, so a branch like a/refs/heads/<branch> matches too (#253).
+export function remoteBranchIsOnOrigin(branch: string, run: (...args: string[]) => string = git): boolean {
+  const ref = `refs/heads/${branch}`;
+  return run("ls-remote", "origin", ref)
+    .split("\n")
+    .some((line) => line.split(/\s+/)[1] === ref);
+}
+
 const liveHost: BuildHost = {
   createSandbox: createCheckedSandbox,
   commitsAhead,
@@ -513,6 +541,12 @@ const liveHost: BuildHost = {
   workflowFiles: (from, to, mergedMain) => workflowFilesFrom(git(...workflowLogArgs(from, to, mergedMain))),
   pushRefusesWorkflowChanges: process.env.GITHUB_ACTIONS === "true",
   handBackWorkflowChange: (issueNumber, branch, detail, change) => handBackWorkflowChange(issueNumber, branch, detail, change),
+  remoteBranchExists: (branch) => remoteBranchIsOnOrigin(branch),
+  createBranchAt: (branch, commit) => void git("push", "--quiet", "origin", `${commit}:refs/heads/${branch}`),
+  moveToLocal: (issueNumber, branch, detail, change, createdAtBase) =>
+    moveToLocalQueue(issueNumber, branch, detail, change, createdAtBase),
+  deleteBranchAt: (branch, commit) =>
+    void git("push", "--quiet", `--force-with-lease=refs/heads/${branch}:${commit}`, "origin", `:refs/heads/${branch}`),
 };
 
 // `value` as one single-quoted shell word, for the commit and branch names
@@ -938,6 +972,70 @@ async function buildMarkedIssue(
     return gated === undefined ? undefined : { gated };
   }
 
+  // GitHub judges the push of a branch it doesn't have yet against main's
+  // current tip, not the commit the branch was cut from (#253): once main has
+  // changed a workflow since `base`, a new branch "changes" it back, and
+  // Actions' token, without the Workflows permission, can't push it. So the
+  // branch is first created at `base`, which GitHub already has, and the
+  // build's commits are then pushed as an update to it, judged against
+  // `base`. Returns undefined when this path wasn't taken, else whether the
+  // creation worked; the path counts as taken even when it failed, so a push
+  // GitHub still refuses moves the issue to Sandcastle:local instead of
+  // handing it back. A local run's push can
+  // carry a workflow change, and an existing branch is already judged
+  // against its own tip, so neither needs it. When main or its workflow
+  // files can't be read, or origin can't be asked for the branch, the build
+  // publishes as it did before this check. `gated` must descend from `base`:
+  // an issue whose earlier round failed the gate keeps its branch, built on
+  // an older main than this round's `base`, and a branch created at `base`
+  // would then reject the push of `gated` as a non-fast-forward, leaving a
+  // stray branch with no PR on origin.
+  async function triedCreatingBranchAtBase(gated: string): Promise<{ created: boolean } | undefined> {
+    if (!host.pushRefusesWorkflowChanges) return undefined;
+    let mainWorkflowFiles: string[];
+    try {
+      const main = host.latestMain();
+      if (main === base) return undefined;
+      mainWorkflowFiles = host.workflowFiles(base, main);
+    } catch (error) {
+      console.error(`  ⚠ #${issue.number}: listing the workflow files main changed since ${base} failed: ${error}`);
+      log("main's workflow changes since the build started can't be listed, so the branch is published as usual");
+      return undefined;
+    }
+    if (mainWorkflowFiles.length === 0) return undefined;
+    try {
+      if (host.remoteBranchExists(branch)) return undefined;
+    } catch (error) {
+      console.error(`  ⚠ #${issue.number}: asking GitHub whether ${branch} exists failed: ${error}`);
+      log(`GitHub can't be asked whether ${branch} exists, so it's published as usual`);
+      return undefined;
+    }
+    let descends: { exitCode: number };
+    try {
+      descends = await sandbox.exec(`git merge-base --is-ancestor ${shellWord(base)} ${shellWord(gated)}`);
+    } catch (error) {
+      console.error(`  ⚠ #${issue.number}: checking that ${base} is an ancestor of ${gated} failed: ${error}`);
+      log(`${base} can't be checked as an ancestor of the commit the gate passed on, so ${branch} is published as usual`);
+      return undefined;
+    }
+    if (descends.exitCode !== 0) {
+      log(`${base} isn't an ancestor of the commit the gate passed on (or can't be checked), so ${branch} is published as usual`);
+      return undefined;
+    }
+    // A failed creation still pushes: GitHub may take it, and if it refuses
+    // the push for main's workflow change, the issue moves to Sandcastle:local
+    // as it would after a creation that worked.
+    try {
+      host.createBranchAt(branch, base);
+      log(`main changed ${mainWorkflowFiles.join(", ")} since the build started, so ${branch} was created at ${base} before the push`);
+      return { created: true };
+    } catch (error) {
+      console.error(`  ⚠ #${issue.number}: creating ${branch} at ${base} failed, so it's pushed as a new branch: ${error}`);
+      log(`creating ${branch} at the build's base failed, so it's pushed as a new branch`);
+      return { created: false };
+    }
+  }
+
   try {
     // The worktree is named after the branch, so it may still hold an earlier
     // round's design note, and every role follows the note when it exists:
@@ -1031,6 +1129,7 @@ async function buildMarkedIssue(
     // pushed) or any other git or gh failure. Whatever still fails needs a
     // person, so the issue gets git's or gh's error rather than only the run log.
     const prBody = await reviewerPrBody();
+    const branchAtBase = await triedCreatingBranchAtBase(gated);
     try {
       const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody);
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
@@ -1038,18 +1137,67 @@ async function buildMarkedIssue(
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${error}`);
       const detail = host.publicError(error);
       // Sandcastle's token can't push a .github/workflows/** change, so no
-      // retry or rebuild will get it through: a person has to make it.
+      // retry or rebuild will get it through: a person has to make it, or,
+      // once the branch was created at base, a local run can push it (#253).
       if (isWorkflowPushRejection(error)) {
+        // A failed listing still hands back: the comment then names the
+        // directory rather than each file.
+        let files: string[] = [];
+        let listed = true;
         try {
-          // A failed listing still hands back: the comment then names the
-          // directory rather than each file.
-          let files: string[] = [];
-          try {
-            files = host.workflowFiles(base, gated, mergedMain);
-          } catch (listError) {
-            console.error(`  ⚠ #${issue.number}: listing the workflow files ${branch} changes failed: ${listError}`);
+          files = host.workflowFiles(base, gated, mergedMain);
+        } catch (listError) {
+          listed = false;
+          console.error(`  ⚠ #${issue.number}: listing the workflow files ${branch} changes failed: ${listError}`);
+        }
+        const change = { head: gated, files };
+        // The build's commits touch no workflow and the branch was pushed as a
+        // new one, so GitHub refused it only for main's change since `base`.
+        // The next round builds from the new main, which holds that change, and
+        // its push goes through: no local run is needed (#253).
+        if (branchAtBase !== undefined && !branchAtBase.created && listed && files.length === 0) {
+          log(`GitHub refused ${branch} only for a workflow change main made since ${base}, so the issue stays in the queue for the next round`);
+          return {
+            commits,
+            prUrl: undefined,
+            publishFailed: true,
+            outcome: "not published",
+            detail: "GitHub refused its push for a workflow change main made since the build started, so the next round builds it again",
+          };
+        }
+        if (branchAtBase !== undefined) {
+          // The refused push left the branch at base with no commits and no
+          // PR; a stray one would send the next round down the existing-branch
+          // path and start CI on it (#253).
+          if (branchAtBase.created) {
+            try {
+              host.deleteBranchAt(branch, base);
+            } catch (deleteError) {
+              console.error(`  ⚠ #${issue.number}: deleting the stray ${branch} at ${base} failed: ${deleteError}`);
+            }
           }
-          host.handBackWorkflowChange(issue.number, branch, detail, { head: gated, files });
+          let moved = false;
+          try {
+            host.moveToLocal(issue.number, branch, detail, change, branchAtBase.created);
+            moved = true;
+            log(`GitHub refused the push even as an update from ${base}, so the issue moved to Sandcastle:local`);
+          } catch (moveError) {
+            console.error(
+              `  ⚠ #${issue.number}: moving it to Sandcastle:local failed, so the next round tries again: ${moveError}`,
+            );
+          }
+          return {
+            commits,
+            prUrl: undefined,
+            publishFailed: true,
+            outcome: "not published",
+            detail: moved
+              ? "GitHub refused its push for a .github/workflows change, so it moved to Sandcastle:local"
+              : "GitHub refused its push for a .github/workflows change; moving it to Sandcastle:local failed",
+          };
+        }
+        try {
+          host.handBackWorkflowChange(issue.number, branch, detail, change);
         } catch (handBackError) {
           console.error(
             `  ⚠ #${issue.number}: handing it back for its workflow change failed, so the next round tries again: ${handBackError}`,

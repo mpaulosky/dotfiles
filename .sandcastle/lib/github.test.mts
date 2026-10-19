@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
-import { COPILOT_REVIEWER, SANDCASTLE_LABELS } from "./config.mts";
+import { COPILOT_REVIEWER, LOCAL_QUEUE_LABEL, LOCAL_QUEUE_LABEL_DEFINITION, SANDCASTLE_LABELS } from "./config.mts";
 import {
   addIssueLabel,
   addPullRequestLabel,
@@ -37,6 +37,7 @@ import {
   pullRequestFiles,
   pushAccess,
   removeIssueLabel,
+  replaceIssueLabel,
   replyToReviewThread,
   requestCopilotReview,
   rerunFailedChecksOnce,
@@ -521,6 +522,21 @@ describe("ensureLabels", () => {
     }
   });
 
+  it("creates Sandcastle:local by default, which the move of an issue to the local queue needs (#253)", () => {
+    const { calls, run } = recordingGh(["[]"]);
+
+    ensureLabels(undefined, run, "o/r");
+
+    const created = calls.filter((call) => call.args[1] === "create").map((call) => call.args[2]);
+    assert.deepEqual(created, [...SANDCASTLE_LABELS.map((label) => label.name), LOCAL_QUEUE_LABEL]);
+  });
+
+  it("gives every label it creates by default a description GitHub accepts, at most 100 characters", () => {
+    for (const label of [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION]) {
+      assert.ok(label.description.length <= 100, `${label.name}'s description is ${label.description.length} characters`);
+    }
+  });
+
   // Two runs starting together can both see a label missing; the second
   // create then fails, and that mustn't stop the run.
   it("treats a label another run created in the meantime as created", () => {
@@ -638,6 +654,16 @@ describe("issue labels", () => {
     removeIssueLabel(150, "sandcastle:building", run, "o/r");
 
     assert.deepEqual(calls.map((call) => call.args), [["issue", "edit", "150", "--repo", "o/r", "--remove-label", "sandcastle:building"]]);
+  });
+
+  it("replaces one label with another on an issue in one edit", () => {
+    const { calls, run } = recordingGh();
+
+    replaceIssueLabel(253, "Sandcastle", "Sandcastle:local", run, "o/r");
+
+    assert.deepEqual(calls.map((call) => call.args), [
+      ["issue", "edit", "253", "--repo", "o/r", "--add-label", "Sandcastle:local", "--remove-label", "Sandcastle"],
+    ]);
   });
 
   it("reads an issue's labels", () => {

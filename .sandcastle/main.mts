@@ -388,8 +388,9 @@ try {
     // Phase 1c: Critique
     // -----------------------------------------------------------------------
     // It still runs on the kept picks, for dependencies and for overlaps of
-    // modules rather than paths. The held picks aren't passed to it, not even
-    // as unpicked: the host has already ruled on them this round (#251).
+    // modules rather than paths. The held picks are passed to it as unpicked,
+    // each with a note that it's held, so its dependency check can defer a
+    // kept pick that needs one of them (#254).
     // critiqueRound only filters the picks, so its SandcastleIssue[] return
     // type is narrower than what it's given; put each kept pick's roles back
     // by issue number rather than widen the critique's own types for a field

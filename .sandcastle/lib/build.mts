@@ -20,7 +20,7 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
@@ -363,19 +363,102 @@ function commandOutput(error: unknown): string {
   return outputStart === -1 ? message : message.slice(outputStart + "failed:\n".length);
 }
 
+// The committer identity the host's git has configured: git's user.name and
+// user.email, each undefined when the host has none.
+export type HostIdentity = { name?: string; email?: string };
+
+// The host's git identity, read in the main checkout as Sandcastle reads it
+// when a role starts. git exits non-zero for a key that isn't set, which
+// leaves that half undefined.
+export function liveHostIdentity(read: (...args: string[]) => string = git): HostIdentity {
+  const value = (key: string) => {
+    try {
+      return read("config", key) || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  return { name: value("user.name"), email: value("user.email") };
+}
+
+// Set the host's identity as the sandbox's global git config. Sandcastle does
+// this only when a role starts, so a git command the host runs in a new
+// sandbox before any role, such as the follow-up pass's merge of main, had no
+// committer and failed with "Committer identity unknown" (#242). Each half is
+// set only when the host has it.
+async function setGitIdentity(sandbox: sandcastle.Sandbox, identity: HostIdentity): Promise<void> {
+  const settings: [string, string | undefined][] = [
+    ["user.name", identity.name],
+    ["user.email", identity.email],
+  ];
+  for (const [key, value] of settings) {
+    if (!value) continue;
+    const result = await sandbox.exec(`git config --global ${key} ${shellWord(value)}`);
+    if (result.exitCode !== 0) {
+      throw new Error(`setting the sandbox's git ${key} failed: ${result.stderr.trim() || result.stdout.trim()}`);
+    }
+  }
+}
+
+const tamperedWorktreeComment = (branch: string) =>
+  `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
+  "person to look at. Don't run git in it.";
+
 const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktreePath, repoGitDir());
 
 // The live sandbox for `branch`, for a build and a follow-up pass
 // (lib/follow-up-pass.mts) alike. Sandcastle reuses a branch's worktree
 // that's still there, running git in it first, so that one is checked before
-// it's handed over.
-export function createCheckedSandbox(branch: string): Promise<sandcastle.Sandbox> {
+// it's handed over. The sandbox is handed over with the host's git identity
+// already set (see setGitIdentity); if setting it fails, the sandbox is closed
+// and the error thrown, so the caller doesn't run git in a sandbox that can't
+// commit. Creating the sandbox runs hooks over the worktree, which on a
+// follow-up pass holds an agent-written branch, so the worktree is checked
+// again before that close: Sandcastle's close() runs git in it, and one that
+// no longer points at this repository is left in place, with its sandbox, and
+// its problems added to the error, a TamperedWorktreeError for the caller to
+// report. A check that itself fails counts as a tampered worktree.
+//
+// `create` (what makes the sandbox, once the worktree is checked),
+// `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
+// link check) are injected so tests can stand in for Sandcastle, Docker, the
+// host's git config and the main checkout.
+export async function createCheckedSandbox(
+  branch: string,
+  create: (branch: string) => Promise<sandcastle.Sandbox> = (name) =>
+    sandcastle.createSandbox({ branch: name, sandbox: agentSandbox(), hooks, copyToWorktree }),
+  hostIdentity: () => HostIdentity = liveHostIdentity,
+  checkWorktree: (worktreePath: string) => string[] = worktreeProblems,
+): Promise<sandcastle.Sandbox> {
   const existing = worktreePathFor(process.cwd(), branch);
-  const problems = existsSync(existing) ? worktreeProblems(existing) : [];
+  const problems = existsSync(existing) ? checkWorktree(existing) : [];
   if (problems.length > 0) {
-    return Promise.reject(new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`));
+    throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
-  return sandcastle.createSandbox({ branch, sandbox: agentSandbox(), hooks, copyToWorktree });
+  const sandbox = await create(branch);
+  try {
+    await setGitIdentity(sandbox, hostIdentity());
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    // The check itself can fail (the worktree gone, git failing). Then the
+    // worktree can't be vouched for, so it's treated as tampered with and the
+    // sandbox is left in place, with the check's failure added to the error.
+    let tampered: string[];
+    try {
+      tampered = checkWorktree(sandbox.worktreePath);
+    } catch (checkError) {
+      tampered = [`checking the worktree failed: ${checkError instanceof Error ? checkError.message : String(checkError)}`];
+    }
+    if (tampered.length > 0) {
+      throw new TamperedWorktreeError(
+        `${reason}; left ${sandbox.worktreePath} and its sandbox in place, as the worktree was tampered with: ${tampered.join("; ")}`,
+        sandbox.worktreePath,
+      );
+    }
+    await sandbox.close().catch(() => undefined);
+    throw error;
+  }
+  return sandbox;
 }
 
 const liveHost: BuildHost = {
@@ -406,7 +489,8 @@ const liveHost: BuildHost = {
 };
 
 // `value` as one single-quoted shell word, for the commit and branch names
-// buildIssue puts in a sandbox command.
+// buildIssue puts in a sandbox command and the git identity setGitIdentity
+// does.
 function shellWord(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
@@ -496,7 +580,18 @@ async function buildMarkedIssue(
     host.log(`  #${issue.number} PR #${fresh.pr} was closed without merging, so the build starts from main: deleted ${fresh.deleted.join(", ")}`);
   }
 
-  const sandbox = await host.createSandbox(branch);
+  let sandbox: sandcastle.Sandbox;
+  try {
+    sandbox = await host.createSandbox(branch);
+  } catch (error) {
+    // The sandbox was left in place for a person, as the finally below does
+    // for a worktree it finds tampered with, so the issue says so too.
+    if (error instanceof TamperedWorktreeError) {
+      console.error(`  ✗ #${issue.number}: ${error.message}`);
+      host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
+    }
+    throw error;
+  }
 
   const promptArgs = issuePromptArgs(issue, branch);
   const commits: { sha: string }[] = [];
@@ -940,11 +1035,7 @@ async function buildMarkedIssue(
     const problems = host.worktreeProblems(sandbox.worktreePath);
     if (problems.length > 0) {
       console.error(`  ✗ #${issue.number}: left ${sandbox.worktreePath} and its sandbox in place: ${problems.join("; ")}`);
-      host.commentOnIssue(
-        issue.number,
-        `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
-          "person to look at. Don't run git in it.",
-      );
+      host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
     } else {
       await sandbox.close();
     }

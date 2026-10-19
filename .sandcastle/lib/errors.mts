@@ -13,3 +13,17 @@
 // BUILD_FAILURE_CAP attempts (see "Giving up and telling the human" in
 // docs/plans/sandcastle-workflow.md).
 export class UncountedStopError extends Error {}
+
+// For a sandbox whose git identity couldn't be set and whose worktree no
+// longer points at this repository, so createCheckedSandbox (lib/build.mts)
+// left the worktree and its sandbox in place for a person instead of closing
+// it. The caller says so on the issue or the PR, as it does for a worktree it
+// finds tampered with when it closes the sandbox.
+export class TamperedWorktreeError extends Error {
+  constructor(
+    message: string,
+    readonly worktreePath: string,
+  ) {
+    super(message);
+  }
+}

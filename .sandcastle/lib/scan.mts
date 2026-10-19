@@ -103,14 +103,22 @@ export type SecretMatch = { readonly location: MatchLocation; readonly kind: Sec
 // the order a reviewer would look: its author, its committer, its message,
 // each path it touches, then each line it adds, top to bottom. Undefined
 // when nothing matches. Never reads removed lines or context (see the top of
-// this file).
+// this file). `mergedMain` is the main commit a build merged into the branch
+// after `base`, when it did: its history is left out (`^<mergedMain>`), since
+// it's main's work, already public, not the branch's. Without that, a token-
+// shaped test fixture landing on main during a build stopped the publish and
+// had the owner told to rotate a secret that never leaked (#224). The merge
+// commit itself is still read, and --cc shows only what it changed from both
+// sides, so a secret written while resolving the merge is still caught.
 export function firstSecretMatch(
   base: string,
   commit: string,
   secrets: ReadonlyMap<string, string>,
   run: (...args: string[]) => string = git,
+  mergedMain?: string,
 ): SecretMatch | undefined {
-  for (const sha of run("rev-list", "--reverse", `${base}..${commit}`).split("\n").filter(Boolean)) {
+  const exclude = mergedMain === undefined ? [] : [`^${mergedMain}`];
+  for (const sha of run("rev-list", "--reverse", `${base}..${commit}`, ...exclude).split("\n").filter(Boolean)) {
     const [author = "", committer = "", message = ""] = run("log", "-1", "--format=%an <%ae>%x00%cn <%ce>%x00%B", sha).split("\0");
     for (const [field, text] of [["author", author], ["committer", committer], ["message", message]] as const) {
       const kind = secretKindIn(text, secrets);

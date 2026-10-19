@@ -186,6 +186,7 @@ function ancestors(commits, sha) {
 // workflow_run event: { name, head_sha }) with associated (the PRs GitHub
 // associates with its commit).
 const POSTER = "release-bot";
+const PAT_TOKEN = "pat-token";
 async function evaluate(pr, events = [], options = {}) {
   const {
     commits = graph(),
@@ -233,7 +234,28 @@ async function evaluate(pr, events = [], options = {}) {
   const runRequests = [];
   const headRunRequests = [];
   const queries = [];
-  const eventTokens = [];
+  // Every client call as { client: "token" | "pat", call }, in order, and the
+  // tokens getOctokit was given.
+  const calls = [];
+  const patTokens = [];
+  const clientCall = (client, call) => calls.push({ client, call });
+  // A GITHUB_TOKEN method, and the name a paginate call reports it under.
+  const methodNames = new Map();
+  const viaToken = (call, method) => {
+    const wrapped = async (...args) => {
+      clientCall("token", call);
+      return method(...args);
+    };
+    methodNames.set(wrapped, call);
+    return wrapped;
+  };
+  // A call that must go through the PAT: GITHUB_TOKEN's client throws.
+  const viaPat = (call) => {
+    return async () => {
+      clientCall("token", call);
+      throw new Error(`${call} goes through the PAT client`);
+    };
+  };
   const removedLabels = [];
   const addedLabels = [];
   const listRequests = [];
@@ -243,54 +265,44 @@ async function evaluate(pr, events = [], options = {}) {
   const eventSets = Array.isArray(events[0]) ? [...events] : [events];
   const rest = {
     pulls: {
-      merge: async (params) => {
-        merges.push(params);
-      },
-      updateBranch: async (params) => {
-        updates.push(params);
-        if (updateError) {
-          throw updateError;
-        }
-      },
-      list: async () => {
+      merge: viaPat("pulls.merge"),
+      updateBranch: viaPat("pulls.updateBranch"),
+      list: viaToken("pulls.list", async () => {
         throw new Error("pulls.list is only called through paginate");
-      },
-      listCommits: async () => {
+      }),
+      listCommits: viaToken("pulls.listCommits", async () => {
         throw new Error("pulls.listCommits is only called through paginate");
-      }
+      })
     },
     issues: {
-      listEvents: async () => {
+      listEvents: viaToken("issues.listEvents", async () => {
         throw new Error("issues.listEvents is only called through paginate");
-      },
-      listComments: async () => {
+      }),
+      listComments: viaToken("issues.listComments", async () => {
         throw new Error("issues.listComments is only called through paginate");
-      },
-      createComment: async (params) => {
-        posted.push(params);
-      },
-      removeLabel: async () => {
-        throw new Error("issues.removeLabel is only called with GITHUB_TOKEN");
-      },
-      // With the PAT: a label added with GITHUB_TOKEN starts no workflow.
-      addLabels: async (params) => {
-        addedLabels.push(params);
-        if (addLabelError) {
-          throw addLabelError;
+      }),
+      createComment: viaPat("issues.createComment"),
+      // GITHUB_TOKEN: a removal that starts no workflow is what's wanted.
+      removeLabel: viaToken("issues.removeLabel", async (params) => {
+        removedLabels.push(params);
+        if (removeLabelError) {
+          throw removeLabelError;
         }
-      }
+      }),
+      // With the PAT: a label added with GITHUB_TOKEN starts no workflow.
+      addLabels: viaPat("issues.addLabels")
     },
     users: {
-      getAuthenticated: async () => ({ data: { login: poster } })
+      getAuthenticated: viaPat("users.getAuthenticated")
     },
     git: {
-      getCommit: async ({ commit_sha: sha }) => {
+      getCommit: viaToken("git.getCommit", async ({ commit_sha: sha }) => {
         if (!commits[sha]) {
           throw Object.assign(new Error(`No commit ${sha}`), { status: 404 });
         }
         return { data: { sha, parents: commits[sha].parents.map((parent) => ({ sha: parent })), tree: { sha: `tree:${sha}` } } };
-      },
-      getTree: async ({ tree_sha: treeSha, recursive }) => {
+      }),
+      getTree: viaToken("git.getTree", async ({ tree_sha: treeSha, recursive }) => {
         assert.equal(recursive, "true");
         const commit = commits[treeSha.slice("tree:".length)];
         // A file is a blob sha, or { sha, mode } for another mode (an executable, a symlink).
@@ -300,17 +312,17 @@ async function evaluate(pr, events = [], options = {}) {
         });
         // A directory entry, which the comparison has to leave out.
         return { data: { truncated: commit.truncated ?? false, tree: [{ path: "src", mode: "040000", type: "tree", sha: "t" }, ...files] } };
-      }
+      })
     },
     repos: {
-      listPullRequestsAssociatedWithCommit: async ({ commit_sha: sha }) => {
+      listPullRequestsAssociatedWithCommit: viaToken("repos.listPullRequestsAssociatedWithCommit", async ({ commit_sha: sha }) => {
         assert.equal(sha, workflowRun.head_sha);
         return { data: associated };
-      },
-      getBranchRules: async () => {
+      }),
+      getBranchRules: viaToken("repos.getBranchRules", async () => {
         throw new Error("repos.getBranchRules is only called through paginate");
-      },
-      compareCommitsWithBasehead: async ({ basehead }) => {
+      }),
+      compareCommitsWithBasehead: viaToken("repos.compareCommitsWithBasehead", async ({ basehead }) => {
         const [base, head] = basehead.split("...");
         if (head === "main") {
           return { data: { status: onMain.includes(base) ? (base === onMain.at(-1) ? "identical" : "ahead") : "diverged" } };
@@ -326,12 +338,13 @@ async function evaluate(pr, events = [], options = {}) {
           queue.push(...(commits[next]?.parents ?? []));
         }
         return { data: { status: "diverged", merge_base_commit: null } };
-      }
+      })
     }
   };
   const github = {
     rest,
     graphql: async (query, variables = {}) => {
+      clientCall("token", "graphql");
       queries.push(query);
       const number = variables.number;
       if (readErrors.includes(number)) {
@@ -351,6 +364,7 @@ async function evaluate(pr, events = [], options = {}) {
       return { repository: { pullRequest: pullRequests[Math.min(graphqlRequests++, pullRequests.length - 1)] } };
     },
     paginate: async (method, params) => {
+      clientCall("token", methodNames.get(method) ?? "unknown paginate method");
       if (method === rest.pulls.listCommits) {
         assert.equal(params.pull_number, 7);
         return prCommits;
@@ -370,7 +384,25 @@ async function evaluate(pr, events = [], options = {}) {
           { type: "required_status_checks", parameters: { required_status_checks: requiredChecks.map((context) => ({ context })) } }
         ];
       }
-      throw new Error("the PAT client must not read label events or comments");
+      if (method === rest.issues.listEvents) {
+        eventRequests.push(params);
+        // Only one read fails (the first, unless eventsErrorAt says), so a later one (the hand-back check) still works.
+        if (eventsError && eventRequests.length === eventsErrorAt) {
+          throw eventsError;
+        }
+        return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
+      }
+      if (method === rest.issues.listComments) {
+        return comments;
+      }
+      if (method === rest.actions.listWorkflowRunsForRepo) {
+        headRunRequests.push(params);
+        if (headRunsError) {
+          throw headRunsError;
+        }
+        return headRunsFor(params);
+      }
+      throw new Error("unexpected paginate call");
     }
   };
   // The head's runs, filtered as GitHub filters them by head_sha and status.
@@ -380,65 +412,76 @@ async function evaluate(pr, events = [], options = {}) {
         (params.status === undefined || run.status === params.status);
     });
   };
-  const octokitActions = {
-    listWorkflowRuns: async (params) => {
+  rest.actions = {
+    listWorkflowRuns: viaToken("actions.listWorkflowRuns", async (params) => {
       runRequests.push(params);
       if (claudeRunsError) {
         throw claudeRunsError;
       }
       return { data: { total_count: claudeRunsTotal ?? claudeRuns.length, workflow_runs: claudeRuns } };
-    },
-    listWorkflowRunsForRepo: async (params) => {
+    }),
+    listWorkflowRunsForRepo: viaToken("actions.listWorkflowRunsForRepo", async (params) => {
       headRunRequests.push(params);
       if (headRunsError) {
         throw headRunsError;
       }
       const runs = headRunsFor(params);
       return { data: { total_count: runs.length, workflow_runs: runs } };
-    }
+    })
   };
-  // The GITHUB_TOKEN client: it reads label events and removes review:claude.
-  const getOctokit = (token) => {
-    eventTokens.push(token);
-    return {
-      rest: {
-        ...rest,
-        issues: {
-          ...rest.issues,
-          removeLabel: async (params) => {
-            removedLabels.push(params);
-            if (removeLabelError) {
-              throw removeLabelError;
-            }
-          },
-          addLabels: async () => {
-            throw new Error("issues.addLabels is only called with the PAT");
-          }
-        },
-        actions: octokitActions
-      },
-      paginate: async (method, params) => {
-        if (method === rest.issues.listEvents) {
-          eventRequests.push(params);
-          // Only one read fails (the first, unless eventsErrorAt says), so a later one (the hand-back check) still works.
-          if (eventsError && eventRequests.length === eventsErrorAt) {
-            throw eventsError;
-          }
-          return eventSets[Math.min(eventRequests.length - 1, eventSets.length - 1)];
+  // The PAT client has only the calls GitHub must treat as a person's. Any
+  // other property is a read or write that belongs to GITHUB_TOKEN.
+  const guard = (path, target) => {
+    return new Proxy(target, {
+      get(object, property) {
+        if (property in object || typeof property === "symbol" || property === "then") {
+          return object[property];
         }
-        if (method === rest.issues.listComments) {
-          return comments;
-        }
-        if (method === octokitActions.listWorkflowRunsForRepo) {
-          headRunRequests.push(params);
-          if (headRunsError) {
-            throw headRunsError;
-          }
-          return headRunsFor(params);
-        }
-        throw new Error("unexpected paginate call");
+        clientCall("pat", `${path}.${property}`);
+        throw new Error(`${path}.${property} goes through GITHUB_TOKEN, not the PAT`);
       }
+    });
+  };
+  const viaPatClient = (call, method) => {
+    return async (...args) => {
+      clientCall("pat", call);
+      return method(...args);
     };
+  };
+  const patClient = guard("patClient", {
+    rest: guard("patClient.rest", {
+      pulls: guard("patClient.rest.pulls", {
+        merge: viaPatClient("pulls.merge", async (params) => {
+          merges.push(params);
+        }),
+        updateBranch: viaPatClient("pulls.updateBranch", async (params) => {
+          updates.push(params);
+          if (updateError) {
+            throw updateError;
+          }
+        })
+      }),
+      issues: guard("patClient.rest.issues", {
+        createComment: viaPatClient("issues.createComment", async (params) => {
+          posted.push(params);
+        }),
+        // A label added with GITHUB_TOKEN starts no workflow.
+        addLabels: viaPatClient("issues.addLabels", async (params) => {
+          addedLabels.push(params);
+          if (addLabelError) {
+            throw addLabelError;
+          }
+        })
+      }),
+      users: guard("patClient.rest.users", {
+        getAuthenticated: viaPatClient("users.getAuthenticated", async () => ({ data: { login: poster } }))
+      })
+    })
+  });
+  const getOctokit = (token) => {
+    patTokens.push(token);
+    assert.equal(token, PAT_TOKEN, "getOctokit authenticates with the PAT");
+    return patClient;
   };
   const core = {
     info: (message) => logs.push(message),
@@ -452,7 +495,8 @@ async function evaluate(pr, events = [], options = {}) {
   };
 
   process.env.HAS_RELEASE_PR_PAT = pat ? "true" : "false";
-  process.env.EVENTS_TOKEN = "github-token";
+  process.env.PAT_TOKEN = PAT_TOKEN;
+  delete process.env.EVENTS_TOKEN;
   process.env.MERGE_STATE_RETRY_MS = "0";
   try {
     await run(github, context, core, getOctokit);
@@ -462,7 +506,7 @@ async function evaluate(pr, events = [], options = {}) {
     throw error;
   }
   return {
-    merges, updates, posted, logs, eventRequests, queries, eventTokens, graphqlRequests, rulesRequests, removedLabels,
+    merges, updates, posted, logs, eventRequests, queries, patTokens, calls, graphqlRequests, rulesRequests, removedLabels,
     addedLabels, listRequests, runRequests, headRunRequests
   };
 }
@@ -569,12 +613,13 @@ test("re-checks the latest sandcastle:needs-human removal before merging", async
   );
 });
 
-test("reads label events with GITHUB_TOKEN, not the PAT", async () => {
-  const { merges, eventRequests, eventTokens } = await evaluate(readyPr());
+test("reads label events with GITHUB_TOKEN, and makes one PAT client a run", async () => {
+  const { merges, eventRequests, patTokens, calls } = await evaluate(readyPr());
 
   assert.equal(merges.length, 1);
   assert.ok(eventRequests.length > 0);
-  assert.deepEqual(eventTokens, ["github-token"]);
+  assert.deepEqual(patTokens, [PAT_TOKEN]);
+  assert.ok(calls.some((call) => call.client === "token" && call.call === "issues.listEvents"), JSON.stringify(calls));
 });
 
 test("judges the rest of readiness on the snapshot taken after the label re-check", async () => {
@@ -2362,15 +2407,220 @@ function commentAbove(anchor) {
   return block.join(" ").replace(/\s+/g, " ");
 }
 
-test("says in EVENTS_TOKEN's comment that it also takes review:claude off at MAX_CLAUDE_ROUNDS", () => {
-  const comment = commentAbove(/^\s*EVENTS_TOKEN:/);
+// Which client makes each API call (mpaulosky/dotfiles#231). A PAT is the
+// owner's account, whose 5,000 REST requests an hour everything acting as the
+// owner shares, so only the calls GitHub must treat as a person's use it:
+// the ones that have to start another workflow, and `@dependabot rebase`.
+// Every other call is made with GITHUB_TOKEN, which has an allowance of its
+// own for this repo. references/tokens.md lists them and says why.
+const PAT_CALLS = [
+  "pulls.merge",
+  "pulls.updateBranch",
+  "issues.addLabels",
+  "issues.createComment",
+  "users.getAuthenticated"
+];
+const TOKEN_CALLS = [
+  "graphql",
+  "pulls.list",
+  "pulls.listCommits",
+  "repos.getBranchRules",
+  "repos.listPullRequestsAssociatedWithCommit",
+  "repos.compareCommitsWithBasehead",
+  "git.getCommit",
+  "git.getTree",
+  "issues.listEvents",
+  "issues.listComments",
+  "issues.removeLabel",
+  "actions.listWorkflowRuns",
+  "actions.listWorkflowRunsForRepo"
+];
 
+// The script with its // comments taken out, so a client named in a comment isn't a call.
+function scriptCode() {
+  return inlineScript()
+    .split("\n")
+    .map((line) => line.replace(/(^|\s)\/\/.*$/, "$1"))
+    .join("\n");
+}
+
+test("pins which client makes each call: the PAT's five calls, and GITHUB_TOKEN's other thirteen (mpaulosky/dotfiles#231)", () => {
+  const code = scriptCode();
+  const used = { patClient: new Set(), github: new Set() };
+  for (const [, client, call] of code.matchAll(/\b(github|patClient)\.(graphql|paginate|rest\.\w+\.\w+)/g)) {
+    used[client].add(call.replace(/^rest\./, ""));
+  }
+
+  // paginate and graphql are only ever GITHUB_TOKEN's.
+  assert.ok(!used.patClient.has("paginate"), "patClient.paginate");
+  assert.ok(!used.patClient.has("graphql"), "patClient.graphql");
+  assert.deepEqual([...used.patClient].sort(), [...PAT_CALLS].sort(), "calls made through patClient");
+  const tokenNames = [...used.github].filter((name) => name !== "paginate").sort();
+  assert.deepEqual(tokenNames, [...TOKEN_CALLS].sort(), "calls made through github");
+  assert.deepEqual(PAT_CALLS.filter((name) => TOKEN_CALLS.includes(name)), [], "a call on both lists");
+});
+
+test("has no client but github and patClient in front of .rest, so a read can't go through an alias (mpaulosky/dotfiles#231)", () => {
+  const code = scriptCode();
+  const clients = new Set([...code.matchAll(/([\w$]+)\.rest\./g)].map((match) => match[1]));
+
+  assert.deepEqual([...clients].sort(), ["github", "patClient"]);
+  assert.ok(!/eventsClient/.test(code), "eventsClient is gone: github is GITHUB_TOKEN's client now");
+});
+
+test("makes the one PAT client from PAT_TOKEN and nothing else (mpaulosky/dotfiles#231)", () => {
+  const code = scriptCode();
+
+  assert.equal(code.match(/getOctokit\(/g)?.length, 1);
+  assert.match(code, /const patClient = getOctokit\(process\.env\.PAT_TOKEN\);/);
+});
+
+// Every call on the PAT must be one of PAT_CALLS, and every call on
+// GITHUB_TOKEN one that isn't.
+function assertClients({ calls }, scenario) {
+  assert.ok(calls.length > 0, `${scenario}: no calls`);
+  for (const { client, call } of calls) {
+    if (client === "pat") {
+      assert.ok(PAT_CALLS.includes(call), `${scenario}: ${call} went through the PAT`);
+    } else {
+      assert.ok(!PAT_CALLS.includes(call), `${scenario}: ${call} went through GITHUB_TOKEN`);
+      assert.ok(TOKEN_CALLS.includes(call), `${scenario}: ${call} is missing from TOKEN_CALLS`);
+    }
+  }
+}
+
+const patCallsOf = ({ calls }) => calls.filter(({ client }) => client === "pat").map(({ call }) => call);
+const tokenCallsOf = ({ calls }) => calls.filter(({ client }) => client === "token").map(({ call }) => call);
+
+test("makes every read with GITHUB_TOKEN and only the PAT's five calls with the PAT (mpaulosky/dotfiles#231)", async () => {
+  const atCap = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("one", "two", HEAD),
+    reviewThreads: threadsBy({ login: ACTIONS, review: "claude-3" }),
+    labels: labelled("enhancement", CLAUDE_LABEL)
+  });
+  const workflowRun = { name: "Claude Review", head_sha: "rev" };
+  const associated = [{ number: 7, state: "open", head: { sha: "merge1" } }];
+  const scenarios = {
+    "a ready merge": { run: await evaluate(readyPr()), pat: ["pulls.merge"], token: ["graphql", "issues.listEvents"] },
+    "an update of a BEHIND PR": {
+      run: await evaluate(readyPr({ mergeStateStatus: "BEHIND" })),
+      pat: ["pulls.updateBranch"],
+      token: ["graphql"]
+    },
+    "a sweep that updates a BEHIND PR": {
+      run: await evaluate(readyPr({ mergeStateStatus: "BEHIND" }), [], { push: true }),
+      pat: ["pulls.updateBranch"],
+      token: ["pulls.list", "graphql", "repos.getBranchRules"]
+    },
+    "a rebase request to Dependabot": {
+      run: await evaluate(dependabotPr(), [], { prCommits: DEPENDABOT_COMMITS }),
+      pat: ["users.getAuthenticated", "issues.createComment"],
+      token: ["pulls.listCommits", "issues.listComments"]
+    },
+    "calling in Claude when Copilot's quota is used up": {
+      run: await evaluate(readyPr({ copilotReviews: DECLINED })),
+      pat: ["issues.addLabels"],
+      token: ["graphql"]
+    },
+    "taking review:claude off at the review cap": {
+      run: await evaluate(atCap),
+      pat: [],
+      token: ["issues.removeLabel"]
+    },
+    "a workflow_run event on a clean merge from main": {
+      run: await evaluate(mergedPr("merge1"), [], { workflowRun, associated }),
+      pat: ["pulls.merge"],
+      token: [
+        "repos.listPullRequestsAssociatedWithCommit",
+        "repos.compareCommitsWithBasehead",
+        "git.getCommit",
+        "git.getTree"
+      ]
+    }
+  };
+
+  for (const [name, { run: result, pat, token }] of Object.entries(scenarios)) {
+    assertClients(result, name);
+    assert.deepEqual([...new Set(patCallsOf(result))].sort(), [...pat].sort(), `${name}: the PAT's calls`);
+    for (const call of token) {
+      assert.ok(tokenCallsOf(result).includes(call), `${name}: ${call} should go through GITHUB_TOKEN`);
+    }
+  }
+});
+
+test("reads a head's workflow runs with GITHUB_TOKEN when no check is required, and adds review:claude with the PAT (mpaulosky/dotfiles#231)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution", { isRequired: false }));
+  const result = await evaluate(readyPr({ copilotReviews: DECLINED, headRef }), [], { push: true, requiredChecks: [] });
+
+  assertClients(result, "no required check");
+  assert.ok(tokenCallsOf(result).includes("actions.listWorkflowRunsForRepo"), JSON.stringify(result.calls));
+  assert.deepEqual(patCallsOf(result), ["issues.addLabels"]);
+});
+
+test("makes no PAT call at all when it writes nothing (mpaulosky/dotfiles#231)", async () => {
+  const result = await evaluate(readyPr({ labels: labelled("enhancement", NEEDS_HUMAN) }));
+
+  assertClients(result, "a run that writes nothing");
+  assert.deepEqual(patCallsOf(result), []);
+  assert.ok(tokenCallsOf(result).length > 0);
+});
+
+// The workflow's own text: the token each client is made from, and the
+// permissions GITHUB_TOKEN's reads need (mpaulosky/dotfiles#231).
+function workflowLines() {
+  return readFileSync(WORKFLOW, "utf8").split("\n");
+}
+
+test("authenticates github with GITHUB_TOKEN and the PAT client with RELEASE_PR_PAT, falling back to GITHUB_TOKEN (mpaulosky/dotfiles#231)", () => {
+  const lines = workflowLines();
+
+  assert.ok(lines.some((line) => /^\s*github-token: \$\{\{ secrets\.GITHUB_TOKEN \}\}\s*$/.test(line)), "with: github-token");
+  assert.ok(
+    lines.some((line) => /^\s*PAT_TOKEN: \$\{\{ secrets\.RELEASE_PR_PAT \|\| secrets\.GITHUB_TOKEN \}\}\s*$/.test(line)),
+    "env: PAT_TOKEN"
+  );
+  assert.ok(!lines.some((line) => /EVENTS_TOKEN/.test(line)), "EVENTS_TOKEN is gone");
+  assert.ok(!lines.some((line) => /^\s*github-token: .*RELEASE_PR_PAT/.test(line)), "with: github-token is not the PAT");
+});
+
+test("grants the job the permissions GITHUB_TOKEN's reads need (mpaulosky/dotfiles#231)", () => {
+  const lines = workflowLines();
+  const at = lines.findIndex((line) => /^permissions:\s*$/.test(line));
+  assert.notEqual(at, -1, "pr-automerge.yml has no permissions: block");
+  const granted = {};
+  for (const line of lines.slice(at + 1)) {
+    if (line.trim() === "" || line.trim().startsWith("#")) {
+      continue;
+    }
+    const match = line.match(/^ {2}([a-z-]+): (read|write|none)\s*$/);
+    if (!match) {
+      break;
+    }
+    granted[match[1]] = match[2];
+  }
+
+  // issues: label events and comments; actions: workflow runs; checks and
+  // statuses: the head's check runs and commit statuses in the GraphQL read;
+  // pull-requests: write takes review:claude off, and merges without a PAT.
+  assert.equal(granted.issues, "read");
+  assert.equal(granted.actions, "read");
+  assert.equal(granted.checks, "read");
+  assert.equal(granted.statuses, "read");
+  assert.equal(granted["pull-requests"], "write");
+  assert.equal(granted.contents, "write");
+});
+
+test("says in the comment above github-token that GITHUB_TOKEN makes the reads and takes review:claude off at MAX_CLAUDE_ROUNDS", () => {
+  const comment = commentAbove(/^\s*github-token: /);
+
+  assert.match(comment, /GITHUB_TOKEN/);
   assert.match(comment, /review:claude/);
   assert.match(comment, /MAX_CLAUDE_ROUNDS/);
 });
 
-test("says in the eventsClient comment that the PAT adds review:claude and needs Pull requests (or Issues) write", () => {
-  const comment = commentAbove(/^\s*const eventsClient = /);
+test("says in the patClient comment that the PAT adds review:claude and needs Pull requests (or Issues) write", () => {
+  const comment = commentAbove(/^\s*const patClient = /);
 
   assert.match(comment, /\badd(s|ed)?\b[^.]*review:claude|review:claude[^.]*\badd(s|ed)?\b/);
   assert.match(comment, /RELEASE_PR_PAT|\bthe PAT\b/);

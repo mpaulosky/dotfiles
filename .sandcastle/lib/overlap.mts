@@ -20,6 +20,7 @@ import {
   type SandcastleIssue,
 } from "./github.mts";
 import { plainText } from "./intake.mts";
+import { CONTROL_CHARACTER } from "./plan.mts";
 import { outcomeReport, type OutcomeReport } from "./report.mts";
 import { containsSandboxSecret } from "./sandbox-env.mts";
 
@@ -118,10 +119,12 @@ export function findOverlaps(
     }
   }
 
-  return new Map(picks.flatMap((pick) => {
+  const inPlannerOrder = new Map<number, Overlap>();
+  for (const pick of picks) {
     const overlap = held.get(pick.number);
-    return overlap ? [[pick.number, overlap] as const] : [];
-  }));
+    if (overlap) inPlannerOrder.set(pick.number, overlap);
+  }
+  return inPlannerOrder;
 }
 
 // What the picks with no files wait on: the lowest-numbered open PR, or else
@@ -137,7 +140,8 @@ function noFilesBlocker(
   const [kept] = claimed;
   if (kept) return { kind: "pick", number: kept.number };
   const [first] = noFiles;
-  return first && { kind: "pick", number: first.number };
+  if (first) return { kind: "pick", number: first.number };
+  return undefined;
 }
 
 // The overlap of the first of `files` that a kept pick claims or a PR changes,
@@ -262,9 +266,12 @@ function overlapLog(overlap: Overlap): string {
   }
 }
 
+// Every match of lib/plan.mts#CONTROL_CHARACTER, for logPath.
+const CONTROL_CHARACTERS = new RegExp(CONTROL_CHARACTER, "g");
+
 // `path` with each control character, line break included, written as \uXXXX.
 function logPath(path: string): string {
-  return path.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return path.replace(CONTROL_CHARACTERS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
 // Why a pick is held, for the run report: host text only, never the path,
@@ -279,8 +286,6 @@ function overlapDetail(overlap: Overlap): string {
       return "names no files";
   }
 }
-
-const liveGitHub: OverlapGitHub = { openPullRequestsIntoMain, pullRequestFiles, comment: commentOnIssue };
 
 // The numbers of the held picks whose hold lasts the rest of the run: those
 // behind an open PR, and those behind a pick in `published`, which opened one
@@ -307,3 +312,5 @@ export function critiqueUnpicked(
   const keptNumbers = new Set(kept.map((pick) => pick.number));
   return ready.filter((issue) => !keptNumbers.has(issue.number) && !heldForFiles.has(issue.number));
 }
+
+const liveGitHub: OverlapGitHub = { openPullRequestsIntoMain, pullRequestFiles, comment: commentOnIssue };

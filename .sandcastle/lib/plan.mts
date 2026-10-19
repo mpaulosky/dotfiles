@@ -16,8 +16,8 @@ import { agentSandbox } from "./skills.mts";
 // back to every optional role, not abort the whole plan the way a schema
 // mismatch would (see "Phase 4: Plan" in docs/plans/sandcastle-workflow.md).
 // `files` is left unknown for the same reason: a bad value falls back to "no
-// files" (resolveFiles), which lib/overlap.mts holds back unless the pick is
-// alone, rather than aborting the plan.
+// files" (resolveFiles), which lib/overlap.mts holds back unless no PR is
+// open and it's the only pick built that round, rather than aborting the plan.
 const planSchema = z.object({
   issues: z.array(z.object({ id: z.string(), title: z.string(), roles: z.unknown().optional(), files: z.unknown().optional() })),
 });
@@ -41,8 +41,11 @@ export function resolveRoles(roles: unknown): OptionalRole[] {
 // Where the repository is checked out inside the sandbox the planner runs in.
 const SANDBOX_REPO_ROOT = "/home/agent/workspace";
 
-// C0 and C1 control characters, DEL, and Unicode's line and paragraph separators.
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+// C0 and C1 control characters, DEL, and Unicode's line and paragraph
+// separators. resolveFiles drops a path holding one, and lib/overlap.mts
+// escapes them in the host's log, where a line starting "::" is a workflow
+// command in Actions (#251).
+export const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 // The paths the planner expects one issue to change, from its raw `files`
 // field, cleaned up for lib/overlap.mts (#248): trimmed, with backslashes as
@@ -67,7 +70,7 @@ export function resolveFiles(files: unknown, repoRoot: string = SANDBOX_REPO_ROO
     const path = file.trim().replace(/\\/g, "/");
     if (CONTROL_CHARACTER.test(path)) return [];
     const parts = segments(path);
-    const underRoot = path.startsWith("/") && root.length > 0 && root.every((segment, i) => parts[i] === segment);
+    const underRoot = path.startsWith("/") && root.every((segment, i) => parts[i] === segment);
     return [(underRoot ? parts.slice(root.length) : parts).join("/")];
   });
   return [...new Set(paths.filter((path) => path !== ""))];

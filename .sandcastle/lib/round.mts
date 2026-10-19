@@ -82,3 +82,11 @@ export function roundOutcomes(
       : [{ ...target, outcome: "not published", detail: "the build stopped on an error; see the run log" }];
   });
 }
+
+// The numbers of the issues whose build opened a PR, from the round's `work` and its `settled` builds.
+export function publishedIssues(
+  _work: readonly { issue: { number: number } }[],
+  _settled: readonly PromiseSettledResult<BuildResult>[],
+): Set<number> {
+  throw new Error("Not implemented");
+}

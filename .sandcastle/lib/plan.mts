@@ -45,7 +45,7 @@ export function resolveRoles(roles: unknown): OptionalRole[] {
 // empty, meaning "no files", when the field isn't an array, when an entry
 // isn't a string, or when an entry holds a glob (`*` or `?`), which can't be
 // compared with a path.
-export function resolveFiles(files: unknown): string[] {
+export function resolveFiles(files: unknown, _repoRoot: string = "/home/agent/workspace"): string[] {
   const isPath = (file: unknown): file is string => typeof file === "string" && !/[*?]/.test(file);
   if (!Array.isArray(files) || !files.every(isPath)) return [];
   const paths = files.map((file) => file.trim().replace(/\\/g, "/").replace(/^(\.?\/)+/, ""));

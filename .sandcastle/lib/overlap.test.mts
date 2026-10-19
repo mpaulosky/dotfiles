@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { TEMPLATE_OWNED_DIR } from "./config.mts";
+import { OVERLAP_MARKER, TEMPLATE_OWNED_DIR } from "./config.mts";
 import type { OpenPullRequest } from "./github.mts";
 import {
+  critiqueUnpicked,
   findOverlaps,
   holdOverlappingPicks,
+  lastingHolds,
   overlapComment,
   pathKey,
   type FilePick,
+  type Overlap,
   type OverlapGitHub,
 } from "./overlap.mts";
 import { OutcomeReport } from "./report.mts";
@@ -176,6 +179,115 @@ describe("findOverlaps", () => {
   });
 });
 
+// #251: picks that name no files block no one but a pick that can be built.
+describe("findOverlaps with several picks that name no files", () => {
+  it("never makes two picks with no files wait on each other: the first is kept and the second waits behind it", () => {
+    const held = findOverlaps([pick(1, []), pick(2, [])], []);
+
+    assert.deepEqual([...held], [[2, { kind: "no files", waitsOn: { kind: "pick", number: 1 } }]]);
+  });
+
+  it("keeps the first of three picks with no files, and the other two wait behind it", () => {
+    const held = findOverlaps([pick(1, []), pick(2, []), pick(3, [])], []);
+
+    assert.deepEqual([...held.keys()], [2, 3]);
+    assert.deepEqual(held.get(2), { kind: "no files", waitsOn: { kind: "pick", number: 1 } });
+    assert.deepEqual(held.get(3), { kind: "no files", waitsOn: { kind: "pick", number: 1 } });
+  });
+
+  it("holds every pick with no files while a PR into main is open, all waiting on the PR", () => {
+    const held = findOverlaps([pick(1, []), pick(2, [])], [{ number: 9, files: ["x"] }]);
+
+    assert.deepEqual(held.get(1), { kind: "no files", waitsOn: { kind: "pr", number: 9 } });
+    assert.deepEqual(held.get(2), { kind: "no files", waitsOn: { kind: "pr", number: 9 } });
+  });
+
+  it("holds each pick with no files behind a kept pick that names files", () => {
+    const held = findOverlaps([pick(1, ["x"]), pick(2, []), pick(3, [])], []);
+
+    assert.deepEqual([...held.keys()], [2, 3]);
+    assert.deepEqual(held.get(2), { kind: "no files", waitsOn: { kind: "pick", number: 1 } });
+    assert.deepEqual(held.get(3), { kind: "no files", waitsOn: { kind: "pick", number: 1 } });
+  });
+
+  it("holds both picks with no files behind a pick that names files, even when it comes last", () => {
+    const held = findOverlaps([pick(1, []), pick(2, []), pick(3, ["x"])], []);
+
+    assert.deepEqual([...held.keys()], [1, 2]);
+    assert.deepEqual(held.get(1), { kind: "no files", waitsOn: { kind: "pick", number: 3 } });
+    assert.equal(held.get(2)?.kind, "no files");
+  });
+
+  it("doesn't wait on a pick that is itself held: a pick with files held by a PR leaves the PR as what the pick with no files waits on", () => {
+    const held = findOverlaps([pick(1, []), pick(2, ["x"])], [{ number: 9, files: ["x"] }]);
+
+    assert.deepEqual(held.get(1), { kind: "no files", waitsOn: { kind: "pr", number: 9 } });
+    assert.deepEqual(held.get(2), { kind: "pr", blocker: 9, path: "x" });
+  });
+});
+
+// #251: a folder named without a trailing slash covers the paths under it too.
+describe("findOverlaps with folders", () => {
+  it("counts a folder as overlapping every path under it, either way round, whether or not it ends in a slash", () => {
+    assert.equal(findOverlaps([pick(1, ["lib"]), pick(2, ["lib/a.mts"])], []).get(2)?.kind, "pick");
+    assert.equal(findOverlaps([pick(1, ["lib/a.mts"]), pick(2, ["lib"])], []).get(2)?.kind, "pick");
+    assert.equal(findOverlaps([pick(1, ["lib/deep"])], [{ number: 9, files: ["lib/deep/a/b.mts"] }]).get(1)?.kind, "pr");
+    assert.equal(findOverlaps([pick(1, ["lib/deep/a/b.mts"])], [{ number: 9, files: ["lib/deep"] }]).get(1)?.kind, "pr");
+  });
+
+  it("doesn't count a folder as overlapping a path that only shares its prefix", () => {
+    assert.equal(findOverlaps([pick(1, ["lib"]), pick(2, ["library.mts"])], []).size, 0);
+    assert.equal(findOverlaps([pick(1, ["lib"]), pick(2, ["lib2/a.mts"])], []).size, 0);
+  });
+});
+
+// #251: a hold lasts the run only behind an open PR or a pick that opened one.
+describe("lastingHolds", () => {
+  const overlaps = new Map<number, Overlap>([
+    [2, { kind: "pick", blocker: 1, path: "x" }],
+    [3, { kind: "pr", blocker: 9, path: "x" }],
+    [4, { kind: "no files", waitsOn: { kind: "pick", number: 1 } }],
+    [5, { kind: "no files", waitsOn: { kind: "pr", number: 9 } }],
+    [6, { kind: "pick", blocker: 7, path: "y" }],
+  ]);
+  const sorted = (numbers: number[]) => [...numbers].sort((a, b) => a - b);
+
+  it("keeps the holds behind a pick that opened a PR, and the holds behind an open PR", () => {
+    assert.deepEqual(sorted(lastingHolds(overlaps, new Set([1]))), [2, 3, 4, 5]);
+  });
+
+  it("releases the holds behind a pick that was deferred by the critique or opened no PR, and keeps only the holds behind an open PR", () => {
+    assert.deepEqual(sorted(lastingHolds(overlaps, new Set())), [3, 5]);
+  });
+
+  it("releases a hold behind a pick that isn't among those that opened a PR, whichever other pick did", () => {
+    assert.deepEqual(sorted(lastingHolds(overlaps, new Set([7]))), [3, 5, 6]);
+  });
+
+  it("holds nothing when nothing was held", () => {
+    assert.deepEqual(lastingHolds(new Map(), new Set([1])), []);
+  });
+});
+
+// #251: a pick held back for sharing a file isn't one of the issues the critique is told were left unpicked.
+describe("critiqueUnpicked", () => {
+  const issue = (number: number) => pick(number, []);
+
+  it("leaves out the kept picks and the issues held back for a file, and passes on the rest of the ready issues", () => {
+    const ready = [1, 2, 3, 4, 5].map(issue);
+
+    const unpicked = critiqueUnpicked(ready, [{ number: 1 }], new Set([2, 4]));
+
+    assert.deepEqual(unpicked.map((i) => i.number), [3, 5]);
+  });
+
+  it("passes on every ready issue that was not kept when none is held back", () => {
+    const unpicked = critiqueUnpicked([1, 2, 3].map(issue), [{ number: 2 }], new Set());
+
+    assert.deepEqual(unpicked.map((i) => i.number), [1, 3]);
+  });
+});
+
 describe("overlapComment", () => {
   it("names the file and the pick the held issue waits on", () => {
     const body = overlapComment({ kind: "pick", blocker: 7, path: "lib/build.mts" });
@@ -207,6 +319,27 @@ describe("overlapComment", () => {
     const body = overlapComment({ kind: "pr", blocker: 9, path: `ghp_${"a".repeat(36)}.txt` });
 
     assert.doesNotMatch(body, /ghp_/);
+  });
+});
+
+describe("overlapComment's marker", () => {
+  it("carries the overlap marker, whatever the overlap", () => {
+    const overlaps: Overlap[] = [
+      { kind: "pick", blocker: 7, path: "lib/build.mts" },
+      { kind: "pr", blocker: 9, path: "lib/build.mts" },
+      { kind: "no files", waitsOn: { kind: "pick", number: 7 } },
+      { kind: "no files", waitsOn: { kind: "pr", number: 9 } },
+    ];
+
+    for (const overlap of overlaps) {
+      assert.ok(overlapComment(overlap).includes(OVERLAP_MARKER), JSON.stringify(overlap));
+    }
+  });
+
+  it("doesn't let a path forge the marker", () => {
+    const body = overlapComment({ kind: "pr", blocker: 9, path: `${OVERLAP_MARKER}.md` });
+
+    assert.equal(body.split(OVERLAP_MARKER).length - 1, 1);
   });
 });
 
@@ -315,7 +448,7 @@ describe("holdOverlappingPicks", () => {
 
     const result = holdOverlappingPicks([], gh.stub, () => {}, new OutcomeReport());
 
-    assert.deepEqual(result, { kept: [], held: [] });
+    assert.deepEqual(result, { kept: [], held: [], overlaps: new Map() });
     assert.deepEqual(gh.calls, []);
   });
 
@@ -382,3 +515,72 @@ describe("holdOverlappingPicks", () => {
     assert.deepEqual(held.map((p) => p.number), [3, 2]);
   });
 });
+
+// #251
+describe("holdOverlappingPicks with several picks that name no files", () => {
+  it("builds the first pick with no files and holds the rest, commenting only on the held ones", () => {
+    const gh = github();
+
+    const { kept, held } = holdOverlappingPicks([pick(1, []), pick(2, []), pick(3, [])], gh.stub, () => {}, new OutcomeReport());
+
+    assert.deepEqual(kept.map((p) => p.number), [1]);
+    assert.deepEqual(held.map((p) => p.number), [2, 3]);
+    assert.deepEqual(gh.comments.map(([issue]) => issue), [2, 3]);
+  });
+
+  it("returns why each pick was held, by issue number", () => {
+    const gh = github({ 9: ["lib/build.mts"] });
+
+    const { overlaps } = holdOverlappingPicks([pick(1, ["lib/build.mts"]), pick(2, ["lib/a.mts"])], gh.stub, () => {}, new OutcomeReport());
+
+    assert.deepEqual([...overlaps], [[1, { kind: "pr", blocker: 9, path: "lib/build.mts" }]]);
+  });
+});
+
+// #251: a pick behind an open PR is held every run until the PR closes, so its comment must not be posted every run.
+describe("holdOverlappingPicks's comment once", () => {
+  it("doesn't post another comment when the issue carries one with the overlap marker, though the earlier run named another path", () => {
+    const gh = github({ 9: ["lib/build.mts"] });
+    const earlier = overlapComment({ kind: "pr", blocker: 9, path: "lib/other.mts" });
+
+    const { held } = holdOverlappingPicks([pick(1, ["lib/build.mts"], ["an unrelated comment", earlier])], gh.stub, () => {}, new OutcomeReport());
+
+    assert.deepEqual(held.map((p) => p.number), [1]);
+    assert.deepEqual(gh.comments, []);
+  });
+
+  it("still reports the pick as deferred when it doesn't comment again", () => {
+    const gh = github({ 9: ["lib/build.mts"] });
+    const report = new OutcomeReport();
+    const earlier = overlapComment({ kind: "pr", blocker: 9, path: "lib/other.mts" });
+
+    holdOverlappingPicks([pick(1, ["lib/build.mts"], [earlier])], gh.stub, () => {}, report);
+
+    assert.deepEqual(report.items().map((item) => [item.number, item.outcome]), [[1, "deferred"]]);
+  });
+
+  it("comments on a held pick whose comments carry no overlap marker", () => {
+    const gh = github({ 9: ["lib/build.mts"] });
+
+    holdOverlappingPicks([pick(1, ["lib/build.mts"], ["Sandcastle's plan critique deferred this issue behind #4"])], gh.stub, () => {}, new OutcomeReport());
+
+    assert.deepEqual(gh.comments.map(([issue]) => issue), [1]);
+  });
+});
+
+// #251: a line starting with "::" in a log is a workflow command in Actions.
+describe("holdOverlappingPicks's log", () => {
+  it("writes a path with a line break on one line, so no log line starts a workflow command", () => {
+    const gh = github({ 9: ["x\n::error::pwned"] });
+    const { lines, log } = capture();
+
+    holdOverlappingPicks([pick(1, ["x\n::error::pwned"])], gh.stub, log, new OutcomeReport());
+
+    assert.ok(lines.length > 0);
+    for (const line of lines) {
+      assert.doesNotMatch(line, /[\x00-\x08\x0a-\x1f\x7f]/);
+      assert.doesNotMatch(line, /^\s*::/);
+    }
+  });
+});
+

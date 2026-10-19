@@ -187,8 +187,8 @@ export function holdOverlappingPicks<T extends FilePick>(
   github: OverlapGitHub = liveGitHub,
   log: (line: string) => void = console.log,
   report: OutcomeReport = outcomeReport,
-): { kept: T[]; held: T[] } {
-  if (picks.length === 0) return { kept: [], held: [] };
+): { kept: T[]; held: T[]; overlaps: Map<number, Overlap> } {
+  if (picks.length === 0) return { kept: [], held: [], overlaps: new Map() };
 
   const pullRequests = github
     .openPullRequestsIntoMain()
@@ -214,6 +214,7 @@ export function holdOverlappingPicks<T extends FilePick>(
   return {
     kept: picks.filter((pick) => !overlaps.has(pick.number)),
     held: picks.filter((pick) => overlaps.has(pick.number)),
+    overlaps,
   };
 }
 
@@ -243,3 +244,18 @@ function overlapDetail(overlap: Overlap): string {
 }
 
 const liveGitHub: OverlapGitHub = { openPullRequestsIntoMain, pullRequestFiles, comment: commentOnIssue };
+
+// The numbers of the held picks whose hold lasts the rest of the run: those behind an open PR, and those behind a pick
+// in `published`, which opened one. A hold behind any other pick is released (#251).
+export function lastingHolds(_overlaps: ReadonlyMap<number, Overlap>, _published: ReadonlySet<number>): number[] {
+  throw new Error("Not implemented");
+}
+
+// The ready issues the critique sees as unpicked: those neither kept nor held back for sharing a file (#251).
+export function critiqueUnpicked(
+  _ready: readonly SandcastleIssue[],
+  _kept: readonly { number: number }[],
+  _heldForFiles: ReadonlySet<number>,
+): SandcastleIssue[] {
+  throw new Error("Not implemented");
+}

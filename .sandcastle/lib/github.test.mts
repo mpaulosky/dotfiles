@@ -34,6 +34,7 @@ import {
   openPullRequest,
   openPullRequestsForSweep,
   ownerApproved,
+  pullRequestFiles,
   pushAccess,
   removeIssueLabel,
   replyToReviewThread,
@@ -1557,5 +1558,45 @@ describe("addPullRequestLabel", () => {
     addPullRequestLabel(42, "sandcastle:needs-human", run, "o/r");
 
     assert.deepEqual(calls[0]!.args, ["pr", "edit", "42", "--repo", "o/r", "--add-label", "sandcastle:needs-human"]);
+  });
+});
+
+// Issue #251: gh pr view --json files can stop at 100 paths, so a PR's files come from the REST list, paged in full.
+describe("pullRequestFiles", () => {
+  it("reads the PR's files from the paginated REST list", () => {
+    const { calls, run } = recordingGh([`${JSON.stringify("lib/a.mts")}\n${JSON.stringify("lib/b.mts")}\n`]);
+
+    const files = pullRequestFiles(7, run, "o/r");
+
+    assert.deepEqual(files, ["lib/a.mts", "lib/b.mts"]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]!.args.slice(0, 3), ["api", "--paginate", "repos/o/r/pulls/7/files"]);
+  });
+
+  it("returns every path of a PR that changes more than 100", () => {
+    const paths = Array.from({ length: 250 }, (_, i) => `src/file-${i}.mts`);
+    const { run } = recordingGh([paths.map((path) => JSON.stringify(path)).join("\n") + "\n"]);
+
+    assert.deepEqual(pullRequestFiles(7, run, "o/r"), paths);
+  });
+
+  it("keeps a path with a line break whole, as one path", () => {
+    const { run } = recordingGh([`${JSON.stringify("odd\nname.mts")}\n`]);
+
+    assert.deepEqual(pullRequestFiles(7, run, "o/r"), ["odd\nname.mts"]);
+  });
+
+  it("is empty for a PR that changes nothing", () => {
+    const { run } = recordingGh([""]);
+
+    assert.deepEqual(pullRequestFiles(7, run, "o/r"), []);
+  });
+
+  it("throws when gh fails, rather than return part of the list", () => {
+    const run = (() => {
+      throw new Error("HTTP 502");
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => pullRequestFiles(7, run, "o/r"), /HTTP 502|failed/);
   });
 });

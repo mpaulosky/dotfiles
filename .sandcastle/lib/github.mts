@@ -804,11 +804,9 @@ export function commentOnPullRequest(
   ghWithStderr(run, ["pr", "comment", String(number), "--repo", repo, "--body-file", "-"], body);
 }
 
-// The paths an open PR changes.
-export function pullRequestFiles(pr: number): string[] {
-  return JSON.parse(
-    sh(process.cwd(), "gh", "pr", "view", String(pr), "--repo", repoName(), "--json", "files", "--jq", "[.files[].path]"),
-  ) as string[];
+// Every path an open PR changes, paged through in full (#251).
+export function pullRequestFiles(_pr: number, _run: typeof execFileSync = execFileSync, _repo: string = repoName()): string[] {
+  throw new Error("Not implemented");
 }
 
 // Any issue's body, or "" when it has none.

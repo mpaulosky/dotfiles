@@ -36,6 +36,7 @@ import {
   ownerApproved,
   pushAccess,
   removeIssueLabel,
+  replaceIssueLabel,
   replyToReviewThread,
   requestCopilotReview,
   rerunFailedChecksOnce,
@@ -637,6 +638,16 @@ describe("issue labels", () => {
     removeIssueLabel(150, "sandcastle:building", run, "o/r");
 
     assert.deepEqual(calls.map((call) => call.args), [["issue", "edit", "150", "--repo", "o/r", "--remove-label", "sandcastle:building"]]);
+  });
+
+  it("replaces one label with another on an issue in one edit", () => {
+    const { calls, run } = recordingGh();
+
+    replaceIssueLabel(253, "Sandcastle", "Sandcastle:local", run, "o/r");
+
+    assert.deepEqual(calls.map((call) => call.args), [
+      ["issue", "edit", "253", "--repo", "o/r", "--add-label", "Sandcastle:local", "--remove-label", "Sandcastle"],
+    ]);
   });
 
   it("reads an issue's labels", () => {

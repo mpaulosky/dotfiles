@@ -1383,6 +1383,41 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
     assert.equal(result.outcome, "published");
   });
 
+  it("publishes as today when origin can't be asked whether it has the branch", async () => {
+    const { createdBranches, publishEvents, buildHost } = host([0, 0], mainChangedWorkflow);
+    buildHost.remoteBranchExists = () => {
+      throw new Error("git ls-remote failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(createdBranches, []);
+    assert.deepEqual(publishEvents, ["publish"]);
+    assert.equal(result.outcome, "published");
+  });
+
+  it("still pushes the build's commits when creating the branch at base fails", async () => {
+    const { pushed, head, buildHost } = host([0, 0], { ...mainChangedWorkflow, createBranchError: "git push failed" });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(pushed, [{ branch, commit: head() }]);
+    assert.equal(result.outcome, "published");
+  });
+
+  it("moves the issue to Sandcastle:local when creating the branch failed and the push is then refused", async () => {
+    const { moveToLocalCalls, handBackWorkflowChangeCalls, buildHost } = host([0, 0], {
+      ...mainChangedWorkflow,
+      createBranchError: "git push failed",
+      publishError: refusal,
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(moveToLocalCalls.length, 1);
+    assert.deepEqual(handBackWorkflowChangeCalls, []);
+  });
+
   it("moves the issue to Sandcastle:local, not to needs-human, when the push is still refused after the branch was created", async () => {
     const { moveToLocalCalls, handBackWorkflowChangeCalls, comments, recordBuildFailureCalls, createdBranches, buildHost } = host(
       [0, 0],

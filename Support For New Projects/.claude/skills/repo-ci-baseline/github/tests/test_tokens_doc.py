@@ -1,0 +1,184 @@
+"""Tests for references/tokens.md (mpaulosky/dotfiles#231): it lists every API call the
+Template's workflows make with RELEASE_PR_PAT or GITHUB_TOKEN, says whether each needs
+the PAT and why, and gives land.sh's poll interval and cost. No GitHub.
+
+The Template's workflows are the source of truth, so the page is checked against them:
+add a call to pr-automerge.yml and this fails until the page lists it.
+"""
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+SKILL = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SKILL / "github"))
+import land  # noqa: E402
+
+TOKENS = SKILL / "references" / "tokens.md"
+AUTOMERGE_DOC = SKILL / "references" / "automerge.md"
+WORKFLOWS = SKILL / "template" / "owned" / ".github" / "workflows"
+
+
+def inline_script(workflow):
+    """The body of the workflow's `script: |` block, without its // comments."""
+    lines = (WORKFLOWS / workflow).read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if re.fullmatch(r"\s*script: \|\s*", line))
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    body = []
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        body.append(re.sub(r"(^|\s)//.*$", r"\1", line))
+    return "\n".join(body)
+
+
+def automerge_calls():
+    """{call name: "pat" | "token"} for every API call pr-automerge.yml's script makes."""
+    calls = {}
+    for client, call in re.findall(r"\b(github|patClient)\.(graphql|rest\.\w+\.\w+)", inline_script("pr-automerge.yml")):
+        calls[re.sub(r"^rest\.", "", call)] = "pat" if client == "patClient" else "token"
+    return calls
+
+
+def page():
+    assert TOKENS.is_file(), "references/tokens.md doesn't exist"
+    return TOKENS.read_text()
+
+
+def table_rows(text):
+    """The cells of each table row, as [workflow, call, client, why]."""
+    rows = []
+    for line in text.splitlines():
+        if line.startswith("|") and not re.fullmatch(r"[|\s:-]+", line):
+            rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
+    return rows
+
+
+def section(text, heading_pattern):
+    """The text from the first heading matching the pattern to the next heading of its level or higher."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if re.match(r"#{2,4} ", line) and re.search(heading_pattern, line)), None)
+    assert start is not None, f"tokens.md has no heading matching {heading_pattern!r}"
+    level = len(lines[start]) - len(lines[start].lstrip("#"))
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"#{1,%d} " % level, lines[i])), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def test_pr_automerge_makes_calls_through_two_clients():
+    calls = automerge_calls()
+
+    assert calls, "found no API calls in pr-automerge.yml's script"
+    assert set(calls.values()) == {"pat", "token"}
+
+
+def test_lists_every_pr_automerge_call_with_its_client_and_why():
+    rows = table_rows(page())
+
+    for call, client in automerge_calls().items():
+        listed = [row for row in rows if len(row) >= 4 and f"`{call}`" in row[1]]
+        assert listed, f"tokens.md has no table row for `{call}`"
+        _workflow, _call, who, why = listed[0][:4]
+        assert why, f"`{call}`'s row gives no reason"
+        if client == "pat":
+            assert "PAT" in who and "GITHUB_TOKEN" not in who, f"`{call}` needs the PAT: {who!r}"
+        else:
+            assert "GITHUB_TOKEN" in who, f"`{call}` doesn't need the PAT: {who!r}"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "gh pr list",
+        "gh api",
+        "gh pr edit",
+        "gh pr create",
+        "gh pr merge",
+        "git push",
+        "create-pull-request",
+    ],
+)
+def test_lists_the_release_and_backfill_workflows_calls(call):
+    rows = table_rows(page())
+
+    listed = [row for row in rows if len(row) >= 4 and re.search(rf"`[^`]*{re.escape(call)}[^`]*`", row[1])]
+    assert listed, f"tokens.md has no table row for `{call}`"
+    assert listed[0][3], f"`{call}`'s row gives no reason"
+    assert re.search(r"PAT|GITHUB_TOKEN", listed[0][2])
+
+
+def test_moves_the_blog_pr_lookups_and_label_to_github_token():
+    rows = table_rows(page())
+
+    for call in ("gh pr list", "gh api"):
+        listed = [row for row in rows if len(row) >= 4 and f"`{call}" in row[1]]
+        assert listed and all("GITHUB_TOKEN" in row[2] for row in listed), call
+    for call in ("gh pr edit", "gh pr create", "gh pr merge"):
+        listed = [row for row in rows if len(row) >= 4 and f"`{call}" in row[1]]
+        assert listed and all("PAT" in row[2] and "GITHUB_TOKEN" not in row[2] for row in listed), call
+
+
+def test_says_where_sandcastle_s_token_stands():
+    text = page()
+
+    assert "SANDCASTLE_GH_TOKEN" in text
+    assert "RELEASE_PR_PAT" in text
+
+
+def test_explains_the_shared_allowance_and_the_incident():
+    text = page()
+
+    assert "5,000" in text
+    assert re.search(r"shar(e|es|ed)\b", text)
+    assert "rate limit" in text.lower()
+    assert "2026-10-18" in text
+
+
+def default_interval(monkeypatch):
+    """land.sh's --interval default, read from the parser land.main builds."""
+    class Parsed(Exception):
+        pass
+
+    parse = argparse.ArgumentParser.parse_args
+
+    def spy(self, args=None, namespace=None):
+        raise Parsed(parse(self, args, namespace))
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", spy)
+    with pytest.raises(Parsed) as parsed:
+        land.main([])
+    return parsed.value.args[0].interval
+
+
+def test_gives_land_sh_s_default_poll_interval(monkeypatch):
+    interval = default_interval(monkeypatch)
+    text = section(page(), r"land\.sh")
+
+    assert re.search(rf"\b{interval:g} ?s(econds)?\b", text), f"the land.sh section doesn't give the {interval:g} s default"
+    assert "--interval" in text
+
+
+def test_gives_the_requests_a_land_sh_round_makes_and_the_shared_allowance():
+    text = section(page(), r"land\.sh")
+
+    assert re.search(r"GraphQL", text)
+    assert re.search(r"\bper (repo|round|poll)\b|\ba round\b", text)
+    assert "5,000" in text
+    assert re.search(r"shar(e|es|ed)\b", text)
+    assert "gh api rate_limit" in text
+
+
+def test_automerge_md_gives_the_same_default_interval_and_points_at_tokens_md(monkeypatch):
+    interval = default_interval(monkeypatch)
+    text = AUTOMERGE_DOC.read_text()
+    landing = text[text.index("### Landing a round"):]
+
+    assert f"default every {interval:g} s" in landing
+    assert "tokens.md" in landing
+    assert "tokens.md" in text.split("### Landing a round")[0], "the Token bullet doesn't link tokens.md"
+
+
+def test_skill_md_links_tokens_md():
+    assert "references/tokens.md" in (SKILL / "SKILL.md").read_text()

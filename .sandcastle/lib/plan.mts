@@ -46,10 +46,9 @@ export function resolveRoles(roles: unknown): OptionalRole[] {
 // isn't a string, or when an entry holds a glob (`*` or `?`), which can't be
 // compared with a path.
 export function resolveFiles(files: unknown): string[] {
-  if (!Array.isArray(files) || !files.every((file) => typeof file === "string" && !/[*?]/.test(file))) {
-    return [];
-  }
-  const paths = (files as string[]).map((file) => file.trim().replace(/\\/g, "/").replace(/^(\.?\/)+/, ""));
+  const isPath = (file: unknown): file is string => typeof file === "string" && !/[*?]/.test(file);
+  if (!Array.isArray(files) || !files.every(isPath)) return [];
+  const paths = files.map((file) => file.trim().replace(/\\/g, "/").replace(/^(\.?\/)+/, ""));
   return [...new Set(paths.filter((path) => path !== ""))];
 }
 

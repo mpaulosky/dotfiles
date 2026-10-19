@@ -45,6 +45,11 @@ export type OverlapGitHub = {
   comment(issue: number, body: string): void;
 };
 
+// A path a kept pick claims, so no later pick can.
+type Claim = { number: number; path: string };
+
+const ROOT_COPIES: ReadonlySet<string> = new Set(TEMPLATE_ROOT_COPIES);
+
 // The path two picks or a pick and a PR are compared by: a Template Owned
 // file dotfiles carries a root copy of maps to that root path, since every
 // change to one changes the other (test.sh fails when they differ). Only the
@@ -54,7 +59,7 @@ export function pathKey(path: string): string {
   const prefix = `${TEMPLATE_OWNED_DIR}/`;
   if (!path.startsWith(prefix)) return path;
   const rest = path.slice(prefix.length);
-  return (TEMPLATE_ROOT_COPIES as readonly string[]).includes(rest) ? rest : path;
+  return ROOT_COPIES.has(rest) ? rest : path;
 }
 
 // Whether two paths are the same file, or one is a directory (ending in "/")
@@ -79,17 +84,13 @@ export function findOverlaps(
   pullRequests: readonly ChangingPullRequest[],
 ): Map<number, Overlap> {
   const byNumber = [...pullRequests].sort((a, b) => a.number - b.number);
-  const claimed: { number: number; path: string }[] = [];
+  const claimed: Claim[] = [];
   const held = new Map<number, Overlap>();
 
   for (const pick of picks) {
     if (pick.files.length === 0) {
-      if (picks.length === 1 && byNumber.length === 0) continue;
-      const otherPick = picks.find((other) => other.number !== pick.number);
-      held.set(pick.number, {
-        kind: "no files",
-        waitsOn: otherPick ? { kind: "pick", number: otherPick.number } : { kind: "pr", number: byNumber[0]!.number },
-      });
+      const waitsOn = noFilesBlocker(pick, picks, byNumber);
+      if (waitsOn) held.set(pick.number, { kind: "no files", waitsOn });
       continue;
     }
 
@@ -103,11 +104,26 @@ export function findOverlaps(
   return held;
 }
 
+// What a pick with no files waits on: the first other pick in the planner's
+// order, or else the first of `pullRequests`. Undefined when it's the round's
+// only pick and no PR is open, so it's built.
+function noFilesBlocker(
+  pick: FilePick,
+  picks: readonly FilePick[],
+  pullRequests: readonly ChangingPullRequest[],
+): { kind: "pick" | "pr"; number: number } | undefined {
+  const otherPick = picks.find((other) => other.number !== pick.number);
+  if (otherPick) return { kind: "pick", number: otherPick.number };
+  const [pullRequest] = pullRequests;
+  if (pullRequest) return { kind: "pr", number: pullRequest.number };
+  return undefined;
+}
+
 // The overlap of the first of `files` that a kept pick claims or a PR changes,
 // or undefined when none does. A kept pick wins over a PR for the same path.
 function firstOverlap(
   files: readonly string[],
-  claimed: readonly { number: number; path: string }[],
+  claimed: readonly Claim[],
   pullRequests: readonly ChangingPullRequest[],
 ): Overlap | undefined {
   for (const path of files) {
@@ -124,23 +140,39 @@ function firstOverlap(
 // goes through publicErrorText and plainText: no secret, mention or
 // cross-reference reaches a public issue. The blocker's "#N" stays live.
 export function overlapComment(overlap: Overlap): string {
-  if (overlap.kind === "no files") {
-    const { kind, number } = overlap.waitsOn;
-    const ref = kind === "pick" ? `#${number}` : `pull request #${number}`;
-    return (
-      "Sandcastle held this issue back this round: the planner didn't name the files it expects the issue to change, so it counts as " +
-      "changing every file. Such an issue is built only when it's the round's only pick and no pull request into main is open; this " +
-      `round it would wait on ${ref}.`
-    );
-  }
-  const path = plainText(publicErrorText(overlap.path, containsSandboxSecret));
-  const n = overlap.blocker;
-  return overlap.kind === "pick"
-    ? `Sandcastle held this issue back this round: the planner expects it to change ${path}, which #${n}, built this round, changes ` +
+  switch (overlap.kind) {
+    case "pick": {
+      const path = publicPath(overlap.path);
+      const n = overlap.blocker;
+      return (
+        `Sandcastle held this issue back this round: the planner expects it to change ${path}, which #${n}, built this round, changes ` +
         `too, so their pull requests would conflict. Sandcastle plans it again in its next run, and holds it back while #${n}'s pull ` +
         "request is open."
-    : `Sandcastle held this issue back this round: the planner expects it to change ${path}, which pull request #${n} changes too, ` +
-        `so the two would conflict. Sandcastle plans it again in its next run, and holds it back while #${n} is open.`;
+      );
+    }
+    case "pr": {
+      const path = publicPath(overlap.path);
+      const n = overlap.blocker;
+      return (
+        `Sandcastle held this issue back this round: the planner expects it to change ${path}, which pull request #${n} changes too, ` +
+        `so the two would conflict. Sandcastle plans it again in its next run, and holds it back while #${n} is open.`
+      );
+    }
+    case "no files": {
+      const { kind, number } = overlap.waitsOn;
+      const ref = kind === "pick" ? `#${number}` : `pull request #${number}`;
+      return (
+        "Sandcastle held this issue back this round: the planner didn't name the files it expects the issue to change, so it counts as " +
+        "changing every file. Such an issue is built only when it's the round's only pick and no pull request into main is open; this " +
+        `round it would wait on ${ref}.`
+      );
+    }
+  }
+}
+
+// A planner-named path as it may appear on a public issue.
+function publicPath(path: string): string {
+  return plainText(publicErrorText(path, containsSandboxSecret));
 }
 
 // Splits the round's picks into those to build and those held back, both in

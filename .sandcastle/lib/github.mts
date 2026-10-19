@@ -198,13 +198,7 @@ export function sameRepository<T extends Pick<ListedPullRequest, "isCrossReposit
 // branches. gh pages through results up to --limit, so the cap sits far above
 // any real queue: a PR missed here would let its issue be built twice.
 export function openPullRequests(): OpenPullRequest[] {
-  const listed = JSON.parse(
-    sh(
-      process.cwd(), "gh", "pr", "list", "--repo", repoName(), "--state", "open", "--limit", "1000",
-      "--json", "number,headRefName,isCrossRepository",
-    ),
-  ) as ListedPullRequest[];
-  return sameRepository(listed).map(({ number, headRefName }) => ({ number, headRefName }));
+  return openSameRepositoryPullRequests();
 }
 
 // The open pull requests into main from this repository's branches, from any
@@ -214,10 +208,15 @@ export function openPullRequests(): OpenPullRequest[] {
 // sameRepository explains: counting them would let anyone with a fork hold the
 // whole queue back.
 export function openPullRequestsIntoMain(): OpenPullRequest[] {
+  return openSameRepositoryPullRequests("--base", BASE_BRANCH.replace(/^origin\//, ""));
+}
+
+// The open pull requests from this repository's branches that gh pr list
+// returns with `filters`, and their head branches.
+function openSameRepositoryPullRequests(...filters: string[]): OpenPullRequest[] {
   const listed = JSON.parse(
     sh(
-      process.cwd(), "gh", "pr", "list", "--repo", repoName(), "--state", "open",
-      "--base", BASE_BRANCH.replace(/^origin\//, ""), "--limit", "1000",
+      process.cwd(), "gh", "pr", "list", "--repo", repoName(), "--state", "open", ...filters, "--limit", "1000",
       "--json", "number,headRefName,isCrossRepository",
     ),
   ) as ListedPullRequest[];

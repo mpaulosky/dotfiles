@@ -15,7 +15,8 @@ For the owner, that one allowance is shared by:
 - `RELEASE_PR_PAT` in every repo's PR Auto-Merge, release, backfill and code-metrics workflows;
 - `SANDCASTLE_GH_TOKEN`, Sandcastle's token in GitHub Actions.
 
-A workflow's own `GITHUB_TOKEN` has a separate allowance for each repository (1,000 REST requests an hour), so one busy repo can't stall the others.
+A workflow's own `GITHUB_TOKEN` has a separate allowance for each repository: 1,000 REST requests an hour and, separately, 1,000 GraphQL points an hour.
+So one busy repo can't stall the others.
 
 On 2026-10-18 the owner's account used up its REST allowance: 0 requests were left from about 20:53 to 21:29 UTC.
 Every PR Auto-Merge run in every Baseline repo then failed with `HTTP 403: API rate limit exceeded`, so no PR merged until the limit reset.
@@ -28,8 +29,18 @@ Use the PAT only where GitHub must start another workflow, or must see a person:
 and a comment Dependabot takes only from a person. Everything else goes through `GITHUB_TOKEN`.
 A change made with `GITHUB_TOKEN` starts no workflow (other than `workflow_dispatch` and `repository_dispatch`), which is what a read, or a label removal, wants.
 
-`GITHUB_TOKEN`'s allowance is smaller, and PR Auto-Merge, Claude Review and CI's `gh` calls in one repo share it.
-Each push to a PR starts about ten PR Auto-Merge runs of a few requests each, and a sweep costs about four per open PR, well under 1,000 an hour for these repos.
+`GITHUB_TOKEN`'s allowances are smaller, and PR Auto-Merge, Claude Review and CI's `gh` calls in one repo share them.
+Two buckets matter, and the GraphQL one is the likelier to run out:
+
+- **REST (1,000 requests an hour):** each push to a PR starts about ten PR Auto-Merge runs of a few requests each,
+  and a sweep costs about four per open PR, well under 1,000 an hour for these repos.
+- **GraphQL (1,000 points an hour):** `MergeReadiness` is most of PR Auto-Merge's load. It has seven connections (the head's checks, two review lists,
+  threads and labels, and the review commits' parents), so it costs about 1 point, and at most a few when both review lists are full.
+  A run evaluating a PR makes at least two queries (the first snapshot and a fresh one), up to four more retries while GitHub reports `UNKNOWN`,
+  and one more in `noRequiredCheckState`: 2 to 7 queries, so about 2 to 7 points.
+  A push starts about ten runs, so it costs roughly 20 to 30 points, and a sweep costs 2 to 7 points per open PR.
+  Between 30 and 50 pushes an hour, or a sweep over a few dozen open PRs, would use up the 1,000, so a repo with many open PRs and frequent pushes is the one to watch.
+
 When it is hit, PR Auto-Merge's `endsRun` ends the run on the 403 or 429 (or GraphQL's `RATE_LIMITED`) from either client, and only that repo waits.
 
 ## The calls
@@ -79,7 +90,9 @@ Moving the bots to a GitHub App, whose installation tokens have an allowance of 
 
 ## land.sh and the shared allowance
 
-`land.sh` runs as the owner's `gh` login, so every request it makes comes out of the same 5,000 an hour the PAT and Sandcastle share.
+`land.sh` runs as the owner's `gh` login, so what it spends comes out of the account's allowances that the PAT and Sandcastle share.
+Almost all of it is GraphQL points (its poll, and `gh pr update-branch`, `edit`, `view`, `ready` and `merge`, are GraphQL), out of the account's 5,000 an hour.
+The 5,000 REST requests an hour, the allowance that ran out on 2026-10-18, are left to the PAT's and Sandcastle's REST calls.
 
 - **Interval:** it polls every 60 s by default (`--interval`).
 - **A quiet round** costs one `gh api graphql` per repo: status.py's `QUERY`, about 3 GraphQL points

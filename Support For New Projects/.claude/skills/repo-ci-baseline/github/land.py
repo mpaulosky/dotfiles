@@ -8,8 +8,9 @@
 It polls every 60 s by default (--interval). Each poll costs one GraphQL query
 per repo (status.py's QUERY, about 3 points), plus the action calls below and
 a gh pr view for each watched PR that left the open list. They all run as the
-owner's gh login, whose 5,000 requests an hour RELEASE_PR_PAT and Sandcastle
-share: see references/tokens.md.
+owner's gh login, so they are almost all GraphQL points, out of the account's
+5,000 an hour (the 5,000 REST requests an hour RELEASE_PR_PAT and Sandcastle
+spend are left alone, though they share the account): see references/tokens.md.
 
 Every watched PR goes through landing.decide(), and the command does what the
 decision says, once per PR head:

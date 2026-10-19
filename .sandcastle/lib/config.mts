@@ -146,6 +146,12 @@ export type SandcastleLabel = { name: string; color: string; description: string
 // every other label SANDCASTLE_LABELS doesn't manage (#146).
 export const QUEUE_LABEL = "Sandcastle";
 
+// The label of the queue a local run works (SANDCASTLE_LABEL=Sandcastle:local),
+// pushing with the owner's own `gh` login. The build moves an issue here when
+// GitHub refuses Actions' push of it for a workflow change (#253). Not one of
+// SANDCASTLE_LABELS, which a local run can't name as its queue.
+export const LOCAL_QUEUE_LABEL = "Sandcastle:local";
+
 // What a run builds from, resolved once at startup (see queueScopeFrom):
 // every open issue carrying `label` (GitHub Actions always uses QUEUE_LABEL),
 // or just one `number` and its pull request, for a local run that mustn't

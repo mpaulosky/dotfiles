@@ -1005,6 +1005,18 @@ export function removeIssueLabel(
   ghWithStderr(run, ["issue", "edit", String(number), "--repo", repo, "--remove-label", label]);
 }
 
+// Replaces `from` with `to` on the issue `number`, in one edit so the issue
+// never carries both or neither.
+export function replaceIssueLabel(
+  number: number,
+  from: string,
+  to: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): void {
+  ghWithStderr(run, ["issue", "edit", String(number), "--repo", repo, "--add-label", to, "--remove-label", from]);
+}
+
 // Adds `label` to the pull request `number`: gh issue edit refuses a PR
 // number, so restoring a PR-level hand-back label someone other than the
 // repository owner removed (lib/follow-up.mts#sweepPullRequests, #146) needs

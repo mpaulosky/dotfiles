@@ -4,8 +4,8 @@
 // and telling the human" in docs/plans/sandcastle-workflow.md.
 
 import { execFileSync } from "node:child_process";
-import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP } from "./config.mts";
-import { commentOnIssue, handBack, repoName } from "./github.mts";
+import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP, LOCAL_QUEUE_LABEL, QUEUE_LABEL } from "./config.mts";
+import { commentOnIssue, handBack, replaceIssueLabel, repoName } from "./github.mts";
 import { handBackReport, type HandBackReport } from "./report.mts";
 
 // The comment for a failed build attempt under the cap: carries
@@ -137,7 +137,7 @@ export function recordFailedAttempt(
 // publish-failure comment does. No BUILD_FAILED_MARKER: this isn't a failed
 // attempt.
 export function workflowHandBackComment(branch: string, detail: string, change: WorkflowChange): string {
-  const fence = "`".repeat(Math.max(3, ...[...detail.matchAll(/`+/g)].map((match) => match[0].length + 1)));
+  const fence = fenceFor(detail);
   const what =
     change.files.length > 0
       ? `its commits touch ${change.files.map(codeSpan).join(", ")}`
@@ -151,6 +151,11 @@ export function workflowHandBackComment(branch: string, detail: string, change: 
     "To put the issue back in the queue: make the workflow change in its own pull request, and once it has merged, " +
     `remove \`sandcastle:needs-human\`. The next build no longer needs to touch the workflow.\n\n${fence}\n${fit(detail, GITHUB_COMMENT_LIMIT - 2_000)}\n${fence}`
   );
+}
+
+// A code fence longer than any backtick run in `text`, so `text` can't close it.
+function fenceFor(text: string): string {
+  return "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((match) => match[0].length + 1)));
 }
 
 // `text` as a Markdown code span it can't break out of: on one line, inside a
@@ -198,20 +203,43 @@ export function handBackWorkflowChange(
 // moved from the `Sandcastle` queue to `Sandcastle:local`, why, and how to run it
 // there; names the branch, the workflow files and the head commit like
 // workflowHandBackComment. Not a hand-back, so no `sandcastle:needs-human`, and no
-// BUILD_FAILED_MARKER.
-export function workflowLocalComment(_branch: string, _detail: string, _change: WorkflowChange): string {
-  throw new Error("Not implemented");
+// BUILD_FAILED_MARKER. `change.files` are the build's own (base..head), so they're
+// empty when the refusal came from main's workflow change alone.
+export function workflowLocalComment(branch: string, detail: string, change: WorkflowChange): string {
+  const fence = fenceFor(detail);
+  const what =
+    change.files.length > 0
+      ? `its commits touch ${change.files.map(codeSpan).join(", ")}`
+      : "GitHub counts it as changing a file under `.github/workflows/`";
+  return (
+    `Sandcastle couldn't push \`${branch}\` from GitHub Actions: ${what}, and GitHub refuses that change without ` +
+    "the Workflows permission, which Sandcastle's token in Actions doesn't have. Main changed a workflow after this " +
+    `build started, and the push was refused even as an update to \`${branch}\` created at the commit the build ` +
+    `started from. A local run pushes with the owner's own \`gh\` login, which can push it, so the issue moved from ` +
+    `the \`${QUEUE_LABEL}\` queue to \`${LOCAL_QUEUE_LABEL}\`.\n\n` +
+    `GitHub doesn't have this attempt's commits (head \`${change.head}\`): the push was refused, so \`${branch}\` ` +
+    "on GitHub doesn't hold them, and they're gone once this run's checkout is. The local run builds the issue again.\n\n" +
+    `To build it, run \`SANDCASTLE_LABEL=${LOCAL_QUEUE_LABEL} pnpm run sandcastle\` from the main checkout. Its pull ` +
+    `request's follow-up passes run locally too.\n\n${fence}\n${fit(detail, GITHUB_COMMENT_LIMIT - 2_000)}\n${fence}`
+  );
 }
 
 // Moves the issue `issueNumber` from the `Sandcastle` queue to
-// `Sandcastle:local` with workflowLocalComment, instead of handing it back.
+// `Sandcastle:local` with workflowLocalComment, instead of handing it back:
+// nothing about the issue needs a person, only a push token with the
+// Workflows permission (#253). The comment goes first, so a comment GitHub
+// rejects leaves the issue in the queue rather than moved without a word; the
+// labels change in one edit, so the issue is never in both queues or neither.
+// The repository must already have `Sandcastle:local`, as dotfiles does.
+// `sandcastle:ready` stays, so the local run builds it without intake.
 export function moveToLocalQueue(
-  _issueNumber: number,
-  _branch: string,
-  _detail: string,
-  _change: WorkflowChange,
-  _run: typeof execFileSync = execFileSync,
-  _repo: string = repoName(),
+  issueNumber: number,
+  branch: string,
+  detail: string,
+  change: WorkflowChange,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
 ): void {
-  throw new Error("Not implemented");
+  commentOnIssue(issueNumber, workflowLocalComment(branch, detail, change), run, repo);
+  replaceIssueLabel(issueNumber, QUEUE_LABEL, LOCAL_QUEUE_LABEL, run, repo);
 }

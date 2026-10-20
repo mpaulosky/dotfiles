@@ -55,15 +55,15 @@ def comment(body, login="github-actions", association="NONE", review=CLAUDE_REVI
             "authorAssociation": association, "body": body, "createdAt": at, "pullRequestReview": {"body": review}}
 
 
-def thread(*comments, resolved=True, path="src/App.cs", line=12, outdated=False, resolver="owner"):
+def thread(*comments, resolved=True, path="src/App.cs", line=12, outdated=False, resolver="owner", resolver_kind="User"):
     return {"isResolved": resolved, "isOutdated": outdated, "path": path, "line": None if outdated else line,
-            "originalLine": line, "resolvedBy": {"login": resolver} if resolved else None,
-            # As the step's query asks: the first comment, and the newest 29 with the thread's count.
+            "originalLine": line, "resolvedBy": {"login": resolver, "__typename": resolver_kind} if resolved else None,
+            # As the step's query asks: the first comment, and the newest 100 with the thread's count.
             "finding": {"nodes": list(comments[:1])},
-            "replies": {"totalCount": len(comments), "nodes": list(comments[-29:])}}
+            "replies": {"totalCount": len(comments), "nodes": list(comments[-100:])}}
 
 
-def run(tmp_path, pages, author="author", script=None):
+def run(tmp_path, pages, author="author", script=None, author_type=None):
     """Run the step: (exit code, its threads output, what it printed, the gh calls)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -77,7 +77,7 @@ def run(tmp_path, pages, author="author", script=None):
     output.write_text("")
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_PAGES": str(tmp_path / "pages.json"),
            "FAKE_CALLS": str(calls), "GITHUB_OUTPUT": str(output), "REPOSITORY": "owner/repo", "PR_NUMBER": "59",
-           "PR_AUTHOR": author}
+           "PR_AUTHOR": author, "PR_AUTHOR_TYPE": author_type or ("Bot" if author.endswith("[bot]") else "User")}
     result = subprocess.run([sys.executable, "-I", "-"], input=script or step_script(), env=env, capture_output=True,
                             text=True)
     written = output.read_text()
@@ -337,3 +337,40 @@ def test_the_step_fits_in_the_review_jobs_time_with_the_review_step():
     calls = int(re.search(r"CALL_TIMEOUT = (\d+)", script)[1])
     pages = int(re.search(r"MAX_PAGES = (\d+)", script)[1])
     assert calls * pages < resolved * 60
+
+
+def test_the_copilot_coding_agents_replies_count_on_a_pr_it_opened(tmp_path):
+    # It opens PRs as Copilot, with no [bot] suffix; the event's user.type says Bot.
+    pages = [[[thread(comment("Finding."), comment("Fixed in abc.", login="Copilot", kind="Bot"))], False]]
+    _, threads, _, _ = run(tmp_path, pages, author="Copilot", author_type="Bot")
+    assert "  Reply from Copilot:" in threads
+
+
+def test_an_apps_replies_count_when_the_app_resolved_the_thread(tmp_path):
+    pages = [[[thread(comment("Finding."), comment("Fixed in abc.", login="agent", kind="Bot"),
+                      resolver="agent", resolver_kind="Bot")], False]]
+    _, threads, _, _ = run(tmp_path, pages)
+    assert "  Reply from agent:" in threads
+
+
+def test_a_user_named_like_a_bot_resolver_doesnt_count_as_the_resolver(tmp_path):
+    pages = [[[thread(comment("Finding."), comment("Accepted.", login="agent", kind="User"),
+                      resolver="agent", resolver_kind="Bot")], False]]
+    _, threads, _, _ = run(tmp_path, pages)
+    assert "Accepted." not in threads
+
+
+def test_a_passer_bys_replies_cant_push_the_decision_out(tmp_path):
+    flood = [comment(f"Noise {n}.", login="passer-by", at=f"2026-10-20T01:{n:02d}:00Z") for n in range(40)]
+    decision = comment("Accepted because the issue asks for it.", login="owner", association="OWNER",
+                       at="2026-10-20T00:00:00Z")
+    _, threads, _, _ = run(tmp_path, [[[thread(comment("Finding."), decision, *flood)], False]])
+    assert "Accepted because the issue asks for it." in threads
+    assert "Noise" not in threads and "not shown" not in threads
+
+
+def test_a_thread_past_the_comments_read_says_how_many_went_unread(tmp_path):
+    replies = [comment(f"Reply {n}.", login="author") for n in range(1, 120)]
+    _, threads, _, _ = run(tmp_path, [[[thread(comment("Finding."), *replies)], False]])
+    assert "  (19 earlier comment(s) not read)" in threads
+    assert "  (71 earlier replies not shown)" in threads

@@ -194,7 +194,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   GitHub still runs it far less often than asked: IssueTracker's sweeps after #201 ran about 70 minutes apart. Treat it as the fallback, never the expected path.
 - **Safety:** `pull_request_target` runs main's copy of the file and never checks out PR code, so a PR can't edit what decides whether it merges.
   `pull_request_review` is never a trigger here: it would run the PR's own copy with write access. It reaches this workflow only through PR Review Submitted.
-- **Token:** every read goes through `GITHUB_TOKEN` (the script's `github`), whose rate limit is the repo's own,
+- **Token:** every read goes through `GITHUB_TOKEN` (the script's `github`), whose rate limit is the repo's own
+  (1,000 REST requests and 1,000 GraphQL points an hour, shared with the repo's other workflows; see [tokens.md](tokens.md)),
   and so does taking `review:claude` off. Only the calls GitHub must treat as a person's go through `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`
   (the script's `patClient`): the merge, update-branch, adding `review:claude` and `@dependabot rebase`, plus one read of the PAT's own login.
   A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip; an update would start no CI.

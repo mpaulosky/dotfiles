@@ -42,6 +42,10 @@ Two buckets matter, and the GraphQL one is the likelier to run out:
   Between 30 and 50 pushes an hour, or a sweep over a few dozen open PRs, would use up the 1,000, so a repo with many open PRs and frequent pushes is the one to watch.
 
 When it is hit, PR Auto-Merge's `endsRun` ends the run on the 403 or 429 (or GraphQL's `RATE_LIMITED`) from either client, and only that repo waits.
+On a run started by a PR event, that's a failed check on the PR's head, so the PR is `UNSTABLE`, which PR Auto-Merge never merges,
+until a later event on the PR, such as a push, runs the check again.
+That's accepted (mpaulosky/TicketManager#233): with the PAT, one busy repo could use up the allowance every other repo and Sandcastle share,
+as on 2026-10-18, while `GITHUB_TOKEN`'s run out only in the repo that spent it, and only past the load estimated above.
 
 ## The calls
 

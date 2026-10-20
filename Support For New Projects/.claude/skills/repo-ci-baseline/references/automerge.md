@@ -179,6 +179,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#context-pieces-117)), all read in one turn,
   and reads only the checkout, the diff and the runner's `_actions`, with no tool granted outright
   ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#keeping-the-token-out-of-the-review-121)), and answers in a JSON schema.
+  Its prompt also holds the PR's resolved Copilot and Claude Review threads, with the replies of the PR's author, whoever resolved the thread and the repo's owner,
+  and tells it not to raise a resolved thread's problem again unless the code has changed in a way that brings it back,
+  so a finding a maintainer declined doesn't come back on every push (auth0-management-app#59 had one four times).
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.

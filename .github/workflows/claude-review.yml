@@ -1142,17 +1142,21 @@ jobs:
       # Resolving a thread takes write access or the PR's authorship, the same
       # bar PR Auto-Merge sets for a thread to stop holding. A reply counts
       # only from the PR's author, whoever resolved the thread, the repo's
-      # OWNER or the reviewer bots. Not from any MEMBER or COLLABORATOR: in an
-      # organization's repo those include accounts with read access only, and
-      # anyone who can comment can reply to a resolved thread, so a passer-by's
-      # reply can't argue a finding away. They go into the prompt itself,
+      # OWNER or the reviewer bots, matched by login and by the account's
+      # kind, so a user account named like an app can't pass for it. Not from
+      # any MEMBER or COLLABORATOR: in an organization's repo those include
+      # accounts with read access only, and anyone who can comment can reply
+      # to a resolved thread, so a passer-by's reply can't argue a finding
+      # away. They go into the prompt itself,
       # between lines holding a nonce no thread can guess, with every line of
       # a comment indented, rather than in a file Claude would spend one of its
       # 24 Reads on. Only the newest MAX_PAGES pages of threads are read, and
       # the prompt says when older ones went unread. Newest first, within
       # MAX_BYTES: a thread that doesn't fit is skipped, smaller ones after it
       # still go in, and the skipped ones are counted, so the prompt never
-      # says none is resolved when some are.
+      # says none is resolved when some are. Each thread brings its finding and
+      # its newest 29 replies, where the decision usually is, and says how many
+      # earlier replies it left out.
       #
       # Accepted limit: someone who can resolve a thread can also argue in its
       # replies for leaving other code alone. The prompt says a thread decides
@@ -1189,6 +1193,9 @@ jobs:
           MAX_BODY = 3_000    # per comment
           REVIEWERS = {"copilot-pull-request-reviewer", "github-actions"}  # GraphQL logins drop [bot]
           AUTHOR = os.environ["PR_AUTHOR"].removesuffix("[bot]")  # the event's REST login keeps it, for an app
+          # A login alone doesn't tell an app from a user account of the same name, so each match checks the
+          # author's kind too: an app opened the PR when its REST login ends in [bot].
+          AUTHOR_KIND = "Bot" if os.environ["PR_AUTHOR"].endswith("[bot]") else "User"
           QUERY = """
           query($owner: String!, $name: String!, $number: Int!, $before: String) {
             repository(owner: $owner, name: $name) {
@@ -1198,13 +1205,15 @@ jobs:
                   nodes {
                     isResolved isOutdated path line originalLine
                     resolvedBy { login }
-                    comments(first: 30) {
-                      nodes { author { login } authorAssociation body createdAt pullRequestReview { body } }
-                    }
+                    finding: comments(first: 1) { nodes { ...comment } }
+                    replies: comments(last: 29) { totalCount nodes { ...comment } }
                   }
                 }
               }
             }
+          }
+          fragment comment on PullRequestReviewComment {
+            author { login __typename } authorAssociation body createdAt pullRequestReview { body }
           }"""
 
 
@@ -1233,8 +1242,25 @@ jobs:
               return (comment.get("author") or {}).get("login") or "ghost"
 
 
+          def kind(comment):
+              """The author's GraphQL type: Bot for an app, User for a person's account."""
+              return (comment.get("author") or {}).get("__typename")
+
+
+          def comments_of(thread):
+              """The thread's finding and its newest replies, in order, and how many earlier replies were left out."""
+              finding = thread["finding"]["nodes"]
+              replies = thread["replies"]["nodes"]
+              total = thread["replies"]["totalCount"]
+              if finding and total <= len(replies):
+                  replies = replies[1:]  # a short thread's last replies include the finding itself
+              return finding + replies, max(0, total - len(finding) - len(replies))
+
+
           def reviewer_of(comment):
               """Copilot or Claude Review when that reviewer wrote comment, else None."""
+              if kind(comment) != "Bot":
+                  return None
               if login(comment) == "copilot-pull-request-reviewer":
                   return "Copilot"
               review = (comment.get("pullRequestReview") or {}).get("body") or ""
@@ -1255,18 +1281,26 @@ jobs:
               return "".join(c if c.isprintable() else repr(c)[1:-1] for c in text)
 
 
-          def render(thread, reviewer):
-              comments = thread["comments"]["nodes"]
+          def counts(reply, resolver):
+              """Whether reply is the PR's author's, the resolver's, the repo owner's or a reviewer bot's."""
+              who = login(reply)
+              return ((who == AUTHOR and kind(reply) == AUTHOR_KIND)
+                      or (resolver is not None and who == resolver and kind(reply) == "User")
+                      or (who in REVIEWERS and kind(reply) == "Bot")
+                      or reply.get("authorAssociation") == "OWNER")
+
+
+          def render(thread, reviewer, comments, left_out):
               where = f"{printable(thread['path'] or '')}:{thread['line'] or thread['originalLine']}"
               if thread["isOutdated"]:
                   where += " (raised on an earlier commit; the code there has changed since)"
               resolver = (thread.get("resolvedBy") or {}).get("login")
               parts = [f"- {where}, raised by {reviewer}, resolved by {resolver or 'unknown'}:", indented(comments[0]["body"])]
+              if left_out:
+                  parts.append(f"  ({left_out} earlier repl{'y' if left_out == 1 else 'ies'} not shown)")
               for reply in comments[1:]:
-                  who = login(reply)
-                  if (who == AUTHOR or (resolver and who == resolver) or who in REVIEWERS
-                          or reply.get("authorAssociation") == "OWNER"):
-                      parts += [f"  Reply from {who}:", indented(reply["body"])]
+                  if counts(reply, resolver):
+                      parts += [f"  Reply from {login(reply)}:", indented(reply["body"])]
               return "\n".join(parts)
 
 
@@ -1274,10 +1308,10 @@ jobs:
           try:
               nodes, unread = threads()
               for thread in nodes:
-                  comments = thread["comments"]["nodes"]
+                  comments, left_out = comments_of(thread)
                   reviewer = reviewer_of(comments[0]) if comments else None
                   if thread["isResolved"] and reviewer:
-                      picked.append((comments[-1]["createdAt"], render(thread, reviewer)))
+                      picked.append((comments[-1]["createdAt"], render(thread, reviewer, comments, left_out)))
           except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as error:
               print(f"::warning::Couldn't read the PR's review threads ({type(error).__name__}), so Claude may raise "
                     "a finding a maintainer already resolved.")

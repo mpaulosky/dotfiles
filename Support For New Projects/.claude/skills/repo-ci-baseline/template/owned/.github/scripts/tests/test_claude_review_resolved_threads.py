@@ -13,6 +13,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "claude-review.yml"
 CLAUDE_REVIEW = "<!-- claude-review -->\nSummary"
 
@@ -21,6 +23,9 @@ import json, os, sys
 pages = json.loads(open(os.environ["FAKE_PAGES"]).read())
 if pages == "fail":
     sys.exit("gh: HTTP 502")
+if pages == "hang":
+    import time
+    time.sleep(30)
 before = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("before=")), None)
 with open(os.environ["FAKE_CALLS"], "a") as calls:
     calls.write(json.dumps(sys.argv[1:]) + "\\n")
@@ -52,7 +57,7 @@ def thread(*comments, resolved=True, path="src/App.cs", line=12, outdated=False,
             "comments": {"nodes": list(comments)}}
 
 
-def run(tmp_path, pages, author="author"):
+def run(tmp_path, pages, author="author", script=None):
     """Run the step: (exit code, its threads output, what it printed, the gh calls)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -67,7 +72,7 @@ def run(tmp_path, pages, author="author"):
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_PAGES": str(tmp_path / "pages.json"),
            "FAKE_CALLS": str(calls), "GITHUB_OUTPUT": str(output), "REPOSITORY": "owner/repo", "PR_NUMBER": "59",
            "PR_AUTHOR": author}
-    result = subprocess.run([sys.executable, "-I", "-"], input=step_script(), env=env, capture_output=True,
+    result = subprocess.run([sys.executable, "-I", "-"], input=script or step_script(), env=env, capture_output=True,
                             text=True)
     written = output.read_text()
     found = re.search(r"^threads<<(EOF_[0-9a-f]+)\n(.*?)\n\1\n", written, re.S | re.M)
@@ -224,3 +229,23 @@ def test_past_the_page_limit_the_prompt_says_older_threads_went_unread(tmp_path)
     assert not threads.startswith("None")
     assert threads.splitlines()[1] == "- Threads older than the PR's newest 300 weren't read, and some may be resolved."
     assert "only the newest 300 are read" in out
+
+
+def test_a_hung_read_times_out_and_warns(tmp_path):
+    # The step's 15 s per call, shortened so the test doesn't wait for it.
+    script = step_script()
+    assert script.count("CALL_TIMEOUT = 15") == 1
+    code, threads, out, _ = run(tmp_path, "hang", script=script.replace("CALL_TIMEOUT = 15", "CALL_TIMEOUT = 1"))
+    assert code != 0 and threads is None
+    assert "::warning::Couldn't read the PR's review threads (TimeoutExpired)" in out
+
+
+def test_the_step_fits_in_the_review_jobs_time_with_the_review_step():
+    yaml = pytest.importorskip("yaml")
+    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["review"]
+    steps = {step.get("id"): step for step in job["steps"]}
+    # The diff step's grep can take up to 2 minutes (USERS_TIMEOUT); the rest is checkout and the checks.
+    assert steps["resolved"]["timeout-minutes"] + steps["claude"]["timeout-minutes"] + 2 < job["timeout-minutes"]
+    calls = int(re.search(r"CALL_TIMEOUT = (\d+)", step_script())[1])
+    pages = int(re.search(r"MAX_PAGES = (\d+)", step_script())[1])
+    assert calls * pages < steps["resolved"]["timeout-minutes"] * 60

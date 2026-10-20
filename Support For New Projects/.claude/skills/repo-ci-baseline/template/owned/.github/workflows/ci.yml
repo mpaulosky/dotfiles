@@ -599,7 +599,7 @@ jobs:
       # published there. The status step below still fails the job when a
       # test did.
       - name: Publish test results
-        uses: EnricoMi/publish-unit-test-result-action@d0a4676d0e0b938bc201470d88276b7c74c712b3 # v2.24.0
+        uses: EnricoMi/publish-unit-test-result-action@7622c5bf3d112a72ab4fa3951c2aa5723d8ab92d # v2.25.0
         if: >-
           ${{ always() && needs.discover-tests.outputs.has_tests == 'true' &&
           github.actor != 'dependabot[bot]' &&

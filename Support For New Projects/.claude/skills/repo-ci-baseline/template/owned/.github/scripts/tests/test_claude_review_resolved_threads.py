@@ -31,7 +31,7 @@ with open(os.environ["FAKE_CALLS"], "a") as calls:
 # pages[0] is the newest page; the step pages back from it.
 index = 0 if before is None else int(before)
 nodes, more = pages[index]
-print(json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
+print(json.dumps({"data": {"repository": {"pullRequest": {"author": json.loads(os.environ["FAKE_AUTHOR"]), "reviewThreads": {
     "pageInfo": {"hasPreviousPage": more, "startCursor": str(index + 1)}, "nodes": nodes}}}}}))
 """
 
@@ -77,7 +77,10 @@ def run(tmp_path, pages, author="author", script=None, author_type=None):
     output.write_text("")
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_PAGES": str(tmp_path / "pages.json"),
            "FAKE_CALLS": str(calls), "GITHUB_OUTPUT": str(output), "REPOSITORY": "owner/repo", "PR_NUMBER": "59",
-           "PR_AUTHOR": author, "PR_AUTHOR_TYPE": author_type or ("Bot" if author.endswith("[bot]") else "User")}
+           # The PR's author as GraphQL gives it: an app's login without [bot], and its kind.
+           "FAKE_AUTHOR": json.dumps(None if author is None else {
+               "login": author.removesuffix("[bot]"),
+               "__typename": author_type or ("Bot" if author.endswith("[bot]") else "User")})}
     result = subprocess.run([sys.executable, "-I", "-"], input=script or step_script(), env=env, capture_output=True,
                             text=True)
     written = output.read_text()
@@ -340,10 +343,17 @@ def test_the_step_fits_in_the_review_jobs_time_with_the_review_step():
 
 
 def test_the_copilot_coding_agents_replies_count_on_a_pr_it_opened(tmp_path):
-    # It opens PRs as Copilot, with no [bot] suffix; the event's user.type says Bot.
-    pages = [[[thread(comment("Finding."), comment("Fixed in abc.", login="Copilot", kind="Bot"))], False]]
-    _, threads, _, _ = run(tmp_path, pages, author="Copilot", author_type="Bot")
-    assert "  Reply from Copilot:" in threads
+    # The event says Copilot; GraphQL, where the replies come from, says copilot-swe-agent for both.
+    pages = [[[thread(comment("Finding."), comment("Fixed in abc.", login="copilot-swe-agent", kind="Bot"))], False]]
+    _, threads, _, _ = run(tmp_path, pages, author="copilot-swe-agent", author_type="Bot")
+    assert "  Reply from copilot-swe-agent:" in threads
+
+
+def test_a_deleted_authors_account_matches_no_reply(tmp_path):
+    # GraphQL gives a deleted account's author as null; a reply from a ghost login mustn't pass for theirs.
+    pages = [[[thread(comment("Finding."), comment("Accepted.", login="ghost", kind="User"))], False]]
+    code, threads, _, _ = run(tmp_path, pages, author=None)
+    assert code == 0 and "Accepted." not in threads
 
 
 def test_when_no_resolver_is_given_an_apps_reply_counts_only_as_author_or_reviewer(tmp_path):

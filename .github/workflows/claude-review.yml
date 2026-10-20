@@ -1189,9 +1189,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          # Bot or User. Not guessed from a [bot] suffix: the Copilot coding agent opens PRs as Copilot.
-          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: |
           python3 -I - <<'PY'
           import json, os, subprocess
@@ -1201,16 +1198,18 @@ jobs:
           MAX_BYTES = 60_000  # about 15,000 tokens
           MAX_BODY = 3_000    # per comment
           REVIEWERS = {"copilot-pull-request-reviewer", "github-actions"}  # GraphQL logins drop [bot]
-          AUTHOR = os.environ["PR_AUTHOR"].removesuffix("[bot]")  # the event's REST login keeps it, for an app
-          # A login alone doesn't tell an app from a user account of the same name, so each match checks the
-          # author's kind too.
-          AUTHOR_KIND = "Bot" if os.environ.get("PR_AUTHOR_TYPE") == "Bot" else "User"
+          # The PR's author as GraphQL names it, read with the threads, so it compares with the replies' logins:
+          # the event's REST login differs for an app (some-app[bot]) and for the Copilot coding agent (Copilot,
+          # where GraphQL says copilot-swe-agent). A login alone doesn't tell an app from a user account of the
+          # same name, so each match checks the account's kind (__typename) too.
+          AUTHOR = {}
           MAX_READ = 100      # comments per thread, newest first: room for passers-by without losing a decision
           MAX_REPLIES = 29    # counted replies per thread, newest first
           QUERY = """
           query($owner: String!, $name: String!, $number: Int!, $before: String) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
+                author { login __typename }
                 reviewThreads(last: 100, before: $before) {
                   pageInfo { hasPreviousPage startCursor }
                   nodes {
@@ -1240,7 +1239,9 @@ jobs:
                       args += ["-f", f"before={before}"]
                   page = json.loads(subprocess.run(args, capture_output=True, text=True, check=True,
                                                    timeout=CALL_TIMEOUT).stdout)
-                  found = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+                  pull = page["data"]["repository"]["pullRequest"]
+                  AUTHOR.update(pull.get("author") or {})  # a deleted account (ghost) is null, and matches nobody
+                  found = pull["reviewThreads"]
                   nodes += found["nodes"]
                   if not found["pageInfo"]["hasPreviousPage"]:
                       return nodes, False
@@ -1296,7 +1297,7 @@ jobs:
           def counts(reply, resolver):
               """Whether reply is the PR's author's, the resolver's, the repo owner's or a reviewer bot's."""
               who = login(reply)
-              return ((who == AUTHOR and kind(reply) == AUTHOR_KIND)
+              return ((AUTHOR and who == AUTHOR.get("login") and kind(reply) == AUTHOR.get("__typename"))
                       # The schema types resolvedBy as a User, so only a person's account can be the resolver.
                       or (resolver is not None and who == resolver.get("login") and kind(reply) == "User")
                       or (who in REVIEWERS and kind(reply) == "Bot")

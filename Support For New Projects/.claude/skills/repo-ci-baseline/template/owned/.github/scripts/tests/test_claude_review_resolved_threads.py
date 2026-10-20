@@ -21,13 +21,14 @@ import json, os, sys
 pages = json.loads(open(os.environ["FAKE_PAGES"]).read())
 if pages == "fail":
     sys.exit("gh: HTTP 502")
-after = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("after=")), None)
+before = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("before=")), None)
 with open(os.environ["FAKE_CALLS"], "a") as calls:
     calls.write(json.dumps(sys.argv[1:]) + "\\n")
-index = 0 if after is None else int(after)
+# pages[0] is the newest page; the step pages back from it.
+index = 0 if before is None else int(before)
 nodes, more = pages[index]
 print(json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": {
-    "pageInfo": {"hasNextPage": more, "endCursor": str(index + 1)}, "nodes": nodes}}}}}))
+    "pageInfo": {"hasPreviousPage": more, "startCursor": str(index + 1)}, "nodes": nodes}}}}}))
 """
 
 
@@ -182,7 +183,7 @@ def test_every_page_of_threads_is_read(tmp_path):
     pages = [[[thread(comment("First page."))], True], [[thread(comment("Second page."))], False]]
     _, threads, _, calls = run(tmp_path, pages)
     assert "First page." in threads and "Second page." in threads
-    assert len(calls) == 2 and "after=1" in calls[1]
+    assert len(calls) == 2 and "before=1" in calls[1]
 
 
 def test_a_failed_read_warns_and_fails_the_step(tmp_path):
@@ -213,3 +214,13 @@ def test_an_apps_reply_counts_when_the_app_opened_the_pr(tmp_path):
     pages = [[[thread(comment("Finding."), comment("Fixed in abc.", login="some-app", association="NONE"))], False]]
     _, threads, _, _ = run(tmp_path, pages, author="some-app[bot]")
     assert "  Reply from some-app:" in threads
+
+
+def test_past_the_page_limit_the_prompt_says_older_threads_went_unread(tmp_path):
+    # Three full pages, the newest first, each with older ones behind it, and none resolved.
+    pages = [[[thread(comment("Open."), resolved=False)], True] for _ in range(4)]
+    code, threads, out, calls = run(tmp_path, pages)
+    assert code == 0 and len(calls) == 3
+    assert not threads.startswith("None")
+    assert threads.splitlines()[1] == "- Threads older than the PR's newest 300 weren't read, and some may be resolved."
+    assert "only the newest 300 are read" in out

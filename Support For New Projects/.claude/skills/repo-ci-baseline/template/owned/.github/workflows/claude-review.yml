@@ -1156,13 +1156,19 @@ jobs:
       # still go in, and the skipped ones are counted, so the prompt never
       # says none is resolved when some are. Each thread brings its finding and
       # its newest 29 counted replies, where the decision usually is, picked
-      # from its newest 100 comments after the filter, so replies that don't
-      # count can't push a decision out. It says how many it left out.
+      # from its newest MAX_READ (100) comments after the filter, so fewer
+      # than MAX_READ replies that don't count can't push a decision out. It
+      # says how many it left out.
       #
-      # Accepted limit: someone who can resolve a thread can also argue in its
+      # Accepted limits: someone who can resolve a thread can also argue in its
       # replies for leaving other code alone. The prompt says a thread decides
       # only the problem it raised; past that, that person could resolve the
-      # next finding's thread anyway.
+      # next finding's thread anyway. And anyone who can comment can post
+      # MAX_READ replies after a decision and push it out of what's read:
+      # the prompt then shows the finding and "(N earlier comment(s) not
+      # read)", and Claude may raise it again. That fails safe (it holds the
+      # merge, never merges wrongly), and paging back through a thread's
+      # comments would cost the step's minute.
       #
       # A failed read warns, and the review goes on without them, as before.
       # It has a minute, and each GraphQL call CALL_TIMEOUT seconds. A job
@@ -1304,7 +1310,7 @@ jobs:
               resolver = thread.get("resolvedBy") or None
               name = (resolver or {}).get("login") or "unknown"
               parts = [f"- {where}, raised by {reviewer}, resolved by {name}:", indented(comments[0]["body"])]
-              # Counted before they're cut, so a passer-by's replies can't push a decision out.
+              # Counted before they're cut, so fewer than MAX_READ passer-by replies can't push a decision out.
               counted = [reply for reply in comments[1:] if counts(reply, resolver)]
               if not_read:
                   parts.append(f"  ({not_read} earlier comment(s) not read)")

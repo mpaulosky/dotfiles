@@ -1160,11 +1160,15 @@ jobs:
       # next finding's thread anyway.
       #
       # A failed read warns, and the review goes on without them, as before.
-      # It has a minute, and each GraphQL call CALL_TIMEOUT seconds, so the
-      # step can't take the job past its 30 minutes: the Review step may run
-      # 25 of them, and the diff step's grep up to 2 more. A job past its
-      # limit fails "Review with Claude", which leaves the PR UNSTABLE and
-      # PR Auto-Merge never merges it (mpaulosky/TicketManager#233).
+      # It has a minute, and each GraphQL call CALL_TIMEOUT seconds. A job
+      # past its 30 minutes fails "Review with Claude", which leaves the PR
+      # UNSTABLE, and PR Auto-Merge never merges it
+      # (mpaulosky/TicketManager#233). With this step's minute, the Review
+      # step's 25 and the diff step's grep (USERS_TIMEOUT), 2 minutes are
+      # left for what has no limit of its own: job setup, the full-history
+      # checkout, the diff step's other git calls and the answer check. That
+      # they fit is an assumption, which holds for these repos' size; the
+      # Template's tests check only that the limits leave that room.
       - name: Read the PR's resolved review threads
         id: resolved
         if: steps.secret.outputs.enabled == 'true'

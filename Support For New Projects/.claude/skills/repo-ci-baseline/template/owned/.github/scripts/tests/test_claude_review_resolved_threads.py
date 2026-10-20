@@ -13,7 +13,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "claude-review.yml"
 CLAUDE_REVIEW = "<!-- claude-review -->\nSummary"
@@ -240,12 +239,24 @@ def test_a_hung_read_times_out_and_warns(tmp_path):
     assert "::warning::Couldn't read the PR's review threads (TimeoutExpired)" in out
 
 
+def timeout_after(text, anchor):
+    """The first timeout-minutes at or after the line that is anchor, read without YAML so the test can't skip."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.rstrip() == anchor)
+    return int(next(re.match(r"\s*timeout-minutes: (\d+)$", line)[1] for line in lines[start:]
+                    if re.match(r"\s*timeout-minutes: \d+$", line)))
+
+
 def test_the_step_fits_in_the_review_jobs_time_with_the_review_step():
-    yaml = pytest.importorskip("yaml")
-    job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["review"]
-    steps = {step.get("id"): step for step in job["steps"]}
-    # The diff step's grep can take up to 2 minutes (USERS_TIMEOUT); the rest is checkout and the checks.
-    assert steps["resolved"]["timeout-minutes"] + steps["claude"]["timeout-minutes"] + 2 < job["timeout-minutes"]
-    calls = int(re.search(r"CALL_TIMEOUT = (\d+)", step_script())[1])
-    pages = int(re.search(r"MAX_PAGES = (\d+)", step_script())[1])
-    assert calls * pages < steps["resolved"]["timeout-minutes"] * 60
+    text = WORKFLOW.read_text()
+    job = timeout_after(text, "  review:")
+    resolved = timeout_after(text, "        id: resolved")
+    review = timeout_after(text, "        id: claude")
+    grep = -(-int(re.search(r"USERS_TIMEOUT = (\d+)", text)[1]) // 60)  # the diff step's grep, in whole minutes
+    # The rest (job setup, the checkout, the diff step's other git calls and the answer check) has no limit of its
+    # own; the step's comment assumes it fits in what's left.
+    assert resolved + review + grep < job
+    script = step_script()
+    calls = int(re.search(r"CALL_TIMEOUT = (\d+)", script)[1])
+    pages = int(re.search(r"MAX_PAGES = (\d+)", script)[1])
+    assert calls * pages < resolved * 60

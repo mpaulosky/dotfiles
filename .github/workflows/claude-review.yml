@@ -1176,6 +1176,7 @@ jobs:
           MAX_BYTES = 60_000  # about 15,000 tokens
           MAX_BODY = 3_000    # per comment
           REVIEWERS = {"copilot-pull-request-reviewer", "github-actions"}  # GraphQL logins drop [bot]
+          AUTHOR = os.environ["PR_AUTHOR"].removesuffix("[bot]")  # the event's REST login keeps it, for an app
           QUERY = """
           query($owner: String!, $name: String!, $number: Int!, $after: String) {
             repository(owner: $owner, name: $name) {
@@ -1233,16 +1234,21 @@ jobs:
               return "\n".join("    " + line for line in text.splitlines())
 
 
+          def printable(text):
+              """The text on one line, as the diff step writes paths: a path can hold a newline (mpaulosky/dotfiles#210)."""
+              return "".join(c if c.isprintable() else repr(c)[1:-1] for c in text)
+
+
           def render(thread, reviewer):
               comments = thread["comments"]["nodes"]
-              where = f"{thread['path']}:{thread['line'] or thread['originalLine']}"
+              where = f"{printable(thread['path'] or '')}:{thread['line'] or thread['originalLine']}"
               if thread["isOutdated"]:
                   where += " (raised on an earlier commit; the code there has changed since)"
               resolver = (thread.get("resolvedBy") or {}).get("login")
               parts = [f"- {where}, raised by {reviewer}, resolved by {resolver or 'unknown'}:", indented(comments[0]["body"])]
               for reply in comments[1:]:
                   who = login(reply)
-                  if (who == os.environ["PR_AUTHOR"] or (resolver and who == resolver) or who in REVIEWERS
+                  if (who == AUTHOR or (resolver and who == resolver) or who in REVIEWERS
                           or reply.get("authorAssociation") == "OWNER"):
                       parts += [f"  Reply from {who}:", indented(reply["body"])]
               return "\n".join(parts)

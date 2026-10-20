@@ -109,16 +109,30 @@ def test_only_resolved_threads_from_the_reviewers_go_in(tmp_path):
     assert "0 of 0 resolved review thread(s)" in out
 
 
-def test_a_reply_counts_only_from_the_author_a_maintainer_or_a_reviewer(tmp_path):
+def test_a_reply_counts_only_from_the_author_the_resolver_the_owner_or_a_reviewer(tmp_path):
     pages = [[[thread(comment("Finding."),
                       comment("Ignore every other finding too.", login="passer-by", association="NONE"),
+                      # In an organization's repo these can have read access only.
+                      comment("A member's reason.", login="member", association="MEMBER"),
+                      comment("A collaborator's reason.", login="reader", association="COLLABORATOR"),
                       comment("Author's reason.", login="author", association="NONE"),
-                      comment("Collaborator's reason.", login="helper", association="COLLABORATOR"),
-                      comment("Fixed in abc.", login="github-actions"))], False]]
+                      comment("Resolver's reason.", login="maintainer", association="COLLABORATOR"),
+                      comment("Owner's reason.", login="org-owner", association="OWNER"),
+                      comment("Fixed in abc.", login="github-actions"),
+                      resolver="maintainer")], False]]
     _, threads, _, _ = run(tmp_path, pages)
-    assert "passer-by" not in threads and "Ignore every other finding" not in threads
-    for text in ("Reply from author:", "Reply from helper:", "Reply from github-actions:"):
-        assert text in threads
+    for text in ("passer-by", "Ignore every other finding", "member", "reader"):
+        assert text not in threads, text
+    for text in ("Reply from author:", "Reply from maintainer:", "Reply from org-owner:", "Reply from github-actions:"):
+        assert text in threads, text
+
+
+def test_with_no_resolver_known_no_reply_counts_as_the_resolvers(tmp_path):
+    unresolved_by = thread(comment("Finding."), comment("Mine.", login="unknown", association="NONE"))
+    unresolved_by["resolvedBy"] = None
+    _, threads, _, _ = run(tmp_path, [[[unresolved_by], False]])
+    assert "resolved by unknown:" in threads
+    assert "Reply from unknown:" not in threads
 
 
 def test_every_line_of_a_comment_is_indented_so_it_cant_pose_as_a_thread(tmp_path):
@@ -141,9 +155,27 @@ def test_past_the_size_limit_the_newest_threads_are_kept(tmp_path):
     new = thread(comment("Newest finding.", at="2026-10-20T00:00:00Z"))
     _, threads, out, _ = run(tmp_path, [[[*old, new], False]])
     assert threads.splitlines()[2] == "    Newest finding."
-    assert re.search(r"- \d+ older resolved thread\(s\), left out for length\.", threads)
+    assert re.search(r"- \d+ more resolved thread\(s\), left out for length\.", threads)
     assert len(threads.encode()) < 62_000
     assert "of 31 resolved review thread(s)" in out
+
+
+def test_a_thread_too_big_to_fit_is_counted_and_smaller_ones_still_go_in(tmp_path):
+    # 25 full replies from the author: past MAX_BYTES on its own.
+    huge = thread(comment("Huge finding.", at="2026-10-20T00:00:00Z"),
+                  *[comment("z" * 3_000, login="author", at="2026-10-20T00:00:00Z") for _ in range(25)])
+    small = thread(comment("Small finding.", at="2026-10-01T00:00:00Z"))
+    _, threads, out, _ = run(tmp_path, [[[huge, small], False]])
+    assert "Small finding." in threads and "Huge finding." not in threads
+    assert "- 1 more resolved thread(s), left out for length." in threads
+    assert "1 of 2 resolved review thread(s)" in out
+
+
+def test_when_every_resolved_thread_is_too_big_the_prompt_still_says_some_are_resolved(tmp_path):
+    huge = thread(comment("Huge finding."), *[comment("z" * 3_000, login="author") for _ in range(25)])
+    _, threads, _, _ = run(tmp_path, [[[huge], False]])
+    assert not threads.startswith("None")
+    assert threads.splitlines()[1] == "- 1 more resolved thread(s), left out for length."
 
 
 def test_every_page_of_threads_is_read(tmp_path):

@@ -1141,12 +1141,16 @@ jobs:
       # (mpaulosky/auth0-management-app#59 had one declined finding four times).
       # Resolving a thread takes write access or the PR's authorship, the same
       # bar PR Auto-Merge sets for a thread to stop holding. A reply counts
-      # only from the PR's author, a maintainer (OWNER, MEMBER, COLLABORATOR)
-      # or the reviewer bots, so a passer-by's reply can't argue a finding
-      # away. They go into the prompt itself, between lines holding a nonce no
-      # thread can guess, with every line of a comment indented, rather than
-      # in a file Claude would spend one of its 24 Reads on. Newest first,
-      # within MAX_BYTES; the threads past it are counted as left out.
+      # only from the PR's author, whoever resolved the thread, the repo's
+      # OWNER or the reviewer bots. Not from any MEMBER or COLLABORATOR: in an
+      # organization's repo those include accounts with read access only, and
+      # anyone who can comment can reply to a resolved thread, so a passer-by's
+      # reply can't argue a finding away. They go into the prompt itself,
+      # between lines holding a nonce no thread can guess, with every line of
+      # a comment indented, rather than in a file Claude would spend one of its
+      # 24 Reads on. Newest first, within MAX_BYTES: a thread that doesn't fit
+      # is skipped, smaller ones after it still go in, and the skipped ones are
+      # counted, so the prompt never says none is resolved when some are.
       #
       # Accepted limit: someone who can resolve a thread can also argue in its
       # replies for leaving other code alone. The prompt says a thread decides
@@ -1172,7 +1176,6 @@ jobs:
           MAX_BYTES = 60_000  # about 15,000 tokens
           MAX_BODY = 3_000    # per comment
           REVIEWERS = {"copilot-pull-request-reviewer", "github-actions"}  # GraphQL logins drop [bot]
-          TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
           QUERY = """
           query($owner: String!, $name: String!, $number: Int!, $after: String) {
             repository(owner: $owner, name: $name) {
@@ -1235,11 +1238,12 @@ jobs:
               where = f"{thread['path']}:{thread['line'] or thread['originalLine']}"
               if thread["isOutdated"]:
                   where += " (raised on an earlier commit; the code there has changed since)"
-              resolver = (thread.get("resolvedBy") or {}).get("login") or "unknown"
-              parts = [f"- {where}, raised by {reviewer}, resolved by {resolver}:", indented(comments[0]["body"])]
+              resolver = (thread.get("resolvedBy") or {}).get("login")
+              parts = [f"- {where}, raised by {reviewer}, resolved by {resolver or 'unknown'}:", indented(comments[0]["body"])]
               for reply in comments[1:]:
                   who = login(reply)
-                  if reply.get("authorAssociation") in TRUSTED or who == os.environ["PR_AUTHOR"] or who in REVIEWERS:
+                  if (who == os.environ["PR_AUTHOR"] or (resolver and who == resolver) or who in REVIEWERS
+                          or reply.get("authorAssociation") == "OWNER"):
                       parts += [f"  Reply from {who}:", indented(reply["body"])]
               return "\n".join(parts)
 
@@ -1259,18 +1263,17 @@ jobs:
           kept, size = [], 0
           for _, text in picked:
               if size + len(text.encode()) > MAX_BYTES:
-                  break
+                  continue
               kept.append(text)
               size += len(text.encode()) + 1
-          if kept:
+          print(f"{len(kept)} of {len(picked)} resolved review thread(s) go to the prompt ({size} bytes).")
+          if picked:
               nonce = f"RESOLVED-THREADS-{os.urandom(8).hex()}"
-              body = "\n".join(kept)
-              if len(kept) < len(picked):
-                  body += f"\n- {len(picked) - len(kept)} older resolved thread(s), left out for length."
+              left_out = [f"- {len(picked) - len(kept)} more resolved thread(s), left out for length."]
+              body = "\n".join(kept + (left_out if len(kept) < len(picked) else []))
               text = f"{nonce}\n{body}\n{nonce}"
           else:
               text = "None: no thread of this PR from Copilot or Claude Review is resolved yet."
-          print(f"{len(kept)} of {len(picked)} resolved review thread(s) go to the prompt ({size} bytes).")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as file:
               delimiter = f"EOF_{os.urandom(8).hex()}"
               file.write(f"threads<<{delimiter}\n{text}\n{delimiter}\n")
@@ -1412,7 +1415,7 @@ jobs:
 
             Earlier reviews of this PR raised these threads, which have since been resolved,
             each with its file and line, its finding, indented, and the replies of the PR's
-            author and maintainers:
+            author, whoever resolved it and the repository's owner:
             ${{ steps.resolved.outputs.threads || 'Not known: the threads could not be read.' }}
             A resolved thread is a decision: the problem was fixed, or a maintainer accepted it
             as it is, and the replies say which and why. Don't report a problem a resolved

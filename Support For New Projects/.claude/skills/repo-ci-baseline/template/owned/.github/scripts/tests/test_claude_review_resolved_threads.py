@@ -240,11 +240,32 @@ def test_a_hung_read_times_out_and_warns(tmp_path):
 
 
 def timeout_after(text, anchor):
-    """The first timeout-minutes at or after the line that is anchor, read without YAML so the test can't skip."""
+    """The timeout-minutes of the step or job whose line is anchor, read without YAML so the test can't skip.
+
+    The scan stops where that step or job ends, so a later one's limit can't stand in for a missing one."""
     lines = text.splitlines()
     start = next(i for i, line in enumerate(lines) if line.rstrip() == anchor)
-    return int(next(re.match(r"\s*timeout-minutes: (\d+)$", line)[1] for line in lines[start:]
-                    if re.match(r"\s*timeout-minutes: \d+$", line)))
+    job = not anchor.startswith("      ")
+    for line in lines[start + 1:]:
+        if re.match(r"  \S", line) or (not job and re.match(r"\s{6}- ", line)):
+            break
+        found = re.match(r"\s*timeout-minutes: (\d+)$", line)
+        if found and (len(line) - len(line.lstrip())) == (4 if job else 8):
+            return int(found[1])
+    raise AssertionError(f"no timeout-minutes for {anchor.strip()!r}")
+
+
+def test_timeout_after_reads_only_its_own_step():
+    text = "  review:\n    timeout-minutes: 30\n    steps:\n      - name: A\n        id: a\n      - name: B\n        id: b\n" \
+           "        timeout-minutes: 5\n"
+    assert timeout_after(text, "  review:") == 30
+    assert timeout_after(text, "        id: b") == 5
+    try:
+        timeout_after(text, "        id: a")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("a step without its own limit took the next step's")
 
 
 def test_the_step_fits_in_the_review_jobs_time_with_the_review_step():

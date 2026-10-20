@@ -1209,7 +1209,7 @@ jobs:
                   pageInfo { hasPreviousPage startCursor }
                   nodes {
                     isResolved isOutdated path line originalLine
-                    resolvedBy { login __typename }
+                    resolvedBy { login }
                     finding: comments(first: 1) { nodes { ...comment } }
                     replies: comments(last: MAX_READ) { totalCount nodes { ...comment } }
                   }
@@ -1291,7 +1291,8 @@ jobs:
               """Whether reply is the PR's author's, the resolver's, the repo owner's or a reviewer bot's."""
               who = login(reply)
               return ((who == AUTHOR and kind(reply) == AUTHOR_KIND)
-                      or (resolver is not None and who == resolver.get("login") and kind(reply) == resolver.get("__typename"))
+                      # The schema types resolvedBy as a User, so only a person's account can be the resolver.
+                      or (resolver is not None and who == resolver.get("login") and kind(reply) == "User")
                       or (who in REVIEWERS and kind(reply) == "Bot")
                       or reply.get("authorAssociation") == "OWNER")
 

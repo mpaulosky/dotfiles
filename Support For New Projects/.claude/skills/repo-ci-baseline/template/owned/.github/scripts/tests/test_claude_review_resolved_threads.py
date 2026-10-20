@@ -55,9 +55,9 @@ def comment(body, login="github-actions", association="NONE", review=CLAUDE_REVI
             "authorAssociation": association, "body": body, "createdAt": at, "pullRequestReview": {"body": review}}
 
 
-def thread(*comments, resolved=True, path="src/App.cs", line=12, outdated=False, resolver="owner", resolver_kind="User"):
+def thread(*comments, resolved=True, path="src/App.cs", line=12, outdated=False, resolver="owner"):
     return {"isResolved": resolved, "isOutdated": outdated, "path": path, "line": None if outdated else line,
-            "originalLine": line, "resolvedBy": {"login": resolver, "__typename": resolver_kind} if resolved else None,
+            "originalLine": line, "resolvedBy": {"login": resolver} if resolved else None,
             # As the step's query asks: the first comment, and the newest 100 with the thread's count.
             "finding": {"nodes": list(comments[:1])},
             "replies": {"totalCount": len(comments), "nodes": list(comments[-100:])}}
@@ -346,16 +346,18 @@ def test_the_copilot_coding_agents_replies_count_on_a_pr_it_opened(tmp_path):
     assert "  Reply from Copilot:" in threads
 
 
-def test_an_apps_replies_count_when_the_app_resolved_the_thread(tmp_path):
-    pages = [[[thread(comment("Finding."), comment("Fixed in abc.", login="agent", kind="Bot"),
-                      resolver="agent", resolver_kind="Bot")], False]]
-    _, threads, _, _ = run(tmp_path, pages)
-    assert "  Reply from agent:" in threads
+def test_when_no_resolver_is_given_an_apps_reply_counts_only_as_author_or_reviewer(tmp_path):
+    # GitHub types resolvedBy as a User, so an app that resolves a thread leaves it null.
+    by_app = thread(comment("Finding."), comment("Fixed in abc.", login="agent", kind="Bot"),
+                    comment("Done.", login="some-app", kind="Bot"))
+    by_app["resolvedBy"] = None
+    _, threads, _, _ = run(tmp_path, [[[by_app], False]], author="some-app[bot]")
+    assert "resolved by unknown:" in threads
+    assert "Fixed in abc." not in threads and "  Reply from some-app:" in threads
 
 
-def test_a_user_named_like_a_bot_resolver_doesnt_count_as_the_resolver(tmp_path):
-    pages = [[[thread(comment("Finding."), comment("Accepted.", login="agent", kind="User"),
-                      resolver="agent", resolver_kind="Bot")], False]]
+def test_a_bot_named_like_the_resolver_doesnt_count_as_the_resolver(tmp_path):
+    pages = [[[thread(comment("Finding."), comment("Accepted.", login="owner", kind="Bot"), resolver="owner")], False]]
     _, threads, _, _ = run(tmp_path, pages)
     assert "Accepted." not in threads
 

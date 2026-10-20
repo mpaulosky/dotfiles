@@ -13,6 +13,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "claude-review.yml"
 CLAUDE_REVIEW = "<!-- claude-review -->\nSummary"
 
@@ -21,6 +22,9 @@ import json, os, sys
 pages = json.loads(open(os.environ["FAKE_PAGES"]).read())
 if pages == "fail":
     sys.exit("gh: HTTP 502")
+if pages == "hang":
+    import time
+    time.sleep(30)
 before = next((arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("before=")), None)
 with open(os.environ["FAKE_CALLS"], "a") as calls:
     calls.write(json.dumps(sys.argv[1:]) + "\\n")
@@ -52,7 +56,7 @@ def thread(*comments, resolved=True, path="src/App.cs", line=12, outdated=False,
             "comments": {"nodes": list(comments)}}
 
 
-def run(tmp_path, pages, author="author"):
+def run(tmp_path, pages, author="author", script=None):
     """Run the step: (exit code, its threads output, what it printed, the gh calls)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -67,7 +71,7 @@ def run(tmp_path, pages, author="author"):
     env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_PAGES": str(tmp_path / "pages.json"),
            "FAKE_CALLS": str(calls), "GITHUB_OUTPUT": str(output), "REPOSITORY": "owner/repo", "PR_NUMBER": "59",
            "PR_AUTHOR": author}
-    result = subprocess.run([sys.executable, "-I", "-"], input=step_script(), env=env, capture_output=True,
+    result = subprocess.run([sys.executable, "-I", "-"], input=script or step_script(), env=env, capture_output=True,
                             text=True)
     written = output.read_text()
     found = re.search(r"^threads<<(EOF_[0-9a-f]+)\n(.*?)\n\1\n", written, re.S | re.M)
@@ -224,3 +228,56 @@ def test_past_the_page_limit_the_prompt_says_older_threads_went_unread(tmp_path)
     assert not threads.startswith("None")
     assert threads.splitlines()[1] == "- Threads older than the PR's newest 300 weren't read, and some may be resolved."
     assert "only the newest 300 are read" in out
+
+
+def test_a_hung_read_times_out_and_warns(tmp_path):
+    # The step's 15 s per call, shortened so the test doesn't wait for it.
+    script = step_script()
+    assert script.count("CALL_TIMEOUT = 15") == 1
+    code, threads, out, _ = run(tmp_path, "hang", script=script.replace("CALL_TIMEOUT = 15", "CALL_TIMEOUT = 1"))
+    assert code != 0 and threads is None
+    assert "::warning::Couldn't read the PR's review threads (TimeoutExpired)" in out
+
+
+def timeout_after(text, anchor):
+    """The timeout-minutes of the step or job whose line is anchor, read without YAML so the test can't skip.
+
+    The scan stops where that step or job ends, so a later one's limit can't stand in for a missing one."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.rstrip() == anchor)
+    job = not anchor.startswith("      ")
+    for line in lines[start + 1:]:
+        if re.match(r"  \S", line) or (not job and re.match(r"\s{6}- ", line)):
+            break
+        found = re.match(r"\s*timeout-minutes: (\d+)$", line)
+        if found and (len(line) - len(line.lstrip())) == (4 if job else 8):
+            return int(found[1])
+    raise AssertionError(f"no timeout-minutes for {anchor.strip()!r}")
+
+
+def test_timeout_after_reads_only_its_own_step():
+    text = "  review:\n    timeout-minutes: 30\n    steps:\n      - name: A\n        id: a\n      - name: B\n        id: b\n" \
+           "        timeout-minutes: 5\n"
+    assert timeout_after(text, "  review:") == 30
+    assert timeout_after(text, "        id: b") == 5
+    try:
+        timeout_after(text, "        id: a")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("a step without its own limit took the next step's")
+
+
+def test_the_step_fits_in_the_review_jobs_time_with_the_review_step():
+    text = WORKFLOW.read_text()
+    job = timeout_after(text, "  review:")
+    resolved = timeout_after(text, "        id: resolved")
+    review = timeout_after(text, "        id: claude")
+    grep = -(-int(re.search(r"USERS_TIMEOUT = (\d+)", text)[1]) // 60)  # the diff step's grep, in whole minutes
+    # The rest (job setup, the checkout, the diff step's other git calls and the answer check) has no limit of its
+    # own; the step's comment assumes it fits in what's left.
+    assert resolved + review + grep < job
+    script = step_script()
+    calls = int(re.search(r"CALL_TIMEOUT = (\d+)", script)[1])
+    pages = int(re.search(r"MAX_PAGES = (\d+)", script)[1])
+    assert calls * pages < resolved * 60

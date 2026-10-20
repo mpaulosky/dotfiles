@@ -1160,11 +1160,20 @@ jobs:
       # next finding's thread anyway.
       #
       # A failed read warns, and the review goes on without them, as before.
+      # It has a minute, and each GraphQL call CALL_TIMEOUT seconds. A job
+      # past its 30 minutes fails "Review with Claude", which leaves the PR
+      # UNSTABLE, and PR Auto-Merge never merges it
+      # (mpaulosky/TicketManager#233). With this step's minute, the Review
+      # step's 25 and the diff step's grep (USERS_TIMEOUT), 2 minutes are
+      # left for what has no limit of its own: job setup, the full-history
+      # checkout, the diff step's other git calls and the answer check. That
+      # they fit is an assumption, which holds for these repos' size; the
+      # Template's tests check only that the limits leave that room.
       - name: Read the PR's resolved review threads
         id: resolved
         if: steps.secret.outputs.enabled == 'true'
         continue-on-error: true
-        timeout-minutes: 5
+        timeout-minutes: 1
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -1175,6 +1184,7 @@ jobs:
           import json, os, subprocess
 
           MAX_PAGES = 3       # of 100 threads
+          CALL_TIMEOUT = 15   # seconds per page, so the pages fit in the step's minute
           MAX_BYTES = 60_000  # about 15,000 tokens
           MAX_BODY = 3_000    # per comment
           REVIEWERS = {"copilot-pull-request-reviewer", "github-actions"}  # GraphQL logins drop [bot]
@@ -1208,7 +1218,8 @@ jobs:
                           "-F", f"number={os.environ['PR_NUMBER']}"]
                   if before:
                       args += ["-f", f"before={before}"]
-                  page = json.loads(subprocess.run(args, capture_output=True, text=True, check=True).stdout)
+                  page = json.loads(subprocess.run(args, capture_output=True, text=True, check=True,
+                                                   timeout=CALL_TIMEOUT).stdout)
                   found = page["data"]["repository"]["pullRequest"]["reviewThreads"]
                   nodes += found["nodes"]
                   if not found["pageInfo"]["hasPreviousPage"]:
@@ -1267,7 +1278,7 @@ jobs:
                   reviewer = reviewer_of(comments[0]) if comments else None
                   if thread["isResolved"] and reviewer:
                       picked.append((comments[-1]["createdAt"], render(thread, reviewer)))
-          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
+          except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError) as error:
               print(f"::warning::Couldn't read the PR's review threads ({type(error).__name__}), so Claude may raise "
                     "a finding a maintainer already resolved.")
               raise

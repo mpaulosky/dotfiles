@@ -44,6 +44,12 @@ def untold(tmp_path, text, name="script.sh"):
     "export GH_REPO=\"$GITHUB_REPOSITORY\"\ngh pr view 1\n",
     "export GH_REPO=$repo\ngh pr view 1\n",
     "GH_REPO=\"$repo\" gh api repos/{owner}/{repo}/pulls\n",
+    # The hidden subcommand can be gh repo view, which ignores GH_REPO.
+    "export GH_REPO=o/r\ngh_() { gh \"$@\"; }\ngh_ repo view --json name\n",
+    "export GH_REPO=o/r\ngh $sub view\n",
+    # A character bash doesn't end a line on hides no export behind it.
+    "echo x\u2028export GH_REPO=o/r\ngh pr view 1\n",
+    "echo x\x0cexport GH_REPO=o/r\ngh pr view 1\n",
     # An export that runs only sometimes.
     "if [[ -n \"${CI:-}\" ]]; then\n  export GH_REPO=o/r\nfi\ngh pr view 1\n",
 ])
@@ -62,7 +68,6 @@ def test_untold_refuses_a_gh_command_not_told_its_repository(tmp_path, text):
     "GH_REPO=o/r gh pr view 1\n",
     "GH_REPO=\"${repo:?}\" gh api repos/{owner}/{repo}/pulls\n",
     "export GH_REPO=o/r\nif command -v gh\n",
-    "export GH_REPO=o/r\ngh_() { gh \"$@\"; }\n",
     "echo \"needs gh.\"\n",
     "# gh pr view 1 is how you'd look\n",
     "echo hi\n",
@@ -124,6 +129,23 @@ def test_untold_names_the_file_and_line(tmp_path):
 
     # Assert
     assert found == [f"{tmp_path / 'gate.sh'}:2: gh pr view 1"]
+
+
+@pytest.mark.parametrize("separator", ["\x0c", "\x0b", "\x1c", "\x85", "\u2028"])
+def test_untold_counts_lines_as_bash_does(tmp_path, separator):
+    # Arrange, Act
+    found = untold(tmp_path, f"echo a{separator}b\ngh pr view 1\n", name="gate.sh")
+
+    # Assert
+    assert found == [f"{tmp_path / 'gate.sh'}:2: gh pr view 1"]
+
+
+def test_untold_reads_crlf_line_endings(tmp_path):
+    # Arrange, Act
+    found = untold(tmp_path, "export GH_REPO=o/r\r\ngh pr view 1\r\ngh repo view\r\n", name="gate.sh")
+
+    # Assert
+    assert found == [f"{tmp_path / 'gate.sh'}:3: gh repo view"]
 
 
 def test_untold_skips_a_file_that_isnt_text(tmp_path):

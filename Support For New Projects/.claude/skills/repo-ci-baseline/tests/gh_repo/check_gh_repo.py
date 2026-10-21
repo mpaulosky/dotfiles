@@ -11,18 +11,23 @@ same rule:
   or a function), alone on its line but for a comment, before its first gh
   command, or writes GH_REPO=<value> as the prefix of the gh command itself;
 - the value is literal, or a variable written ${NAME:?}, which stops the script
-  when it's empty: gh ignores an empty GH_REPO, and GITHUB_REPOSITORY, say, is
-  set only in Actions;
+  when it's empty, since gh ignores an empty GH_REPO. GITHUB_REPOSITORY is set
+  only in Actions, so a script that also runs locally falls back to a remote
+  first (references/gotchas.md has the lines) and guards the result;
 - gh repo's subcommands don't read GH_REPO, so each takes the repository as its
   first argument, the same literal or ${NAME:?}. view and edit have no -R. list,
   create, clone, gitignore and license name their own or need none, and rename,
   deploy-key and autolink read GH_REPO like any other gh command;
-- gh is called by name, with its subcommand written out on the same line: a gh
-  whose subcommand comes from a variable ("$@", a wrapper) or the next line
-  hides it, so it counts only once the script has exported GH_REPO, and a
-  backslash continuation never does.
+- gh is called by name, with its subcommand written out on the same line. A gh
+  followed by an expansion ("$@", $sub, a wrapper's body) or a backslash
+  continuation hides a subcommand that may be repo view, which ignores
+  GH_REPO, so it's refused even after an export. A bare gh (command -v gh)
+  counts once the script has exported GH_REPO.
 
 Whole-line comments are skipped, and so are files that aren't UTF-8 text.
+Lines end only at a newline, as bash's do (an optional \r before it is
+dropped), so a form feed or U+2028 can't put an export at the start of a line
+bash never sees.
 
     python3 check_gh_repo.py <dir>...
 
@@ -43,7 +48,8 @@ TOLD = re.compile(r"(^|[^A-Za-z0-9_])GH_REPO=" + VALUE + r"[ \t]+$")
 GH = re.compile(r"(?<![A-Za-z0-9_.-])gh(?![A-Za-z0-9_.-])")
 # Its subcommand, written out.
 SUBCOMMAND = re.compile(r"[ \t]+(?=[a-z-])")
-CONTINUED = re.compile(r"[ \t]*\\$")
+# A backslash continuation, or a word gh's subcommand could come from.
+HIDDEN = re.compile(r"""[ \t]*(\\$|["'`$])""")
 REPO = re.compile(r"repo([^A-Za-z0-9_-]|$)")
 NAMES_ITS_OWN = re.compile(r"repo[ \t]+(list|create|clone|gitignore|license)\b")
 READS_GH_REPO = re.compile(r"repo[ \t]+(rename|deploy-key|autolink)\b")
@@ -55,7 +61,8 @@ NAMED = re.compile(r"repo[ \t]+[a-z-]+[ \t]+(?!-)" + VALUE)
 def untold(path):
     """Each line of path with a gh command not told its repository, as file:line: text."""
     try:
-        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        # Not splitlines(), which also breaks at characters bash doesn't.
+        lines = [line.removesuffix("\r") for line in Path(path).read_text(encoding="utf-8").split("\n")]
     except UnicodeDecodeError:
         return []
     found = []
@@ -70,7 +77,7 @@ def untold(path):
             subcommand = SUBCOMMAND.match(after)
             rest = after[subcommand.end():] if subcommand else ""
             if not subcommand:
-                told = exported and not CONTINUED.match(after)
+                told = exported and not HIDDEN.match(after)
             elif REPO.match(rest) and not READS_GH_REPO.match(rest):
                 named = NAMED.match(rest)
                 repository = named.group(1) if named else ""

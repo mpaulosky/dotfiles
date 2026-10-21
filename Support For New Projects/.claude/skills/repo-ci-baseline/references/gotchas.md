@@ -79,10 +79,14 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   `node --test '.github/scripts/tests/*.test.mjs'`.
 - **Tell every `gh` command its repository** in the Owned `scripts/`. Without it gh uses its default repository, which in
   a clone whose only remote is a fork is the fork, and a Baseline repo's gate refuses such a command in files it can't
-  edit (mpaulosky/dotfiles#267). Export `GH_REPO` (from `GITHUB_REPOSITORY`, say), alone on its line, before the
-  script's first `gh` command, or write `GH_REPO=<repo> gh ...`, and keep each `gh` command on one line. `gh repo`'s
-  subcommands don't read `GH_REPO`: give them the repository as their first argument or `-R` (`list`, `create` and
-  `clone` name their own). `test.sh` checks it with `tests/gh_repo/check_gh_repo.py`.
+  edit (mpaulosky/dotfiles#267). Export `GH_REPO` at the top level, alone on its line, before the script's first `gh`
+  command, or write `GH_REPO=<repo> gh ...`. gh ignores an empty `GH_REPO`, and `GITHUB_REPOSITORY` is set only in
+  Actions, not when the pre-push hook runs `gate.sh`, so write a variable as `${NAME:?}`, which stops the script when
+  it's empty: `export GH_REPO="${GITHUB_REPOSITORY:?}"`. Call `gh` by name with its subcommand on the same line, not
+  through `"$@"`, a wrapper or a backslash continuation. `gh repo view`, `edit` and most other `gh repo` subcommands
+  don't read `GH_REPO` and have no `-R`: give them the repository as their first argument (`list`, `create`, `clone`,
+  `gitignore` and `license` name their own or need none, while `rename`, `deploy-key` and `autolink` read `GH_REPO`).
+  `test.sh` checks it with `tests/gh_repo/check_gh_repo.py`.
 - **Script tests need pytest,** which the system Python may lack. `uvx pytest -q .github/scripts/tests` runs them
   without installing anything.
 

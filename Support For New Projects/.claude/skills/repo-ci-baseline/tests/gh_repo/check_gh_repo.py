@@ -7,15 +7,20 @@ a clone whose only remote is a fork that's the fork. A Baseline repo's gate
 can't edit the Owned files that hold one, so the Template keeps its own to the
 same rule:
 
-- a script exports GH_REPO, alone on its line but for a comment, with a value
-  that isn't empty, before its first gh command, or writes GH_REPO=<value> as
-  the prefix of the gh command itself;
+- a script exports GH_REPO at the top level (in column 0, so not inside an if
+  or a function), alone on its line but for a comment, before its first gh
+  command, or writes GH_REPO=<value> as the prefix of the gh command itself;
+- the value is literal, or a variable written ${NAME:?}, which stops the script
+  when it's empty: gh ignores an empty GH_REPO, and GITHUB_REPOSITORY, say, is
+  set only in Actions;
 - gh repo's subcommands don't read GH_REPO, so each takes the repository as its
-  first argument (or -R, --repo), except list, create and clone, which name
-  their own;
-- a gh command stays on one line: a line that ends in gh, or continues it with
-  a backslash, hides its command, unless the script has exported GH_REPO
-  (command -v gh).
+  first argument, the same literal or ${NAME:?}. view and edit have no -R. list,
+  create, clone, gitignore and license name their own or need none, and rename,
+  deploy-key and autolink read GH_REPO like any other gh command;
+- gh is called by name, with its subcommand written out on the same line: a gh
+  whose subcommand comes from a variable ("$@", a wrapper) or the next line
+  hides it, so it counts only once the script has exported GH_REPO, and a
+  backslash continuation never does.
 
 Whole-line comments are skipped, and so are files that aren't UTF-8 text.
 
@@ -28,18 +33,23 @@ import re
 import sys
 from pathlib import Path
 
-# A value gh receives: quoted and not empty, or bare up to the next blank.
-VALUE = r"""("[^" \t]+"|'[^' \t]+'|[^ \t`"';&|,()<>]+)"""
-EXPORTS = re.compile(r"^[ \t]*export GH_REPO=" + VALUE + r"[ \t]*(;[ \t]*)?(#.*)?$")
+# A value that's never empty: literal (quoted or bare, with no expansion), or
+# ${NAME:?...}, which stops the script when NAME is empty.
+VALUE = (r"""("[^"$` \t]+"|'[^' \t]+'|[^ \t`"'$;&|,()<>]+"""
+         r"""|"?\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}"'`]*\}"?)""")
+EXPORTS = re.compile(r"^export GH_REPO=" + VALUE + r"[ \t]*(;[ \t]*)?(#.*)?$")
 TOLD = re.compile(r"(^|[^A-Za-z0-9_])GH_REPO=" + VALUE + r"[ \t]+$")
-COMMAND = re.compile(r"(?<![A-Za-z0-9_.-])gh[ \t]+(?=[a-z-])")
-HIDDEN = re.compile(r"(?<![A-Za-z0-9_.-])gh[ \t]*\\$")
-BARE = re.compile(r"(?<![A-Za-z0-9_.-])gh[ \t]*$")
+# gh as a word: not part of gh_, neigh or gh.exe.
+GH = re.compile(r"(?<![A-Za-z0-9_.-])gh(?![A-Za-z0-9_.-])")
+# Its subcommand, written out.
+SUBCOMMAND = re.compile(r"[ \t]+(?=[a-z-])")
+CONTINUED = re.compile(r"[ \t]*\\$")
 REPO = re.compile(r"repo([^A-Za-z0-9_-]|$)")
-NAMES_ITS_OWN = re.compile(r"repo[ \t]+(list|create|clone)\b")
-# gh repo <subcommand>, then its repository: o/r (bare or quoted), a variable,
-# or -R and --repo.
-NAMED = re.compile(r"""repo[ \t]+[a-z-]+[ \t]+(["']?[^- \t<>`"'$&|;(][^ \t`<>&|;"']*/|"?\$|-R[ =]|--repo[ =])""")
+NAMES_ITS_OWN = re.compile(r"repo[ \t]+(list|create|clone|gitignore|license)\b")
+READS_GH_REPO = re.compile(r"repo[ \t]+(rename|deploy-key|autolink)\b")
+# gh repo <subcommand>, then a value that isn't a flag: its repository when
+# it's owner/repo or ${NAME:?}.
+NAMED = re.compile(r"repo[ \t]+[a-z-]+[ \t]+(?!-)" + VALUE)
 
 
 def untold(path):
@@ -55,13 +65,16 @@ def untold(path):
             continue
         if EXPORTS.match(line):
             exported = True
-        if HIDDEN.search(line) or (not exported and BARE.search(line)):
-            found.append(f"{path}:{number}: {line}")
-            continue
-        for match in COMMAND.finditer(line):
-            before, rest = line[:match.start()], line[match.end():]
-            if REPO.match(rest):
-                told = NAMES_ITS_OWN.match(rest) or NAMED.match(rest)
+        for match in GH.finditer(line):
+            before, after = line[:match.start()], line[match.end():]
+            subcommand = SUBCOMMAND.match(after)
+            rest = after[subcommand.end():] if subcommand else ""
+            if not subcommand:
+                told = exported and not CONTINUED.match(after)
+            elif REPO.match(rest) and not READS_GH_REPO.match(rest):
+                named = NAMED.match(rest)
+                repository = named.group(1) if named else ""
+                told = NAMES_ITS_OWN.match(rest) or "/" in repository or "${" in repository
             else:
                 told = exported or TOLD.search(before)
             if not told:

@@ -35,6 +35,17 @@ def untold(tmp_path, text, name="script.sh"):
     "export GH_REPO=o/r && gh pr view 1\n",
     "gh \\\n  pr view 1\n",
     "if command -v gh\n",
+    # The subcommand arrives through a variable or a wrapper.
+    "gh \"$@\"\n",
+    "gh $sub view 1\n",
+    "gh \"${args[@]}\"\n",
+    "gh_() { (cd \"$primary\" && gh \"$@\"); }\ngh_ pr view 1\n",
+    # A variable that's empty where the script runs leaves gh its default.
+    "export GH_REPO=\"$GITHUB_REPOSITORY\"\ngh pr view 1\n",
+    "export GH_REPO=$repo\ngh pr view 1\n",
+    "GH_REPO=\"$repo\" gh api repos/{owner}/{repo}/pulls\n",
+    # An export that runs only sometimes.
+    "if [[ -n \"${CI:-}\" ]]; then\n  export GH_REPO=o/r\nfi\ngh pr view 1\n",
 ])
 def test_untold_refuses_a_gh_command_not_told_its_repository(tmp_path, text):
     # Arrange, Act
@@ -45,11 +56,14 @@ def test_untold_refuses_a_gh_command_not_told_its_repository(tmp_path, text):
 
 
 @pytest.mark.parametrize("text", [
-    "export GH_REPO=\"$GITHUB_REPOSITORY\"\ngh pr view 1\n",
+    "export GH_REPO=\"${GITHUB_REPOSITORY:?}\"\ngh pr view 1\n",
+    "export GH_REPO=${GITHUB_REPOSITORY:?set it}\ngh pr view 1\n",
     "export GH_REPO=o/r  # the repository\ngh issue list\n",
     "GH_REPO=o/r gh pr view 1\n",
-    "GH_REPO=\"$repo\" gh api repos/{owner}/{repo}/pulls\n",
+    "GH_REPO=\"${repo:?}\" gh api repos/{owner}/{repo}/pulls\n",
     "export GH_REPO=o/r\nif command -v gh\n",
+    "export GH_REPO=o/r\ngh_() { gh \"$@\"; }\n",
+    "echo \"needs gh.\"\n",
     "# gh pr view 1 is how you'd look\n",
     "echo hi\n",
     "neigh pr\nhigh api\n",
@@ -64,10 +78,14 @@ def test_untold_accepts_a_gh_command_told_its_repository(tmp_path, text):
 
 @pytest.mark.parametrize("text", [
     "gh repo view o/r\n",
-    "gh repo view \"$repo\"\n",
-    "gh repo edit -R o/r --enable-auto-merge\n",
-    "gh repo view --repo=o/r\n",
+    "gh repo view \"${repo:?}\"\n",
+    "gh repo edit o/r --enable-auto-merge\n",
     "gh repo list mpaulosky\n",
+    "gh repo gitignore list\n",
+    "gh repo license view mit\n",
+    # rename, deploy-key and autolink read GH_REPO, like gh pr.
+    "export GH_REPO=o/r\ngh repo rename new-name\n",
+    "GH_REPO=o/r gh repo deploy-key list\n",
     "gh repo create o/r --private\n",
     "gh repo clone o/r\n",
 ])
@@ -83,9 +101,14 @@ def test_untold_accepts_gh_repo_naming_its_repository(tmp_path, text):
     "gh repo view\n",
     "gh repo view --json name\n",
     "gh repo\n",
-    # GH_REPO doesn't reach gh repo's subcommands.
+    # GH_REPO doesn't reach view, edit and most of gh repo's subcommands.
     "export GH_REPO=o/r\ngh repo view\n",
     "GH_REPO=o/r gh repo view --json name\n",
+    # view and edit have no -R or --repo; gh refuses them as unknown flags.
+    "gh repo edit -R o/r --enable-auto-merge\n",
+    "gh repo view --repo=o/r\n",
+    "gh repo view \"$repo\"\n",
+    "gh repo rename new-name\n",
 ])
 def test_untold_refuses_gh_repo_without_its_repository(tmp_path, text):
     # Arrange, Act

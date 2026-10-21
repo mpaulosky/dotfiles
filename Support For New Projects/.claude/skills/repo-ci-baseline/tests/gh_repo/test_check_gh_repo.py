@@ -50,6 +50,16 @@ def untold(tmp_path, text, name="script.sh"):
     # A character bash doesn't end a line on hides no export behind it.
     "echo x\u2028export GH_REPO=o/r\ngh pr view 1\n",
     "echo x\x0cexport GH_REPO=o/r\ngh pr view 1\n",
+    # A redirection or a brace expansion before the subcommand hides it.
+    "export GH_REPO=o/r\ngh 2>/dev/null repo view --json name\n",
+    "export GH_REPO=o/r\ngh >\"$log\" repo edit o\n",
+    "export GH_REPO=o/r\ngh {repo,} view\n",
+    # Emptied or removed after the export.
+    "export GH_REPO=o/r\nGH_REPO= gh pr view 1\n",
+    "export GH_REPO=o/r\nunset GH_REPO\ngh pr view 1\n",
+    "export GH_REPO=o/r\nGH_REPO=\"$repo\"\ngh pr view 1\n",
+    # A list of gh's words, where no export reaches it.
+    "export GH_REPO=o/r\nsubprocess.run([\"gh\", \"pr\", \"view\"])\n",
     # An export that runs only sometimes.
     "if [[ -n \"${CI:-}\" ]]; then\n  export GH_REPO=o/r\nfi\ngh pr view 1\n",
 ])
@@ -69,6 +79,15 @@ def test_untold_refuses_a_gh_command_not_told_its_repository(tmp_path, text):
     "GH_REPO=\"${repo:?}\" gh api repos/{owner}/{repo}/pulls\n",
     "export GH_REPO=o/r\nif command -v gh\n",
     "echo \"needs gh.\"\n",
+    # gh ending a quoted word, as a test's stub does.
+    "export GH_REPO=o/r\ncat > \"$work/bin/gh\" <<EOF\n",
+    "export GH_REPO=o/r\nchmod +x \"$work/bin/gh\"\n",
+    "export GH_REPO=o/r\necho \"gate.sh: needs gh\"\n",
+    "export GH_REPO=o/r\nfor t in \"gh\" jq; do\n",
+    "export GH_REPO=o/r\ncommand -v gh >/dev/null || exit 1\n",
+    "export GH_REPO=o/r\ncommand -v gh &>/dev/null\n",
+    # A prefix that names a repository leaves the export standing.
+    "export GH_REPO=o/r\nGH_REPO=o/s gh pr view 1\ngh pr view 2\n",
     "# gh pr view 1 is how you'd look\n",
     "echo hi\n",
     "neigh pr\nhigh api\n",
@@ -148,10 +167,22 @@ def test_untold_reads_crlf_line_endings(tmp_path):
     assert found == [f"{tmp_path / 'gate.sh'}:3: gh repo view"]
 
 
-def test_untold_skips_a_file_that_isnt_text(tmp_path):
+def test_untold_reads_a_script_that_isnt_utf8(tmp_path):
+    # Arrange: a comment saved as cp1252.
+    path = tmp_path / "gate.sh"
+    path.write_bytes(b"# caf\xe9\ngh pr view 1\n")
+
+    # Act
+    found = check_gh_repo.untold(path)
+
+    # Assert
+    assert found == [f"{path}:2: gh pr view 1"]
+
+
+def test_untold_skips_a_binary_file(tmp_path):
     # Arrange
     path = tmp_path / "blob"
-    path.write_bytes(b"\xff\xfegh pr view\n")
+    path.write_bytes(b"\x00\x01gh pr view\n")
 
     # Act
     found = check_gh_repo.untold(path)
@@ -174,8 +205,20 @@ def test_main_fails_when_a_script_under_the_root_isnt_told(tmp_path, capsys):
     assert "bad.test.sh:1: gh pr view 1" in capsys.readouterr().out
 
 
-def test_main_passes_the_templates_owned_scripts():
+def test_main_fails_when_a_root_isnt_a_directory(tmp_path, capsys):
     # Arrange, Act
+    code = check_gh_repo.main([str(tmp_path / "missing")])
+
+    # Assert
+    assert code == 2
+    assert "missing" in capsys.readouterr().err
+
+
+def test_main_passes_the_templates_owned_scripts():
+    # Arrange
+    assert any(path.is_file() for path in OWNED_SCRIPTS.rglob("*"))
+
+    # Act
     code = check_gh_repo.main([str(OWNED_SCRIPTS)])
 
     # Assert

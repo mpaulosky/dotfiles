@@ -8,7 +8,8 @@
 # (settings, the landing decision, status, land and rollout), the Claude Review
 # benchmark's tests, lints its workflows, YAML, shell
 # and Markdown with the Template's configs, checks that
-# Owned files carry no {{PLACEHOLDER}}, and smoke-tests apply.sh and
+# Owned files carry no {{PLACEHOLDER}} and that the Owned scripts tell every gh
+# command its repository, and smoke-tests apply.sh and
 # reapply.sh against throwaway repos. dotfiles CI runs this on every change
 # under the skill, and it's the check to run before committing a Template
 # change.
@@ -147,6 +148,17 @@ if found:
     print("\n".join(found))
 sys.exit(1 if found else 0)
 PY
+
+step "gh commands in Owned scripts are told their repository"
+# A Baseline repo's gate refuses a gh command under scripts/ that reaches gh's
+# default repository, a fork in a fork's clone (auth0-management-app's
+# .github/ci/gate-checks.sh), and the repo can't edit Owned files, so a
+# re-Apply that brings one would fail every gate there (mpaulosky/dotfiles#267).
+# check_gh_repo.py holds the rule; its tests run first, so a check that stopped
+# refusing anything can't pass the scripts.
+(cd "$skill_dir/tests/gh_repo" && "${pytest_cmd[@]}" -q -p no:cacheprovider .) || fail "gh_repo pytest"
+python3 -I "$skill_dir/tests/gh_repo/check_gh_repo.py" "$owned/scripts" \
+  || fail "export GH_REPO before an Owned script's first gh command, and give gh repo's subcommands their repository"
 
 step ".gitignore keeps secrets out"
 # Repos keep Auth0 and other secrets in .env, and the Template's .gitignore

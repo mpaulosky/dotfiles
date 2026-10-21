@@ -77,6 +77,12 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   output to a file and test `$?` instead.
 - **`node --test` takes files or globs, not a directory,** on Node 24: quote a glob so node expands it,
   `node --test '.github/scripts/tests/*.test.mjs'`.
+- **Tell every `gh` command its repository** in the Owned `scripts/`. Without it gh uses its default repository, which in
+  a clone whose only remote is a fork is the fork, and a Baseline repo's gate refuses such a command in files it can't
+  edit (mpaulosky/dotfiles#267). Export `GH_REPO` (from `GITHUB_REPOSITORY`, say), alone on its line, before the
+  script's first `gh` command, or write `GH_REPO=<repo> gh ...`, and keep each `gh` command on one line. `gh repo`'s
+  subcommands don't read `GH_REPO`: give them the repository as their first argument or `-R` (`list`, `create` and
+  `clone` name their own). `test.sh` checks it with `tests/gh_repo/check_gh_repo.py`.
 - **Script tests need pytest,** which the system Python may lack. `uvx pytest -q .github/scripts/tests` runs them
   without installing anything.
 

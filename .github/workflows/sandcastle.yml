@@ -22,10 +22,14 @@ name: Sandcastle
     types: [unlabeled]
   pull_request_review:
     types: [submitted]
-  # The name: of repo-ci-baseline.yml: workflow_run matches workflow names,
-  # not file names.
+  # The name: of repo-ci-baseline.yml and of claude-review.yml: workflow_run
+  # matches workflow names, not file names. Claude Review posts its review with
+  # GITHUB_TOKEN, which starts no pull_request_review run, so its completion is
+  # followed here instead, as PR Auto-Merge does, to start a follow-up pass on
+  # its threads. Claude Review's workflow also completes, skipped, on every PR
+  # without the review:claude label, so only a successful run counts.
   workflow_run:
-    workflows: ["repo-ci-baseline Template"]
+    workflows: ["repo-ci-baseline Template", "Claude Review"]
     types: [completed]
   workflow_dispatch:
   # A backstop for blockers cleared by merges and PRs that fell behind main.
@@ -63,6 +67,7 @@ jobs:
           || startsWith(github.event.pull_request.head.ref, 'fix/')
           || startsWith(github.event.pull_request.head.ref, 'hotfix/')))
       || (github.event_name == 'workflow_run'
+        && (github.event.workflow_run.name != 'Claude Review' || github.event.workflow_run.conclusion == 'success')
         && github.event.workflow_run.head_repository.full_name == github.repository
         && (startsWith(github.event.workflow_run.head_branch, 'feature/')
           || startsWith(github.event.workflow_run.head_branch, 'fix/')

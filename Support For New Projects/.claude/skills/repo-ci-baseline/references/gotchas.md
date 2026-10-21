@@ -77,6 +77,26 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   output to a file and test `$?` instead.
 - **`node --test` takes files or globs, not a directory,** on Node 24: quote a glob so node expands it,
   `node --test '.github/scripts/tests/*.test.mjs'`.
+- **Tell every `gh` command its repository** in the Owned `scripts/`. Without it gh uses its default repository, which in
+  a clone whose only remote is a fork is the fork, and a Baseline repo's gate refuses such a command in files it can't
+  edit (mpaulosky/dotfiles#267). Export `GH_REPO` at the top level, alone on its line, before the script's first `gh`
+  command, or write `GH_REPO=<repo> gh ...`. gh ignores an empty `GH_REPO`, so write a variable as `${NAME:?}`, which
+  stops the script when it's empty. `GITHUB_REPOSITORY` is set only in Actions, not when the pre-push hook runs
+  `gate.sh`, so a script that also runs locally falls back to the `upstream` remote, then `origin` (a fork's clone
+  needs its `upstream` remote), and stops when there's neither:
+
+  ```bash
+  url="$(git remote get-url upstream 2>/dev/null || git remote get-url origin)"
+  url="${url%.git}"
+  repo="${GITHUB_REPOSITORY:-${url#*github.com[:/]}}"
+  export GH_REPO="${repo:?}"
+  ```
+
+  Call `gh` by name with its subcommand on the same line: a `gh` followed by `"$@"`, another expansion or a backslash
+  continuation is refused even after the export, since the subcommand it hides could be `gh repo view`. `gh repo
+  view`, `edit` and most other `gh repo` subcommands don't read `GH_REPO` and have no `-R`: give them the repository as
+  their first argument (`list`, `create`, `clone`, `gitignore` and `license` name their own or need none, while
+  `rename`, `deploy-key` and `autolink` read `GH_REPO`). `test.sh` checks it with `tests/gh_repo/check_gh_repo.py`.
 - **Script tests need pytest,** which the system Python may lack. `uvx pytest -q .github/scripts/tests` runs them
   without installing anything.
 

@@ -67,7 +67,7 @@ Order across repos: `github/repos.txt`'s, the one list of the repos (retiring on
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
 2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the renderer oracle, the GitHub scripts' tests
    (settings, the landing decision, status, land, rollout), the Claude Review benchmark's tests, actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned
-   check and the `apply.sh` and `reapply.sh` tests.
+   check, the check that the Owned scripts' `gh` commands are told their repository, and the `apply.sh` and `reapply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.

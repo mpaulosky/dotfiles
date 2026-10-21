@@ -179,6 +179,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#context-pieces-117)), all read in one turn,
   and reads only the checkout, the diff and the runner's `_actions`, with no tool granted outright
   ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#keeping-the-token-out-of-the-review-121)), and answers in a JSON schema.
+  Its prompt also holds the PR's resolved Copilot and Claude Review threads, with the replies of the PR's author, whoever resolved the thread and the repo's owner,
+  and tells it not to raise a resolved thread's problem again unless the code has changed in a way that brings it back,
+  so a finding a maintainer declined doesn't come back on every push (auth0-management-app#59 had one four times).
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.
@@ -191,7 +194,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   GitHub still runs it far less often than asked: IssueTracker's sweeps after #201 ran about 70 minutes apart. Treat it as the fallback, never the expected path.
 - **Safety:** `pull_request_target` runs main's copy of the file and never checks out PR code, so a PR can't edit what decides whether it merges.
   `pull_request_review` is never a trigger here: it would run the PR's own copy with write access. It reaches this workflow only through PR Review Submitted.
-- **Token:** every read goes through `GITHUB_TOKEN` (the script's `github`), whose rate limit is the repo's own,
+- **Token:** every read goes through `GITHUB_TOKEN` (the script's `github`), whose rate limit is the repo's own
+  (1,000 REST requests and 1,000 GraphQL points an hour, shared with the repo's other workflows; see [tokens.md](tokens.md)),
   and so does taking `review:claude` off. Only the calls GitHub must treat as a person's go through `RELEASE_PR_PAT`, falling back to `GITHUB_TOKEN`
   (the script's `patClient`): the merge, update-branch, adding `review:claude` and `@dependabot rebase`, plus one read of the PAT's own login.
   A merge made with `GITHUB_TOKEN` starts no workflows, so the release and its blog PR would silently skip; an update would start no CI.

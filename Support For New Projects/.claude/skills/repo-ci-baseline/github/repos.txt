@@ -11,4 +11,5 @@ mpaulosky/Blazor-Server
 mpaulosky/IssueManager
 mpaulosky/Articles
 mpaulosky/SuggestionApp
+mpaulosky/auth0-management-app
 mpaulosky/dotfiles repo-settings-only

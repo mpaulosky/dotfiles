@@ -151,7 +151,11 @@ jobs:
           # every read, and takes review:claude off at the review cap and once
           # Claude has reviewed MAX_CLAUDE_ROUNDS of a PR's commits. Its rate
           # limit is this repo's own, while the PAT's is shared by everything
-          # acting as its owner (mpaulosky/dotfiles#231).
+          # acting as its owner (mpaulosky/dotfiles#231). It's smaller, though:
+          # 1,000 REST requests and 1,000 GraphQL points an hour, shared with
+          # Claude Review's and CI's calls in this repo. Running out fails this
+          # job's check on a PR event (repo-ci-baseline's references/tokens.md
+          # says what that costs and why it's accepted).
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;

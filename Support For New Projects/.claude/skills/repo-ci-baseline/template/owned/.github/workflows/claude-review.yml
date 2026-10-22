@@ -1,22 +1,23 @@
 ---
 name: Claude Review
 
-# Claude reviews a PR as a backup to Copilot, whose review requests GitHub
-# drops without a word once the account's Copilot code review budget is used
-# up. It runs only on request: while the PR carries review:claude, which PR
-# Auto-Merge adds (with RELEASE_PR_PAT) when Copilot's quota note answers a
-# head, the repo-ci-baseline skill's reapply.sh and land.sh (in
-# mpaulosky/dotfiles, not this repo) add when Copilot's request didn't
-# register, and a person can add at any time. PR Auto-Merge also takes it off
-# at the review cap and at MAX_CLAUDE_ROUNDS. It reviews every new head while
-# the label is on.
+# Claude reviews a PR as a backup to Copilot, whose review it stands in for
+# only where Copilot answered the head with its quota note (the account's
+# Copilot code review budget is used up). It runs only on request: while the PR
+# carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) when
+# that note answers a head, as the repo-ci-baseline skill's land.sh (in
+# mpaulosky/dotfiles, not this repo) does, and a person can add at any time;
+# a review of a head without the note covers nothing. PR Auto-Merge also takes
+# it off at the review cap and at MAX_CLAUDE_ROUNDS. It reviews every new head
+# while the label is on.
 #
 # Claude never holds a write token. The review job checks the PR out with a
 # read-only token, gives Claude the diff against the base and read-only tools,
 # and takes its findings as structured JSON. The post job turns that JSON
 # into one review on the head commit (post_claude_review.py), with inline
 # threads like Copilot's, and a body that starts with <!-- claude-review -->:
-# PR Auto-Merge accepts that review of the head as it does Copilot's. A
+# PR Auto-Merge accepts that review of the head in place of Copilot's when
+# Copilot's quota note is on the same commit. A
 # finding outside the diff can't be a thread, so it goes in the body under a
 # second marker, which PR Auto-Merge holds on until the next push gets a fresh
 # review (past the review cap too), and the post job warns. It doesn't
@@ -176,13 +177,20 @@ jobs:
                 || echo "::warning::Couldn't read the jobs of Claude Review run ${run}, so ${HEAD_SHA} may be reviewed twice."
             done < "${RUNNER_TEMP}/run-ids.txt"
           fi
-          # Commits Copilot or Claude Review (a marked github-actions[bot] review) reviewed.
-          # Copilot's note that it couldn't review (its quota is used up) covers
+          # Commits Copilot reviewed, or Claude Review (a marked github-actions[bot]
+          # review) did where Copilot answered the same commit with its note that
+          # it couldn't review (its quota is used up). The note itself covers
           # nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
-          gh api --paginate "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" --jq '.[]
-            | select((.user.login == "copilot-pull-request-reviewer[bot]"
-                and ((.body // "") | test("\\A[ \\t\\r\\n]*Copilot was unable to review") | not))
-              or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))))
+          # --slurp, so the note is seen whichever page of reviews it is on.
+          gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" | jq -r '
+            def declined: .user.login == "copilot-pull-request-reviewer[bot]"
+              and ((.body // "") | test("\\A[ \\t\\r\\n]*Copilot was unable to review"));
+            add as $reviews
+            | ([$reviews[] | select(declined) | .commit_id]) as $declined
+            | $reviews[]
+            | select((.user.login == "copilot-pull-request-reviewer[bot]" and (declined | not))
+              or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))
+                and (.commit_id as $commit | $declined | index($commit) != null)))
             | .commit_id' > "${RUNNER_TEMP}/reviewed.txt"
           python3 -I - <<'PY'
           import os, subprocess

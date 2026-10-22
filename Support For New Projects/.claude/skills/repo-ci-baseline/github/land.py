@@ -23,7 +23,7 @@ decision says, once per PR head:
                     has reviewed or is on its way to, read back the same way;
                     a request that didn't register is remembered for the head
 - add review:claude: gh pr edit --add-label review:claude, so Claude Review
-                    reviews a head whose Copilot request didn't register; the
+                    reviews a head Copilot answered with its quota note; the
                     decision makes it only once the head's checks are green,
                     and never past Claude's review rounds
                     (landing.MAX_CLAUDE_ROUNDS)
@@ -246,10 +246,11 @@ class Lander:
     def read_back_copilot(self, repo, number, head=None):
         """Read Copilot's review request back, and warn when GitHub dropped it.
 
-        A dropped request for head is remembered, so the decision can call in
-        Claude Review, though not here: it adds review:claude once the head's
-        checks are green. A read-back that fails remembers nothing, and
-        returns False; otherwise True.
+        A dropped request for head is remembered, so the decision leaves the
+        head to the owner: Claude Review backs Copilot up only on its quota
+        note, and review:claude is added for a head that carries it. A
+        read-back that fails remembers nothing, and returns False; otherwise
+        True.
         """
         url = f"https://github.com/{repo}/pull/{number}"
         try:
@@ -261,7 +262,7 @@ class Lander:
         if head:
             self.copilot_dropped.add((repo, number, head))
         self.say(f"  warning: Copilot's review request didn't register on #{number} (GitHub drops it once the Copilot "
-                 f"code review budget is used up); {REVIEW_CLAUDE} is added once the head's checks are green")
+                 f"code review budget is used up); {REVIEW_CLAUDE} backs Copilot up only on its quota note, so the owner decides")
         return True
 
     def update_gone(self, repo, number, pr, flags):

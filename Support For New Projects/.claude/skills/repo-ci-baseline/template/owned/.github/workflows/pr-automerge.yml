@@ -5,7 +5,8 @@ name: PR Auto-Merge
 # pass, a reviewer has reviewed the PR's head commit, and every review thread
 # is resolved. The reviewer is Copilot, or Claude as its backup: Claude
 # Review (claude-review.yml) posts a review under github-actions[bot] whose
-# body starts with CLAUDE_MARKER. The main ruleset asks Copilot to review
+# body starts with CLAUDE_MARKER, and counts only for a head whose Copilot
+# review is the quota note below. The main ruleset asks Copilot to review
 # each push but doesn't require its review, so merging on green alone would
 # usually land a PR before that review arrives. Each trigger below is a
 # moment one of those conditions can become true; the job re-checks all of
@@ -41,7 +42,9 @@ name: PR Auto-Merge
 # reviewed MAX_CLAUDE_ROUNDS (the cap's 3) of the PR's commits, whoever added
 # it, since reviews of merge commits don't count toward the cap: that's the
 # owner's cost rule.
-# At the cap the run takes review:claude off the PR (mpaulosky/dotfiles#170), once Claude has
+# The run takes review:claude off a PR once Copilot has really reviewed its head
+# (mpaulosky/dotfiles#270): Copilot has budget, and Claude's review would cover
+# nothing. At the cap it takes it off too (mpaulosky/dotfiles#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
 # so the PR would go on chasing them past the cap.
@@ -885,7 +888,16 @@ jobs:
                 return review.body?.startsWith(CLAUDE_MARKER);
               });
               const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
-              const reviewed = [...copilotReviews, ...claudeReviews]
+              // Claude is Copilot's backup only: its review of a commit
+              // qualifies when Copilot's quota note is on that same commit.
+              const declinedCommits = new Set(
+                pr.copilotReviews.nodes
+                  .filter((review) => COPILOT_NO_REVIEW.test(review.body ?? ""))
+                  .map((review) => review.commit?.oid)
+                  .filter(Boolean)
+              );
+              const backupReviews = claudeReviews.filter((review) => declinedCommits.has(review.commit?.oid));
+              const reviewed = [...copilotReviews, ...backupReviews]
                 .map((review) => review.commit)
                 .filter(Boolean);
               const reviewedCommits = new Set(reviewed.map((commit) => commit.oid));
@@ -1188,7 +1200,14 @@ jobs:
               if (isOpenSameRepoPrIntoMain(pr) && pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
                 const { claudeReviews, capReached } = reviewState(pr);
                 const roundsUsed = claudeRounds(claudeReviews) >= MAX_CLAUDE_ROUNDS;
-                if ((capReached || roundsUsed) && (await claudeReviewedSinceLabel(pullNumber, claudeReviews))) {
+                // Copilot has really reviewed the head, so it has budget and
+                // Claude's review would cover nothing: the label only costs money.
+                const copilotReviewedHead = pr.copilotReviews.nodes.some((review) => {
+                  return review.commit?.oid === pr.headRefOid && !COPILOT_NO_REVIEW.test(review.body ?? "");
+                });
+                if (copilotReviewedHead) {
+                  await removeClaudeLabel(pullNumber, "Copilot has reviewed the head");
+                } else if ((capReached || roundsUsed) && (await claudeReviewedSinceLabel(pullNumber, claudeReviews))) {
                   await removeClaudeLabel(pullNumber, capReached
                     ? `Review cap (${COPILOT_REVIEW_CAP}) reached`
                     : `Claude has reviewed ${MAX_CLAUDE_ROUNDS} of its commits (MAX_CLAUDE_ROUNDS)`);

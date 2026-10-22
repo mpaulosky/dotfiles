@@ -52,8 +52,8 @@ def js_pattern():
 def jq_program():
     """The reviewed-list jq filter from claude-review.yml, unquoted from the shell."""
     source = (WORKFLOWS / "claude-review.yml").read_text(encoding="utf-8")
-    match = re.search(r"/reviews\" --jq '(.+?)' > \"\$\{RUNNER_TEMP\}/reviewed\.txt\"", source, re.DOTALL)
-    assert match, "claude-review.yml builds reviewed.txt with a --jq filter"
+    match = re.search(r"/reviews\" \| jq -r '(.+?)' > \"\$\{RUNNER_TEMP\}/reviewed\.txt\"", source, re.DOTALL)
+    assert match, "claude-review.yml builds reviewed.txt with a jq filter"
     return match.group(1).replace("'\"'\"'", "'")
 
 
@@ -65,13 +65,28 @@ def test_landing_and_pr_automerge_agree(name):
 
 
 def test_claude_review_jq_agrees():
-    # claude-review.yml runs the filter through gh api --jq, which embeds gojq (Go's RE2 regexes); prefer it, and
-    # fall back to jq (Oniguruma), which reads these spelled-out patterns the same way.
-    engine = shutil.which("gojq") or shutil.which("jq")
-    if engine is None:
-        pytest.fail("neither gojq nor jq is installed, so claude-review.yml's filter can't be checked")
     reviews = [{"user": {"login": LOGIN}, "body": body, "commit_id": name} for name, (body, _) in BODIES.items()]
-    run = subprocess.run([engine, "-r", jq_program()], input=json.dumps(reviews), capture_output=True, text=True,
+    assert reviewed_by_filter(reviews) == {name for name, (_, is_note) in BODIES.items() if not is_note}
+
+
+def reviewed_by_filter(reviews):
+    """The commits claude-review.yml's filter lists, over reviews split into two pages as gh api --slurp reads them."""
+    engine = shutil.which("jq")
+    if engine is None:
+        pytest.fail("jq isn't installed, so claude-review.yml's filter can't be checked")
+    pages = [reviews[: len(reviews) // 2], reviews[len(reviews) // 2:]]
+    run = subprocess.run([engine, "-r", jq_program()], input=json.dumps(pages), capture_output=True, text=True,
                          check=True)
-    counted = set(run.stdout.split("\n")) - {""}
-    assert counted == {name for name, (_, is_note) in BODIES.items() if not is_note}
+    return set(run.stdout.split("\n")) - {""}
+
+
+def test_claude_review_counts_in_the_jq_filter_only_with_the_note_on_the_same_commit():
+    claude = "<!-- claude-review -->\nNo findings."
+    reviews = [
+        {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "noted"},
+        {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "bare"},
+        {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "other"},
+        {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "noted"},
+        {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "elsewhere"},
+    ]
+    assert reviewed_by_filter(reviews) == {"noted"}

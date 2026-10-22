@@ -12,7 +12,10 @@ import land  # noqa: E402
 HEAD = "1234567" + "0" * 33
 NEW = "abcdef0" + "0" * 33
 COPILOT = [("copilot-pull-request-reviewer", HEAD)]
-CLAUDE = [("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")]
+NOTE = ("copilot-pull-request-reviewer", HEAD, "Copilot was unable to review this pull request because the user who "
+        "requested the review has reached their quota limit.")
+# Claude backs Copilot up only on a head Copilot answered with its quota note.
+CLAUDE = [NOTE, ("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")]
 GREEN = [{"__typename": "CheckRun", "name": "Template tests", "status": "COMPLETED", "conclusion": "SUCCESS",
           "startedAt": "2026-10-07T10:00:00Z"}]
 RUNNING = [{"__typename": "CheckRun", "name": "Template tests", "status": "IN_PROGRESS", "conclusion": None,
@@ -120,30 +123,38 @@ def test_a_behind_branch_is_updated_and_copilot_asked_again_once_per_head():
     assert "-> update branch" in printed(out) and len(fake.calls) == 2
 
 
-def test_a_copilot_request_github_dropped_is_warned_about_and_claude_waits_for_green_checks():
+def test_a_copilot_request_github_dropped_is_warned_about_and_left_to_the_owner():
     fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
     text = printed(out)
     assert ("  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review "
-            "budget is used up); review:claude is added once the head's checks are green" in text)
+            "budget is used up); review:claude backs Copilot up only on its quota note, so the owner decides" in text)
     assert "  failed:" not in text
     # The update's new head: Copilot is asked for it, and the drop is remembered for it.
     fake.open["o/app"] = [node(head=NEW, contexts=RUNNING)]
     lander.poll()
     assert "-> request Copilot" in printed(out)
     assert fake.calls[2:] == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
-    # Its CI is still running: no label yet.
-    lander.poll()
-    assert "waiting for checks before calling in Claude: Template tests" in printed(out) and len(fake.calls) == 3
-    # Green: review:claude, once for the head.
+    # Claude covers a head only where Copilot posted its quota note, which a dropped request never brings: no label.
     fake.open["o/app"] = [node(head=NEW, contexts=GREEN)]
     lander.poll()
-    assert fake.calls[3:] == ["gh pr edit 7 -R o/app --add-label review:claude"]
+    assert "so the owner decides" in printed(out) and len(fake.calls) == 3
+
+
+def test_claude_is_called_in_once_copilot_posted_its_quota_note_and_checks_are_green():
+    note = [("copilot-pull-request-reviewer", HEAD, NOTE[2])]
+    fake = Fake({"o/app": [node(reviews=note, contexts=RUNNING)]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert "waiting for checks before calling in Claude: Template tests" in printed(out) and fake.calls == []
+    fake.open["o/app"] = [node(reviews=note, contexts=GREEN)]
+    lander.poll()
+    assert fake.calls == ["gh pr edit 7 -R o/app --add-label review:claude"]
     assert "-> add review:claude" in printed(out)
     lander.poll()
-    assert len(fake.calls) == 4
+    assert len(fake.calls) == 1
 
 
 def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
@@ -170,7 +181,7 @@ def test_a_copilot_request_github_refused_outright_is_warned_about():
     assert fake.read_back == [("o/app", 7)]
     text = printed(out)
     assert f"  warning: {request} failed (boom)" in text
-    assert "review:claude is added once the head's checks are green" in text
+    assert "review:claude backs Copilot up only on its quota note, so the owner decides" in text
 
 
 def test_claude_isnt_called_in_while_copilot_is_requested_or_the_label_is_on():
@@ -186,11 +197,11 @@ def test_claude_isnt_called_in_while_copilot_is_requested_or_the_label_is_on():
 def test_claude_is_called_in_for_a_third_round_to_review_a_fix():
     # Two rounds aren't MAX_CLAUDE_ROUNDS (3): a fix for the second's findings is reviewed too (#193).
     rounds = [("github-actions", sha, "<!-- claude-review -->\n**Claude Review**") for sha in ("1" * 40, "2" * 40)]
-    fake = Fake({"o/app": [node(reviews=rounds, contexts=GREEN)]}, dropped={("o/app", 7)})
+    fake = Fake({"o/app": [node(reviews=[NOTE, *rounds], contexts=GREEN)]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     lander.poll()
-    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot", "gh pr edit 7 -R o/app --add-label review:claude"]
+    assert fake.calls == ["gh pr edit 7 -R o/app --add-label review:claude"]
 
 
 def test_claudes_rounds_used_on_a_merge_commit_leave_it_to_the_owner_not_the_cap():
@@ -198,7 +209,7 @@ def test_claudes_rounds_used_on_a_merge_commit_leave_it_to_the_owner_not_the_cap
     # still waits for a review, and Claude's 3 rounds are used: the owner decides (mpaulosky/dotfiles#193).
     body = "<!-- claude-review -->\n**Claude Review**"
     rounds = [("github-actions", "1" * 40, body), ("github-actions", "2" * 40, body, "merge"), ("github-actions", "3" * 40, body)]
-    fake = Fake({"o/app": [node(reviews=rounds, contexts=GREEN)]}, dropped={("o/app", 7)})
+    fake = Fake({"o/app": [node(reviews=[NOTE, *rounds], contexts=GREEN)]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     lander.poll()
@@ -208,7 +219,7 @@ def test_claudes_rounds_used_on_a_merge_commit_leave_it_to_the_owner_not_the_cap
 
 
 def test_a_failed_review_claude_label_is_reported_as_failed():
-    fake = Fake({"o/app": [node(contexts=GREEN)]}, dropped={("o/app", 7)},
+    fake = Fake({"o/app": [node(reviews=[NOTE], contexts=GREEN)]},
                 fail_calls={"gh pr edit 7 -R o/app --add-label review:claude"})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()

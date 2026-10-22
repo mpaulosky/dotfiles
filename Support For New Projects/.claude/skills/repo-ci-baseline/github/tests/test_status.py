@@ -120,12 +120,16 @@ def test_a_release_blog_pr_is_told_apart_by_its_branch():
 
 
 def test_the_review_column_names_the_reviewer_of_the_head():
-    claude = pr_node(reviews=[("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")])
+    claude = pr_node(reviews=[("copilot-pull-request-reviewer", HEAD, "Copilot was unable to review this pull request because the quota is used up."), ("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")])
     unmarked = pr_node(number=8, reviews=[("github-actions", HEAD, "Something else.")])
     _, out, _ = run(["owner/app"], {"owner/app": repo(claude, unmarked)})
     first, second = out.splitlines()
     assert "review:claude" in first and "Claude reviewed the head" in first
     assert "review:no" in second
+    # Without Copilot's quota note on the head, Claude's review covers nothing (#270).
+    bare = pr_node(reviews=[("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")])
+    _, out, _ = run(["owner/app"], {"owner/app": repo(bare)})
+    assert "review:no" in out
 
 
 def test_the_query_fetches_review_bodies_and_whether_each_commit_is_a_merge():
@@ -134,7 +138,7 @@ def test_the_query_fetches_review_bodies_and_whether_each_commit_is_a_merge():
 
 def test_claude_findings_outside_the_diff_hold_the_landing_decision():
     off = "<!-- claude-review -->\n<!-- claude-review:off-diff -->\n**Claude Review**"
-    _, out, _ = run(["owner/app"], {"owner/app": repo(pr_node(reviews=[("github-actions", HEAD, off)]))})
+    _, out, _ = run(["owner/app"], {"owner/app": repo(pr_node(reviews=[("copilot-pull-request-reviewer", HEAD, "Copilot was unable to review this pull request because the quota is used up."), ("github-actions", HEAD, off)]))})
     assert "review:claude" in out and "-> wait (Claude's review of 1234567 has findings outside the diff)" in out
 
 

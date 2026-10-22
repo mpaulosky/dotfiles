@@ -261,7 +261,7 @@ class Lander:
         if head:
             self.copilot_dropped.add((repo, number, head))
         self.say(f"  warning: Copilot's review request didn't register on #{number} (GitHub drops it once the Copilot "
-                 f"code review budget is used up); {REVIEW_CLAUDE} is added once the head's checks are green")
+                 f"code review budget is used up); {REVIEW_CLAUDE} backs Copilot up only on its quota note, so the owner decides")
         return True
 
     def update_gone(self, repo, number, pr, flags):

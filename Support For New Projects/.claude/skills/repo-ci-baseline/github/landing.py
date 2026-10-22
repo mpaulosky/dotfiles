@@ -321,7 +321,9 @@ def review_needed(pr, checks):
     declined = pr.head in pr.copilot_declined
     if pr.copilot_requested and not declined:
         return Decision(WAIT, waiting + "; Copilot is requested")
-    if pr.claude_requested:
+    # The label means Claude is on its way only until it has reviewed the head: a review
+    # without Copilot's note covers nothing, and none further is coming.
+    if pr.claude_requested and pr.head not in pr.claude_reviewed:
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
     if not pr.copilot_dropped and not declined:
         return Decision(REQUEST_COPILOT, waiting + "; Copilot not requested")

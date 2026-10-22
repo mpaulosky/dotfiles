@@ -56,6 +56,15 @@ def test_an_unreviewed_head_waits_while_review_claude_is_on():
     assert decision == ld.Decision(ld.WAIT, "no Copilot or Claude review of aaaaaaa yet; review:claude is on")
 
 
+def test_a_claude_review_without_a_quota_note_doesnt_keep_the_label_waiting():
+    # Claude reviewed the head but Copilot posted no note: that covers nothing and no more is coming (#270).
+    labelled = replace(READY, copilot_reviewed=frozenset({OLD}), claude_requested=True,
+                       claude_reviewed=frozenset({HEAD}))
+    assert ld.decide(labelled).action == ld.REQUEST_COPILOT
+    decision = ld.decide(replace(labelled, copilot_dropped=True))
+    assert decision.action == ld.WAIT and decision.reason.endswith("so the owner decides")
+
+
 def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
     # Copilot reviewed an older head and nothing is requested now.
     decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD})))

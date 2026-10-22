@@ -1395,6 +1395,23 @@ test("takes review:claude off a PR at the review cap, even while a thread holds 
   assert.ok(logs.some((line) => line.includes("removed review:claude")), logs.join("\n"));
 });
 
+test("takes review:claude off once Copilot has really reviewed the head, so it has budget (mpaulosky/dotfiles#270)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
+  const { removedLabels, logs } = await evaluate(pr);
+
+  assert.deepEqual(removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
+  assert.ok(logs.some((line) => line.includes("Copilot has reviewed the head")), logs.join("\n"));
+});
+
+test("leaves review:claude on when Copilot's quota note or an earlier head's review is all it has", async () => {
+  for (const copilotReviews of [copilotReviewsOf({ oid: HEAD, note: true }), copilotReviewsOf("older")]) {
+    const pr = readyPr({ copilotReviews, labels: labelled(CLAUDE_LABEL), quotaNotes: false });
+    const { removedLabels } = await evaluate(pr);
+
+    assert.deepEqual(removedLabels, []);
+  }
+});
+
 test("leaves review:claude on below the review cap and MAX_CLAUDE_ROUNDS", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewsOf("one"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
   const { removedLabels } = await evaluate(pr);
@@ -1437,7 +1454,7 @@ test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits
 });
 
 test("leaves review:claude on at a cap reached on Copilot's reviews alone", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), labels: labelled(CLAUDE_LABEL) });
   const { removedLabels } = await evaluate(pr);
 
   assert.deepEqual(removedLabels, []);
@@ -1507,7 +1524,7 @@ test("falls back to any Claude review at the cap when the label events can't be 
 });
 
 test("keeps review:claude at the cap when the label events can't be read and Claude never reviewed", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL) });
+  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), labels: labelled(CLAUDE_LABEL) });
   const { removedLabels } = await evaluate(pr, [], { eventsError: new Error("Server Error") });
 
   assert.deepEqual(removedLabels, []);

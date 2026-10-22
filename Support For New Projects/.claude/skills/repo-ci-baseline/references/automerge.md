@@ -52,6 +52,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Articles#314 merged at the cap past open Claude threads. A review that arrives after a cap merge comes too late, so its findings land on a merged PR.
   The constant keeps Copilot's name because `github-settings.sh` reads the cap by it.
   Rounds are counted across both, so a PR can't reset the cap by switching reviewer.
+  The run takes `review:claude` off a PR once Copilot has really reviewed its head (#270): Copilot has budget, so Claude's review would cover nothing.
   At the cap the run also takes `review:claude` off the PR, with `GITHUB_TOKEN` (#170): Claude Review reviews every push while it's on,
   and its threads hold the merge, so the PR would keep chasing them past the cap (Blazor-Server#243 went seven rounds and 26 threads
   before the label came off by hand). It does so before the draft, hand-back and auto-merge checks, for any open same-repo PR into `main`

@@ -5,7 +5,8 @@ name: PR Auto-Merge
 # pass, a reviewer has reviewed the PR's head commit, and every review thread
 # is resolved. The reviewer is Copilot, or Claude as its backup: Claude
 # Review (claude-review.yml) posts a review under github-actions[bot] whose
-# body starts with CLAUDE_MARKER. The main ruleset asks Copilot to review
+# body starts with CLAUDE_MARKER, and counts only for a head whose Copilot
+# review is the quota note below. The main ruleset asks Copilot to review
 # each push but doesn't require its review, so merging on green alone would
 # usually land a PR before that review arrives. Each trigger below is a
 # moment one of those conditions can become true; the job re-checks all of
@@ -885,7 +886,16 @@ jobs:
                 return review.body?.startsWith(CLAUDE_MARKER);
               });
               const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
-              const reviewed = [...copilotReviews, ...claudeReviews]
+              // Claude is Copilot's backup only: its review of a commit
+              // qualifies when Copilot's quota note is on that same commit.
+              const declinedCommits = new Set(
+                pr.copilotReviews.nodes
+                  .filter((review) => COPILOT_NO_REVIEW.test(review.body ?? ""))
+                  .map((review) => review.commit?.oid)
+                  .filter(Boolean)
+              );
+              const backupReviews = claudeReviews.filter((review) => declinedCommits.has(review.commit?.oid));
+              const reviewed = [...copilotReviews, ...backupReviews]
                 .map((review) => review.commit)
                 .filter(Boolean);
               const reviewedCommits = new Set(reviewed.map((commit) => commit.oid));

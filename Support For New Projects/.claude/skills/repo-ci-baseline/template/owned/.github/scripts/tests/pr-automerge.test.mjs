@@ -32,7 +32,18 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const run = new AsyncFunction("github", "context", "core", "getOctokit", inlineScript());
 
 // A same-repo PR into main that is ready to merge unless a test changes it.
-function readyPr(overrides = {}) {
+// Claude's reviews only count as backup for Copilot's quota note on the same
+// commit, so each Claude review given here comes with that note, unless
+// { quotaNotes: false } says Copilot never posted one, or the test's own
+// copilotReviews already hold the notes it wants.
+function readyPr({ quotaNotes = true, ...overrides } = {}) {
+  if (quotaNotes && overrides.claudeReviews) {
+    const reviewed = overrides.copilotReviews?.nodes ?? [{ commit: { oid: HEAD } }];
+    const notes = overrides.claudeReviews.nodes
+      .filter((review) => !reviewed.some((other) => other.commit?.oid === review.commit.oid && COPILOT_NO_REVIEW_TEST.test(other.body ?? "")))
+      .map((review) => ({ body: COPILOT_QUOTA_NOTE, commit: { oid: review.commit.oid, parents: review.commit.parents } }));
+    overrides = { ...overrides, copilotReviews: { nodes: [...reviewed, ...notes] } };
+  }
   return {
     state: "OPEN",
     isDraft: false,
@@ -72,6 +83,7 @@ function requiredCheck(name, overrides = {}) {
 
 // What Copilot posts, as a review of the head, when the account's Copilot
 // code review quota is used up: it reviewed nothing.
+const COPILOT_NO_REVIEW_TEST = /^[ \t\r\n]*Copilot was unable to review/;
 const COPILOT_QUOTA_NOTE =
   "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit.";
 
@@ -1235,6 +1247,37 @@ test("merges on Claude's review of the head when Copilot only posted its quota n
     labels: labelled(CLAUDE_LABEL)
   });
   const { merges } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
+});
+
+test("doesn't count Claude's review of the head when Copilot posted no quota note", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    quotaNotes: false
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of")), logs.join("\n"));
+});
+
+test("doesn't count Claude's review of the head when the quota note is on an earlier head", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf({ oid: "older", note: true }),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    quotaNotes: false
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+});
+
+test("still counts Copilot's own review of the head without a quota note", async () => {
+  const { merges } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(HEAD) }));
 
   assert.equal(merges.length, 1);
 });

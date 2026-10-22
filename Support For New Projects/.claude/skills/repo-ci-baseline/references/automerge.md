@@ -33,6 +33,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Readiness** comes from one GraphQL query: state, draft, fork, mergeability, `mergeStateStatus`, the auto-merge request, both reviewers' reviews and the review threads.
   The reviews are fetched by author, `copilot-pull-request-reviewer[bot]` and `github-actions[bot]`, so thread replies can't push them off the page.
   A `github-actions[bot]` review counts as Claude's only when its body starts with `<!-- claude-review -->`.
+  Even then it counts as a review of a commit only when Copilot's quota note is on that same commit: Claude is the backup, so a Claude review
+  of a head Copilot didn't decline, or declined only on an earlier head, covers nothing, label or not.
   A Copilot review counts only when it reviewed something. Once the account's Copilot code review quota is used up, Copilot still posts a review
   of each head whose body starts "Copilot was unable to review" (`COPILOT_NO_REVIEW`). It covers no commit and counts toward no round.
   `claude-review.yml`'s reviewed list and the landing scripts (`landing.COPILOT_NO_REVIEW`) skip it the same way: the start of the body, after any

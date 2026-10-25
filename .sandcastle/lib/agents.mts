@@ -5,11 +5,12 @@
 // that times out or fails still appears in the end-of-run report. Every role's
 // prompt file also gets the shared role rules as {{SHARED_RULES}}. No role
 // starts once the run's limits (lib/limits.mts) say stop, and a run that hits
-// Claude's usage limit ends in an UncountedStopError (#147).
+// Claude's usage limit ends in an UncountedStopError.
 
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { ROLE_AGENTS, type Role } from "./config.mts";
+import type { Role } from "./config.mts";
+import { ROLE_AGENTS } from "./repo-config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { MAX_CAUSE_DEPTH, RunLimits, runLimits, usageLimitLine } from "./limits.mts";
 import { usageReport } from "./report.mts";

@@ -68,9 +68,9 @@
 //                               however it ends. The architect, when the
 //                               planner picked it, writes a design note the
 //                               host posts on the issue. The tester commits
-//                               failing tests, then the backend developer and,
-//                               when picked, the UI developer make them pass;
-//                               if any of these fails, the issue stops for the
+//                               failing tests, then the backend developer
+//                               makes them pass; if either fails, the issue
+//                               stops for the
 //                               round. If the branch is then ahead of main (this
 //                               run's commits or earlier ones), the host runs
 //                               scripts/gate.sh in the sandbox (checkpoint 1),
@@ -80,7 +80,7 @@
 //                               again (checkpoint 2). A red gate gets two gate-fixer
 //                               attempts per checkpoint; past that nothing is
 //                               pushed. A red checkpoint or a failed architect,
-//                               tester, backend or UI run is a failed build
+//                               tester or backend run is a failed build
 //                               attempt: the first gets a comment, the second
 //                               hands the issue back with sandcastle:needs-human
 //                               (lib/handback.mts). A failed scribe or reviewer
@@ -99,7 +99,7 @@
 // critique defers every pick.
 //
 // The run also stops cleanly, exiting 0, once it can't finish more work
-// (lib/limits.mts, #147): no new round or role run starts after
+// (lib/limits.mts): no new round or role run starts after
 // SANDCASTLE_BUDGET_MINUTES (default 240) have passed since it started, and
 // once a role run hits Claude's usage or rate limit no role starts; a build
 // whose roles all finished still publishes, since that costs no usage.
@@ -108,7 +108,7 @@
 // rebuilds the issue from what GitHub has.
 //
 // Every role's model, effort, iteration cap and timeout comes from ROLE_AGENTS
-// in lib/config.mts. The sandbox gets no GitHub token: the host reads GitHub
+// in lib/repo-config.mts. The sandbox gets no GitHub token: the host reads GitHub
 // with its own gh auth and passes each role what it needs through its prompt.
 //
 // Every phase reads the queue through lib/queue.mts#loadQueue, scoped to the
@@ -117,7 +117,7 @@
 // names. Within it, an issue reaches the phases only when the repository
 // owner added its queue label and nobody else has edited it since; anything
 // else is skipped and logged. An untrusted sandcastle:ready is removed, and
-// a hand-back label someone else removed is put back (#146).
+// a hand-back label someone else removed is put back.
 //
 // Usage:
 //   SANDCASTLE_ISSUE=<n> pnpm run sandcastle         (only issue #n and its PR)
@@ -132,7 +132,6 @@ import {
   budgetMinutesFrom,
   BUILDING_LABEL,
   describeQueueScope,
-  MAX_ITERATIONS,
   QueueScopeError,
   queueScopeFrom,
   type QueueScope,
@@ -149,6 +148,7 @@ import { runLimits } from "./lib/limits.mts";
 import { critiqueUnpicked, holdOverlappingPicks, lastingHolds } from "./lib/overlap.mts";
 import { planRound, resolveFiles, resolveRoles } from "./lib/plan.mts";
 import { loadQueue, startQueueRound, useQueueScope } from "./lib/queue.mts";
+import { MAX_ITERATIONS } from "./lib/repo-config.mts";
 import {
   handBackReport,
   humanThreadReport,
@@ -169,7 +169,7 @@ import { umbrellaPhase } from "./lib/umbrella.mts";
 import { findWork } from "./lib/work.mts";
 
 // The queue scope comes first, so a local run that names none exits with
-// the usage message before it touches git, gh or a sandbox (#146).
+// the usage message before it touches git, gh or a sandbox.
 let scope: QueueScope;
 try {
   scope = queueScopeFrom(process.env);
@@ -182,7 +182,7 @@ useQueueScope(scope);
 console.log(`Queue: ${describeQueueScope(scope)}`);
 
 // The time budget is read just as early, so a bad value exits the same way.
-// Its clock starts here, as close to the job's own start as it gets (#147).
+// Its clock starts here, as close to the job's own start as it gets.
 let budgetMinutes: number;
 try {
   budgetMinutes = budgetMinutesFrom(process.env);
@@ -256,7 +256,7 @@ try {
   // held would re-plan the same picks, up to MAX_ITERATIONS planner runs. Only
   // a hold behind an open PR, or behind a pick that opened one, lasts the run
   // (lib/overlap.mts#lastingHolds): a hold behind a pick the critique deferred
-  // or whose build opened no PR is released once that's known (#251).
+  // or whose build opened no PR is released once that's known.
   const heldForFiles = new Set<number>();
 
   for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
@@ -390,7 +390,7 @@ try {
     // It still runs on the kept picks, for dependencies and for overlaps of
     // modules rather than paths. The held picks are passed to it as unpicked,
     // each with a note that it's held, so its dependency check can defer a
-    // kept pick that needs one of them (#254).
+    // kept pick that needs one of them.
     // critiqueRound only filters the picks, so its SandcastleIssue[] return
     // type is narrower than what it's given; put each kept pick's roles back
     // by issue number rather than widen the critique's own types for a field
@@ -473,7 +473,7 @@ try {
   console.log(lines.length > 0 ? lines.join("\n") : "  (no role ran)");
 
   // Only logged and written here. Ending the run red on a hand-back is the
-  // trigger workflow's final step (#82), reading the list written to
+  // trigger workflow's final step, reading the list written to
   // .sandcastle/logs/handbacks.json below; exiting non-zero here would make a
   // local run that hands something back look like a crash.
   const handBacks = handBackReport.items();
@@ -485,7 +485,7 @@ try {
   }
 
   // Threads a follow-up pass kept from the follow-up role because someone
-  // other than the repository owner or a bot opened them (#78).
+  // other than the repository owner or a bot opened them.
   const humanThreads = humanThreadReport.items();
   if (humanThreads.length > 0) {
     console.log("\nReview threads waiting on a person:");
@@ -511,7 +511,7 @@ try {
   console.log(`\nRun report: ${REPORT_DIR}/summary.md`);
 
   // Unlike a hand-back, an intake stop means the host couldn't run a role at
-  // all, so the run ends red once the report is written (#320). A crash still
+  // all, so the run ends red once the report is written. A crash still
   // exits 1 on its uncaught error, whatever this sets.
   for (const { reason, firstError } of intakeStopReport.items()) {
     console.error(`\n✗ Intake stopped: ${reason}. First error: ${firstError}`);

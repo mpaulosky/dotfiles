@@ -1,7 +1,7 @@
 // A stand-in for a Sandcastle sandbox that runs its commands in a scratch git
 // repository, with a home directory of its own. Tests use it where a stubbed
 // `exec` can't show what git itself does: a merge with no committer identity
-// fails here as it does in the real sandbox (#242).
+// fails here as it does in the real sandbox.
 
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

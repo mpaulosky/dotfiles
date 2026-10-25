@@ -96,10 +96,10 @@ worktree, then pushes the branch and opens a pull request that closes the issue.
 rather than starting from the stock template. dotfiles runs Sandcastle too: its `.sandcastle/` is a port for a repo with
 no .NET, whose image carries the repo-ci-baseline skill's test tools instead of the SDK.
 
-The repo-ci-baseline Template now carries Sandcastle's shared files: its config, intake and critique prompts and host-safety
-modules (Owned), and its role prompts, Dockerfile, check and `package.json` (Seed). In a Baseline repo, create `.sandcastle/`
-and Apply again to get them, then copy `main.mts` and the rest of `lib/` from Blazor-Server, which the Template doesn't carry
-yet. The skill's `references/sandcastle.md` says what each file is and how an existing Sandcastle repo migrates.
+The repo-ci-baseline Template now carries Sandcastle's shared files: its code (`main.mts` and `lib/`), config, intake and
+critique prompts (Owned), and its per-repo values (`lib/repo-config.mts`), role prompts, Dockerfile, check and `package.json`
+(Seed). In a Baseline repo, create `.sandcastle/` and Apply again to get them. The skill's `references/sandcastle.md` says
+what each file is and how an existing Sandcastle repo migrates.
 
 ### 1. Prerequisites
 
@@ -221,7 +221,7 @@ into every role's prompt and names Blazor-Server's solution, gate and commit rul
   same things on GitHub as a backstop.
 - Open a pull request that says `Closes #<id>`.
 
-Set each role's model, effort and budget in `lib/config.mts` (`ROLE_AGENTS`), and keep the
+Set each role's model, effort and budget in `lib/repo-config.mts` (`ROLE_AGENTS`), and keep the
 `onSandboxReady` hook (`pnpm install --frozen-lockfile --config.confirm-modules-purge=false`) and
 `copyToWorktree = ["node_modules"]`.
 

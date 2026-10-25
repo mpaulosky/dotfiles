@@ -2,7 +2,7 @@
 // Claude's usage limit. The role runner (lib/agents.mts#runWithinLimits)
 // checks this before every role run, and main.mts checks it once at the top
 // of each round, so a run never starts a round or a role once the budget has
-// passed or the usage limit has been hit (#147).
+// passed or the usage limit has been hit.
 
 import { UncountedStopError } from "./errors.mts";
 

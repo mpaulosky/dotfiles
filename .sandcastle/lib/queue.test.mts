@@ -220,7 +220,7 @@ function stubQueueGithub({
   return { github, removed, added };
 }
 
-// Issue #146's acceptance criteria: only work the repository owner queued
+// Only work the repository owner queued
 // and approved reaches an agent.
 describe("loadQueue", () => {
   const SCOPE = { kind: "label", label: "Sandcastle" } as const;

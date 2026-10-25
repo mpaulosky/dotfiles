@@ -37,7 +37,7 @@ export const liveUmbrellaGitHub: UmbrellaGitHub = {
 // completed. Leaves one open while it has no children yet, any child is
 // still open, or a child closed as not planned: that child's work never
 // landed, so the umbrella's own job isn't done either. `scope` is this run's
-// queue scope (#146): in issue scope, only its one issue is considered among
+// queue scope: in issue scope, only its one issue is considered among
 // openUmbrellas(), and the "held" check also matches the scope's own queue
 // label, case-insensitively, not just the literal "Sandcastle". Returns the
 // numbers of the umbrellas this round closed.
@@ -50,7 +50,7 @@ export function closeFinishedUmbrellas(
   // A split that failed after its umbrella comment landed is handed back
   // with sandcastle:needs-human, and a person may re-queue it with
   // Sandcastle or the scope's own queue label: either way it isn't an
-  // umbrella to close (#234).
+  // umbrella to close.
   const holding = [QUEUE_LABEL, queueLabelOf(scope), "sandcastle:needs-human"].map((label) => label.toLowerCase());
   const umbrellas = github.openUmbrellas().filter((umbrella) => scope.kind === "label" || umbrella === scope.number);
   for (const umbrella of umbrellas) {

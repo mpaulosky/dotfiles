@@ -37,7 +37,7 @@ export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, chec
 // contains main, merged main cleanly, or merging main conflicted in which
 // files (and that it must finish the merge with `git commit --no-edit`).
 // `ciLog` is the failed-job log of each red check the gate doesn't cover,
-// such as CodeQL's (#79), as CODEQL_LOG; Sandcastle refuses a placeholder
+// such as CodeQL's, as CODEQL_LOG; Sandcastle refuses a placeholder
 // with no value, so a pass with none still sends a sentence saying so.
 export function followUpPromptArgs(
   issue: SandcastleIssue,

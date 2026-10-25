@@ -43,7 +43,7 @@ describe("readyPicks", () => {
 });
 
 // Covers "A plan with a missing or invalid roles field runs every role for
-// that issue" from issue #72: resolveRoles is what main.mts asks for that
+// that issue" from Blazor-Server#72: resolveRoles is what main.mts asks for that
 // fallback, since the plan schema itself can't reject an invalid field
 // without aborting the whole plan (see plan.mts).
 describe("resolveRoles", () => {
@@ -76,7 +76,7 @@ describe("resolveRoles", () => {
   });
 });
 
-// Issue #248: resolveFiles is what main.mts asks for each pick's files. The
+// resolveFiles is what main.mts asks for each pick's files. The
 // plan schema leaves the field unknown so a bad value means "no files" (the
 // pick is held behind an open PR or another pick, unless it's the first) rather than aborting the whole plan.
 describe("resolveFiles", () => {
@@ -118,7 +118,7 @@ describe("resolveFiles", () => {
     assert.deepEqual(resolveFiles(["lib/a.mts", "", "  ", "./", "lib/b.mts", "./lib/a.mts"]), ["lib/a.mts", "lib/b.mts"]);
   });
 
-  // #251: a folder is a path like any other, and overlap treats it as covering what's under it.
+  // A folder is a path like any other, and overlap treats it as covering what's under it.
   it("drops a trailing slash, so a folder and the same folder with a slash are one path", () => {
     assert.deepEqual(resolveFiles(["lib/new/", "lib/new", "lib/other//"]), ["lib/new", "lib/other"]);
   });
@@ -128,7 +128,7 @@ describe("resolveFiles", () => {
   });
 });
 
-// Issue #251: the planner works in the sandbox, where the repository is at /home/agent/workspace, and may name a path from there.
+// The planner works in the sandbox, where the repository is at /home/agent/workspace, and may name a path from there.
 describe("resolveFiles paths from the sandbox", () => {
   it("turns an absolute path under the repository root into a repo-relative one", () => {
     assert.deepEqual(resolveFiles(["/home/agent/workspace/.sandcastle/lib/build.mts"]), [".sandcastle/lib/build.mts"]);

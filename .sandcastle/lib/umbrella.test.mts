@@ -4,7 +4,7 @@ import type { SubIssue } from "./github.mts";
 import { useQueueScope } from "./queue.mts";
 import { closeFinishedUmbrellas, umbrellaPhase, type UmbrellaGitHub } from "./umbrella.mts";
 
-// Every pre-existing test here predates queue scope (#146) and expects
+// Every pre-existing test here predates queue scope and expects
 // today's behaviour, under the scope closeFinishedUmbrellas defaults to
 // outside GitHub Actions: every issue labelled Sandcastle. Set once, so
 // omitting the new third argument doesn't throw activeQueueScope's "no
@@ -34,7 +34,7 @@ function stubGithub(umbrellas: Record<number, SubIssue[]>, labels: Record<number
 
 describe("closeFinishedUmbrellas", () => {
   // A split that failed after its umbrella comment landed is handed back, and
-  // a person may re-queue it; it isn't an umbrella to close any more (#234).
+  // a person may re-queue it; it isn't an umbrella to close any more.
   for (const label of ["Sandcastle", "sandcastle:needs-human"]) {
     it(`leaves an umbrella open while it carries ${label}, and logs why`, () => {
       const { github, closed } = stubGithub({ 10: [child(11, "closed", "completed")] }, { 10: [label] });
@@ -133,7 +133,7 @@ describe("closeFinishedUmbrellas", () => {
     assert.ok(lines.some((line) => line.includes("#10") && line.includes("HTTP 502")), lines.join("\n"));
   });
 
-  // A local run's queue scope (#146) governs which label means "held" and
+  // A local run's queue scope governs which label means "held" and
   // which umbrellas are even checked.
   it("leaves an umbrella open while it carries the scope's own queue label, not just the literal Sandcastle", () => {
     const { github, closed } = stubGithub({ 10: [child(11, "closed", "completed")] }, { 10: ["Sandcastle:dev"] });

@@ -147,7 +147,7 @@ describe("recordFailedAttempt", () => {
   });
 });
 
-// #147: a push GitHub rejected because it touches .github/workflows/**
+// A push GitHub rejected because it touches .github/workflows/**
 // without Workflows permission must hand the issue back, not be treated as a
 // failed build attempt.
 describe("workflowHandBackComment", () => {
@@ -239,7 +239,7 @@ describe("handBackWorkflowChange", () => {
   });
 });
 
-// #253: a push GitHub still refuses for a workflow change, after the branch was
+// A push GitHub still refuses for a workflow change, after the branch was
 // created at base, moves the issue to Sandcastle:local instead of handing it
 // back: a local run pushes with the owner's own gh login.
 describe("workflowLocalComment", () => {

@@ -1,7 +1,7 @@
 // The build pipeline's failed attempts: the comment each one posts, and
 // giving up on an issue after BUILD_FAILURE_CAP of them through the hand-back
 // that intake and PR follow-up share (lib/github.mts#handBack). See "Giving up
-// and telling the human" in docs/plans/sandcastle-workflow.md.
+// and telling the human" in Blazor-Server's docs/plans/sandcastle-workflow.md.
 
 import { execFileSync } from "node:child_process";
 import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP, LOCAL_QUEUE_LABEL, QUEUE_LABEL } from "./config.mts";
@@ -199,7 +199,7 @@ export function handBackWorkflowChange(
 }
 
 // The comment for a push GitHub refused for a .github/workflows/** change
-// after main changed a workflow since the build's base (#253). `createdAtBase`
+// after main changed a workflow since the build's base. `createdAtBase`
 // is whether the branch was created at the base first, so the push was an
 // update to it; when that creation failed, the push was of a new branch, and
 // the comment says so. Says the issue
@@ -233,7 +233,7 @@ export function workflowLocalComment(branch: string, detail: string, change: Wor
 // Moves the issue `issueNumber` from the `Sandcastle` queue to
 // `Sandcastle:local` with workflowLocalComment, instead of handing it back:
 // nothing about the issue needs a person, only a push token with the
-// Workflows permission (#253). The comment goes first, so a comment GitHub
+// Workflows permission. The comment goes first, so a comment GitHub
 // rejects leaves the issue in the queue rather than moved without a word; the
 // labels change in one edit, so the issue is never in both queues or neither.
 // Records the move in `report`, so the run ends red and Actions emails the

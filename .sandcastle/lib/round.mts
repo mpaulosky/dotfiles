@@ -15,7 +15,7 @@ type BuildReportFields = Pick<OutcomeEntry, "outcome" | "detail">;
 // built nothing. `stop` is the line to stop the run on when no pull request
 // opened, and undefined when one did. `settled` holds each `work` item's
 // build, in the same order. A build that stopped with UncountedStopError (the
-// time budget or Claude's usage limit, #147) gets a ⏹ line, and stops the run
+// time budget or Claude's usage limit) gets a ⏹ line, and stops the run
 // whatever else the round published: nothing more can start.
 export function roundSummary(
   work: readonly { issue: { number: number }; branch: string }[],
@@ -65,7 +65,7 @@ export function roundSummary(
 
 // This round's outcomes, for the run report (lib/report.mts): a fulfilled
 // build's own outcome and detail, a build that rejected with
-// UncountedStopError (the time budget or Claude's usage limit, #147) as
+// UncountedStopError (the time budget or Claude's usage limit) as
 // "stopped" with its message, and any other rejection as "not published",
 // since the build threw rather than return a result.
 export function roundOutcomes(
@@ -86,7 +86,7 @@ export function roundOutcomes(
 // The numbers of the issues whose build opened a PR, from the round's `work`
 // and its `settled` builds, in the same order. lib/overlap.mts#lastingHolds
 // keeps a hold behind a pick for the rest of the run only when that pick is
-// here (#251): a build that threw, stopped or opened no PR leaves nothing
+// here: a build that threw, stopped or opened no PR leaves nothing
 // open for the held pick to conflict with.
 export function publishedIssues(
   work: readonly { issue: { number: number } }[],

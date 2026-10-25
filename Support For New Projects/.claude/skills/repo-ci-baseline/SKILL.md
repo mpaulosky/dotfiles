@@ -31,7 +31,7 @@ A fix made only in a repo is reverted by its next Apply.
 | Docs-only CI skip | Docs PRs skip the build and tests while required checks still pass | [docs-only-ci.md](references/docs-only-ci.md) |
 | Per-project test matrix | Each test project runs in its own job on Microsoft Testing Platform | [test-matrix.md](references/test-matrix.md) |
 | Release labels | `semver:minor` and `semver:major` exist, because `release.yml` reads them | [release-pipeline.md](references/release-pipeline.md) |
-| Sandcastle | Repos that run Sandcastle share its config, intake and critique prompts and host-safety guardrails (Owned), and start from the same role prompts, Dockerfile and scripts (Seed); Apply adds them only to a repo with a `.sandcastle/` folder or no commits | [sandcastle.md](references/sandcastle.md) |
+| Sandcastle | Repos that run Sandcastle share its code (`main.mts` and `lib/`), config, intake and critique prompts and host-safety guardrails (Owned), and start from the same per-repo values (`lib/repo-config.mts`), role prompts, Dockerfile and scripts (Seed); Apply adds them only to a repo with a `.sandcastle/` folder or no commits | [sandcastle.md](references/sandcastle.md) |
 | GitHub settings | One standard for merge settings, the `main-rules` ruleset and required checks, labels, Actions and security, checked and applied by `github-settings.sh` | [github-settings.md](references/github-settings.md) |
 
 Read a part's reference before changing it: each holds the design, the review findings behind it, and its live check.

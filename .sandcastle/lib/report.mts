@@ -1,7 +1,7 @@
 // The run's report: token usage per role, what became of each issue and PR it
 // touched, its hand-backs and the PRs waiting on people — collected during the
 // run and written at its end to .sandcastle/logs/ and the job summary (see
-// "Observability" in docs/plans/sandcastle-workflow.md).
+// "Observability" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import type { IterationUsage } from "@ai-hero/sandcastle";
@@ -90,7 +90,7 @@ export type HandBackEntry = ReportTarget & { label: string; reason: string; url:
 // Every hand-back this run made, so a final workflow step can fail the job
 // when the list isn't empty: the owner's PAT means GitHub never notifies
 // anyone about Sandcastle's own labels or comments (see "Notification: the
-// run ends red" in docs/plans/sandcastle-workflow.md).
+// run ends red" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 export class HandBackReport {
   private readonly entries: HandBackEntry[] = [];
 
@@ -111,7 +111,7 @@ export const handBackReport = new HandBackReport();
 // lib/follow-up-pass.mts#threadsForRole uses for "leftForHuman"): an owner's
 // own thread is the follow-up role's to answer, not a person's to wait on.
 // `answered` counts the bot or owner threads the host has replied to that are
-// still open: they wait on the owner now, so the PR shows here too (#225).
+// still open: they wait on the owner now, so the PR shows here too.
 export type WaitingPrEntry = { pr: number; threads: number; answered?: number };
 
 // Every PR the latest follow-up sweep found waiting on a person, replaced
@@ -158,7 +158,7 @@ export const humanThreadReport = new HumanThreadReport();
 // judge every issue: it hit INTAKE_FAILED_RUNS_LIMIT failed runs or
 // INTAKE_REFUSED_BATCHES_LIMIT refused batches in a row, so the issues it
 // hadn't judged yet are left with no verdict and nothing told the owner
-// (#320, the first automatic runs ending green on a missing Docker image).
+// (the first automatic runs ending green on a missing Docker image).
 // `unjudged` are the issue numbers intake never gave a verdict to this
 // round; `firstError` is the message of the first error in the streak that
 // stopped it.
@@ -182,14 +182,14 @@ export class IntakeStopReport {
 export const intakeStopReport = new IntakeStopReport();
 
 // Whether main.mts must exit non-zero: any recorded intake stop means some
-// issues were left silently unjudged (#320), so the run must end red even
+// issues were left silently unjudged, so the run must end red even
 // when nothing else failed, a hand-back included.
 export function intakeStopExitCode(stops: readonly IntakeStopEntry[]): number {
   return stops.length > 0 ? 1 : 0;
 }
 
 // How the run ended, so the summary tells a hand-back from a crash
-// ("Notification: the run ends red" in docs/plans/sandcastle-workflow.md).
+// ("Notification: the run ends red" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 export type RunEnding = { kind: "finished" } | { kind: "stopped"; reason: string } | { kind: "crashed" };
 
 // Everything renderSummary needs to render the run's Markdown report.
@@ -206,11 +206,10 @@ export type SummaryInput = {
 };
 
 // The run's report as Markdown, for .sandcastle/logs/summary.md and (when set)
-// $GITHUB_STEP_SUMMARY. See the design note at .sandcastle/work/81/design.md
-// for the exact shape: queue and ending sentence, a table of every touched
+// $GITHUB_STEP_SUMMARY: the queue and ending sentence, a table of every touched
 // issue and PR with its outcome (plus one row per hand-back), the hand-backs
 // themselves with links, the PRs waiting on a person, any round where intake
-// stopped (#320), and a token-usage table by role with a total row.
+// stopped, and a token-usage table by role with a total row.
 export function renderSummary(input: SummaryInput): string {
   const { repo } = input;
   const link = (target: ReportTarget): string =>
@@ -314,7 +313,7 @@ function waitingLines(
 }
 
 // Only a run whose intake stopped gets the section, since it's the reason the
-// run ends red (#320); a run with no stop has nothing to say here.
+// run ends red; a run with no stop has nothing to say here.
 function intakeStopLines(stops: readonly IntakeStopEntry[], link: (target: ReportTarget) => string): string[] {
   if (stops.length === 0) return [];
   return [

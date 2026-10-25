@@ -157,7 +157,7 @@ describe("parseHeads", () => {
   });
 });
 
-// A BranchRefs stub for discardClosedWork (#77). Each ref's current commit
+// A BranchRefs stub for discardClosedWork. Each ref's current commit
 // (local, tracking, and origin's real branch) and whether it contains
 // closedHead are configurable independently, and every call is recorded in
 // `calls` so a test can check the order of operations.

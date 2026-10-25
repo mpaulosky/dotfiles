@@ -10,9 +10,9 @@
 // code it needs never reached main. The gate also holds back an issue intake
 // hasn't cleared (no sandcastle:ready) or that's handed back to a human
 // (sandcastle:needs-info or sandcastle:needs-human), so the planner never
-// sees one (#74). The gate reads the queue through lib/queue.mts#loadQueue,
+// sees one. The gate reads the queue through lib/queue.mts#loadQueue,
 // so an issue outside the run's queue scope, or one the repository owner
-// didn't approve, never reaches it (#146).
+// didn't approve, never reaches it.
 // ---------------------------------------------------------------------------
 
 import { isIssueBranch } from "./branches.mts";
@@ -74,7 +74,7 @@ function fetchBlocker(number: number, cache: Map<number, Blocker>, github: GateG
 }
 
 // Issue numbers named on "Blocked by #N" / "Depends on #N" lines in the body.
-// Only line starts count, so prose such as "reuses the generator from #22"
+// Only line starts count, so prose such as "reuses the generator from #N"
 // doesn't create a dependency.
 export function bodyBlockers(body: string): number[] {
   const numbers: number[] = [];
@@ -96,9 +96,9 @@ export function unfinishedReason(blocker: Blocker): string | undefined {
 }
 
 // Why intake hasn't cleared the issue to build yet, or undefined once it has
-// (see docs/plans/sandcastle-workflow.md, "Phase 3: Blocker gate"): it isn't
+// (see Blazor-Server's docs/plans/sandcastle-workflow.md, "Phase 3: Blocker gate"): it isn't
 // marked sandcastle:ready, or it's labelled sandcastle:needs-info or
-// sandcastle:needs-human (#74).
+// sandcastle:needs-human.
 export function readinessReason(issue: SandcastleIssue): string | undefined {
   // The hand-back labels come first: an issue can carry sandcastle:ready and
   // still be handed back, and the reason should name what a human must do.
@@ -152,13 +152,13 @@ export function gateIssues(
       continue;
     }
 
-    // Another Sandcastle run is building it right now (#150).
+    // Another Sandcastle run is building it right now.
     if (hasLabel(issue, BUILDING_LABEL)) {
       blocked.push({ issue, reasons: ["it's already being built"] });
       continue;
     }
 
-    // Intake hasn't cleared it yet (#74). Checked before the native blockers
+    // Intake hasn't cleared it yet. Checked before the native blockers
     // are read, so an issue without sandcastle:ready isn't looked up for
     // nothing.
     const readiness = readinessReason(issue);

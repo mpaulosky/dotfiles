@@ -2,12 +2,12 @@
 // Intake
 //
 // A run before the blocker gate judges every unjudged Sandcastle issue
-// against the Definition of Ready (see docs/plans/sandcastle-workflow.md,
+// against the Definition of Ready (see Blazor-Server's docs/plans/sandcastle-workflow.md,
 // "Phase 2: Intake"), so a human sees numbered questions on an unclear issue
 // instead of Sandcastle guessing at it. Its verdicts are "ready"
 // (sandcastle:ready), "needs-info" (hands the issue back with
 // sandcastle:needs-info and one comment of numbered questions), and "split"
-// (#75: too big for one PR, so the host creates child issues from the
+// (too big for one PR, so the host creates child issues from the
 // verdict's children and turns the original into an umbrella). Every verdict
 // can also carry bug: true, which adds the bug label so the issue's branch is
 // fix/.
@@ -19,13 +19,13 @@ import { z } from "zod";
 import { runRole } from "./agents.mts";
 import {
   BUILDING_LABEL,
-  hooks,
   INTAKE_BATCH_SIZE,
   INTAKE_FAILED_RUNS_LIMIT,
   INTAKE_REFUSED_BATCHES_LIMIT,
   queueLabelOf,
   UMBRELLA_MARKER,
 } from "./config.mts";
+import { hooks } from "./repo-config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { bodyBlockers, openPrReason } from "./gate.mts";
 import {
@@ -49,7 +49,7 @@ import { handBackReport, intakeStopReport, type HandBackReport, type IntakeStopR
 import { agentSandbox } from "./skills.mts";
 
 // Lenient where a slip is harmless, because one verdict that fails the schema
-// costs every verdict in the block (#224): the issue JSON gives `number` as a
+// costs every verdict in the block: the issue JSON gives `number` as a
 // number, so a numeric id is taken as a string, and a missing bug means false.
 const intakeSchema = z.object({
   verdicts: z.array(
@@ -94,7 +94,7 @@ export type SplitGitHub = {
   unmarkSplitting(issue: number): void;
   // The label this run's queue scope approves issues with (lib/config.mts),
   // so a split under a non-default scope (SANDCASTLE_LABEL) queues its
-  // children in that scope rather than GitHub Actions' (#146).
+  // children in that scope rather than GitHub Actions'.
   queueLabel(): string;
 };
 
@@ -167,7 +167,7 @@ const runIntake: IntakeRun = intakeRunner();
 // Returns how many verdicts GitHub took and refused, the first refusal's
 // error, and the issues settled (a verdict GitHub took, or one another run
 // gave first), so intakeRound can record which issues a stop leaves behind
-// and why (#320).
+// and why.
 export function applyVerdicts(
   issues: readonly SandcastleIssue[],
   verdicts: readonly IntakeVerdict[],
@@ -198,7 +198,7 @@ export function applyVerdicts(
 
     // Handing an issue back with no questions would leave its author nothing
     // to answer, so such a verdict counts as none: checked before the issue
-    // counts as judged, so a valid verdict after it still applies (#224).
+    // counts as judged, so a valid verdict after it still applies.
     if (verdict.verdict === "needs-info" && questionsOf(verdict).length === 0) {
       log(`  ⚠ Ignoring intake's needs-info verdict on ${ref}: it has no questions.`);
       continue;
@@ -315,7 +315,7 @@ function applyVerdict(
 // failure after that hands it back with sandcastle:needs-human, even before
 // the first child exists: a create that GitHub answered with an error may
 // still have created the child. When the hand-back fails too, the marks still
-// keep the issue and its children out of intake (#234).
+// keep the issue and its children out of intake.
 function applySplit(
   issue: SandcastleIssue,
   verdict: IntakeVerdict,
@@ -420,8 +420,8 @@ const conventionalPrefix = /^(?:feat|fix|docs|style|refactor|perf|test|build|ci|
 // A split child's drafted title with the parent title's conventional prefix in
 // front, so the PR built from the child passes the PR title check, which wants
 // that prefix since the title becomes the squash commit's subject. The model
-// drafts child titles without one (#351: #347's children came back bare, and
-// the PR built from the first failed the check). A drafted title that already
+// drafts child titles without one (one split's children came back bare,
+// and the PR built from the first failed the check). A drafted title that already
 // has a prefix, or a parent title with none, leaves the draft as it is.
 function withParentPrefix(parentTitle: string, drafted: string): string {
   const prefix = conventionalPrefix.exec(parentTitle.trim())?.[0];
@@ -540,7 +540,7 @@ function questionsOf(verdict: IntakeVerdict): string[] {
 // &#64; would otherwise render as an @ these rules never saw. Code spans and
 // fenced blocks are left as written: mentions and references don't fire
 // there, and a child is a build spec, whose Razor directives (@page, @inject)
-// an agent must be able to copy as they are (#234).
+// an agent must be able to copy as they are.
 export function withoutReferences(text: string): string {
   const prose = (part: string) => breakReferences(part.replace(/&(?=#?[A-Za-z0-9]+;)/g, "&amp;"));
   // As CommonMark reads them: a fenced block, to its closing fence or the end
@@ -571,7 +571,7 @@ function breakReferences(text: string): string {
 
 // `text` from intake, as plain text for an issue comment. Intake read
 // untrusted issue text, and its words go to the issue's author, so nothing in
-// them may restructure the comment or reach anyone else (#224, #227): it's
+// them may restructure the comment or reach anyone else: it's
 // kept to one line; backslashes and backticks are escaped (no code span or
 // fence to swallow the re-queue instructions), and so are & (no character
 // reference to decode into an @, # or . that breakReferences doesn't see) and
@@ -624,11 +624,11 @@ function handBackComment(lead: string, reason: string, questions: readonly strin
 // intake leaves alone (see needsIntake).
 //
 // Intake runs once per batch of INTAKE_BATCH_SIZE issues, so a malformed or
-// truncated answer costs only its batch (#224), and the next batch is still
-// judged (#227). A batch whose run fails is tried again in halves, and each
+// truncated answer costs only its batch, and the next batch is still
+// judged. A batch whose run fails is tried again in halves, and each
 // half that fails again in halves, so an issue that always breaks intake's
 // answer is left unjudged on its own rather than with its batch-mates: they'd
-// otherwise re-form the same batch every round (#229). Whatever is left
+// otherwise re-form the same batch every round. Whatever is left
 // unjudged is logged and judged again in a later round or run.
 //
 // Intake stops for the round after INTAKE_FAILED_RUNS_LIMIT failed runs in a
@@ -641,7 +641,7 @@ function handBackComment(lead: string, reason: string, questions: readonly strin
 // Either stop is recorded in `stops` (lib/report.mts#IntakeStopReport) with
 // its reason, the issue numbers intake never judged this round, and the
 // first error's message in the streak that stopped it, so a run that can't
-// do its work ends red instead of silently exiting 0 (#320).
+// do its work ends red instead of silently exiting 0.
 export async function intakeRound(
   issues: readonly SandcastleIssue[],
   openPrs: readonly OpenPullRequest[],

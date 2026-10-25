@@ -65,14 +65,14 @@ function passTarget(overrides: Partial<PassTarget> = {}): PassTarget {
 
 // A red check (completed, not green) with an Actions run behind it; tests
 // override just the fields their scenario needs. A check's runId is what a
-// pass can re-run or forward (see runlessCheck for one with none, #79).
+// pass can re-run or forward (see runlessCheck for one with none).
 function redCheck(overrides: Partial<HeadCheck> = {}): HeadCheck {
   return { name: "Template tests", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z", runId: 1001, ...overrides };
 }
 
 // A red check with no Actions run behind it, such as code scanning's own
 // "CodeQL" result (lib/github.mts's HeadCheck): nothing a pass can re-run or
-// read a failed-job log from (#79).
+// read a failed-job log from.
 function runlessCheck(overrides: Partial<HeadCheck> = {}): HeadCheck {
   return redCheck({ name: "CodeQL", runId: undefined, ...overrides });
 }
@@ -573,14 +573,25 @@ describe("giveUpComment", () => {
 // isGateCovered / planRedCi
 // ---------------------------------------------------------------------------
 
+// The gate-covered names these tests pass in, as the host's gateCovered
+// would hold them (lib/repo-config.mts#GATE_COVERED_CHECKS). The functions
+// take the set, so these tests don't depend on any repo's value.
+const covered: ReadonlySet<string> = new Set(["Template tests"]);
+
 // Acceptance criterion: "The decision between fix, re-run and CodeQL is unit
 // tested with stubbed check data."
 describe("isGateCovered", () => {
-  it(`treats "Template tests" as the job scripts/gate.sh reproduces`, () => {
-    assert.equal(isGateCovered("Template tests"), true);
+  it("treats a name in the covered set as a job scripts/gate.sh reproduces", () => {
+    assert.equal(isGateCovered("Template tests", covered), true);
   });
 
-  // Blazor-Server's jobs, which dotfiles hasn't got, and dotfiles' checks
+  it("takes the covered names from its argument, not from any one repo's value", () => {
+    assert.equal(isGateCovered("Build Solution", new Set(["Build Solution"])), true);
+    assert.equal(isGateCovered("Template tests", new Set(["Build Solution"])), false);
+    assert.equal(isGateCovered("Template tests", new Set()), false);
+  });
+
+  // Blazor-Server's jobs, which the covered set here hasn't got, and the checks
   // that gate.sh doesn't run.
   for (const name of [
     "Build Solution",
@@ -594,44 +605,50 @@ describe("isGateCovered", () => {
     "Analyze (actions)",
   ]) {
     it(`treats "${name}" as a check scripts/gate.sh doesn't reproduce`, () => {
-      assert.equal(isGateCovered(name), false);
+      assert.equal(isGateCovered(name, covered), false);
     });
   }
 });
 
 describe("planRedCi", () => {
   it("fixes a build the gate reproduces, regardless of which checks are red", () => {
-    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Template tests" })]);
+    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Template tests" })], covered);
 
     assert.deepEqual(plan, { fix: true, rerun: [], forward: [] });
   });
 
   it("fixes even when the only red check is one the gate doesn't cover, since the gate itself is red", () => {
-    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Analyze (csharp)" })]);
+    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Analyze (csharp)" })], covered);
 
     assert.deepEqual(plan, { fix: true, rerun: [], forward: [] });
   });
 
   it("re-runs a gate-covered check once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" })], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: ["Template tests"], forward: [] });
   });
 
   it("forwards a check the gate doesn't cover once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Analyze (csharp)" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Analyze (csharp)" })], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: [], forward: ["Analyze (csharp)"] });
   });
 
   it("sorts red checks of both kinds into rerun and forward once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" }), redCheck({ name: "Analyze (csharp)" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" }), redCheck({ name: "Analyze (csharp)" })], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: ["Template tests"], forward: ["Analyze (csharp)"] });
   });
 
+  it("re-runs and forwards by the covered set it's given, not by any one repo's value", () => {
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" }), redCheck({ name: "Build Solution" })], new Set(["Build Solution"]));
+
+    assert.deepEqual(plan, { fix: false, rerun: ["Build Solution"], forward: ["Template tests"] });
+  });
+
   it("does nothing when the gate is green and no check is red", () => {
-    const plan: RedCiPlan = planRedCi(true, []);
+    const plan: RedCiPlan = planRedCi(true, [], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: [], forward: [] });
   });
@@ -658,7 +675,7 @@ function sandboxFake(
     gateCommits?: boolean;
     // These roles leave the worktree's head exactly as they found it: a
     // follow-up run that declines every thread and fixes nothing from a
-    // forwarded log commits nothing (#79), unlike every other test's role,
+    // forwarded log commits nothing, unlike every other test's role,
     // which always commits to simulate a change.
     roleNoCommit?: string[];
   } = {},
@@ -773,7 +790,7 @@ function passHostFake(
     // red checks.
     checks?: HeadCheck[];
     // The head host.checks says its checks were read from; defaults to the
-    // PR's head, so a test must say when it's read a race (#79).
+    // PR's head, so a test must say when it's read a race.
     checksHeadRefOid?: string;
     // The state of the re-run checks host.rerunFailedChecks reports once it
     // settles; defaults to still red, so a test must say when the re-run
@@ -781,6 +798,8 @@ function passHostFake(
     rerunResult?: CheckState[];
     // host.failedCheckLog's answer.
     failedCheckLog?: string;
+    // host.gateCovered; defaults to the set the isGateCovered tests use.
+    gateCovered?: ReadonlySet<string>;
   } = {},
 ) {
   const calls = {
@@ -801,6 +820,7 @@ function passHostFake(
   };
   const sandbox = options.sandbox ?? sandboxFake();
   const passHost: PassHost = {
+    gateCovered: options.gateCovered ?? covered,
     fetchBranch: (branch) => void calls.fetchBranch.push(branch),
     reviewThreads: () => ({
       headRefOid: options.headRefOid ?? HEAD,
@@ -1039,7 +1059,7 @@ describe("runPass", () => {
   // Acceptance criteria: "`planPass` starts a pass for a settled PR whose
   // only open threads are the owner's, and hands those threads to the
   // follow-up role" and "A test pins that such a PR gets a pass rather than a
-  // skip" (#225).
+  // skip".
   it("gives a pass to a settled PR whose only open thread is the owner's, handing that thread to the follow-up role", async () => {
     const sandbox = sandboxFake({ followUpJson: JSON.stringify([{ threadId: "RT_owner", verdict: "declined", reason: "Pattern matching reads worse here." }]) });
     const { passHost, calls } = passHostFake({ threads: [ownerThread()], containsBase: true, sandbox });
@@ -1062,7 +1082,7 @@ describe("runPass", () => {
   });
 
   // Acceptance criterion: "A test pins that a PR with no open thread, no merge
-  // to make and no red check still gets no pass" (#225).
+  // to make and no red check still gets no pass".
   for (const containsBase of [true, false]) {
     it(`skips a PR with no open thread, no merge to make and no red check, without claiming its issue (main ${containsBase ? "merged in" : "not merged in, but no conflict"})`, async () => {
       const { passHost, calls } = passHostFake({ threads: [], checks: [], containsBase });
@@ -1341,7 +1361,7 @@ describe("runPass", () => {
     assert.match(logged, /src\/example\.ts/);
     assert.match(logged, /\b3\b/);
     assert.equal(calls.handBack.length, 1);
-    // The run report shows the hand-back's reason (lib/report.mts#handBackLines); the PR comment never does (#324).
+    // The run report shows the hand-back's reason (lib/report.mts#handBackLines); the PR comment never does.
     assert.match(calls.handBack[0]!.reason, /src\/example\.ts/);
     assert.doesNotMatch(calls.handBack[0]!.body, /src\/example\.ts/);
   });
@@ -1460,8 +1480,8 @@ describe("followUpPassPhase", () => {
   });
 });
 
-// The design note's other give-ups and guards (.sandcastle/work/78/design.md,
-// "Also pin"), each a hand-back with no push unless it says otherwise.
+// The pass's other give-ups and guards, each a hand-back with no push unless
+// it says otherwise.
 describe("runPass's other give-ups", () => {
   const fixedVerdict = JSON.stringify([{ threadId: "RT_bot", verdict: "fixed", reason: "Done.", commit: "a".repeat(7) }]);
 
@@ -1643,6 +1663,23 @@ describe("runPass's red CI handling", () => {
     assert.deepEqual(calls.push, []);
   });
 
+  it("doesn't re-run a red check the host's gateCovered leaves out, but forwards its log", async () => {
+    const sandbox = sandboxFake({ gateExitCodes: [0, 0, 0], followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({
+      threads: [],
+      containsBase: true,
+      sandbox,
+      gateCovered: new Set(),
+      checks: [redCheck({ name: "Template tests" })],
+      failedCheckLog: "the failed-job log",
+    });
+
+    await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
+
+    assert.deepEqual(calls.rerunFailedChecks, []);
+    assert.deepEqual(calls.failedCheckLog.map((call) => call.checkNames), [["Template tests"]]);
+  });
+
   // Acceptance criterion: "A second failure hands the PR back with
   // `sandcastle:needs-human`."
   it("gives up with sandcastle:needs-human when the re-run check fails again", async () => {
@@ -1686,7 +1723,7 @@ describe("runPass's red CI handling", () => {
     assert.equal(calls.push.length, 1);
   });
 
-  // #79's follow-up review: a CodeQL failure the role can't act on (an
+  // From a follow-up review: a CodeQL failure the role can't act on (an
   // autobuild or infrastructure error, say) leaves the role committing
   // nothing. Reporting "passed" there would only let the next sweep find the
   // same red check and run the role the same way again, every sweep until
@@ -1711,7 +1748,7 @@ describe("runPass's red CI handling", () => {
     assert.ok(roleRun !== undefined, "the role still ran, and was given the log");
   });
 
-  // #79's follow-up review: a red check with no Actions run behind it (code
+  // From a follow-up review: a red check with no Actions run behind it (code
   // scanning's own "CodeQL" result, not the "Analyze" job) has no log a pass
   // could forward and nothing a pass could re-run, so sending it to the
   // follow-up role would only start a run with nothing to fix from, every
@@ -1728,7 +1765,7 @@ describe("runPass's red CI handling", () => {
 });
 
 describe("runPass's red CI decisions", () => {
-  // #79's follow-up review: host.checks's own read can race a push that
+  // From a follow-up review: host.checks's own read can race a push that
   // lands between the sweep and this pass, which would otherwise decide
   // redChecks from a commit other than the one it's about to gate and push.
   it("skips the pass when its checks were read from a commit other than its head", async () => {
@@ -1758,7 +1795,7 @@ describe("runPass's red CI decisions", () => {
     assert.deepEqual(calls.rerunFailedChecks, []);
   });
 
-  // #222: a Sandcastle run started by a PR event reports its own running
+  // A Sandcastle run started by a PR event reports its own running
   // check on the head it sweeps, which would otherwise hold every pass it
   // claims.
   it("re-runs a red check while only Sandcastle's own check is still running", async () => {
@@ -1772,7 +1809,7 @@ describe("runPass's red CI decisions", () => {
     assert.deepEqual(calls.rerunFailedChecks.map((call) => call.checkNames), [["Template tests"]]);
   });
 
-  // #222: a red Sandcastle check is a hand-back's, with nothing in the PR for
+  // A red Sandcastle check is a hand-back's, with nothing in the PR for
   // the follow-up role to fix from its job log.
   it("doesn't start a pass for Sandcastle's own red check", async () => {
     const { passHost, calls } = passHostFake({ threads: [], containsBase: true, checks: [redCheck({ name: "Sandcastle", workflow: "Sandcastle", runId: 2002 })] });
@@ -1802,7 +1839,7 @@ describe("runPass's red CI decisions", () => {
     assert.deepEqual(calls.failedCheckLog, [{ pr: PR_NUMBER, checkNames: ["Sandcastle"], expectedHead: HEAD }]);
   });
 
-  // #79's follow-up review: `pull_request` CI checks out the head merged
+  // From a follow-up review: `pull_request` CI checks out the head merged
   // with main, so a PR that's merely behind main (not conflicted) has its
   // checks run against a commit the bare head's gate never sees. Merging
   // main in first, before the gate decides, makes the gate judge the same
@@ -1827,7 +1864,7 @@ describe("runPass's red CI decisions", () => {
     assert.equal(calls.push.length, 1);
   });
 
-  // #259's follow-up review: GitHub's conflicted flag can be stale by the
+  // From a follow-up review: GitHub's conflicted flag can be stale by the
   // time this pass fetches main, so `mergeFirst`'s merge can conflict even
   // though the PR isn't flagged as conflicted. Gating the half-merged tree
   // that leaves behind would judge conflict markers, not the branch, so the
@@ -1920,7 +1957,7 @@ describe("runPass's red CI decisions", () => {
     assert.match(log, /the real failure$/);
   });
 
-  // #79's follow-up review: reading the CodeQL log happens before the role
+  // From a follow-up review: reading the CodeQL log happens before the role
   // or anything else runs, so a stop here loses nothing of this pass's own —
   // but an uncaught throw would otherwise crash the pass instead of handing
   // the PR back with a reason.
@@ -1938,7 +1975,7 @@ describe("runPass's red CI decisions", () => {
     assert.equal(sandbox.runs.length, 0, "the role never ran: there was no log to give it");
   });
 
-  // #79's follow-up review: a give-up for a re-run check still red used to
+  // From a follow-up review: a give-up for a re-run check still red used to
   // leave before the role's thread verdicts were replied to and resolved,
   // throwing away work the role already did. The reply and resolution must
   // land even though the pass ends in a hand-back.
@@ -1960,7 +1997,7 @@ describe("runPass's red CI decisions", () => {
     assert.deepEqual(calls.resolveThread, ["RT_bot"]);
   });
 
-  // #79's follow-up review: an error re-running the checks (the head moved,
+  // From a follow-up review: an error re-running the checks (the head moved,
   // or a `gh` failure) must give up with a reason rather than crash the pass
   // outright, and must still answer the role's threads first.
   it("gives up, after answering threads, when re-running a still-red check fails", async () => {
@@ -2019,7 +2056,7 @@ describe("runPass's merge of main in a sandbox from createCheckedSandbox", () =>
   const hostIdentity = () => ({ name: "Host Person", email: "host@example.com" });
 
   // The pass's sandbox is made by the real createCheckedSandbox over a scratch
-  // git repository that has no committer identity until one is set (#242).
+  // git repository that has no committer identity until one is set.
   function realSandboxPass(options: { conflicted: boolean; checks: HeadCheck[] }) {
     const fake = gitSandboxFake();
     const { passHost, calls } = passHostFake({ threads: [], containsBase: false, checks: options.checks, headRefOid: fake.head });

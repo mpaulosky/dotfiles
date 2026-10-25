@@ -3,14 +3,13 @@
 //
 // The sweep (lib/follow-up.mts) decides which PRs need a pass; this module is
 // the pass itself. One pass resets the PR's worktree to its head, gates the
-// head when a check is red to tell a real failure from a flaky one (#79),
+// head when a check is red to tell a real failure from a flaky one,
 // merges main in when the PR needs it, runs the follow-up role to resolve the
 // merge, the PR's bot and owner review threads and any red check the gate
 // doesn't cover, gates and pushes the result, re-runs a flaky check the gate
 // passes, then replies to and resolves the role's verdicts and posts a
-// pass-summary comment. See docs/plans/sandcastle-workflow.md, "Phase 1:
-// Follow-up sweep", and #78's design note (.sandcastle/work/78/design.md) for
-// the step-by-step this module follows.
+// pass-summary comment. See Blazor-Server's docs/plans/sandcastle-workflow.md,
+// "Phase 1: Follow-up sweep", for the step-by-step this module follows.
 // ---------------------------------------------------------------------------
 
 import { setTimeout as sleep } from "node:timers/promises";
@@ -59,6 +58,7 @@ import { plainText, withoutReferences } from "./intake.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { followUpPromptArgs, gateFixerPromptArgs } from "./prompts.mts";
 import { ownerCheck, type IsOwner } from "./queue.mts";
+import { GATE_COVERED_CHECKS } from "./repo-config.mts";
 import { humanThreadReport, outcomeReport, type HumanThreadEntry, type OutcomeEntry, type OutcomeReport } from "./report.mts";
 import { containsSandboxSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
@@ -77,7 +77,7 @@ const COMMENT_LIMIT = 65_000;
 // each run's own end, where its error is, rather than the end of the whole
 // joined text): a whole CodeQL log can run to megabytes, far past what a
 // prompt should carry, and without the split one run's log could crowd out
-// another's entirely (#79).
+// another's entirely.
 const CI_LOG_LIMIT = 60_000;
 
 // One review thread given to the follow-up role, trimmed to only what it
@@ -241,7 +241,7 @@ const RESOLUTION_WORDS: Record<Resolution, string> = { ADDRESSED: "addressed", W
 
 // Model text the host posts with its <!-- broken, so a reason quoting a host
 // marker can't pass for the host's own comment (as lib/build.mts's
-// designComment does, #228).
+// designComment does).
 function withoutCommentOpeners(text: string): string {
   return text.replaceAll("<!--", BROKEN_COMMENT_OPEN);
 }
@@ -255,7 +255,7 @@ function cutToLimit(text: string): string {
 // FOLLOW_UP_REPLY_MARKER, a first line naming the verdict (and, for a bot
 // thread, the resolution, such as "Resolved as won't fix."), then the reason
 // — through `publicError`, which hides a secret, with its <!-- and every
-// @mention or #123 reference outside code broken — and "Fixed in <commit>"
+// @mention or issue reference outside code broken — and "Fixed in <commit>"
 // when the verdict names one. Cut to fit GitHub's comment limit.
 export function replyBody(action: ThreadAction, publicError: (text: string) => string): string {
   const { verdict, resolve } = action;
@@ -371,7 +371,7 @@ function checkList(names: readonly string[]): string {
 // or left out of the host's answer, since a check missing from it isn't
 // known to have passed. `expectedHead` is the commit the pass gated
 // (target.headRefOid): the host refuses when the PR's head has moved past it,
-// rather than re-run jobs for a commit the pass never judged (#79).
+// rather than re-run jobs for a commit the pass never judged.
 function stillRedAfterRerun(pr: number, names: readonly string[], host: PassHost, expectedHead: string): string[] {
   const after = new Map(host.rerunFailedChecks(pr, names, expectedHead).map((check) => [check.name, check]));
   return names.filter((name) => {
@@ -452,6 +452,8 @@ export function passOutcomeEntry(target: PassTarget, outcome: PassOutcome): Outc
 // What runPass needs from outside the pass itself; tests pass a stub. The
 // live wiring sits at the bottom of this module.
 export type PassHost = {
+  // The CI checks scripts/gate.sh reproduces (lib/repo-config.mts#GATE_COVERED_CHECKS).
+  gateCovered: ReadonlySet<string>;
   // branches.mts's originGit.fetch, so the sandbox's createSandbox(branch)
   // checks the PR's head out from its remote-tracking ref.
   fetchBranch(branch: string): void;
@@ -479,7 +481,7 @@ export type PassHost = {
   // from `base` to `commit` publish, against one of the sandbox's secrets or
   // a token shape, or undefined when nothing matches. Carries only where the
   // match sits and what kind it is, never the matched text, so logging or
-  // reporting it never risks the secret itself (#324).
+  // reporting it never risks the secret itself.
   leaksSecret(base: string, commit: string): SecretMatch | undefined;
   // A plain push of the gated commit to the PR's branch, retried on a
   // GitHub server error the way lib/build.mts#publish's push is.
@@ -490,7 +492,7 @@ export type PassHost = {
   // sweep read (lib/follow-up.mts#SweepPullRequest.checks) may be stale by
   // the time a pass claims the PR (lib/github.mts#headChecksOf). The head the
   // checks were read from travels with them, so a caller can tell a race from
-  // a settled read (#79) rather than decide red CI from a commit it never
+  // a settled read rather than decide red CI from a commit it never
   // gated.
   checks(pr: number): { headRefOid: string; checks: HeadCheck[] };
   // `gh run rerun --failed` for the run(s) backing each of `checkNames`
@@ -500,7 +502,7 @@ export type PassHost = {
   // to finish, since that would hold the issue's building label, and the
   // whole host, for as long as CI takes (lib/github.mts#rerunFailedChecksOnce).
   // `expectedHead` is the commit the pass gated: the host refuses when the
-  // PR's head has moved past it (#79), rather than re-run a commit the pass
+  // PR's head has moved past it, rather than re-run a commit the pass
   // never judged.
   rerunFailedChecks(pr: number, checkNames: readonly string[], expectedHead: string): CheckState[];
   // `gh run view --log-failed` for the run(s) backing each of `checkNames`
@@ -509,7 +511,7 @@ export type PassHost = {
   // `expectedHead` is checked the same way rerunFailedChecks' is. `limit`,
   // when given, keeps each run's own section to an even share of it, so one
   // run's log can't crowd another's out when the joined text is cut to fit a
-  // prompt (#79).
+  // prompt.
   failedCheckLog(pr: number, checkNames: readonly string[], expectedHead: string, limit?: number): string;
   // lib/github.mts#replyToReviewThread.
   replyToThread(threadId: string, body: string): void;
@@ -531,6 +533,7 @@ export type PassHost = {
 
 // The live PassHost.
 export const livePassHost: PassHost = {
+  gateCovered: new Set(GATE_COVERED_CHECKS),
   fetchBranch: (branch) => originGit.fetch(branch),
   reviewThreads: (pr) => reviewThreadsOf(pr),
   isOwner: ownerCheck(
@@ -671,21 +674,16 @@ async function fixesInPush(
   return { kept, unverified };
 }
 
-// Whether `checkName` is a job scripts/gate.sh actually runs: dotfiles'
-// "Template tests" in repo-ci-baseline.yml, which runs test.sh and the
-// Sandcastle check, as the gate does. Every other check on a PR's head
-// (Claude Review's and PR Auto-Merge's jobs, code scanning's) isn't: the gate
-// never runs it, so a pass can't tell whether it's a real failure or a flaky
-// one by gating alone (see "Red CI" in Blazor-Server's
-// docs/plans/sandcastle-workflow.md).
-export function isGateCovered(checkName: string): boolean {
-  return GATE_COVERED_CHECKS.has(checkName);
+// Whether `checkName` is a job scripts/gate.sh actually runs: one of the
+// `covered` names (the host's gateCovered, from
+// lib/repo-config.mts#GATE_COVERED_CHECKS), each a CI job that runs what the
+// gate does. Every other check on a PR's head (Claude Review's and PR
+// Auto-Merge's jobs, code scanning's) isn't: the gate never runs it, so a
+// pass can't tell whether it's a real failure or a flaky one by gating alone
+// (see "Red CI" in Blazor-Server's docs/plans/sandcastle-workflow.md).
+export function isGateCovered(checkName: string, covered: ReadonlySet<string>): boolean {
+  return covered.has(checkName);
 }
-
-// The check names isGateCovered matches. Blazor-Server's are its own build,
-// test and lint jobs; a rename of the job in repo-ci-baseline.yml must
-// change this too.
-const GATE_COVERED_CHECKS = new Set(["Template tests"]);
 
 // What a pass does about a PR's red checks (planPass's `redChecks`),
 // decided from whether `scripts/gate.sh` reproduced a failure on the head
@@ -699,18 +697,18 @@ const GATE_COVERED_CHECKS = new Set(["Template tests"]);
 // nothing to re-run or forward until the gate is green), and when there are
 // no red checks at all.
 export type RedCiPlan = { fix: boolean; rerun: string[]; forward: string[] };
-export function planRedCi(gatePassed: boolean, redChecks: readonly CheckState[]): RedCiPlan {
+export function planRedCi(gatePassed: boolean, redChecks: readonly CheckState[], covered: ReadonlySet<string>): RedCiPlan {
   if (!gatePassed) return { fix: true, rerun: [], forward: [] };
   // A check can be listed twice (a status and a check run of one name), but
   // it's re-run or forwarded once.
   const names = [...new Set(redChecks.map((check) => check.name))];
-  return { fix: false, rerun: names.filter(isGateCovered), forward: names.filter((name) => !isGateCovered(name)) };
+  const isCovered = (name: string) => isGateCovered(name, covered);
+  return { fix: false, rerun: names.filter(isCovered), forward: names.filter((name) => !isCovered(name)) };
 }
 
 // Runs one follow-up pass on `target`, a PR the sweep (lib/follow-up.mts)
-// marked as needing one, for its issue. See this module's header and the
-// design note at .sandcastle/work/78/design.md for the step-by-step: reset
-// the PR's worktree to its head, merge main in when the PR needs it, run the
+// marked as needing one, for its issue. See this module's header for the
+// step-by-step: reset the PR's worktree to its head, merge main in when the PR needs it, run the
 // follow-up role, gate and push, then reply to and resolve the role's
 // verdicts and post the pass summary. `base` is the commit fetchMain()
 // resolved origin/main to this round.
@@ -780,23 +778,23 @@ function planPass(
   // of redChecks entirely: no pass can re-run, forward or gate-fix a failure
   // with nothing behind it to act on, and sending it to the follow-up role
   // anyway would only start a run with no log to fix from, over and over
-  // every sweep (#79). A thread about the same alert, if the owner or a bot
+  // every sweep. A thread about the same alert, if the owner or a bot
   // opens one, still reaches the role as a bot or owner thread. Sandcastle's
-  // own check is left out as the sweep leaves it out (withoutOwnCheck, #222).
+  // own check is left out as the sweep leaves it out (withoutOwnCheck).
   const checksRead = host.checks(target.number);
   if (checksRead.headRefOid !== target.headRefOid) return skip("its checks were read from a commit other than its head");
   const checks = withoutOwnCheck(checksRead.checks);
   const redChecks = checks.some((check) => !check.completed) ? [] : checks.filter((check) => !check.green && check.runId !== undefined);
   // A needed merge, a red check, or any thread the role is given (a bot's or
   // the owner's) starts a pass. An owner thread alone counts: the sweep flags
-  // a PR for one (#81), and skipping it left the PR flagged and skipped every
-  // round with the thread never answered (#225). A thread the host has
+  // a PR for one, and skipping it left the PR flagged and skipped every
+  // round with the thread never answered. A thread the host has
   // already answered isn't in forRole, so it doesn't start another pass. A
   // merge is needed when the PR conflicts with main, or, since
   // `pull_request` CI builds the head merged with main, when a settled red
   // check sits on a head that's merely behind it: gating the bare head would
   // then judge a commit CI never built, possibly misreading a real failure
-  // main's own change caused as one the gate doesn't reproduce (#79). A head
+  // main's own change caused as one the gate doesn't reproduce. A head
   // that's behind with no red check is left for the sweep's update-branch
   // instead, so a clean PR doesn't spend a counted pass merging every time
   // main moves.
@@ -827,7 +825,7 @@ const tamperedWorktreeComment = (branch: string) =>
 // `output` once it's safe to post. `privateDetail`, when given, is added to
 // the reason in the run log and the run report but left out of the PR comment,
 // for what's fine for the run's own records but not for the public PR, such as
-// where the secret scan matched (#324). A hand-back that fails is logged: the
+// where the secret scan matched. A hand-back that fails is logged: the
 // next round's sweep finds the PR again.
 function giveUp(target: PassTarget, host: PassHost, reason: string, output: string | undefined, privateDetail?: string): PassOutcome {
   const recorded = privateDetail === undefined ? reason : `${reason} (${privateDetail})`;
@@ -924,7 +922,7 @@ async function passOnMarkedIssue(
     };
     // A merge main can bring in cleanly happens before the gate decides red
     // CI, since `pull_request` CI builds the head merged with main: gating
-    // the bare head first would then judge a commit CI never built (#79).
+    // the bare head first would then judge a commit CI never built.
     // GitHub already says this PR isn't conflicted, so the merge is expected
     // to be clean; `tryMerge` falls back to the conflict path if it isn't. A
     // conflicted PR can't be merged without the role, so its gate still runs
@@ -937,7 +935,7 @@ async function passOnMarkedIssue(
         // GitHub's mergeability can be stale by the time this pass fetches
         // main: the conflict is real, but the worktree it leaves behind is
         // mid-merge, with conflict markers and no commit at all. Gating that
-        // tree would judge nonsense (#259), so abort back to the bare head
+        // tree would judge nonsense, so abort back to the bare head
         // and fall through to the conflicted-PR order below: gate the head,
         // then merge after, leaving the conflict for the follow-up role.
         const abort = await sandbox.exec("git merge --abort");
@@ -955,7 +953,7 @@ async function passOnMarkedIssue(
     let redCi: RedCiPlan = { fix: false, rerun: [], forward: [] };
     if (redChecks.length > 0) {
       headGate = await runGate(sandbox);
-      redCi = planRedCi(headGate.passed, redChecks);
+      redCi = planRedCi(headGate.passed, redChecks, host.gateCovered);
       log(`has ${redChecks.length} red check(s), and \`scripts/gate.sh\` ${headGate.passed ? "passes" : "fails"} on its head`);
     }
     let ciLog: string | undefined;
@@ -964,7 +962,7 @@ async function passOnMarkedIssue(
         ciLog = host.failedCheckLog(target.number, redCi.forward, target.headRefOid, CI_LOG_LIMIT);
       } catch (error) {
         // Nothing has run or pushed yet, so there's nothing of this pass's to
-        // lose by giving up here (#79): a GitHub API error, a rate limit, or
+        // lose by giving up here: a GitHub API error, a rate limit, or
         // the PR's head having moved since redChecks was read.
         return stop(`reading the failed-job log of ${checkList(redCi.forward)} failed`, String(error));
       }
@@ -1040,7 +1038,7 @@ async function passOnMarkedIssue(
     if (gated !== target.headRefOid) {
       // The push is public, and the sandbox holds the Claude token or API
       // key. The comment doesn't say where the secret is: the PR is public too.
-      // The log and the run report do (#324), since the location names no
+      // The log and the run report do, since the location names no
       // part of the secret, and the runner is the only holder of the commit.
       const leak = host.leaksSecret(base, gated);
       if (leak !== undefined) {
@@ -1090,7 +1088,7 @@ async function passOnMarkedIssue(
 
     // Replied to and resolved before the red-CI re-run is decided, so a
     // give-up below for a check still red after its re-run never throws the
-    // role's verdicts away unanswered (#79): the push, if any, has already
+    // role's verdicts away unanswered: the push, if any, has already
     // landed, so there's nothing left to lose by answering threads first.
     const matched = threadActions(verdicts, forRole);
     const { kept: actions, unverified } = await fixesInPush(sandbox, matched.actions, { gated, head: target.headRefOid, base, hostMerge });
@@ -1125,7 +1123,7 @@ async function passOnMarkedIssue(
     // check either: nothing re-runs a forwarded check the way a push or
     // `gh run rerun --failed` does, so the next sweep would only find the
     // same red check and run the role the same way again, over and over
-    // until FOLLOW_UP_PASS_CAP (#79). Giving up now, rather than reporting
+    // until FOLLOW_UP_PASS_CAP. Giving up now, rather than reporting
     // "passed", stops that at once instead of after two wasted repeats.
     if (ciLog !== undefined && forRole.length === 0 && merged !== "conflicts" && pushed === undefined) {
       return stop(`the follow-up role committed nothing for the forwarded failed-job log of ${checkList(redCi.forward)}`);

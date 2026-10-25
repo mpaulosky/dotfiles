@@ -1,6 +1,6 @@
 // Whether an unattended run has anything to do this round, checked before the
-// Docker image is built or Claude is called (#147, "The round" in
-// docs/plans/sandcastle-workflow.md): an in-scope open issue intake hasn't
+// Docker image is built or Claude is called ("The round" in
+// Blazor-Server's docs/plans/sandcastle-workflow.md): an in-scope open issue intake hasn't
 // judged yet, a ready unblocked issue, or a settled pull request that needs a
 // follow-up pass. With none of these, the run exits 0 rather than spend a
 // round on housekeeping alone.

@@ -1,7 +1,8 @@
 # Sandcastle's shared files are Owned, its prompts are Seed, and Apply adds them only to a Sandcastle repo
 
 **Status:** accepted (mpaulosky/dotfiles#280); implemented in `template/owned/.sandcastle/`, `template/seed/.sandcastle/`, `apply.sh` and `test.sh`
-([sandcastle.md](../../references/sandcastle.md)).
+([sandcastle.md](../../references/sandcastle.md)). Its decision to keep the rest of `lib/` and `main.mts` out is superseded by
+[ADR 0007](0007-sandcastle-code-is-owned-with-a-seed-repo-config.md).
 
 Seven repos carry a `.sandcastle/`, in two generations, and their settings have drifted: five `.env.example` variants, two `.gitignore`s,
 `test:sandcastle` against `check:sandcastle`, and a different Dockerfile in each.
@@ -18,7 +19,7 @@ The Template now carries one, split by the same rule as the rest of it (ADR 0001
   and `check.sh` under `.sandcastle/`, and the root `package.json` and `pnpm-workspace.yaml`.
   Each one describes the repo (its stacks, test commands, docs, toolchain), so it's the repo's once written.
   mpaulosky/dotfiles#280 listed `roles/shared-rules.md` as Owned; it isn't, because it is the one file that describes the repo to every role.
-- **The rest of `lib/` and `main.mts` stay out of the Template for now.** Almost every module imports `lib/config.mts`, which holds
+- **Superseded by ADR 0007: the rest of `lib/` and `main.mts` stay out of the Template for now.** Almost every module imports `lib/config.mts`, which holds
   per-repo values (labels, root copies, role models), so an Owned module would break whenever a repo's `config.mts` lacked a name it reads.
   Their comments also cite issues by bare number from more than one repo, which the Owned-file check refuses.
   Bringing them in needs `config.mts` split into an Owned part and a Seed part first, as its own issue.
@@ -44,5 +45,5 @@ The Template now carries one, split by the same rule as the rest of it (ADR 0001
 
 - A repo moves onto the section by re-Apply, then Adapt: the Owned files arrive as drift to review, and each Seed file it already has is diffed
   against the Template's ([sandcastle.md](../../references/sandcastle.md#migrating-a-repo)).
-- A new repo gets the config and prompts but not the code: until `lib/` is in the Template, `main.mts` and the rest of `lib/` are copied by hand.
+- Superseded by ADR 0007: a new repo gets the config and prompts but not the code: until `lib/` is in the Template, `main.mts` and the rest of `lib/` are copied by hand.
 - The Sandcastle workflows (`sandcastle*.yml`) stay each repo's own, since Sandcastle's Actions token can't push workflow changes.

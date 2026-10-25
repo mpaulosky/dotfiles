@@ -17,4 +17,6 @@
 set -euo pipefail
 
 base="${1-}"
-: "$base"
+
+# Sandcastle's type-check and tests, when the repo runs Sandcastle.
+if [[ -x .sandcastle/check.sh ]]; then .sandcastle/check.sh "$base"; fi

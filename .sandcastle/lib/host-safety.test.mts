@@ -1,10 +1,123 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { hostGitEnv, mainGitDir, protectedGitMounts, withoutGitHooks, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+import { pathToFileURL } from "node:url";
+import { configIncludeProblem, hostGitEnv, mainGitDir, protectedGitMounts, withoutGitHooks, worktreeConfigProblem, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+
+describe("worktreeConfigProblem", () => {
+  const configIn = (setup: (gitDir: string) => void) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-worktree-config-")));
+    try {
+      execFileSync("git", ["init", "--quiet", join(root, "repo")], { stdio: "ignore" });
+      setup(join(root, "repo", ".git"));
+      return worktreeConfigProblem(join(root, "repo", ".git"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const setExtension = (value: string) => (gitDir: string) =>
+    execFileSync("git", ["config", "--file", join(gitDir, "config"), "extensions.worktreeConfig", value]);
+
+  it("is undefined for a repository that doesn't turn it on", () => {
+    assert.equal(configIn(() => {}), undefined);
+    assert.equal(configIn(setExtension("false")), undefined);
+  });
+
+  it("names the config when extensions.worktreeConfig is on, however it is spelled", () => {
+    for (const value of ["true", "yes", "on", "1"]) {
+      assert.match(configIn(setExtension(value)) ?? "", /extensions\.worktreeConfig/, value);
+    }
+  });
+});
+
+describe("configIncludeProblem", () => {
+  // setup gets the repo's config path and a directory outside the checkout and .git.
+  const configIn = (setup: (config: string, outside: string) => void) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-config-include-")));
+    try {
+      execFileSync("git", ["init", "--quiet", join(root, "repo")], { stdio: "ignore" });
+      mkdirSync(join(root, "outside"));
+      const gitDir = join(root, "repo", ".git");
+      setup(join(gitDir, "config"), join(root, "outside"));
+      return configIncludeProblem(gitDir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const set = (key: string, value: string) => (config: string) => execFileSync("git", ["config", "--file", config, key, value]);
+
+  it("is undefined for a repository whose config includes nothing", () => {
+    assert.equal(configIn(() => {}), undefined);
+  });
+
+  it("names the include, whether relative, includeIf, or spelled in another case", () => {
+    for (const [key, value] of [
+      ["include.path", "local.inc"],
+      ["includeIf.gitdir:/work/.path", "~/work.inc"],
+      ["INCLUDE.PATH", "local.inc"],
+    ] as const) {
+      assert.match(configIn(set(key, value)) ?? "", /includes .*\.inc/, key);
+    }
+  });
+
+  it("allows an absolute path outside .git and the checkout, as actions/checkout writes", () => {
+    assert.equal(
+      configIn((config, outside) => set("includeIf.gitdir:/work/repo/.git.path", join(outside, "git-credentials.config"))(config)),
+      undefined,
+    );
+  });
+
+  it("names an absolute path inside .git or the checkout", () => {
+    assert.match(configIn((config) => set("include.path", join(config, "..", "local.inc"))(config)) ?? "", /includes .*local\.inc/);
+    assert.match(configIn((config) => set("include.path", join(config, "..", "..", "local.inc"))(config)) ?? "", /includes .*local\.inc/);
+  });
+
+  it("names a path outside whose symlink leads inside", () => {
+    const problem = configIn((config, outside) => {
+      symlinkSync(join(config, ".."), join(outside, "link"));
+      set("include.path", join(outside, "link", "local.inc"))(config);
+    });
+    assert.match(problem ?? "", /includes .*local\.inc/);
+  });
+});
+
+describe("protectHostGit", () => {
+  // Runs in a child process: repoGitDir() caches process.cwd() and protectHostGit() changes process.env.
+  const protectIn = (setup: (gitDir: string) => void) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-protect-")));
+    try {
+      execFileSync("git", ["init", "--quiet", join(root, "repo")], { stdio: "ignore" });
+      setup(join(root, "repo", ".git"));
+      const module = pathToFileURL(join(import.meta.dirname, "host-safety.mts")).href;
+      return spawnSync(process.execPath, [...process.execArgv, "--input-type=module", "-e", `import(${JSON.stringify(module)}).then((m) => m.protectHostGit())`], {
+        cwd: join(root, "repo"),
+        encoding: "utf8",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it("refuses a repository that has extensions.worktreeConfig on", () => {
+    const result = protectIn((gitDir) => execFileSync("git", ["config", "--file", join(gitDir, "config"), "extensions.worktreeConfig", "true"]));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /extensions\.worktreeConfig/);
+  });
+
+  it("refuses a repository whose config includes another file", () => {
+    const result = protectIn((gitDir) => execFileSync("git", ["config", "--file", join(gitDir, "config"), "include.path", "local.inc"]));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /includes local\.inc/);
+  });
+
+  it("succeeds in a repository that doesn't", () => {
+    const result = protectIn(() => {});
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
 
 describe("withoutGitHooks", () => {
   it("forces core.hooksPath to /dev/null through the environment", () => {

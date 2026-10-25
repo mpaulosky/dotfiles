@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   BUILD_ROLES,
@@ -193,6 +193,23 @@ describe("TEMPLATE_ROOT_COPIES", () => {
     for (const file of TEMPLATE_ROOT_COPIES) {
       assert.ok(existsSync(new URL(`${TEMPLATE_OWNED_DIR}/${file}`, root)), `${TEMPLATE_OWNED_DIR}/${file}`);
       assert.ok(existsSync(new URL(file, root)), file);
+    }
+  });
+
+  // #280: the Template's Sandcastle section is Owned files under .sandcastle/. A new one must reach the list (and so test.sh's copy
+  // check and the overlap rule) before it can drift from dotfiles' copy unseen.
+  it("lists every Owned file the Template carries under .sandcastle/", () => {
+    const folder = new URL(`${TEMPLATE_OWNED_DIR}/.sandcastle/`, root);
+
+    assert.ok(existsSync(folder), "the Template has no owned/.sandcastle/ folder");
+    const owned = (readdirSync(folder, { recursive: true }) as string[])
+      .filter((entry) => statSync(new URL(entry, folder)).isFile())
+      .map((entry) => `.sandcastle/${entry.split("\\").join("/")}`)
+      .sort();
+
+    assert.ok(owned.length > 0, "owned/.sandcastle/ holds no files");
+    for (const file of owned) {
+      assert.ok((TEMPLATE_ROOT_COPIES as readonly string[]).includes(file), `${file} is missing from TEMPLATE_ROOT_COPIES`);
     }
   });
 });

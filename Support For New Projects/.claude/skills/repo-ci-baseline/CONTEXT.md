@@ -40,3 +40,8 @@ _Avoid_: Divergence, local changes
 **Leftover**:
 A file in a directory the Template owns (workflows, hooks, CI scripts) that the Template doesn't carry.
 _Avoid_: Orphan, stale file
+
+**Sandcastle section**:
+The Template's files under `.sandcastle/`, with the Seed `package.json` and `pnpm-workspace.yaml`, that a repo running Sandcastle shares.
+Apply adds them only to a repo that has a `.sandcastle/` folder or no commits yet.
+_Avoid_: Sandcastle template, agent kit

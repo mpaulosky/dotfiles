@@ -59,7 +59,8 @@ export const BUILD_ROLES = ["architect", "tester", "backend", "scribe", "reviewe
 // the host's .git, so the ref resolves there too.
 export const BASE_BRANCH = "origin/main";
 
-// The Template's Owned files under this folder, of which dotfiles carries copies at the repo root: the list test.sh's copy check walks.
+// The Template's Owned files under this folder, of which dotfiles carries copies at the same path from the repo root (its own
+// .sandcastle/ included): the list test.sh's copy check walks.
 // lib/overlap.mts counts each pair as one path, since every change to one changes the other. Blazor-Server has no Template, so this
 // list doesn't apply there.
 export const TEMPLATE_OWNED_DIR = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned";
@@ -72,6 +73,16 @@ export const TEMPLATE_ROOT_COPIES = [
   ".github/hooks/pre-push",
   ".github/hooks/post-checkout",
   "scripts/check-branch-name.sh",
+  ".sandcastle/.env.example",
+  ".sandcastle/.gitignore",
+  ".sandcastle/.markdownlint-cli2.jsonc",
+  ".sandcastle/critique-prompt.md",
+  ".sandcastle/intake-prompt.md",
+  ".sandcastle/lib/host-safety.mts",
+  ".sandcastle/lib/host-safety.test.mts",
+  ".sandcastle/lib/shell.mts",
+  ".sandcastle/lib/shell.test.mts",
+  ".sandcastle/tsconfig.json",
 ] as const;
 
 // Maximum number of plan→execute→merge cycles before stopping.

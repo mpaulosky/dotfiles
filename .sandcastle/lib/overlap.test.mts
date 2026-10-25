@@ -68,6 +68,11 @@ describe("pathKey", () => {
     assert.notEqual(pathKey(`${TEMPLATE_OWNED_DIR}/scripts/gate.sh`), pathKey("scripts/gate.sh"));
   });
 
+  // #280: the Template's Sandcastle Owned files are copied into dotfiles' own .sandcastle/, so a change to either is one path.
+  it("maps a Template Owned Sandcastle file to dotfiles' own .sandcastle/ copy", () => {
+    assert.equal(pathKey(`${TEMPLATE_OWNED_DIR}/.sandcastle/tsconfig.json`), ".sandcastle/tsconfig.json");
+  });
+
   it("leaves any other path alone", () => {
     assert.equal(pathKey(".sandcastle/lib/build.mts"), ".sandcastle/lib/build.mts");
   });

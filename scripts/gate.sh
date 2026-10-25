@@ -19,9 +19,11 @@ unset $(git rev-parse --local-env-vars)
 # Where this branch left origin/main; with none, the Sandcastle check runs.
 # dockerfile.test.mts checks the sandbox image's tools against the versions
 # the Template's gate.sh and dotfiles' CI pin, so a change to either reruns it.
+# config.test.mts reads the Template's .sandcastle/ and test.sh's copy list.
+skill="Support For New Projects/.claude/skills/repo-ci-baseline"
 base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
 if [[ -z "$base" ]] || ! git diff --quiet --no-renames "$base" HEAD -- .sandcastle package.json ':(glob)pnpm-*.yaml' \
-  .github/workflows/repo-ci-baseline.yml "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/scripts/gate.sh"; then
+  .github/workflows/repo-ci-baseline.yml "$skill/template/owned/scripts/gate.sh" "$skill/template/owned/.sandcastle" "$skill/template/seed/.sandcastle" "$skill/test.sh"; then
   echo
   echo "── Sandcastle check"
   pnpm run check:sandcastle

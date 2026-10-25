@@ -6,7 +6,9 @@
 # Owned files (template/owned) always overwrite the repo's copy, mode included. Seed files
 # (template/seed) are written only where the repo has none, with {{OWNER}},
 # {{REPO}} and {{SOLUTION}} filled in. Then core.hooksPath is pointed at
-# .github/hooks. Nothing is ever deleted.
+# .github/hooks. Nothing is ever deleted. Sandcastle's files (.sandcastle/, and
+# the package.json and pnpm-workspace.yaml it runs with) go only into a repo
+# with a .sandcastle/ folder or no commits yet (docs/adr/0006).
 #
 # The report lists what Adapt has to look at: Owned files whose local copy
 # differed (drift to drop, or a local fix to move into the Template first),
@@ -62,6 +64,12 @@ if ! $dry_run; then
   fi
 fi
 
+# Sandcastle's files (.sandcastle/, and the package.json and pnpm-workspace.yaml it runs with) go only into a repo that runs
+# Sandcastle, or a new one (ADR 0006): a repo starts using it by creating .sandcastle/ and Applying again.
+with_sandcastle=false
+if [[ -d "$target/.sandcastle" ]] || ! git -C "$target" rev-parse --verify --quiet HEAD >/dev/null; then with_sandcastle=true; fi
+sandcastle_path() { [[ "$1" == .sandcastle/* || "$1" == package.json || "$1" == pnpm-workspace.yaml ]]; }
+
 # ── Placeholder values ──────────────────────────────────────────────────────
 owner=""
 repo=""
@@ -102,9 +110,11 @@ owned_same=0
 seed_written=()
 seed_skipped=()
 unfilled=()
+sandcastle_left=()
 
 # ── Owned ───────────────────────────────────────────────────────────────────
 while IFS= read -r rel; do
+  if ! $with_sandcastle && sandcastle_path "$rel"; then sandcastle_left+=("$rel"); continue; fi
   src="$owned_dir/$rel"
   dst="$target/$rel"
   if [[ ! -e "$dst" ]]; then
@@ -123,6 +133,7 @@ done < <(list_files "$owned_dir")
 
 # ── Seed ────────────────────────────────────────────────────────────────────
 while IFS= read -r rel; do
+  if ! $with_sandcastle && sandcastle_path "$rel"; then sandcastle_left+=("$rel"); continue; fi
   src="$seed_dir/$rel"
   dst="$target/$rel"
   if [[ -e "$dst" ]]; then
@@ -134,7 +145,8 @@ while IFS= read -r rel; do
     mkdir -p "$(dirname "$dst")"
     command cp -f --preserve=mode "$src" "$dst"
     fill_placeholders "$dst"
-    grep -q '{{[A-Z_]*}}' "$dst" && unfilled+=("$rel")
+    # Only Apply's own three: Sandcastle fills its prompts' {{NAME}}s when it runs them.
+    grep -qE '\{\{(OWNER|REPO|SOLUTION)\}\}' "$dst" && unfilled+=("$rel")
   elif { [[ -z "$owner" ]] && grep -q '{{OWNER}}' "$src"; } \
     || { [[ -z "$repo" ]] && grep -q '{{REPO}}' "$src"; } \
     || { [[ -z "$solution" ]] && grep -q '{{SOLUTION}}' "$src"; }; then
@@ -192,6 +204,7 @@ section "Owned files that $verb added" "${owned_added[@]}"
 section "Owned files that $verb overwritten (drift: drop it, or move a local fix into the Template first)" "${owned_changed[@]}"
 echo
 echo "Owned files already identical: $owned_same"
+echo "Sandcastle files left out (the repo has no .sandcastle/; create it and Apply again to add them): ${#sandcastle_left[@]}"
 section "Seed files that $verb written" "${seed_written[@]}"
 section "Seed files skipped because the repo has its own (review against the Template in Adapt)" "${seed_skipped[@]}"
 section "Seed files with unfilled placeholders" "${unfilled[@]}"

@@ -31,6 +31,7 @@ A fix made only in a repo is reverted by its next Apply.
 | Docs-only CI skip | Docs PRs skip the build and tests while required checks still pass | [docs-only-ci.md](references/docs-only-ci.md) |
 | Per-project test matrix | Each test project runs in its own job on Microsoft Testing Platform | [test-matrix.md](references/test-matrix.md) |
 | Release labels | `semver:minor` and `semver:major` exist, because `release.yml` reads them | [release-pipeline.md](references/release-pipeline.md) |
+| Sandcastle | Repos that run Sandcastle share its config, intake and critique prompts and host-safety guardrails (Owned), and start from the same role prompts, Dockerfile and scripts (Seed); Apply adds them only to a repo with a `.sandcastle/` folder or no commits | [sandcastle.md](references/sandcastle.md) |
 | GitHub settings | One standard for merge settings, the `main-rules` ruleset and required checks, labels, Actions and security, checked and applied by `github-settings.sh` | [github-settings.md](references/github-settings.md) |
 
 Read a part's reference before changing it: each holds the design, the review findings behind it, and its live check.
@@ -68,7 +69,7 @@ Order across repos: `github/repos.txt`'s, the one list of the repos (retiring on
 1. Edit `template/` (and the part's reference) in a dotfiles worktree.
 2. Run `test.sh`: the hook suites, the auto-merge script tests, the release-script tests, the renderer oracle, the GitHub scripts' tests
    (settings, the landing decision, status, land, rollout), the Claude Review benchmark's tests, actionlint, zizmor, yamllint, shellcheck, markdownlint, the no-placeholders-in-Owned
-   check, the check that the Owned scripts' `gh` commands are told their repository, and the `apply.sh` and `reapply.sh` tests.
+   check, the check that the Owned scripts' `gh` commands are told their repository, the Sandcastle copy and Seed checks, and the `apply.sh` and `reapply.sh` tests.
    dotfiles CI runs the same script.
    Done when it passes.
 3. After the dotfiles PR merges, re-Apply to each repo in its own PR; the overwritten Owned files are the change.

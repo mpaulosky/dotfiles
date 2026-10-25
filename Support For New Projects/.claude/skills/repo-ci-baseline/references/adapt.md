@@ -19,6 +19,7 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
   IssueManager's root file turned off xUnit1030 and xUnit1051 for `tests/**` and IDE0044 for Razor code-behind; Apply dropped them and
   the build failed, so they moved to `tests/.editorconfig` (`[*.cs]`) and `src/.editorconfig` (`[*.razor.cs]`).
 - **Unfilled placeholders.** Fill each `{{...}}` by hand.
+- **Sandcastle.** A repo that runs Sandcastle follows [sandcastle.md](sandcastle.md#migrating-a-repo) for its `.sandcastle/` drift and Seed files.
 - **Leftovers.** Delete `sync-readme.yml` (`release_post.py` already maintains `docs/README.md`) and `label-enforce.yml` (squad's triage labels).
   Delete `automerge-decision.mjs`, its test and `automerge-tests.yml` (TicketManager, IssueManager): the Template's `pr-automerge.yml` keeps its decision inline, see [automerge.md](automerge.md).
   Keep repo features such as `generate-blog-posts-json.yml`, and check each kept workflow still passes actionlint and zizmor.

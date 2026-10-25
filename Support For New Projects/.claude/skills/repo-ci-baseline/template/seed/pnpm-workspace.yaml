@@ -1,0 +1,10 @@
+# esbuild (under tsx) only uses its install script to check its native
+# binary, which pnpm already installs as an optional dependency.
+allowBuilds:
+  esbuild: false
+# pnpm 12 otherwise writes a two-document lockfile (the pnpm version first),
+# and GitHub's dependency graph reads only that first document, hiding the
+# real dependencies from Dependabot alerts (dependabot/dependabot-core#15904).
+# The pnpm version stays pinned by packageManager in package.json, which
+# corepack reads (locally and in the Sandcastle image).
+pmOnFail: ignore

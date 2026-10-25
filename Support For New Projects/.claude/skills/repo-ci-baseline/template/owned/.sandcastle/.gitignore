@@ -1,0 +1,7 @@
+.env
+logs/
+worktrees/
+# Notes passed between roles in a sandbox, such as the architect's design note.
+work/
+# The follow-up role's verdicts on a PR's review threads, read back by the host.
+follow-up.json

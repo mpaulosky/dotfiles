@@ -11,7 +11,8 @@
 // ---------------------------------------------------------------------------
 
 import { publicErrorText } from "./build.mts";
-import { OVERLAP_MARKER, TEMPLATE_OWNED_DIR, TEMPLATE_ROOT_COPIES } from "./config.mts";
+import { OVERLAP_MARKER } from "./config.mts";
+import { TEMPLATE_OWNED_DIR, TEMPLATE_ROOT_COPIES } from "./repo-config.mts";
 import {
   commentOnIssue,
   openPullRequestsIntoMain,

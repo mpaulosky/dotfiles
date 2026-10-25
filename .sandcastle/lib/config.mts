@@ -1,40 +1,26 @@
 // ---------------------------------------------------------------------------
-// Configuration
+// Configuration every Sandcastle repo shares: the role names, limits, labels,
+// markers and the Copilot reviewer settings. The per-repo values (each role's
+// model and budget, the sandbox hooks, what's copied into the worktree) are in
+// lib/repo-config.mts, which imports only types from here.
 // ---------------------------------------------------------------------------
 
 import type { ClaudeCodeOptions } from "@ai-hero/sandcastle";
 
-const opus = "claude-opus-5-5";
-const sonnet = "claude-sonnet-5-5";
+// Every role Sandcastle runs. lib/repo-config.mts gives each one its agent
+// and budget (ROLE_AGENTS) and must name every one: a role it leaves out,
+// or one it adds, fails the type-check rather than a run.
+export const ROLES = ["intake", "planner", "critique", "architect", "tester", "backend", "scribe", "reviewer", "gate-fixer", "follow-up"] as const;
 
+export type Role = (typeof ROLES)[number];
+
+// The agent and budget lib/repo-config.mts#ROLE_AGENTS gives one role.
 export type RoleAgent = {
   model: string;
   effort: NonNullable<ClaudeCodeOptions["effort"]>;
   maxIterations: number;
   timeoutMinutes: number;
 };
-
-// Every role's agent and budget, from the "Roles, models and budgets" table in
-// docs/plans/sandcastle-workflow.md. Opus goes where a wrong answer costs a
-// whole round; Sonnet goes where the gate, the reviewer or CI checks the
-// output anyway. Structured-output roles must stay at one iteration.
-export const ROLE_AGENTS = {
-  intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-  planner: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
-  critique: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
-  architect: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
-  tester: { model: sonnet, effort: "high", maxIterations: 3, timeoutMinutes: 45 },
-  backend: { model: opus, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
-  scribe: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-  reviewer: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
-  "gate-fixer": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 20 },
-  "follow-up": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 30 },
-} as const satisfies Record<string, RoleAgent>;
-
-export type Role = keyof typeof ROLE_AGENTS;
-
-// Not implemented yet: the role names, which lib/repo-config.mts's ROLE_AGENTS must cover exactly.
-export const ROLES: readonly Role[] = [];
 
 // The roles the planner may pick per issue, besides the tester, developer
 // (the backend role) and reviewer, which always run (see "Phase 4: Plan" and
@@ -61,36 +47,6 @@ export const BUILD_ROLES = ["architect", "tester", "backend", "scribe", "reviewe
 // and fetchMain() refreshes origin/main before each round. The sandbox mounts
 // the host's .git, so the ref resolves there too.
 export const BASE_BRANCH = "origin/main";
-
-// The Template's Owned files under this folder, of which dotfiles carries copies at the same path from the repo root (its own
-// .sandcastle/ included): the list test.sh's copy check walks.
-// lib/overlap.mts counts each pair as one path, since every change to one changes the other. Blazor-Server has no Template, so this
-// list doesn't apply there.
-export const TEMPLATE_OWNED_DIR = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned";
-export const TEMPLATE_ROOT_COPIES = [
-  ".github/workflows/claude-review.yml",
-  ".github/workflows/pr-automerge.yml",
-  ".github/workflows/pr-review-submitted.yml",
-  ".github/scripts/post_claude_review.py",
-  ".github/hooks/pre-commit",
-  ".github/hooks/pre-push",
-  ".github/hooks/post-checkout",
-  "scripts/check-branch-name.sh",
-  ".sandcastle/.env.example",
-  ".sandcastle/.gitignore",
-  ".sandcastle/.markdownlint-cli2.jsonc",
-  ".sandcastle/critique-prompt.md",
-  ".sandcastle/intake-prompt.md",
-  ".sandcastle/lib/host-safety.mts",
-  ".sandcastle/lib/host-safety.test.mts",
-  ".sandcastle/lib/shell.mts",
-  ".sandcastle/lib/shell.test.mts",
-  ".sandcastle/tsconfig.json",
-] as const;
-
-// Maximum number of plan→execute→merge cycles before stopping.
-// Raise this if your backlog is large; lower it for a quick smoke-test run.
-export const MAX_ITERATIONS = 10;
 
 // The default for SANDCASTLE_BUDGET_MINUTES: no new round starts, and no role
 // run starts, once this many minutes have passed since the run started. The
@@ -302,24 +258,6 @@ export const UMBRELLA_MARKER = "<!-- sandcastle:umbrella -->";
 // (lib/overlap.mts#overlapComment), so a later run finds it and doesn't post another (#251). The marker
 // ends with what the hold waits on (lib/overlap.mts#overlapMarker), so a new blocker gets its own comment.
 export const OVERLAP_MARKER = "<!-- sandcastle:overlap";
-
-// Hooks run inside the sandbox before the agent starts each iteration.
-// pnpm install ensures the sandbox always has fresh dependencies. The copied
-// node_modules records the host's pnpm store, so pnpm may rebuild it against
-// the sandbox's store; confirm-modules-purge=false lets it do that without a
-// TTY prompt.
-export const hooks = {
-  sandbox: {
-    onSandboxReady: [
-      { command: "pnpm install --frozen-lockfile --config.confirm-modules-purge=false" },
-    ],
-  },
-};
-
-// Copy node_modules from the host into the worktree before each sandbox
-// starts. Avoids a full pnpm install from scratch; the hook above handles
-// platform-specific binaries and any packages added since the last copy.
-export const copyToWorktree = ["node_modules"];
 
 // Marks a PR body as one the host published (lib/build.mts#publish), so the
 // follow-up sweep (lib/follow-up.mts) never acts on a collaborator's PR from

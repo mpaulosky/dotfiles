@@ -9,7 +9,8 @@
 
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { ROLE_AGENTS, type Role } from "./config.mts";
+import type { Role } from "./config.mts";
+import { ROLE_AGENTS } from "./repo-config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { MAX_CAUSE_DEPTH, RunLimits, runLimits, usageLimitLine } from "./limits.mts";
 import { usageReport } from "./report.mts";

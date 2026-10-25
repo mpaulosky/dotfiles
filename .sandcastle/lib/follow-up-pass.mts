@@ -59,6 +59,7 @@ import { plainText, withoutReferences } from "./intake.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { followUpPromptArgs, gateFixerPromptArgs } from "./prompts.mts";
 import { ownerCheck, type IsOwner } from "./queue.mts";
+import { GATE_COVERED_CHECKS } from "./repo-config.mts";
 import { humanThreadReport, outcomeReport, type HumanThreadEntry, type OutcomeEntry, type OutcomeReport } from "./report.mts";
 import { containsSandboxSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
@@ -533,7 +534,7 @@ export type PassHost = {
 
 // The live PassHost.
 export const livePassHost: PassHost = {
-  gateCovered: new Set(["Template tests"]),
+  gateCovered: new Set(GATE_COVERED_CHECKS),
   fetchBranch: (branch) => originGit.fetch(branch),
   reviewThreads: (pr) => reviewThreadsOf(pr),
   isOwner: ownerCheck(
@@ -674,21 +675,16 @@ async function fixesInPush(
   return { kept, unverified };
 }
 
-// Whether `checkName` is a job scripts/gate.sh actually runs: dotfiles'
-// "Template tests" in repo-ci-baseline.yml, which runs test.sh and the
-// Sandcastle check, as the gate does. Every other check on a PR's head
-// (Claude Review's and PR Auto-Merge's jobs, code scanning's) isn't: the gate
-// never runs it, so a pass can't tell whether it's a real failure or a flaky
-// one by gating alone (see "Red CI" in Blazor-Server's
-// docs/plans/sandcastle-workflow.md).
-export function isGateCovered(checkName: string, _covered: ReadonlySet<string>): boolean {
-  return GATE_COVERED_CHECKS.has(checkName);
+// Whether `checkName` is a job scripts/gate.sh actually runs: one of the
+// `covered` names (the host's gateCovered, from
+// lib/repo-config.mts#GATE_COVERED_CHECKS), each a CI job that runs what the
+// gate does. Every other check on a PR's head (Claude Review's and PR
+// Auto-Merge's jobs, code scanning's) isn't: the gate never runs it, so a
+// pass can't tell whether it's a real failure or a flaky one by gating alone
+// (see "Red CI" in Blazor-Server's docs/plans/sandcastle-workflow.md).
+export function isGateCovered(checkName: string, covered: ReadonlySet<string>): boolean {
+  return covered.has(checkName);
 }
-
-// The check names isGateCovered matches. Blazor-Server's are its own build,
-// test and lint jobs; a rename of the job in repo-ci-baseline.yml must
-// change this too.
-const GATE_COVERED_CHECKS = new Set(["Template tests"]);
 
 // What a pass does about a PR's red checks (planPass's `redChecks`),
 // decided from whether `scripts/gate.sh` reproduced a failure on the head

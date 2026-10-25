@@ -1,7 +1,8 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { z } from "zod";
 import { runRole } from "./agents.mts";
-import { hooks, OPTIONAL_ROLES, type OptionalRole } from "./config.mts";
+import { OPTIONAL_ROLES, type OptionalRole } from "./config.mts";
+import { hooks } from "./repo-config.mts";
 import type { SandcastleIssue } from "./github.mts";
 import { plannerPromptArgs } from "./prompts.mts";
 import { agentSandbox } from "./skills.mts";

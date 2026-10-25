@@ -13,13 +13,12 @@ import {
   BASE_BRANCH,
   BUILD_FAILED_MARKER,
   BUILDING_LABEL,
-  copyToWorktree,
   DESIGN_MARKER,
-  hooks,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
+import { copyToWorktree, hooks } from "./repo-config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";

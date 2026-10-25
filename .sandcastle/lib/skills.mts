@@ -15,12 +15,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { protectedGitMounts, repoGitDir, type ReadOnlyMount } from "./host-safety.mts";
+import { SANDBOX_SKILLS } from "./repo-config.mts";
 
-// The host skills the role prompts tell the agent to use. None: dotfiles'
-// own skills, the repo-ci-baseline skill among them, are in the worktree
-// under "Support For New Projects/.claude/skills/", and the roles read them
-// there.
-export const SANDBOX_SKILLS: readonly string[] = [];
 
 export type SkillMount = ReadOnlyMount;
 

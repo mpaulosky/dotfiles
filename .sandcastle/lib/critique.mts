@@ -13,7 +13,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { z } from "zod";
 import { runRole } from "./agents.mts";
 import { publicErrorText } from "./build.mts";
-import { hooks } from "./config.mts";
+import { hooks } from "./repo-config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { bodyBlockers, liveGitHub as gateGitHub, type Blocker } from "./gate.mts";
 import {

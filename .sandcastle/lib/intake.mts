@@ -19,13 +19,13 @@ import { z } from "zod";
 import { runRole } from "./agents.mts";
 import {
   BUILDING_LABEL,
-  hooks,
   INTAKE_BATCH_SIZE,
   INTAKE_FAILED_RUNS_LIMIT,
   INTAKE_REFUSED_BATCHES_LIMIT,
   queueLabelOf,
   UMBRELLA_MARKER,
 } from "./config.mts";
+import { hooks } from "./repo-config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { bodyBlockers, openPrReason } from "./gate.mts";
 import {

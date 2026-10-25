@@ -137,6 +137,7 @@ describe("the Template owns Sandcastle's code", () => {
       "lib/template.test.mts",
       "lib/dockerfile.test.mts",
       "lib/role-prompts.test.mts",
+      "lib/owned-paths.test.mts",
     ]);
     const here = new URL("../", import.meta.url);
     const expected = [

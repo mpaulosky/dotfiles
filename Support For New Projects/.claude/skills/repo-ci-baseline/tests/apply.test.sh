@@ -138,6 +138,7 @@ sandcastle_files=(.sandcastle/tsconfig.json .sandcastle/roles/architect.md packa
 # An empty repo gets them. Sandcastle's own {{TASK_ID}} stays and isn't reported as unfilled.
 repo="$work/sandcastle empty"
 new_repo "$repo"
+touch "$repo/Widget.slnx"
 out="$("$apply" "$repo")"
 check "sandcastle, empty repo: Owned file written" '[[ -f "$repo/.sandcastle/tsconfig.json" ]]'
 check "sandcastle, empty repo: Seed role prompt written" '[[ -f "$repo/.sandcastle/roles/architect.md" ]]'
@@ -176,6 +177,7 @@ check "sandcastle, dry run: nothing written" '[[ -z "$(git -C "$repo" status --p
 # A repo with history and a .sandcastle/ folder gets them.
 repo="$work/sandcastle present"
 new_repo "$repo"
+touch "$repo/Widget.slnx"
 mkdir -p "$repo/.sandcastle"
 printf 'x\n' > "$repo/.sandcastle/.gitkeep"
 commit_all "$repo" "init"

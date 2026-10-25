@@ -489,6 +489,46 @@ def check_rulesets(gh, repo, std, workflows, default_branch, remove_legacy):
     return findings, main
 
 
+def check_dotfiles_copilot_review_rule(gh, repo, std):
+    """Check only dotfiles' Copilot review rule without managing its hand-made ruleset."""
+    try:
+        summaries = gh.api("GET", f"repos/{repo}/rulesets?includes_parents=false")
+    except ApiError as error:
+        if error.status not in (403, 404):
+            raise
+        return [Finding("ruleset main-rules", UNAVAILABLE, "rulesets need GitHub Pro (or a public repo)")]
+
+    summary = next((ruleset for ruleset in summaries if ruleset["name"] == std["ruleset"]["name"]), None)
+    if summary is None:
+        return [Finding("ruleset main-rules", MANUAL, "missing; create it before checking the Copilot review rule")]
+
+    live = gh.api("GET", f"repos/{repo}/rulesets/{summary['id']}")
+    expected = next(rule for rule in std["ruleset"]["rules"] if rule["type"] == "copilot_code_review")
+    rules = live.get("rules", [])
+    current = next((rule for rule in rules if rule["type"] == expected["type"]), None)
+    if current is not None and current.get("parameters") == expected["parameters"]:
+        return [Finding("ruleset main-rules", OK, "Copilot review rule matches the standard")]
+
+    if current is None:
+        detail = "rule copilot_code_review: add"
+    else:
+        detail = (f"copilot_code_review.parameters: {json.dumps(current.get('parameters'))} → "
+                  f"{json.dumps(expected['parameters'])}")
+
+    def fix():
+        updated_rules = list(rules)
+        if current is None:
+            updated_rules.append(expected)
+        else:
+            position = updated_rules.index(current)
+            updated_rules[position] = {**current, "parameters": expected["parameters"]}
+        body = {key: live[key] for key in ("name", "target", "enforcement", "conditions", "bypass_actors")}
+        body["rules"] = updated_rules
+        gh.api("PUT", f"repos/{repo}/rulesets/{summary['id']}", body)
+
+    return [Finding("ruleset main-rules", DRIFT, detail, fix)]
+
+
 def live_labels(gh, repo):
     return {label["name"]: label for label in gh.api("GET", f"repos/{repo}/labels?per_page=100")}
 
@@ -560,14 +600,18 @@ def read_repo_list():
 
 
 def check(gh, repo, remove_legacy=False, scope="full"):
-    """Every Finding for repo. A repo-settings-only repo gets just its merge settings."""
+    """Every Finding for repo, including dotfiles' one explicitly managed ruleset rule."""
     std = load_standard(repo)
     info = gh.api("GET", f"repos/{repo}")
     findings = check_repo_flags(gh, repo, info, std)
     labels = live_labels(gh, repo)
     if scope == "repo-settings-only":
-        return findings + check_retired_labels(gh, repo, std, labels) + [
-            Finding("scope", INFO, "repo settings and retired labels only (repos.txt); the rest isn't managed here")]
+        findings += check_retired_labels(gh, repo, std, labels)
+        if repo == "mpaulosky/dotfiles":
+            findings += check_dotfiles_copilot_review_rule(gh, repo, std)
+        return findings + [
+            Finding("scope", INFO, "repo settings and retired labels; dotfiles also checks its Copilot review rule "
+                                   "in main-rules (repos.txt)")]
     branch = info["default_branch"]
     workflows = read_workflows(gh, repo, branch)
     findings += check_security(gh, repo, info, std, workflows)

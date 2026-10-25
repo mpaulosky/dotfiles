@@ -1,6 +1,6 @@
 # The repos github-settings.sh --all checks, in rollout order. A second word
-# narrows the scope: repo-settings-only manages just the merge settings
-# (dotfiles isn't a Baseline repo, and rulesets need GitHub Pro there).
+# narrows the scope: repo-settings-only manages merge settings and retired
+# labels; dotfiles' main-rules Copilot review rule is the only other setting checked.
 # This is the one list of repos: the docs name none, and rollout.sh stops
 # before it starts when one has no checkout. To retire a repo, delete its
 # line and add it below.

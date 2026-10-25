@@ -35,6 +35,11 @@ import { TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
+import { GATE_COMMAND } from "./repo-config.mts";
+
+// These tests name the Template's gate command, whatever this repo's
+// GATE_COMMAND is: the fake sandbox reports the configured one as the default.
+const asDefaultGate = (command: string) => (command === `${GATE_COMMAND} 2>&1` ? "scripts/gate.sh 2>&1" : command);
 
 const issue = { number: 69, title: "Run the gate", body: "", labels: ["Sandcastle"], comments: [], roles: [] as OptionalRole[] };
 
@@ -194,7 +199,8 @@ function host(
         completionSignal: unfinished.includes(role) ? undefined : "<promise>COMPLETE</promise>",
       };
     },
-    exec: async (command: string) => {
+    exec: async (rawCommand: string) => {
+      const command = asDefaultGate(rawCommand);
       if (command.startsWith("git status")) {
         const stdout = worktreeStatuses.shift() ?? "";
         return { stdout, stderr: "", exitCode: 0 };

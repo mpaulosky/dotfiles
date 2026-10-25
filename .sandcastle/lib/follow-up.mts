@@ -417,7 +417,8 @@ export function sweepPullRequests(
         log(`  · PR #${pr.number} isn't swept: ${skip}.`);
         continue;
       }
-      // A stranger's removal of the PR's hand-back label isn't a re-queue: put the label back and leave the PR alone this round.
+      // A stranger's removal of the PR's hand-back label isn't a re-queue:
+      // put the label back and leave the PR alone this round.
       const origin = labelOriginFixes(pr.labels, github.pullRequestEvents(pr.number), github.isOwner, PR_LABEL_RULES);
       if (origin.unknown.length > 0) {
         log(`  · PR #${pr.number} isn't swept: couldn't check whether the repository owner removed ${NEEDS_HUMAN}.`);

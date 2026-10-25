@@ -206,8 +206,7 @@ export type SummaryInput = {
 };
 
 // The run's report as Markdown, for .sandcastle/logs/summary.md and (when set)
-// $GITHUB_STEP_SUMMARY. See the design note at .sandcastle/work/81/design.md
-// for the exact shape: queue and ending sentence, a table of every touched
+// $GITHUB_STEP_SUMMARY: the queue and ending sentence, a table of every touched
 // issue and PR with its outcome (plus one row per hand-back), the hand-backs
 // themselves with links, the PRs waiting on a person, any round where intake
 // stopped, and a token-usage table by role with a total row.

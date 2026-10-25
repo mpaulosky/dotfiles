@@ -17,7 +17,6 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { protectedGitMounts, repoGitDir, type ReadOnlyMount } from "./host-safety.mts";
 import { SANDBOX_SKILLS } from "./repo-config.mts";
 
-
 export type SkillMount = ReadOnlyMount;
 
 // Mounts for the named skills found in skillsDir, and the names it lacks.

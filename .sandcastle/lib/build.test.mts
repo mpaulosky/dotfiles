@@ -132,7 +132,8 @@ function host(
     remoteMain?: string;
     remoteMainError?: string;
     // The workflow files `<branch head>..<latest main>` touches: what
-    // workflowFiles returns when asked about the range ending at latestMain. Empty by default, as when main hasn't changed a workflow.
+    // workflowFiles returns when asked about the range ending at latestMain.
+    // Empty by default, as when main hasn't changed a workflow.
     mainWorkflowFiles?: string[];
     // Whether the push token lacks the Workflows permission, as in Actions
     // (the default); false is a local `Sandcastle:local` run.

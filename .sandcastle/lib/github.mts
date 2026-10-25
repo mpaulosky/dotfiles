@@ -688,7 +688,8 @@ function namedRuns(
   // A head can carry a name in `names` from more than one Actions run, for
   // example a workflow triggered by both `push` and `pull_request`: one run
   // green, one red. Keeping only the failed ones here stops a caller from
-  // re-running, or reading the failed-job log of, a run that already passed. Sandcastle's own check is left out as the sweep leaves it out
+  // re-running, or reading the failed-job log of, a run that already passed.
+  // Sandcastle's own check is left out as the sweep leaves it out
   // (withoutOwnCheck): its run's log isn't for the follow-up role, and
   // its run isn't one to re-run.
   const checks = withoutOwnCheck(allChecks).filter((check) => names.includes(check.name) && check.completed && !check.green);
@@ -745,7 +746,8 @@ const FAILED_LOG_BUFFER = 256 * 1024 * 1024;
 // for each Actions run behind the checks in `names`, read once per run under
 // a header naming its checks. A check with no Actions run gets a line saying
 // so rather than failing the pass: the follow-up role can still fix the rest.
-// Throws when the head has moved past `expectedHead` since the pass gated it, rather than quote a log for a commit the pass never judged. `limit`,
+// Throws when the head has moved past `expectedHead` since the pass gated
+// it, rather than quote a log for a commit the pass never judged. `limit`,
 // when given, keeps each run's own section to an even share of it (the end,
 // where its error is) rather than cutting the joined text as a whole: two
 // runs' logs otherwise compete for the same budget, and the later one in the

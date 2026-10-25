@@ -685,7 +685,8 @@ describe("applyVerdicts for a split verdict beyond the acceptance criteria", () 
   }
 
   // The children's bodies are model text posted from the host's account, so
-  // a mention or cross-reference copied from the original would fire again. They keep their Markdown, which the build needs.
+  // a mention or cross-reference copied from the original would fire again.
+  // They keep their Markdown, which the build needs.
   it("posts each child without a working mention or cross-reference, keeping its Markdown", () => {
     const split = recordingSplitGithub();
     const hostileChild = {
@@ -1150,7 +1151,8 @@ describe("intakeRound", () => {
   });
 
   // applyVerdicts handles a failure on one issue itself; when it fails on
-  // every verdict in two batches in a row, GitHub is refusing the host, so each later batch would cost a run for nothing.
+  // every verdict in two batches in a row, GitHub is refusing the host, so
+  // each later batch would cost a run for nothing.
   it("stops for the round when GitHub refuses every verdict in two batches in a row, and logs it", async () => {
     const issues = Array.from({ length: INTAKE_BATCH_SIZE * 3 }, (_, i) => issue(i + 1));
     const warnings: string[] = [];

@@ -573,12 +573,13 @@ describe("giveUpComment", () => {
 // isGateCovered / planRedCi
 // ---------------------------------------------------------------------------
 
-// Acceptance criterion: "The decision between fix, re-run and CodeQL is unit
-// tested with stubbed check data."
-// What the host's gateCovered holds in dotfiles (lib/repo-config.mts#GATE_COVERED_CHECKS). The functions take the set, so these tests
-// don't depend on any repo's value.
+// The gate-covered names these tests pass in, as the host's gateCovered
+// would hold them (lib/repo-config.mts#GATE_COVERED_CHECKS). The functions
+// take the set, so these tests don't depend on any repo's value.
 const covered: ReadonlySet<string> = new Set(["Template tests"]);
 
+// Acceptance criterion: "The decision between fix, re-run and CodeQL is unit
+// tested with stubbed check data."
 describe("isGateCovered", () => {
   it("treats a name in the covered set as a job scripts/gate.sh reproduces", () => {
     assert.equal(isGateCovered("Template tests", covered), true);
@@ -1479,8 +1480,8 @@ describe("followUpPassPhase", () => {
   });
 });
 
-// The design note's other give-ups and guards (.sandcastle/work/78/design.md,
-// "Also pin"), each a hand-back with no push unless it says otherwise.
+// The pass's other give-ups and guards, each a hand-back with no push unless
+// it says otherwise.
 describe("runPass's other give-ups", () => {
   const fixedVerdict = JSON.stringify([{ threadId: "RT_bot", verdict: "fixed", reason: "Done.", commit: "a".repeat(7) }]);
 

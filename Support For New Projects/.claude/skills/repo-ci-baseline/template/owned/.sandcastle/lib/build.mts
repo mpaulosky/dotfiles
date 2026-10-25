@@ -284,8 +284,9 @@ export type BuildHost = {
   leaksSecret(base: string, commit: string, mergedMain?: string): SecretMatch | undefined;
   // Deletes the refs of `branch` that still hold the work of the issue's
   // latest Sandcastle PR, when that PR was closed without merging and a
-  // person has since re-queued the issue, so the build starts from main. Returns that PR's number and the refs it deleted, or undefined
-  // when there was nothing to do. Throws when nobody re-queued the issue
+  // person has since re-queued the issue, so the build starts from main.
+  // Returns that PR's number and the refs it deleted, or undefined when
+  // there was nothing to do. Throws when nobody re-queued the issue
   // (handing it back first) or a ref can't be deleted.
   startFromMain(issueNumber: number, branch: string, base: string): { pr: number; deleted: string[] } | undefined;
   publish: typeof publish;
@@ -339,7 +340,8 @@ export type BuildHost = {
   // comment says how the push was made.
   moveToLocal(issueNumber: number, branch: string, detail: string, change: WorkflowChange, createdAtBase: boolean): void;
   // Deletes `branch` from origin if it's still at `commit`, the stray branch
-  // createBranchAt left when the push of the build's commits was then refused. A branch that moved is left alone.
+  // createBranchAt left when the push of the build's commits was then
+  // refused. A branch that moved is left alone.
   deleteBranchAt(branch: string, commit: string): void;
 };
 

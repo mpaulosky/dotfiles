@@ -43,7 +43,7 @@ describe("readyPicks", () => {
 });
 
 // Covers "A plan with a missing or invalid roles field runs every role for
-// that issue" from issue ResolveRoles is what main.mts asks for that
+// that issue" from Blazor-Server#72: resolveRoles is what main.mts asks for that
 // fallback, since the plan schema itself can't reject an invalid field
 // without aborting the whole plan (see plan.mts).
 describe("resolveRoles", () => {

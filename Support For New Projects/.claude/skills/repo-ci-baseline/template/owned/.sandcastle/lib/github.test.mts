@@ -1585,7 +1585,7 @@ describe("addPullRequestLabel", () => {
   });
 });
 
-// Gh pr view --json files can stop at 100 paths, so a PR's files come from the REST list, paged in full.
+// `gh pr view --json files` can stop at 100 paths, so a PR's files come from the REST list, paged in full.
 describe("pullRequestFiles", () => {
   it("reads the PR's files from the paginated REST list", () => {
     const { calls, run } = recordingGh([`${JSON.stringify(["lib/a.mts"])}\n${JSON.stringify(["lib/b.mts"])}\n`]);

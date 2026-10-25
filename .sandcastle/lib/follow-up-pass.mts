@@ -702,13 +702,13 @@ export function planRedCi(gatePassed: boolean, redChecks: readonly CheckState[],
   // A check can be listed twice (a status and a check run of one name), but
   // it's re-run or forwarded once.
   const names = [...new Set(redChecks.map((check) => check.name))];
-  return { fix: false, rerun: names.filter((name) => isGateCovered(name, covered)), forward: names.filter((name) => !isGateCovered(name, covered)) };
+  const isCovered = (name: string) => isGateCovered(name, covered);
+  return { fix: false, rerun: names.filter(isCovered), forward: names.filter((name) => !isCovered(name)) };
 }
 
 // Runs one follow-up pass on `target`, a PR the sweep (lib/follow-up.mts)
-// marked as needing one, for its issue. See this module's header and the
-// design note at .sandcastle/work/78/design.md for the step-by-step: reset
-// the PR's worktree to its head, merge main in when the PR needs it, run the
+// marked as needing one, for its issue. See this module's header for the
+// step-by-step: reset the PR's worktree to its head, merge main in when the PR needs it, run the
 // follow-up role, gate and push, then reply to and resolve the role's
 // verdicts and post the pass summary. `base` is the commit fetchMain()
 // resolved origin/main to this round.

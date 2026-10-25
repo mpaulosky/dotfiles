@@ -56,12 +56,12 @@ export { UncountedStopError };
 // `docsFailed` is true when the planner picked the scribe for this issue and
 // its run failed. Unlike an architect, tester or backend failure, that
 // doesn't stop the pipeline (see "When a role fails" in
-// docs/plans/sandcastle-workflow.md): the PR still publishes, with a note
+// Blazor-Server's docs/plans/sandcastle-workflow.md): the PR still publishes, with a note
 // that the documentation step failed.
 //
 // `prBody` is the reviewer's `pr-body.md` (its Why, What changed and
 // Verification sections), already read from the sandbox and validated by the
-// caller, or undefined to fall back to the generic body (#335). A
+// caller, or undefined to fall back to the generic body. A
 // review-failed or docs-failed warning is placed after the reviewer's
 // sections rather than folded into them, since the reviewer wrote them before
 // either was known.
@@ -89,7 +89,7 @@ export async function publish(
     ? "\n\n⚠️ The documentation step failed, so this PR may leave `CONTEXT.md`, `README.md` or the guides out of date."
     : "";
   // PR_MARKER is how the follow-up sweep (lib/follow-up.mts) tells a PR the
-  // host published from a collaborator's on a matching branch (#77).
+  // host published from a collaborator's on a matching branch.
   const body = `${PR_MARKER}\nCloses #${issue.number}\n\n${description}${docsNote}`;
   // A retry after a create that GitHub carried out but answered with an error
   // finds that PR rather than open a second one: openPullRequest looks for an
@@ -149,7 +149,7 @@ const DESIGN_NOTE_LIMIT = 60_000;
 
 // GitHub refuses a PR body over 65,536 characters too; this leaves room for
 // the marker, `Closes #n` and the warnings publish() adds around the
-// reviewer's sections (#335).
+// reviewer's sections.
 export const PR_BODY_LIMIT = 60_000;
 
 // A closing keyword and the issue it names, as GitHub reads one in a PR body:
@@ -165,14 +165,14 @@ const PR_BODY_CLOSING_REFERENCE =
 const PR_BODY_MENTION = /(?<![\w`/.])@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\b/;
 
 // The headings the reviewer's pr-body.md must hold, the ones docs/PROCESS.md
-// ("The PR description") asks every PR description for (#335).
+// ("The PR description") asks every PR description for.
 const PR_BODY_HEADINGS = ["Why", "What changed", "Verification"] as const;
 
 // What stands in for <!-- in a posted design note. Every host marker starts
 // with <!--, and markerComments finds the host's comments by substring, so a
 // note quoting one (as a design for a change to Sandcastle itself would)
 // would otherwise pass for that host comment: a design comment counted as a
-// failed build attempt, for one (#228). A follow-up pass's thread replies
+// failed build attempt, for one. A follow-up pass's thread replies
 // (lib/follow-up-pass.mts) break them the same way.
 export const BROKEN_COMMENT_OPEN = "<!\u200B--";
 
@@ -184,7 +184,7 @@ export const BROKEN_COMMENT_OPEN = "<!\u200B--";
 // saying where the whole of it is (`path`, in the sandbox). designNoteIn
 // reads the note back.
 export function designComment(note: string, branch: string, path: string): string {
-  // Broken before it's measured, since each break adds a character (#230).
+  // Broken before it's measured, since each break adds a character.
   const broken = note.replaceAll("<!--", BROKEN_COMMENT_OPEN);
   const cut = broken.length > DESIGN_NOTE_LIMIT;
   const kept = cut ? cutAtCharacter(broken, DESIGN_NOTE_LIMIT) : broken;
@@ -209,7 +209,7 @@ export function cutAtCharacter(text: string, limit: number): string {
 // The architect's design note in a comment designComment wrote, as the
 // architect wrote it, for a re-run's prompt. A comment with no fence gives
 // its body without the marker. Line endings are normalised first: GitHub
-// stores a comment edited on github.com with CRLF (#230).
+// stores a comment edited on github.com with CRLF.
 export function designNoteIn(body: string): string {
   body = body.replace(/\r\n?/g, "\n");
   const fenced = /^(`{3,})markdown\n([\s\S]*?)\n\1$/m.exec(body);
@@ -237,7 +237,7 @@ export function latestDesignNote(
 // An issue with the optional roles the planner picked for it (see
 // resolveRoles in lib/plan.mts): the architect and/or the scribe, each
 // run only when listed, alongside the tester, developer and reviewer, which always run (see "Phase 6: Build" in
-// docs/plans/sandcastle-workflow.md).
+// Blazor-Server's docs/plans/sandcastle-workflow.md).
 export type RoledIssue = SandcastleIssue & { roles: readonly OptionalRole[] };
 
 // The roles that write the design, the tests or the code. When one fails, the
@@ -251,7 +251,7 @@ export type BuildHost = {
   commitsAhead(branch: string, base: string): number;
   commentOnIssue(issueNumber: number, body: string): void;
   // Records a failed build attempt (anything that stops the issue's
-  // pipeline, see "When a role fails" in docs/plans/sandcastle-workflow.md):
+  // pipeline, see "When a role fails" in Blazor-Server's docs/plans/sandcastle-workflow.md):
   // posts the issue's `sandcastle:build-failed` comment with this attempt's
   // number and `detail` (the tail of the gate output, or the role's error),
   // and once that's the BUILD_FAILURE_CAPth attempt since
@@ -260,7 +260,7 @@ export type BuildHost = {
   // that threw UncountedStopError.
   recordBuildFailure(issueNumber: number, branch: string, detail: string): void;
   // Adds sandcastle:building to the issue, so the gate (lib/gate.mts) holds it
-  // back for a second Sandcastle run while this one builds it (#150). Returns
+  // back for a second Sandcastle run while this one builds it. Returns
   // false, without adding it, when the issue already carries the label:
   // another run marked it after this round's gate read the labels.
   markBuilding(issueNumber: number): boolean;
@@ -279,13 +279,12 @@ export type BuildHost = {
   // from `base` to `commit` publish, against one of the sandbox's secrets or
   // a token shape, or undefined when nothing matches. Carries only where the
   // match sits and what kind it is, never the matched text, so logging or
-  // reporting it never risks the secret itself (#324). `mergedMain` is the
-  // main commit syncWithMain merged in, whose history isn't scanned (#224).
+  // reporting it never risks the secret itself. `mergedMain` is the
+  // main commit syncWithMain merged in, whose history isn't scanned.
   leaksSecret(base: string, commit: string, mergedMain?: string): SecretMatch | undefined;
   // Deletes the refs of `branch` that still hold the work of the issue's
   // latest Sandcastle PR, when that PR was closed without merging and a
-  // person has since re-queued the issue, so the build starts from main
-  // (#77). Returns that PR's number and the refs it deleted, or undefined
+  // person has since re-queued the issue, so the build starts from main. Returns that PR's number and the refs it deleted, or undefined
   // when there was nothing to do. Throws when nobody re-queued the issue
   // (handing it back first) or a ref can't be deleted.
   startFromMain(issueNumber: number, branch: string, base: string): { pr: number; deleted: string[] } | undefined;
@@ -298,7 +297,7 @@ export type BuildHost = {
   // the remote itself (git ls-remote against origin, whose URL is in the
   // read-only .git/config) rather than read from refs/remotes/origin/main,
   // which agents can write. buildIssue leaves a merged main's history out of
-  // the secret scan only when this holds (#224). Throws when it can't ask.
+  // the secret scan only when this holds. Throws when it can't ask.
   isRemoteMain(commit: string): boolean;
   // What's wrong with how the worktree finds its repository (see
   // lib/host-safety.mts); empty when nothing is.
@@ -307,14 +306,13 @@ export type BuildHost = {
   // note), made safe to post on the public issue.
   publicError(error: unknown): string;
   log(line: string): void;
-  // The run's limits (#147): buildIssue runs every role through
+  // The run's limits: buildIssue runs every role through
   // runRoleInSandbox(..., host.limits), and checks it before publishing.
   limits: RunLimits;
   // The .github/workflows/ files the commits from `base` to `commit` touch,
   // for the hand-back comment of a push GitHub refused for them, and to tell
-  // whether merging main in would bring in a workflow change (#223), leaving
-  // out the history of `mergedMain`, the main commit syncWithMain merged in
-  // (#224).
+  // whether merging main in would bring in a workflow change, leaving
+  // out the history of `mergedMain`, the main commit syncWithMain merged in.
   workflowFiles(base: string, commit: string, mergedMain?: string): string[];
   // Whether the token that pushes the branch lacks the Workflows permission,
   // so GitHub refuses a push carrying a workflow change. True in GitHub
@@ -326,23 +324,22 @@ export type BuildHost = {
   // `detail` is the publicError text of the push's error; `change` names the
   // refused head and its workflow files.
   handBackWorkflowChange(issueNumber: number, branch: string, detail: string, change: WorkflowChange): void;
-  // Whether origin already has `branch` (#253), asked of the remote itself.
+  // Whether origin already has `branch`, asked of the remote itself.
   // A branch that exists is pushed to as an update, which GitHub judges
   // against the branch's own tip.
   remoteBranchExists(branch: string): boolean;
   // Creates `branch` on origin at `commit`, a commit GitHub already has, so
-  // the build's commits can then be pushed as an update to it (#253).
+  // the build's commits can then be pushed as an update to it.
   createBranchAt(branch: string, commit: string): void;
   // Moves the issue from the Sandcastle queue to `Sandcastle:local` with a
   // comment saying why, after a push GitHub refused for a workflow change
-  // even as an update to a branch created at `base` (#253). A local run
+  // even as an update to a branch created at `base`. A local run
   // pushes with the owner's own `gh` login, which can push it.
   // `createdAtBase` is whether creating the branch at `base` worked, so the
   // comment says how the push was made.
   moveToLocal(issueNumber: number, branch: string, detail: string, change: WorkflowChange, createdAtBase: boolean): void;
   // Deletes `branch` from origin if it's still at `commit`, the stray branch
-  // createBranchAt left when the push of the build's commits was then refused
-  // (#253). A branch that moved is left alone.
+  // createBranchAt left when the push of the build's commits was then refused. A branch that moved is left alone.
   deleteBranchAt(branch: string, commit: string): void;
 };
 
@@ -362,7 +359,7 @@ export function publicErrorText(text: string, holdsSecret: (text: string) => boo
 // files come from the commits (a two-dot range: the branch side only), not
 // from the net diff, which would list nothing for an edit and its revert.
 // With `mergedMain`, the main commit merged into the branch after `from`, its
-// history is left out too: main's workflow changes aren't the branch's (#224).
+// history is left out too: main's workflow changes aren't the branch's.
 export function workflowLogArgs(from: string, to: string, mergedMain?: string): string[] {
   const exclude = mergedMain === undefined ? [] : [`^${mergedMain}`];
   return ["log", "--name-only", "--format=", `${from}..${to}`, ...exclude, "--", ".github/workflows/"];
@@ -413,7 +410,7 @@ export function liveHostIdentity(read: (...args: string[]) => string = git): Hos
 // Set the host's identity as the sandbox's global git config. Sandcastle does
 // this only when a role starts, so a git command the host runs in a new
 // sandbox before any role, such as the follow-up pass's merge of main, had no
-// committer and failed with "Committer identity unknown" (#242). Each half is
+// committer and failed with "Committer identity unknown". Each half is
 // set only when the host has it.
 async function setGitIdentity(sandbox: sandcastle.Sandbox, identity: HostIdentity): Promise<void> {
   const settings: [string, string | undefined][] = [
@@ -506,7 +503,7 @@ export function remoteMainIs(commit: string, run: (...args: string[]) => string 
 
 // Whether origin has `branch` now, by its answer to git ls-remote, picking the
 // line by its exact ref name as remoteMainIs does: ls-remote matches refs by
-// their tail, so a branch like a/refs/heads/<branch> matches too (#253).
+// their tail, so a branch like a/refs/heads/<branch> matches too.
 export function remoteBranchIsOnOrigin(branch: string, run: (...args: string[]) => string = git): boolean {
   const ref = `refs/heads/${branch}`;
   return run("ls-remote", "origin", ref)
@@ -572,7 +569,7 @@ function shellWord(value: string): string {
 // tell that apart from a round that built nothing.
 //
 // The issue carries sandcastle:building from before its sandbox is created
-// until after it closes (#150), so a second Sandcastle run's gate holds it
+// until after it closes, so a second Sandcastle run's gate holds it
 // back, and a run that finds another already marked it never creates or
 // closes a sandbox on the worktree that run is using (worktreePathFor names
 // it after the branch alone).
@@ -606,7 +603,7 @@ export async function buildIssue(
   }
 }
 
-// What became of a build, for the run report (lib/report.mts, #81).
+// What became of a build, for the run report (lib/report.mts).
 export type BuildOutcome = Extract<Outcome, "published" | "role failed" | "timed out" | "gate failed" | "not published">;
 
 // The detail of a build that ended because the branch holds no work to
@@ -778,7 +775,7 @@ async function buildMarkedIssue(
     }
   }
 
-  // The reviewer's PR description (#335): its Why, What changed and
+  // The reviewer's PR description: its Why, What changed and
   // Verification sections, for publish() to put under the marker and
   // `Closes #n`. Read inside the sandbox, as postDesignNote reads the design
   // note, since an agent wrote it. It's published word for word (the squash
@@ -865,7 +862,7 @@ async function buildMarkedIssue(
   // now, asked of the remote rather than read from the origin/main ref in the
   // shared .git, which agents can write: a ref they moved onto a commit of
   // their own would otherwise hide a leak in it from the scan, and the
-  // pinned `base` can't protect a range the exclusion shrinks (#224). When
+  // pinned `base` can't protect a range the exclusion shrinks. When
   // main has moved on (PR Auto-Merge landing another PR during the gate), or
   // the remote can't be asked, nothing is left out and the scan reads
   // everything past `base`, as it did before.
@@ -885,7 +882,7 @@ async function buildMarkedIssue(
   // hooks off, so the pre-push hook's behind-main check never runs on it.
   // Returns the reviewed commit the merge went onto, so checkpoint 2 can fall
   // back to it, and the main commit it merged, so the secret scan and the
-  // workflow listing can leave main's own commits out (#224), or undefined
+  // workflow listing can leave main's own commits out, or undefined
   // when nothing was merged. A merge that conflicts is aborted and the branch
   // published as it is: the follow-up pass (lib/follow-up-pass.mts) merges
   // main into a conflicted PR with a role to resolve it. A failed fetch
@@ -912,7 +909,7 @@ async function buildMarkedIssue(
     }
     // In Actions, the merge commit would carry main's own workflow change,
     // and GitHub refuses Sandcastle's push of it for lack of the Workflows
-    // permission, handing the issue back for a change it never made (#223).
+    // permission, handing the issue back for a change it never made.
     // The merge is left undone, not promised to anyone: the follow-up pass
     // runs in Actions with the same token, so its own push of main's workflow
     // change is refused the same way and it hands the PR to a person, as does
@@ -972,7 +969,7 @@ async function buildMarkedIssue(
   }
 
   // GitHub judges the push of a branch it doesn't have yet against main's
-  // current tip, not the commit the branch was cut from (#253): once main has
+  // current tip, not the commit the branch was cut from: once main has
   // changed a workflow since `base`, a new branch "changes" it back, and
   // Actions' token, without the Workflows permission, can't push it. So the
   // branch is first created at `base`, which GitHub already has, and the
@@ -1038,9 +1035,9 @@ async function buildMarkedIssue(
   try {
     // The worktree is named after the branch, so it may still hold an earlier
     // round's design note, and every role follows the note when it exists:
-    // only this build's architect may have written it (#230). The PR body
+    // only this build's architect may have written it. The PR body
     // likewise, so an earlier round's description never goes out with this
-    // round's change (#335).
+    // round's change.
     await sandbox.exec(`rm -f ${designNotePath}`);
     await sandbox.exec(`rm -f ${prBodyPath}`);
     const developers: DeveloperRole[] = [
@@ -1101,7 +1098,7 @@ async function buildMarkedIssue(
 
     // The push is public, and the sandbox holds the Claude token or API key.
     // The comment doesn't say where the secret is, since the issue is public
-    // too. The log and the run report do (#324): the location names no part
+    // too. The log and the run report do: the location names no part
     // of the secret, and without it nobody can tell a leak from a false
     // positive once the runner, the only holder of the commit, is gone.
     const leak = host.leaksSecret(base, gated, mergedMain);
@@ -1119,7 +1116,7 @@ async function buildMarkedIssue(
     }
 
     // A publish already reached goes ahead even once the run has hit the time
-    // budget or Claude's usage limit (#147): every role has finished, pushing
+    // budget or Claude's usage limit: every role has finished, pushing
     // and opening the PR cost no usage, and an ephemeral runner throws away
     // whatever isn't pushed. The limits stop roles from starting, not this.
 
@@ -1137,7 +1134,7 @@ async function buildMarkedIssue(
       const detail = host.publicError(error);
       // Sandcastle's token can't push a .github/workflows/** change, so no
       // retry or rebuild will get it through: a person has to make it, or,
-      // once the branch was created at base, a local run can push it (#253).
+      // once the branch was created at base, a local run can push it.
       if (isWorkflowPushRejection(error)) {
         // A failed listing still hands back: the comment then names the
         // directory rather than each file.
@@ -1153,7 +1150,7 @@ async function buildMarkedIssue(
         // The build's commits touch no workflow and the branch was pushed as a
         // new one, so GitHub refused it only for main's change since `base`.
         // The next round builds from the new main, which holds that change, and
-        // its push goes through: no local run is needed (#253).
+        // its push goes through: no local run is needed.
         if (branchAtBase !== undefined && !branchAtBase.created && listed && files.length === 0) {
           log(`GitHub refused ${branch} only for a workflow change main made since ${base}, so the issue stays in the queue for the next round`);
           return {
@@ -1167,7 +1164,7 @@ async function buildMarkedIssue(
         if (branchAtBase !== undefined) {
           // The refused push left the branch at base with no commits and no
           // PR; a stray one would send the next round down the existing-branch
-          // path and start CI on it (#253).
+          // path and start CI on it.
           if (branchAtBase.created) {
             try {
               host.deleteBranchAt(branch, base);

@@ -25,7 +25,7 @@ const BRANCH = "feature/42-add-search";
 const NOW = Date.parse("2026-10-10T12:00:00Z");
 const IN_SCOPE = new Set([42]);
 
-// A settled, CLEAN, Sandcastle PR on issue #42's branch, reviewed by Copilot
+// A settled, CLEAN, Sandcastle PR on issue 42's branch, reviewed by Copilot
 // with every check green; tests override just the fields their scenario
 // needs.
 function pr(overrides: Partial<SweepPullRequest> = {}): SweepPullRequest {
@@ -459,7 +459,7 @@ describe("decide", () => {
   });
 
   // threadsForRole answers a thread the repository owner opened, so `decide`
-  // must flag it too: otherwise the PR never gets a pass to answer it (#81).
+  // must flag it too: otherwise the PR never gets a pass to answer it.
   it("flags a settled PR with an unresolved owner thread as needing a follow-up pass, counting it", () => {
     const result = decide(pr({ threads: [{ resolved: false, byBot: false, author: "owner" }] }), NOW, (login) => login === "owner");
 
@@ -620,7 +620,7 @@ function thread(author: string, byBot: boolean, more: { author: string; body: st
 const hostReply = { author: HOST, body: `${FOLLOW_UP_REPLY_MARKER}\nDeclined: it reads better as it is.` };
 const ownerIs = (owner: string) => (login: string | null) => (login === null ? false : login === owner);
 
-// #225: the one rule the sweep and the pass share to decide whether a thread
+// The one rule the sweep and the pass share to decide whether a thread
 // starts a pass.
 describe("threadStanding", () => {
   it("is \"resolved\" for a resolved thread", () => {
@@ -852,7 +852,7 @@ describe("sweepPullRequests", () => {
     assert.deepEqual(updatedBranches, []);
   });
 
-  // #81's follow-up review: a settled PR whose only open thread is the
+  // From a follow-up review: a settled PR whose only open thread is the
   // repository owner's must still get a follow-up pass, since that's the
   // only thing that ever answers an owner thread (threadsForRole). Before
   // this, `decide` classified threads by byBot alone and never saw the
@@ -870,7 +870,7 @@ describe("sweepPullRequests", () => {
     assert.equal(passes[0]?.number, 101);
   });
 
-  // #225: the sweep read only each thread's first comment, so a thread the
+  // The sweep read only each thread's first comment, so a thread the
   // host had answered still counted as open. Such a PR was flagged every
   // round, and `decide` returns needs-pass before its update-branch and
   // Copilot re-request branches, so it was never updated or re-reviewed.
@@ -1053,7 +1053,7 @@ describe("sweepPullRequests", () => {
     assert.ok(lines.some((line) => line.includes("Couldn't follow up PR #101")), lines.join("\n"));
     assert.ok(!needsPass.includes(101));
     assert.deepEqual(updatedBranches, [{ number: 102, expectedHeadSha: "b".repeat(40) }]);
-    // #249: the stranger's thread still waits on a person, so the PR stays listed.
+    // The stranger's thread still waits on a person, so the PR stays listed.
     assert.deepEqual(waiting.items(), [{ pr: 101, threads: 1, answered: 0 }]);
   });
 
@@ -1212,8 +1212,8 @@ describe("sweepPullRequests", () => {
     assert.deepEqual(closedCalls, []);
   });
 
-  // Label origin applies to PR-level hand-backs too, not just issues (#146,
-  // "Label origin"): a stranger removing sandcastle:needs-human from a PR
+  // Label origin applies to PR-level hand-backs too, not just issues
+  // ("Label origin"): a stranger removing sandcastle:needs-human from a PR
   // mustn't let the sweep touch it as if a human had re-queued it.
   it("re-adds needs-human to a PR whose removal wasn't the owner's, taking no other action on it", () => {
     const strangerRemoved: IssueEvent[] = [
@@ -1373,7 +1373,7 @@ describe("followUpPhase", () => {
     assert.match(warnings[0]!, /GitHub's API is unavailable/);
   });
 
-  // #147: the early exit reads followUpPhase's result, so a failed sweep
+  // The early exit reads followUpPhase's result, so a failed sweep
   // must never look like it found work.
   it("returns no PRs needing a pass when the sweep throws", () => {
     const result = followUpPhase(
@@ -1393,9 +1393,9 @@ describe("followUpPhase", () => {
   });
 });
 
-// #147: the early exit needs the PRs the sweep found needing a follow-up
+// The early exit needs the PRs the sweep found needing a follow-up
 // pass, and only those, so it doesn't start an agent for a PR the sweep
-// already updated or is still waiting on. #78: the pass pipeline
+// already updated or is still waiting on. The pass pipeline
 // (lib/follow-up-pass.mts#followUpPassPhase) needs those same PRs as
 // PassTargets, so it never has to re-read what the sweep already read.
 describe("sweepPullRequests' needsPass and passes result", () => {
@@ -1438,7 +1438,7 @@ describe("sweepPullRequests' needsPass and passes result", () => {
     assert.deepEqual(result, { needsPass: [], passes: [] });
   });
 
-  // #78: runPass reads PassTarget.id, headRefName, headRefOid and
+  // runPass reads PassTarget.id, headRefName, headRefOid and
   // issueNumber to start a sandbox on the PR's own head, and reasons to
   // explain a give-up; the pass pipeline must never have to read the PR
   // again from GitHub just to learn them.

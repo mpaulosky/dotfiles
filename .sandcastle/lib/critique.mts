@@ -95,7 +95,7 @@ const runCritique: CritiqueRun = async (promptArgs) => {
 // is model text posted by the host's login, so it's made safe to post (see
 // publicErrorText) and plain (see plainText): no mention or reference fires,
 // and a quoted host marker's < is escaped, so markerComments can't count the
-// comment as that marker's (#228).
+// comment as that marker's.
 export function deferralComment(blocker: number, reason: string): string {
   return [
     `Sandcastle's plan critique deferred this issue behind #${blocker}, so it won't be built until #${blocker} lands.`,

@@ -40,7 +40,7 @@ describe("roundSummary", () => {
     ]);
   });
 
-  // #147: a round that stopped cleanly on the time budget or Claude's usage
+  // A round that stopped cleanly on the time budget or Claude's usage
   // limit must say so and stop the run, even when another build in the same
   // round opened a pull request.
   it("stops on an UncountedStopError even when another build opened a pull request", () => {
@@ -106,7 +106,7 @@ describe("roundOutcomes", () => {
   });
 });
 
-// Issue #251: a hold behind a pick lasts the run only when that pick's build opened a PR.
+// A hold behind a pick lasts the run only when that pick's build opened a PR.
 describe("publishedIssues", () => {
   it("names the issues whose build opened a PR", () => {
     assert.deepEqual([...publishedIssues(work, [built("https://github.com/o/r/pull/1"), built("https://github.com/o/r/pull/2")])], [71, 72]);

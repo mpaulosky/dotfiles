@@ -82,7 +82,7 @@ describe("gateFixerPromptArgs", () => {
 });
 
 // Covers "After an architect run, the issue has a comment with the design
-// note..." (issue #72): on a re-run the architect needs that earlier note
+// note...": on a re-run the architect needs that earlier note
 // back, since .sandcastle/work/ is gitignored and may not have survived into
 // a fresh sandbox (see lib/build.mts and DESIGN_MARKER in lib/config.mts).
 describe("architectPromptArgs", () => {
@@ -116,7 +116,7 @@ describe("intakePromptArgs", () => {
   });
 });
 
-// #78: the follow-up role can't reach GitHub, so everything it learns about
+// The follow-up role can't reach GitHub, so everything it learns about
 // the PR and its threads travels through these prompt arguments.
 describe("followUpPromptArgs", () => {
   const threads: PromptThread[] = [
@@ -146,10 +146,10 @@ describe("followUpPromptArgs", () => {
     assert.deepEqual(JSON.parse(String(args.THREADS_JSON)), []);
   });
 
-  // #79: a red check the gate doesn't cover reaches the role as its log, and
+  // A red check the gate doesn't cover reaches the role as its log, and
   // only then does CODEQL_LOG say the gate passed: planRedCi only forwards a
   // check once the gate is green, but the prompt mustn't claim that on every
-  // run (#79's follow-up review), such as one with only a merge conflict or
+  // run (a follow-up review), such as one with only a merge conflict or
   // bot threads to resolve, where the gate never ran on the head at all.
   it("passes the failed-job log of a check the gate doesn't cover as CODEQL_LOG, noting the gate already passed", () => {
     const args = followUpPromptArgs(issue, "feature/3-add-a-thing", 42, [], "already contains main.", "##[error] CS8600");

@@ -3,7 +3,7 @@
 //
 // Before the critique, the host holds back, in code, any pick whose planned
 // files share a path with a pick kept earlier in the planner's order or with
-// an open PR into main (#248: two builds both rewrote build.mts's merge-main
+// an open PR into main (two builds both rewrote build.mts's merge-main
 // code and the second PR went DIRTY). The critique's own overlap check is a
 // judgment and sees only this queue's PRs; this one is neither. A held pick
 // is only skipped for the round, with no "blocked by" link: next round the
@@ -65,7 +65,7 @@ export function pathKey(path: string): string {
 }
 
 // Whether two paths are the same file, or one is a folder that holds the
-// other, with or without a trailing "/" (#251: resolveFiles drops it). Each
+// other, with or without a trailing "/" (resolveFiles drops it). Each
 // path is compared under every name it goes by: a root copy is also its
 // Template file, so a folder holding either holds both.
 function sharesPath(a: string, b: string): boolean {
@@ -93,7 +93,7 @@ function aliases(path: string): string[] {
 // - A pick with no files counts as changing every file, so it waits on the
 //   lowest-numbered open PR, or else the first kept pick with files. With
 //   neither, the first pick with no files is built and the others wait on it:
-//   two such picks never wait on each other, which would build neither (#251).
+//   two such picks never wait on each other, which would build neither.
 export function findOverlaps(
   picks: readonly FilePick[],
   pullRequests: readonly ChangingPullRequest[],
@@ -163,7 +163,7 @@ function firstOverlap(
 
 // The comment on a held pick, naming the file and the pick or PR it waits on,
 // like the critique's deferral comment, after OVERLAP_MARKER, which is how a
-// later run sees it's already there (#251). The path comes from the planner,
+// later run sees it's already there. The path comes from the planner,
 // so it goes through publicErrorText and plainText: no secret, mention,
 // cross-reference or forged marker reaches a public issue. The blocker's "#N"
 // stays live.
@@ -223,7 +223,7 @@ function publicPath(path: string): string {
 // "deferred", and gets overlapComment unless the newest comment with an
 // OVERLAP_MARKER on the issue has this hold's overlapMarker, whatever path it
 // named: a pick behind an open PR is held again every run until the PR
-// closes, and each run would post another otherwise (#251). A later hold
+// closes, and each run would post another otherwise. A later hold
 // behind another blocker has another marker, so it is explained too.
 // A failed read of the open PRs or of one PR's files throws, ending the run
 // red: building without knowing what's open is the unsafe direction. A
@@ -266,7 +266,7 @@ export function holdOverlappingPicks<T extends FilePick>(
 
 // Why a pick is held, for the host's log, with the path's control characters
 // escaped: a PR's path can hold a line break, and a log line starting "::" is
-// a workflow command in Actions (#251).
+// a workflow command in Actions.
 function overlapLog(overlap: Overlap): string {
   switch (overlap.kind) {
     case "pick":
@@ -304,7 +304,7 @@ function overlapDetail(overlap: Overlap): string {
 // and so stays open for the next round's check to see. holdOverlappingPicks
 // decides before the critique and the build, so a hold behind a pick the
 // critique deferred, or whose build opened no PR, is released, and the held
-// pick can be planned again next round (#251).
+// pick can be planned again next round.
 export function lastingHolds(overlaps: ReadonlyMap<number, Overlap>, published: ReadonlySet<number>): number[] {
   return [...overlaps].flatMap(([number, overlap]) => {
     const waitsOn = overlap.kind === "no files" ? overlap.waitsOn : { kind: overlap.kind, number: overlap.blocker };
@@ -322,9 +322,9 @@ export const HELD_NOTE =
 // The ready issues the critique sees as unpicked: every one that wasn't kept.
 // An issue the host held back is among them, marked with
 // HELD_NOTE. The critique's dependency check is the safety net for a
-// dependency the planner missed, so it has to see a held issue: when #2 is
-// held behind #1 and the kept #3 depends on #2, the critique can only defer
-// #3 behind #2 if #2 is in front of it (#254).
+// dependency the planner missed, so it has to see a held issue: when issue 2
+// is held behind 1 and the kept 3 depends on 2, the critique can only defer
+// 3 behind 2 if 2 is in front of it.
 export function critiqueUnpicked(
   ready: readonly SandcastleIssue[],
   kept: readonly { number: number }[],

@@ -439,7 +439,7 @@ describe("listSandcastleIssues", () => {
     assert.equal(lookups(), 2);
   });
 
-  // The run's queue scope (#146) decides what gh is asked for.
+  // The run's queue scope decides what gh is asked for.
   it("lists the scope's own label in a label scope", () => {
     const { calls, run } = recordingGh(["[]"]);
 
@@ -522,7 +522,7 @@ describe("ensureLabels", () => {
     }
   });
 
-  it("creates Sandcastle:local by default, which the move of an issue to the local queue needs (#253)", () => {
+  it("creates Sandcastle:local by default, which the move of an issue to the local queue needs", () => {
     const { calls, run } = recordingGh(["[]"]);
 
     ensureLabels(undefined, run, "o/r");
@@ -687,8 +687,7 @@ describe("issue labels", () => {
 
 describe("split and umbrella issues", () => {
   // GitHub allows a "blocked by" link to an issue in another repository; its
-  // number means nothing here, so only this repository's blockers are kept
-  // (#234).
+  // number means nothing here, so only this repository's blockers are kept.
   it("reads an issue's native blockers in this repository, leaving out other repositories'", () => {
     const { calls, run } = recordingGh([
       [
@@ -926,7 +925,7 @@ describe("hasLabel", () => {
   });
 });
 
-// The follow-up sweep's own login (#77), read and cached the same way
+// The follow-up sweep's own login, read and cached the same way
 // hostLogin's other callers already do (see cacheHostLogin and
 // markerComments above).
 describe("signedInHostLogin", () => {
@@ -1123,7 +1122,7 @@ describe("openPullRequestsForSweep", () => {
   }
 });
 
-// #78: a follow-up pass reads a PR's open review threads through one
+// A follow-up pass reads a PR's open review threads through one
 // GraphQL query, so it decides from the same shape of answer as
 // openPullRequestsForSweep's query, just for one PR's threads and comments.
 describe("reviewThreadsOf", () => {
@@ -1211,7 +1210,7 @@ describe("reviewThreadsOf", () => {
   });
 });
 
-// #79: a follow-up pass reads a PR's head checks with the GitHub Actions run
+// A follow-up pass reads a PR's head checks with the GitHub Actions run
 // behind each, so it can re-run a flaky one or read a failed one's log.
 describe("head checks and their runs", () => {
   const HEAD_OID = "a".repeat(40);
@@ -1277,7 +1276,7 @@ describe("head checks and their runs", () => {
       ]);
     });
 
-    // #222: the sweep leaves out Sandcastle's own check by the workflow behind it.
+    // The sweep leaves out Sandcastle's own check by the workflow behind it.
     it("names the workflow behind a check run", () => {
       const { run } = gh([checkRun("Sandcastle", "FAILURE", 12, "Sandcastle")]);
 
@@ -1318,7 +1317,6 @@ describe("head checks and their runs", () => {
       );
     });
 
-    // #222
     it("doesn't re-run Sandcastle's own run, only a check of that name from another workflow", () => {
       const { calls, run } = gh([checkRun("Sandcastle", "FAILURE", 22, "CI"), checkRun("Sandcastle", "FAILURE", 23, "Sandcastle")]);
 
@@ -1345,7 +1343,7 @@ describe("head checks and their runs", () => {
       assert.throws(() => rerunFailedChecksOnce(7, ["Tests: A"], HEAD_OID, run, "o/r"), /Tests: A/);
     });
 
-    // #79: a pass must never re-run jobs it read for a commit other than the
+    // A pass must never re-run jobs it read for a commit other than the
     // one it gated, since a push between the read and the re-run would re-run
     // the wrong commit's failures.
     it("throws, without re-running anything, when the head has moved past the gated commit", () => {
@@ -1355,7 +1353,7 @@ describe("head checks and their runs", () => {
       assert.ok(!calls.some((args) => args[0] === "run"), "nothing was re-run");
     });
 
-    // #259: a name in `names` can carry a green run from one workflow
+    // A name in `names` can carry a green run from one workflow
     // trigger and a red one from another (`push` and `pull_request`, say).
     // Only the red run should be re-run; re-running the green one too would
     // ask `gh` to re-run a run with no failed jobs.
@@ -1390,7 +1388,7 @@ describe("head checks and their runs", () => {
       assert.match(log, /##\[error\] CS8600/);
     });
 
-    // #222: a red `Sandcastle` check from the Sandcastle workflow is its own run's.
+    // A red `Sandcastle` check from the Sandcastle workflow is its own run's.
     it("leaves out the log of Sandcastle's own check, keeping a check of that name from another workflow", () => {
       const { calls, run } = gh(
         [checkRun("Sandcastle", "FAILURE", 41, "CI"), checkRun("Sandcastle", "FAILURE", 42, "Sandcastle")],
@@ -1420,7 +1418,7 @@ describe("head checks and their runs", () => {
       assert.throws(() => failedCheckLogs(7, ["Analyze (csharp)"], "b".repeat(40), run, "o/r"), /head moved/);
     });
 
-    // #79's follow-up review: a limit applied once to the whole joined text
+    // From a follow-up review: a limit applied once to the whole joined text
     // lets a later, longer run's log crowd an earlier run's out of it
     // entirely. Each run gets an even share instead.
     it("gives each run's log its own share of a limit, rather than letting a later run's log crowd an earlier one's out", () => {
@@ -1497,7 +1495,7 @@ describe("commentOnPullRequest", () => {
 });
 
 // Who counts as "the repository owner" for the queue's approval and
-// label-origin checks (lib/queue.mts, #146): the same admin/maintain/write
+// label-origin checks (lib/queue.mts): the same admin/maintain/write
 // permission ownerApproved already trusts a comment's author with.
 describe("pushAccess", () => {
   it("is false for a null (deleted) actor, with no gh call", () => {
@@ -1587,7 +1585,7 @@ describe("addPullRequestLabel", () => {
   });
 });
 
-// Issue #251: gh pr view --json files can stop at 100 paths, so a PR's files come from the REST list, paged in full.
+// Gh pr view --json files can stop at 100 paths, so a PR's files come from the REST list, paged in full.
 describe("pullRequestFiles", () => {
   it("reads the PR's files from the paginated REST list", () => {
     const { calls, run } = recordingGh([`${JSON.stringify(["lib/a.mts"])}\n${JSON.stringify(["lib/b.mts"])}\n`]);

@@ -24,7 +24,7 @@ export type RoleAgent = {
 
 // The roles the planner may pick per issue, besides the tester, developer
 // (the backend role) and reviewer, which always run (see "Phase 4: Plan" and
-// "Phase 6: Build" in docs/plans/sandcastle-workflow.md). lib/plan.mts#resolveRoles
+// "Phase 6: Build" in Blazor-Server's docs/plans/sandcastle-workflow.md). lib/plan.mts#resolveRoles
 // validates the planner's roles field against this list, falling back to
 // every one of them when the field is missing or invalid.
 export const OPTIONAL_ROLES = ["architect", "scribe"] as const satisfies readonly Role[];
@@ -51,7 +51,7 @@ export const BASE_BRANCH = "origin/main";
 // The default for SANDCASTLE_BUDGET_MINUTES: no new round starts, and no role
 // run starts, once this many minutes have passed since the run started. The
 // job's timeout-minutes is 350 ("Trigger and run environment" in
-// docs/plans/sandcastle-workflow.md).
+// Blazor-Server's docs/plans/sandcastle-workflow.md).
 export const DEFAULT_BUDGET_MINUTES = 240;
 
 // Thrown by budgetMinutesFrom for a value that isn't a positive whole number
@@ -78,7 +78,7 @@ export function budgetMinutesFrom(env: Record<string, string | undefined>): numb
 
 // How many issues one intake run judges. A malformed or truncated <intake>
 // block costs every verdict in it, so a large backlog is judged in several
-// runs of this many issues each (#224, #227).
+// runs of this many issues each.
 export const INTAKE_BATCH_SIZE = 10;
 
 // How many intake runs in a row may fail before intake stops for the round.
@@ -87,14 +87,14 @@ export const INTAKE_BATCH_SIZE = 10;
 // few more for bad issues next to each other: 8 leaves room for three. A
 // failure every run hits (a sandbox that won't start, an answer the parser
 // always rejects) then costs 8 runs a round, not one for every split of every
-// batch (#229).
+// batch.
 export const INTAKE_FAILED_RUNS_LIMIT = 8;
 
 // How many batches in a row may have GitHub refuse every verdict before
 // intake stops for the round. A batch counts only when it held more than one
 // verdict: one refused edit can be the issue's own (closed or transferred
 // since the queue was read), and narrowing a failed batch makes single-issue
-// batches back to back (#229).
+// batches back to back.
 export const INTAKE_REFUSED_BATCHES_LIMIT = 2;
 
 // Gate-fixer runs allowed at each gate checkpoint before the issue's round is
@@ -109,23 +109,23 @@ export const GATE_COMMENT_LINES = 100;
 export const PUBLISH_RETRY_ATTEMPTS = 4;
 
 // A label the host manages: created at startup if the repository doesn't
-// have it yet (see docs/plans/sandcastle-workflow.md, "Labels").
+// have it yet (see Blazor-Server's docs/plans/sandcastle-workflow.md, "Labels").
 export type SandcastleLabel = { name: string; color: string; description: string };
 
 // The label that queues an issue in GitHub Actions, and the approval label
 // for an issue-scoped local run (see queueLabelOf). A human's to add, like
-// every other label SANDCASTLE_LABELS doesn't manage (#146).
+// every other label SANDCASTLE_LABELS doesn't manage.
 export const QUEUE_LABEL = "Sandcastle";
 
 // The label of the queue a local run works (SANDCASTLE_LABEL=Sandcastle:local),
 // pushing with the owner's own `gh` login. The build moves an issue here when
-// GitHub refuses Actions' push of it for a workflow change (#253). Not one of
+// GitHub refuses Actions' push of it for a workflow change. Not one of
 // SANDCASTLE_LABELS, which a local run can't name as its queue.
 export const LOCAL_QUEUE_LABEL = "Sandcastle:local";
 
 // How the host creates LOCAL_QUEUE_LABEL at startup, apart from SANDCASTLE_LABELS,
 // so the move to it (lib/handback.mts#moveToLocalQueue) never finds the label
-// missing after it has already commented (#253). GitHub refuses a label
+// missing after it has already commented. GitHub refuses a label
 // description over 100 characters, which would fail every run at startup.
 export const LOCAL_QUEUE_LABEL_DEFINITION: SandcastleLabel = {
   name: LOCAL_QUEUE_LABEL,
@@ -136,7 +136,7 @@ export const LOCAL_QUEUE_LABEL_DEFINITION: SandcastleLabel = {
 // What a run builds from, resolved once at startup (see queueScopeFrom):
 // every open issue carrying `label` (GitHub Actions always uses QUEUE_LABEL),
 // or just one `number` and its pull request, for a local run that mustn't
-// compete with GitHub Actions over the whole queue (#146).
+// compete with GitHub Actions over the whole queue.
 export type QueueScope = { kind: "label"; label: string } | { kind: "issue"; number: number };
 
 // Thrown by queueScopeFrom when the environment names no valid scope. Its
@@ -150,7 +150,7 @@ export const QUEUE_SCOPE_USAGE = `Usage: SANDCASTLE_ISSUE=<n> pnpm run sandcastl
 Set it on the command line, not in .sandcastle/.env. In GitHub Actions the queue is always the Sandcastle label.`;
 
 // The run's queue scope from the environment (see "Labels" in
-// docs/plans/sandcastle-workflow.md): in GitHub Actions (GITHUB_ACTIONS ===
+// Blazor-Server's docs/plans/sandcastle-workflow.md): in GitHub Actions (GITHUB_ACTIONS ===
 // "true"), always every issue labelled QUEUE_LABEL, and SANDCASTLE_ISSUE or
 // SANDCASTLE_LABEL set there is refused rather than silently ignored.
 // Otherwise exactly one of SANDCASTLE_ISSUE (a local run building one issue
@@ -197,14 +197,14 @@ export function queueLabelOf(scope: QueueScope): string {
 }
 
 // A one-line description of `scope` for the run's log, such as "issues
-// labelled Sandcastle:dev" or "issue #146 and its PR".
+// labelled Sandcastle:dev" or "issue #N and its PR".
 export function describeQueueScope(scope: QueueScope): string {
   return scope.kind === "label" ? `issues labelled ${scope.label}` : `issue #${scope.number} and its PR`;
 }
 
 // Marks an issue while a sandbox is building it (see lib/build.mts#buildIssue
 // and lib/gate.mts), so a second Sandcastle run doesn't start building the
-// same issue too (#150, a near-miss on #71).
+// same issue too (a near-miss once).
 export const BUILDING_LABEL = "sandcastle:building";
 
 // How old a sandcastle:building label must be before startup clears it as a
@@ -217,7 +217,7 @@ export const BUILDING_LABEL_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 // Every label from the Labels table that the host, not a human, is
 // responsible for creating. `Sandcastle` is a human's to add. `bug` is
-// GitHub's default label, but intake adds it too (#74), and an add fails for a
+// GitHub's default label, but intake adds it too, and an add fails for a
 // label a repository has deleted.
 export const SANDCASTLE_LABELS: readonly SandcastleLabel[] = [
   { name: "sandcastle:ready", color: "0E8A16", description: "The issue passed the Definition of Ready and isn't re-checked." },
@@ -245,7 +245,7 @@ export const BUILD_FAILED_MARKER = "<!-- sandcastle:build-failed -->";
 
 // Failed build attempts, counted by BUILD_FAILED_MARKER comments posted since
 // `sandcastle:needs-human` was last removed, before the issue is handed back
-// (see "Giving up and telling the human" in docs/plans/sandcastle-workflow.md).
+// (see "Giving up and telling the human" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 export const BUILD_FAILURE_CAP = 2;
 
 // The HTML comment marking an issue a split verdict turned into an umbrella
@@ -255,13 +255,13 @@ export const BUILD_FAILURE_CAP = 2;
 export const UMBRELLA_MARKER = "<!-- sandcastle:umbrella -->";
 
 // The start of the HTML comment marking the comment that says a pick was held back for sharing a file
-// (lib/overlap.mts#overlapComment), so a later run finds it and doesn't post another (#251). The marker
+// (lib/overlap.mts#overlapComment), so a later run finds it and doesn't post another. The marker
 // ends with what the hold waits on (lib/overlap.mts#overlapMarker), so a new blocker gets its own comment.
 export const OVERLAP_MARKER = "<!-- sandcastle:overlap";
 
 // Marks a PR body as one the host published (lib/build.mts#publish), so the
 // follow-up sweep (lib/follow-up.mts) never acts on a collaborator's PR from
-// a matching branch (#77).
+// a matching branch.
 export const PR_MARKER = "<!-- sandcastle:pr -->";
 
 // The login requestReviewsByLogin takes for Copilot's code review
@@ -280,7 +280,7 @@ export const COPILOT_REREQUEST_AFTER_MS = 60 * 60 * 1000;
 // PR it sweeps, so the sweep and the follow-up pass leave it out
 // (withoutOwnCheck below): running, it would hold the PR that
 // started the run, and red after a hand-back, it would send the follow-up
-// role Sandcastle's own job log (#222).
+// role Sandcastle's own job log.
 export const SANDCASTLE_CHECK = "Sandcastle";
 
 // The Sandcastle workflow's name (the top-level `name:` of
@@ -293,24 +293,23 @@ export const SANDCASTLE_WORKFLOW = "Sandcastle";
 // which a run started by a PR event reports on the head it sweeps. Counting
 // it, the sweep would wait on the very run deciding, and after a red run
 // would flag the PR for a pass that's handed Sandcastle's own job log, with
-// nothing in the PR to fix (#222). A check of that name from any other
+// nothing in the PR to fix. A check of that name from any other
 // workflow is a real one and stays.
 export function withoutOwnCheck<T extends { name: string; workflow?: string }>(checks: readonly T[]): T[] {
   return checks.filter((check) => !(check.name === SANDCASTLE_CHECK && check.workflow === SANDCASTLE_WORKFLOW));
 }
 
 // Marks the follow-up pass's summary PR comment (lib/follow-up-pass.mts), so
-// markerComments can count passes already run toward FOLLOW_UP_PASS_CAP
-// (#78).
+// markerComments can count passes already run toward FOLLOW_UP_PASS_CAP.
 export const FOLLOW_UP_MARKER = "<!-- sandcastle:follow-up -->";
 
 // Marks the host's own reply in a review thread (lib/follow-up-pass.mts), so
 // an owner thread the host already answered isn't handed to the follow-up
 // role again: the host posts replies from the same login the owner may be,
-// so an author check alone can't tell the two apart (#78).
+// so an author check alone can't tell the two apart.
 export const FOLLOW_UP_REPLY_MARKER = "<!-- sandcastle:follow-up-reply -->";
 
 // Passes per PR, counted by FOLLOW_UP_MARKER comments since
 // sandcastle:needs-human was last removed from it (lib/follow-up-pass.mts,
-// "Giving up" in docs/plans/sandcastle-workflow.md, #78).
+// "Giving up" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 export const FOLLOW_UP_PASS_CAP = 3;

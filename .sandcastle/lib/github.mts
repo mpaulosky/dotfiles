@@ -47,7 +47,7 @@ export function hasLabel(issue: Pick<SandcastleIssue, "labels">, label: string):
 // Keep only the comments of authors with admin, maintain or write permission
 // on `repo`, so text from anyone else never reaches a role's prompt.
 // Permission rather than the owner's login decides this, because in a
-// repository an organization owns the owner never comments (#214). A
+// repository an organization owns the owner never comments. A
 // permission lookup that fails drops that author's comments, so an error
 // never lets a stranger's text through. `canPush` caches each author's
 // answer, so a caller that shares one map across issues looks each author up
@@ -120,7 +120,7 @@ const writeAccessByLogin = new Map<string, boolean>();
 // login (a deleted account) is a definite no, with no gh call. `canPush` and
 // `failed` share one cache and one round's failures with whichever caller
 // passes them in, so a login asked about from two places, such as a comment
-// and a label event, is looked up once (#146).
+// and a label event, is looked up once.
 export function pushAccess(
   login: string | null,
   canPush: Map<string, boolean> = writeAccessByLogin,
@@ -203,7 +203,7 @@ export function openPullRequests(): OpenPullRequest[] {
 
 // The open pull requests into main from this repository's branches, from any
 // author or queue: a person's PR, or one another queue's run opened, conflicts
-// with a pick just as this queue's own does. For lib/overlap.mts (#248), which
+// with a pick just as this queue's own does. For lib/overlap.mts, which
 // reads each one's files with pullRequestFiles. Fork PRs are left out, as
 // sameRepository explains: counting them would let anyone with a fork hold the
 // whole queue back.
@@ -534,7 +534,7 @@ export type ReviewThread = {
 // (lib/follow-up-pass.mts#runPass), through one GraphQL query. Throws when
 // any nested list (threads or a thread's comments) is truncated, or the
 // answer names no such PR, so a pass never decides from partial information
-// (#78, fail closed as lib/github.mts#bodyEdits already does for issues).
+// (fail closed as lib/github.mts#bodyEdits already does for issues).
 export function reviewThreadsOf(
   number: number,
   run: typeof execFileSync = execFileSync,
@@ -599,7 +599,7 @@ type ReviewThreadsNode = {
   }>;
 };
 
-// One check on a PR's head as a follow-up pass reads it (#79): its
+// One check on a PR's head as a follow-up pass reads it: its
 // CheckState, and the id of the GitHub Actions run behind it, which is what
 // `gh run rerun` and `gh run view` take. A status, or a check run another
 // app made (such as code scanning's own "CodeQL" result), has none.
@@ -673,7 +673,7 @@ export function headChecksOf(
 // The head checks named in `names`, each with the Actions run behind it. Reads
 // the checks afresh and refuses when the head has moved past `expectedHead`
 // (the commit a follow-up pass gated), rather than re-run or forward a check
-// read from a commit the pass never judged (#79).
+// read from a commit the pass never judged.
 function namedRuns(
   number: number,
   names: readonly string[],
@@ -688,9 +688,8 @@ function namedRuns(
   // A head can carry a name in `names` from more than one Actions run, for
   // example a workflow triggered by both `push` and `pull_request`: one run
   // green, one red. Keeping only the failed ones here stops a caller from
-  // re-running, or reading the failed-job log of, a run that already passed
-  // (#259). Sandcastle's own check is left out as the sweep leaves it out
-  // (withoutOwnCheck, #222): its run's log isn't for the follow-up role, and
+  // re-running, or reading the failed-job log of, a run that already passed. Sandcastle's own check is left out as the sweep leaves it out
+  // (withoutOwnCheck): its run's log isn't for the follow-up role, and
   // its run isn't one to re-run.
   const checks = withoutOwnCheck(allChecks).filter((check) => names.includes(check.name) && check.completed && !check.green);
   const runIds = [...new Set(checks.flatMap((check) => (check.runId === undefined ? [] : [check.runId])))];
@@ -711,7 +710,7 @@ function stateOf({ runId: _runId, ...state }: HeadCheck): CheckState {
 // re-run already, by a pass or a person, and its checks are reported as they
 // stand, so one still red there hands the PR back. Throws for a named check
 // with no Actions run, which can't be re-run, or when the head has moved past
-// `expectedHead` since the pass gated it (#79).
+// `expectedHead` since the pass gated it.
 export function rerunFailedChecksOnce(
   number: number,
   names: readonly string[],
@@ -746,12 +745,11 @@ const FAILED_LOG_BUFFER = 256 * 1024 * 1024;
 // for each Actions run behind the checks in `names`, read once per run under
 // a header naming its checks. A check with no Actions run gets a line saying
 // so rather than failing the pass: the follow-up role can still fix the rest.
-// Throws when the head has moved past `expectedHead` since the pass gated it
-// (#79), rather than quote a log for a commit the pass never judged. `limit`,
+// Throws when the head has moved past `expectedHead` since the pass gated it, rather than quote a log for a commit the pass never judged. `limit`,
 // when given, keeps each run's own section to an even share of it (the end,
 // where its error is) rather than cutting the joined text as a whole: two
 // runs' logs otherwise compete for the same budget, and the later one in the
-// join can crowd the earlier one out of it entirely (#79).
+// join can crowd the earlier one out of it entirely.
 export function failedCheckLogs(
   number: number,
   names: readonly string[],
@@ -786,7 +784,7 @@ export function replyToReviewThread(threadId: string, body: string, run: typeof 
 // Resolves a review thread (lib/follow-up-pass.mts#runPass), through
 // resolveReviewThread. GitHub's mutation takes only the thread id: there's no
 // ADDRESSED/WONT_FIX/INVALID argument, so that resolution travels in the
-// reply and the pass summary instead (#78).
+// reply and the pass summary instead.
 export function resolveReviewThread(threadId: string, run: typeof execFileSync = execFileSync): void {
   const mutation = "mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { id } } }";
   ghWithStderr(run, ["api", "graphql", "-f", `query=${mutation}`, "-f", `threadId=${threadId}`]);
@@ -810,7 +808,7 @@ const PULL_REQUEST_FILES_CAP = 3000;
 // Every path an open PR changes, for lib/overlap.mts, a renamed file's old
 // path included, since a pick that names either would conflict. It reads the
 // REST list with --paginate rather than `gh pr view --json files`, which can
-// stop at 100 paths and so leave the check blind to the rest (#251). Each path
+// stop at 100 paths and so leave the check blind to the rest. Each path
 // comes out as one JSON string per line, so a path with a line break stays
 // whole. A failed read throws rather than return part of the list, and so does
 // a list at GitHub's 3000-file cap, which may be cut short.
@@ -974,9 +972,9 @@ export function commentOnIssue(
 // Creates any of `labels` this repository doesn't already have, with its
 // colour and description. Run once at the host's startup, before the first
 // round, so a fresh repository (or one whose labels were deleted) always has
-// them (see docs/plans/sandcastle-workflow.md, "Labels"). By default that's
+// them (see Blazor-Server's docs/plans/sandcastle-workflow.md, "Labels"). By default that's
 // SANDCASTLE_LABELS and `Sandcastle:local`, which isn't one of them but must
-// exist before an issue moves to it (#253).
+// exist before an issue moves to it.
 export function ensureLabels(
   labels: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION],
   run: typeof execFileSync = execFileSync,
@@ -1038,7 +1036,7 @@ export function replaceIssueLabel(
 
 // Adds `label` to the pull request `number`: gh issue edit refuses a PR
 // number, so restoring a PR-level hand-back label someone other than the
-// repository owner removed (lib/follow-up.mts#sweepPullRequests, #146) needs
+// repository owner removed (lib/follow-up.mts#sweepPullRequests) needs
 // its own gh pr edit call.
 export function addPullRequestLabel(
   number: number,
@@ -1105,7 +1103,7 @@ export function labelTimeline(
 // One "labeled", "unlabeled" or "renamed" event from an issue's or PR's REST
 // events list (PRs share it). Unlike labelTimeline, this names who made it:
 // lib/queue.mts#approval and #labelOriginFixes need that to tell the
-// repository owner's own labelling from anyone else's (#146). `actor` is
+// repository owner's own labelling from anyone else's. `actor` is
 // null for a deleted account; `label` is null on a renamed event, which
 // carries no label.
 export type IssueEvent = { event: "labeled" | "unlabeled" | "renamed"; actor: string | null; label: string | null; createdAt: string };
@@ -1205,7 +1203,7 @@ export type TimestampedComment = { body: string; createdAt: string; author: stri
 // recent "unlabeled" event naming `label` in `timeline`), or since
 // `createdAt` when `label` was never removed. Counting from the timeline rather than a running counter means the
 // count survives a restart, and a human re-queueing by removing the label
-// resets it (see docs/plans/sandcastle-workflow.md, "Giving up and telling
+// resets it (see Blazor-Server's docs/plans/sandcastle-workflow.md, "Giving up and telling
 // the human").
 export function markerCommentsSince(
   comments: readonly TimestampedComment[],
@@ -1253,7 +1251,7 @@ export function cacheHostLogin(run: typeof execFileSync = execFileSync): string 
 // The host's own login (see hostLogin), cached the same way markerComments and
 // openIssuesWithComment already do, for the follow-up sweep
 // (lib/follow-up.mts), which needs it outside any single GitHub read: "the
-// repository owner opened it" means this login authored the PR (#77, #214).
+// repository owner opened it" means this login authored the PR.
 export function signedInHostLogin(run: typeof execFileSync = execFileSync): string {
   if (sweepLogin?.run !== run) sweepLogin = { run, login: hostLogin(run) };
   return sweepLogin.login;

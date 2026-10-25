@@ -72,7 +72,7 @@ export function containsSandboxSecret(text: string): boolean {
 // What kind of thing a match is: one of the sandbox's secret values, naming
 // the .sandcastle/.env key it came from, or a token shape. Never carries the
 // matched text itself, so a caller can log or report a SecretKind without
-// ever touching the secret (#324).
+// ever touching the secret.
 export type SecretKind =
   | { readonly type: "secret"; readonly envKey: string }
   | { readonly type: "pattern"; readonly shape: (typeof tokenShapes)[number]["shape"] };

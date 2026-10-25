@@ -100,7 +100,7 @@ export function commitsAhead(branch: string, base: string): number {
 // unshallowed here. Shallow, git can't see that a branch's older history is in
 // main, so `<this commit>..<branch>` lists everything the branch reaches past
 // the cut: the secret scan then read main's whole history as a PR's own, and a
-// fake token in a test on main handed a follow-up pass back (#372). git refuses
+// fake token in a test on main handed a follow-up pass back. git refuses
 // --unshallow in a full clone, so it's only passed to a shallow one.
 export function fetchMain(run: (...args: string[]) => string = git): string {
   const shallow = run("rev-parse", "--is-shallow-repository") === "true";

@@ -191,7 +191,7 @@ describe("applyVerdicts", () => {
   });
 
   it("ignores a defer that would close an existing chain into a cycle", () => {
-    // #3 is blocked by #4, which is blocked by #1, so #1 blocked by #3 would loop.
+    // Issue 3 is blocked by 4, which is blocked by 1, so 1 blocked by 3 would loop.
     const gh = github({ chains: { 3: [4], 4: [1] } });
     const { lines, log } = capture();
 
@@ -333,8 +333,8 @@ describe("critiqueRound", () => {
     assert.deepEqual(JSON.parse(args!.UNPICKED_JSON).map((i: SandcastleIssue) => i.number), [3]);
   });
 
-  // #254: #1 and #2 name the same file and #2 is held behind #1; #3 depends on #2. The critique has to see #2 to
-  // defer #3 behind it, or #3 is built before the issue it depends on.
+  // Issues 1 and 2 name the same file and 2 is held behind 1; 3 depends on 2. The critique has to see 2 to
+  // defer 3 behind it, or 3 is built before the issue it depends on.
   it("shows the critique an overlap-held issue as unpicked, with a note that it is held", async () => {
     const gh = github();
     const { log } = capture();
@@ -364,7 +364,7 @@ describe("critiqueRound", () => {
 
     const kept = await critiqueRound(
       { picks: [issue(1), issue(3)], inFlight: [], unpicked },
-      // Defers #3 only when the prompt shows #2 as held, as a critique has to see it to do so.
+      // Defers issue 3 only when the prompt shows 2 as held, as a critique has to see it to do so.
       async (promptArgs) => {
         const sent = JSON.parse(promptArgs.UNPICKED_JSON) as { number: number; heldNote?: string }[];
         const sawHeld = sent.some((i) => i.number === 2 && typeof i.heldNote === "string");
@@ -382,7 +382,7 @@ describe("critiqueRound", () => {
     assert.deepEqual(gh.links, [[3, 2]]);
   });
 
-  // #251: critique-prompt.md says each pick carries `files`; they must reach the prompt.
+  // critique-prompt.md says each pick carries `files`; they must reach the prompt.
   it("passes each pick's files to the critique", async () => {
     const picks: (SandcastleIssue & { files: string[] })[] = [
       { ...issue(1), files: ["lib/a.mts"] },
@@ -471,7 +471,7 @@ describe("critiqueRound", () => {
     assert.deepEqual(kept.map((i) => i.number), [4]);
   });
 
-  // #147: a critique run stopped by the time budget or Claude's usage limit
+  // A critique run stopped by the time budget or Claude's usage limit
   // must end the round uncounted, rather than falling back to the first pick
   // as a failed critique does.
   it("rethrows an UncountedStopError from the run instead of returning the first pick", async () => {

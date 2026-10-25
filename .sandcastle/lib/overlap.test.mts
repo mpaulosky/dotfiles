@@ -144,7 +144,7 @@ describe("findOverlaps", () => {
   });
 });
 
-// #251: picks that name no files block no one but a pick that can be built.
+// Picks that name no files block no one but a pick that can be built.
 describe("findOverlaps with several picks that name no files", () => {
   it("never makes two picks with no files wait on each other: the first is kept and the second waits behind it", () => {
     const held = findOverlaps([pick(1, []), pick(2, [])], []);
@@ -191,7 +191,7 @@ describe("findOverlaps with several picks that name no files", () => {
   });
 });
 
-// #251: a folder named without a trailing slash covers the paths under it too.
+// A folder named without a trailing slash covers the paths under it too.
 describe("findOverlaps with folders", () => {
   it("counts a folder as overlapping every path under it, either way round, whether or not it ends in a slash", () => {
     assert.equal(findOverlaps([pick(1, ["lib"]), pick(2, ["lib/a.mts"])], []).get(2)?.kind, "pick");
@@ -206,7 +206,7 @@ describe("findOverlaps with folders", () => {
   });
 });
 
-// #251: a hold lasts the run only behind an open PR or a pick that opened one.
+// A hold lasts the run only behind an open PR or a pick that opened one.
 describe("lastingHolds", () => {
   const overlaps = new Map<number, Overlap>([
     [2, { kind: "pick", blocker: 1, path: "x" }],
@@ -234,7 +234,7 @@ describe("lastingHolds", () => {
   });
 });
 
-// #254: the critique's dependency check is the safety net for a dependency the planner missed, so a pick held back
+// The critique's dependency check is the safety net for a dependency the planner missed, so a pick held back
 // for a file is still one of the open ready issues it has to see, marked as held.
 describe("critiqueUnpicked", () => {
   const issue = (number: number) => pick(number, []);
@@ -508,7 +508,6 @@ describe("holdOverlappingPicks", () => {
   });
 });
 
-// #251
 describe("holdOverlappingPicks with several picks that name no files", () => {
   it("builds the first pick with no files and holds the rest, commenting only on the held ones", () => {
     const gh = github();
@@ -529,7 +528,7 @@ describe("holdOverlappingPicks with several picks that name no files", () => {
   });
 });
 
-// #251: a pick behind an open PR is held every run until the PR closes, so its comment must not be posted every run.
+// A pick behind an open PR is held every run until the PR closes, so its comment must not be posted every run.
 describe("holdOverlappingPicks's comment once", () => {
   it("doesn't post another comment when the issue carries one with the overlap marker, though the earlier run named another path", () => {
     const gh = github({ 9: ["lib/build.mts"] });
@@ -589,7 +588,7 @@ describe("holdOverlappingPicks's comment once", () => {
   });
 });
 
-// #251: a line starting with "::" in a log is a workflow command in Actions.
+// A line starting with "::" in a log is a workflow command in Actions.
 describe("holdOverlappingPicks's log", () => {
   it("writes a path with a line break on one line, so no log line starts a workflow command", () => {
     const gh = github({ 9: ["x\n::error::pwned"] });

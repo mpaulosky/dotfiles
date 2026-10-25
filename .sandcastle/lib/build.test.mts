@@ -52,7 +52,7 @@ const sampleSecretMatch: SecretMatch = {
   kind: { type: "pattern", shape: "sk-ant-" },
 };
 
-// A pr-body.md with the three headings the reviewer must write (#335).
+// A pr-body.md with the three headings the reviewer must write.
 const validPrBody = "## Why\n\nBecause.\n\n## What changed\n\nAdded X.\n\n## Verification\n\nRan the tests.";
 
 // A host whose sandbox records each role run and gate run in `steps`, and
@@ -111,7 +111,7 @@ function host(
     designFile?: string;
     // The content .sandcastle/work/{n}/pr-body.md holds in the sandbox once
     // the reviewer has run: its Why, What changed and Verification sections,
-    // read back before publish() is called (#335). A valid one by default, as
+    // read back before publish() is called. A valid one by default, as
     // a reviewer that finished writes, so a test that pins the log isn't
     // handed the fallback's line.
     prBodyFile?: string;
@@ -127,25 +127,24 @@ function host(
     abortExitCode?: number;
     latestMainError?: string;
     // What the remote says main is when buildIssue asks (isRemoteMain), for
-    // the check that the merged main commit is really GitHub's (#224): the
+    // the check that the merged main commit is really GitHub's: the
     // latestMain commit by default, and an error it throws instead.
     remoteMain?: string;
     remoteMainError?: string;
     // The workflow files `<branch head>..<latest main>` touches: what
-    // workflowFiles returns when asked about the range ending at latestMain
-    // (#223). Empty by default, as when main hasn't changed a workflow.
+    // workflowFiles returns when asked about the range ending at latestMain. Empty by default, as when main hasn't changed a workflow.
     mainWorkflowFiles?: string[];
     // Whether the push token lacks the Workflows permission, as in Actions
     // (the default); false is a local `Sandcastle:local` run.
     pushRefusesWorkflowChanges?: boolean;
     // Whether origin already has the issue's branch (an earlier round pushed
-    // it), and an error creating it at `base` throws (#253).
+    // it), and an error creating it at `base` throws.
     branchOnOrigin?: boolean;
     createBranchError?: string;
     deleteBranchError?: string;
     baseExecError?: string;
     // Whether `base` is an ancestor of the commit the gate passed on; false
-    // when an earlier round's branch was built on an older main (#253).
+    // when an earlier round's branch was built on an older main.
     baseIsAncestor?: boolean;
   } = {},
 ) {
@@ -250,7 +249,7 @@ function host(
   const publishCalls: { reviewed: boolean; docsFailed: boolean }[] = [];
   // The prBody argument buildMarkedIssue passed to host.publish, one entry
   // per call, kept apart from publishCalls so existing assertions on that
-  // shape don't have to change (#335).
+  // shape don't have to change.
   const publishedPrBodies: (string | undefined)[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
   const handBackWorkflowChangeCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];
@@ -264,7 +263,7 @@ function host(
   const deletedBranches: { branch: string; commit: string }[] = [];
   const createdBranches: { branch: string; commit: string }[] = [];
   // "create-branch", "publish", "delete-branch" and "move-to-local" in the order the host did them, kept apart
-  // from `steps` so the existing assertions on its exact list don't change (#253).
+  // from `steps` so the existing assertions on its exact list don't change.
   const publishEvents: string[] = [];
   const buildHost: BuildHost = {
     createSandbox: async () => {
@@ -334,9 +333,9 @@ function host(
     pushRefusesWorkflowChanges,
     workflowFiles: (from, to, mergedMain) => {
       workflowFileCalls.push({ from, to });
-      // The range ending at main is the sync check's (#223); any other range
+      // The range ending at main is the sync check's; any other range
       // is the base..gated one the hand-back lists, which leaves out the main
-      // commit syncWithMain merged (#224).
+      // commit syncWithMain merged.
       if (to === latestMain) return mainWorkflowFiles;
       listedExclusions.push(mergedMain);
       return [`.github/workflows/${from.slice(0, 4)}-${to.slice(0, 4)}.yml`];
@@ -762,7 +761,7 @@ describe("buildIssue publishing", () => {
     assert.match(logged, /\b3\b/);
     assert.match(result.detail ?? "", /src\/example\.ts/);
     assert.match(result.detail ?? "", /\b3\b/);
-    // The public comment on the issue stays as it is: no path or line number (#324).
+    // The public comment on the issue stays as it is: no path or line number.
     assert.equal(comments.length, 1);
     assert.doesNotMatch(comments[0]!.body, /src\/example\.ts/);
   });
@@ -943,7 +942,7 @@ describe("buildIssue syncing with main before publishing", () => {
     assert.deepEqual(comments, []);
   });
 
-  // #224: after the merge, `gated` holds the commits main gained since
+  // After the merge, `gated` holds the commits main gained since
   // `base`, which aren't the branch's work.
   it("leaves the main commit it merged out of the secret scan", async () => {
     const { scanned, scannedBases, scannedExclusions, head, buildHost } = host([0, 0], { latestMain: newerMain, containsMain: false });
@@ -1060,7 +1059,7 @@ describe("buildIssue syncing with main before publishing", () => {
     assert.deepEqual(failedFetch.scannedExclusions, [undefined]);
   });
 
-  // #223: main's own workflow change would ride into the branch on the merge
+  // Main's own workflow change would ride into the branch on the merge
   // commit, and the push of it is refused for lack of Workflows permission,
   // handing the issue back for a change the issue never made.
   it("doesn't merge main in when the branch head..latest main touches .github/workflows/, and publishes the gated head", async () => {
@@ -1160,7 +1159,7 @@ describe("buildIssue syncing with main before publishing", () => {
   });
 
   // On a branch origin already has, the push is an update judged against the
-  // branch's own tip, so main's workflow change isn't what GitHub refuses (#253).
+  // branch's own tip, so main's workflow change isn't what GitHub refuses.
   it("hands the issue back for the branch's own workflow change, listing only its files, when main's workflow change is left unmerged", async () => {
     const { handBackWorkflowChangeCalls, steps, buildHost } = host([0, 0], {
       latestMain: newerMain,
@@ -1213,7 +1212,7 @@ describe("buildIssue syncing with main before publishing", () => {
   });
 });
 
-// #147: a role run that hits Claude's usage limit, or a build the time
+// A role run that hits Claude's usage limit, or a build the time
 // budget has already stopped, must end the build uncounted rather than
 // treating it as a failed attempt or publishing unreviewed work.
 describe("buildIssue and the usage limit", () => {
@@ -1277,7 +1276,7 @@ describe("buildIssue and the usage limit", () => {
   });
 });
 
-// #147: a push GitHub refuses because it touches .github/workflows/** without
+// A push GitHub refuses because it touches .github/workflows/** without
 // Workflows permission needs a person, not a retry and not a generic
 // publish-failure comment.
 describe("buildIssue publishing a workflow file", () => {
@@ -1317,7 +1316,7 @@ describe("buildIssue publishing a workflow file", () => {
   });
 });
 
-// #253: GitHub judges the push of a branch it doesn't have yet against main's
+// GitHub judges the push of a branch it doesn't have yet against main's
 // current tip, so a build cut before main changed a workflow "changes" that
 // workflow back, and the push is refused. The host creates the branch at `base`
 // first, then pushes the build's commits as an update to it.
@@ -1656,7 +1655,7 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
 });
 
 // Covers Blazor-Server#72 ("Add architect, UI developer and scribe roles
-// picked by the planner"; dotfiles has no UI developer): the build order is
+// picked by the planner"; the Template has no UI developer): the build order is
 // [architect] → tester → backend → gate 1 → [scribe] → reviewer → gate 2 → publish,
 // with each bracketed role run only when the planner picked it (issue.roles).
 describe("buildIssue optional roles", () => {
@@ -1780,7 +1779,7 @@ describe("buildIssue optional roles", () => {
 
   // The worktree is named after the branch, so it can still hold an earlier
   // round's note; the roles follow the note when it exists, so only this
-  // build's architect may have written it (#230).
+  // build's architect may have written it.
   it("removes an earlier design note in the sandbox before the first role runs", async () => {
     for (const roles of [["architect"], []] as OptionalRole[][]) {
       const { workCommands, buildHost } = host([0, 0]);
@@ -1874,7 +1873,7 @@ describe("buildIssue optional roles", () => {
   });
 });
 
-// #335: every PR Sandcastle opens had the same generic body, however the
+// Every PR Sandcastle opens had the same generic body, however the
 // branch changed. The reviewer now writes .sandcastle/work/{n}/pr-body.md
 // with its Why, What changed and Verification sections; buildMarkedIssue
 // reads it from the sandbox (never the host's filesystem, since an agent
@@ -1966,7 +1965,7 @@ describe("buildIssue marking the issue as building", () => {
     assert.deepEqual(order.slice(-2), ["close", "unmark"]);
   });
 
-  // #77: a closed-without-merging PR's old work must be discarded before a
+  // A closed-without-merging PR's old work must be discarded before a
   // fresh sandbox is created from the branch, but only once the issue is
   // marked (so a second run can't race to delete the same refs).
   it("calls startFromMain with the issue, branch and base after marking the issue and before creating its sandbox", async () => {
@@ -2097,7 +2096,7 @@ describe("buildIssue marking the issue as building", () => {
 });
 
 describe("publish", () => {
-  // git's output for the Internal Server Error that #149 reports: a transient
+  // git's output for a GitHub Internal Server Error: a transient
   // GitHub failure that's worth retrying.
   const serverError =
     "git push --quiet origin abc:refs/heads/x failed:\nremote: Internal Server Error\nremote: (request ID A83C:231712:11AADA:1D38A9:6AC6797C)";
@@ -2173,7 +2172,7 @@ describe("publish", () => {
   });
 
   // Covers "A scribe failure still publishes the PR, and its body says the
-  // documentation step failed" from issue #72.
+  // documentation step failed".
   it("says the documentation step failed in the PR body when docsFailed is true", async () => {
     let body = "";
     const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
@@ -2198,7 +2197,7 @@ describe("publish", () => {
     assert.doesNotMatch(body, /documentation/i);
   });
 
-  // #77: the follow-up sweep (lib/follow-up.mts#isSandcastlePullRequest) only
+  // The follow-up sweep (lib/follow-up.mts#isSandcastlePullRequest) only
   // ever acts on a PR whose body carries this marker, so every PR the host
   // publishes from now on must carry it.
   it("carries PR_MARKER in the body, so the follow-up sweep recognises a PR the host published", async () => {
@@ -2213,7 +2212,7 @@ describe("publish", () => {
     assert.ok(body.includes(PR_MARKER), body);
   });
 
-  // #335: every PR Sandcastle opens had the same generic body. The reviewer
+  // Every PR Sandcastle opens had the same generic body. The reviewer
   // now writes a pr-body.md with Why, What changed and Verification
   // sections, read and validated before publish() is called, so a valid
   // `prBody` replaces the generic note entirely.
@@ -2295,7 +2294,7 @@ describe("isGitHubServerError", () => {
   });
 });
 
-// #147: a push GitHub refused because it touches .github/workflows/** without
+// A push GitHub refused because it touches .github/workflows/** without
 // Workflows permission must hand the issue back, not be treated as a
 // transient server error or a generic publish failure.
 describe("isWorkflowPushRejection", () => {
@@ -2360,7 +2359,7 @@ describe("publicErrorText", () => {
 // The architect's design note as the host posts it and reads it back
 // (lib/build.mts). The host finds its own comments by marker substring
 // (markerComments), so a note quoting a marker, as one for a change to
-// Sandcastle itself would, mustn't pass for a host comment (#228).
+// Sandcastle itself would, mustn't pass for a host comment.
 describe("designComment", () => {
   const note = `## Design\n\nOn failure, post ${BUILD_FAILED_MARKER} and keep ${DESIGN_MARKER} last.\n\n\`\`\`\`ts\nconst x = 1;\n\`\`\`\`\n\ncc @someone, see #12`;
 
@@ -2378,7 +2377,7 @@ describe("designComment", () => {
     assert.match(body, /^`````markdown\n[\s\S]*\n`````$/m);
   });
 
-  // Breaking a <!-- adds a character, so the cut is measured after it (#230).
+  // Breaking a <!-- adds a character, so the cut is measured after it.
   it("stays under GitHub's comment limit for a note full of <!--", () => {
     const body = designComment("<!--".repeat(16_000), "feature/3-add-a-thing", ".sandcastle/work/3/design.md");
 
@@ -2406,7 +2405,7 @@ describe("designNoteIn", () => {
     assert.equal(designNoteIn(designComment(note, "feature/3-add-a-thing", ".sandcastle/work/3/design.md")), note);
   });
 
-  // GitHub stores a comment edited on github.com with CRLF line endings (#230).
+  // GitHub stores a comment edited on github.com with CRLF line endings.
   it("reads back a design comment edited on github.com, with CRLF line endings", () => {
     const note = "## Design\n\nUse a Result<T>.";
     const edited = designComment(note, "feature/3-add-a-thing", ".sandcastle/work/3/design.md").replace(/\n/g, "\r\n");
@@ -2421,7 +2420,7 @@ describe("designNoteIn", () => {
 
 // The live lookup a re-run's architect prompt comes from. Anyone can comment
 // on a public issue, so only the host's own design comments may reach the
-// prompt, past the ownerApproved filtering every other prompt gets (#230).
+// prompt, past the ownerApproved filtering every other prompt gets.
 describe("latestDesignNote", () => {
   // A gh stub answering markerComments' three reads: the comments, the
   // label timeline (no events) and the issue's creation time.
@@ -2461,7 +2460,7 @@ describe("workflowLogArgs", () => {
   });
 });
 
-// #224: main's commits merged in after `base` aren't the branch's work.
+// Main's commits merged in after `base` aren't the branch's work.
 describe("workflowLogArgs with a merged main commit", () => {
   it("excludes the history of the main commit that was merged in", () => {
     assert.deepEqual(workflowLogArgs("origin/main", "abc123", "def456"), [
@@ -2565,7 +2564,7 @@ describe("createCheckedSandbox's git identity", () => {
   // Acceptance criterion: "A test pins that a sandbox from
   // `createCheckedSandbox` gets the host's identity before the host's first
   // `git merge`."
-  it("gives the sandbox the host's identity, so the host's first git merge can commit (#242)", async (t) => {
+  it("gives the sandbox the host's identity, so the host's first git merge can commit", async (t) => {
     const { fake, sandbox } = await sandboxFor({ name: "Host Person", email: "host@example.com" });
     t.after(() => fake.cleanup());
 

@@ -15,7 +15,7 @@ import { agentSandbox } from "./skills.mts";
 // `roles` is left as unknown rather than validated here: an invalid value
 // (not an array, or naming a role resolveRoles doesn't recognise) must fall
 // back to every optional role, not abort the whole plan the way a schema
-// mismatch would (see "Phase 4: Plan" in docs/plans/sandcastle-workflow.md).
+// mismatch would (see "Phase 4: Plan" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 // `files` is left unknown for the same reason: a bad value falls back to "no
 // files" (resolveFiles), which lib/overlap.mts holds back unless no PR is
 // open and no other pick naming files is built, and it's the first such pick,
@@ -46,16 +46,16 @@ const SANDBOX_REPO_ROOT = "/home/agent/workspace";
 // C0 and C1 control characters, DEL, and Unicode's line and paragraph
 // separators. resolveFiles drops a path holding one, and lib/overlap.mts
 // escapes them in the host's log, where a line starting "::" is a workflow
-// command in Actions (#251).
+// command in Actions.
 export const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 // The paths the planner expects one issue to change, from its raw `files`
-// field, cleaned up for lib/overlap.mts (#248): trimmed, with backslashes as
+// field, cleaned up for lib/overlap.mts: trimmed, with backslashes as
 // slashes, and empty, "." and repeated slashes' segments dropped, so "./x",
 // "x/" and "x//" are all "x". A folder is a path like any other, which
 // lib/overlap.mts treats as covering what's under it. The planner works in
 // the sandbox, so an absolute path under `repoRoot` (the sandbox's checkout)
-// is made relative to it; any other leading "/" is dropped (#251). Entries
+// is made relative to it; any other leading "/" is dropped. Entries
 // that come out empty, such as the root itself, and repeats are dropped, and
 // so is an entry with a control character or line break: it names no real
 // file the planner meant, and it would reach the host's log, where a line

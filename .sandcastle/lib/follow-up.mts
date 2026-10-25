@@ -11,7 +11,7 @@
 // closed without merging. A PR that needs more than that (DIRTY, a red
 // check, an unresolved bot or owner thread the host hasn't answered) is
 // logged here and returned as a PassTarget: the agent pass that fixes it
-// lives in lib/follow-up-pass.mts (#78).
+// lives in lib/follow-up-pass.mts.
 // ---------------------------------------------------------------------------
 
 import { discardClosedWork, isIssueBranch, type BranchRefs } from "./branches.mts";
@@ -79,7 +79,7 @@ const NEEDS_HUMAN = "sandcastle:needs-human";
 
 // The PR-level counterpart of lib/queue.mts#ISSUE_LABEL_RULES: a PR's
 // needs-human removal counts as a re-queue only when the repository owner
-// made it (#146). Nothing on a PR is trusted as an add.
+// made it. Nothing on a PR is trusted as an add.
 const PR_LABEL_RULES = { trustAdds: [], trustRemovals: [NEEDS_HUMAN] } as const;
 
 // The issue number a PR's head branch names, read from
@@ -95,7 +95,7 @@ export function issueNumberOf(headRefName: string): number | undefined {
 
 // Whether the host published `pr` itself: not a fork, into main, authored by
 // the repository owner's own login (the account the host publishes with,
-// never an organization's, see #214), carrying PR_MARKER, and on an issue
+// never an organization's), carrying PR_MARKER, and on an issue
 // branch. A collaborator's PR on a matching branch, or one of the host's own
 // from before this marker existed, is never this.
 export function isSandcastlePullRequest(pr: PullRequestIdentity, host: string): boolean {
@@ -138,15 +138,15 @@ export type SweepDecision =
 // flag one with conflicts for a later pass at once, wait while CI is still
 // running, flag one with a red check or an unresolved bot or confirmed-owner
 // thread (the same threads the follow-up role answers via threadsForRole, so
-// a pass actually runs for an owner thread rather than leaving it stranded,
-// #81), wait while Copilot's review is in flight, ask Copilot again once CI
+// a pass actually runs for an owner thread rather than leaving it stranded),
+// wait while Copilot's review is in flight, ask Copilot again once CI
 // has been done for a while with no review or pending request, update a
 // settled PR that's only behind main, or leave a clean or merge-blocked one
 // alone. Sandcastle's own check run counts for none of these
-// (withoutOwnCheck, #222). `isOwner` defaults to never-owner so a caller that
+// (withoutOwnCheck). `isOwner` defaults to never-owner so a caller that
 // doesn't pass it (most tests) sees every non-bot thread as a human's, as
 // before this parameter existed. `pr.threads` is the sweep's view, without
-// the threads the host has already answered (threadStanding, #225), so a PR
+// the threads the host has already answered (threadStanding), so a PR
 // waiting on the owner's reply moves on to the Copilot and update-branch
 // branches instead of being flagged every round.
 export function decide(pr: SweepPullRequest, now: number, isOwner: IsOwner = () => false): SweepDecision {
@@ -171,7 +171,7 @@ export function decide(pr: SweepPullRequest, now: number, isOwner: IsOwner = () 
   // A thread the repository owner opened is the follow-up role's to answer
   // (threadsForRole), not left waiting on a person forever: without this, a
   // settled PR whose only open thread is the owner's never needs a pass, so
-  // nothing ever answers it (#81's follow-up review).
+  // nothing ever answers it (a follow-up review).
   const ownerThreads = pr.threads.filter((thread) => !thread.resolved && !thread.byBot && isOwner(thread.author) === true).length;
   if (ownerThreads > 0) reasons.push(`${ownerThreads} unresolved owner thread(s)`);
   if (reasons.length > 0) return { action: "needs-pass", reasons };
@@ -251,7 +251,7 @@ export type FollowUpGitHub = {
   openPullRequests(): SweepPullRequest[];
   closedPullRequests(author: string): ClosedPullRequest[];
   // live: lib/queue.mts#loadQueue(), so the sweep sees only this run's
-  // scope, approved by the owner (#146).
+  // scope, approved by the owner.
   inScopeIssues(): { number: number; labels: string[] }[];
   labelTimeline(issueNumber: number): TimelineLabelEvent[];
   requestCopilotReview(pullRequestId: string): void;
@@ -266,7 +266,7 @@ export type FollowUpGitHub = {
   // Puts back a PR's hand-back label someone else removed. live: gh pr edit.
   addPullRequestLabel(number: number, label: string): void;
   // A PR's review threads in full, comments included, so the sweep can tell a
-  // thread the host has answered from one it hasn't (#225).
+  // thread the host has answered from one it hasn't.
   reviewThreads(number: number): ReviewThread[];
 };
 
@@ -289,8 +289,7 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
 
 // How a review thread stands with the follow-up pass (threadStanding): the
 // one rule the sweep and the pass share to decide whether a thread starts a
-// pass, so the sweep never flags a PR for a thread the pass won't take up
-// (#225).
+// pass, so the sweep never flags a PR for a thread the pass won't take up.
 export type ThreadStanding = "resolved" | "answered" | "bot" | "owner" | "human" | "unknown";
 
 // How `thread` stands, checked in this order. A resolved thread is
@@ -331,7 +330,7 @@ export function threadStanding(
 
 // `pr` as `decide` should see it: without the threads the host has already
 // answered (threadStanding), which the sweep's batch query can't tell apart
-// since it reads only each thread's first comment (#225). Also counts them,
+// since it reads only each thread's first comment. Also counts them,
 // since a PR blocked on them waits on the owner and the run report says so.
 // Only a PR with an unresolved bot or owner thread costs a read of its threads
 // in full, whatever `decide` would say of it unfiltered: a PR whose checks are
@@ -340,7 +339,7 @@ export function threadStanding(
 // read the same way, for the count only: `decide` flags it whatever its
 // threads are, so a failed read there leaves it flagged with nothing counted.
 // For any other PR a failed read throws, and the sweep leaves it alone this
-// round, still listing it as waiting on its people's threads (#249).
+// round, still listing it as waiting on its people's threads.
 function withoutAnsweredThreads(
   pr: SweepPullRequest,
   github: FollowUpGitHub,
@@ -367,7 +366,7 @@ function withoutAnsweredThreads(
 }
 
 // What the sweep found that needs an agent: the numbers of the PRs it logged
-// as needing a follow-up pass (#147's early exit reads this, so a round with
+// as needing a follow-up pass (the early exit reads this, so a round with
 // one of these still has work), and those same PRs as PassTargets for
 // lib/follow-up-pass.mts#followUpPassPhase to run a pass on. A failed sweep
 // (see followUpPhase) returns both empty, never treated as work found.
@@ -377,15 +376,15 @@ export type SweepResult = { needsPass: number[]; passes: PassTarget[] };
 // for each PR either skips it (sweepSkipReason) or applies `decide`, logging
 // what happened. A PR with an unresolved bot or owner thread has its threads
 // read in full first, and the ones the host has answered are left out and
-// counted for `waiting` (withoutAnsweredThreads, #225). A PR whose
+// counted for `waiting` (withoutAnsweredThreads). A PR whose
 // sandcastle:needs-human someone other than the repository owner removed gets
-// it back instead, and is left alone (#146).
+// it back instead, and is left alone.
 // Each PR runs in its own try/catch, so one failure doesn't stop the rest.
 // An updated PR reaches `outcomes` as "updated", and every PR that reached
 // `decide` with unresolved threads opened by someone other than the
 // repository owner or a bot (the same test lib/follow-up-pass.mts#threadsForRole
 // uses), or that is left alone because its threads couldn't be read in full
-// while such a thread is open (#249), replaces `waiting`'s list, so the run
+// while such a thread is open, replaces `waiting`'s list, so the run
 // report shows the latest sweep's view. Once that's done, hands
 // back any in-scope issue, not labelled sandcastle:needs-human and with no
 // open PR, whose latest Sandcastle PR closed without merging
@@ -418,8 +417,7 @@ export function sweepPullRequests(
         log(`  · PR #${pr.number} isn't swept: ${skip}.`);
         continue;
       }
-      // A stranger's removal of the PR's hand-back label isn't a re-queue
-      // (#146): put the label back and leave the PR alone this round.
+      // A stranger's removal of the PR's hand-back label isn't a re-queue: put the label back and leave the PR alone this round.
       const origin = labelOriginFixes(pr.labels, github.pullRequestEvents(pr.number), github.isOwner, PR_LABEL_RULES);
       if (origin.unknown.length > 0) {
         log(`  · PR #${pr.number} isn't swept: couldn't check whether the repository owner removed ${NEEDS_HUMAN}.`);
@@ -437,7 +435,7 @@ export function sweepPullRequests(
       } catch (error) {
         // The PR is left alone this round, but its people's threads still
         // wait on them, so it stays listed, counted from the sweep's own
-        // threads (#249).
+        // threads.
         const waitingThreads = countHumanThreads(pr.threads);
         if (waitingThreads > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered: 0 });
         throw error;
@@ -547,7 +545,7 @@ function followUp(
 // intake. A failure, such as GitHub's API being unavailable, is logged and
 // the sweep runs again next round: it's housekeeping, never a reason to stop
 // building. Returns { needsPass: [], passes: [] } for a failed sweep, so
-// #147's early exit never treats a sweep failure as work found.
+// the early exit never treats a sweep failure as work found.
 export function followUpPhase(
   sweep: () => SweepResult = () => sweepPullRequests(),
   warn: (message: string) => void = console.error,

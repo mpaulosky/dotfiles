@@ -2,13 +2,13 @@
 // Queue scope
 //
 // Only work the repository owner queued and approved reaches an agent (see
-// docs/plans/sandcastle-workflow.md, "Labels" and "The round"). Every phase
+// Blazor-Server's docs/plans/sandcastle-workflow.md, "Labels" and "The round"). Every phase
 // reads the open Sandcastle issues through loadQueue, not through
 // listSandcastleIssues directly: loadQueue keeps only the issues in this
 // run's queue scope (lib/config.mts#QueueScope) whose most recent queueing
 // was the repository owner's, with no untrusted edit since, and fixes any
 // trust-sensitive label whose most recent add or removal wasn't the
-// owner's (#146).
+// owner's.
 // ---------------------------------------------------------------------------
 
 import { queueLabelOf, type QueueScope } from "./config.mts";
@@ -65,7 +65,7 @@ export type Approval = { approved: true } | { approved: false; reason: string };
 
 // Whether the issue's most recent `labeled` event adding `queueLabel` was
 // the repository owner's, and nobody but the owner has renamed the issue or
-// edited its body since (see docs/plans/sandcastle-workflow.md, "Labels"):
+// edited its body since (see Blazor-Server's docs/plans/sandcastle-workflow.md, "Labels"):
 // only the owner's own queueing, undisturbed by anyone else, reaches an
 // agent. Not approved when there's no such event, when its actor isn't
 // (definitely) the owner, or when any renamed event or ContentEdit at or
@@ -119,7 +119,7 @@ export type LabelFix = { action: "remove" | "restore"; label: string; reason: st
 
 // Which of the issue's trust-sensitive labels need fixing, because their
 // most recent add or removal wasn't the repository owner's (see
-// docs/plans/sandcastle-workflow.md, "Labels"): a label in `rules.trustAdds`
+// Blazor-Server's docs/plans/sandcastle-workflow.md, "Labels"): a label in `rules.trustAdds`
 // the issue carries, added by someone other than the owner, is fixed by
 // removing it; a label in `rules.trustRemovals` the issue doesn't carry, most
 // recently removed by someone other than the owner, is fixed by restoring
@@ -257,7 +257,7 @@ export function liveQueueGitHub(): QueueGitHub {
 // approved, or with an unknown label actor is skipped: logged once per run,
 // with no comment and no write. Every phase (the gate, the follow-up sweep,
 // intake) calls this instead of reading the queue directly, so each one
-// filters the same way (#146).
+// filters the same way.
 export function loadQueue(
   scope: QueueScope = activeQueueScope(),
   github: QueueGitHub = liveQueueGitHub(),

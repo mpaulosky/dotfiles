@@ -62,7 +62,7 @@ describe("runRoleInSandbox", () => {
     assert.deepEqual(runs[0]!.promptArgs, { TASK_ID: "3", SHARED_RULES: sharedRules });
   });
 
-  // #147: a run must stop cleanly at the time budget or Claude's usage limit,
+  // A run must stop cleanly at the time budget or Claude's usage limit,
   // without starting another role.
   it("never calls sandbox.run, and rejects with UncountedStopError, when the limits have already stopped the run", async () => {
     const limits = new RunLimits();

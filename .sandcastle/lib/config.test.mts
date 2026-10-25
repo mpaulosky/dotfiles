@@ -49,7 +49,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
 
 // A local run must never silently build the whole queue nor silently build
 // nothing: an environment that names no valid scope is a usage error, not a
-// default (#146, "A local run without SANDCASTLE_ISSUE or SANDCASTLE_LABEL
+// default ("A local run without SANDCASTLE_ISSUE or SANDCASTLE_LABEL
 // exits non-zero with a usage message and touches nothing").
 describe("queueScopeFrom", () => {
   it("throws QueueScopeError with both usage forms when neither variable is set", () => {
@@ -120,7 +120,7 @@ describe("queueScopeFrom", () => {
   });
 });
 
-// #147: no new round, and no role run, starts once this many minutes have
+// No new round, and no role run, starts once this many minutes have
 // passed since the run started.
 describe("budgetMinutesFrom", () => {
   it("defaults to DEFAULT_BUDGET_MINUTES when unset", () => {

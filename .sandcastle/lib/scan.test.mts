@@ -111,7 +111,7 @@ describe("firstSecretMatch", () => {
         location: { commit: leak, field: "line", path: "notes.txt", line: 2 },
         kind: { type: "pattern", shape: "gh*_" },
       });
-      // Never the matched text itself (#324).
+      // Never the matched text itself.
       assert.ok(!JSON.stringify(match).includes(githubShaped));
     } finally {
       rmSync(repo, { recursive: true, force: true });
@@ -125,7 +125,7 @@ describe("firstSecretMatch", () => {
       const match = firstSecretMatch(base, leak, new Map([["ANTHROPIC_API_KEY", secretValue]]), hostGit);
 
       assert.deepEqual(match, { location: { commit: leak, field: "message" }, kind: { type: "secret", envKey: "ANTHROPIC_API_KEY" } });
-      // Never the matched text itself (#324).
+      // Never the matched text itself.
       assert.ok(!JSON.stringify(match).includes(secretValue));
     } finally {
       rmSync(repo, { recursive: true, force: true });
@@ -140,7 +140,7 @@ describe("firstSecretMatch", () => {
         const match = firstSecretMatch(base, leak, new Map([["GH_TOKEN", secretValue]]), hostGit);
 
         assert.deepEqual(match, { location: { commit: leak, field }, kind: { type: "secret", envKey: "GH_TOKEN" } });
-        // Never the matched text itself (#324).
+        // Never the matched text itself.
         assert.ok(!JSON.stringify(match).includes(secretValue));
       } finally {
         rmSync(repo, { recursive: true, force: true });
@@ -155,7 +155,7 @@ describe("firstSecretMatch", () => {
       const match = firstSecretMatch(base, leak, new Map([["ANTHROPIC_API_KEY", secretValue]]), hostGit);
 
       assert.deepEqual(match, { location: { commit: leak, field: "path" }, kind: { type: "secret", envKey: "ANTHROPIC_API_KEY" } });
-      // Never the matched text itself (#324).
+      // Never the matched text itself.
       assert.ok(!JSON.stringify(match).includes(secretValue));
     } finally {
       rmSync(repo, { recursive: true, force: true });
@@ -241,7 +241,7 @@ describe("describeSecretMatch", () => {
     assert.equal(text, `the sandbox's GH_TOKEN value in a path commit ${commit} touches`);
   });
 
-  // Criterion 3 of #324, end to end: what reaches the log and the run report,
+  // The secret-scan criterion, end to end: what reaches the log and the run report,
   // for a fake token and a fake secret a commit really holds.
   it("holds no part of the matched text, for a fake token in a line or a fake secret in a message", () => {
     const githubShaped = `${"gh"}p_${"A".repeat(36)}`;
@@ -265,7 +265,7 @@ describe("describeSecretMatch", () => {
   });
 });
 
-// #224: with the latest main merged into the branch, `base..commit` also holds
+// With the latest main merged into the branch, `base..commit` also holds
 // the commits main gained after `base`, which the branch didn't write.
 describe("firstSecretMatch with a merged main commit", () => {
   // Built at run time, so this test file isn't itself flagged as a leak.

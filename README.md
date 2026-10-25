@@ -96,6 +96,11 @@ worktree, then pushes the branch and opens a pull request that closes the issue.
 rather than starting from the stock template. dotfiles runs Sandcastle too: its `.sandcastle/` is a port for a repo with
 no .NET, whose image carries the repo-ci-baseline skill's test tools instead of the SDK.
 
+The repo-ci-baseline Template now carries Sandcastle's shared files: its config, intake and critique prompts and host-safety
+modules (Owned), and its role prompts, Dockerfile, check and `package.json` (Seed). In a Baseline repo, create `.sandcastle/`
+and Apply again to get them, then copy `main.mts` and the rest of `lib/` from Blazor-Server, which the Template doesn't carry
+yet. The skill's `references/sandcastle.md` says what each file is and how an existing Sandcastle repo migrates.
+
 ### 1. Prerequisites
 
 - Docker running on the host, and your user able to run `docker` without `sudo`.

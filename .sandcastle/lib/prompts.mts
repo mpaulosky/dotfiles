@@ -16,7 +16,7 @@ export function issuePromptArgs(issue: SandcastleIssue, branch: string) {
   return {
     TASK_ID: String(issue.number),
     ISSUE_TITLE: issue.title,
-    ISSUE_BODY: issue.body,
+    ISSUE_BODY: issue.body.trim() === "" ? "(no description)" : issue.body,
     ISSUE_COMMENTS: issue.comments.length > 0 ? issue.comments.join("\n\n---\n\n") : "(no comments)",
     BRANCH: branch,
     BASE_BRANCH,

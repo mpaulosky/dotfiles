@@ -62,19 +62,34 @@ export const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 // starting "::" is a workflow command in Actions. The list is empty, meaning
 // "no files", when the field isn't an array, when an entry isn't a string,
 // or when an entry holds a glob (`*` or `?`), which can't be compared with a
-// path.
+// path, or climbs above the root with "..". Other ".." segments are folded into
+// the one before, so two spellings of a file compare equal.
 export function resolveFiles(files: unknown, repoRoot: string = SANDBOX_REPO_ROOT): string[] {
   const isPath = (file: unknown): file is string => typeof file === "string" && !/[*?]/.test(file);
   if (!Array.isArray(files) || !files.every(isPath)) return [];
   const segments = (path: string) => path.split("/").filter((segment) => segment !== "" && segment !== ".");
+  // Folds each ".." into the segment before it, so "src/Web/../Web/a.cs" and
+  // "src/Web/a.cs" compare equal. A path that climbs above the root names
+  // nothing the host can compare, so it is undefined.
+  const canonical = (parts: string[]): string[] | undefined => {
+    const out: string[] = [];
+    for (const part of parts) {
+      if (part !== "..") out.push(part);
+      else if (out.pop() === undefined) return undefined;
+    }
+    return out;
+  };
   const root = segments(repoRoot.replace(/\\/g, "/"));
-  const paths = files.flatMap((file) => {
+  const resolved = files.map((file) => {
     const path = file.trim().replace(/\\/g, "/");
     if (CONTROL_CHARACTER.test(path)) return [];
-    const parts = segments(path);
+    const parts = canonical(segments(path));
+    if (parts === undefined) return undefined;
     const underRoot = path.startsWith("/") && root.every((segment, i) => parts[i] === segment);
     return [(underRoot ? parts.slice(root.length) : parts).join("/")];
   });
+  if (resolved.some((entry) => entry === undefined)) return [];
+  const paths = resolved.flat() as string[];
   return [...new Set(paths.filter((path) => path !== ""))];
 }
 

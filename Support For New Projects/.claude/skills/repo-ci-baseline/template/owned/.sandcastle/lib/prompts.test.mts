@@ -34,6 +34,11 @@ describe("issuePromptArgs", () => {
     assert.equal(args.BRANCH, "feature/3-add-a-thing");
   });
 
+  it("gives the role a sentence when the issue has no body, since Sandcastle refuses an empty value", () => {
+    assert.equal(issuePromptArgs({ ...issue, body: "" }, "feature/3-add-a-thing").ISSUE_BODY, "(no description)");
+    assert.equal(issuePromptArgs({ ...issue, body: " \n " }, "feature/3-add-a-thing").ISSUE_BODY, "(no description)");
+  });
+
   it("gives the role origin/main as the base to diff against, since Sandcastle's TARGET_BRANCH is the sandbox's own branch", () => {
     const args = issuePromptArgs(issue, "feature/3-add-a-thing");
 

@@ -66,6 +66,10 @@ export const SANDBOX_SKILLS: readonly string[] = [];
 // must change this too.
 export const GATE_COVERED_CHECKS: readonly string[] = ["Template tests"];
 
+// The command the host runs in the sandbox as the gate. dotfiles has no
+// Docker-backed tests, so it keeps the Template's default.
+export const GATE_COMMAND = "scripts/gate.sh";
+
 // The Template's Owned files under this folder, of which dotfiles carries copies at the same path from the repo root (its own
 // .sandcastle/ included): the list test.sh's copy check walks, entry for entry and in the same order.
 // lib/overlap.mts counts each pair as one path, since every change to one changes the other.

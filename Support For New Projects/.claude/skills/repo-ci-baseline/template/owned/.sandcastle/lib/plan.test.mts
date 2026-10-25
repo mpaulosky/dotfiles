@@ -90,6 +90,16 @@ describe("resolveFiles", () => {
     assert.deepEqual(resolveFiles({ "lib/a.mts": true }), []);
   });
 
+  it("folds a parent segment into the one before it, so two spellings of a file compare equal", () => {
+    assert.deepEqual(resolveFiles(["src/Web/../Web/Program.cs", "src/Web/Program.cs"]), ["src/Web/Program.cs"]);
+    assert.deepEqual(resolveFiles(["a/b/../../c.txt"]), ["c.txt"]);
+  });
+
+  it("is empty when a path climbs above the root, since it names nothing to compare", () => {
+    assert.deepEqual(resolveFiles(["../outside.txt"]), []);
+    assert.deepEqual(resolveFiles(["lib/a.mts", "a/../../b.txt"]), []);
+  });
+
   it("is empty when any entry isn't a string", () => {
     assert.deepEqual(resolveFiles(["lib/a.mts", 4]), []);
     assert.deepEqual(resolveFiles([null]), []);

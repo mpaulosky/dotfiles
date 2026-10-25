@@ -49,7 +49,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, and an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`) |
 | `.sandcastle/check.sh` | Sandcastle's check, which the Seed `.github/ci/gate-checks.sh` runs when it's there |
 | `package.json`, `pnpm-workspace.yaml` | Sandcastle's packages and scripts; a repo with its own Node tooling merges them |
-| `.sandcastle/lib/repo-config.mts` | `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
+| `.sandcastle/lib/repo-config.mts` | `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
 
 The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-prompts.test.mts` checks).
 `test.sh` keeps dotfiles' own text out of them, and checks that the Dockerfile's linter versions match the Owned `scripts/gate.sh` and its .NET channel matches `global.json`.
@@ -84,6 +84,9 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 6. Leave the Sandcastle workflows out of the re-Apply.
 7. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
    those out and keeps the lints (its `.sandcastle/check.sh`), and points the gate-fixer and follow-up roles' instructions at it.
+8. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/check.sh` for the step above), and list in `CHECK_PATHS` every place
+   the gate reads its checks from: its scripts and tests, and `package.json`. A gate whose branch changes `GATE_SCRIPT`, or a `GATE_SCRIPT` that isn't a file at the
+   branch's base, fails without running.
 
 Blazor-Server's UI developer role has to come into the Template (`ROLES`, `OPTIONAL_ROLES` and the build) before Blazor-Server migrates,
 or it loses that role.

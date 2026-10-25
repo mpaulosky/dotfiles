@@ -70,6 +70,33 @@ export const GATE_COVERED_CHECKS: readonly string[] = ["Template tests"];
 // Docker-backed tests, so it keeps the Template's default.
 export const GATE_COMMAND = "scripts/gate.sh";
 
+// The committed file GATE_COMMAND runs. It is written in the worktree by the
+// agents whose work it judges, so a gate whose branch changes it fails without
+// running (lib/checkpoint.mts#gateScriptChange); a file that isn't committed at
+// the branch's base fails too. Name the script, not the interpreter or
+// arguments: `.sandcastle/check.sh` for `bash .sandcastle/check.sh`.
+export const GATE_SCRIPT = "scripts/gate.sh";
+
+// The paths whose files the gate and CI run: the scripts, the tests, the build
+// definition. An agent that edits one can make its own checks pass, so a PR
+// whose branch changes a file under them lists it in its body for the reviewer
+// (lib/build.mts#publish). Folders end in a slash. List every place the gate
+// reads its checks from, not only where its script sits. dotfiles' gate runs the
+// repo-ci-baseline skill's test.sh and the tests it calls, and the Template's.
+const SKILL = "Support For New Projects/.claude/skills/repo-ci-baseline/";
+export const CHECK_PATHS: readonly string[] = [
+  ".sandcastle/",
+  "scripts/",
+  ".github/ci/",
+  "package.json",
+  `${SKILL}test.sh`,
+  `${SKILL}tests/`,
+  `${SKILL}github/tests/`,
+  `${SKILL}template/owned/scripts/tests/`,
+  `${SKILL}template/owned/.github/hooks/tests/`,
+  `${SKILL}template/owned/.github/scripts/tests/`,
+];
+
 // The Template's Owned files under this folder, of which dotfiles carries copies at the same path from the repo root (its own
 // .sandcastle/ included): the list test.sh's copy check walks, entry for entry and in the same order.
 // lib/overlap.mts counts each pair as one path, since every change to one changes the other.

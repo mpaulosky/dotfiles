@@ -101,11 +101,6 @@ export const INTAKE_REFUSED_BATCHES_LIMIT = 2;
 // given up, and how much of the final gate output the issue comment quotes.
 export const GATE_FIXER_ATTEMPTS = 2;
 
-// The folders whose files the gate and CI run: an agent that edits one can make
-// its own checks pass. A PR whose commits change a file under them says so in
-// its body (lib/build.mts#publish), for the reviewer to look at. The gate script
-// itself is stricter (lib/checkpoint.mts#gateScriptChange).
-export const CHECK_PATHS: readonly string[] = [".sandcastle/", "scripts/", ".github/ci/"];
 export const GATE_COMMENT_LINES = 100;
 
 // Attempts allowed for a publish step (git push, gh pr create) that keeps

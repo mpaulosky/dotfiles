@@ -18,16 +18,21 @@ bad() { echo "FAIL: $1" >&2; failed=$((failed + 1)); }
 check() { if eval "$2"; then ok; else bad "$1"; fi; }
 
 # A skill copy whose Template has one Owned and two Seed files, plus a cache
-# a local pytest run could leave behind.
+# a local pytest run could leave behind, and a Sandcastle section (an Owned
+# tsconfig.json, a Seed role prompt and a Seed package.json).
 skill="$work/skill"
 mkdir -p "$skill/template/owned/.github/workflows" "$skill/template/owned/.github/scripts/__pycache__" \
-  "$skill/template/seed/docs" "$skill/template/seed/.github/ci"
+  "$skill/template/seed/docs" "$skill/template/seed/.github/ci" \
+  "$skill/template/owned/.sandcastle" "$skill/template/seed/.sandcastle/roles"
 command cp -f "$skill_dir/apply.sh" "$skill/"
 printf 'name: CI\n' > "$skill/template/owned/.github/workflows/ci.yml"
 printf 'stale\n' > "$skill/template/owned/.github/scripts/__pycache__/x.pyc"
 printf '# {{REPO}} by {{OWNER}}, solution {{SOLUTION}}\n' > "$skill/template/seed/docs/SECURITY.md"
 printf '#!/usr/bin/env bash\n' > "$skill/template/seed/.github/ci/prepare.sh"
 chmod +x "$skill/template/seed/.github/ci/prepare.sh"
+printf '{"compilerOptions": {}}\n' > "$skill/template/owned/.sandcastle/tsconfig.json"
+printf '# {{REPO}} architect for issue {{TASK_ID}}\n' > "$skill/template/seed/.sandcastle/roles/architect.md"
+printf '{"private": true}\n' > "$skill/template/seed/package.json"
 apply="$skill/apply.sh"
 
 # Hooks off: a global init.templateDir can install hooks (such as a
@@ -124,7 +129,70 @@ repo="$work/bare"
 git init -q -b main "$repo"
 out="$("$apply" "$repo")"
 check "no remote: placeholder left" 'grep -q "{{REPO}}" "$repo/docs/SECURITY.md"'
-check "no remote: unfilled reported" 'grep -A1 "unfilled placeholders (1)" <<< "$out" | grep -q "docs/SECURITY.md"'
+check "no remote: unfilled reported" \
+  'grep -A2 "unfilled placeholders (2)" <<< "$out" | grep -q "docs/SECURITY.md" && grep -A2 "unfilled placeholders (2)" <<< "$out" | grep -q ".sandcastle/roles/architect.md"'
+
+# ── Sandcastle's files go only into a repo that runs Sandcastle (ADR 0006) ──
+sandcastle_files=(.sandcastle/tsconfig.json .sandcastle/roles/architect.md package.json)
+
+# An empty repo gets them. Sandcastle's own {{TASK_ID}} stays and isn't reported as unfilled.
+repo="$work/sandcastle empty"
+new_repo "$repo"
+out="$("$apply" "$repo")"
+check "sandcastle, empty repo: Owned file written" '[[ -f "$repo/.sandcastle/tsconfig.json" ]]'
+check "sandcastle, empty repo: Seed role prompt written" '[[ -f "$repo/.sandcastle/roles/architect.md" ]]'
+check "sandcastle, empty repo: Seed package.json written" '[[ -f "$repo/package.json" ]]'
+check "sandcastle, empty repo: {{REPO}} filled and {{TASK_ID}} kept" \
+  'grep -qx "# Widget architect for issue {{TASK_ID}}" "$repo/.sandcastle/roles/architect.md"'
+check "sandcastle, empty repo: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
+check "sandcastle, empty repo: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
+
+# A repo with history and no .sandcastle/ gets none of them, and its other files as before.
+repo="$work/sandcastle absent"
+new_repo "$repo"
+printf '# readme\n' > "$repo/README.md"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$("$apply" "$repo")"
+for f in "${sandcastle_files[@]}"; do
+  check "sandcastle, no .sandcastle/: $f not written" '[[ ! -e "$repo/$f" ]]'
+done
+check "sandcastle, no .sandcastle/: other Owned file written" '[[ -f "$repo/.github/workflows/ci.yml" ]]'
+check "sandcastle, no .sandcastle/: other Seed file written" '[[ -f "$repo/docs/SECURITY.md" ]]'
+check "sandcastle, no .sandcastle/: the three are reported as left out" 'grep -q "Sandcastle files left out.*: 3" <<< "$out"'
+check "sandcastle, no .sandcastle/: the report says how to add them" 'grep -q "create it and Apply again" <<< "$out"'
+check "sandcastle, no .sandcastle/: no .sandcastle/ folder made" '[[ ! -e "$repo/.sandcastle" ]]'
+
+# A dry run of the same repo reports the same three and writes nothing.
+repo="$work/sandcastle dry"
+new_repo "$repo"
+printf '# readme\n' > "$repo/README.md"
+commit_all "$repo" "init"
+dry="$("$apply" --dry-run "$repo")"
+check "sandcastle, dry run: the three are reported as left out" 'grep -q "Sandcastle files left out.*: 3" <<< "$dry"'
+check "sandcastle, dry run: the left-out files aren't listed as added" '! grep -q "^  .sandcastle/tsconfig.json" <<< "$dry"'
+check "sandcastle, dry run: nothing written" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
+
+# A repo with history and a .sandcastle/ folder gets them.
+repo="$work/sandcastle present"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle"
+printf 'x\n' > "$repo/.sandcastle/.gitkeep"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$("$apply" "$repo")"
+for f in "${sandcastle_files[@]}"; do
+  check "sandcastle, .sandcastle/ present: $f written" '[[ -f "$repo/$f" ]]'
+done
+check "sandcastle, .sandcastle/ present: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
+check "sandcastle, .sandcastle/ present: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
+
+# A Seed file with an Apply placeholder still counts as unfilled under .sandcastle/ (no remote, so {{REPO}} stays).
+repo="$work/sandcastle unfilled"
+git init -q -b main "$repo"
+out="$("$apply" --dry-run "$repo")"
+check "sandcastle, dry run without a remote: {{REPO}} in a Sandcastle Seed file is unfilled" \
+  'grep -A3 "unfilled placeholders" <<< "$out" | grep -q ".sandcastle/roles/architect.md"'
 
 echo "apply.test.sh: $pass passed, $failed failed"
 [[ $failed -eq 0 ]]

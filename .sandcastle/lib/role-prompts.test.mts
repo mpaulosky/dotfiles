@@ -241,3 +241,34 @@ describe("every prompt", () => {
     });
   }
 });
+
+// #280: the Template's Seed prompts are dotfiles' prompts rewritten for any repo. Sandcastle (lib/prompts.mts) fills the {{NAME}}s at
+// run time, so a rewrite that drops one leaves a value unused, or an agent without what it needs. Apply fills {{OWNER}}, {{REPO}}
+// and {{SOLUTION}} itself, so those three aren't compared.
+describe("the Template's Seed prompts", () => {
+  const seedSandcastle = new URL(
+    "../../Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/.sandcastle/",
+    import.meta.url,
+  );
+  const applyPlaceholders = new Set(["OWNER", "REPO", "SOLUTION"]);
+  const placeholders = (text: string) =>
+    [...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((match) => match[1]!))].filter((name) => !applyPlaceholders.has(name)).sort();
+  const prompts = [
+    "plan-prompt.md",
+    "review-prompt.md",
+    ...["architect", "backend", "tester", "scribe", "gate-fixer", "follow-up", "shared-rules"].map((role) => `roles/${role}.md`),
+  ];
+
+  for (const prompt of prompts) {
+    it(`${prompt} has the Sandcastle placeholders dotfiles' copy has`, () => {
+      const seed = new URL(prompt, seedSandcastle);
+
+      assert.ok(existsSync(seed), `the Template's Seed has no .sandcastle/${prompt}`);
+      assert.deepEqual(placeholders(readFileSync(seed, "utf8")), placeholders(read(prompt)));
+    });
+  }
+
+  it("holds no UI role prompt, since nothing in the Template's files picks that role", () => {
+    assert.equal(existsSync(new URL("roles/ui.md", seedSandcastle)), false);
+  });
+});

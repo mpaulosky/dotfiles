@@ -52,11 +52,13 @@ type Claim = { number: number; path: string };
 
 const ROOT_COPIES: ReadonlySet<string> = new Set(TEMPLATE_ROOT_COPIES);
 
-// The path two picks or a pick and a PR are compared by: a Template Owned
-// file dotfiles carries a root copy of maps to that root path, since every
-// change to one changes the other (test.sh fails when they differ). Only the
-// files in TEMPLATE_ROOT_COPIES map: template/owned/scripts/gate.sh and
-// dotfiles' own scripts/gate.sh are different files. Case-sensitive, as git is.
+// The path two picks or a pick and a PR are compared by. In a repo that holds
+// the Template itself and carries root copies of some of its Owned files
+// (lib/repo-config.mts#TEMPLATE_ROOT_COPIES), such a Template file maps to its
+// root copy, since every change to one changes the other. Only the files in
+// that list map: an Owned scripts/gate.sh under TEMPLATE_OWNED_DIR and the
+// repo's own scripts/gate.sh are different files. In any other repo the list
+// is empty and every path is its own key. Case-sensitive, as git is.
 export function pathKey(path: string): string {
   const prefix = `${TEMPLATE_OWNED_DIR}/`;
   if (!path.startsWith(prefix)) return path;
@@ -74,7 +76,7 @@ function sharesPath(a: string, b: string): boolean {
 }
 
 // The names `path` goes by, without a trailing "/": itself, and for a
-// Template file dotfiles carries a root copy of, the other one of the pair.
+// Template file the repo carries a root copy of, the other one of the pair.
 function aliases(path: string): string[] {
   const trimmed = path.replace(/\/+$/, "");
   const key = pathKey(trimmed);

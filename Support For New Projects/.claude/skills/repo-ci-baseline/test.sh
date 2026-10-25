@@ -134,7 +134,9 @@ step "Issue references in Owned files name their repo"
 # another repo's. A citation in parentheses is checked everywhere, tests
 # included; elsewhere every #N is, outside the tests' fixture data, except
 # HTML entities (&#9;) and the exact examples in EXAMPLES, so an example
-# hides nothing else on its line. Python, not grep -P, which BSD grep lacks.
+# hides nothing else on its line. A Sandcastle *.test.mts carries fixture
+# data in its strings, so only its // comment lines are checked for a bare
+# #N. Python, not grep -P, which BSD grep lacks.
 python3 -I - "$owned" <<'PY' || fail "write issue references in Owned files as mpaulosky/dotfiles#N (or <Repo>#N), not a bare #N"
 import pathlib, re, sys
 
@@ -150,12 +152,15 @@ for path in sorted(p for p in root.rglob("*") if p.is_file()):
     except UnicodeDecodeError:
         continue
     in_tests = "tests" in path.relative_to(root).parts
+    is_ts_test = path.name.endswith(".test.mts")
     for number, line in enumerate(lines, 1):
         text = line
         for example in EXAMPLES:
             # Not followed by a digit, so "Fixes #42" leaves "Fixes #421" whole.
             text = re.sub(re.escape(example) + r"(?!\d)", "", text)
-        if CITATION.search(line) or (not in_tests and BARE.search(text)):
+        if CITATION.search(line) or (
+            BARE.search(text) and not in_tests and (not is_ts_test or line.lstrip().startswith("//"))
+        ):
             found.append(f"{path.relative_to(root)}:{number}: {line.strip()}")
 if found:
     print("\n".join(found))
@@ -199,14 +204,27 @@ step "dotfiles' copies of Template files"
 # dotfiles isn't a Baseline repo, so it carries Claude Review, PR Auto-Merge,
 # PR Review Submitted, the git hooks and Sandcastle's Owned files as copies of
 # the Template's files, which must not drift from them. Its scripts/gate.sh is
-# its own: it runs this script. Sandcastle's lib/config.mts reads this list.
+# its own: it runs this script. Sandcastle's lib/repo-config.mts reads this list.
 dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
 for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.yml .github/workflows/pr-review-submitted.yml \
   .github/scripts/post_claude_review.py \
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh \
   .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/critique-prompt.md \
-  .sandcastle/intake-prompt.md .sandcastle/lib/host-safety.mts .sandcastle/lib/host-safety.test.mts .sandcastle/lib/shell.mts \
-  .sandcastle/lib/shell.test.mts .sandcastle/tsconfig.json; do
+  .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
+  .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
+  .sandcastle/lib/building.test.mts .sandcastle/lib/checkpoint.mts .sandcastle/lib/checkpoint.test.mts .sandcastle/lib/config.mts \
+  .sandcastle/lib/config.test.mts .sandcastle/lib/critique.mts .sandcastle/lib/critique.test.mts .sandcastle/lib/errors.mts \
+  .sandcastle/lib/follow-up-pass.mts .sandcastle/lib/follow-up-pass.test.mts .sandcastle/lib/follow-up.mts \
+  .sandcastle/lib/follow-up.test.mts .sandcastle/lib/gate.mts .sandcastle/lib/gate.test.mts .sandcastle/lib/git-sandbox-fake.mts \
+  .sandcastle/lib/github.mts .sandcastle/lib/github.test.mts .sandcastle/lib/handback.mts .sandcastle/lib/handback.test.mts \
+  .sandcastle/lib/host-safety.mts .sandcastle/lib/host-safety.test.mts .sandcastle/lib/intake.mts .sandcastle/lib/intake.test.mts \
+  .sandcastle/lib/limits.mts .sandcastle/lib/limits.test.mts .sandcastle/lib/overlap.mts .sandcastle/lib/overlap.test.mts \
+  .sandcastle/lib/plan.mts .sandcastle/lib/plan.test.mts .sandcastle/lib/prompts.mts .sandcastle/lib/prompts.test.mts \
+  .sandcastle/lib/queue.mts .sandcastle/lib/queue.test.mts .sandcastle/lib/report.mts .sandcastle/lib/report.test.mts \
+  .sandcastle/lib/round.mts .sandcastle/lib/round.test.mts .sandcastle/lib/sandbox-env.mts .sandcastle/lib/sandbox-env.test.mts \
+  .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
+  .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
+  .sandcastle/lib/work.mts .sandcastle/lib/work.test.mts .sandcastle/main.mts .sandcastle/tsconfig.json; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
   # The mode too: a hook that isn't executable doesn't run.
   owned_x=no; dotfiles_x=no

@@ -590,7 +590,7 @@ describe("isGateCovered", () => {
     assert.equal(isGateCovered("Template tests", new Set()), false);
   });
 
-  // Blazor-Server's jobs, which dotfiles hasn't got, and dotfiles' checks
+  // Blazor-Server's jobs, which the covered set here hasn't got, and the checks
   // that gate.sh doesn't run.
   for (const name of [
     "Build Solution",

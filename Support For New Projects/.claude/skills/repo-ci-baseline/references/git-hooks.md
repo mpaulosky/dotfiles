@@ -129,6 +129,25 @@ Dependabot branches allowed only there, a `claude/...` branch refused, and other
 
 CI's hook-tests job runs this suite, `pre-commit.test.sh` and `check-branch-name.test.sh`.
 
+## Session-start check
+
+`scripts/check-git-hooks.sh` (with `scripts/tests/check-git-hooks.test.sh`) warns when a clone's `core.hooksPath` isn't
+`.github/hooks`, because git then never runs `pre-push` and a push skips the gate without a word. It prints nothing when
+the hooks are on, and stays silent in Claude Code cloud sessions, in GitHub Actions and where git can't write its config
+(Sandcastle's sandbox). It always exits 0. Taken from auth0-management-app.
+
+The Template doesn't carry `.claude/settings.json`, so each repo that wants the warning adds the hook by hand:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/check-git-hooks.sh" }] }
+    ]
+  }
+}
+```
+
 ## Adapting
 
 - A repo's own gate steps go in the Seed `.github/ci/gate-checks.sh`, each guarded by the paths it covers. A step

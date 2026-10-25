@@ -41,6 +41,7 @@ bash "$owned/.github/hooks/tests/pre-push.test.sh" || fail "pre-push.test.sh"
 bash "$owned/.github/hooks/tests/pre-commit.test.sh" || fail "pre-commit.test.sh"
 bash "$owned/scripts/tests/check-branch-name.test.sh" || fail "check-branch-name.test.sh"
 bash "$owned/scripts/tests/check-pr-title.test.sh" || fail "check-pr-title.test.sh"
+bash "$owned/scripts/tests/check-git-hooks.test.sh" || fail "check-git-hooks.test.sh"
 
 step "Auto-merge script tests"
 need node
@@ -97,6 +98,7 @@ shell_files=(
   "$skill_dir/tests/apply.test.sh" "$skill_dir/tests/reapply.test.sh"
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
+  "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh"
   "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"

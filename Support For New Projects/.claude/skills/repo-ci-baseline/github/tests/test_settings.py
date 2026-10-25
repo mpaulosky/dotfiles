@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import settings as gs  # noqa: E402
 
 REPO = "owner/app"
+DOTFILES = "mpaulosky/dotfiles"
 STANDARD = json.loads((Path(gs.HERE) / "settings.json").read_text())
 LABELS = json.loads((Path(gs.HERE) / "labels.json").read_text())
 
@@ -81,7 +82,8 @@ def matching_ruleset(checks):
 
 
 class FakeGitHub:
-    def __init__(self, **state):
+    def __init__(self, full_name=REPO, **state):
+        self.full_name = full_name
         self.repo = {"default_branch": "main", **STANDARD["repo"],
                      "security_and_analysis": {"secret_scanning": {"status": "enabled"},
                                                "secret_scanning_push_protection": {"status": "enabled"}}}
@@ -105,7 +107,7 @@ class FakeGitHub:
     def api(self, method, path, body=None):
         if method != "GET":
             self.writes.append((method, path, body))
-        path = path.removeprefix(f"repos/{REPO}")
+        path = path.removeprefix(f"repos/{self.full_name}")
         route, _, _query = path.partition("?")
         if route == "" and method == "GET":
             return json.loads(json.dumps(self.repo))
@@ -576,6 +578,61 @@ def test_a_repo_settings_only_repo_gets_just_its_merge_settings(monkeypatch, tmp
     assert status == 0, output
     assert fake.writes == [("DELETE", f"repos/{REPO}/labels/squad%3Afrodo", None)], \
         "only the retired label goes; nothing else outside the merge settings is touched"
+
+
+def dotfiles_scope(monkeypatch, tmp_path):
+    shutil.copytree(gs.HERE, tmp_path / "github", ignore=shutil.ignore_patterns("tests", "__pycache__"))
+    (tmp_path / "github" / "repos.txt").write_text(f"{DOTFILES} repo-settings-only\n")
+    monkeypatch.setattr(gs, "HERE", tmp_path / "github")
+
+
+def test_dotfiles_reports_and_adds_only_the_copilot_review_rule(monkeypatch, tmp_path):
+    dotfiles_scope(monkeypatch, tmp_path)
+    fake = FakeGitHub(full_name=DOTFILES)
+    rules_before = [rule for rule in fake.rulesets[7]["rules"] if rule["type"] != "copilot_code_review"]
+    fake.rulesets[7]["rules"] = rules_before
+
+    checked, output = run(fake, repo=DOTFILES)
+    fixed, fix_output = run(fake, "--fix", repo=DOTFILES)
+
+    assert checked == 1
+    assert "DRIFT       ruleset main-rules: rule copilot_code_review: add" in output
+    assert fixed == 0, fix_output
+    assert len(fake.writes) == 1
+    method, path, body = fake.writes[0]
+    assert (method, path) == ("PUT", f"repos/{DOTFILES}/rulesets/7")
+    assert [rule for rule in body["rules"] if rule["type"] != "copilot_code_review"] == rules_before
+    copilot_rule = next(rule for rule in body["rules"] if rule["type"] == "copilot_code_review")
+    assert copilot_rule["parameters"] == {"review_on_push": True, "review_draft_pull_requests": True}
+
+
+def test_dotfiles_reports_ok_when_the_copilot_review_rule_matches(monkeypatch, tmp_path):
+    dotfiles_scope(monkeypatch, tmp_path)
+    fake = FakeGitHub(full_name=DOTFILES)
+
+    status, output = run(fake, repo=DOTFILES)
+
+    assert status == 0, output
+    assert "OK          ruleset main-rules: Copilot review rule matches the standard" in output
+    assert fake.writes == []
+
+
+def test_dotfiles_fixes_disabled_copilot_review_flags_without_changing_other_rules(monkeypatch, tmp_path):
+    dotfiles_scope(monkeypatch, tmp_path)
+    fake = FakeGitHub(full_name=DOTFILES)
+    rules_before = [rule for rule in fake.rulesets[7]["rules"] if rule["type"] != "copilot_code_review"]
+    copilot_rule = next(rule for rule in fake.rulesets[7]["rules"] if rule["type"] == "copilot_code_review")
+    copilot_rule["parameters"]["review_on_push"] = False
+
+    checked, output = run(fake, repo=DOTFILES)
+    fixed, fix_output = run(fake, "--fix", repo=DOTFILES)
+
+    assert checked == 1
+    assert "review_on_push" in output
+    assert fixed == 0, fix_output
+    assert [rule for rule in fake.rulesets[7]["rules"] if rule["type"] != "copilot_code_review"] == rules_before
+    copilot_rule = next(rule for rule in fake.rulesets[7]["rules"] if rule["type"] == "copilot_code_review")
+    assert copilot_rule["parameters"] == {"review_on_push": True, "review_draft_pull_requests": True}
 
 
 def test_a_per_repo_file_can_add_a_required_check(monkeypatch, tmp_path):

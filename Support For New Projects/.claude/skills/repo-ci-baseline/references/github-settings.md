@@ -61,7 +61,9 @@ Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
 - **`github/repos/<repo>.json`** may add `required_checks` or `labels` for one repo, never remove or loosen anything; any other key is an error.
   A repo's own required check (a Sandcastle check, say) goes there, and in its workflow.
 - **`repos.txt` scope.** `repo-settings-only` manages just the merge settings, and deletes the retired squad labels. dotfiles carries it: it isn't a Baseline repo,
-  and rulesets need GitHub Pro on a private repo, where the API answers 403 (reported as UNAVAILABLE, which doesn't fail the run).
+  and its hand-made `main-rules` is checked only for the `copilot_code_review` rule: review on push and drafts included.
+  Every other part of that ruleset stays unmanaged. The ruleset check is UNAVAILABLE if the API returns 403 or 404,
+  which doesn't fail the run.
 
 ## When to run it
 
@@ -75,7 +77,7 @@ Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
 ## Tests
 
 `github/tests/test_settings.py` runs the script against an in-memory GitHub that keeps state, so a case can run `--fix` and then show that a
-second run writes nothing. Cases cover each area's drift and fix, a check-only run writing nothing, required checks limited to what workflows report,
+second run writes nothing. Cases cover each area's drift and fix, dotfiles' scoped Copilot review rule, a check-only run writing nothing, required checks limited to what workflows report,
 an old check kept while reported, a required check from another app, the suspend/restore cycle (keeping every rule), 403s,
 squad labels deleted, legacy rulesets deleted only on request (and classic protection only with `main-rules` active), the review cap,
 pinning only when all workflows are pinned, scope and per-repo additions, a per-repo file that tries to loosen the standard, and `--json`.

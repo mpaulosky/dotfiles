@@ -1,6 +1,9 @@
 // Gate checkpoints. The host runs scripts/gate.sh inside the sandbox after the
 // last developer run (checkpoint 1) and just before publishing (checkpoint 2).
-// The gate's exit code decides, never what an agent reports. A red gate gets up
+// The gate's exit code decides, never what an agent reports, and only while the
+// branch's own commits leave the gate script alone (see gateScriptChange): the
+// gate-fixer's job is to make the exit code 0, and a script it can edit would
+// let it do that by weakening the check. A red gate gets up
 // to GATE_FIXER_ATTEMPTS gate-fixer runs, with the gate re-run after each; a
 // fixer run that throws or times out still uses up its attempt.
 
@@ -39,13 +42,52 @@ export async function headOf(sandbox: Pick<Sandbox, "exec">): Promise<string | u
   return exitCode === 0 && commitId.test(commit) ? commit : undefined;
 }
 
+// The commits a gate run vouches for: those after `base`, the commit the branch
+// was cut from, whose copy of the gate script is main's. `mergedMain` is the
+// main commit a build merged in afterwards, whose own history is left out.
+export type GateGuard = { base: string; mergedMain?: string };
+
+const quoted = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+
+// The file GATE_COMMAND runs.
+const gateScript = GATE_COMMAND.split(/\s+/)[0]!;
+
+// Why the gate can't be trusted on this branch, or undefined when it can: the
+// script it runs is written in the worktree, by the agents whose work it judges,
+// so a commit of theirs that changes it (or a git that can't say) leaves the
+// exit code showing nothing. The old host ran main's copy to avoid this; a
+// script run from the worktree can't be swapped for main's without breaking
+// what it finds by its own path, so the gate refuses the branch until the
+// change is undone. A change to the gate itself is for a person to make.
+export async function gateScriptChange(sandbox: Pick<Sandbox, "exec">, guard: GateGuard): Promise<string | undefined> {
+  const exclude = guard.mergedMain === undefined ? "" : ` ${quoted(`^${guard.mergedMain}`)}`;
+  const { stdout, stderr, exitCode } = await sandbox.exec(
+    `git log --no-merges --format=%h ${quoted(`${guard.base}..HEAD`)}${exclude} -- ${quoted(gateScript)} 2>&1`,
+  );
+  if (exitCode !== 0) {
+    return `❌ git log failed, so it can't be shown that the branch leaves ${gateScript}, the gate itself, alone:\n${stdout}${stderr}`;
+  }
+  const commits = stdout.trim().split("\n").filter(Boolean);
+  if (commits.length === 0) return undefined;
+  return (
+    `❌ The branch changes ${gateScript}, which is the gate itself (commits ${commits.join(", ")}), so a pass wouldn't show the work is ` +
+    `sound. Restore it to what the branch started from with \`git checkout ${guard.base} -- ${gateScript}\` and commit. ` +
+    "A change to the gate is for a person to make."
+  );
+}
+
 // Run the gate with stderr folded into stdout, so the output keeps the order
 // it was printed in. A passing gate over a dirty worktree still fails: the gate
 // checks BASE..HEAD and publish() pushes only commits, so uncommitted edits
 // would be gated but never pushed. So does one during which HEAD moved, or
 // whose HEAD can't be read: the host pushes the commit the gate passed on, by
-// its id, so that commit must be known.
-export async function runGate(sandbox: Pick<Sandbox, "exec">): Promise<GateRun> {
+// its id, so that commit must be known. Given a `guard`, a branch whose own
+// commits change the gate script fails without running it.
+export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard): Promise<GateRun> {
+  if (guard !== undefined) {
+    const changed = await gateScriptChange(sandbox, guard);
+    if (changed !== undefined) return { passed: false, output: changed };
+  }
   const before = await headOf(sandbox);
   const { stdout, exitCode } = await sandbox.exec(`${GATE_COMMAND} 2>&1`);
   const output = stdout.replace(ansiEscape, "");

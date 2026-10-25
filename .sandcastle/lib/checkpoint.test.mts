@@ -176,6 +176,69 @@ describe("runGate", () => {
     assert.match(result.output, /git status failed/);
   });
 
+  describe("with a guard", () => {
+    const base = "c".repeat(40);
+    const mergedMain = "d".repeat(40);
+
+    // The Template's sandbox, whose `git log` of the gate script prints `changed`.
+    const guarded = (changed: string, logExit = 0) => {
+      const inner = sandbox(0);
+      return {
+        commands: inner.commands,
+        exec: async (command: string) =>
+          command.startsWith("git log")
+            ? (inner.commands.push(command), { stdout: changed, stderr: "", exitCode: logExit })
+            : inner.exec(command),
+      };
+    };
+
+    it("runs the gate when the branch's commits leave the gate script alone", async () => {
+      const s = guarded("");
+
+      const result = await runGate(s, { base });
+
+      assert.equal(result.passed, true);
+      assert.match(s.commands[0]!, /^git log --no-merges --format=%h 'c+\.\.HEAD' -- '[^']+' 2>&1$/);
+    });
+
+    it("leaves the merged main's history out of the check", async () => {
+      const s = guarded("");
+
+      await runGate(s, { base, mergedMain });
+
+      assert.match(s.commands[0]!, new RegExp(`'\\^${mergedMain}'`));
+    });
+
+    it("fails without running the gate when a commit of the branch changes the gate script, and says how to undo it", async () => {
+      const s = guarded("abc1234\n");
+
+      const result = await runGate(s, { base });
+
+      assert.equal(result.passed, false);
+      assert.equal(result.head, undefined);
+      assert.match(result.output, /changes .*, which is the gate itself \(commits abc1234\)/);
+      assert.match(result.output, new RegExp(`git checkout ${base} -- `));
+      assert.equal(s.commands.length, 1);
+    });
+
+    it("fails when git can't say whether the gate script changed", async () => {
+      const s = guarded("fatal: bad revision", 128);
+
+      const result = await runGate(s, { base });
+
+      assert.equal(result.passed, false);
+      assert.match(result.output, /git log failed/);
+      assert.equal(s.commands.length, 1);
+    });
+
+    it("doesn't ask without a guard", async () => {
+      const s = guarded("abc1234\n");
+
+      assert.equal((await runGate(s)).passed, true);
+      assert.ok(!s.commands.some((command) => command.startsWith("git log")));
+    });
+  });
+
   it("doesn't check the worktree when the gate is already red", async () => {
     const s = sandbox(1);
 

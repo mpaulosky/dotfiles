@@ -13,6 +13,7 @@ import {
   BASE_BRANCH,
   BUILD_FAILED_MARKER,
   BUILDING_LABEL,
+  CHECK_PATHS,
   DESIGN_MARKER,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
@@ -32,6 +33,23 @@ import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git } from "./shell.mts";
 import { agentSandbox } from "./skills.mts";
+
+// A conventional-commit prefix as scripts/check-pr-title.sh accepts it: a type,
+// an optional scope, an optional breaking-change marker, a colon and a space.
+const titlePrefix = /^(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\([^)]+\))?!?: /;
+
+// The title of the PR built from `issue`. The title becomes the squash commit's
+// subject, which scripts/check-pr-title.sh holds to `<type>(<scope>): <Summary>`
+// with a capital and no final period, and a PR that fails it never merges. An
+// issue title that already follows it is used as written. One that doesn't gets
+// `fix:` when the issue is labelled bug, else `feat:`, and its summary a
+// capital and no final period.
+export function prTitle(issue: Pick<SandcastleIssue, "title" | "labels">): string {
+  const title = issue.title.trim().replace(/\s+/g, " ");
+  const prefix = titlePrefix.exec(title)?.[0] ?? (issue.labels.includes("bug") ? "fix: " : "feat: ");
+  const summary = (titlePrefix.test(title) ? title.slice(prefix.length) : title).replace(/\.+$/, "");
+  return `${prefix}${summary.charAt(0).toUpperCase()}${summary.slice(1)}`;
+}
 
 // Re-exported for the callers and tests that already import it from here.
 export { UncountedStopError };
@@ -59,6 +77,9 @@ export { UncountedStopError };
 // Blazor-Server's docs/plans/sandcastle-workflow.md): the PR still publishes, with a note
 // that the documentation step failed.
 //
+// `checkChanges` are the files under CHECK_PATHS that the branch's own commits
+// change; the PR body lists them (see CHECK_PATHS).
+//
 // `prBody` is the reviewer's `pr-body.md` (its Why, What changed and
 // Verification sections), already read from the sandbox and validated by the
 // caller, or undefined to fall back to the generic body. A
@@ -72,6 +93,7 @@ export async function publish(
   reviewed: boolean,
   docsFailed: boolean,
   prBody: string | undefined = undefined,
+  checkChanges: readonly string[] = [],
   push: (branch: string, commit: string) => void = (pushBranch, pushCommit) =>
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
   createPullRequest: (branch: string, title: string, body: string) => string = openPullRequest,
@@ -90,11 +112,16 @@ export async function publish(
     : "";
   // PR_MARKER is how the follow-up sweep (lib/follow-up.mts) tells a PR the
   // host published from a collaborator's on a matching branch.
-  const body = `${PR_MARKER}\nCloses #${issue.number}\n\n${description}${docsNote}`;
+  const checkNote =
+    checkChanges.length > 0
+      ? "\n\n⚠️ The commits on this branch change files the gate and CI run, so they could have weakened a check. " +
+        `Look at these before merging: ${checkChanges.map((file) => `\`${file}\``).join(", ")}.`
+      : "";
+  const body = `${PR_MARKER}\nCloses #${issue.number}\n\n${description}${docsNote}${checkNote}`;
   // A retry after a create that GitHub carried out but answered with an error
   // finds that PR rather than open a second one: openPullRequest looks for an
   // open PR from the branch first.
-  return retryOnServerError(() => createPullRequest(branch, issue.title, body), wait);
+  return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body), wait);
 }
 
 // Whether a git or gh failure is GitHub's own server error, which a later
@@ -726,7 +753,7 @@ async function buildMarkedIssue(
     const result = await runCheckpoint(
       checkpoint,
       {
-        gate: () => runGate(sandbox),
+        gate: () => runGate(sandbox, { base }),
         fix: async (at, gateOutput) => {
           const fixer = await runRoleInSandbox(
             sandbox,
@@ -958,7 +985,7 @@ async function buildMarkedIssue(
     const synced = await syncWithMain();
     if (synced !== undefined) {
       const { reviewedHead, mergedMain } = synced;
-      const merged = await runGate(sandbox);
+      const merged = await runGate(sandbox, { base, mergedMain });
       log(`checkpoint 2: gate ${merged.passed ? "passed" : "failed"} with main merged in`);
       if (merged.passed) return merged.head === undefined ? undefined : { gated: merged.head, mergedMain };
       if (!(await restoredTo(reviewedHead, `git reset --hard ${shellWord(reviewedHead)}`))) {
@@ -968,6 +995,22 @@ async function buildMarkedIssue(
     }
     const gated = await gatePasses(2);
     return gated === undefined ? undefined : { gated };
+  }
+
+  // The files under CHECK_PATHS that the branch's own commits change (main's
+  // merged-in history left out), for the PR body to list. Empty when git can't
+  // say: the note is a courtesy to the reviewer, and the gate and CI still run.
+  async function changedCheckFiles(gated: string, mergedMain: string | undefined): Promise<string[]> {
+    const exclude = mergedMain === undefined ? "" : ` ${shellWord(`^${mergedMain}`)}`;
+    const paths = CHECK_PATHS.map(shellWord).join(" ");
+    const { stdout, exitCode } = await sandbox.exec(
+      `git log --no-merges --name-only --format= ${shellWord(`${base}..${gated}`)}${exclude} -- ${paths} 2>/dev/null`,
+    );
+    if (exitCode !== 0) {
+      log("the files the branch changes under the gate's and CI's folders can't be listed, so the PR body won't name them");
+      return [];
+    }
+    return [...new Set(stdout.split("\n").filter(Boolean))].sort();
   }
 
   // GitHub judges the push of a branch it doesn't have yet against main's
@@ -1127,9 +1170,10 @@ async function buildMarkedIssue(
     // pushed) or any other git or gh failure. Whatever still fails needs a
     // person, so the issue gets git's or gh's error rather than only the run log.
     const prBody = await reviewerPrBody();
+    const checkChanges = await changedCheckFiles(gated, mergedMain);
     const branchAtBase = await triedCreatingBranchAtBase(gated);
     try {
-      const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody);
+      const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody, checkChanges);
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
     } catch (error) {
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${error}`);
@@ -1141,28 +1185,12 @@ async function buildMarkedIssue(
         // A failed listing still hands back: the comment then names the
         // directory rather than each file.
         let files: string[] = [];
-        let listed = true;
         try {
           files = host.workflowFiles(base, gated, mergedMain);
         } catch (listError) {
-          listed = false;
           console.error(`  ⚠ #${issue.number}: listing the workflow files ${branch} changes failed: ${listError}`);
         }
         const change = { head: gated, files };
-        // The build's commits touch no workflow and the branch was pushed as a
-        // new one, so GitHub refused it only for main's change since `base`.
-        // The next round builds from the new main, which holds that change, and
-        // its push goes through: no local run is needed.
-        if (branchAtBase !== undefined && !branchAtBase.created && listed && files.length === 0) {
-          log(`GitHub refused ${branch} only for a workflow change main made since ${base}, so the issue stays in the queue for the next round`);
-          return {
-            commits,
-            prUrl: undefined,
-            publishFailed: true,
-            outcome: "not published",
-            detail: "GitHub refused its push for a workflow change main made since the build started, so the next round builds it again",
-          };
-        }
         if (branchAtBase !== undefined) {
           // The refused push left the branch at base with no commits and no
           // PR; a stray one would send the next round down the existing-branch

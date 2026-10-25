@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { gateFailureComment, runCheckpoint, runGate, tail, type Checkpoint, type GateRun } from "./checkpoint.mts";
+import { GATE_COMMAND } from "./repo-config.mts";
+
+// These tests name the Template's gate command, whatever this repo's
+// GATE_COMMAND is: the fake sandbox reports the configured one as the default.
+const asDefaultGate = (command: string) => (command === `${GATE_COMMAND} 2>&1` ? "scripts/gate.sh 2>&1" : command);
 
 const red = (output = "error CS1002: ; expected"): GateRun => ({ passed: false, output });
 const green: GateRun = { passed: true, output: "Gate passed" };
@@ -113,7 +118,8 @@ describe("runGate", () => {
     const queue = [...heads];
     return {
       commands,
-      exec: async (command: string) => {
+      exec: async (rawCommand: string) => {
+        const command = asDefaultGate(rawCommand);
         commands.push(command);
         if (command === "git rev-parse HEAD") {
           const head = queue.length > 1 ? queue.shift()! : queue[0]!;

@@ -6,8 +6,9 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type * as sandcastle from "@ai-hero/sandcastle";
+import { GATE_COMMAND } from "./repo-config.mts";
 
 export type GitSandboxFake = {
   // Stands in for what makes the sandbox: resolves to the fake sandbox.
@@ -60,9 +61,10 @@ export function gitSandboxFake(): GitSandboxFake {
   run("git add base.txt");
   setupCommit("base");
   run("git checkout -q -b feature");
-  mkdirSync(join(repo, "scripts"));
-  writeFileSync(join(repo, "scripts", "gate.sh"), "#!/bin/sh\nexit 0\n");
-  chmodSync(join(repo, "scripts", "gate.sh"), 0o755);
+  const gate = join(repo, GATE_COMMAND);
+  mkdirSync(dirname(gate), { recursive: true });
+  writeFileSync(gate, "#!/bin/sh\nexit 0\n");
+  chmodSync(gate, 0o755);
   writeFileSync(join(repo, "feature.txt"), "feature\n");
   run("git add .");
   setupCommit("feature");

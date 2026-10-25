@@ -31,6 +31,11 @@ import type { IsOwner } from "./queue.mts";
 import { OutcomeReport, type HumanThreadEntry } from "./report.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
+import { GATE_COMMAND } from "./repo-config.mts";
+
+// These tests name the Template's gate command, whatever this repo's
+// GATE_COMMAND is: the fake sandbox reports the configured one as the default.
+const asDefaultGate = (command: string) => (command === `${GATE_COMMAND} 2>&1` ? "scripts/gate.sh 2>&1" : command);
 
 const ISSUE_NUMBER = 50;
 const PR_NUMBER = 7;
@@ -539,7 +544,7 @@ describe("passSummaryComment", () => {
   it("says the gate was red on the PR's head when the pass fixed it", () => {
     const comment = passSummaryComment({ ...report, redCi: { fix: true, rerun: [], forward: [] } }, publicError);
 
-    assert.match(comment, /`scripts\/gate\.sh` was red on the PR's head/);
+    assert.ok(comment.includes(`\`${GATE_COMMAND}\` was red on the PR's head`));
   });
 
   it("names the checks whose failed-job logs went to the follow-up role", () => {
@@ -701,7 +706,8 @@ function sandboxFake(
 
   const sandbox = {
     worktreePath: "/worktree",
-    exec: async (command: string) => {
+    exec: async (rawCommand: string) => {
+      const command = asDefaultGate(rawCommand);
       execCalls.push(command);
       // Every exec call lands here too, alongside role runs, so a test can
       // compare an exec's position against a role's in one timeline instead

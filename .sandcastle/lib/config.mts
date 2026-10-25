@@ -33,6 +33,9 @@ export const ROLE_AGENTS = {
 
 export type Role = keyof typeof ROLE_AGENTS;
 
+// Not implemented yet: the role names, which lib/repo-config.mts's ROLE_AGENTS must cover exactly.
+export const ROLES: readonly Role[] = [];
+
 // The roles the planner may pick per issue, besides the tester, developer
 // (the backend role) and reviewer, which always run (see "Phase 4: Plan" and
 // "Phase 6: Build" in docs/plans/sandcastle-workflow.md). lib/plan.mts#resolveRoles

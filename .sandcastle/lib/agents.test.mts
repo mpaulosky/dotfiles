@@ -5,6 +5,7 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { isRoleTimeout, roleOptions, runRoleInSandbox, runWithinLimits, withSharedRules } from "./agents.mts";
 import { UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
+import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
 
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
@@ -14,14 +15,14 @@ describe("roleOptions", () => {
     const options = roleOptions("tester");
 
     assert.equal(options.name, "tester");
-    assert.equal(options.maxIterations, 3);
+    assert.equal(options.maxIterations, ROLE_AGENTS.tester.maxIterations);
   });
 
   it("runs the role's model at its effort", () => {
     const { command } = roleOptions("scribe").agent.buildPrintCommand({ prompt: "", dangerouslySkipPermissions: true });
 
-    assert.match(command, /--model 'claude-sonnet-5-5'/);
-    assert.match(command, /--effort medium/);
+    assert.match(command, new RegExp(`--model '${ROLE_AGENTS.scribe.model}'`));
+    assert.match(command, new RegExp(`--effort ${ROLE_AGENTS.scribe.effort}`));
   });
 
   it("aborts the run after the role's timeout", () => {
@@ -33,7 +34,7 @@ describe("roleOptions", () => {
       return signal;
     });
 
-    assert.deepEqual(requested, [45 * 60_000]);
+    assert.deepEqual(requested, [ROLE_AGENTS.backend.timeoutMinutes * 60_000]);
     assert.equal(options.signal, signal);
   });
 });

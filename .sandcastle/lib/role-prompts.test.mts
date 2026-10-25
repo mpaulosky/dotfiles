@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { SANDBOX_SKILLS } from "./skills.mts";
+import { SANDBOX_SKILLS } from "./repo-config.mts";
 
 const sandcastleFile = (path: string) => new URL(`../${path}`, import.meta.url);
 const read = (path: string) => readFileSync(sandcastleFile(path), "utf8");

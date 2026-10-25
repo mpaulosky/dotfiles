@@ -575,9 +575,19 @@ describe("giveUpComment", () => {
 
 // Acceptance criterion: "The decision between fix, re-run and CodeQL is unit
 // tested with stubbed check data."
+// What the host's gateCovered holds in dotfiles (lib/repo-config.mts#GATE_COVERED_CHECKS). The functions take the set, so these tests
+// don't depend on any repo's value.
+const covered: ReadonlySet<string> = new Set(["Template tests"]);
+
 describe("isGateCovered", () => {
-  it(`treats "Template tests" as the job scripts/gate.sh reproduces`, () => {
-    assert.equal(isGateCovered("Template tests"), true);
+  it("treats a name in the covered set as a job scripts/gate.sh reproduces", () => {
+    assert.equal(isGateCovered("Template tests", covered), true);
+  });
+
+  it("takes the covered names from its argument, not from any one repo's value", () => {
+    assert.equal(isGateCovered("Build Solution", new Set(["Build Solution"])), true);
+    assert.equal(isGateCovered("Template tests", new Set(["Build Solution"])), false);
+    assert.equal(isGateCovered("Template tests", new Set()), false);
   });
 
   // Blazor-Server's jobs, which dotfiles hasn't got, and dotfiles' checks
@@ -594,44 +604,50 @@ describe("isGateCovered", () => {
     "Analyze (actions)",
   ]) {
     it(`treats "${name}" as a check scripts/gate.sh doesn't reproduce`, () => {
-      assert.equal(isGateCovered(name), false);
+      assert.equal(isGateCovered(name, covered), false);
     });
   }
 });
 
 describe("planRedCi", () => {
   it("fixes a build the gate reproduces, regardless of which checks are red", () => {
-    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Template tests" })]);
+    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Template tests" })], covered);
 
     assert.deepEqual(plan, { fix: true, rerun: [], forward: [] });
   });
 
   it("fixes even when the only red check is one the gate doesn't cover, since the gate itself is red", () => {
-    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Analyze (csharp)" })]);
+    const plan: RedCiPlan = planRedCi(false, [redCheck({ name: "Analyze (csharp)" })], covered);
 
     assert.deepEqual(plan, { fix: true, rerun: [], forward: [] });
   });
 
   it("re-runs a gate-covered check once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" })], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: ["Template tests"], forward: [] });
   });
 
   it("forwards a check the gate doesn't cover once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Analyze (csharp)" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Analyze (csharp)" })], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: [], forward: ["Analyze (csharp)"] });
   });
 
   it("sorts red checks of both kinds into rerun and forward once the gate is green", () => {
-    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" }), redCheck({ name: "Analyze (csharp)" })]);
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" }), redCheck({ name: "Analyze (csharp)" })], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: ["Template tests"], forward: ["Analyze (csharp)"] });
   });
 
+  it("re-runs and forwards by the covered set it's given, not by any one repo's value", () => {
+    const plan: RedCiPlan = planRedCi(true, [redCheck({ name: "Template tests" }), redCheck({ name: "Build Solution" })], new Set(["Build Solution"]));
+
+    assert.deepEqual(plan, { fix: false, rerun: ["Build Solution"], forward: ["Template tests"] });
+  });
+
   it("does nothing when the gate is green and no check is red", () => {
-    const plan: RedCiPlan = planRedCi(true, []);
+    const plan: RedCiPlan = planRedCi(true, [], covered);
 
     assert.deepEqual(plan, { fix: false, rerun: [], forward: [] });
   });
@@ -781,6 +797,8 @@ function passHostFake(
     rerunResult?: CheckState[];
     // host.failedCheckLog's answer.
     failedCheckLog?: string;
+    // host.gateCovered; defaults to the set the isGateCovered tests use.
+    gateCovered?: ReadonlySet<string>;
   } = {},
 ) {
   const calls = {
@@ -801,6 +819,7 @@ function passHostFake(
   };
   const sandbox = options.sandbox ?? sandboxFake();
   const passHost: PassHost = {
+    gateCovered: options.gateCovered ?? covered,
     fetchBranch: (branch) => void calls.fetchBranch.push(branch),
     reviewThreads: () => ({
       headRefOid: options.headRefOid ?? HEAD,
@@ -1641,6 +1660,23 @@ describe("runPass's red CI handling", () => {
     assert.deepEqual(calls.rerunFailedChecks, [{ pr: PR_NUMBER, checkNames: ["Template tests"], expectedHead: HEAD }]);
     assert.equal(sandbox.runs.length, 0, "no role ran: nothing in the branch needed changing");
     assert.deepEqual(calls.push, []);
+  });
+
+  it("doesn't re-run a red check the host's gateCovered leaves out, but forwards its log", async () => {
+    const sandbox = sandboxFake({ gateExitCodes: [0, 0, 0], followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({
+      threads: [],
+      containsBase: true,
+      sandbox,
+      gateCovered: new Set(),
+      checks: [redCheck({ name: "Template tests" })],
+      failedCheckLog: "the failed-job log",
+    });
+
+    await runPass(passTarget({ reasons: ["check Template tests is red"] }), issue, BASE, passHost);
+
+    assert.deepEqual(calls.rerunFailedChecks, []);
+    assert.deepEqual(calls.failedCheckLog.map((call) => call.checkNames), [["Template tests"]]);
   });
 
   // Acceptance criterion: "A second failure hands the PR back with

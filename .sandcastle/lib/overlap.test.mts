@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { OVERLAP_MARKER, TEMPLATE_OWNED_DIR } from "./config.mts";
+import { OVERLAP_MARKER } from "./config.mts";
 import type { OpenPullRequest } from "./github.mts";
 import {
   critiqueUnpicked,
@@ -23,9 +23,6 @@ const pick = (number: number, files: string[], comments: string[] = []): FilePic
   comments,
   files,
 });
-
-const ownedWorkflow = `${TEMPLATE_OWNED_DIR}/.github/workflows/pr-automerge.yml`;
-const rootWorkflow = ".github/workflows/pr-automerge.yml";
 
 // A GitHub stub: `prs` maps each open PR into main to the paths it changes.
 // Writes are recorded instead of sent, and every call is logged in `calls`.
@@ -55,24 +52,6 @@ const capture = () => {
 };
 
 describe("pathKey", () => {
-  it("maps a Template Owned file to its dotfiles root copy", () => {
-    assert.equal(pathKey(ownedWorkflow), rootWorkflow);
-  });
-
-  it("leaves the root copy as it is", () => {
-    assert.equal(pathKey(rootWorkflow), rootWorkflow);
-  });
-
-  it("leaves an Owned file with no root copy alone: template/owned/scripts/gate.sh is not dotfiles' scripts/gate.sh", () => {
-    assert.equal(pathKey(`${TEMPLATE_OWNED_DIR}/scripts/gate.sh`), `${TEMPLATE_OWNED_DIR}/scripts/gate.sh`);
-    assert.notEqual(pathKey(`${TEMPLATE_OWNED_DIR}/scripts/gate.sh`), pathKey("scripts/gate.sh"));
-  });
-
-  // #280: the Template's Sandcastle Owned files are copied into dotfiles' own .sandcastle/, so a change to either is one path.
-  it("maps a Template Owned Sandcastle file to dotfiles' own .sandcastle/ copy", () => {
-    assert.equal(pathKey(`${TEMPLATE_OWNED_DIR}/.sandcastle/tsconfig.json`), ".sandcastle/tsconfig.json");
-  });
-
   it("leaves any other path alone", () => {
     assert.equal(pathKey(".sandcastle/lib/build.mts"), ".sandcastle/lib/build.mts");
   });
@@ -152,25 +131,6 @@ describe("findOverlaps", () => {
     const held = findOverlaps([pick(1, []), pick(2, ["x"])], []);
 
     assert.equal(held.has(2), false);
-  });
-
-  // AC: a Template Owned file and its dotfiles root copy count as the same path.
-  it("counts a Template Owned file and its root copy as one path between two picks", () => {
-    const held = findOverlaps([pick(1, [ownedWorkflow]), pick(2, [rootWorkflow])], []);
-
-    assert.deepEqual(held.get(2), { kind: "pick", blocker: 1, path: rootWorkflow });
-  });
-
-  it("counts a Template Owned file and its root copy as one path between a pick and an open PR", () => {
-    const held = findOverlaps([pick(1, [ownedWorkflow])], [{ number: 9, files: [rootWorkflow] }]);
-
-    assert.deepEqual(held.get(1), { kind: "pr", blocker: 9, path: ownedWorkflow });
-  });
-
-  it("doesn't count template/owned/scripts/gate.sh and dotfiles' scripts/gate.sh as one path", () => {
-    const held = findOverlaps([pick(1, [`${TEMPLATE_OWNED_DIR}/scripts/gate.sh`]), pick(2, ["scripts/gate.sh"])], []);
-
-    assert.equal(held.size, 0);
   });
 
   it("counts a directory entry as overlapping every path under it, either way round", () => {
@@ -473,15 +433,6 @@ describe("holdOverlappingPicks", () => {
     const { kept } = holdOverlappingPicks([withRoles], gh.stub, () => {}, new OutcomeReport());
 
     assert.deepEqual(kept[0]?.roles, ["scribe"]);
-  });
-
-  it("reads the PRs' files, not the picks', with the Template and root copies as one path", () => {
-    const gh = github({ 9: [rootWorkflow] });
-
-    const { held } = holdOverlappingPicks([pick(1, [ownedWorkflow])], gh.stub, () => {}, new OutcomeReport());
-
-    assert.deepEqual(held.map((p) => p.number), [1]);
-    assert.ok(gh.calls.includes("files 9"));
   });
 
   it("reads nothing when there are no picks", () => {

@@ -452,6 +452,8 @@ export function passOutcomeEntry(target: PassTarget, outcome: PassOutcome): Outc
 // What runPass needs from outside the pass itself; tests pass a stub. The
 // live wiring sits at the bottom of this module.
 export type PassHost = {
+  // The CI checks scripts/gate.sh reproduces (lib/repo-config.mts#GATE_COVERED_CHECKS).
+  gateCovered: ReadonlySet<string>;
   // branches.mts's originGit.fetch, so the sandbox's createSandbox(branch)
   // checks the PR's head out from its remote-tracking ref.
   fetchBranch(branch: string): void;
@@ -531,6 +533,7 @@ export type PassHost = {
 
 // The live PassHost.
 export const livePassHost: PassHost = {
+  gateCovered: new Set(["Template tests"]),
   fetchBranch: (branch) => originGit.fetch(branch),
   reviewThreads: (pr) => reviewThreadsOf(pr),
   isOwner: ownerCheck(
@@ -678,7 +681,7 @@ async function fixesInPush(
 // never runs it, so a pass can't tell whether it's a real failure or a flaky
 // one by gating alone (see "Red CI" in Blazor-Server's
 // docs/plans/sandcastle-workflow.md).
-export function isGateCovered(checkName: string): boolean {
+export function isGateCovered(checkName: string, _covered: ReadonlySet<string>): boolean {
   return GATE_COVERED_CHECKS.has(checkName);
 }
 
@@ -699,12 +702,12 @@ const GATE_COVERED_CHECKS = new Set(["Template tests"]);
 // nothing to re-run or forward until the gate is green), and when there are
 // no red checks at all.
 export type RedCiPlan = { fix: boolean; rerun: string[]; forward: string[] };
-export function planRedCi(gatePassed: boolean, redChecks: readonly CheckState[]): RedCiPlan {
+export function planRedCi(gatePassed: boolean, redChecks: readonly CheckState[], covered: ReadonlySet<string>): RedCiPlan {
   if (!gatePassed) return { fix: true, rerun: [], forward: [] };
   // A check can be listed twice (a status and a check run of one name), but
   // it's re-run or forwarded once.
   const names = [...new Set(redChecks.map((check) => check.name))];
-  return { fix: false, rerun: names.filter(isGateCovered), forward: names.filter((name) => !isGateCovered(name)) };
+  return { fix: false, rerun: names.filter((name) => isGateCovered(name, covered)), forward: names.filter((name) => !isGateCovered(name, covered)) };
 }
 
 // Runs one follow-up pass on `target`, a PR the sweep (lib/follow-up.mts)
@@ -955,7 +958,7 @@ async function passOnMarkedIssue(
     let redCi: RedCiPlan = { fix: false, rerun: [], forward: [] };
     if (redChecks.length > 0) {
       headGate = await runGate(sandbox);
-      redCi = planRedCi(headGate.passed, redChecks);
+      redCi = planRedCi(headGate.passed, redChecks, host.gateCovered);
       log(`has ${redChecks.length} red check(s), and \`scripts/gate.sh\` ${headGate.passed ? "passes" : "fails"} on its head`);
     }
     let ciLog: string | undefined;

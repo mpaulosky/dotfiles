@@ -9,7 +9,8 @@
 # benchmark's tests, lints its workflows, YAML, shell
 # and Markdown with the Template's configs, checks that
 # Owned files carry no {{PLACEHOLDER}} and that the Owned scripts tell every gh
-# command its repository, and smoke-tests apply.sh and
+# command its repository, checks dotfiles' copies of Owned files (its
+# .sandcastle/ included) and the Seed Sandcastle files, and smoke-tests apply.sh and
 # reapply.sh against throwaway repos. dotfiles CI runs this on every change
 # under the skill, and it's the check to run before committing a Template
 # change.
@@ -99,7 +100,7 @@ shell_files=(
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
   "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh"
-  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh"
+  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.sandcastle/check.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )
@@ -110,10 +111,20 @@ step "markdownlint"
 # Applies. --config needs a file name ending in .markdownlint-cli2.jsonc.
 command cp -f "$owned/.markdownlint-cli2.jsonc" "$md_tmp/template.markdownlint-cli2.jsonc"
 (cd "$skill_dir" && markdownlint-cli2 --config "$md_tmp/template.markdownlint-cli2.jsonc" \
-  '*.md' 'references/*.md' 'docs/**/*.md' 'template/**/*.md' 'template/**/.*/**/*.md') || fail "markdownlint"
+  '*.md' 'references/*.md' 'docs/**/*.md' 'template/**/*.md' 'template/**/.*/**/*.md' '!template/seed/.sandcastle/**') || fail "markdownlint"
+# The Seed Sandcastle prompts, as an Applied repo lints them: beside the Owned
+# .sandcastle/.markdownlint-cli2.jsonc, which markdownlint-cli2 merges with --config.
+mkdir -p "$md_tmp/seed-sandcastle/.sandcastle"
+(cd "$seed/.sandcastle" && find . -name '*.md' -exec cp --parents {} "$md_tmp/seed-sandcastle/.sandcastle/" \;)
+command cp -f "$owned/.sandcastle/.markdownlint-cli2.jsonc" "$md_tmp/seed-sandcastle/.sandcastle/"
+(cd "$md_tmp/seed-sandcastle" && markdownlint-cli2 --config "$md_tmp/template.markdownlint-cli2.jsonc" '.sandcastle/**/*.md') \
+  || fail "markdownlint (Seed .sandcastle/)"
 
 step "No placeholders in Owned files"
-if grep -rnE '\{\{[A-Z_]+\}\}' "$owned"; then
+# Under .sandcastle/ only Apply's own three: Sandcastle fills its prompts'
+# {{NAME}}s ({{SHARED_RULES}}, {{ISSUES_JSON}} and the rest) when it runs them.
+if grep -rnE '\{\{[A-Z_]+\}\}' --exclude-dir=.sandcastle "$owned" \
+  || grep -rnE '\{\{(OWNER|REPO|SOLUTION)\}\}' "$owned/.sandcastle"; then
   fail "Owned files must not carry {{PLACEHOLDER}}s; per-repo values belong in Seed files"
 fi
 
@@ -174,16 +185,28 @@ done
 if git -C "$ignore_repo" check-ignore -q .env.example; then
   fail ".gitignore must not ignore .env.example"
 fi
+# Sandcastle's own .gitignore: its secrets, and the logs, worktrees and notes a run leaves.
+mkdir -p "$ignore_repo/.sandcastle"
+command cp -f "$owned/.sandcastle/.gitignore" "$ignore_repo/.sandcastle/.gitignore"
+for path in .env logs/x worktrees/x work/x follow-up.json; do
+  git -C "$ignore_repo" check-ignore -q ".sandcastle/$path" || fail ".sandcastle/.gitignore must ignore $path"
+done
+if git -C "$ignore_repo" check-ignore -q .sandcastle/.env.example; then
+  fail ".sandcastle/.gitignore must not ignore .env.example"
+fi
 
 step "dotfiles' copies of Template files"
 # dotfiles isn't a Baseline repo, so it carries Claude Review, PR Auto-Merge,
-# PR Review Submitted and the git hooks as copies of the Template's files, which must not drift
-# from them. Its
-# scripts/gate.sh is its own: it runs this script.
+# PR Review Submitted, the git hooks and Sandcastle's Owned files as copies of
+# the Template's files, which must not drift from them. Its scripts/gate.sh is
+# its own: it runs this script. Sandcastle's lib/config.mts reads this list.
 dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
 for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.yml .github/workflows/pr-review-submitted.yml \
   .github/scripts/post_claude_review.py \
-  .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh; do
+  .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh \
+  .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/critique-prompt.md \
+  .sandcastle/intake-prompt.md .sandcastle/lib/host-safety.mts .sandcastle/lib/host-safety.test.mts .sandcastle/lib/shell.mts \
+  .sandcastle/lib/shell.test.mts .sandcastle/tsconfig.json; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
   # The mode too: a hook that isn't executable doesn't run.
   owned_x=no; dotfiles_x=no
@@ -191,6 +214,29 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   [[ -x "$dotfiles/$file" ]] && dotfiles_x=yes
   [[ "$owned_x" == "$dotfiles_x" ]] || fail "dotfiles' $file is executable: $dotfiles_x, the Template's: $owned_x"
 done
+# Every Owned Sandcastle file, so a new one is checked before anyone lists it above.
+while IFS= read -r rel; do
+  cmp -s "$owned/.sandcastle/$rel" "$dotfiles/.sandcastle/$rel" \
+    || fail "dotfiles' .sandcastle/$rel differs from the Template's; copy it over"
+done < <(cd "$owned/.sandcastle" && find . -type f -printf '%P\n' | sort)
+
+step "Seed Sandcastle files"
+# Written from dotfiles' copies, so none of dotfiles' own text may stay behind.
+if grep -rnE 'dotfiles|repo-ci-baseline|Support For New Projects' "$seed/.sandcastle" "$seed/package.json"; then
+  fail "the Seed Sandcastle files describe dotfiles; describe any Baseline repo instead"
+fi
+# The sandbox runs the gate, so its linters are the versions the Owned gate.sh pins.
+for name in ACTIONLINT_VERSION ZIZMOR_VERSION SHELLCHECK_VERSION MARKDOWNLINT_CLI2_VERSION; do
+  pinned="$(sed -nE "s/^$name=\"([^\"]+)\".*/\1/p" "$owned/scripts/gate.sh")"
+  image="$(sed -nE "s/^ARG $name=([^ ]+).*/\1/p" "$seed/.sandcastle/Dockerfile")"
+  [[ -n "$pinned" && "$image" == "$pinned" ]] \
+    || fail "the Seed .sandcastle/Dockerfile's $name is '$image', gate.sh's '$pinned'; set it, and its SHA-256s, to gate.sh's"
+done
+# And the .NET SDK channel global.json pins.
+sdk="$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["sdk"]["version"])' "$owned/global.json")"
+channel="$(sed -nE 's/^ARG DOTNET_CHANNEL=([^ ]+).*/\1/p' "$seed/.sandcastle/Dockerfile")"
+[[ "$channel" == "$(cut -d. -f1-2 <<< "$sdk")" ]] \
+  || fail "the Seed .sandcastle/Dockerfile's DOTNET_CHANNEL is '$channel'; global.json's SDK is $sdk"
 
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"

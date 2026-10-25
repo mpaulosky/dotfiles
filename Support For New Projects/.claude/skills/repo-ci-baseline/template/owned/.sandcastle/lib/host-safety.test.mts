@@ -4,7 +4,33 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { hostGitEnv, mainGitDir, protectedGitMounts, withoutGitHooks, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+import { hostGitEnv, mainGitDir, protectedGitMounts, withoutGitHooks, worktreeConfigProblem, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+
+describe("worktreeConfigProblem", () => {
+  const configIn = (setup: (gitDir: string) => void) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-worktree-config-")));
+    try {
+      execFileSync("git", ["init", "--quiet", join(root, "repo")], { stdio: "ignore" });
+      setup(join(root, "repo", ".git"));
+      return worktreeConfigProblem(join(root, "repo", ".git"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const setExtension = (value: string) => (gitDir: string) =>
+    execFileSync("git", ["config", "--file", join(gitDir, "config"), "extensions.worktreeConfig", value]);
+
+  it("is undefined for a repository that doesn't turn it on", () => {
+    assert.equal(configIn(() => {}), undefined);
+    assert.equal(configIn(setExtension("false")), undefined);
+  });
+
+  it("names the config when extensions.worktreeConfig is on, however it is spelled", () => {
+    for (const value of ["true", "yes", "on", "1"]) {
+      assert.match(configIn(setExtension(value)) ?? "", /extensions\.worktreeConfig/, value);
+    }
+  });
+});
 
 describe("withoutGitHooks", () => {
   it("forces core.hooksPath to /dev/null through the environment", () => {

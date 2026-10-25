@@ -27,9 +27,11 @@
 //   (worktreeLinkProblems), and leaves one that doesn't for a person.
 //
 // What's left: a worktree's own files (HEAD, index) can still be redirected,
-// which changes what git sees there but runs nothing, unless someone turned on
-// extensions.worktreeConfig, which reads a config.worktree from there.
+// which changes what git sees there but runs nothing. extensions.worktreeConfig
+// would make git read a config.worktree from there, which agents can write, so
+// protectHostGit() refuses a repository that has it on (worktreeConfigProblem).
 
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
@@ -84,9 +86,26 @@ export function repoGitDir(): string {
   return commonDir;
 }
 
+// Why this repository can't be protected, or undefined when nothing is wrong:
+// with extensions.worktreeConfig on, git also reads .git/config.worktree and
+// each linked worktree's config.worktree, which agents can write and which can
+// name a command (core.fsmonitor) for the host's next git command to run.
+// .git/config is mounted read-only (protectedGitMounts), but those files aren't.
+export function worktreeConfigProblem(gitDir: string): string | undefined {
+  const enabled = execFileSync("git", ["config", "--file", join(gitDir, "config"), "--type=bool", "--default", "false", "extensions.worktreeConfig"], {
+    encoding: "utf8",
+  }).trim();
+  return enabled === "true"
+    ? `${join(gitDir, "config")} sets extensions.worktreeConfig, so git would read config.worktree files that agents can write. ` +
+        "Move what's in them into the shared config and run `git config --unset extensions.worktreeConfig`."
+    : undefined;
+}
+
 // Protect this process and everything it starts (see hostGitEnv). Call before
 // the first git command and before any agent runs.
 export function protectHostGit(): void {
+  const problem = worktreeConfigProblem(repoGitDir());
+  if (problem) throw new Error(problem);
   Object.assign(process.env, hostGitEnv(process.env, repoGitDir()));
 }
 

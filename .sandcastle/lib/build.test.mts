@@ -99,6 +99,7 @@ function host(
     gateOutput,
     gateScriptChanged = "",
     checkFiles = "",
+    checkFilesError,
   }: {
     ahead?: number | number[];
     statuses?: string[];
@@ -161,6 +162,8 @@ function host(
     // for the files under CHECK_PATHS that do.
     gateScriptChanged?: string;
     checkFiles?: string;
+    // An error listing the files under CHECK_PATHS throws instead.
+    checkFilesError?: string;
   } = {},
 ) {
   const steps: string[] = [];
@@ -226,13 +229,17 @@ function host(
         mainChecks.push(command);
         return { stdout: "", stderr: "", exitCode: containsMain ? 0 : 1 };
       }
-      if (command.startsWith("git cat-file -e")) {
+      if (command.startsWith("git --no-replace-objects") && command.includes(" cat-file -e ")) {
         return { stdout: "", stderr: "", exitCode: 0 };
       }
-      if (command.startsWith("git --literal-pathspecs diff")) {
+      if (command.startsWith("git --no-replace-objects") && command.includes(" merge-base ")) {
+        return { stdout: `${"e".repeat(40)}\n`, stderr: "", exitCode: 0 };
+      }
+      if (command.startsWith("git --no-replace-objects") && command.includes(" diff ")) {
         // The gate guard asks about the gate script alone, the PR body's note about CHECK_PATHS.
         const forGuard = command.split(" -- ")[1]?.replace(" 2>/dev/null", "") === `'${GATE_SCRIPT}'`;
         if (forGuard) gateGuardChecks.push(command);
+        if (!forGuard && checkFilesError !== undefined) throw new Error(checkFilesError);
         return { stdout: forGuard ? gateScriptChanged : checkFiles, stderr: "", exitCode: 0 };
       }
       if (command.startsWith("git merge --abort")) {
@@ -716,6 +723,16 @@ describe("buildIssue's outcome and detail", () => {
     assert.deepEqual(publishedCheckChanges, [[".github/ci/a.sh", "scripts/gate.sh"]]);
   });
 
+  it("still publishes when listing the files under the gate's and CI's folders throws", async () => {
+    const { publishedCheckChanges, logs, buildHost } = host([0, 0], { checkFilesError: "container died" });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(publishedCheckChanges, [[]]);
+    assert.ok(logs.some((line) => line.includes("can't be listed")), logs.join("\n"));
+  });
+
   it("is gate failed, naming the checkpoint, when a checkpoint stays red past the gate-fixer's attempts", async () => {
     const { buildHost } = host([1, 1, 1]);
 
@@ -732,7 +749,7 @@ describe("buildIssue's outcome and detail", () => {
 
     assert.equal(result.outcome, "gate failed");
     assert.ok(gateGuardChecks.length > 0);
-    assert.ok(gateGuardChecks.every((command) => command.includes(`'${base}' 'HEAD'`)), gateGuardChecks.join("\n"));
+    assert.ok(gateGuardChecks.some((command) => command.includes(`'${base}' 'HEAD'`)), gateGuardChecks.join("\n"));
     assert.ok(!steps.some((step) => step.startsWith("gate:")), steps.join("\n"));
   });
 
@@ -924,6 +941,16 @@ describe("buildIssue syncing with main before publishing", () => {
 
     assert.ok(!steps.some((step) => step.startsWith("merge")));
     assert.equal(mainChecks.length, 1);
+  });
+
+  it("leaves the merged main out of the gate guard only once GitHub says it is main", async () => {
+    const trusted = host([0, 0], { latestMain: newerMain, containsMain: false });
+    await buildIssue(issue, branch, base, trusted.buildHost);
+    const untrusted = host([0, 0], { latestMain: newerMain, containsMain: false, remoteMain: "9".repeat(40) });
+    await buildIssue(issue, branch, base, untrusted.buildHost);
+
+    assert.ok(trusted.gateGuardChecks.some((command) => command.includes(`'${newerMain}'`)), trusted.gateGuardChecks.join("\n"));
+    assert.ok(!untrusted.gateGuardChecks.some((command) => command.includes(`'${newerMain}'`)), untrusted.gateGuardChecks.join("\n"));
   });
 
   it("aborts a merge that conflicts and publishes the reviewed commit, leaving the conflict to the follow-up pass", async () => {

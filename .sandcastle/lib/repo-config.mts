@@ -78,7 +78,7 @@ export const GATE_COMMAND = "scripts/gate.sh";
 export const GATE_SCRIPT = "scripts/gate.sh";
 
 // The paths whose files the gate and CI run: the scripts, the tests, the build
-// definition. An agent that edits one can make its own checks pass, so a PR
+// definition, and the workflows a `Sandcastle:local` build can change. An agent that edits one can make its own checks pass, so a PR
 // whose branch changes a file under them lists it in its body for the reviewer
 // (lib/build.mts#publish). Folders end in a slash. List every place the gate
 // reads its checks from, not only where its script sits. dotfiles' gate runs the
@@ -88,6 +88,7 @@ export const CHECK_PATHS: readonly string[] = [
   ".sandcastle/",
   "scripts/",
   ".github/ci/",
+  ".github/workflows/",
   "package.json",
   `${SKILL}test.sh`,
   `${SKILL}tests/`,

@@ -191,9 +191,13 @@ describe("runGate", () => {
       return {
         commands: inner.commands,
         exec: async (command: string) => {
-          if (command.startsWith("git cat-file")) {
+          if (command.includes(" cat-file ")) {
             inner.commands.push(command);
             return { stdout: "", stderr: "", exitCode: tracked ? 0 : 128 };
+          }
+          if (command.includes(" merge-base ")) {
+            inner.commands.push(command);
+            return { stdout: `${"d".repeat(40)}\n`, stderr: "", exitCode: 0 };
           }
           if (command.includes(" diff ")) {
             inner.commands.push(command);
@@ -210,7 +214,7 @@ describe("runGate", () => {
       const result = await runGate(s, { base });
 
       assert.equal(result.passed, true);
-      assert.match(s.commands[0]!, new RegExp(`^git cat-file -e '${base}:`));
+      assert.match(s.commands[0]!, new RegExp(`^git --no-replace-objects --literal-pathspecs cat-file -e '${base}:`));
     });
 
     it("fails without running the gate when the branch changes the gate script, and says how to restore it", async () => {
@@ -243,7 +247,7 @@ describe("runGate", () => {
       const s = guarded(`${GATE_SCRIPT}\0`);
 
       assert.equal((await runGate(s)).passed, true);
-      assert.ok(!s.commands.some((command) => command.startsWith("git cat-file")));
+      assert.ok(!s.commands.some((command) => command.includes(" cat-file ")));
     });
   });
 
@@ -398,6 +402,37 @@ describe("the gate guard in a git repository", () => {
       git("merge", "--quiet", "--no-edit", mergedMain);
 
       assert.equal(await gateScriptChange(run, { base, mergedMain }), undefined);
+      assert.match((await gateScriptChange(run, { base })) ?? "", /changes .*, which is the gate itself/);
+    });
+  });
+
+  it("leaves out main's change to the gate script for a branch cut from an older main, until the branch changes it too", async () => {
+    await inRepo(async ({ git, write, run }) => {
+      git("checkout", "--quiet", "-b", "work");
+      write("src/a.txt", "branch work\n");
+      git("commit", "--quiet", "-am", "work");
+      git("checkout", "--quiet", "main");
+      write(GATE_SCRIPT, "#!/bin/sh\nexit 0 # main's change\n");
+      git("commit", "--quiet", "-am", "main changes the gate");
+      const newMain = git("rev-parse", "HEAD");
+      git("checkout", "--quiet", "work");
+
+      assert.equal(await gateScriptChange(run, { base: newMain }), undefined);
+
+      write(GATE_SCRIPT, "#!/bin/sh\nexit 0 # weakened\n");
+      git("commit", "--quiet", "-am", "weaken the gate");
+      assert.match((await gateScriptChange(run, { base: newMain })) ?? "", /changes .*, which is the gate itself/);
+    });
+  });
+
+  it("isn't fooled by a replace ref that makes base hold the branch's weakened script", async () => {
+    await inRepo(async ({ git, write, run }) => {
+      const base = git("rev-parse", "HEAD");
+      write(GATE_SCRIPT, "#!/bin/sh\nexit 0 # weakened\n");
+      git("commit", "--quiet", "-am", "weaken the gate");
+      const fake = git("commit-tree", "-m", "fake base", git("rev-parse", "HEAD^{tree}"));
+      git("replace", base, fake);
+
       assert.match((await gateScriptChange(run, { base })) ?? "", /changes .*, which is the gate itself/);
     });
   });

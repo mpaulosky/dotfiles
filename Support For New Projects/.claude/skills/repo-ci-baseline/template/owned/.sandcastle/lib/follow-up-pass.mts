@@ -952,7 +952,7 @@ async function passOnMarkedIssue(
     let headGate: GateRun | undefined;
     let redCi: RedCiPlan = { fix: false, rerun: [], forward: [] };
     if (redChecks.length > 0) {
-      headGate = await runGate(sandbox);
+      headGate = await runGate(sandbox, { base });
       redCi = planRedCi(headGate.passed, redChecks, host.gateCovered);
       log(`has ${redChecks.length} red check(s), and \`${GATE_COMMAND}\` ${headGate.passed ? "passes" : "fails"} on its head`);
     }
@@ -1002,7 +1002,7 @@ async function passOnMarkedIssue(
         gate: async () => {
           const known = unchangedGate;
           unchangedGate = undefined;
-          return known ?? (await runGate(sandbox));
+          return known ?? (await runGate(sandbox, { base }));
         },
         fix: (at, gateOutput) =>
           runRoleInSandbox(

@@ -43,35 +43,46 @@ export async function headOf(sandbox: Pick<Sandbox, "exec">): Promise<string | u
 }
 
 // What a gate run vouches for: the branch's own changes. `base` is the commit
-// the branch was cut from, whose copy of every file is main's. `mergedMain` is
-// the main commit a build merged in afterwards, whose changes are main's too.
+// the branch was cut from or, for a branch kept from an earlier round, this
+// round's main: the host resolved it from GitHub, so its copy of every file is
+// main's. `mergedMain` is the main commit a build merged in afterwards, which the
+// caller passes only once GitHub has confirmed it is main (the ref in the shared
+// .git is the agents' to move).
 export type GateGuard = { base: string; mergedMain?: string };
 
 const quoted = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
-// The files under `paths` that `head` holds in a form neither `base` nor
-// `mergedMain` has, so the ones the branch changed, sorted; undefined when git
-// can't say. By content, not history: an edit that is later undone leaves no
-// trace, a change made in a merge commit shows, and main's own changes (merged
-// in, or a branch built on an older main) are left out. A deleted file counts.
+// Every git call here ignores replace refs, which agents can write: a
+// `git replace` of `base` by a commit of their own would otherwise make the
+// weakened script they hold read as main's.
+const plainGit = "git --no-replace-objects --literal-pathspecs";
+
+// The files under `paths` that `head` holds in a form that none of main's
+// copies has, so the ones the branch changed, sorted; undefined when git can't
+// say. The copies are those at `base`, at `mergedMain`, and at the merge base
+// of `base` and `head`: the last is where a branch kept from an earlier round
+// left main, and main's changes since aren't the branch's. All by content, not
+// history: an edit that is later undone leaves no trace, a change made in a
+// merge commit shows, and a deleted file counts.
 export async function changedFiles(
   sandbox: Pick<Sandbox, "exec">,
   guard: GateGuard,
   paths: readonly string[],
   head = "HEAD",
 ): Promise<string[] | undefined> {
-  const differingFrom = async (from: string): Promise<string[] | undefined> => {
+  const mergeBase = await sandbox.exec(`${plainGit} merge-base ${quoted(guard.base)} ${quoted(head)} 2>/dev/null`);
+  const common = mergeBase.stdout.trim();
+  if (mergeBase.exitCode !== 0 || !commitId.test(common)) return undefined;
+  let changed: Set<string> | undefined;
+  for (const from of new Set([guard.base, ...(guard.mergedMain === undefined ? [] : [guard.mergedMain]), common])) {
     const { stdout, exitCode } = await sandbox.exec(
-      `git --literal-pathspecs diff -z --no-renames --name-only ${quoted(from)} ${quoted(head)} -- ${paths.map(quoted).join(" ")} 2>/dev/null`,
+      `${plainGit} diff -z --no-renames --name-only ${quoted(from)} ${quoted(head)} -- ${paths.map(quoted).join(" ")} 2>/dev/null`,
     );
-    return exitCode === 0 ? stdout.split("\0").filter(Boolean) : undefined;
-  };
-  const fromBase = await differingFrom(guard.base);
-  if (fromBase === undefined || guard.mergedMain === undefined) return fromBase?.sort();
-  const fromMain = await differingFrom(guard.mergedMain);
-  if (fromMain === undefined) return undefined;
-  const main = new Set(fromMain);
-  return fromBase.filter((file) => main.has(file)).sort();
+    if (exitCode !== 0) return undefined;
+    const differing = stdout.split("\0").filter(Boolean);
+    changed = changed === undefined ? new Set(differing) : new Set(differing.filter((file) => changed!.has(file)));
+  }
+  return [...(changed ?? [])].sort();
 }
 
 // Why the gate can't be trusted on this branch, or undefined when it can: the
@@ -84,7 +95,7 @@ export async function changedFiles(
 // closed: a GATE_SCRIPT that isn't a file at `base`, or a git that can't say,
 // is refused rather than waved through.
 export async function gateScriptChange(sandbox: Pick<Sandbox, "exec">, guard: GateGuard): Promise<string | undefined> {
-  const tracked = await sandbox.exec(`git cat-file -e ${quoted(`${guard.base}:${GATE_SCRIPT}`)} 2>&1`);
+  const tracked = await sandbox.exec(`${plainGit} cat-file -e ${quoted(`${guard.base}:${GATE_SCRIPT}`)} 2>&1`);
   if (tracked.exitCode !== 0) {
     return (
       `❌ ${GATE_SCRIPT} isn't a file at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +

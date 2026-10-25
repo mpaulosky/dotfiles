@@ -994,7 +994,7 @@ async function buildMarkedIssue(
     const synced = await syncWithMain();
     if (synced !== undefined) {
       const { reviewedHead, mergedMain } = synced;
-      const merged = await runGate(sandbox, { base, mergedMain });
+      const merged = await runGate(sandbox, { base, mergedMain: trustedMergedMain(mergedMain) });
       log(`checkpoint 2: gate ${merged.passed ? "passed" : "failed"} with main merged in`);
       if (merged.passed) return merged.head === undefined ? undefined : { gated: merged.head, mergedMain };
       if (!(await restoredTo(reviewedHead, `git reset --hard ${shellWord(reviewedHead)}`))) {
@@ -1010,12 +1010,14 @@ async function buildMarkedIssue(
   // the PR body to list. Empty when git can't say: the note is a courtesy to the
   // reviewer, and the gate and CI still run.
   async function changedCheckFiles(gated: string, mergedMain: string | undefined): Promise<string[]> {
-    const changed = await changedFiles(sandbox, { base, mergedMain }, CHECK_PATHS, gated);
-    if (changed === undefined) {
-      log("the files the branch changes under the gate's and CI's folders can't be listed, so the PR body won't name them");
-      return [];
+    try {
+      const changed = await changedFiles(sandbox, { base, mergedMain }, CHECK_PATHS, gated);
+      if (changed !== undefined) return changed;
+    } catch (error) {
+      console.error(`  ⚠ #${issue.number}: listing the files ${branch} changes under the gate's and CI's folders failed: ${error}`);
     }
-    return changed;
+    log("the files the branch changes under the gate's and CI's folders can't be listed, so the PR body won't name them");
+    return [];
   }
 
   // GitHub judges the push of a branch it doesn't have yet against main's

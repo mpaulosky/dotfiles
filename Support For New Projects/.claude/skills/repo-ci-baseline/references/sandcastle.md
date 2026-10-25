@@ -85,7 +85,7 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 7. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
    those out and keeps the lints (its `.sandcastle/check.sh`), and points the gate-fixer and follow-up roles' instructions at it.
 8. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/check.sh` for the step above), and list in `CHECK_PATHS` every place
-   the gate reads its checks from: its scripts and tests, and `package.json`. A gate whose branch changes `GATE_SCRIPT`, or a `GATE_SCRIPT` that isn't a file at the
+   the gate reads its checks from: its scripts and tests, `.github/workflows/` and `package.json`. A gate whose branch changes `GATE_SCRIPT`, or a `GATE_SCRIPT` that isn't a file at the
    branch's base, fails without running.
 
 Blazor-Server's UI developer role has to come into the Template (`ROLES`, `OPTIONAL_ROLES` and the build) before Blazor-Server migrates,

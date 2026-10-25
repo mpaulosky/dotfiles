@@ -34,8 +34,8 @@
 // (worktreeConfigProblem, configIncludeProblem).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 // A bind mount into the sandbox, in the shape Sandcastle's docker() takes.
 export type ReadOnlyMount = { hostPath: string; sandboxPath: string; readonly: true };
@@ -103,25 +103,48 @@ export function worktreeConfigProblem(gitDir: string): string | undefined {
     : undefined;
 }
 
+// A path with its symlinks followed, as far as it exists.
+function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return join(realPath(dirname(path)), basename(path));
+  }
+}
+
+// Whether `path` is `dir` or lies under it.
+function isWithin(path: string, dir: string): boolean {
+  const rel = relative(dir, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 // Why this repository can't be protected, or undefined when nothing is wrong:
 // git follows include.path and includeIf.*.path in .git/config, resolving a
 // relative path against .git, which agents can write outside config and hooks.
 // A file reached that way can name a command (core.fsmonitor) just as a
-// config.worktree can. Refusing every include is simpler than judging where
-// each one leads (`~/`, includeIf conditions, symlinks).
+// config.worktree can. So an include is refused unless its path is absolute and
+// lies outside both .git and the checkout, which is everywhere agents write:
+// actions/checkout includes its credentials file from $RUNNER_TEMP that way.
+// A `~/` path is refused since where it leads depends on who runs git.
 export function configIncludeProblem(gitDir: string): string | undefined {
   const config = join(gitDir, "config");
-  let includes: string;
+  let output: string;
   try {
-    includes = execFileSync("git", ["config", "--file", config, "--get-regexp", "^include(if\\..*)?\\.path$"], { encoding: "utf8" }).trim();
+    output = execFileSync("git", ["config", "--file", config, "--get-regexp", "-z", "^include(if\\..*)?\\.path$"], { encoding: "utf8" });
   } catch (error) {
     if ((error as { status?: number }).status === 1) return undefined; // git exits 1 when nothing matches
     throw error;
   }
-  return (
-    `${config} includes other config files (${includes.split("\n").join("; ")}), and git would read them, ` +
-    "including any that agents can write. Move what's in them into the config and remove the include."
-  );
+  const writable = [realPath(gitDir), realPath(dirname(gitDir))];
+  const risky = output
+    .split("\0")
+    .filter(Boolean)
+    .map((entry) => entry.slice(entry.indexOf("\n") + 1))
+    .filter((path) => !isAbsolute(path) || writable.some((dir) => isWithin(realPath(path), dir)));
+  return risky.length === 0
+    ? undefined
+    : `${config} includes ${risky.join(", ")}, and git would read it, but agents can write there or it isn't a fixed absolute path. ` +
+        "Move what's in it into the config and remove the include.";
 }
 
 // Protect this process and everything it starts (see hostGitEnv). Call before

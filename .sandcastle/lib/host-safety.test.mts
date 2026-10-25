@@ -34,12 +34,14 @@ describe("worktreeConfigProblem", () => {
 });
 
 describe("configIncludeProblem", () => {
-  const configIn = (setup: (config: string) => void) => {
+  // setup gets the repo's config path and a directory outside the checkout and .git.
+  const configIn = (setup: (config: string, outside: string) => void) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-config-include-")));
     try {
       execFileSync("git", ["init", "--quiet", join(root, "repo")], { stdio: "ignore" });
+      mkdirSync(join(root, "outside"));
       const gitDir = join(root, "repo", ".git");
-      setup(join(gitDir, "config"));
+      setup(join(gitDir, "config"), join(root, "outside"));
       return configIncludeProblem(gitDir);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -57,8 +59,28 @@ describe("configIncludeProblem", () => {
       ["includeIf.gitdir:/work/.path", "~/work.inc"],
       ["INCLUDE.PATH", "local.inc"],
     ] as const) {
-      assert.match(configIn(set(key, value)) ?? "", /includes other config files.*\.inc/, key);
+      assert.match(configIn(set(key, value)) ?? "", /includes .*\.inc/, key);
     }
+  });
+
+  it("allows an absolute path outside .git and the checkout, as actions/checkout writes", () => {
+    assert.equal(
+      configIn((config, outside) => set("includeIf.gitdir:/work/repo/.git.path", join(outside, "git-credentials.config"))(config)),
+      undefined,
+    );
+  });
+
+  it("names an absolute path inside .git or the checkout", () => {
+    assert.match(configIn((config) => set("include.path", join(config, "..", "local.inc"))(config)) ?? "", /includes .*local\.inc/);
+    assert.match(configIn((config) => set("include.path", join(config, "..", "..", "local.inc"))(config)) ?? "", /includes .*local\.inc/);
+  });
+
+  it("names a path outside whose symlink leads inside", () => {
+    const problem = configIn((config, outside) => {
+      symlinkSync(join(config, ".."), join(outside, "link"));
+      set("include.path", join(outside, "link", "local.inc"))(config);
+    });
+    assert.match(problem ?? "", /includes .*local\.inc/);
   });
 });
 
@@ -88,7 +110,7 @@ describe("protectHostGit", () => {
   it("refuses a repository whose config includes another file", () => {
     const result = protectIn((gitDir) => execFileSync("git", ["config", "--file", join(gitDir, "config"), "include.path", "local.inc"]));
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /includes other config files/);
+    assert.match(result.stderr, /includes local\.inc/);
   });
 
   it("succeeds in a repository that doesn't", () => {

@@ -35,6 +35,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A `github-actions[bot]` review counts as Claude's only when its body starts with `<!-- claude-review -->`.
   Even then it counts as a review of a commit only when Copilot's quota note is on that same commit: Claude is the backup, so a Claude review
   of a head Copilot didn't decline, or declined only on an earlier head, covers nothing, label or not.
+  That is deliberate (ADR 0004; `pr-automerge.test.mjs` pins it), and it has a cost. A head where GitHub drops Copilot's request "without a word"
+  gets neither a review nor the note, so a Claude review a person or `land.sh` asked for still covers nothing there: no run can tell that silence
+  from a Copilot review that is merely late, and counting Claude's review would let the PR merge before Copilot's findings arrive. Such a PR logs
+  "no Copilot or Claude review" on every run and waits for a person to merge it, which fails safe.
   A Copilot review counts only when it reviewed something. Once the account's Copilot code review quota is used up, Copilot still posts a review
   of each head whose body starts "Copilot was unable to review" (`COPILOT_NO_REVIEW`). It covers no commit and counts toward no round.
   `claude-review.yml`'s reviewed list and the landing scripts (`landing.COPILOT_NO_REVIEW`) skip it the same way: the start of the body, after any

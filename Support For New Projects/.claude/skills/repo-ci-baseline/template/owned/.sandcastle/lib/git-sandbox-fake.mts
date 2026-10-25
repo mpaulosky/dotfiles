@@ -57,14 +57,15 @@ export function gitSandboxFake(): GitSandboxFake {
     run(`git -c user.name=setup -c user.email=setup@example.com commit -q -m ${JSON.stringify(message)}`);
 
   run("git init -q -b main");
-  writeFileSync(join(repo, "base.txt"), "base\n");
-  run("git add base.txt");
-  setupCommit("base");
-  run("git checkout -q -b feature");
+  // The gate script is a file at the base, as the gate guard needs (lib/checkpoint.mts#gateScriptChange).
   const gate = join(repo, GATE_COMMAND);
   mkdirSync(dirname(gate), { recursive: true });
   writeFileSync(gate, "#!/bin/sh\nexit 0\n");
   chmodSync(gate, 0o755);
+  writeFileSync(join(repo, "base.txt"), "base\n");
+  run("git add .");
+  setupCommit("base");
+  run("git checkout -q -b feature");
   writeFileSync(join(repo, "feature.txt"), "feature\n");
   run("git add .");
   setupCommit("feature");

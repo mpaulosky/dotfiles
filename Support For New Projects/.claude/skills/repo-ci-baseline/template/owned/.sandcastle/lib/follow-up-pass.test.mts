@@ -31,7 +31,7 @@ import type { IsOwner } from "./queue.mts";
 import { OutcomeReport, type HumanThreadEntry } from "./report.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
-import { GATE_COMMAND } from "./repo-config.mts";
+import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 
 // These tests name the Template's gate command, whatever this repo's
 // GATE_COMMAND is: the fake sandbox reports the configured one as the default.
@@ -666,6 +666,8 @@ describe("planRedCi", () => {
 function sandboxFake(
   options: {
     gateExitCodes?: number[];
+    // The branch's gate script differs from main's (lib/checkpoint.mts#gateScriptChange).
+    gateScriptChanged?: boolean;
     followUpJson?: string;
     mergeConflictFiles?: string[];
     roleFailing?: string[];
@@ -744,6 +746,13 @@ function sandboxFake(
         return options.followUpJson === undefined ? { stdout: "", stderr: "", exitCode: 1 } : { stdout: options.followUpJson, stderr: "", exitCode: 0 };
       }
       if (command.startsWith("git status")) return { stdout: "", stderr: "", exitCode: 0 };
+      if (command.startsWith("git --no-replace-objects")) {
+        // The gate guard (lib/checkpoint.mts#gateScriptChange): the gate script is a file at base,
+        // and differs from it only when the test says so.
+        if (command.includes(" merge-base ")) return { stdout: `${"e".repeat(40)}\n`, stderr: "", exitCode: 0 };
+        if (command.includes(" diff ")) return { stdout: options.gateScriptChanged ? `${GATE_SCRIPT}\0` : "", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
       const exitCode = gateExitCodes.shift();
       if (exitCode === undefined) throw new Error("the gate ran more often than the test expected");
       if (options.gateCommits) commit(nextHead());
@@ -1028,6 +1037,17 @@ describe("runPass", () => {
     assert.equal(outcome.kind, "gave-up");
     assert.equal(calls.handBack.length, 1);
     assert.match(calls.handBack[0]!.body, /gate output, exit 1/);
+  });
+
+  it("gives up without running the gate when the branch has changed the gate script", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [0], gateScriptChanged: true });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    const outcome = await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    assert.deepEqual(calls.push, []);
+    assert.equal(outcome.kind, "gave-up");
+    assert.match(calls.handBack[0]!.body, /which is the gate itself/);
   });
 
   // Acceptance criterion: "A fourth pass isn't started. The PR gets

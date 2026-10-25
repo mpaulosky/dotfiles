@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
-import type { execFileSync } from "node:child_process";
+import { spawnSync, type execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   buildIssue,
   createCheckedSandbox,
@@ -13,6 +15,7 @@ import {
   liveHostIdentity,
   PR_BODY_LIMIT,
   publicErrorText,
+  prTitle,
   publish,
   remoteBranchIsOnOrigin,
   remoteMainIs,
@@ -35,7 +38,7 @@ import { TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
-import { GATE_COMMAND } from "./repo-config.mts";
+import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 
 // These tests name the Template's gate command, whatever this repo's
 // GATE_COMMAND is: the fake sandbox reports the configured one as the default.
@@ -94,6 +97,9 @@ function host(
     baseExecError,
     baseIsAncestor = true,
     gateOutput,
+    gateScriptChanged = "",
+    checkFiles = "",
+    checkFilesError,
   }: {
     ahead?: number | number[];
     statuses?: string[];
@@ -152,6 +158,12 @@ function host(
     // Whether `base` is an ancestor of the commit the gate passed on; false
     // when an earlier round's branch was built on an older main.
     baseIsAncestor?: boolean;
+    // What `git diff -z` prints for the gate script when it differs from base's, and
+    // for the files under CHECK_PATHS that do.
+    gateScriptChanged?: string;
+    checkFiles?: string;
+    // An error listing the files under CHECK_PATHS throws instead.
+    checkFilesError?: string;
   } = {},
 ) {
   const steps: string[] = [];
@@ -217,6 +229,19 @@ function host(
         mainChecks.push(command);
         return { stdout: "", stderr: "", exitCode: containsMain ? 0 : 1 };
       }
+      if (command.startsWith("git --no-replace-objects") && command.includes(" cat-file -e ")) {
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      if (command.startsWith("git --no-replace-objects") && command.includes(" merge-base ")) {
+        return { stdout: `${"e".repeat(40)}\n`, stderr: "", exitCode: 0 };
+      }
+      if (command.startsWith("git --no-replace-objects") && command.includes(" diff ")) {
+        // The gate guard asks about the gate script alone, the PR body's note about CHECK_PATHS.
+        const forGuard = command.split(" -- ")[1]?.replace(" 2>/dev/null", "") === `'${GATE_SCRIPT}'`;
+        if (forGuard) gateGuardChecks.push(command);
+        if (!forGuard && checkFilesError !== undefined) throw new Error(checkFilesError);
+        return { stdout: forGuard ? gateScriptChanged : checkFiles, stderr: "", exitCode: 0 };
+      }
       if (command.startsWith("git merge --abort")) {
         steps.push("merge abort");
         return { stdout: "", stderr: "", exitCode: abortExitCode };
@@ -253,6 +278,8 @@ function host(
   } as unknown as Sandbox;
   const buildingCalls: number[] = [];
   const designNoteCalls: number[] = [];
+  const gateGuardChecks: string[] = [];
+  const publishedCheckChanges: (readonly string[])[] = [];
   const publishCalls: { reviewed: boolean; docsFailed: boolean }[] = [];
   // The prBody argument buildMarkedIssue passed to host.publish, one entry
   // per call, kept apart from publishCalls so existing assertions on that
@@ -317,12 +344,13 @@ function host(
       scannedExclusions.push(mergedMain);
       return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
-    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody) => {
+    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = []) => {
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
       publishEvents.push("publish");
       publishCalls.push({ reviewed, docsFailed });
       publishedPrBodies.push(prBody);
+      publishedCheckChanges.push(checkChanges);
       steps.push(`publish${reviewed ? "" : " unreviewed"}${docsFailed ? " docs-failed" : ""}`);
       return "https://github.com/o/r/pull/1";
     },
@@ -368,7 +396,7 @@ function host(
   };
   return {
     steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
-    order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
+    order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, publishedCheckChanges, gateGuardChecks, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
   };
 }
@@ -687,6 +715,24 @@ describe("buildIssue's outcome and detail", () => {
     assert.equal(result.outcome, "timed out");
   });
 
+  it("hands the files the branch changes under the gate's and CI's folders to publish", async () => {
+    const { publishedCheckChanges, buildHost } = host([0, 0], { checkFiles: ".github/ci/a.sh\0scripts/gate.sh\0" });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.deepEqual(publishedCheckChanges, [[".github/ci/a.sh", "scripts/gate.sh"]]);
+  });
+
+  it("still publishes when listing the files under the gate's and CI's folders throws", async () => {
+    const { publishedCheckChanges, logs, buildHost } = host([0, 0], { checkFilesError: "container died" });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(publishedCheckChanges, [[]]);
+    assert.ok(logs.some((line) => line.includes("can't be listed")), logs.join("\n"));
+  });
+
   it("is gate failed, naming the checkpoint, when a checkpoint stays red past the gate-fixer's attempts", async () => {
     const { buildHost } = host([1, 1, 1]);
 
@@ -694,6 +740,17 @@ describe("buildIssue's outcome and detail", () => {
 
     assert.equal(result.outcome, "gate failed");
     assert.match(result.detail ?? "", /checkpoint 1/);
+  });
+
+  it("fails the gate without running it when a commit of the branch changes the gate script", async () => {
+    const { steps, gateGuardChecks, buildHost } = host([], { gateScriptChanged: `${GATE_SCRIPT}\0` });
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "gate failed");
+    assert.ok(gateGuardChecks.length > 0);
+    assert.ok(gateGuardChecks.some((command) => command.includes(`'${base}' 'HEAD'`)), gateGuardChecks.join("\n"));
+    assert.ok(!steps.some((step) => step.startsWith("gate:")), steps.join("\n"));
   });
 
   it("is not published, naming the secret, when a commit holds one of the sandbox's secrets", async () => {
@@ -884,6 +941,16 @@ describe("buildIssue syncing with main before publishing", () => {
 
     assert.ok(!steps.some((step) => step.startsWith("merge")));
     assert.equal(mainChecks.length, 1);
+  });
+
+  it("leaves the merged main out of the gate guard only once GitHub says it is main", async () => {
+    const trusted = host([0, 0], { latestMain: newerMain, containsMain: false });
+    await buildIssue(issue, branch, base, trusted.buildHost);
+    const untrusted = host([0, 0], { latestMain: newerMain, containsMain: false, remoteMain: "9".repeat(40) });
+    await buildIssue(issue, branch, base, untrusted.buildHost);
+
+    assert.ok(trusted.gateGuardChecks.some((command) => command.includes(`'${newerMain}'`)), trusted.gateGuardChecks.join("\n"));
+    assert.ok(!untrusted.gateGuardChecks.some((command) => command.includes(`'${newerMain}'`)), untrusted.gateGuardChecks.join("\n"));
   });
 
   it("aborts a merge that conflicts and publishes the reviewed commit, leaving the conflict to the follow-up pass", async () => {
@@ -1578,8 +1645,10 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
     assert.equal(handBackWorkflowChangeCalls.length, 1);
   });
 
-  it("leaves the issue in the queue when the push of a new branch is refused only for main's workflow change", async () => {
-    const { moveToLocalCalls, handBackWorkflowChangeCalls, comments, buildHost } = host([0, 0], {
+  it("moves the issue to Sandcastle:local when the push of a new branch is refused only for main's workflow change", async () => {
+    // The refused push leaves a local branch on the old main that the next round would reuse
+    // and could never push, so the issue can't stay in the queue for it.
+    const { moveToLocalCalls, handBackWorkflowChangeCalls, buildHost } = host([0, 0], {
       ...mainChangedWorkflow,
       createBranchError: "git push failed",
       publishError: refusal,
@@ -1588,9 +1657,9 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
 
     const result = await buildIssue(issue, branch, base, buildHost);
 
-    assert.deepEqual(moveToLocalCalls, []);
+    assert.equal(moveToLocalCalls.length, 1);
+    assert.equal(moveToLocalCalls[0]!.createdAtBase, false);
     assert.deepEqual(handBackWorkflowChangeCalls, []);
-    assert.deepEqual(comments, []);
     assert.equal(result.publishFailed, true);
     assert.equal(result.outcome, "not published");
   });
@@ -2102,6 +2171,49 @@ describe("buildIssue marking the issue as building", () => {
   });
 });
 
+describe("prTitle", () => {
+  const titled = (title: string, labels: string[] = []) => prTitle({ number: 69, title, labels });
+
+  it("keeps a title that already follows the commit format", () => {
+    assert.equal(titled("fix(baseline): Say to push the fix first"), "fix(baseline): Say to push the fix first");
+    assert.equal(titled("feat!: Drop the old queue"), "feat!: Drop the old queue");
+  });
+
+  it("gives a title with no prefix feat:, or fix: for a bug", () => {
+    assert.equal(titled("Add dark mode toggle", ["Sandcastle"]), "feat: Add dark mode toggle");
+    assert.equal(titled("Search crashes on empty input", ["bug", "Sandcastle"]), "fix: Search crashes on empty input");
+  });
+
+  it("capitalises the summary and drops a final period", () => {
+    assert.equal(titled("add dark mode toggle."), "feat: Add dark mode toggle");
+    assert.equal(titled("fix(ui): handle the empty list."), "fix(ui): Handle the empty list");
+  });
+
+  it("keeps a summary that starts with a digit, a backtick or a bracket, which the title check allows", () => {
+    assert.equal(titled("404 on the login page"), "feat: 404 on the login page");
+    assert.equal(titled("`gate.sh` hangs on Windows"), "feat: `gate.sh` hangs on Windows");
+    assert.equal(titled("[ui] Broken toggle", ["bug"]), "fix: [ui] Broken toggle");
+  });
+
+  it("falls back to the issue number when nothing is left of the title to make a summary", () => {
+    assert.equal(titled("..."), "feat: Issue #69");
+    assert.equal(titled("   ", ["bug"]), "fix: Issue #69");
+  });
+
+  // dotfiles has no scripts/check-pr-title.sh of its own, so the test waits for a repo that does.
+  const script = join(import.meta.dirname, "..", "..", "scripts", "check-pr-title.sh");
+  it("always gives a title scripts/check-pr-title.sh accepts", { skip: !existsSync(script) }, () => {
+    for (const title of ["Add dark mode toggle", "fix: lower case.", "docs(x): ok", "...", "404 errors", "[x] y", "feat!: breaking"]) {
+      const result = spawnSync("bash", [script, prTitle({ number: 7, title, labels: [] })], { encoding: "utf8" });
+      assert.equal(result.status, 0, `${title}: ${result.stdout}`);
+    }
+  });
+
+  it("doesn't double a prefix the title has, and squeezes stray spaces", () => {
+    assert.equal(titled("  chore:   Bump   the pins "), "chore: Bump the pins");
+  });
+});
+
 describe("publish", () => {
   // git's output for a GitHub Internal Server Error: a transient
   // GitHub failure that's worth retrying.
@@ -2134,7 +2246,7 @@ describe("publish", () => {
     const { push, calls } = flaky(2, serverError);
     const { delays, wait } = recordedWaits();
 
-    const prUrl = await publish(issue, branch, "a".repeat(40), true, false, undefined, push, () => "https://github.com/o/r/pull/1", wait);
+    const prUrl = await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, () => "https://github.com/o/r/pull/1", wait);
 
     assert.equal(prUrl, "https://github.com/o/r/pull/1");
     assert.equal(calls(), 3);
@@ -2152,7 +2264,7 @@ describe("publish", () => {
     };
     const { wait } = recordedWaits();
 
-    const prUrl = await publish(issue, branch, "a".repeat(40), true, false, undefined, push, createPullRequest, wait);
+    const prUrl = await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, createPullRequest, wait);
 
     assert.equal(prUrl, "https://github.com/o/r/pull/2");
     assert.equal(pushCalls(), 1);
@@ -2164,7 +2276,7 @@ describe("publish", () => {
     const { wait } = recordedWaits();
 
     await assert.rejects(
-      () => publish(issue, branch, "a".repeat(40), true, false, undefined, push, neverCreatePr, wait),
+      () => publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, neverCreatePr, wait),
       (error: unknown) => error instanceof Error && error.message === nonFastForward,
     );
     assert.equal(calls(), 1);
@@ -2174,7 +2286,7 @@ describe("publish", () => {
     const { push, calls } = flaky(Infinity, serverError);
     const { wait } = recordedWaits();
 
-    await assert.rejects(() => publish(issue, branch, "a".repeat(40), true, false, undefined, push, neverCreatePr, wait));
+    await assert.rejects(() => publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, neverCreatePr, wait));
     assert.equal(calls(), PUBLISH_RETRY_ATTEMPTS);
   });
 
@@ -2187,7 +2299,7 @@ describe("publish", () => {
       return "https://github.com/o/r/pull/1";
     };
 
-    await publish(issue, branch, "a".repeat(40), true, true, undefined, () => {}, createPullRequest, async () => {});
+    await publish(issue, branch, "a".repeat(40), true, true, undefined, [], () => {}, createPullRequest, async () => {});
 
     assert.match(body, /documentation step failed/i);
   });
@@ -2199,7 +2311,7 @@ describe("publish", () => {
       return "https://github.com/o/r/pull/1";
     };
 
-    await publish(issue, branch, "a".repeat(40), true, false, undefined, () => {}, createPullRequest, async () => {});
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {});
 
     assert.doesNotMatch(body, /documentation/i);
   });
@@ -2207,6 +2319,50 @@ describe("publish", () => {
   // The follow-up sweep (lib/follow-up.mts#isSandcastlePullRequest) only
   // ever acts on a PR whose body carries this marker, so every PR the host
   // publishes from now on must carry it.
+  it("opens the PR under a title that passes the PR title check", async () => {
+    let title = "";
+    const createPullRequest = (_branch: string, prTitleText: string): string => {
+      title = prTitleText;
+      return "https://github.com/o/r/pull/1";
+    };
+
+    await publish({ ...issue, title: "run the gate." }, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {});
+
+    assert.equal(title, "feat: Run the gate");
+  });
+
+  it("lists the files the branch changes under the gate's and CI's folders in the PR body", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prText: string): string => {
+      body = prText;
+      return "https://github.com/o/r/pull/1";
+    };
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [".github/ci/test.sh", "scripts/gate.sh"], () => {}, createPullRequest, async () => {});
+
+    assert.match(body, /changes files the gate and CI run/);
+    assert.match(body, /```text\n\.github\/ci\/test\.sh\nscripts\/gate\.sh\n```/);
+  });
+
+  it("keeps a file name from closing an issue or mentioning anyone, by listing the names in a fence", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prText: string): string => {
+      body = prText;
+      return "https://github.com/o/r/pull/1";
+    };
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, ["scripts/a` closes #12 `b.sh", "scripts/@someone.sh"], () => {}, createPullRequest, async () => {});
+
+    const fenced = /(`{3,})text\n([\s\S]*?)\n\1$/.exec(body);
+    assert.ok(fenced, body);
+    assert.match(fenced[2]!, /closes #12/);
+    assert.doesNotMatch(body.slice(0, fenced.index), /closes #12|@someone/);
+  });
+
+  it("adds no such note when the branch leaves those folders alone", async () => {
+    assert.doesNotMatch(await publishedBody(true, false, undefined), /gate and CI run/);
+  });
+
   it("carries PR_MARKER in the body, so the follow-up sweep recognises a PR the host published", async () => {
     let body = "";
     const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
@@ -2214,7 +2370,7 @@ describe("publish", () => {
       return "https://github.com/o/r/pull/1";
     };
 
-    await publish(issue, branch, "a".repeat(40), true, false, undefined, () => {}, createPullRequest, async () => {});
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {});
 
     assert.ok(body.includes(PR_MARKER), body);
   });
@@ -2232,7 +2388,7 @@ describe("publish", () => {
       captured = prText;
       return "https://github.com/o/r/pull/1";
     };
-    await publish(issue, branch, "a".repeat(40), reviewed, docsFailed, body, () => {}, createPullRequest, async () => {});
+    await publish(issue, branch, "a".repeat(40), reviewed, docsFailed, body, [], () => {}, createPullRequest, async () => {});
     return captured;
   }
 

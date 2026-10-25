@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { hostGitEnv, mainGitDir, protectedGitMounts, withoutGitHooks, worktreeConfigProblem, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+import { configIncludeProblem, hostGitEnv, mainGitDir, protectedGitMounts, withoutGitHooks, worktreeConfigProblem, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 
 describe("worktreeConfigProblem", () => {
   const configIn = (setup: (gitDir: string) => void) => {
@@ -33,6 +33,35 @@ describe("worktreeConfigProblem", () => {
   });
 });
 
+describe("configIncludeProblem", () => {
+  const configIn = (setup: (config: string) => void) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-config-include-")));
+    try {
+      execFileSync("git", ["init", "--quiet", join(root, "repo")], { stdio: "ignore" });
+      const gitDir = join(root, "repo", ".git");
+      setup(join(gitDir, "config"));
+      return configIncludeProblem(gitDir);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const set = (key: string, value: string) => (config: string) => execFileSync("git", ["config", "--file", config, key, value]);
+
+  it("is undefined for a repository whose config includes nothing", () => {
+    assert.equal(configIn(() => {}), undefined);
+  });
+
+  it("names the include, whether relative, includeIf, or spelled in another case", () => {
+    for (const [key, value] of [
+      ["include.path", "local.inc"],
+      ["includeIf.gitdir:/work/.path", "~/work.inc"],
+      ["INCLUDE.PATH", "local.inc"],
+    ] as const) {
+      assert.match(configIn(set(key, value)) ?? "", /includes other config files.*\.inc/, key);
+    }
+  });
+});
+
 describe("protectHostGit", () => {
   // Runs in a child process: repoGitDir() caches process.cwd() and protectHostGit() changes process.env.
   const protectIn = (setup: (gitDir: string) => void) => {
@@ -54,6 +83,12 @@ describe("protectHostGit", () => {
     const result = protectIn((gitDir) => execFileSync("git", ["config", "--file", join(gitDir, "config"), "extensions.worktreeConfig", "true"]));
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /extensions\.worktreeConfig/);
+  });
+
+  it("refuses a repository whose config includes another file", () => {
+    const result = protectIn((gitDir) => execFileSync("git", ["config", "--file", join(gitDir, "config"), "include.path", "local.inc"]));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /includes other config files/);
   });
 
   it("succeeds in a repository that doesn't", () => {

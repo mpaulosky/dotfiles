@@ -28,8 +28,10 @@
 //
 // What's left: a worktree's own files (HEAD, index) can still be redirected,
 // which changes what git sees there but runs nothing. extensions.worktreeConfig
-// would make git read a config.worktree from there, which agents can write, so
-// protectHostGit() refuses a repository that has it on (worktreeConfigProblem).
+// would make git read a config.worktree from there, which agents can write, and
+// so would an include.path or includeIf.*.path in .git/config that leads to a
+// file they can write, so protectHostGit() refuses a repository that has either
+// (worktreeConfigProblem, configIncludeProblem).
 
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -101,10 +103,31 @@ export function worktreeConfigProblem(gitDir: string): string | undefined {
     : undefined;
 }
 
+// Why this repository can't be protected, or undefined when nothing is wrong:
+// git follows include.path and includeIf.*.path in .git/config, resolving a
+// relative path against .git, which agents can write outside config and hooks.
+// A file reached that way can name a command (core.fsmonitor) just as a
+// config.worktree can. Refusing every include is simpler than judging where
+// each one leads (`~/`, includeIf conditions, symlinks).
+export function configIncludeProblem(gitDir: string): string | undefined {
+  const config = join(gitDir, "config");
+  let includes: string;
+  try {
+    includes = execFileSync("git", ["config", "--file", config, "--get-regexp", "^include(if\\..*)?\\.path$"], { encoding: "utf8" }).trim();
+  } catch (error) {
+    if ((error as { status?: number }).status === 1) return undefined; // git exits 1 when nothing matches
+    throw error;
+  }
+  return (
+    `${config} includes other config files (${includes.split("\n").join("; ")}), and git would read them, ` +
+    "including any that agents can write. Move what's in them into the config and remove the include."
+  );
+}
+
 // Protect this process and everything it starts (see hostGitEnv). Call before
 // the first git command and before any agent runs.
 export function protectHostGit(): void {
-  const problem = worktreeConfigProblem(repoGitDir());
+  const problem = worktreeConfigProblem(repoGitDir()) ?? configIncludeProblem(repoGitDir());
   if (problem) throw new Error(problem);
   Object.assign(process.env, hostGitEnv(process.env, repoGitDir()));
 }

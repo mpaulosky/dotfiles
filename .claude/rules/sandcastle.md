@@ -14,11 +14,18 @@ files change.
 
 ## Writing the code
 
+- **Change the Template's copy too.** `main.mts` and every `lib/` module but `repo-config.mts`, with their tests, are copies of
+  the Template's Owned files under `template/owned/.sandcastle/`. Change both, or change one and copy it over; `test.sh` fails
+  when they differ. dotfiles' own tests (`repo-config`, `template`, `dockerfile` and `role-prompts`, and `main.test.mts`) aren't.
+- **Per-repo values go in `lib/repo-config.mts`,** the Seed file each repo fills. `lib/config.mts` holds only what every
+  Sandcastle repo shares and never imports it. An Owned test reads a per-repo value from `repo-config.mts`, or the code
+  under test takes it as a parameter, and never pins dotfiles' value.
 - **Match the module you're in.** Two-space indents, double quotes, semicolons, `.mts` files that import each other with
   the `.mts` extension. `.editorconfig` has no `.mts` section, so the surrounding code is the style guide.
 - **Comment the why.** Every exported function and type gets a `//` comment above it in full sentences: what it's for,
-  the case it guards against, the incident behind it (`#149`, a request ID). Inside a function, comment only a decision a
-  reader would question.
+  the case it guards against, the incident behind it (`mpaulosky/dotfiles#149`, a request ID). Never a bare `#N`: an
+  Owned file is copied into other repos, where it reads as that repo's issue, and `test.sh` refuses it. Inside a
+  function, comment only a decision a reader would question.
 - **Inject the outside world.** A module that touches git, `gh`, Docker, the clock or the filesystem takes it through a
   host object (`BuildHost` in `lib/build.mts`, `SandboxHost` in `lib/skills.mts`) or through parameters with live
   defaults (`publish` in `lib/build.mts`). The live wiring sits at the bottom of the module; tests pass stubs.

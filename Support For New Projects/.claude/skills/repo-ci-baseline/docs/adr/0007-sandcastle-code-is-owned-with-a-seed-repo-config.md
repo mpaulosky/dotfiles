@@ -1,7 +1,7 @@
 # Sandcastle's code is Owned, and its per-repo values move to a Seed `lib/repo-config.mts`
 
 **Status:** accepted (mpaulosky/dotfiles#282); supersedes ADR 0006's decision to keep the rest of `lib/` and `main.mts` out of the Template.
-To be implemented in `template/owned/.sandcastle/`, `template/seed/.sandcastle/lib/repo-config.mts` and `test.sh`
+Implemented in `template/owned/.sandcastle/`, `template/seed/.sandcastle/lib/repo-config.mts` and `test.sh`
 ([sandcastle.md](../../references/sandcastle.md)).
 
 ADR 0006 owned only `lib/host-safety.mts` and `lib/shell.mts`, because every other module imports `lib/config.mts`,

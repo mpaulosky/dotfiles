@@ -37,6 +37,12 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const script = join(scratch, "scripts/check-branch-name.sh");
     cpSync(join(owned, "scripts/check-branch-name.sh"), script);
     chmodSync(script, statSync(join(owned, "scripts/check-branch-name.sh")).mode);
+    // lib/pre-push-review-skill.test.mts reads the skill and its agent from .claude/.
+    cpSync(join(owned, ".claude"), join(scratch, ".claude"), { recursive: true });
+    // lib/review-ledger.test.mts runs scripts/review.sh the same way.
+    const review = join(scratch, "scripts/review.sh");
+    cpSync(join(owned, "scripts/review.sh"), review);
+    chmodSync(review, statSync(join(owned, "scripts/review.sh")).mode);
     symlinkSync(join(root, "node_modules"), join(scratch, "node_modules"));
   });
 

@@ -54,7 +54,8 @@ import {
   type SandcastleIssue,
 } from "./github.mts";
 import { repoGitDir, worktreeLinkProblems } from "./host-safety.mts";
-import { plainText, withoutReferences } from "./intake.mts";
+import { withoutReferences } from "./intake.mts";
+import { plainText } from "./plain-text.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { followUpPromptArgs, gateFixerPromptArgs } from "./prompts.mts";
 import { ownerCheck, type IsOwner } from "./queue.mts";

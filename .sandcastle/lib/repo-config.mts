@@ -98,6 +98,24 @@ export const CHECK_PATHS: readonly string[] = [
   `${SKILL}template/owned/.github/scripts/tests/`,
 ];
 
+// This repository as OWNER/REPO, which the pre-push-review skill gives every gh command as GH_REPO (`scripts/review.sh repo`).
+export const REPO_SLUG = "mpaulosky/dotfiles";
+
+// The files under an Owned Baseline pattern (OWNED_PATHS in lib/review-ledger.mts) that are dotfiles' own, not copies of the
+// Template's: lib/owned-paths.test.mts keeps this list exactly them.
+export const NOT_OWNED_BASELINE_PATHS: readonly string[] = [
+  ".github/workflows/repo-ci-baseline.yml",
+  ".github/workflows/sandcastle.yml",
+  ".gitignore",
+  ".markdownlint-cli2.jsonc",
+  ".sandcastle/lib/dockerfile.test.mts",
+  ".sandcastle/lib/owned-paths.test.mts",
+  ".sandcastle/lib/repo-config.test.mts",
+  ".sandcastle/lib/role-prompts.test.mts",
+  ".sandcastle/lib/template.test.mts",
+  "scripts/gate.sh",
+];
+
 // The Template's Owned files under this folder, of which dotfiles carries copies at the same path from the repo root (its own
 // .sandcastle/ included): the list test.sh's copy check walks, entry for entry and in the same order.
 // lib/overlap.mts counts each pair as one path, since every change to one changes the other.
@@ -111,6 +129,11 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".github/hooks/pre-push",
   ".github/hooks/post-checkout",
   "scripts/check-branch-name.sh",
+  "scripts/review.sh",
+  ".claude/agents/pre-push-reviewer.md",
+  ".claude/skills/pre-push-review/SKILL.md",
+  ".claude/skills/pre-push-review/lenses.md",
+  ".claude/skills/pre-push-review/review-bar.md",
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
   ".sandcastle/.markdownlint-cli2.jsonc",
@@ -150,6 +173,8 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/limits.test.mts",
   ".sandcastle/lib/overlap.mts",
   ".sandcastle/lib/overlap.test.mts",
+  ".sandcastle/lib/plain-text.mts",
+  ".sandcastle/lib/plain-text.test.mts",
   ".sandcastle/lib/plan.mts",
   ".sandcastle/lib/plan.test.mts",
   ".sandcastle/lib/prompts.mts",
@@ -158,6 +183,8 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/queue.test.mts",
   ".sandcastle/lib/report.mts",
   ".sandcastle/lib/report.test.mts",
+  ".sandcastle/lib/review-ledger.mts",
+  ".sandcastle/lib/review-ledger.test.mts",
   ".sandcastle/lib/round.mts",
   ".sandcastle/lib/round.test.mts",
   ".sandcastle/lib/sandbox-env.mts",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -162,7 +162,7 @@ describe("withoutGitHooks", () => {
 
 describe("protectedGitMounts", () => {
   it("mounts .git/config and .git/hooks read-only at their own paths", () => {
-    assert.deepEqual(protectedGitMounts("/repo/.git", () => true), [
+    assert.deepEqual(protectedGitMounts("/repo/.git", () => true, "/empty", () => {}).slice(0, 2), [
       { hostPath: "/repo/.git/config", sandboxPath: "/repo/.git/config", readonly: true },
       { hostPath: "/repo/.git/hooks", sandboxPath: "/repo/.git/hooks", readonly: true },
     ]);
@@ -170,9 +170,88 @@ describe("protectedGitMounts", () => {
 
   it("leaves out a path that doesn't exist", () => {
     assert.deepEqual(
-      protectedGitMounts("/repo/.git", (path) => path.endsWith("config")).map((mount) => mount.hostPath),
-      ["/repo/.git/config"],
+      protectedGitMounts("/repo/.git", (path) => path.endsWith("config"), "/empty", () => {}).map((mount) => mount.hostPath),
+      ["/repo/.git/config", "/empty"],
     );
+  });
+
+  it("covers the local review's ledgers with an empty read-only folder, whether or not they exist yet, so no agent reads an accepted security finding", () => {
+    for (const exists of [() => true, () => false]) {
+      assert.deepEqual(
+        protectedGitMounts("/repo/.git", exists, "/empty", () => {}).find((mount) => mount.sandboxPath === "/repo/.git/review"),
+        { hostPath: "/empty", sandboxPath: "/repo/.git/review", readonly: true },
+      );
+    }
+  });
+
+  it("makes the ledgers' folder on the host first, so Docker doesn't make it as root through the .git mount", () => {
+    const made: string[] = [];
+
+    protectedGitMounts("/repo/.git", () => false, "/empty", (path) => made.push(path));
+
+    assert.deepEqual(made, ["/repo/.git/review"]);
+  });
+
+  it("makes the ledgers' folder itself when asked to again, as it is for every sandbox of a run", () => {
+    const gitDir = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-gitdir-")));
+    try {
+      protectedGitMounts(gitDir, existsSync, "/empty");
+      protectedGitMounts(gitDir, existsSync, "/empty");
+
+      assert.equal(existsSync(join(gitDir, "review")), true);
+    } finally {
+      rmSync(gitDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops when the ledgers' folder is a symlink, which would send the cover somewhere else", () => {
+    const gitDir = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-gitdir-")));
+    try {
+      mkdirSync(join(gitDir, "elsewhere"));
+      symlinkSync(join(gitDir, "elsewhere"), join(gitDir, "review"));
+
+      assert.throws(() => protectedGitMounts(gitDir, existsSync, "/empty"), (error: Error) => error.message.startsWith(`${join(gitDir, "review")} isn't a real folder`));
+    } finally {
+      rmSync(gitDir, { recursive: true, force: true });
+    }
+  });
+
+  for (const [kind, plant] of [
+    ["a symlink to nothing", (path: string) => symlinkSync(join(path, "..", "gone"), path)],
+    ["a file", (path: string) => writeFileSync(path, "")],
+  ] as const) {
+    it(`stops, saying what to look at, when the ledgers' folder is ${kind}`, () => {
+      const gitDir = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-gitdir-")));
+      try {
+        plant(join(gitDir, "review"));
+
+        assert.throws(() => protectedGitMounts(gitDir, existsSync, "/empty"), (error: Error) => error.message.startsWith(`${join(gitDir, "review")} isn't a real folder`));
+      } finally {
+        rmSync(gitDir, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("makes the ledgers' folder readable only by its owner, and narrows one that isn't", () => {
+    const gitDir = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-gitdir-")));
+    try {
+      protectedGitMounts(gitDir, existsSync, "/empty");
+      assert.equal(statSync(join(gitDir, "review")).mode & 0o777, 0o700);
+
+      chmodSync(join(gitDir, "review"), 0o755);
+      protectedGitMounts(gitDir, existsSync, "/empty");
+
+      assert.equal(statSync(join(gitDir, "review")).mode & 0o777, 0o700);
+    } finally {
+      rmSync(gitDir, { recursive: true, force: true });
+    }
+  });
+
+  it("covers them with a folder that is empty", () => {
+    const review = protectedGitMounts("/repo/.git", () => false, undefined, () => {}).find((mount) => mount.sandboxPath === "/repo/.git/review");
+
+    assert.ok(review !== undefined);
+    assert.deepEqual(readdirSync(review.hostPath), []);
   });
 });
 

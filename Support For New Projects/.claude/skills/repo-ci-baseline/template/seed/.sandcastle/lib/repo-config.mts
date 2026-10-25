@@ -86,6 +86,18 @@ export const GATE_SCRIPT = "scripts/gate.sh";
 // reads its checks from, not only where its script sits.
 export const CHECK_PATHS: readonly string[] = [".sandcastle/", "scripts/", ".github/ci/", ".github/workflows/", "package.json"];
 
+// This repository as OWNER/REPO, which the pre-push-review skill gives every gh
+// command as GH_REPO (`scripts/review.sh repo`): in a clone whose only remote is
+// a fork, gh's default repository is the fork. Apply fills it in.
+export const REPO_SLUG = "{{OWNER}}/{{REPO}}";
+
+// The files under an Owned Baseline pattern (see OWNED_PATHS in
+// lib/review-ledger.mts) that are this repository's own, not the Template's:
+// its own workflows, scripts and Sandcastle tests. A re-Apply that changes only
+// Owned files passes the local review's check, so a file listed here is
+// reviewed like any other.
+export const NOT_OWNED_BASELINE_PATHS: readonly string[] = [];
+
 // The Template's Owned folder and the Owned files the repo carries copies of
 // at the same path from its root, which lib/overlap.mts counts as one path
 // with their Template file. Only a repo that holds the Template itself lists

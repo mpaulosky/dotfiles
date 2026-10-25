@@ -23,7 +23,7 @@ unset $(git rev-parse --local-env-vars)
 skill="Support For New Projects/.claude/skills/repo-ci-baseline"
 base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
 if [[ -z "$base" ]] || ! git diff --quiet --no-renames "$base" HEAD -- .sandcastle package.json ':(glob)pnpm-*.yaml' \
-  .github/workflows/repo-ci-baseline.yml "$skill/template/owned/scripts/gate.sh" "$skill/template/owned/.sandcastle" "$skill/test.sh"; then
+  .github/workflows/repo-ci-baseline.yml "$skill/template/owned/scripts/gate.sh" "$skill/template/owned/.sandcastle" "$skill/template/seed/.sandcastle" "$skill/test.sh"; then
   echo
   echo "── Sandcastle check"
   pnpm run check:sandcastle

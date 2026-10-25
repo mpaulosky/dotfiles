@@ -251,8 +251,10 @@ describe("the Template's Seed prompts", () => {
     import.meta.url,
   );
   const applyPlaceholders = new Set(["OWNER", "REPO", "SOLUTION"]);
-  const placeholders = (text: string) =>
-    [...new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((match) => match[1]!))].filter((name) => !applyPlaceholders.has(name)).sort();
+  const placeholders = (text: string) => {
+    const names = new Set([...text.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((match) => match[1]!));
+    return [...names].filter((name) => !applyPlaceholders.has(name)).sort();
+  };
   const prompts = [
     "plan-prompt.md",
     "review-prompt.md",

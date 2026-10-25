@@ -66,6 +66,7 @@ export const TEMPLATE_OWNED_DIR = "Support For New Projects/.claude/skills/repo-
 export const TEMPLATE_ROOT_COPIES = [
   ".github/workflows/claude-review.yml",
   ".github/workflows/pr-automerge.yml",
+  ".github/workflows/pr-review-submitted.yml",
   ".github/scripts/post_claude_review.py",
   ".github/hooks/pre-commit",
   ".github/hooks/pre-push",

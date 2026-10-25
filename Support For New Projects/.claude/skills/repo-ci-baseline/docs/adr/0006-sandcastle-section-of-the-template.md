@@ -25,7 +25,7 @@ The Template now carries one, split by the same rule as the rest of it (ADR 0001
 - **Apply adds Sandcastle's files only to a repo that has a `.sandcastle/` folder, or no commits yet.**
   The Template's paths are those of every Baseline repo, and SuggestionApp has no Sandcastle: without the rule its next re-Apply would add
   an inert `.sandcastle/` and a root `package.json`. A repo starts using Sandcastle by creating the folder and Applying again.
-- **The Template's other checks see Sandcastle's own `{{NAME}}`s.** Sandcastle fills `{{TASK_ID}}`, `{{SHARED_RULES}}` and the rest when it runs a prompt,
+- **The placeholder checks let Sandcastle's own `{{NAME}}`s through.** Sandcastle fills `{{TASK_ID}}`, `{{SHARED_RULES}}` and the rest when it runs a prompt,
   so under `.sandcastle/` the no-placeholders check refuses only Apply's `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}`,
   and Apply reports a Seed file as unfilled only for those three.
 - **dotfiles' `.sandcastle/` carries the Owned files as copies**, checked by `test.sh` like its other copies of Owned files.

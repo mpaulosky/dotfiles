@@ -12,9 +12,9 @@ RUN apt-get update && apt-get install -y \
   libicu76 \
   && rm -rf /var/lib/apt/lists/*
 
-# The Python tools the gate runs: yamllint, at the version the Lint YAML
-# workflow pins, and pytest for the release scripts' tests. The gate falls back
-# to uvx or Docker for a missing tool, which the sandbox hasn't got.
+# The Python tools: yamllint, which the gate runs on the YAML a branch changes,
+# and pytest for the tests of the scripts under .github/scripts. The gate skips
+# yamllint when it's missing, so the sandbox would pass a branch CI fails.
 ARG YAMLLINT_VERSION=1.38.0
 RUN pip3 install --no-cache-dir --break-system-packages \
     pytest pyyaml "yamllint==${YAMLLINT_VERSION}"

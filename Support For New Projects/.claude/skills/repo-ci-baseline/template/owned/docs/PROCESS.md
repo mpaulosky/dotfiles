@@ -61,7 +61,10 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 - **Required checks:** Build Solution, Test Suite, Branch name, PR title, actionlint, zizmor, shellcheck, markdownlint
   and yamllint. A docs-only PR skips the build and tests, and so does a Dependabot GitHub Actions bump; a skipped check
   counts as passing.
-- **Copilot reviews every push**, drafts included. Resolve each thread: fix it, or reply with why not.
+- **Copilot reviews every push**, drafts included. Fix a thread you agree with, push the fix, then reply saying what
+  changed. Resolve it if Copilot or Claude Review opened it; leave a person's thread for them. Don't resolve a thread
+  before the push: PR Auto-Merge merges once the last thread is resolved, fix or not. On a thread you decline, reply with
+  why not.
 - **PR Auto-Merge squash-merges** a same-repo PR once its checks pass, Copilot has reviewed its latest commit and every
   thread is resolved. After three review rounds it stops waiting for a review of the latest commit, so a PR can't chase
   reviews forever, but every unresolved thread still holds it, Copilot's and Claude's included. At that point, once

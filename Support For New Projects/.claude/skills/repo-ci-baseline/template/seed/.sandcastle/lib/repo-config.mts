@@ -65,6 +65,13 @@ export const SANDBOX_SKILLS: readonly string[] = [];
 // jobs included. A rename of one of those jobs must change this too.
 export const GATE_COVERED_CHECKS: readonly string[] = ["Build Solution"];
 
+// The command the host runs in the sandbox as the gate: at each checkpoint, and
+// on a PR's head in a follow-up pass. The default is the Template's
+// scripts/gate.sh, which runs every test project. The sandbox has no Docker
+// daemon, so a repo whose tests start containers points this at a script that
+// leaves those out (such as .sandcastle/check.sh) and keeps its lints.
+export const GATE_COMMAND = "scripts/gate.sh";
+
 // The Template's Owned folder and the Owned files the repo carries copies of
 // at the same path from its root, which lib/overlap.mts counts as one path
 // with their Template file. Only a repo that holds the Template itself lists

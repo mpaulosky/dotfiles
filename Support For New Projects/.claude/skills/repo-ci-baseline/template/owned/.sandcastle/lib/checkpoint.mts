@@ -6,6 +6,7 @@
 
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMENT_LINES, GATE_FIXER_ATTEMPTS } from "./config.mts";
+import { GATE_COMMAND } from "./repo-config.mts";
 
 export type Checkpoint = 1 | 2;
 
@@ -46,7 +47,7 @@ export async function headOf(sandbox: Pick<Sandbox, "exec">): Promise<string | u
 // its id, so that commit must be known.
 export async function runGate(sandbox: Pick<Sandbox, "exec">): Promise<GateRun> {
   const before = await headOf(sandbox);
-  const { stdout, exitCode } = await sandbox.exec("scripts/gate.sh 2>&1");
+  const { stdout, exitCode } = await sandbox.exec(`${GATE_COMMAND} 2>&1`);
   const output = stdout.replace(ansiEscape, "");
   if (exitCode !== 0) return { passed: false, output };
 
@@ -115,7 +116,7 @@ export function endOf(text: string, limit: number): string {
 // The issue comment for a checkpoint that stayed red past the fixer's attempts.
 export function gateFailureComment(checkpoint: Checkpoint, branch: string, output: string): string {
   return [
-    `Sandcastle stopped building this issue: \`scripts/gate.sh\` is still red at checkpoint ${checkpoint} ` +
+    `Sandcastle stopped building this issue: \`${GATE_COMMAND}\` is still red at checkpoint ${checkpoint} ` +
       `after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts, so \`${branch}\` wasn't pushed. The branch keeps its commits.`,
     "",
     `The last ${GATE_COMMENT_LINES} lines of the gate output:`,

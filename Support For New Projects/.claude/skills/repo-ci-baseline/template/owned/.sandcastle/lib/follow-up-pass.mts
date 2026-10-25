@@ -58,7 +58,7 @@ import { plainText, withoutReferences } from "./intake.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { followUpPromptArgs, gateFixerPromptArgs } from "./prompts.mts";
 import { ownerCheck, type IsOwner } from "./queue.mts";
-import { GATE_COVERED_CHECKS } from "./repo-config.mts";
+import { GATE_COMMAND, GATE_COVERED_CHECKS } from "./repo-config.mts";
 import { humanThreadReport, outcomeReport, type HumanThreadEntry, type OutcomeEntry, type OutcomeReport } from "./report.mts";
 import { containsSandboxSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
@@ -303,16 +303,16 @@ const MERGE_SENTENCES: Record<PassReport["merged"], string[]> = {
 export function passSummaryComment(report: PassReport, publicError: (text: string) => string): string {
   const lines = [`${FOLLOW_UP_MARKER}\nSandcastle's follow-up pass ${report.pass} of ${FOLLOW_UP_PASS_CAP} on this PR.`];
   const pushed =
-    report.pushed === undefined ? "Nothing needed pushing." : `Pushed \`${report.pushed}\`, which passed \`scripts/gate.sh\`.`;
+    report.pushed === undefined ? "Nothing needed pushing." : `Pushed \`${report.pushed}\`, which passed \`${GATE_COMMAND}\`.`;
   lines.push([...MERGE_SENTENCES[report.merged], pushed].join(" "));
   const ci = report.redCi;
   if (ci !== undefined) {
-    if (ci.fix) lines.push("`scripts/gate.sh` was red on the PR's head before this pass.");
+    if (ci.fix) lines.push(`\`${GATE_COMMAND}\` was red on the PR's head before this pass.`);
     if (ci.forward.length > 0) {
-      lines.push(`Gave the follow-up role the failed-job logs of these checks, which \`scripts/gate.sh\` doesn't cover: ${checkList(ci.forward)}.`);
+      lines.push(`Gave the follow-up role the failed-job logs of these checks, which \`${GATE_COMMAND}\` doesn't cover: ${checkList(ci.forward)}.`);
     }
     if (ci.rerun.length > 0) {
-      lines.push(`Re-ran the failed jobs of ${checkList(ci.rerun)} once as flaky, since \`scripts/gate.sh\` passes on the PR's head.`);
+      lines.push(`Re-ran the failed jobs of ${checkList(ci.rerun)} once as flaky, since \`${GATE_COMMAND}\` passes on the PR's head.`);
     }
   }
   if (report.actions.length > 0) {
@@ -954,7 +954,7 @@ async function passOnMarkedIssue(
     if (redChecks.length > 0) {
       headGate = await runGate(sandbox);
       redCi = planRedCi(headGate.passed, redChecks, host.gateCovered);
-      log(`has ${redChecks.length} red check(s), and \`scripts/gate.sh\` ${headGate.passed ? "passes" : "fails"} on its head`);
+      log(`has ${redChecks.length} red check(s), and \`${GATE_COMMAND}\` ${headGate.passed ? "passes" : "fails"} on its head`);
     }
     let ciLog: string | undefined;
     if (redCi.forward.length > 0) {
@@ -1021,7 +1021,7 @@ async function passOnMarkedIssue(
     // each and the quoted output says which.
     if (!gate.passed || gate.head === undefined) {
       return stop(
-        `\`scripts/gate.sh\` didn't pass on a known, clean commit after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts: it's ` +
+        `\`${GATE_COMMAND}\` didn't pass on a known, clean commit after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts: it's ` +
           "red, the worktree isn't clean, or HEAD moved while it ran",
         gate.output,
       );
@@ -1110,7 +1110,7 @@ async function passOnMarkedIssue(
       }
       if (stillRed.length > 0) {
         return stop(
-          `\`scripts/gate.sh\` passes on the head, but ${checkList(stillRed)} stayed red after its one re-run as flaky`,
+          `\`${GATE_COMMAND}\` passes on the head, but ${checkList(stillRed)} stayed red after its one re-run as flaky`,
           rerunLog(target.number, stillRed, host, log, target.headRefOid),
         );
       }

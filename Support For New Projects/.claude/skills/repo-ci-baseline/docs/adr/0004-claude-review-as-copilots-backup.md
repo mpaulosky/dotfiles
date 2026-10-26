@@ -369,3 +369,36 @@ It reads the PR description's `## Review notes` as accepted findings, between th
 The benchmark above scored the old prompt, which asked for convention findings too, and it has not been rerun on this one: the local review now carries those, and a rerun is for the owner to ask for.
 Not done: reviewing only what a push changed since the last review. The diff step packs the whole diff into pieces with its own exclusion and holding
 rules, and a delta would need the same rules applied to a second diff, so it is left for its own change.
+
+## How the review reads (#299)
+
+The owner found Copilot's reviews easier to read than Claude's one dense paragraph, so the prompt asks for the same shape: a summary in short Markdown sections
+(Overview, a Changes table of file and what changed, Advisory, Not reviewed) and findings whose body starts with a bold title, then what goes wrong and the fix.
+The model's answer is still the schema's `summary` string and each finding's `body` string, so the schema and the checks that hold a merge don't change.
+The posting script changes only in how it handles suggestions, below, and in indenting an off-diff finding's body under its bullet so its paragraphs stay with it.
+
+A finding may carry a GitHub `suggestion` block, which a reader applies to the commented line with one click, only when the fix replaces that one line.
+That is the one place this review's text can change the PR's branch, so the script enforces the rule. The prompt does **not** ask for suggestions yet: the post job runs the
+base's `post_claude_review.py`, taken from the merge commit's first parent, while the prompt comes from the PR's own workflow, so a prompt that asked for them would reach a PR
+(this one's, and a repo's first re-Apply) before the script that vets them. This change lands the script, its tests and the redaction first, as the two-step rule above says;
+a later change adds the instruction to the prompt once the script is on every base. The script vets any suggestion the model writes unasked all the same:
+
+- A comment keeps a suggestion only when it holds exactly one block, whose info string is exactly `suggestion` and whose content is one non-empty line
+  with no redaction marker, no control, zero-width or bidirectional character, a visible character, and nothing that would close the block (an empty suggestion deletes the line)
+  (`vet_suggestions`). A suggestion with several lines, the `suggestion:-1+1` form, several blocks, a fence that isn't on its own lines, or a closing fence that isn't exactly the
+  opener's marker and length at column 0 (only spaces or tabs may follow it) is turned into a plain text fence.
+- A comment Claude cited at a line that isn't in the file goes on the nearest diff line, and a finding outside the diff goes in the review body: the first would replace the
+  wrong line and the second can't be applied, so both lose their suggestions (`defuse_suggestions`).
+- A suggestion changes only the PR's own branch, and only when a person clicks it. It is still text the model wrote from a PR it read, so a diff that steers the model
+  can steer the suggestion, which the reader has to read before applying: an accepted limit, the same as for the review text.
+
+This changes the prompt's formatting instructions and the script's handling of suggestions, so the benchmark's recall figures were not rerun for it.
+
+The regexes that run on the model's text also had to stay linear, because that text can be steered by a diff. The suggestion fence pattern starts a match only at the start of a run of
+fence characters. `CREDENTIAL` is unchanged, since a rewrite that started its JWT forms later in a run would miss a JWT glued to the end of another token, but it was quadratic on a long run
+of token characters: the first segment's characters include e, y and J, so a start at every `eyJ` rescanned the run each time, about 0.5 s at 60,000 characters and minutes at 200,000.
+So both the posting script and the workflow's answer check (`redact_credentials`, mirrored, with a test that they redact alike) first replace any token, dots included, that holds a run of more
+than 128 token characters, which no legitimate review text has, and which leaves nothing of a long JWT's payload or signature. What `CREDENTIAL` then scans has short runs, so its cost is linear.
+A JWT glued straight onto a `ghp_` or `sk-ant-` token is redacted as it always was: the token's pattern takes the JWT's first segment too, and the rest is no longer a JWT.
+A finding's `path` gets only `CREDENTIAL` (`redact_path`), not the long-run rule: a long generated file name is no credential, and a path that no longer matched the diff would
+move its finding into the review body, where it holds the merge. A path past 1,024 characters is no real path and gets the full rule.

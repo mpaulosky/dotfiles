@@ -6,6 +6,7 @@ import string
 import subprocess
 import sys
 import textwrap
+import time
 import unicodedata
 from pathlib import Path
 
@@ -137,6 +138,146 @@ def test_a_line_past_the_end_of_a_changed_file_goes_on_its_nearest_diff_line(cap
     assert review["comments"][0]["body"].endswith("Wrong number.")
     assert pcr.OFF_DIFF_MARKER not in review["body"]
     assert "::warning::" not in capsys.readouterr().out
+
+
+SUGGESTED = "**Wrong default**\n\nIt is 0.\n\n```suggestion\nvalue = 1\n```"
+
+
+def test_a_suggestion_on_the_cited_line_is_kept():
+    gh = run(findings_json(("src/app.py", 22, SUGGESTED)))
+
+    _, review = gh.posted[0]
+    assert review["comments"][0]["body"] == SUGGESTED
+
+
+def test_a_suggestion_on_the_nearest_line_is_turned_into_plain_text():
+    # The suggestion would replace the nearest diff line, not the line Claude meant.
+    gh = run(findings_json(("src/app.py", 598, SUGGESTED)))
+
+    _, review = gh.posted[0]
+    body = review["comments"][0]["body"]
+    assert "```suggestion" not in body
+    assert "```text\nvalue = 1\n```" in body
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("```suggestion\nx\n```", "```text\nx\n```"),
+        ("````suggestion\nx\n````", "````text\nx\n````"),
+        ("~~~ suggestion\nx\n~~~", "~~~text\nx\n~~~"),
+        ("```SUGGESTION\nx\n```", "```text\nx\n```"),
+        ("   ```suggestion\nx\n```", "   ```text\nx\n```"),
+        ("a `suggestion` word and ```suggestions``` inline", "a `suggestion` word and ```suggestions``` inline"),
+        ("```python\nsuggestion = 1\n```", "```python\nsuggestion = 1\n```"),
+    ],
+)
+def test_defuse_suggestions_changes_only_suggestion_fences(body, expected):
+    assert pcr.defuse_suggestions(body) == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "> ```suggestion\nx\n> ```",
+        "- ```suggestion\n  x\n  ```",
+        "a\r```suggestion\nx\n```",
+        "    ```suggestion\nx\n```",
+        "```suggestion foo\nx\n```",
+        "```suggestion:-1+1\nx\ny\n```",
+        "````\n```suggestion\nx\n```\n````",
+        "```suggestion\r\nx\r\n```",
+        "```\x0bsuggestion\nx\n```",
+        "```\x0csuggestion\nx\n```",
+    ],
+)
+def test_defuse_suggestions_catches_every_form_a_fence_can_take(body):
+    assert not pcr.SUGGESTION_FENCE.search(pcr.defuse_suggestions(body))
+
+
+def test_a_suggestion_fence_after_a_quote_marker_is_defused_to_text():
+    assert pcr.defuse_suggestions("> ```suggestion\nx") == "> ```text\nx"
+
+
+GOOD = "**T**\n\nWhy.\n\n```suggestion\n    value = 1\n```"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "No suggestion here.",
+        GOOD,
+        GOOD.replace("```", "~~~"),
+        "```python\nsuggestion = 1\n```",
+        "````suggestion\n```bash\n````",  # content that can't close a longer fence
+        "```suggestion\n\tvalue = 1  \n```",  # a tab and trailing spaces are the line's own
+        "```suggestion\n    ```\n```",  # four spaces make it indented text, not a closing fence
+    ],
+)
+def test_vet_suggestions_keeps_no_suggestion_or_one_good_line(body):
+    assert pcr.vet_suggestions(body) == body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "```suggestion\na\nb\n```",  # two lines
+        "```suggestion\n\n```",  # nothing
+        "```suggestion\n   \n```",  # blank
+        "```suggestion:-1+1\nx\n```",  # the multi-line form
+        "```suggestion\nx\n```\n\n```suggestion\ny\n```",  # two blocks
+        "```suggestion\ntoken = [redacted]\n```",  # a click would write the redaction
+        "``` suggestion\nx\n```",  # not exactly the info string
+        "- ```suggestion\n  x\n  ```",  # not on its own lines
+        "```suggestion\nx\r\n```",  # a lone CR in the block
+        "```suggestion\n```\n```",  # the content closes the block: a click would delete the line
+        "~~~suggestion\n~~~\n~~~",
+        "```suggestion\n  ```\n```",
+        "````suggestion\n`````\n````",
+        "```suggestion\nvalue = 1\n",  # never closed
+        "```suggestion\nvalue = 1\n~~~",  # closed by the other marker
+        "```suggestion\n\u200b\n```",  # a zero-width space is not a visible line
+        "```suggestion\nvalue\u202e = 1\n```",  # a bidirectional override
+        "```suggestion\nvalue\x00 = 1\n```",
+        "```suggestion\nvalue\u2028= 1\n```",
+        "```suggestion\n\u3164\n```",  # a Hangul filler renders blank
+        "```suggestion\n \u2800 \n```",  # a blank Braille cell
+        "```suggestion\n\u0301\n```",  # a lone combining mark
+        "```suggestion\nx\n````",  # a closing fence longer than the opener
+        "```suggestion\nx\n  ```",  # a closing fence indented
+        "```\x0bsuggestion\nx\ny\n```",
+    ],
+)
+def test_vet_suggestions_defuses_anything_but_one_good_line(body):
+    vetted = pcr.vet_suggestions(body)
+
+    assert vetted != body
+    assert not pcr.SUGGESTION_FENCE.search(vetted)
+
+
+def test_an_on_diff_comment_goes_through_vet_suggestions():
+    body = "**T**\n\n```suggestion\na\nb\n```"
+    _, review = run(findings_json(("src/app.py", 22, body))).posted[0]
+
+    assert "```suggestion" not in review["comments"][0]["body"]
+    assert "```text\na\nb\n```" in review["comments"][0]["body"]
+
+
+def test_a_finding_off_the_diff_keeps_a_table_and_a_list_under_its_bullet():
+    body = "**T**\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- one\n- two"
+    _, review = run(findings_json(("src/app.py", 10, body))).posted[0]
+
+    for row in ("  | a | b |", "  | - | - |", "  | 1 | 2 |", "  - one", "  - two"):
+        assert row in review["body"].split("\n")
+
+
+def test_a_finding_off_the_diff_keeps_its_paragraphs_under_its_bullet_and_loses_its_suggestion():
+    body = "**Title**\n\nWhat goes wrong.\n\n```suggestion\nx = 1\n```"
+    _, review = run(findings_json(("src/app.py", 10, body))).posted[0]
+
+    assert "- `src/app.py:10`: **Title**\n  \n  What goes wrong." in review["body"]
+    assert "```suggestion" not in review["body"]
+    assert "  ```text\n  x = 1\n  ```" in review["body"]
 
 
 def test_a_real_line_outside_the_hunks_still_holds_the_merge():
@@ -881,3 +1022,194 @@ def test_header_names_pr_automerge_among_what_adds_review_claude():
     adders = [s for s in sentences if re.search(r"\badds?\b", s) and "review:claude" in s]
     assert adders, "the header has no sentence about what adds review:claude"
     assert any("PR Auto-Merge" in s for s in adders), adders
+
+
+def test_the_prompt_asks_for_a_structured_summary_and_titled_findings():
+    prompt = " ".join(WORKFLOW.read_text().split())
+
+    for section in ("**Overview**", "**Changes**", "**Advisory (not blocking)**", "**Not reviewed**"):
+        assert section in prompt
+    assert "Start each finding's body with a bold one-line title" in prompt
+    # The posting script that vets suggestions reaches a repo with the re-Apply, but a PR's review
+    # runs the base's script: the prompt asks for suggestions only in a later change.
+    assert "suggestion" not in prompt.lower()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "```suggestion\n" + "a" * 200_000,
+        "`" * 200_000,
+        "~" * 200_000,
+        "`" * 100_000 + " " * 100_000,
+        "~" * 100_000 + "\t" * 100_000,
+        "```" + " " * 200_000,
+    ],
+    ids=["long line", "backticks", "tildes", "backticks then spaces", "tildes then tabs", "fence then spaces"],
+)
+def test_suggestion_handling_takes_linear_time_on_long_input(body):
+    start = time.monotonic()
+    pcr.vet_suggestions(body)
+    pcr.defuse_suggestions(body)
+
+    assert time.monotonic() - start < 2
+
+
+def workflow_credentials():
+    """The workflow answer check's credential definitions, run on their own."""
+    script = answer_check_script()
+    start = script.index("CREDENTIAL = re.compile(")
+    namespace = {"re": re}
+    exec(script[start:script.index("\n\n\ndef answer_in", start)], namespace)
+    return namespace
+
+
+def a_jwt(first=12, second=12, third=12, prefix="eyJ"):
+    return f"{prefix}{'a' * first}.eyJ{'b' * second}.{'c' * third}"
+
+
+GLUED = "ghp_" + "A" * 36 + "_" + a_jwt()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        a_jwt(),
+        "x-" + a_jwt(),
+        GLUED,
+        "ghs_123_" + a_jwt(),
+        a_jwt(second=200),  # a payload past MAX_TOKEN_RUN: the signature goes too
+        a_jwt(first=200),
+        a_jwt(third=300),
+        "eyJ" * 70_000,
+        "(" + a_jwt() + ")",
+    ],
+    ids=["jwt", "prefixed", "glued to ghp", "installation token", "long payload", "long header", "long signature",
+         "run of eyJ", "in parentheses"],
+)
+def test_no_credential_shaped_text_survives_redaction(text):
+    for redact_text in (pcr.redact_credentials, workflow_credentials()["redact_credentials"]):
+        redacted, count = redact_text(f"see {text} end")
+
+        assert count >= 1
+        assert redacted.startswith("see ") and redacted.endswith(" end")
+        assert not pcr.CREDENTIAL.search(redacted)
+        assert "bbbbbbbb" not in redacted and "cccccccc" not in redacted
+
+
+@pytest.mark.parametrize("text", ["ghp_" + "A" * 36 + a_jwt(), "sk-ant-" + "a" * 30 + "-" + a_jwt()], ids=["ghp then jwt", "sk-ant then jwt"])
+def test_a_jwt_run_straight_onto_a_token_is_redacted_as_the_original_pattern_did(text):
+    # The token's alternative takes the JWT's first segment too, as it always has, so the rest
+    # (two segments) is no longer a JWT; the redaction must still act and never match a JWT.
+    redacted, count = pcr.redact_credentials(text)
+
+    assert count >= 1
+    assert not pcr.CREDENTIAL.search(redacted)
+    assert pcr.CREDENTIAL.sub("[redacted]", text) == redacted
+
+
+def test_a_long_jwts_signature_is_replaced_with_its_payload():
+    redacted, _ = pcr.redact_credentials("t=" + a_jwt(second=400, third=50))
+
+    assert redacted == "t=[redacted]"
+
+
+def test_ordinary_text_with_short_words_is_left_alone():
+    text = "Fix snake_case_names, dotted.names.here and a 64-char hash " + "0" * 64 + " in src/app.py:12."
+
+    assert pcr.redact_credentials(text) == (text, 0)
+
+
+def test_the_script_and_the_workflow_redact_alike():
+    rng = random.Random(299)
+    pieces = [a_jwt(), a_jwt(second=200), GLUED, "ghs_9_" + a_jwt(), "sk-ant-" + "q" * 25, "x-", "eyJ", ".", " ", "/", "a" * 130, "ok"]
+    redact_workflow = workflow_credentials()["redact_credentials"]
+    for _ in range(300):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 6)))
+
+        assert pcr.redact_credentials(text) == redact_workflow(text)
+
+
+def test_the_redaction_leaves_nothing_the_original_pattern_matches():
+    rng = random.Random(299)
+    pieces = [a_jwt(), a_jwt(first=8, second=8, third=8), a_jwt(second=200), GLUED, "ghp_" + "Z" * 40, "ghs_9_" + a_jwt(),
+              "github_pat_" + "a" * 22 + "_" + "b" * 59, "sk-ant-" + "q" * 25, "x-", "_", "-", ".", " ", "eyJ", "/"]
+    matched = 0
+    for _ in range(3000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 7)))
+        matched += bool(pcr.CREDENTIAL.search(text))
+        redacted, _ = pcr.redact_credentials(text)
+
+        assert not pcr.CREDENTIAL.search(redacted), text
+    assert matched > 1500
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "eyJ" * 70_000,
+        "ghp_1_eyJ" * 25_000,
+        "eyJ" * 40_000 + "." + "eyJ" * 40_000,
+        "x-" * 100_000 + "eyJ",
+        ("eyJ" * 42 + "a" + ".") * 1_500,  # many runs just under MAX_TOKEN_RUN, each full of eyJ
+        ("ghp_1_eyJ" * 14 + ".") * 1_500,
+        "a." * 100_000,
+    ],
+    ids=["eyJ run", "ghp eyJ run", "two eyJ runs", "long prefix", "many short eyJ runs", "many ghp runs", "many dots"],
+)
+def test_redacting_takes_linear_time_on_long_input(text):
+    redact_workflow = workflow_credentials()["redact_credentials"]
+    start = time.monotonic()
+    pcr.redact_credentials(text)
+    redact_workflow(text)
+
+    assert time.monotonic() - start < 3
+
+
+LONG_NAME = "tests/Get_Articles_When_" + "A" * 130 + "_Returns_401.cs"
+
+
+def test_a_long_file_name_in_a_finding_path_is_left_alone():
+    summary, findings, count = pcr.redact("s", [{"path": LONG_NAME, "line": 3, "body": "b"}])
+
+    assert findings[0]["path"] == LONG_NAME
+    assert count == 0
+
+
+def test_a_credential_in_a_finding_path_is_still_redacted():
+    path = "src/" + a_jwt() + ".cs"
+    _, findings, count = pcr.redact("s", [{"path": path, "line": 3, "body": "b"}])
+
+    assert "bbbbbbbb" not in findings[0]["path"]
+    assert count >= 1
+
+
+def test_a_path_past_the_limit_gets_the_full_rule():
+    path = "x/" + "eyJ" * 70_000
+    start = time.monotonic()
+    _, findings, _ = pcr.redact("s", [{"path": path, "line": 3, "body": "b"}])
+
+    assert findings[0]["path"] == "x/[redacted]"
+    assert time.monotonic() - start < 3
+
+
+def test_the_workflow_redacts_paths_like_the_script():
+    redact = workflow_credentials()["redact_path"]
+
+    assert redact(LONG_NAME) == (LONG_NAME, 0)
+    assert redact("src/" + a_jwt()) == pcr.redact_path("src/" + a_jwt())
+    assert redact("x/" + "eyJ" * 1000) == pcr.redact_path("x/" + "eyJ" * 1000)
+
+
+def test_the_workflows_redact_leaves_a_long_file_name_in_a_path_field_alone():
+    script = answer_check_script()
+    namespace = workflow_credentials()
+    exec(script[script.index("def redact(value, key=None):"):script.index("def write_outputs")], namespace)
+    answer = {"summary": "see " + a_jwt(), "findings": [{"path": LONG_NAME, "line": 3, "body": "see " + a_jwt()}]}
+
+    redacted, count = namespace["redact"](answer)
+
+    assert redacted["findings"][0]["path"] == LONG_NAME
+    assert "bbbbbbbb" not in redacted["summary"] and "bbbbbbbb" not in redacted["findings"][0]["body"]
+    assert count == 2
+

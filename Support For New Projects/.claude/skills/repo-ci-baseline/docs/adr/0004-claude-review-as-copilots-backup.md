@@ -383,10 +383,16 @@ That is the one place this review's text can change the PR's branch, so the scri
 - A comment keeps a suggestion only when it holds exactly one block, whose info string is exactly `suggestion` and whose content is one non-empty line
   with no redaction marker, no control, zero-width or bidirectional character, a visible character, and nothing that would close the block (an empty suggestion deletes the line)
   (`vet_suggestions`). A suggestion with several lines, the `suggestion:-1+1` form, several blocks, a fence that isn't on its own lines, or a closing fence that isn't exactly the
-  opener's marker and length at column 0 is turned into a plain text fence.
+  opener's marker and length at column 0 (only spaces or tabs may follow it) is turned into a plain text fence.
 - A comment Claude cited at a line that isn't in the file goes on the nearest diff line, and a finding outside the diff goes in the review body: the first would replace the
   wrong line and the second can't be applied, so both lose their suggestions (`defuse_suggestions`).
 - A suggestion changes only the PR's own branch, and only when a person clicks it. It is still text the model wrote from a PR it read, so a diff that steers the model
   can steer the suggestion, which the reader has to read before applying: an accepted limit, the same as for the review text.
 
 This changes the prompt's formatting instructions and the script's handling of suggestions, so the benchmark's recall figures were not rerun for it.
+
+The regexes that run on the model's text also had to stay linear, because that text can be steered by a diff. The suggestion fence pattern starts a match only at the start of a run of
+fence characters, and the credential patterns (`CREDENTIAL` in the script and in the workflow's answer check, and the workflow's `SECRET_PART`) start their JWT forms at the start of a
+run of token characters and skip to its first `eyJ`. Only the first `eyJ` of a run can match, since every one in it ends at the same dot, so they find the same credentials as before, and
+a match may begin earlier in the run. The first segment's characters include e, y and J, so a start at every `eyJ` rescanned the whole run each time: about 0.5 s at 60,000 characters, and minutes at 200,000.
+A test compares the new `CREDENTIAL` with the old one on random strings, and others time long runs.

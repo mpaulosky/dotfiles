@@ -1033,8 +1033,6 @@ def test_the_prompt_asks_for_a_structured_summary_and_titled_findings():
     assert "GitHub suggestion" in prompt
 
 
-
-
 @pytest.mark.parametrize(
     "body",
     [
@@ -1053,3 +1051,53 @@ def test_suggestion_handling_takes_linear_time_on_long_input(body):
     pcr.defuse_suggestions(body)
 
     assert time.monotonic() - start < 2
+
+
+# The patterns before they started at the start of a run of token characters.
+OLD_CREDENTIAL = re.compile(
+    r"sk-ant-[A-Za-z0-9_-]{20,}"
+    r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"|gh[pousr]_[A-Za-z0-9]{36,}"
+    r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+)
+
+
+def test_credential_finds_what_the_old_pattern_found_and_covers_it():
+    rng = random.Random(299)
+    pieces = ["eyJ", "eyJhbGciOiJIUzI1", ".", "..", "a", "Z9", "_", "-", "ghp_1_", "ghs_42_", "sk-ant-", "x" * 12, " ", "/", "\n"]
+    for _ in range(4000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 14)))
+        old = [m.span() for m in OLD_CREDENTIAL.finditer(text)]
+        new = [m.span() for m in pcr.CREDENTIAL.finditer(text)]
+        assert bool(old) == bool(new), text
+        # Every old match lies inside a new one: the new pattern may begin earlier in the run, never later.
+        for start, end in old:
+            assert any(n_start <= start and end <= n_end for n_start, n_end in new), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["eyJ" * 70_000, "ghp_1_eyJ" * 25_000, "eyJ" * 40_000 + "." + "eyJ" * 40_000, "x-" * 100_000 + "eyJ"],
+    ids=["eyJ run", "ghp eyJ run", "two eyJ runs", "long prefix"],
+)
+def test_the_credential_pattern_takes_linear_time_on_long_runs(text):
+    start = time.monotonic()
+    pcr.redact(text, [{"path": "a", "line": 1, "body": text}])
+
+    assert time.monotonic() - start < 2
+
+
+def test_the_workflows_secret_patterns_take_linear_time_on_long_runs():
+    script = answer_check_script()
+    start = script.index("CREDENTIAL = re.compile(")
+    namespace = {"re": re}
+    exec(script[start:script.index("LEAK_WINDOW", start)], namespace)
+
+    for text in ("eyJ" * 70_000, "ghp_1_eyJ" * 25_000, "eyJ" * 40_000 + "." + "eyJ" * 40_000):
+        begun = time.monotonic()
+        namespace["CREDENTIAL"].search(text)
+        namespace["SECRET_PART"].search(text)
+
+        assert time.monotonic() - begun < 2
+

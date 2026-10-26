@@ -70,12 +70,17 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # today's ghs_<digits>_<JWT> installation tokens), and JWTs. No boundary on
 # the left, so text run up against a token (token_ghp_..., x-eyJ...) can't
 # hide it; a match only warns, so redacting a little too much costs little.
+# The two JWT forms start at the start of a run of token characters and skip to its first
+# `eyJ`: the first segment's characters include e, y and J, so a start at every `eyJ` of a long
+# run would rescan the run each time. Only the first `eyJ` of a run can match, because every
+# `eyJ` in the run ends at the same dot, so this finds what a start at each one would, and a
+# match may begin a few characters earlier, at the run's start.
 CREDENTIAL = re.compile(
     r"sk-ant-[A-Za-z0-9_-]{20,}"
-    r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"|(?<![A-Za-z0-9_-])(?:(?!gh[pousr]_[0-9]+_eyJ)[A-Za-z0-9_-])*gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
     r"|gh[pousr]_[A-Za-z0-9]{36,}"
     r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"|(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
 )
 REDACTED = "[redacted]"
 

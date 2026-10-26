@@ -1767,14 +1767,14 @@ jobs:
 
           CREDENTIAL = re.compile(
               r"sk-ant-[A-Za-z0-9_-]{20,}"
-              r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+              r"|(?<![A-Za-z0-9_-])(?:(?!gh[pousr]_[0-9]+_eyJ)[A-Za-z0-9_-])*gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
               r"|gh[pousr]_[A-Za-z0-9]{36,}"
               r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
-              r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+              r"|(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
           )
           SECRET_PART = re.compile(
               r"sk-ant-(?:[a-z]+[0-9]+-)?([A-Za-z0-9_-]{20,})"
-              r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)"
+              r"|(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)"
               r"|gh[pousr]_([A-Za-z0-9]{36,})"
               r"|github_pat_([A-Za-z0-9_]{82})"
           )

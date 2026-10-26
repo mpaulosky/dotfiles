@@ -52,6 +52,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 import urllib.parse
 
 # Accepted limit (repo-ci-baseline's ADR 0004): the marker proves the login,
@@ -81,10 +82,12 @@ REDACTED = "[redacted]"
 # A fence whose info string starts with `suggestion`, anywhere in a body (after a list or quote
 # marker, or a lone CR, too): GitHub shows its content as a change the reader can apply with
 # one click to the line the comment sits on, and the legacy `suggestion:-1+1` form changes more.
-SUGGESTION_FENCE = re.compile(r"(?i)(`{3,}|~{3,})[ \t]*suggestion\b")
+# Any whitespace but a line break may sit between the fence and the info string.
+SUGGESTION_FENCE = re.compile(r"(?i)(`{3,}|~{3,})[^\S\r\n]*suggestion\b")
 # The one form a comment may keep: a fence on its own lines whose info string is exactly
-# `suggestion`, holding one non-empty line.
-ONE_LINE_SUGGESTION = re.compile(r"(?m)^(`{3,}|~{3,})suggestion[ \t]*\n([^\n\r]*\S[^\n\r]*)\n\1[ \t]*$")
+# `suggestion`, holding one non-empty line. The leading class and \S are disjoint, so
+# matching is linear.
+ONE_LINE_SUGGESTION = re.compile(r"(?m)^(`{3,}|~{3,})suggestion[ \t]*\n([^\S\n\r]*\S[^\n\r]*)\n\1[ \t]*$")
 
 
 class MalformedFindings(ValueError):
@@ -190,18 +193,31 @@ def defuse_suggestions(body):
     return SUGGESTION_FENCE.sub(r"\1text", body)
 
 
+def suggestion_line_is_safe(fence, line):
+    """Whether `line` can be the one line of a suggestion that `fence` opened.
+
+    Not when it would close the block (a suggestion with no content deletes the line), nor when
+    it holds a character the reader can't see in the diff: a control or format character
+    (zero-width, bidirectional) or a Unicode line or paragraph separator.
+    """
+    closes = re.fullmatch(" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + ",}[ \t]*", line)
+    hidden = any(unicodedata.category(c) in ("Cf", "Zl", "Zp") or (unicodedata.category(c) == "Cc" and c != "\t") for c in line)
+    return not closes and not hidden
+
+
 def vet_suggestions(body):
     """The body as it is when it holds no suggestion, or exactly one well-formed single-line suggestion.
 
-    Any other suggestion (several, several lines, the multi-line form, text redacted from a
-    credential) is defused: the prompt asks for one line only, but a suggestion is applied with one
-    click and what the model writes comes from a PR it read, so the script holds the rule.
+    Any other suggestion (several, several lines, the multi-line form, an empty or hidden one, text
+    redacted from a credential) is defused: the prompt asks for one line only, but a suggestion is
+    applied with one click and what the model writes comes from a PR it read, so the script holds
+    the rule.
     """
     fences = SUGGESTION_FENCE.findall(body)
     if not fences:
         return body
     block = ONE_LINE_SUGGESTION.search(body)
-    if len(fences) == 1 and block and REDACTED not in block.group(2):
+    if len(fences) == 1 and block and REDACTED not in block.group(2) and suggestion_line_is_safe(block.group(1), block.group(2)):
         return body
     return defuse_suggestions(body)
 

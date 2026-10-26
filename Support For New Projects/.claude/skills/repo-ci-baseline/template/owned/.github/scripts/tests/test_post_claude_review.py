@@ -186,6 +186,8 @@ def test_defuse_suggestions_changes_only_suggestion_fences(body, expected):
         "```suggestion:-1+1\nx\ny\n```",
         "````\n```suggestion\nx\n```\n````",
         "```suggestion\r\nx\r\n```",
+        "```\x0bsuggestion\nx\n```",
+        "```\x0csuggestion\nx\n```",
     ],
 )
 def test_defuse_suggestions_catches_every_form_a_fence_can_take(body):
@@ -199,7 +201,18 @@ def test_a_suggestion_fence_after_a_quote_marker_is_defused_to_text():
 GOOD = "**T**\n\nWhy.\n\n```suggestion\n    value = 1\n```"
 
 
-@pytest.mark.parametrize("body", ["No suggestion here.", GOOD, GOOD.replace("```", "~~~"), "```python\nsuggestion = 1\n```"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        "No suggestion here.",
+        GOOD,
+        GOOD.replace("```", "~~~"),
+        "```python\nsuggestion = 1\n```",
+        "````suggestion\n```bash\n````",  # content that can't close a longer fence
+        "```suggestion\n\tvalue = 1  \n```",  # a tab and trailing spaces are the line's own
+        "```suggestion\n    ```\n```",  # four spaces make it indented text, not a closing fence
+    ],
+)
 def test_vet_suggestions_keeps_no_suggestion_or_one_good_line(body):
     assert pcr.vet_suggestions(body) == body
 
@@ -216,6 +229,17 @@ def test_vet_suggestions_keeps_no_suggestion_or_one_good_line(body):
         "``` suggestion\nx\n```",  # not exactly the info string
         "- ```suggestion\n  x\n  ```",  # not on its own lines
         "```suggestion\nx\r\n```",  # a lone CR in the block
+        "```suggestion\n```\n```",  # the content closes the block: a click would delete the line
+        "~~~suggestion\n~~~\n~~~",
+        "```suggestion\n  ```\n```",
+        "````suggestion\n`````\n````",
+        "```suggestion\nvalue = 1\n",  # never closed
+        "```suggestion\nvalue = 1\n~~~",  # closed by the other marker
+        "```suggestion\n\u200b\n```",  # a zero-width space is not a visible line
+        "```suggestion\nvalue\u202e = 1\n```",  # a bidirectional override
+        "```suggestion\nvalue\x00 = 1\n```",
+        "```suggestion\nvalue\u2028= 1\n```",
+        "```\x0bsuggestion\nx\ny\n```",
     ],
 )
 def test_vet_suggestions_defuses_anything_but_one_good_line(body):
@@ -1002,3 +1026,15 @@ def test_the_prompt_asks_for_a_structured_summary_and_titled_findings():
     assert "Start each finding's body with a bold one-line title" in prompt
     assert "GitHub suggestion" in prompt
 
+
+
+
+def test_vet_suggestions_takes_linear_time_on_a_long_line():
+    import time
+
+    body = "```suggestion\n" + "a" * 200_000
+
+    start = time.monotonic()
+    pcr.vet_suggestions(body)
+
+    assert time.monotonic() - start < 2

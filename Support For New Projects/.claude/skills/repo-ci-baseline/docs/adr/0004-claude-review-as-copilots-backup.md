@@ -380,7 +380,8 @@ The posting script changes only in how it handles suggestions, below, and in ind
 A finding may carry a GitHub `suggestion` block, which a reader applies to the commented line with one click, only when the fix replaces that one line.
 That is the one place this review's text can change the PR's branch, so the script enforces the rule and the prompt only asks for it:
 
-- A comment keeps a suggestion only when it holds exactly one block, whose info string is exactly `suggestion` and whose content is one non-empty line with no redaction marker
+- A comment keeps a suggestion only when it holds exactly one block, whose info string is exactly `suggestion` and whose content is one non-empty line
+  with no redaction marker, no control, zero-width or bidirectional character, and nothing that would close the block (an empty suggestion deletes the line)
   (`vet_suggestions`). A suggestion with several lines, the `suggestion:-1+1` form, several blocks or a fence that isn't on its own lines is turned into a plain text fence.
 - A comment Claude cited at a line that isn't in the file goes on the nearest diff line, and a finding outside the diff goes in the review body: the first would replace the
   wrong line and the second can't be applied, so both lose their suggestions (`defuse_suggestions`).

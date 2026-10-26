@@ -204,12 +204,15 @@ describe("the Template's tests remove scratch directories with retries", () => {
   it("passes maxRetries to every recursive rmSync in the Owned lib/ modules", () => {
     const lib = join(owned, ".sandcastle/lib");
     const bare: string[] = [];
+    let found = 0;
     for (const file of filesUnder(lib).filter((entry) => entry.endsWith(".mts"))) {
       for (const call of readFileSync(join(lib, file), "utf8").matchAll(/rmSync\([^;]*?recursive: true[^;]*?\)/g)) {
+        found += 1;
         if (!call[0].includes("maxRetries")) bare.push(`${file}: ${call[0].replace(/\s+/g, " ")}`);
       }
     }
 
+    assert.ok(found > 0, "no recursive rmSync found in the Owned lib/ modules: the scan checks nothing");
     assert.deepEqual(bare, []);
   });
 });

@@ -2,23 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { OPTIONAL_ROLES } from "./config.mts";
 import { uiEnabled } from "./agents.mts";
-import { ROLE_AGENTS } from "./repo-config.mts";
 import { readyPicks, resolveFiles, resolveRoles } from "./plan.mts";
-
-// Runs `run` with the repo's `ui` role opted in or out of ROLE_AGENTS, whatever
-// lib/repo-config.mts says, then puts ROLE_AGENTS back as it was.
-async function withUiRole<T>(enabled: boolean, run: () => T | Promise<T>): Promise<T> {
-  const agents: Record<string, unknown> = ROLE_AGENTS;
-  const original = agents.ui;
-  if (enabled) agents.ui = { ...ROLE_AGENTS.backend };
-  else delete agents.ui;
-  try {
-    return await run();
-  } finally {
-    if (original === undefined) delete agents.ui;
-    else agents.ui = original;
-  }
-}
+import { withUiRole } from "./ui-role-fixture.mts";
 
 describe("readyPicks", () => {
   const ready = [{ number: 4 }, { number: 5 }];

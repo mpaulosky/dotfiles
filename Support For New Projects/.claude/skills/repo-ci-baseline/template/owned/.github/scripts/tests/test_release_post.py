@@ -1823,3 +1823,13 @@ def test_a_reference_definition_keeps_its_label_and_title_as_written(text, expec
 )
 def test_an_autolink_the_sanitizer_escapes_is_scanned_as_text(body, expected):
     assert rp.sanitize_markdown(body) == expected
+
+
+def test_list_reads_a_record_whose_text_holds_unicode_line_separators(monkeypatch):
+    # jq's @json leaves U+2028 and U+2029 unescaped, and str.splitlines() splits on both.
+    records = [{"filename": "a.md", "patch": "x\u2028y\u2029z"}, {"filename": "b.md", "patch": "plain"}]
+    output = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+    github = rp.GitHub(REPO)
+    monkeypatch.setattr(github, "_api", lambda path, jq=None: output)
+
+    assert github.files(42) == records

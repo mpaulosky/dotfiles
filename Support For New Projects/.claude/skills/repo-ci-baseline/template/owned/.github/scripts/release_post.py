@@ -61,7 +61,9 @@ class GitHub:
         return subprocess.run(command, check=True, capture_output=True, text=True).stdout
 
     def _list(self, path, jq=".[] | @json"):
-        return [json.loads(line) for line in self._api(path, jq).splitlines() if line.strip()]
+        # Split on newlines only: jq's @json leaves U+2028 and U+2029 unescaped, and
+        # splitlines() would cut a record at either one.
+        return [json.loads(line) for line in self._api(path, jq).split("\n") if line.strip()]
 
     def pull(self, number):
         return json.loads(self._api(f"pulls/{number}"))

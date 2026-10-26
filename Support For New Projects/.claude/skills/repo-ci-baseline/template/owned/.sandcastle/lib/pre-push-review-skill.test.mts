@@ -8,6 +8,7 @@ import { REVIEW_NOTES_END, REVIEW_NOTES_START } from "./review-ledger.mts";
 // Claude Code reads both files, not this repository's code.
 const agent = readFileSync(new URL("../../.claude/agents/pre-push-reviewer.md", import.meta.url), "utf8");
 const skill = readFileSync(new URL("../../.claude/skills/pre-push-review/SKILL.md", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../../.github/workflows/claude-review.yml", import.meta.url), "utf8");
 const bar = readFileSync(new URL("../../.claude/skills/pre-push-review/review-bar.md", import.meta.url), "utf8");
 
 describe("the pre-push-review skill's reviewers", () => {
@@ -266,6 +267,40 @@ describe("the pre-push-review skill's follow-up issue text", () => {
     assert.ok(flat.includes("show the person the exact text that will be posted"));
     assert.ok(flat.includes("post it only once they say to"));
     assert.doesNotMatch(flat, /have the person look over the report's Advisory section/);
+  });
+});
+
+describe("the pre-push-review skill's fixing", () => {
+  it("fixes Critical, Warning and Advisory findings alike, and leaves one open only for a person", () => {
+    assert.match(skill, /Fix the Critical, Warning and Advisory findings\. For each one:/);
+    assert.match(skill, /\*\*Fix it\*\* when it's a real Critical, Warning or Advisory finding, `needsPerson` is false/);
+    assert.match(skill, /\| \*\*Warning\*\* \|[^|]*\| Fixed in the review, behind a regression test \|/);
+    assert.doesNotMatch(skill, /Never fix a Warning they haven't asked you to fix/);
+    assert.doesNotMatch(skill, /the Warnings the person asks you to fix/);
+  });
+});
+
+describe("the pre-push-review skill's fixing, in the rest of its text", () => {
+  it("still names Warnings with the Critical ones to fix in a round, and the Warning bullet for a person", () => {
+    assert.match(skill, /in\s+that\s+round,\s+with\s+its\s+Critical\s+and\s+Warning\s+ones/);
+    assert.match(skill, /\*\*Leave it open\*\* for a person, with its suggested fix, when a Critical or Warning finding's `needsPerson` is true/);
+  });
+
+  it("records a Warning fixed only with a test, and keeps an agent from loosening a guard or accepting for a person", () => {
+    assert.match(skill, /A\s+security\s+finding\s+\(every\s+Warning\)\s+is\s+recorded\s+`fixed`\s+only\s+with\s+a\s+`test`/);
+    assert.match(skill, /except\s+that\s+a\s+security\s+finding,\s+any\s+Warning,\s+needs\s+a\s+`test`/);
+    assert.match(skill, /never\s+weaken,\s+skip\s+or\s+delete\s+a\s+test,\s+a\s+gate\s+check,\s+a\s+validation\s+or\s+a\s+permission/);
+    assert.match(skill, /A fix that changes the gate, the ledger, the reviewer agent, `\.claude\/settings\.json` or a workflow's permissions is\s+`needsPerson`/);
+    assert.match(skill, /Never accept a finding on a person's behalf/);
+  });
+});
+
+describe("Claude Review's accepted-findings step and the ledger", () => {
+  // The workflow is Owned by every Baseline repo and the ledger by every Sandcastle repo, so this is the one
+  // place that sees both: the step reads the markers the ledger writes.
+  it("look for the markers the ledger writes", () => {
+    assert.ok(workflow.includes(`START = "${REVIEW_NOTES_START}"`), "the step's START is not the ledger's");
+    assert.ok(workflow.includes(`END = "${REVIEW_NOTES_END}"`), "the step's END is not the ledger's");
   });
 });
 

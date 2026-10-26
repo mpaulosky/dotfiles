@@ -10,7 +10,7 @@ Why: [ADR 0008](../docs/adr/0008-review-before-the-push.md). The process a devel
 | Piece | Where | Owned or Seed |
 | --- | --- | --- |
 | The skill: severities, steps, the ledger commands | `.claude/skills/pre-push-review/SKILL.md` | Owned |
-| The reviewers' bar (Claude Review's own prompt, adapted) and the generic lenses | `.claude/skills/pre-push-review/review-bar.md`, `lenses.md` | Owned |
+| The reviewers' bar (Claude Review's own prompt, adapted and widened) and the generic lenses | `.claude/skills/pre-push-review/review-bar.md`, `lenses.md` | Owned |
 | The read-only reviewer agent (Read, Grep and Glob only) | `.claude/agents/pre-push-reviewer.md` | Owned |
 | The ledger: what the review found and what became of it, keyed by the branch's own hunks | `.sandcastle/lib/review-ledger.mts` (run as `scripts/review.sh`) | Owned |
 | The gate's check | `scripts/gate.sh`, step "Local review" | Owned |
@@ -25,9 +25,10 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
 
 - `/pre-push-review` reviews the branch's whole diff against `origin/main` with parallel reviewers (the bar, plus one per matching lens),
   grades each finding **Critical** (a bug in code that runs, or behaviour with no test), **Warning** (a security weakness, whatever the file) or
-  **Advisory** (docs, comments, conventions), fixes Critical ones behind a regression test and Advisory ones in the review (with a gate check when one can pin it),
+  **Advisory** (docs, comments, conventions), fixes all three kinds in the review (Critical and Warning ones behind a regression test, Advisory ones with a gate check when one can pin it),
   reviews the fixes again until a round fixes nothing, and records the result.
-- Critical and Warning findings left open block the push until the person fixes them or accepts them with `scripts/review.sh accept` (never on their behalf).
+- Critical and Warning findings left open (because they need a person, or the last, review-only round raised them) block the push until the person fixes them or accepts
+  them with `scripts/review.sh accept` (never on their behalf).
   Advisory findings never block: one that needs a person goes to one follow-up issue per branch.
 - The ledger is keyed by the branch's hunks against its merge base with `origin/main`. A clean merge of `main` keeps the review; a new commit, a conflict
   resolution or a `main` change inside one of the branch's hunks needs a new one. A re-Apply on `chore/reapply-baseline` passes without one only when every
@@ -68,8 +69,8 @@ A repo that already has Sandcastle:
    (a deny rule beats any allow rule, so a `.env.*` rule would lock the templates too). The list is a floor: add a rule for each other `.env.<name>` file your repo keeps secrets in.
 
 3. Run `pnpm install` (the ledger needs `zod` and `tsx`, both in the Seed `package.json`; a repo whose own `package.json` lacks `tsx` gets it when it migrates
-   to the Sandcastle section), then `pnpm run check:sandcastle`. Add `scripts/review.sh`, `.claude/skills/pre-push-review` and
-   `.claude/agents/pre-push-reviewer.md` to the pathspec in the repo's Sandcastle check (the Seed `.sandcastle/check.sh` has them), since its tests read them.
+   to the Sandcastle section), then `pnpm run check:sandcastle`. Add `scripts/review.sh`, `.claude/skills/pre-push-review`,
+   `.claude/agents/pre-push-reviewer.md` and `.github/workflows/claude-review.yml` to the pathspec in the repo's Sandcastle check (the Seed `.sandcastle/check.sh` has them), since its tests read them.
 4. The repo's own guidance for reviewers is optional: a `.claude/skills/code-review/SKILL.md` with a **Lenses** table of the same shape as `lenses.md` adds lenses
    and `CLAUDE.md`, `.sandcastle/CODING_STANDARDS.md` (or `docs/CODING_STANDARDS.md`) and `.claude/rules/` are read when they exist. A lesson from a GitHub review goes into the
    repo's `code-review` skill, not into the Owned `lenses.md` or `review-bar.md` (the next Apply reverts those): to change them, change the Template first.
@@ -78,6 +79,6 @@ A repo that already has Sandcastle:
 ## Not in it yet
 
 - **Sandcastle running the review.** Its builds skip the check and keep their own reviewer role.
-- **Claude Review taking the local review into account.** The planned follow-up: on `synchronize` review only what changed since the last review, open
-  threads only for bugs, security and GitHub behaviour (list the rest as Advisory in the review body), and honour a PR description's `## Review notes`.
-  That changes the Owned `claude-review.yml`, so it is its own PR.
+- **Claude Review reviewing only what a push changed.** Claude Review now opens findings only for what a local review can't check and reads the PR's
+  `## Review notes` as accepted findings ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#claude-review-after-the-local-review)),
+  but it still reads the PR's whole diff on every push. A delta needs the diff step's exclusion and holding rules applied to a second diff.

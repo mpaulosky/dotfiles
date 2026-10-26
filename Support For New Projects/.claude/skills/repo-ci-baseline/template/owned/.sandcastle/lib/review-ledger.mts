@@ -156,7 +156,9 @@ function checkOutcome(finding: z.infer<typeof findingFields>, context: z.Refinem
 // lens names security is never Advisory: it would pass the check without a
 // person deciding it, and go to the public follow-up issue.
 // Its `fix` is always given, null when unused, and given for every open
-// finding: the person deciding it, or the follow-up issue, needs it.
+// finding: the person deciding it, or the follow-up issue, needs it. A security
+// weakness (isSecurity) is recorded fixed only with a test, which may name a
+// gate check: a reason alone leaves it open.
 export const findingSchema = findingFields
   .extend({ severity: z.enum(SEVERITIES), security: z.boolean(), fix: z.string().trim().min(1).nullable() })
   .strict()
@@ -164,6 +166,10 @@ export const findingSchema = findingFields
   .superRefine((finding, context) => {
     if (finding.status === "open" && finding.fix === null) {
       context.addIssue({ code: "custom", message: `${finding.id} is open without a suggested fix` });
+    }
+    // isSecurity is what the check and the notes use, so the agent-written `security` flag alone can't dodge this.
+    if (finding.status === "fixed" && finding.test === null && isSecurity(finding)) {
+      context.addIssue({ code: "custom", message: `${finding.id} is a security weakness recorded fixed without a test: name its test or gate check, or leave it open with its suggested fix` });
     }
     if (finding.security && finding.severity !== "warning") {
       context.addIssue({ code: "custom", message: `${finding.id} is a security weakness: grade it warning, not ${finding.severity}` });
@@ -720,7 +726,8 @@ export const REVIEW_NOTES_END = "<!-- /review-notes -->";
 // person accepted, for people reading the PR. Security findings (see
 // isSecurity: graded Warning, a lens naming security, or unmarked) are only
 // counted, so the maintainer knows to wait for the
-// private report. GitHub's reviewers aren't known to read the description, so
+// private report. Claude Review reads the notes' accepted non-security findings on an owner's same-repo PR, but
+// raises a security finding again (the notes only count it), and Copilot isn't known to read them, so
 // a thread one opens on an accepted finding gets the same "Left for the
 // owner." reply as every thread left for the owner (docs/PROCESS.md), which doesn't
 // say which thread a security finding is on; the reason stays in the ledger

@@ -14,7 +14,8 @@ That repo moved the heavy review onto the developer's machine, before the push, 
 
 - **The review runs before the push, and the gate enforces it.** `/pre-push-review` reviews the whole diff against `origin/main`; `scripts/gate.sh` refuses a
   diff without a clean record. The record (a ledger under `.git/review/`, keyed by the branch's hunks) is a process aid, not a security boundary against the person.
-- **Findings are graded Critical, Warning or Advisory.** Only bugs in code that runs, behaviour with no test, and security weaknesses block. Docs, comments and
+- **Findings are graded Critical, Warning or Advisory, and the review fixes all three.** Only bugs in code that runs, behaviour with no test, and security weaknesses
+  block, and only while one is left open for a person. Docs, comments and
   conventions are fixed in the review or go to one follow-up issue, so a stale comment never blocks a push as hard as a bug.
 - **Only the person accepts a finding**, with `scripts/review.sh accept`. An acceptance never carries to a later review of different code.
 - **Reviewers are read-only and run at high effort.** The `pre-push-reviewer` agent has Read, Grep and Glob only, because the diff, issue and threads it reads
@@ -24,5 +25,5 @@ That repo moved the heavy review onto the developer's machine, before the push, 
 - **Sandcastle's builds skip the check for now** (`GATE_SKIP_REVIEW=1` in every sandbox) and keep their own reviewer role. Its sandboxes see an empty folder over
   `.git/review`, since ledgers hold accepted security findings that are never published.
 - **`.claude/settings.json` stays out of the Template.** The deny rules for `.git/review` and credential files are an adapting step instead.
-- **Claude Review is unchanged here** (Copilot's backup, run while a PR carries `review:claude`) until its own change lands: it opens findings only for what a local
-  review can't check, and reads the PR's Review notes. Reviewing only what a push changed is not done yet. That is a separate PR because it changes `claude-review.yml`.
+- **Claude Review (Copilot's backup, run while a PR carries `review:claude`) opens findings only for what a local review can't check, and reads the PR's Review notes**
+  ([ADR 0004](0004-claude-review-as-copilots-backup.md#claude-review-after-the-local-review)). Reviewing only what a push changed is not done yet; that is a separate change to `claude-review.yml`.

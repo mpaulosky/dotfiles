@@ -39,6 +39,9 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     chmodSync(script, statSync(join(owned, "scripts/check-branch-name.sh")).mode);
     // lib/pre-push-review-skill.test.mts reads the skill and its agent from .claude/.
     cpSync(join(owned, ".claude"), join(scratch, ".claude"), { recursive: true });
+    // lib/pre-push-review-skill.test.mts checks the workflow's accepted-findings step against the ledger's markers.
+    mkdirSync(join(scratch, ".github/workflows"), { recursive: true });
+    cpSync(join(owned, ".github/workflows/claude-review.yml"), join(scratch, ".github/workflows/claude-review.yml"));
     // lib/review-ledger.test.mts runs scripts/review.sh the same way.
     const review = join(scratch, "scripts/review.sh");
     cpSync(join(owned, "scripts/review.sh"), review);

@@ -48,7 +48,7 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   The post job warns instead of failing. A failing check couldn't hold the merge on its own: a later run with its jobs skipped (another label added) replaces it.
   And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges. The review's marker holds past the review cap too (#146).
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
-- A Review step that fails, times out (its own 25 minutes, under the job's 30) or is refused at the usage limit doesn't fail the job either (#123):
+- A Review step that fails, times out (its own 25 minutes, under the job's 31) or is refused at the usage limit doesn't fail the job either (#123):
   `continue-on-error` lets a warning step say so, and the post job skips when there's nothing to post (an empty output would fail it as malformed).
   The PR then has no Claude review of its head, so PR Auto-Merge waits for Copilot's or a rerun, instead of the PR going `UNSTABLE`.
   The prompt also has Claude skip the files Copilot code review excludes (see the split-diff decision below).
@@ -96,7 +96,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   for anything else it says what it's relying on. The benchmark copies the case head's pinned actions into the same layout.
   In that run (`v4-scoped-actions`) Claude caught finding 5 for the first time, from the action's `checkHumanActor`, along with 3 and 4 and the marker limit;
   it missed finding 1, which the v2 runs caught. The same run is the check that scoping reads (#121) cost nothing.
-- **The review job's `timeout-minutes` is 30**, and the Review step's 25. Opus took up to about 7 minutes on these diffs; a step that times out now warns instead of failing the check (#123).
+- **The review job's `timeout-minutes` is 31** (30 until the Review notes step took a minute), and the Review step's 25. Opus took up to about 7 minutes on these diffs; a
+  step that times out now warns instead of failing the check (#123).
   `review:claude` goes mostly on re-Apply PRs, which carry only the Owned files that changed: 2 to 8 files and under 800 lines in the #116 and #82 rounds,
   the largest being Articles#298, the benchmark's own case.
 - **The prompt was the bigger change.**
@@ -337,3 +338,33 @@ the pre-push reviewers ([ADR 0008](0008-review-before-the-push.md)), the Sandcas
 The benchmark above ran Opus (its only Sonnet run was at medium effort and caught none of Copilot's findings, #117), so its recall figures describe the Opus workflow.
 The owner accepted that: the review now happens locally before the push, which is why GitHub's review no longer carries the whole load.
 The Seed is written once, so a repo that already has a `repo-config.mts` keeps its models until it changes them.
+
+## Claude Review after the local review
+
+With the review before the push ([ADR 0008](0008-review-before-the-push.md)), Claude Review is a backstop for what a local review can't check.
+The prompt asks for findings only on bugs in code that runs, security weaknesses, tests and GitHub's own behaviour, and has Claude list
+docs, comments and conventions under "Advisory" in its summary, since a finding holds the merge and these shouldn't.
+The local review's reviewers are asked at least what Claude Review is, plus those, so `review-bar.md`'s second paragraph is the wider version of Claude Review's.
+
+It reads the PR description's `## Review notes` as accepted findings, between the markers on lines of their own, indented between nonce lines like the resolved threads.
+
+- **Who counts.** Only a PR whose head is this repository's own branch and whose author is the repository's `OWNER`, the bar the resolved-threads step sets for a reply.
+  A `MEMBER` or `COLLABORATOR` may have read access only, so a same-repo PR from one proves no write access, and a note could silence a finding on code they didn't push.
+  A deleted fork's head repository is empty and never matches. Sandcastle opens its PRs with the owner's token, so its descriptions count as the owner's, as its resolved threads do.
+- **What a note can't do.** The prompt says a note never covers a security weakness.
+  That is an instruction the model follows, not a rule the workflow enforces. The ledger's notes only count accepted security findings, so a legitimate note never needs that cover.
+  An accepted Critical finding, on merge-gate code too, is listed in the notes and honoured like any other.
+- **Accepted limits.** A PR opened with the owner's token, Sandcastle's included, counts as the owner's, so a prompt-injected agent can write notes that silence findings.
+  A note is free text that can name a problem before anyone raises it, and nothing checks it against the local ledger. A section that an HTML comment or `<details>` hides
+  on the rendered page still counts. What the step honoured or ignored goes to the job log.
+- **When it is read.** The description, its author's association and the head repository are read from the API as the step runs.
+  The event's payload is a snapshot: editing a description starts no run, and a re-run reuses the payload, so notes added after the last push would be missed and removed ones kept.
+  The workflow still has no `edited` trigger, which would spend a Claude review on every description edit. A failed read leaves the notes out ("could not be read") and warns.
+- **Markers.** A marker counts only on a line of its own, indented three spaces at most, outside a fenced code block (CommonMark's rules, applied so a
+  doubt hides markers rather than shows them), so a description can show them in a fence or quote them in prose.
+  Outside fences, one start and one end, start first, make a section; anything else is reported as markers nobody can bound, not as no notes.
+- **Cost.** The step has its own minute; the job's limit rose from 30 to 31 minutes to keep the 2 minutes the other steps' comment leaves for what has no limit of its own.
+
+The benchmark above scored the old prompt, which asked for convention findings too, and it has not been rerun on this one: the local review now carries those, and a rerun is for the owner to ask for.
+Not done: reviewing only what a push changed since the last review. The diff step packs the whole diff into pieces with its own exclusion and holding
+rules, and a delta would need the same rules applied to a second diff, so it is left for its own change.

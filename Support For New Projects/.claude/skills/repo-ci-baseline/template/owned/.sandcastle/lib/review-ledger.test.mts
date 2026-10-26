@@ -2384,7 +2384,7 @@ describe("scripts/review.sh", () => {
   });
 
   // A repo-config.mts that exports the given names, as the Seed's does.
-  const configWith = (names: string[], keyword = "const") => names.map((name) => `export ${keyword} ${name} = ${name === "REPO_SLUG" ? '"o/r"' : "[]"};\n`).join("");
+  const configWith = (names: string[]) => names.map((name) => `export const ${name} = ${name === "REPO_SLUG" ? '"o/r"' : "[]"};\n`).join("");
 
   // A copy of scripts/review.sh in a checkout with no packages, and a stub
   // pnpm (or none) on a PATH of its own. The stub logs its arguments; "works"

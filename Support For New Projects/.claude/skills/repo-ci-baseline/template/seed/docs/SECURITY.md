@@ -30,6 +30,12 @@ Please keep the details private until a fix has been released.
 Fixed vulnerabilities are published in the repository's
 [security advisories](https://github.com/{{OWNER}}/{{REPO}}/security/advisories) and in the release notes.
 
+## Accepted security findings from the local review
+
+In a repository with the local review (`.sandcastle/lib/review-ledger.mts`), the pre-push review ([PROCESS.md](PROCESS.md)) never lists an accepted
+security finding in a public PR description: the notes only count them. The person who accepted one keeps its reason in the review's ledger under
+`.git/review` on their own machine, which is not shared, so they put the reason into a private report, as above, before pushing the branch.
+
 ## Contributors
 
 - Never commit secrets, API keys or passwords; keep them in untracked local configuration and in repository or environment secrets for CI.

@@ -100,8 +100,11 @@ def version_key(tag):
 
 def commit_subject(commit):
     message = (commit.get("commit") or {}).get("message") or ""
-    # The first line by newlines only: splitlines() would cut a subject at a U+2028 in it.
-    return message.split("\n")[0].strip() if message.strip() else "(no message)"
+    # Cut at Markdown's line endings (CRLF, CR, LF) and nothing else: a CR left in the
+    # subject would start a new Markdown line, while splitlines() would also cut a
+    # subject at a U+2028 or U+2029 that Markdown reads as text.
+    first = re.split(r"\r\n|\r|\n", message, maxsplit=1)[0].strip()
+    return first if message.strip() else "(no message)"
 
 
 # A commit subject that starts a list item this way, or after the quote or list

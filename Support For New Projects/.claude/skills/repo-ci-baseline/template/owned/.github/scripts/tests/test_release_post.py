@@ -1835,8 +1835,30 @@ def test_list_reads_a_record_whose_text_holds_unicode_line_separators(monkeypatc
     assert github.files(42) == records
 
 
-def test_commit_subject_keeps_a_unicode_line_separator_and_ends_at_a_newline():
-    commit = {"commit": {"message": "Fix a\u2028b\r\n\nBody line"}}
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Fix a\u2028b\r\n\nBody line", "Fix a\u2028b"),
+        ("Fix a\u2029b\nBody", "Fix a\u2029b"),
+        ("Fix\r# Heading", "Fix"),  # a lone CR is a Markdown line ending
+        ("Fix\rBody", "Fix"),
+        ("Fix\r```\rmore", "Fix"),
+        ("Fix\r[x]: y", "Fix"),
+    ],
+)
+def test_commit_subject_ends_at_markdowns_line_endings_and_keeps_other_separators(message, expected):
+    assert rp.commit_subject({"commit": {"message": message}}) == expected
 
-    assert rp.commit_subject(commit) == "Fix a\u2028b"
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_a_subject_with_a_unicode_separator_renders_as_one_list_item(separator):
+    commits = [{"sha": "abc1234def", "commit": {"message": f"Fix a{separator}b\n\nBody"}}]
+
+    assert rp.render_commits(commits).split("\n")[2] == f"- Fix a{separator}b (`abc1234`)"
+
+
+def test_a_subject_with_a_lone_cr_renders_only_the_part_before_it():
+    commits = [{"sha": "abc1234def", "commit": {"message": "Fix\r# Heading"}}]
+
+    assert rp.render_commits(commits).split("\n")[2] == "- Fix (`abc1234`)"
 

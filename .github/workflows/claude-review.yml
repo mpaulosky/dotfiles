@@ -1146,7 +1146,7 @@ jobs:
       # decided: fixed, or accepted as it is (a reply says why). Without them
       # each review sees only the code, and a finding a maintainer declined
       # comes back on every push, holding the merge each time
-      # (mpaulosky/auth0-management-app#59 had one declined finding four times).
+      # (one declined finding once came back four times).
       # Resolving a thread takes write access or the PR's authorship, the same
       # bar PR Auto-Merge sets for a thread to stop holding. A reply counts
       # only from the PR's author, whoever resolved the thread, the repo's

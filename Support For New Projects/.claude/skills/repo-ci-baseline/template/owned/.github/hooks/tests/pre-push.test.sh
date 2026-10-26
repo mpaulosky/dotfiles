@@ -388,7 +388,9 @@ git -C "$REPO" update-ref -d refs/remotes/origin/main
 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
 expect "without an origin/main the review can't be checked, so the push is refused" refused any "No origin/main to diff against"
 git -C "$REPO" update-ref refs/remotes/origin/main "$REVIEW_MAIN"
-run_hook feature/1-x "$(push_stdin feature/1-x)"
+commit_on feature/13-no-ledger scripts/review.sh "echo review.sh >> $LOG"
+run_hook feature/13-no-ledger "$(push_stdin feature/13-no-ledger)"
+expect "a repo with review.sh but no ledger code needs no review to push" allowed tests-ran
 expect_log "a repo without the ledger code never calls review.sh" not-ran 'review.sh*'
 git -C "$REPO" switch -q feature/1-x
 

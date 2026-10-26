@@ -291,6 +291,17 @@ describe("the pre-push-review skill's lenses", () => {
 describe("the pre-push-review skill's repository", () => {
   const prefix = 'repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh ';
 
+  // What is wrong with the gh commands on one line: the first must directly follow the slug read, a later one a GH_REPO="$repo".
+  const ghChainProblems = (line: string): string[] => {
+    const problems: string[] = [];
+    const first = line.search(/gh (api|issue|pr) /);
+    const at = line.indexOf(prefix);
+    if (at < 0 || at + prefix.length - 3 !== first) problems.push("the first gh doesn't follow the slug read");
+    const rest = line.slice(first + 3).replaceAll('GH_REPO="$repo" gh ', "@");
+    if (/(^|[^"])gh (api|issue|pr) /.test(rest)) problems.push("a later gh has no GH_REPO");
+    return problems;
+  };
+
   it("is told to gh by scripts/review.sh repo, read first in a chain that stops when it fails, never by a name written into the skill", () => {
     const assignments = skill.match(/GH_REPO=("[^"]*"|\S+)/g) ?? [];
 
@@ -300,14 +311,20 @@ describe("the pre-push-review skill's repository", () => {
   });
 
   it("starts every gh command with that chain, or continues one that already read the slug", () => {
-    // Each line that runs gh: the first on it must come right after the slug is read; a later one after && GH_REPO="$repo".
-    const lines = skill.split("\n").filter((line) => /(^|[`(\s])gh (api|issue|pr) /.test(line) && !/^\s*-? ?(Run|run)\b/.test(line));
+    // Each line that runs gh: the slug is read first, and the first gh on it follows that read directly.
+    const lines = skill.split("\n").filter((line) => /(^|[`(\s])gh (api|issue|pr) /.test(line));
 
     assert.ok(lines.length >= 8, "too few gh commands found");
     for (const line of lines) {
       if (/^- Every `gh` command here/.test(line)) continue;
-      assert.ok(line.includes(prefix) || line.includes('GH_REPO="$repo" gh '), line);
-      assert.ok(!/(^|[^"])gh (api|issue|pr) /.test(line.replaceAll(prefix, "").replaceAll('GH_REPO="$repo" gh ', "")), line);
+      assert.deepEqual(ghChainProblems(line), [], line);
     }
+  });
+
+  it("refuses a gh command whose slug was never read", () => {
+    assert.notDeepEqual(ghChainProblems('1. `GH_REPO="$repo" gh issue create --title x`'), []);
+    assert.notDeepEqual(ghChainProblems("1. `gh issue create --title x`"), []);
+    assert.deepEqual(ghChainProblems(`1. \`${prefix}issue create --title x\``), []);
+    assert.deepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && GH_REPO="$repo" gh pr edit 1\``), []);
   });
 });

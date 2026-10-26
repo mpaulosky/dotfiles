@@ -1152,7 +1152,7 @@ describe("recordReview", () => {
   });
 
   // Triage decides every finding's security mark, so a weakness misgraded
-  // under a lens that doesn't say security is still held back (mpaulosky/auth0-management-app#89's review).
+  // under a lens that doesn't say security is still held back (a real review's case).
   it("refuses a finding without its security decision", () => {
     const { security: _, ...undecided } = finding();
 

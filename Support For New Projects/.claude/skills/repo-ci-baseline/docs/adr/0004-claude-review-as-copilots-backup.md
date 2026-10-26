@@ -112,7 +112,7 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
   Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 and v4 runs); the earlier files predate that, and the CLI updated during these runs.
-- **Cost:** about $1.20 to $1.70 a review uncapped, instead of $0.19 at API prices; about $0.40 to $1.70 under the turn cap with context pieces.
+- **Cost (Opus):** about $1.20 to $1.70 a review uncapped, instead of $0.19 at API prices; about $0.40 to $1.70 under the turn cap with context pieces.
   That is acceptable, because the backup only runs while a PR carries `review:claude`.
   In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's allowance for the model the workflow names (Opus until the move to
   Sonnet), and the plan has to include that model in Claude Code.
@@ -159,7 +159,7 @@ so a second turn of reads leaves none for the answer.
   - The run that scored 2 also found, from the action's source, that a person with only triage access can add `review:claude`
     and the action then throws "Actor does not have write permissions", which at those commits left a failing check (#123's `continue-on-error` has since contained it).
   - A single run varies by two findings either way, so compare setups on more than one run.
-  - So under the cap with context pieces, recall is about where it was uncapped, at about the uncapped cost, within the owner's 3 turns.
+  - So under the cap with context pieces, Opus recall is about where it was uncapped, at about the uncapped cost, within the owner's 3 turns.
     A Claude-only landing is still a weaker review than one by both, and Copilot stays the first reviewer.
 
 #### The split diff

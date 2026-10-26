@@ -10,7 +10,7 @@ Why: [ADR 0008](../docs/adr/0008-review-before-the-push.md). The process a devel
 | Piece | Where | Owned or Seed |
 | --- | --- | --- |
 | The skill: severities, steps, the ledger commands | `.claude/skills/pre-push-review/SKILL.md` | Owned |
-| The reviewers' bar (Claude Review's own prompt, adapted) and the generic lenses | `.claude/skills/pre-push-review/review-bar.md`, `lenses.md` | Owned |
+| The reviewers' bar (Claude Review's own prompt, adapted and widened) and the generic lenses | `.claude/skills/pre-push-review/review-bar.md`, `lenses.md` | Owned |
 | The read-only reviewer agent (Read, Grep and Glob only) | `.claude/agents/pre-push-reviewer.md` | Owned |
 | The ledger: what the review found and what became of it, keyed by the branch's own hunks | `.sandcastle/lib/review-ledger.mts` (run as `scripts/review.sh`) | Owned |
 | The gate's check | `scripts/gate.sh`, step "Local review" | Owned |

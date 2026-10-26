@@ -192,7 +192,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   The author's local review ([pre-push-review.md](pre-push-review.md)) has already reviewed the whole branch, so the prompt asks for findings (each of which holds the merge)
   only for bugs in code that runs, security weaknesses, tests and how GitHub itself behaves, and has docs, comments and conventions go under "Advisory" in the summary.
   It also holds the findings the author accepted, from the PR description's `## Review notes`, as decisions like a resolved thread's; they count only on a same-repo PR
-  whose author is the `OWNER`, a `MEMBER` or a `COLLABORATOR`, so a fork's author can't silence a finding by listing it.
+  whose author is the `OWNER` (a `MEMBER` or `COLLABORATOR` may have read access only), read from the API when the run starts, never cover a security weakness or a
+  merge-gate flaw, and need their markers on lines of their own outside a code fence.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.
@@ -278,7 +279,8 @@ and goes on to the threads and checks as PR Auto-Merge does;
 then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
 or **arm auto-merge** where there is no such workflow. A repo with no required checks waits for its checks to finish green first,
 since auto-merge alone wouldn't wait for CI.
-dotfiles has both: a copy of PR Auto-Merge, which `test.sh` keeps identical, and a `main-rules` of its own. A cancelled run with a newer run of the same check on the same head is superseded, not a failure:
+dotfiles has both: a copy of PR Auto-Merge, which `test.sh` keeps identical, and a `main-rules` of its own. A cancelled run with a newer run of the same check on the same
+head is superseded, not a failure:
 CI's concurrency cancels runs, and the newest counts. Commands that act on PRs call the same function, so they can't drift from these rules.
 
 ### Landing a round
@@ -296,7 +298,8 @@ It also watches each release-blog PR that opens in a watched repo, and after a w
 It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),
 and exits once every watched PR is merged or closed, or with 1 at `--timeout` (180 minutes).
 A quiet round costs one GraphQL query per repo (about 3 points), and each action a call or three, all on the owner's `gh` login,
-which spends almost only GraphQL points (of the account's 5,000 an hour) and leaves the REST allowance to the PAT and Sandcastle: [tokens.md](tokens.md#landsh-and-the-shared-allowance) gives the numbers.
+which spends almost only GraphQL points (of the account's 5,000 an hour) and leaves the REST allowance to the PAT and Sandcastle:
+[tokens.md](tokens.md#landsh-and-the-shared-allowance) gives the numbers.
 
 ## Verify live
 

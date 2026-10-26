@@ -324,8 +324,8 @@ repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh pr view <n> --json body -
 `--body-file` replaces the whole description, so never pass it the notes alone.
 
 Editing the description starts PR Auto-Merge, which is why it waits for the push: before it, the PR could merge the head
-without this run's fixes. Push a thread's fix before replying to or resolving its thread, for the same reason. GitHub's
-reviewers aren't known to read the description, so they may raise an accepted finding again: its thread gets the reply
+without this run's fixes. Push a thread's fix before replying to or resolving its thread, for the same reason. Claude
+Review reads the notes as accepted findings, but Copilot isn't known to, so a thread may still be raised on an accepted finding: its thread gets the reply
 every thread left for the owner gets (docs/PROCESS.md), only "Left for the owner." and the `<!-- claude-session -->` marker.
 
 The description becomes public release notes, so the notes list the accepted Critical and Advisory findings, leave out

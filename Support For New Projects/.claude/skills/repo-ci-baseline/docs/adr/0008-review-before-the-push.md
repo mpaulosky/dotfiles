@@ -24,5 +24,5 @@ That repo moved the heavy review onto the developer's machine, before the push, 
 - **Sandcastle's builds skip the check for now** (`GATE_SKIP_REVIEW=1` in every sandbox) and keep their own reviewer role. Its sandboxes see an empty folder over
   `.git/review`, since ledgers hold accepted security findings that are never published.
 - **`.claude/settings.json` stays out of the Template.** The deny rules for `.git/review` and credential files are an adapting step instead.
-- **Claude Review is unchanged here** (Copilot's backup, run while a PR carries `review:claude`) until its own change lands: it opens findings only for what a local
-  review can't check, and reads the PR's Review notes. Reviewing only what a push changed is not done yet. That is a separate PR because it changes `claude-review.yml`.
+- **Claude Review (Copilot's backup, run while a PR carries `review:claude`) opens findings only for what a local review can't check, and reads the PR's Review notes**
+  ([ADR 0004](0004-claude-review-as-copilots-backup.md#claude-review-after-the-local-review)). Reviewing only what a push changed is not done yet; that is a separate change to `claude-review.yml`.

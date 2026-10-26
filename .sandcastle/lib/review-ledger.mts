@@ -720,7 +720,7 @@ export const REVIEW_NOTES_END = "<!-- /review-notes -->";
 // person accepted, for people reading the PR. Security findings (see
 // isSecurity: graded Warning, a lens naming security, or unmarked) are only
 // counted, so the maintainer knows to wait for the
-// private report. GitHub's reviewers aren't known to read the description, so
+// private report. Claude Review reads the notes as accepted findings, but Copilot isn't known to, so
 // a thread one opens on an accepted finding gets the same "Left for the
 // owner." reply as every thread left for the owner (docs/PROCESS.md), which doesn't
 // say which thread a security finding is on; the reason stays in the ledger

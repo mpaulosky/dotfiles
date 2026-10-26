@@ -96,7 +96,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   for anything else it says what it's relying on. The benchmark copies the case head's pinned actions into the same layout.
   In that run (`v4-scoped-actions`) Claude caught finding 5 for the first time, from the action's `checkHumanActor`, along with 3 and 4 and the marker limit;
   it missed finding 1, which the v2 runs caught. The same run is the check that scoping reads (#121) cost nothing.
-- **The review job's `timeout-minutes` is 30**, and the Review step's 25. Opus took up to about 7 minutes on these diffs; a step that times out now warns instead of failing the check (#123).
+- **The review job's `timeout-minutes` is 31** (30 until the Review notes step took a minute), and the Review step's 25. Opus took up to about 7 minutes on these diffs; a
+  step that times out now warns instead of failing the check (#123).
   `review:claude` goes mostly on re-Apply PRs, which carry only the Owned files that changed: 2 to 8 files and under 800 lines in the #116 and #82 rounds,
   the largest being Articles#298, the benchmark's own case.
 - **The prompt was the bigger change.**
@@ -343,7 +344,22 @@ The Seed is written once, so a repo that already has a `repo-config.mts` keeps i
 With the review before the push ([ADR 0008](0008-review-before-the-push.md)), Claude Review is a backstop for what a local review can't check.
 The prompt asks for findings only on bugs in code that runs, security weaknesses, tests and GitHub's own behaviour, and has Claude list
 docs, comments and conventions under "Advisory" in its summary, since a finding holds the merge and these shouldn't.
-It reads the PR description's `## Review notes` as accepted findings, between its markers, indented between nonce lines like the resolved threads, and only
-for a same-repo PR by an `OWNER`, `MEMBER` or `COLLABORATOR`.
+The local review's reviewers are asked at least what Claude Review is, plus those, so `review-bar.md`'s second paragraph is the wider version of Claude Review's.
+
+It reads the PR description's `## Review notes` as accepted findings, between the markers on lines of their own, indented between nonce lines like the resolved threads.
+
+- **Who counts.** Only a PR whose head is this repository's own branch and whose author is the repository's `OWNER`, the bar the resolved-threads step sets for a reply.
+  A `MEMBER` or `COLLABORATOR` may have read access only, so a same-repo PR from one proves no write access, and a note could silence a finding on code they didn't push.
+  A deleted fork's head repository is empty and never matches. Sandcastle opens its PRs with the owner's token, so its descriptions count as the owner's, as its resolved threads do.
+- **What a note can't do.** The prompt says a note never covers a security weakness or a flaw in code that decides a merge, release or permission.
+  The ledger's notes only count accepted security findings anyway, so no legitimate note needs that cover.
+- **When it is read.** The description, its author's association and the head repository are read from the API as the step runs.
+  The event's payload is a snapshot: editing a description starts no run, and a re-run reuses the payload, so notes added after the last push would be missed and removed ones kept.
+  The workflow still has no `edited` trigger, which would spend a Claude review on every description edit. A failed read leaves the notes out ("could not be read") and warns.
+- **Markers.** A marker counts only on a line of its own outside a fenced code block, so a description can show them in a fence or quote them in prose.
+  Outside fences, one start and one end, start first, make a section; anything else is reported as markers nobody can bound, not as no notes.
+- **Cost.** The step has its own minute; the job's limit rose from 30 to 31 minutes to keep the 2 minutes the other steps' comment leaves for what has no limit of its own.
+
+The benchmark above scored the old prompt, which asked for convention findings too, and it has not been rerun on this one: the local review now carries those, and a rerun is for the owner to ask for.
 Not done: reviewing only what a push changed since the last review. The diff step packs the whole diff into pieces with its own exclusion and holding
 rules, and a delta would need the same rules applied to a second diff, so it is left for its own change.

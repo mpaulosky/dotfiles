@@ -331,11 +331,12 @@ def test_the_step_fits_in_the_review_jobs_time_with_the_review_step():
     text = WORKFLOW.read_text()
     job = timeout_after(text, "  review:")
     resolved = timeout_after(text, "        id: resolved")
+    notes = timeout_after(text, "        id: notes")
     review = timeout_after(text, "        id: claude")
     grep = -(-int(re.search(r"USERS_TIMEOUT = (\d+)", text)[1]) // 60)  # the diff step's grep, in whole minutes
     # The rest (job setup, the checkout, the diff step's other git calls and the answer check) has no limit of its
     # own; the step's comment assumes it fits in what's left.
-    assert resolved + review + grep < job
+    assert resolved + notes + review + grep + 2 <= job  # the 2 minutes the step's comment leaves for what has no limit
     script = step_script()
     calls = int(re.search(r"CALL_TIMEOUT = (\d+)", script)[1])
     pages = int(re.search(r"MAX_PAGES = (\d+)", script)[1])

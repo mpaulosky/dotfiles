@@ -1833,3 +1833,10 @@ def test_list_reads_a_record_whose_text_holds_unicode_line_separators(monkeypatc
     monkeypatch.setattr(github, "_api", lambda path, jq=None: output)
 
     assert github.files(42) == records
+
+
+def test_commit_subject_keeps_a_unicode_line_separator_and_ends_at_a_newline():
+    commit = {"commit": {"message": "Fix a\u2028b\r\n\nBody line"}}
+
+    assert rp.commit_subject(commit) == "Fix a\u2028b"
+

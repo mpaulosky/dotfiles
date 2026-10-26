@@ -100,7 +100,8 @@ def version_key(tag):
 
 def commit_subject(commit):
     message = (commit.get("commit") or {}).get("message") or ""
-    return message.splitlines()[0].strip() if message.strip() else "(no message)"
+    # The first line by newlines only: splitlines() would cut a subject at a U+2028 in it.
+    return message.split("\n")[0].strip() if message.strip() else "(no message)"
 
 
 # A commit subject that starts a list item this way, or after the quote or list

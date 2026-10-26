@@ -6,7 +6,7 @@ Every Baseline PR waits on a review of its head before PR Auto-Merge lands it.
 Copilot was the only reviewer, and when the account's Copilot code review budget is used up, GitHub drops every review request without a word (#97, #99).
 On 2026-10-07 that stranded a whole re-Apply round: nothing merged until the budget reset or a person merged past the gate.
 
-So Claude reviews as a backup: Claude Review runs Opus 5.5 at high effort in CI (Sonnet 5.5 at medium effort until #117; see below)
+So Claude reviews as a backup: Claude Review runs Sonnet 5.5 at high effort in CI (Sonnet at medium effort until #117, then Opus 5.5 at high effort until it moved back to Sonnet; see below)
 and posts an ordinary review of the head, with inline threads, under `github-actions[bot]`.
 It runs only while a PR carries `review:claude`, which a person can add at any time. `land.sh` adds it when its own request for Copilot's review of the head
 didn't register, once the head's checks are green, and for at most 2 rounds per PR. `reapply.sh` only warns: a review of a head that then fails CI is money spent for nothing.
@@ -325,3 +325,11 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 - Someone who can push workflow changes to a branch is out of scope here, as for the marker: they can change the workflow
   itself. Someone who can push only other files reaches neither `CLAUDE_CODE_OAUTH_TOKEN` nor the post job's script,
   though they can steer Claude's verdict (the marker limit above).
+
+## Moved to Sonnet
+
+The owner moved Claude Review, and the pre-push reviewers ([ADR 0008](0008-review-before-the-push.md)), from Opus 5.5 to Sonnet 5.5, both still at high effort.
+The benchmark above ran Opus: its only Sonnet run was at medium effort, and it caught none of the findings Copilot made on the same commits (#117).
+The benchmark has not been rerun on Sonnet at high effort, so the recall figures above describe the Opus workflow, not this one.
+Rerun `bench/claude-review-bench.py` with `--model sonnet --effort high` before relying on this review as the backup when Copilot's budget is out;
+if recall drops, move the workflow's `--model` back to `claude-opus-5-5`.

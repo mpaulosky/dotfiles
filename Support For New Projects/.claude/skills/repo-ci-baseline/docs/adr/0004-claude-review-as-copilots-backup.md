@@ -76,11 +76,11 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 | Opus 5.5, high, one turn of reads, split diff, `--max-turns 30` (#156) | 2 | ~3 min, ~$0.58–0.88 |
 | The same, the prompt asking for all 24 Reads | 2 | ~3 min, ~$0.56–0.62 |
 | The same, with context pieces (#117) | 2 | ~3 min, ~$1.36–1.43 |
-| The same, with context pieces and pinned actions' gatekeeping source (#117), what the workflow runs; three runs | 2, 4, 4 | ~3 min, ~$1.39–1.70 |
+| The same, with context pieces and pinned actions' gatekeeping source (#117), what the workflow ran before the move to Sonnet; three runs | 2, 4, 4 | ~3 min, ~$1.39–1.70 |
 
 - **Opus at high effort (until the move to Sonnet, see [Moved to Sonnet](#moved-to-sonnet)), held to one turn of reads, on the split diff with context pieces, is what the
   workflow ran** (see [One turn of reads](#one-turn-of-reads-153-154) and [Context pieces](#context-pieces-117)).
-  Everything below until that section is how the model, effort and prompt were chosen, uncapped.
+  Everything below until [One turn of reads](#one-turn-of-reads-153-154) is how the model, effort and prompt were chosen, uncapped.
 
 - **Opus at high effort with the thorough prompt (v3, edited as below) was chosen, before the turn cap.**
   - With v2 it caught findings 1, 3 and 4, in two runs. With v3 it caught 3 and 4, and missed finding 1 in that one run.

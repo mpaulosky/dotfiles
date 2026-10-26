@@ -1193,10 +1193,12 @@ def test_a_long_file_name_quoted_in_a_finding_body_and_the_summary_is_left_alone
     assert count == 0
 
 
-# Each one starts a credential and holds a run over MAX_TOKEN_RUN, with a remainder CREDENTIAL alone would leave behind (or
-# the start in another dot-separated segment than the long run), so each alternative of CREDENTIAL_START is pinned.
+# Each one starts a credential and holds a run over MAX_TOKEN_RUN. CREDENTIAL alone either leaves part of it behind (the ghp, ghu
+# and sk-ant cases) or matches none of it (the others), so only the long-run rule replaces it whole, and each start it looks for is
+# pinned.
 LONG_CREDENTIAL_STARTS = {
     "ghp": "ghp_" + "A" * 40 + "_" + "b" * 200,
+    "ghu": "ghu_" + "A" * 40 + "_" + "b" * 200,
     "sk-ant": "sk-ant-" + "a" * 30 + "." + "b" * 200,
     "github_pat": "github_pat_" + "a" * 300,
     "eyJ in the middle": "prefix" + "q" * 140 + "eyJ" + "q" * 140,
@@ -1234,13 +1236,12 @@ def test_the_workflow_carries_the_scripts_long_run_rule():
     "sample",
     [
         "sk-ant-" + "a" * 20,
-        "ghp_" + "A" * 36,
-        "ghs_" + "A" * 36,
+        *(f"gh{letter}_" + "A" * 36 for letter in "pousr"),
         "ghs_123_" + a_jwt(),
         "github_pat_" + "a" * 22 + "_" + "b" * 59,
         a_jwt(),
     ],
-    ids=["sk-ant", "ghp", "ghs", "installation token", "github_pat", "jwt"],
+    ids=["sk-ant", "ghp", "gho", "ghu", "ghs", "ghr", "installation token", "github_pat", "jwt"],
 )
 def test_every_text_credential_matches_starts_with_a_credential_start(sample):
     # CREDENTIAL can only match inside a token that CREDENTIAL_START finds, or the long-run rule would skip a run CREDENTIAL scans slowly.

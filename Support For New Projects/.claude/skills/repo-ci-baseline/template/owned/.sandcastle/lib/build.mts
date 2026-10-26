@@ -538,8 +538,8 @@ export function remoteMainIs(commit: string, run: (...args: string[]) => string 
 }
 
 // Whether origin has `branch` now, by its answer to git ls-remote, picking the
-// line by its exact ref name as remoteMainIs does: ls-remote matches refs by
-// their tail, so a branch like a/refs/heads/<branch> matches too.
+// line by its exact ref name with headOfRef: ls-remote matches refs by their
+// tail, so a branch like a/refs/heads/<branch> matches too.
 export function remoteBranchIsOnOrigin(branch: string, run: (...args: string[]) => string = git): boolean {
   return headOfRef(run("ls-remote", "origin", `refs/heads/${branch}`), branch) !== undefined;
 }

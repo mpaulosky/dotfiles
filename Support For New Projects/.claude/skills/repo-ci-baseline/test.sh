@@ -227,7 +227,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts \
   .sandcastle/lib/round.mts .sandcastle/lib/round.test.mts .sandcastle/lib/sandbox-env.mts .sandcastle/lib/sandbox-env.test.mts \
   .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
-  .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
+  .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/ui-role-fixture.mts .sandcastle/lib/ui-role-fixture.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
   .sandcastle/lib/work.mts .sandcastle/lib/work.test.mts .sandcastle/main.mts .sandcastle/tsconfig.json; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
   # The mode too: a hook that isn't executable doesn't run.

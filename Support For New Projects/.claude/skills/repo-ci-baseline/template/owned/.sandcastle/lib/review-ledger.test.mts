@@ -2371,6 +2371,9 @@ describe("scripts/review.sh", () => {
     assert.match(result.stderr, /Usage: scripts\/review\.sh/);
   });
 
+  // A repo-config.mts that exports the given names, as the Seed's does.
+  const configWith = (names: string[]) => names.map((name) => `export const ${name} = ${name === "REPO_SLUG" ? '"o/r"' : "[]"};\n`).join("");
+
   // A copy of scripts/review.sh in a checkout with no packages, and a stub
   // pnpm (or none) on a PATH of its own. The stub logs its arguments; "works"
   // creates tsx, "no-tsx" succeeds without creating it, "fails" exits 1.
@@ -2379,9 +2382,11 @@ describe("scripts/review.sh", () => {
     mkdirSync(join(checkout, "scripts"), { recursive: true });
     const script = join(checkout, "scripts", "review.sh");
     writeFileSync(script, readFileSync(reviewScript, "utf8"));
+    mkdirSync(join(checkout, ".sandcastle", "lib"), { recursive: true });
+    writeFileSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"), configWith(["REPO_SLUG", "NOT_OWNED_BASELINE_PATHS"]));
     const bin = join(root, "bin");
     mkdirSync(bin);
-    for (const tool of ["dirname", "mkdir", "chmod", "printf"]) {
+    for (const tool of ["dirname", "mkdir", "chmod", "printf", "grep"]) {
       symlinkSync(execFileSync("bash", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim(), join(bin, tool));
     }
     const log = join(root, "pnpm.log");
@@ -2414,6 +2419,20 @@ describe("scripts/review.sh", () => {
 
       assert.equal(result.status, 1);
       assert.match(result.stderr, /not found after pnpm install/);
+    });
+  }
+
+  for (const missing of [["REPO_SLUG"], ["NOT_OWNED_BASELINE_PATHS"], ["REPO_SLUG", "NOT_OWNED_BASELINE_PATHS"]]) {
+    it(`says to add ${missing.join(" and ")} to repo-config.mts, before any install, when the repo's copy lacks them`, () => {
+      const { checkout, log, runScript } = bareCheckout("works");
+      const present = ["REPO_SLUG", "NOT_OWNED_BASELINE_PATHS"].filter((name) => !missing.includes(name));
+      writeFileSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"), configWith(present));
+
+      const result = runScript("check");
+
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, new RegExp(`no export of ${missing[0]}`));
+      assert.equal(existsSync(log), false, "installed packages before checking the config");
     });
   }
 

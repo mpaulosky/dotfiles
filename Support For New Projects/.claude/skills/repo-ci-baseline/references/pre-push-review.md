@@ -51,9 +51,10 @@ A repo that already has Sandcastle:
 1. **First, in a PR of its own on `main`, before the re-Apply that brings the ledger**: add `REPO_SLUG` (`"<owner>/<repo>"`) and `NOT_OWNED_BASELINE_PATHS` to
    `.sandcastle/lib/repo-config.mts`, which Apply never rewrites. List in `NOT_OWNED_BASELINE_PATHS` each file (not a folder) under an Owned pattern (see
    `OWNED_PATHS` in `lib/review-ledger.mts`) that is the repo's own, such as its `sandcastle.yml` workflow and Sandcastle tests the Template lacks.
-   Skipping this fails the re-Apply's push at the gate's "Local review" step, with tsx's "does not provide an export named" error, and adding the names on
-   `chore/reapply-baseline` instead puts a file that isn't Owned in the re-Apply, which then needs a full review. The old gate has no review step, so the
-   PR on `main` needs none.
+   Until this is on `main`, Apply holds back the three files that import it (`scripts/review.sh`, `lib/review-ledger.mts` and its test) and lists them in
+   its report, so the re-Apply passes the gate without a review step; Apply again after this PR merges to bring them. `scripts/review.sh` also stops with a
+   message naming the missing export. Adding the names on `chore/reapply-baseline` instead puts a file that isn't Owned in the re-Apply, which then needs
+   a full review. The old gate has no review step, so the PR on `main` needs none.
 2. Deny Claude Code reading the ledgers and credential files, in the repo's `.claude/settings.json` (the Template doesn't ship that file, since permissions are set per user):
 
    ```json

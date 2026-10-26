@@ -404,6 +404,21 @@ git -C "$REPO" update-ref -d refs/remotes/origin/main
 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
 expect "without an origin/main the review can't be checked, so the push is refused" refused any "No origin/main to diff against"
 git -C "$REPO" update-ref refs/remotes/origin/main "$REVIEW_MAIN"
+# A remote that has no main yet (a repo's first push) has nothing to fetch and no
+# diff to review; one that has a main we haven't fetched still needs the fetch.
+EMPTY_REMOTE="$(mktemp -d)"
+git init -q --bare "$EMPTY_REMOTE"
+git -C "$REPO" remote add origin "$EMPTY_REMOTE"
+git -C "$REPO" update-ref -d refs/remotes/origin/main
+FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a remote with no main yet skips the review, since there is no diff to review" allowed any
+expect_log "a remote with no main yet doesn't call review.sh" not-ran 'review.sh*'
+git -C "$EMPTY_REMOTE" fetch -q "$REPO" "$REVIEW_MAIN:refs/heads/main"
+run_gate feature/12-local-review
+expect "a remote whose main isn't fetched still needs the fetch" refused any "git fetch origin main"
+git -C "$REPO" remote remove origin
+rm -rf "$EMPTY_REMOTE"
+git -C "$REPO" update-ref refs/remotes/origin/main "$REVIEW_MAIN"
 commit_on feature/13-no-ledger scripts/review.sh "#!/usr/bin/env bash
 echo \"review.sh \$*\" >> \"$LOG\"
 exit 1"

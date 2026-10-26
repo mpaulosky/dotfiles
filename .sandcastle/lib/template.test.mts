@@ -85,8 +85,8 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
   });
 
   // config.test.mts skips its check of the ui prompts in a repo that hasn't opted in, which is every config this repo runs it under, so
-  // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented, once without the planner's ui bullet and
-  // once with it.
+  // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented, first without the planner's ui bullet, then
+  // with the bullet but without roles/ui.md, then with both.
   it("fails config.test.mts's ui prompt check for an opted-in repo without the planner's ui bullet or roles/ui.md, and passes with both", { timeout: 120_000 }, () => {
     const config = join(sandcastle, "lib/repo-config.mts");
     const plan = join(sandcastle, "plan-prompt.md");
@@ -97,19 +97,23 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const bullet = "\n- `ui`: the issue adds or changes Blazor components or pages. Leave it out when the issue changes no markup.\n";
     const run = () =>
       spawnSync(join(root, "node_modules/.bin/tsx"), ["--test", ".sandcastle/lib/config.test.mts"], { cwd: scratch, encoding: "utf8", env: childEnv() });
-    const check = /has the prompts the ui role needs/;
+    // The check's own failure line, not just its name, which the reporter prints whether the test passed or not.
+    const failedCheck = /✖[^\n]*has the prompts the ui role needs/;
 
     try {
       writeFileSync(config, optedIn);
 
       const withoutBullet = run();
       assert.notEqual(withoutBullet.status, 0, "the check should fail without the planner's ui bullet");
-      assert.match(`${withoutBullet.stdout}${withoutBullet.stderr}`, check);
+      assert.match(withoutBullet.stdout, failedCheck);
+      assert.match(withoutBullet.stdout, /plan-prompt|\^- `ui`/);
 
       writeFileSync(plan, `${originals.get(plan)}${bullet}`);
       rmSync(uiPrompt);
       const withoutPrompt = run();
       assert.notEqual(withoutPrompt.status, 0, "the check should fail without roles/ui.md");
+      assert.match(withoutPrompt.stdout, failedCheck);
+      assert.match(withoutPrompt.stdout, /roles\/ui\.md is missing/);
 
       writeFileSync(uiPrompt, originals.get(uiPrompt)!);
       const complete = run();

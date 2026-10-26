@@ -48,5 +48,5 @@ Commit subjects are `<type>(<scope>): <Summary>`, with the scope `baseline` for 
 Don't start work on an issue labelled `sandcastle:building`: a Sandcastle run is building it. Claude reviews a PR only when it has the
 `review:claude` label, and its review counts only where Copilot posted its quota note on the head. PR Auto-Merge and `land.sh` add the
 label once that note appears, so don't add it yourself, except where the Template's
-[`PROCESS.md`](<Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/docs/PROCESS.md>) says to (a push that needs a new review,
-or one more review past the cap).
+[`PROCESS.md`](<Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/docs/PROCESS.md>) says to: a push that needs a new review
+when Copilot doesn't review it (and the label isn't already on).

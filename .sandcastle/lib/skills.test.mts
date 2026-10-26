@@ -325,7 +325,11 @@ describe("role prompts and SANDBOX_SKILLS", () => {
       const listed = listedSkills(prompt(role));
       const missing = SANDBOX_SKILLS.filter((name) => !listed.includes(name));
 
-      assert.deepEqual(missing, [], `roles/${role}.md doesn't list skills lib/repo-config.mts mounts`);
+      assert.deepEqual(
+        missing,
+        [],
+        `roles/${role}.md doesn't list skills lib/repo-config.mts mounts: add a "# SKILLS" section listing each as "- \`name\`: when to use it" (see references/sandcastle.md)`,
+      );
     });
   }
 });

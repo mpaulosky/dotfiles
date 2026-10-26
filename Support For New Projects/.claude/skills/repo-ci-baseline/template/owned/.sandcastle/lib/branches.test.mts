@@ -168,6 +168,20 @@ describe("headOfRef", () => {
     assert.equal(headOfRef(output, "fix/4-foo"), "abc123");
   });
 
+  it("skips a ref that only matches by its tail when it sorts after the real one", () => {
+    const output = "abc123\trefs/heads/fix/4-foo\nbad111\trefs/heads/z/refs/heads/fix/4-foo\n";
+
+    assert.equal(headOfRef(output, "fix/4-foo"), "abc123");
+  });
+
+  it("reads lines that end in a carriage return", () => {
+    assert.equal(headOfRef("abc123\trefs/heads/fix/4-foo\r\n", "fix/4-foo"), "abc123");
+  });
+
+  it("returns undefined for a line with no commit before the ref", () => {
+    assert.equal(headOfRef("\trefs/heads/fix/4-foo\n", "fix/4-foo"), undefined);
+  });
+
   it("returns undefined when only a tail match exists, or nothing", () => {
     assert.equal(headOfRef("bad111\trefs/heads/a/refs/heads/fix/4-foo\n", "fix/4-foo"), undefined);
     assert.equal(headOfRef("", "fix/4-foo"), undefined);

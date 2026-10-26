@@ -66,14 +66,14 @@ export function parseHeads(lsRemote: string): string[] {
 
 // The commit that `git ls-remote origin refs/heads/<branch>` printed for exactly
 // that branch, or undefined when it printed none. ls-remote matches refs by their
-// tail, so a branch like a/refs/heads/<branch> comes back too, and sorts before
-// the real one.
+// tail, so a branch like a/refs/heads/<branch> comes back too, and can sort
+// before the real one.
 export function headOfRef(lsRemote: string, branch: string): string | undefined {
   const ref = `refs/heads/${branch}`;
   return lsRemote
     .split("\n")
     .map((line) => line.split(/\s+/))
-    .find((fields) => fields[1] === ref)?.[0];
+    .find((fields) => fields[1] === ref)?.[0] || undefined;
 }
 
 // The remote git operations prepareBranches needs; tests pass a stub.

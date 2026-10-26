@@ -38,7 +38,7 @@ import { TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
-import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
+import { GATE_COMMAND, GATE_SCRIPT, ROLE_AGENTS } from "./repo-config.mts";
 
 // These tests name the Template's gate command, whatever this repo's
 // GATE_COMMAND is: the fake sandbox reports the configured one as the default.
@@ -1730,9 +1730,92 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
   });
 });
 
+// Runs `run` with the repo's `ui` role opted in to ROLE_AGENTS, whatever
+// lib/repo-config.mts says, then puts ROLE_AGENTS back as it was.
+async function withUiRole<T>(run: () => Promise<T>): Promise<T> {
+  const agents: Record<string, unknown> = ROLE_AGENTS;
+  const original = agents.ui;
+  agents.ui = { ...ROLE_AGENTS.backend };
+  try {
+    return await run();
+  } finally {
+    if (original === undefined) delete agents.ui;
+    else agents.ui = original;
+  }
+}
+
+describe("buildIssue ui role", () => {
+  it("runs the UI developer after the backend developer and before checkpoint 1, when the plan picks it", async () => {
+    await withUiRole(async () => {
+      const { steps, buildHost } = host([0, 0]);
+
+      await buildIssue(withRoles(["ui"]), branch, base, buildHost);
+
+      assert.deepEqual(steps, [
+        "tester",
+        "backend",
+        "ui",
+        "gate: scripts/gate.sh 2>&1",
+        "reviewer",
+        "gate: scripts/gate.sh 2>&1",
+        "publish",
+        "close",
+      ]);
+    });
+  });
+
+  it("runs every optional role in build order when the plan picks them all", async () => {
+    await withUiRole(async () => {
+      const { steps, buildHost } = host([0, 0]);
+
+      await buildIssue(withRoles(["architect", "ui", "scribe"]), branch, base, buildHost);
+
+      assert.deepEqual(steps.filter((step) => !step.startsWith("gate:")), ["architect", "tester", "backend", "ui", "scribe", "reviewer", "publish", "close"]);
+    });
+  });
+
+  it("tells the backend developer the UI developer follows, and that it is the last developer run otherwise", async () => {
+    await withUiRole(async () => {
+      const withUi = host([0, 0]);
+      await buildIssue(withRoles(["ui"]), branch, base, withUi.buildHost);
+      const without = host([0, 0]);
+      await buildIssue(withRoles([]), branch, base, without.buildHost);
+
+      assert.match(String(withUi.runs.find((run) => run.name === "backend")?.promptArgs?.UI_DEVELOPER), /UI developer runs after you/);
+      assert.match(String(without.runs.find((run) => run.name === "backend")?.promptArgs?.UI_DEVELOPER), /last developer run/);
+    });
+  });
+
+  it("stops the build, without publishing, and counts a failed attempt when the UI developer fails", async () => {
+    await withUiRole(async () => {
+      const { steps, recordBuildFailureCalls, buildHost } = host([0, 0], { failing: ["ui"] });
+
+      const result = await buildIssue(withRoles(["ui"]), branch, base, buildHost);
+
+      assert.ok(!steps.includes("publish"));
+      assert.equal(result.prUrl, undefined);
+      assert.equal(recordBuildFailureCalls.length, 1);
+    });
+  });
+
+  it("rethrows a usage-limit stop from the UI developer instead of counting a failed attempt", async () => {
+    await withUiRole(async () => {
+      const stop = new UncountedStopError("usage limit reached");
+      const { recordBuildFailureCalls, buildHost } = host([0, 0], { failing: ["ui"], failWith: { ui: stop } });
+
+      await assert.rejects(
+        () => buildIssue(withRoles(["ui"]), branch, base, buildHost),
+        (error: unknown) => error === stop,
+      );
+
+      assert.deepEqual(recordBuildFailureCalls, []);
+    });
+  });
+});
+
 // Covers Blazor-Server#72 ("Add architect, UI developer and scribe roles
-// picked by the planner"; the Template has no UI developer): the build order is
-// [architect] → tester → backend → gate 1 → [scribe] → reviewer → gate 2 → publish,
+// picked by the planner"): the build order is
+// [architect] → tester → backend → [ui] → gate 1 → [scribe] → reviewer → gate 2 → publish,
 // with each bracketed role run only when the planner picked it (issue.roles).
 describe("buildIssue optional roles", () => {
   it("runs tester, backend, scribe and reviewer, and no architect, when the plan picks only the scribe", async () => {
@@ -2158,7 +2241,7 @@ describe("buildIssue marking the issue as building", () => {
     // (see config.test.mts) must outlast.
     const { runs, buildHost } = host([1, 1, 0, 1, 1, 0]);
 
-    const result = await buildIssue(withRoles(["architect", "scribe"]), branch, base, buildHost);
+    const result = await withUiRole(() => buildIssue(withRoles(["architect", "ui", "scribe"]), branch, base, buildHost));
 
     const roles = runs.map((run) => run.name!);
     const others = roles.filter((role) => role !== "gate-fixer");

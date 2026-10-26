@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { backendPromptArgs } from "./prompts.mts";
 import { SANDBOX_SKILLS } from "./repo-config.mts";
 
 const sandcastleFile = (path: string) => new URL(`../${path}`, import.meta.url);
@@ -100,8 +101,9 @@ describe("optional role prompts", () => {
     }
   });
 
-  it("tells the developer its run is the last developer run", () => {
-    assert.match(read("roles/backend.md"), /last developer run/);
+  it("tells the developer its run is the last developer run, through the UI_DEVELOPER argument", () => {
+    assert.match(read("roles/backend.md"), /\{\{UI_DEVELOPER\}\}/);
+    assert.match(String(backendPromptArgs({ number: 1, title: "t", body: "", labels: [], comments: [] }, "b", false).UI_DEVELOPER), /last developer run/);
   });
 
   it("keeps the scribe off release-generated files, ADRs and the Template's own Markdown", () => {
@@ -270,7 +272,12 @@ describe("the Template's Seed prompts", () => {
     });
   }
 
-  it("holds no UI role prompt, since nothing in the Template's files picks that role", () => {
-    assert.equal(existsSync(new URL("roles/ui.md", seedSandcastle)), false);
+  // dotfiles doesn't opt into the UI developer, so it has no roles/ui.md of its own to compare with: the Seed's carries the
+  // placeholders lib/prompts.mts#issuePromptArgs and withSharedRules fill, and no other.
+  it("roles/ui.md is in the Seed with the placeholders every developer role gets", () => {
+    const seed = new URL("roles/ui.md", seedSandcastle);
+
+    assert.ok(existsSync(seed), "the Template's Seed has no .sandcastle/roles/ui.md");
+    assert.deepEqual(placeholders(readFileSync(seed, "utf8")), placeholders(read("roles/tester.md")));
   });
 });

@@ -9,17 +9,35 @@
 
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
-import type { Role } from "./config.mts";
+import type { AnyRole, RoleAgent } from "./config.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { MAX_CAUSE_DEPTH, RunLimits, runLimits, usageLimitLine } from "./limits.mts";
 import { usageReport } from "./report.mts";
 
+// ROLE_AGENTS as every repo may write it: a repo-config.mts written before the
+// `ui` role existed names none, and ROLE_AGENTS' own type then has no `ui` key.
+const agents: Partial<Record<AnyRole, RoleAgent>> = ROLE_AGENTS;
+
+// Whether the repo opted into the UI developer by giving ROLE_AGENTS a `ui`
+// entry. A repo that hasn't never plans or runs the role.
+export function uiEnabled(): boolean {
+  return agents.ui !== undefined;
+}
+
+// The agent and budget ROLE_AGENTS gives one role. A role the repo left out
+// (only `ui` may be) is a bug in the caller, so it throws.
+export function roleAgent(role: AnyRole): RoleAgent {
+  const agent = agents[role];
+  if (agent === undefined) throw new Error(`ROLE_AGENTS in lib/repo-config.mts has no ${role} entry`);
+  return agent;
+}
+
 // The options a role fixes; callers supply everything else.
 type RoleFixed = "name" | "agent" | "maxIterations" | "signal";
 
-export function roleOptions(role: Role, timeout: (ms: number) => AbortSignal = AbortSignal.timeout) {
-  const { model, effort, maxIterations, timeoutMinutes } = ROLE_AGENTS[role];
+export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout) {
+  const { model, effort, maxIterations, timeoutMinutes } = roleAgent(role);
   return {
     name: role,
     agent: sandcastle.claudeCode(model, { effort }),
@@ -41,17 +59,17 @@ export function withSharedRules<T extends { prompt?: string; promptFile?: string
 }
 
 export function runRole<T>(
-  role: Role,
+  role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed | "output"> & { output: sandcastle.OutputObjectDefinition<T> },
   limits?: RunLimits,
 ): Promise<sandcastle.RunResult & { output: T }>;
 export function runRole(
-  role: Role,
+  role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed>,
   limits?: RunLimits,
 ): Promise<sandcastle.RunResult>;
 export async function runRole(
-  role: Role,
+  role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
 ): Promise<sandcastle.RunResult> {
@@ -67,7 +85,7 @@ export async function runRole(
 
 export async function runRoleInSandbox(
   sandbox: sandcastle.Sandbox,
-  role: Role,
+  role: AnyRole,
   options: Omit<sandcastle.SandboxRunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
 ): Promise<sandcastle.SandboxRunResult> {
@@ -113,7 +131,7 @@ export function isRoleTimeout(error: unknown): boolean {
 // records the stop, so no later role starts or publishes, and rejects with an
 // UncountedStopError naming the role and the limit's line, with the original
 // error as its cause. Any other error is rethrown unchanged.
-export async function runWithinLimits<R>(role: Role, start: () => Promise<R>, limits: RunLimits = runLimits): Promise<R> {
+export async function runWithinLimits<R>(role: AnyRole, start: () => Promise<R>, limits: RunLimits = runLimits): Promise<R> {
   limits.throwIfStopped();
   try {
     return await start();

@@ -13,17 +13,25 @@ import {
   budgetMinutesFrom,
   queueScopeFrom,
 } from "./config.mts";
+import { roleAgent, uiEnabled } from "./agents.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 
 describe("ROLE_AGENTS", () => {
   // lib/repo-config.mts gives each role its agent. The Owned modules index it by Role, so a role it lacks fails a run, and one
-  // it adds that ROLES lacks fails the type-check.
-  it("gives every role in ROLES an agent, and no other", () => {
-    assert.deepEqual(Object.keys(ROLE_AGENTS).sort(), [...ROLES].sort());
+  // it adds that ROLES lacks fails the type-check. The `ui` role is the one a repo may add: it is not in ROLES, so that a
+  // repo-config.mts written before it existed still type-checks.
+  it("gives every role in ROLES an agent, and no other but the opt-in ui", () => {
+    assert.deepEqual(Object.keys(ROLE_AGENTS).filter((role) => role !== "ui").sort(), [...ROLES].sort());
   });
 
   it("names every role the build and the optional-role list use", () => {
-    for (const role of [...BUILD_ROLES, ...OPTIONAL_ROLES]) assert.ok(ROLES.includes(role), `${role} is missing from ROLES`);
+    for (const role of [...BUILD_ROLES, ...OPTIONAL_ROLES]) {
+      assert.ok(role === "ui" || ROLES.includes(role), `${role} is missing from ROLES`);
+    }
+  });
+
+  it("reports the ui role as enabled only when ROLE_AGENTS names it", () => {
+    assert.equal(uiEnabled(), "ui" in ROLE_AGENTS);
   });
 });
 
@@ -36,7 +44,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   it("outlasts the longest build the role timeouts allow, with an hour for gates, sandboxes and publishing", () => {
     const checkpoints = 2;
     const minutes =
-      BUILD_ROLES.reduce((sum, role) => sum + ROLE_AGENTS[role].timeoutMinutes, 0) +
+      BUILD_ROLES.filter((role) => role !== "ui" || uiEnabled()).reduce((sum, role) => sum + roleAgent(role).timeoutMinutes, 0) +
       checkpoints * GATE_FIXER_ATTEMPTS * ROLE_AGENTS["gate-fixer"].timeoutMinutes;
     const hour = 60;
 

@@ -8,7 +8,7 @@
 // every Sandcastle repo shares and imports nothing from here.
 // ---------------------------------------------------------------------------
 
-import type { Role, RoleAgent } from "./config.mts";
+import type { OptInRole, Role, RoleAgent } from "./config.mts";
 
 const sonnet = "claude-sonnet-5-5";
 
@@ -16,7 +16,10 @@ const sonnet = "claude-sonnet-5-5";
 // Blazor-Server's docs/plans/sandcastle-workflow.md. Every role runs Sonnet
 // (the owner moved them off Opus to cut cost; a role whose wrong answer costs a
 // whole round can be pointed back at an Opus model here). Structured-output
-// roles must stay at one iteration.
+// roles must stay at one iteration. A repo with Blazor components and pages
+// opts into the UI developer by adding a `ui` entry (roles/ui.md is its
+// prompt, and plan-prompt.md must offer the role to the planner):
+//   ui: { model: sonnet, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
 export const ROLE_AGENTS = {
   intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
   planner: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
@@ -28,7 +31,7 @@ export const ROLE_AGENTS = {
   reviewer: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   "gate-fixer": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 20 },
   "follow-up": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 30 },
-} as const satisfies Record<Role, RoleAgent>;
+} as const satisfies Record<Role, RoleAgent> & Partial<Record<OptInRole, RoleAgent>>;
 
 // Maximum number of plan→execute→merge cycles before stopping.
 // Raise this if your backlog is large; lower it for a quick smoke-test run.

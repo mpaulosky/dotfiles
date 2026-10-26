@@ -103,7 +103,7 @@ check "first run: succeeds" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
 check "first run: worktree on the branch" \
   '[[ "$(git -C "$wt" symbolic-ref --short HEAD)" == chore/reapply-baseline ]]'
 check "first run: primary checkout stays on main" '[[ "$(git -C "$repo" symbolic-ref --short HEAD)" == main ]]'
-message="$(printf 'chore: Apply repo-ci-baseline Template\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>')"
+message="$(printf 'chore: Apply repo-ci-baseline Template\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>')"
 check "first run: Apply commit message" '[[ "$(git -C "$wt" log -1 --format=%B)" == "$message" ]]'
 check "first run: Apply commit sits on main" '[[ "$(git -C "$wt" rev-parse HEAD~1)" == "$(git -C "$repo" rev-parse origin/main)" ]]'
 check "first run: Apply commit is apply.sh output alone" \

@@ -21,7 +21,8 @@ A real run refuses a dirty worktree (untracked files count), a detached `HEAD`, 
 A repo with no commits yet is allowed on any branch.
 A dry run has no guards and writes nothing, not even `core.hooksPath`.
 
-The Sandcastle section (`.sandcastle/`, `package.json` and `pnpm-workspace.yaml`) is written only into a repo with a `.sandcastle/` folder or no commits yet
+The Sandcastle section (`.sandcastle/`, `package.json`, `pnpm-workspace.yaml`, and the local review's skill, agent
+and `scripts/review.sh`) is written only into a repo with a `.sandcastle/` folder or no commits yet
 ([sandcastle.md](sandcastle.md#when-apply-adds-it)).
 
 ## What it never does

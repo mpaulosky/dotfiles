@@ -16,7 +16,7 @@ files change.
 
 - **Change the Template's copy too.** `main.mts` and every `lib/` module but `repo-config.mts`, with their tests, are copies of
   the Template's Owned files under `template/owned/.sandcastle/`. Change both, or change one and copy it over; `test.sh` fails
-  when they differ. dotfiles' own tests (`repo-config`, `template`, `dockerfile` and `role-prompts`, and `main.test.mts`) aren't.
+  when they differ. dotfiles' own tests (`repo-config`, `template`, `dockerfile`, `role-prompts` and `owned-paths`, and `main.test.mts`) aren't.
 - **Per-repo values go in `lib/repo-config.mts`,** the Seed file each repo fills. `lib/config.mts` holds only what every
   Sandcastle repo shares and never imports it. An Owned test reads a per-repo value from `repo-config.mts`, or the code
   under test takes it as a parameter, and never pins dotfiles' value.
@@ -47,7 +47,9 @@ Agents write the worktree and the shared `.git` directory, and the host later ru
 guardrails keep agent-written code from running on the host. A change keeps every one of them:
 
 - Host git runs with hooks off and `GIT_COMMON_DIR` pinned (`lib/host-safety.mts`), in the main checkout only.
-- Each sandbox mounts `.git/config` and `.git/hooks` read-only through the provider's `create()` (`lib/skills.mts`).
+- Each sandbox mounts `.git/config` and `.git/hooks` read-only through the provider's `create()` (`lib/skills.mts`), and an empty read-only
+  folder over `.git/review` (the local review's ledgers hold accepted security findings, never published), at every path a mount puts `.git`
+  (`protectedGitMounts`, `withCreateMounts`). Every sandbox also sets `GATE_SKIP_REVIEW=1` (`SANDBOX_ENV`): Sandcastle doesn't run that review yet.
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
 - The host pushes the commit the gate passed on, after the secret scan (`lib/scan.mts`), and posts only
   `publicErrorText` on public issues.

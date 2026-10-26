@@ -28,6 +28,7 @@ import {
 import { hooks } from "./repo-config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { bodyBlockers, openPrReason } from "./gate.mts";
+import { breakReferences, plainText } from "./plain-text.mts";
 import {
   addBlockedBy,
   addIssueLabel,
@@ -557,39 +558,6 @@ export function withoutReferences(text: string): string {
     last = match.index + match[0].length;
   }
   return result + prose(text.slice(last));
-}
-
-// A zero-width space after @, a # or GH- before digits, and the dot of
-// github.com, so none mentions anyone or links another issue or PR.
-function breakReferences(text: string): string {
-  return text
-    .replace(/@(?=[A-Za-z0-9])/g, "@\u200B")
-    .replace(/#(?=\d)/g, "#\u200B")
-    .replace(/\b(GH)-(?=\d)/gi, "$1-\u200B")
-    .replace(/\b(github)\.(com)\b/gi, "$1\u200B.$2");
-}
-
-// `text` from intake, as plain text for an issue comment. Intake read
-// untrusted issue text, and its words go to the issue's author, so nothing in
-// them may restructure the comment or reach anyone else: it's
-// kept to one line; backslashes and backticks are escaped (no code span or
-// fence to swallow the re-queue instructions), and so are & (no character
-// reference to decode into an @, # or . that breakReferences doesn't see) and
-// < (no HTML tag, such as an unclosed <details>, or comment to hide them);
-// mentions and cross-references are broken (see breakReferences); and a
-// leading Markdown marker is escaped so it can't start a list, heading or
-// quote.
-export function plainText(text: string): string {
-  return breakReferences(
-    text
-      .replace(/\s+/g, " ")
-      .trim()
-      .replace(/[\\`]/g, "\\$&")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;"),
-  )
-    .replace(/^[-+*#>]/, "\\$&")
-    .replace(/^(\d+)([.)])(?=\s)/, "$1\\$2");
 }
 
 // The one comment on an issue intake handed back: why, the numbered

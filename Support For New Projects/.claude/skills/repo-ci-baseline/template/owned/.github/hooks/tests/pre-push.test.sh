@@ -41,6 +41,8 @@ for tool in dotnet pnpm markdownlint-cli2 yamllint actionlint zizmor shellcheck;
 done
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+# The caller may be iterating with the review check skipped; the cases set what they need.
+unset GATE_SKIP_REVIEW FAIL_REVIEW
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
@@ -79,6 +81,15 @@ run_hook() {
   local stdin="${2//@HEAD@/$(git -C "$REPO" rev-parse HEAD)}"
   stdin="${stdin//@TAG@/$(git -C "$REPO" rev-parse v1.0.0)}"
   OUTPUT="$(cd "$REPO" && PATH="$STUBS:$PATH" bash "$HOOK" <<< "$stdin" 2>&1)"
+  STATUS=$?
+}
+
+# run_gate <checked-out branch>: scripts/gate.sh by itself, as a gate run started by hand
+# or a Sandcastle checkpoint does, without the hook in front of it.
+run_gate() {
+  switch_to "$1"
+  : > "$LOG"
+  OUTPUT="$(cd "$REPO" && PATH="$STUBS:$PATH" bash scripts/gate.sh 2>&1)"
   STATUS=$?
 }
 
@@ -354,6 +365,80 @@ expect_log "gate-checks.sh gets the merge base" ran "repo-check base=$(git -C "$
 FAIL_REPO_CHECK=1 run_hook feature/9-repo-checks "$(push_stdin feature/9-repo-checks)"
 expect "a failing gate-checks.sh refuses the push" refused any
 expect_log "a failing gate-checks.sh stops the gate before the build" not-ran 'dotnet build*'
+git -C "$REPO" switch -q feature/1-x
+
+# The local review (scripts/gate.sh's "Local review" step) runs where the repo has
+# .sandcastle/lib/review-ledger.mts: it asks scripts/review.sh to check the merge
+# base, before the build. The hook drops GATE_SKIP_REVIEW, so no push skips it; a repo
+# without the ledger code has no review to check, and with no origin/main there is
+# nothing to diff against, so the push is refused rather than waved through.
+commit_on feature/12-local-review .sandcastle/lib/review-ledger.mts "// a placeholder: the stub below stands for the ledger"
+cat > "$REPO/scripts/review.sh" <<EOF
+#!/usr/bin/env bash
+echo "review.sh \$*" >> "$LOG"
+[[ -z "\${FAIL_REVIEW:-}" ]]
+EOF
+chmod +x "$REPO/scripts/review.sh"
+git -C "$REPO" add scripts/review.sh
+git -C "$REPO" commit -q -m "stub review.sh"
+run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "a passing review check lets the push through to the tests" allowed tests-ran
+expect_log "the review check gets the merge base" ran "review.sh check $(git -C "$REPO" rev-parse origin/main)"
+FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "a failing review check refuses the push" refused any
+expect_log "a failing review check stops the gate before the build" not-ran 'dotnet build*'
+GATE_SKIP_REVIEW=1 FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "a push ignores GATE_SKIP_REVIEW=1, so the review check still refuses it" refused any
+expect_log "a push with GATE_SKIP_REVIEW=1 still calls review.sh" ran "review.sh check $(git -C "$REPO" rev-parse origin/main)"
+# The gate itself still honours GATE_SKIP_REVIEW=1, and only that value: gate runs
+# while iterating and Sandcastle's checkpoints rely on it.
+GATE_SKIP_REVIEW=1 FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a gate run with GATE_SKIP_REVIEW=1 skips the review check" allowed tests-ran
+expect_log "a gate run with GATE_SKIP_REVIEW=1 doesn't call review.sh" not-ran 'review.sh*'
+GATE_SKIP_REVIEW=true FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a gate run with GATE_SKIP_REVIEW set to any other value doesn't skip it" refused any
+FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a gate run without GATE_SKIP_REVIEW refuses a failing review" refused any
+REVIEW_MAIN="$(git -C "$REPO" rev-parse origin/main)"
+git -C "$REPO" update-ref -d refs/remotes/origin/main
+run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "without an origin/main the review can't be checked, so the push is refused" refused any "No origin/main to diff against"
+git -C "$REPO" update-ref refs/remotes/origin/main "$REVIEW_MAIN"
+# A remote that has no main yet (a repo's first push) has nothing to fetch and no
+# diff to review; one that has a main we haven't fetched still needs the fetch.
+EMPTY_REMOTE="$(mktemp -d)"
+git init -q --bare "$EMPTY_REMOTE"
+git -C "$REPO" remote add origin "$EMPTY_REMOTE"
+git -C "$REPO" update-ref -d refs/remotes/origin/main
+FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a remote with no main yet skips the review, since there is no diff to review" allowed any
+expect_log "a remote with no main yet doesn't call review.sh" not-ran 'review.sh*'
+git -C "$EMPTY_REMOTE" fetch -q "$REPO" "$REVIEW_MAIN:refs/heads/main"
+run_gate feature/12-local-review
+expect "a remote whose main isn't fetched still needs the fetch" refused any "git fetch origin main"
+# Only refs that end in /main but aren't refs/heads/main: still no main to diff against.
+git -C "$EMPTY_REMOTE" update-ref -d refs/heads/main
+git -C "$EMPTY_REMOTE" update-ref refs/heads/feature/main "$REVIEW_MAIN"
+git -C "$EMPTY_REMOTE" update-ref refs/tags/main "$REVIEW_MAIN"
+FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a remote with only feature/main and a main tag has no main either" allowed any
+expect_log "a remote with only feature/main and a main tag doesn't call review.sh" not-ran 'review.sh*'
+# A remote that can't be reached is refused, not mistaken for one with no main.
+git -C "$REPO" remote set-url origin "$EMPTY_REMOTE/does-not-exist"
+run_gate feature/12-local-review
+expect "an unreachable remote refuses the push" refused any "could not be reached"
+git -C "$REPO" remote remove origin
+rm -rf "$EMPTY_REMOTE"
+git -C "$REPO" update-ref refs/remotes/origin/main "$REVIEW_MAIN"
+commit_on feature/13-no-ledger scripts/review.sh "#!/usr/bin/env bash
+echo \"review.sh \$*\" >> \"$LOG\"
+exit 1"
+chmod +x "$REPO/scripts/review.sh"
+git -C "$REPO" add scripts/review.sh
+git -C "$REPO" commit -q -m "make review.sh executable"
+run_hook feature/13-no-ledger "$(push_stdin feature/13-no-ledger)"
+expect "a repo with review.sh but no ledger code needs no review to push" allowed tests-ran
+expect_log "a repo without the ledger code never calls review.sh" not-ran 'review.sh*'
 git -C "$REPO" switch -q feature/1-x
 
 # The old sandcastle.gatedHead marker no longer skips the gate: a Sandcastle

@@ -6,11 +6,12 @@ Every Baseline PR waits on a review of its head before PR Auto-Merge lands it.
 Copilot was the only reviewer, and when the account's Copilot code review budget is used up, GitHub drops every review request without a word (#97, #99).
 On 2026-10-07 that stranded a whole re-Apply round: nothing merged until the budget reset or a person merged past the gate.
 
-So Claude reviews as a backup: Claude Review runs Opus 5.5 at high effort in CI (Sonnet 5.5 at medium effort until #117; see below)
+So Claude reviews as a backup: Claude Review runs Sonnet 5.5 at high effort in CI (Sonnet at medium effort until #117, then Opus 5.5 at high effort until it moved back to Sonnet; see below)
 and posts an ordinary review of the head, with inline threads, under `github-actions[bot]`.
 It runs only while a PR carries `review:claude`, which a person can add at any time. `land.sh` adds it when its own request for Copilot's review of the head
 didn't register, once the head's checks are green, and for at most 2 rounds per PR. `reapply.sh` only warns: a review of a head that then fails CI is money spent for nothing.
-PR Auto-Merge accepts a review of the head by either reviewer, holds on either's unresolved threads, and counts both reviewers' rounds toward one cap ([ADR 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
+PR Auto-Merge accepts a review of the head by either reviewer, holds on either's unresolved threads, and counts both reviewers' rounds toward one cap ([ADR
+0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 The review body starts with `<!-- claude-review -->`: that marker, not the login alone, is how the gate tells Claude's review from anything else posted as `github-actions[bot]`.
 
 ## Considered Options
@@ -27,7 +28,8 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
 
 - A repo without `CLAUDE_CODE_OAUTH_TOKEN` skips Claude Review with a notice, so the workflow is Applied before every secret is added; `github-settings.sh` reports the missing secret as MANUAL.
 - A review posted with `GITHUB_TOKEN` starts no workflows, so PR Auto-Merge follows Claude Review's completion through `workflow_run`.
-- Claude Review runs on `pull_request`, so it reviews with the PR's own copy of the workflow: the PR that brings it in lands on the old gate, and the next round is the first to land on Claude's review.
+- Claude Review runs on `pull_request`, so it reviews with the PR's own copy of the workflow: the PR that brings it in lands on the old gate, and the next round is the
+  first to land on Claude's review.
 - The marker proves a review came through `github-actions[bot]`, not that Claude wrote it.
   Someone who can push workflow changes can still post a marked review of their own: a branch can add any workflow that
   asks for `pull-requests: write`, and it gets the repo's secrets, `RELEASE_PR_PAT` (which can merge a PR outright) included.
@@ -74,10 +76,11 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
 | Opus 5.5, high, one turn of reads, split diff, `--max-turns 30` (#156) | 2 | ~3 min, ~$0.58–0.88 |
 | The same, the prompt asking for all 24 Reads | 2 | ~3 min, ~$0.56–0.62 |
 | The same, with context pieces (#117) | 2 | ~3 min, ~$1.36–1.43 |
-| The same, with context pieces and pinned actions' gatekeeping source (#117), what the workflow runs; three runs | 2, 4, 4 | ~3 min, ~$1.39–1.70 |
+| The same, with context pieces and pinned actions' gatekeeping source (#117), what the workflow ran before the move to Sonnet; three runs | 2, 4, 4 | ~3 min, ~$1.39–1.70 |
 
-- **Opus at high effort, held to one turn of reads, on the split diff with context pieces, is what the workflow runs** (see [One turn of reads](#one-turn-of-reads-153-154) and [Context pieces](#context-pieces-117)).
-  Everything below until that section is how the model, effort and prompt were chosen, uncapped.
+- **Opus at high effort (until the move to Sonnet, see [Moved to Sonnet](#moved-to-sonnet)), held to one turn of reads, on the split diff with context pieces, is what the
+  workflow ran** (see [One turn of reads](#one-turn-of-reads-153-154) and [Context pieces](#context-pieces-117)).
+  Everything below until [One turn of reads](#one-turn-of-reads-153-154) is how the model, effort and prompt were chosen, uncapped.
 
 - **Opus at high effort with the thorough prompt (v3, edited as below) was chosen, before the turn cap.**
   - With v2 it caught findings 1, 3 and 4, in two runs. With v3 it caught 3 and 4, and missed finding 1 in that one run.
@@ -110,7 +113,8 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 and v4 runs); the earlier files predate that, and the CLI updated during these runs.
 - **Cost:** about $1.20 to $1.70 a review uncapped, instead of $0.19 at API prices; about $0.40 to $1.70 under the turn cap with context pieces.
   That is acceptable, because the backup only runs while a PR carries `review:claude`.
-  In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's Opus allowance, and the plan has to include Opus in Claude Code.
+  In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's allowance for the model the workflow names (Opus until the move to
+  Sonnet), and the plan has to include that model in Claude Code.
   A run refused at the usage limit posts nothing and warns, and the PR waits for Copilot's review or a rerun after the reset (#123).
 - Matching is by keyword, whole words, on the files a finding is about, and every saved run in `bench/results/` is scored with the current cases file
   (`--rescore` rewrites a file's score after the cases change). Read the findings too: an early, looser matcher counted a finding about skipping `[bot]` actors as finding 5.
@@ -325,3 +329,11 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 - Someone who can push workflow changes to a branch is out of scope here, as for the marker: they can change the workflow
   itself. Someone who can push only other files reaches neither `CLAUDE_CODE_OAUTH_TOKEN` nor the post job's script,
   though they can steer Claude's verdict (the marker limit above).
+
+## Moved to Sonnet
+
+The owner moved every Claude model the Baseline runs from Opus 5.5 to Sonnet 5.5, still at high effort where it was: Claude Review,
+the pre-push reviewers ([ADR 0008](0008-review-before-the-push.md)), the Sandcastle roles in the Seed `repo-config.mts`, and the `Co-Authored-By` line `reapply.sh` writes.
+The benchmark above ran Opus (its only Sonnet run was at medium effort and caught none of Copilot's findings, #117), so its recall figures describe the Opus workflow.
+The owner accepted that: the review now happens locally before the push, which is why GitHub's review no longer carries the whole load.
+The Seed is written once, so a repo that already has a `repo-config.mts` keeps its models until it changes them.

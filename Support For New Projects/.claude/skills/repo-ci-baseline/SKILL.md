@@ -31,6 +31,7 @@ A fix made only in a repo is reverted by its next Apply.
 | Docs-only CI skip | Docs PRs skip the build and tests while required checks still pass | [docs-only-ci.md](references/docs-only-ci.md) |
 | Per-project test matrix | Each test project runs in its own job on Microsoft Testing Platform | [test-matrix.md](references/test-matrix.md) |
 | Release labels | `semver:minor` and `semver:major` exist, because `release.yml` reads them | [release-pipeline.md](references/release-pipeline.md) |
+| Review before the push | In a repo with Sandcastle, `/pre-push-review` reviews the branch's whole diff locally, grades each finding, fixes the real ones and records a ledger; `scripts/gate.sh` refuses a push without a clean one, so GitHub's reviewers are a backstop | [pre-push-review.md](references/pre-push-review.md) |
 | Sandcastle | Repos that run Sandcastle share its code (`main.mts` and `lib/`), config, intake and critique prompts and host-safety guardrails (Owned), and start from the same per-repo values (`lib/repo-config.mts`), role prompts, Dockerfile and scripts (Seed); Apply adds them only to a repo with a `.sandcastle/` folder or no commits | [sandcastle.md](references/sandcastle.md) |
 | GitHub settings | One standard for merge settings, the `main-rules` ruleset and required checks, labels, Actions and security, checked and applied by `github-settings.sh` | [github-settings.md](references/github-settings.md) |
 
@@ -38,6 +39,7 @@ Read a part's reference before changing it: each holds the design, the review fi
 Lessons that cut across parts are in [gotchas.md](references/gotchas.md).
 Which token each workflow call uses, and the allowance they share, is in [tokens.md](references/tokens.md).
 Claude Code settings (`.claude/settings.json`) are not part of the Template: permissions are set per user, so don't add the file back.
+The one rule worth adding to it, denying Claude Code the local review's ledgers and credential files, is in [pre-push-review.md](references/pre-push-review.md#adapting).
 The one hook worth adding by hand, `scripts/check-git-hooks.sh`, is in [git-hooks.md](references/git-hooks.md#session-start-check).
 A repo that got it from an earlier Apply deletes it by hand, since `apply.sh` never deletes.
 

@@ -20,7 +20,7 @@ import {
   type OpenPullRequest,
   type SandcastleIssue,
 } from "./github.mts";
-import { plainText } from "./intake.mts";
+import { plainText } from "./plain-text.mts";
 import { CONTROL_CHARACTER } from "./plan.mts";
 import { outcomeReport, type OutcomeReport } from "./report.mts";
 import { containsSandboxSecret } from "./sandbox-env.mts";

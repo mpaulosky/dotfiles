@@ -10,22 +10,22 @@
 
 import type { Role, RoleAgent } from "./config.mts";
 
-const opus = "claude-opus-5-5";
 const sonnet = "claude-sonnet-5-5";
 
 // Every role's agent and budget, from the "Roles, models and budgets" table in
-// Blazor-Server's docs/plans/sandcastle-workflow.md. Opus goes where a wrong
-// answer costs a whole round; Sonnet goes where the gate, the reviewer or CI
-// checks the output anyway. Structured-output roles must stay at one iteration.
+// Blazor-Server's docs/plans/sandcastle-workflow.md. Every role runs Sonnet
+// (the owner moved them off Opus to cut cost; a role whose wrong answer costs a
+// whole round can be pointed back at an Opus model here). Structured-output
+// roles must stay at one iteration.
 export const ROLE_AGENTS = {
   intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-  planner: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+  planner: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   critique: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
-  architect: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+  architect: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   tester: { model: sonnet, effort: "high", maxIterations: 3, timeoutMinutes: 45 },
-  backend: { model: opus, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
+  backend: { model: sonnet, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
   scribe: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-  reviewer: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+  reviewer: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   "gate-fixer": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 20 },
   "follow-up": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 30 },
 } as const satisfies Record<Role, RoleAgent>;
@@ -85,6 +85,20 @@ export const GATE_SCRIPT = "scripts/gate.sh";
 // (lib/build.mts#publish). Folders end in a slash. List every place the gate
 // reads its checks from, not only where its script sits.
 export const CHECK_PATHS: readonly string[] = [".sandcastle/", "scripts/", ".github/ci/", ".github/workflows/", "package.json"];
+
+// This repository as OWNER/REPO, which the pre-push-review skill gives every gh
+// command as GH_REPO (`scripts/review.sh repo`): in a clone whose only remote is
+// a fork, gh's default repository is the fork. Apply fills it in. Keep both this and
+// NOT_OWNED_BASELINE_PATHS as a one-line `export const NAME` or `export let NAME`: Apply and
+// scripts/review.sh look for them that way.
+export const REPO_SLUG = "{{OWNER}}/{{REPO}}";
+
+// The files under an Owned Baseline pattern (see OWNED_PATHS in
+// lib/review-ledger.mts) that are this repository's own, not the Template's:
+// its own workflows, scripts and Sandcastle tests. A re-Apply that changes only
+// Owned files passes the local review's check, so a file listed here is
+// reviewed like any other.
+export const NOT_OWNED_BASELINE_PATHS: readonly string[] = [];
 
 // The Template's Owned folder and the Owned files the repo carries copies of
 // at the same path from its root, which lib/overlap.mts counts as one path

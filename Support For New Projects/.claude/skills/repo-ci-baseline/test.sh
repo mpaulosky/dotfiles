@@ -96,10 +96,10 @@ step "shellcheck"
 shell_files=(
   "$skill_dir/apply.sh" "$skill_dir/reapply.sh" "$skill_dir/test.sh" "$skill_dir/github-settings.sh" "$skill_dir/status.sh"
   "$skill_dir/land.sh" "$skill_dir/rollout.sh"
-  "$skill_dir/tests/apply.test.sh" "$skill_dir/tests/reapply.test.sh"
+  "$skill_dir/tests/apply.test.sh" "$skill_dir/tests/reapply.test.sh" "$skill_dir/tests/dotfiles-gate.test.sh"
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
-  "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh"
+  "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh" "$owned/scripts/review.sh"
   "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.sandcastle/check.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
@@ -209,6 +209,8 @@ dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
 for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.yml .github/workflows/pr-review-submitted.yml \
   .github/scripts/post_claude_review.py \
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh \
+  scripts/review.sh .claude/agents/pre-push-reviewer.md .claude/skills/pre-push-review/SKILL.md \
+  .claude/skills/pre-push-review/lenses.md .claude/skills/pre-push-review/review-bar.md \
   .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/critique-prompt.md \
   .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
   .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
@@ -219,8 +221,9 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .sandcastle/lib/github.mts .sandcastle/lib/github.test.mts .sandcastle/lib/handback.mts .sandcastle/lib/handback.test.mts \
   .sandcastle/lib/host-safety.mts .sandcastle/lib/host-safety.test.mts .sandcastle/lib/intake.mts .sandcastle/lib/intake.test.mts \
   .sandcastle/lib/limits.mts .sandcastle/lib/limits.test.mts .sandcastle/lib/overlap.mts .sandcastle/lib/overlap.test.mts \
-  .sandcastle/lib/plan.mts .sandcastle/lib/plan.test.mts .sandcastle/lib/prompts.mts .sandcastle/lib/prompts.test.mts \
+  .sandcastle/lib/plain-text.mts .sandcastle/lib/plain-text.test.mts .sandcastle/lib/plan.mts .sandcastle/lib/plan.test.mts .sandcastle/lib/pre-push-review-skill.test.mts .sandcastle/lib/prompts.mts .sandcastle/lib/prompts.test.mts \
   .sandcastle/lib/queue.mts .sandcastle/lib/queue.test.mts .sandcastle/lib/report.mts .sandcastle/lib/report.test.mts \
+  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts \
   .sandcastle/lib/round.mts .sandcastle/lib/round.test.mts .sandcastle/lib/sandbox-env.mts .sandcastle/lib/sandbox-env.test.mts \
   .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
   .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
@@ -258,6 +261,7 @@ channel="$(sed -nE 's/^ARG DOTNET_CHANNEL=([^ ]+).*/\1/p' "$seed/.sandcastle/Doc
 
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
+"$skill_dir/tests/dotfiles-gate.test.sh" || fail "dotfiles-gate.test.sh"
 
 step "reapply.sh smoke test"
 "$skill_dir/tests/reapply.test.sh" || fail "reapply.test.sh"

@@ -19,7 +19,6 @@ import {
 // dotfiles' own values for the per-repo names the Owned modules read from lib/repo-config.mts. The Template's Owned tests pin none of
 // them, so dotfiles pins them here. This file and lib/template.test.mts are dotfiles', not the Template's.
 
-const opus = "claude-opus-5-5";
 const sonnet = "claude-sonnet-5-5";
 
 const root = new URL("../../", import.meta.url);
@@ -31,13 +30,13 @@ describe("ROLE_AGENTS", () => {
   it("configures every role with the spec's model, effort, iterations and timeout", () => {
     assert.deepEqual(ROLE_AGENTS, {
       intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-      planner: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+      planner: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
       critique: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
-      architect: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+      architect: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
       tester: { model: sonnet, effort: "high", maxIterations: 3, timeoutMinutes: 45 },
-      backend: { model: opus, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
+      backend: { model: sonnet, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
       scribe: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-      reviewer: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+      reviewer: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
       "gate-fixer": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 20 },
       "follow-up": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 30 },
     });
@@ -137,6 +136,7 @@ describe("the Template owns Sandcastle's code", () => {
       "lib/template.test.mts",
       "lib/dockerfile.test.mts",
       "lib/role-prompts.test.mts",
+      "lib/owned-paths.test.mts",
     ]);
     const here = new URL("../", import.meta.url);
     const expected = [

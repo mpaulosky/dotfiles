@@ -19,7 +19,9 @@
 //   objects from this repository's .git, whatever a commondir file says
 //   (GIT_COMMON_DIR, set by hostGitEnv). The host's own git commands also pin
 //   GIT_DIR (see git in lib/shell.mts);
-// - the sandbox can't change .git/config or .git/hooks (protectedGitMounts);
+// - the sandbox can't change .git/config or .git/hooks, or read the local
+//   review's ledgers in .git/review, at any path a mount puts .git
+//   (protectedGitMounts, and withCreateMounts in lib/skills.mts);
 // - the host runs its own git and gh in the main checkout, never in a worktree
 //   (lib/build.mts and lib/branches.mts);
 // - Sandcastle runs git in a worktree when it reuses one and when it closes
@@ -34,7 +36,8 @@
 // (worktreeConfigProblem, configIncludeProblem).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 // A bind mount into the sandbox, in the shape Sandcastle's docker() takes.
@@ -155,15 +158,48 @@ export function protectHostGit(): void {
   Object.assign(process.env, hostGitEnv(process.env, repoGitDir()));
 }
 
+let emptyDir: string | undefined;
+
+// An empty folder to mount over what agents mustn't read, made once.
+function emptyFolder(): string {
+  emptyDir ??= mkdtempSync(join(tmpdir(), "sandcastle-empty-"));
+  return emptyDir;
+}
+
 // Read-only mounts over the parts of the shared .git directory that make git
 // run commands, laid over Sandcastle's read-write mount of the directory at the
 // same path. Agents only need the objects, refs and index to commit. A path
 // that doesn't exist is left out: Docker can't mount it.
-export function protectedGitMounts(gitDir: string, exists: (path: string) => boolean = existsSync): ReadOnlyMount[] {
-  return ["config", "hooks"]
+//
+// The local review's ledgers (.git/review, scripts/review.sh) hold accepted
+// security findings, which are never published, while agents read untrusted
+// text and the host publishes what they write. So an empty read-only folder
+// covers them, whether or not they exist yet: a ledger recorded during the run
+// lands in the hidden folder too. The host makes the folder first, or Docker
+// would make it through the .git mount, perhaps as root.
+export function protectedGitMounts(
+  gitDir: string,
+  exists: (path: string) => boolean = existsSync,
+  empty: string = emptyFolder(),
+  makeDir: (path: string) => void = (path) => {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    chmodSync(path, 0o700);
+  },
+): ReadOnlyMount[] {
+  const review = join(gitDir, "review");
+  // A symlink there would take Docker's cover to its target, leaving the
+  // ledgers open at their own path; checked before makeDir, whose own errors
+  // wouldn't say what to look at.
+  const found = lstatSync(review, { throwIfNoEntry: false });
+  if (found !== undefined && !found.isDirectory()) {
+    throw new Error(`${review} isn't a real folder, so the ledgers can't be hidden from the sandbox. Inspect it and remove it.`);
+  }
+  makeDir(review);
+  const commands: ReadOnlyMount[] = ["config", "hooks"]
     .map((name) => join(gitDir, name))
     .filter((path) => exists(path))
     .map((path) => ({ hostPath: path, sandboxPath: path, readonly: true }));
+  return [...commands, { hostPath: empty, sandboxPath: join(gitDir, "review"), readonly: true }];
 }
 
 // Where Sandcastle 0.12 puts a branch's worktree (its worktree mode's create()).

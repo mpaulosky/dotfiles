@@ -68,7 +68,28 @@ fi
 # Sandcastle, or a new one (ADR 0006): a repo starts using it by creating .sandcastle/ and Applying again.
 with_sandcastle=false
 if [[ -d "$target/.sandcastle" ]] || ! git -C "$target" rev-parse --verify --quiet HEAD >/dev/null; then with_sandcastle=true; fi
-sandcastle_path() { [[ "$1" == .sandcastle/* || "$1" == package.json || "$1" == pnpm-workspace.yaml ]]; }
+# The local review's skill, agent and script too: its ledger is .sandcastle/lib/review-ledger.mts.
+sandcastle_path() {
+  [[ "$1" == .sandcastle/* || "$1" == package.json || "$1" == pnpm-workspace.yaml || "$1" == scripts/review.sh \
+    || "$1" == .claude/agents/pre-push-reviewer.md || "$1" == .claude/skills/pre-push-review/* ]]
+}
+
+# The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's
+# .sandcastle/lib/repo-config.mts, a Seed file Apply never rewrites. A repo whose own
+# copy lacks them would fail at link time (every push, its re-Apply's too), so its
+# ledger (and the tests that import it) wait until they are on its main, each as a
+# one-line `export const NAME` or `export let NAME`. With no repo-config.mts yet,
+# the Seed brings them.
+ledger_path() {
+  [[ "$1" == scripts/review.sh || "$1" == .sandcastle/lib/review-ledger.mts || "$1" == .sandcastle/lib/review-ledger.test.mts \
+    || "$1" == .sandcastle/lib/pre-push-review-skill.test.mts ]]
+}
+ledger_ready=true
+if $with_sandcastle && [[ -f "$target/.sandcastle/lib/repo-config.mts" ]] \
+  && ! { grep -qE '^export[[:space:]]+(const|let)[[:space:]]+REPO_SLUG\b' "$target/.sandcastle/lib/repo-config.mts" \
+    && grep -qE '^export[[:space:]]+(const|let)[[:space:]]+NOT_OWNED_BASELINE_PATHS\b' "$target/.sandcastle/lib/repo-config.mts"; }; then
+  ledger_ready=false
+fi
 
 # ── Placeholder values ──────────────────────────────────────────────────────
 owner=""
@@ -111,10 +132,12 @@ seed_written=()
 seed_skipped=()
 unfilled=()
 sandcastle_left=()
+ledger_left=()
 
 # ── Owned ───────────────────────────────────────────────────────────────────
 while IFS= read -r rel; do
   if ! $with_sandcastle && sandcastle_path "$rel"; then sandcastle_left+=("$rel"); continue; fi
+  if ! $ledger_ready && ledger_path "$rel"; then ledger_left+=("$rel"); continue; fi
   src="$owned_dir/$rel"
   dst="$target/$rel"
   if [[ ! -e "$dst" ]]; then
@@ -205,6 +228,9 @@ section "Owned files that $verb overwritten (drift: drop it, or move a local fix
 echo
 echo "Owned files already identical: $owned_same"
 echo "Sandcastle files left out (the repo has no .sandcastle/; create it and Apply again to add them): ${#sandcastle_left[@]}"
+if [[ ${#ledger_left[@]} -gt 0 ]]; then
+  section "Local review files left out: the repo's .sandcastle/lib/repo-config.mts lacks REPO_SLUG or NOT_OWNED_BASELINE_PATHS as a one-line export const. Add both on main in a PR of its own (references/pre-push-review.md, Adapting step 1), then Apply again" "${ledger_left[@]}"
+fi
 section "Seed files that $verb written" "${seed_written[@]}"
 section "Seed files skipped because the repo has its own (review against the Template in Adapt)" "${seed_skipped[@]}"
 section "Seed files with unfilled placeholders" "${unfilled[@]}"

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Local quality gate, run by .github/hooks/pre-push and safe to run by hand.
 # Lints the Markdown, YAML, workflow and shell files changed since origin/main
-# (every unpushed commit, with the same configs as CI), runs the repo's own
+# (every unpushed commit, with the same configs as CI), checks that the
+# branch's diff passed the local review (/pre-push-review), runs the repo's own
 # checks in .github/ci/gate-checks.sh, builds the solution, then runs each test
 # project CI's discover_tests.py finds under tests/. Exits non-zero on the first
-# failing gate.
+# failing gate. GATE_SKIP_REVIEW=1 skips the review check, for gate runs before
+# the push (the review's own, and while iterating), never for a push.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -120,6 +122,31 @@ if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
   run_tool shellcheck "install shellcheck, or Docker" have_docker \
     docker run --rm -v "$ROOT:/mnt" -w /mnt "koalaman/shellcheck:${SHELLCHECK_VERSION}" \
     -- "${SHELL_FILES[@]}"
+fi
+
+# The local review (/pre-push-review) must have passed this branch's diff, with
+# no open Critical or Warning finding: scripts/review.sh keeps the record under
+# .git/review/. Sandcastle's sandboxes set GATE_SKIP_REVIEW=1 (lib/skills.mts),
+# since its reviewer role stands in there. A repo without a .sandcastle/ folder
+# has no ledger code to run, so it has no review to check.
+step "Local review (scripts/review.sh check)"
+if [[ "${GATE_SKIP_REVIEW:-}" == "1" ]]; then
+  echo -e "${GREEN}✅ Local review check skipped (GATE_SKIP_REVIEW=1).${RESET}"
+elif [[ ! -f .sandcastle/lib/review-ledger.mts ]]; then
+  echo -e "${YELLOW}⚠️  No .sandcastle/lib/review-ledger.mts — this repo has no local review to check.${RESET}"
+elif [[ -z "$BASE" ]]; then
+  # A remote with no main yet (a repo's first push) has nothing to fetch and no review to check
+  # (ls-remote exits 2 when nothing matches); a remote that has one, or that can't be reached,
+  # fails: the first needs the fetch, and the second can't be told from a main we can't see.
+  remote_main=0
+  git ls-remote --exit-code origin refs/heads/main > /dev/null 2>&1 || remote_main=$?
+  if [[ $remote_main -ne 2 ]]; then
+    echo "❌ No origin/main to diff against, so the review can't be checked: run git fetch origin main (or the remote could not be reached)." >&2
+    exit 1
+  fi
+  echo -e "${YELLOW}⚠️  The remote has no main yet, so there is no diff to review: skipping the local review.${RESET}"
+else
+  scripts/review.sh check "$BASE"
 fi
 
 # Checks only this repo needs (Seed, so Apply never overwrites them). It gets

@@ -9,7 +9,8 @@ import type { ClaudeCodeOptions } from "@ai-hero/sandcastle";
 
 // Every role Sandcastle runs. lib/repo-config.mts gives each one its agent
 // and budget (ROLE_AGENTS) and must name every one: a role it leaves out,
-// or one it adds, fails the type-check rather than a run.
+// or one it adds besides the opt-in `ui` (OptInRole), fails the type-check
+// rather than a run.
 export const ROLES = ["intake", "planner", "critique", "architect", "tester", "backend", "scribe", "reviewer", "gate-fixer", "follow-up"] as const;
 
 export type Role = (typeof ROLES)[number];
@@ -36,7 +37,9 @@ export type RoleAgent = {
 // (the backend role) and reviewer, which always run (see "Phase 4: Plan" and
 // "Phase 6: Build" in Blazor-Server's docs/plans/sandcastle-workflow.md). lib/plan.mts#resolveRoles
 // validates the planner's roles field against this list, falling back to
-// every one of them when the field is missing or invalid.
+// every one of them when the field is missing or invalid. `ui` counts only in a
+// repo that opted in (lib/agents.mts#uiEnabled): elsewhere it is neither
+// recognised nor part of the fallback.
 export const OPTIONAL_ROLES = ["architect", "ui", "scribe"] as const satisfies readonly AnyRole[];
 
 export type OptionalRole = (typeof OPTIONAL_ROLES)[number];

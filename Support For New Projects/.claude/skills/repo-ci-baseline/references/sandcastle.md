@@ -27,7 +27,7 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 | `intake-prompt.md`, `critique-prompt.md` | Judge an issue or a plan against the issue alone, with no repo-specific text |
 | `lib/host-safety.mts`, `lib/shell.mts` and their tests | The guardrails that keep agent-written code off the host; they import only each other, so a repo's own code can't break them |
 | `main.mts` | The run's phases and round loop; it reads its round cap from `lib/repo-config.mts` |
-| `lib/config.mts` and its test | What every Sandcastle repo shares: the role names (`ROLES`), limits, labels, markers, the Copilot reviewer settings, and the queue-scope and budget parsing |
+| `lib/config.mts` and its test | What every Sandcastle repo shares: the role names (`ROLES`, plus the opt-in `ui` as `OptInRole`), limits, labels, markers, the Copilot reviewer settings, and the queue-scope and budget parsing |
 | The other `lib/` modules and their tests, `lib/errors.mts` and `lib/git-sandbox-fake.mts` | They import each other as one cluster, so they're Owned together; their tests pin no per-repo value |
 
 The Owned modules read only the names `lib/repo-config.mts` exports (below), and `config.mts` imports nothing from it.
@@ -42,7 +42,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 
 | File | What the repo fills in |
 | --- | --- |
-| `.sandcastle/roles/*.md` (`architect`, `backend`, `tester`, `scribe`, `gate-fixer`, `follow-up`) | Anything its roles do differently |
+| `.sandcastle/roles/*.md` (`architect`, `backend`, `tester`, `scribe`, `gate-fixer`, `follow-up`, and `ui`, which stays unused until the repo opts in) | Anything its roles do differently |
 | `.sandcastle/roles/shared-rules.md` | The repo's paragraph, its stacks and test commands; the one file every role reads about the repo |
 | `.sandcastle/plan-prompt.md`, `.sandcastle/review-prompt.md` | The optional roles' rules and the docs the review follows |
 | `.sandcastle/CODING_STANDARDS.md` | The repo's code and test standards, which every role and the review follow |
@@ -53,9 +53,13 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 
 The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-prompts.test.mts` checks).
 `test.sh` keeps dotfiles' own text out of them, and checks that the Dockerfile's linter versions match the Owned `scripts/gate.sh` and its .NET channel matches `global.json`.
-`roles/ui.md` is the UI developer's prompt, the one role a repo opts into: add a `ui` entry to `ROLE_AGENTS` in `lib/repo-config.mts` and list `ui` in
-`plan-prompt.md`'s roles. `ui` is not in `ROLES`, so a `repo-config.mts` written before it existed still type-checks; without the entry
-`lib/agents.mts#uiEnabled` is false, and the planner's `ui` pick and the fallback "every optional role" both leave it out. With it, the role runs after the backend developer,
+`roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo, where it stays unused. To opt in, add a `ui` entry to
+`ROLE_AGENTS` in `lib/repo-config.mts` (the Seed carries it commented out) and add this bullet to `plan-prompt.md`'s ROLES list, so the planner can pick the role:
+`` - `ui`: the issue adds or changes Blazor components or pages (`.razor` files, their code-behind, layout or styling). Leave it out when the issue changes no markup. ``
+`config.test.mts` fails when a repo has the entry but lacks `roles/ui.md`, `backend.md`'s `{{UI_DEVELOPER}}` or that bullet.
+`ui` is not in `ROLES`, so a `repo-config.mts` written before it existed still type-checks; without the entry
+`lib/agents.mts#uiEnabled` is false, and the planner's `ui` pick and the fallback "every optional role" both leave it out.
+With it, the role runs after the backend developer,
 and `backend.md`'s `{{UI_DEVELOPER}}` tells the backend developer to leave the Blazor components and pages to it.
 
 ## When Apply adds it

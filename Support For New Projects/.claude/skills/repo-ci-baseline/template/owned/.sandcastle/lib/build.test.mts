@@ -1730,12 +1730,13 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
   });
 });
 
-// Runs `run` with the repo's `ui` role opted in to ROLE_AGENTS, whatever
+// Runs `run` with the repo's `ui` role opted in (or out) in ROLE_AGENTS, whatever
 // lib/repo-config.mts says, then puts ROLE_AGENTS back as it was.
-async function withUiRole<T>(run: () => Promise<T>): Promise<T> {
+async function withUiRole<T>(run: () => Promise<T>, enabled = true): Promise<T> {
   const agents: Record<string, unknown> = ROLE_AGENTS;
   const original = agents.ui;
-  agents.ui = { ...ROLE_AGENTS.backend };
+  if (enabled) agents.ui = { ...ROLE_AGENTS.backend };
+  else delete agents.ui;
   try {
     return await run();
   } finally {
@@ -1783,6 +1784,45 @@ describe("buildIssue ui role", () => {
 
       assert.match(String(withUi.runs.find((run) => run.name === "backend")?.promptArgs?.UI_DEVELOPER), /UI developer runs after you/);
       assert.match(String(without.runs.find((run) => run.name === "backend")?.promptArgs?.UI_DEVELOPER), /last developer run/);
+    });
+  });
+
+  it("runs the UI developer from roles/ui.md with the issue's prompt arguments and the shared rules", async () => {
+    await withUiRole(async () => {
+      const { runs, buildHost } = host([0, 0]);
+
+      await buildIssue(withRoles(["ui"]), branch, base, buildHost);
+
+      const run = runs.find((options) => options.name === "ui")!;
+      assert.equal(run.promptFile, "./.sandcastle/roles/ui.md");
+      assert.equal(run.promptArgs?.TASK_ID, "69");
+      assert.equal(run.promptArgs?.BRANCH, branch);
+      assert.ok(run.promptArgs?.SHARED_RULES);
+    });
+  });
+
+  it("skips the UI developer, and tells the backend developer it is the last developer run, when the plan names ui in a repo that hasn't opted in", async () => {
+    await withUiRole(async () => {
+      const { steps, runs, buildHost } = host([0, 0]);
+
+      const result = await buildIssue(withRoles(["ui"]), branch, base, buildHost);
+
+      assert.ok(!steps.includes("ui"));
+      assert.equal(result.prUrl, "https://github.com/o/r/pull/1");
+      assert.match(String(runs.find((run) => run.name === "backend")?.promptArgs?.UI_DEVELOPER), /last developer run/);
+    }, false);
+  });
+
+  it("publishes nothing and comments on the issue when the UI developer runs out of iterations unfinished", async () => {
+    await withUiRole(async () => {
+      const { steps, comments, recordBuildFailureCalls, buildHost } = host([0, 0], { unfinished: ["ui"] });
+
+      const result = await buildIssue(withRoles(["ui"]), branch, base, buildHost);
+
+      assert.ok(!steps.includes("publish"));
+      assert.equal(result.prUrl, undefined);
+      assert.equal(recordBuildFailureCalls.length, 1);
+      assert.match(comments[0]!.body, /ui ran out of iterations/);
     });
   });
 

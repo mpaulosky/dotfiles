@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { isRoleTimeout, runRoleInSandbox } from "./agents.mts";
+import { isRoleTimeout, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
 import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
 import {
@@ -691,12 +691,18 @@ async function buildMarkedIssue(
   const designNotePath = `.sandcastle/work/${issue.number}/design.md`;
   const prBodyPath = `.sandcastle/work/${issue.number}/pr-body.md`;
 
+  // The UI developer runs only for an issue whose plan picked it in a repo that
+  // opted in. resolveRoles already keeps `ui` out of an opted-out repo's plan;
+  // this keeps a RoledIssue built another way from running a role the repo has
+  // no agent or prompt for, after a tester and backend run it can't use.
+  const uiRuns = issue.roles.includes("ui") && uiEnabled();
+
   function developerPromptArgs(role: DeveloperRole): sandcastle.PromptArgs {
     switch (role) {
       case "architect":
         return architectPromptArgs(issue, branch, host.latestDesignNote(issue.number));
       case "backend":
-        return backendPromptArgs(issue, branch, issue.roles.includes("ui"));
+        return backendPromptArgs(issue, branch, uiRuns);
       default:
         return promptArgs;
     }
@@ -1100,7 +1106,7 @@ async function buildMarkedIssue(
       ...(issue.roles.includes("architect") ? ["architect" as const] : []),
       "tester",
       "backend",
-      ...(issue.roles.includes("ui") ? ["ui" as const] : []),
+      ...(uiRuns ? ["ui" as const] : []),
     ];
     for (const role of developers) {
       const failed = await developerFails(role);

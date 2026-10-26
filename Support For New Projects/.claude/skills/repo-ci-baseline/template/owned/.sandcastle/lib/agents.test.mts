@@ -27,7 +27,10 @@ const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta
 
 describe("roleOptions", () => {
   it("builds the ui role's options from its ROLE_AGENTS entry, and refuses it when the repo has none", async () => {
-    await withUiRole(true, () => assert.equal(roleOptions("ui").name, "ui"));
+    await withUiRole(true, () => {
+      assert.equal(uiEnabled(), true);
+      assert.equal(roleOptions("ui").name, "ui");
+    });
     await withUiRole(false, () => {
       assert.equal(uiEnabled(), false);
       assert.throws(() => roleOptions("ui"), /no ui entry/);

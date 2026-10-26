@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +64,24 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const result = spawnSync(join(root, "node_modules/.bin/tsc"), ["--noEmit", "-p", sandcastle], { cwd: scratch, encoding: "utf8", env: childEnv() });
 
     assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  });
+
+  // The Seed's commented `ui` line is what a repo opting into the UI developer uncomments, so it must be a valid entry
+  // under the Seed's own `satisfies` clause, next to the Owned modules that read it.
+  it("type-checks with the Seed's ui entry uncommented", { timeout: 120_000 }, () => {
+    const config = join(sandcastle, "lib/repo-config.mts");
+    const original = readFileSync(config, "utf8");
+    const optedIn = original.replace(/^\/\/ {3}(ui: .*)$/m, "  $1");
+    assert.notEqual(optedIn, original, "the Seed's repo-config.mts has no commented ui entry");
+
+    writeFileSync(config, optedIn);
+    try {
+      const result = spawnSync(join(root, "node_modules/.bin/tsc"), ["--noEmit", "-p", sandcastle], { cwd: scratch, encoding: "utf8", env: childEnv() });
+
+      assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    } finally {
+      writeFileSync(config, original);
+    }
   });
 
   it("passes its Owned tests with the Seed's values", { timeout: 120_000 }, () => {

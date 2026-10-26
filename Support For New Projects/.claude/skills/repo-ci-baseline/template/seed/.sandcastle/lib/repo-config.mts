@@ -17,9 +17,9 @@ const sonnet = "claude-sonnet-5-5";
 // (the owner moved them off Opus to cut cost; a role whose wrong answer costs a
 // whole round can be pointed back at an Opus model here). Structured-output
 // roles must stay at one iteration. A repo with Blazor components and pages
-// opts into the UI developer by adding a `ui` entry (roles/ui.md is its
-// prompt, and plan-prompt.md must offer the role to the planner):
-//   ui: { model: sonnet, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
+// opts into the UI developer by uncommenting the `ui` entry at the end
+// (roles/ui.md is its prompt, and plan-prompt.md must offer the role to the
+// planner with a `ui` bullet in its ROLES list).
 export const ROLE_AGENTS = {
   intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
   planner: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
@@ -31,6 +31,7 @@ export const ROLE_AGENTS = {
   reviewer: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   "gate-fixer": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 20 },
   "follow-up": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 30 },
+//   ui: { model: sonnet, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
 } as const satisfies Record<Role, RoleAgent> & Partial<Record<OptInRole, RoleAgent>>;
 
 // Maximum number of plan→execute→merge cycles before stopping.

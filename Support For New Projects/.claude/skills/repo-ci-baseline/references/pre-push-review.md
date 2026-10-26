@@ -34,7 +34,7 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   change is a regular Owned file added or modified, as Apply writes them (`OWNED_PATHS` in the ledger lists them, and a dotfiles test keeps it equal to
   `template/owned/`). A deleted Owned file, a symlink, a submodule, a file of the repo's own, or a Seed file the re-Apply writes because the repo lacked it
   needs a review like any other change.
-- `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
+- `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
   Sandcastle's own reviewer role stands in there, and running this review in a sandbox is not designed yet.
 - Reviewers run as `pre-push-reviewer`, on Opus at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
   token, only Read, Grep and Glob. Those still reach any file the person can read, so a reviewer's answer is data to check before anything of it is published.
@@ -57,8 +57,10 @@ A repo that already has Sandcastle:
 2. Deny Claude Code reading the ledgers, in the repo's `.claude/settings.json` (the Template doesn't ship that file, since permissions are set per user):
 
    ```json
-   { "permissions": { "deny": ["Read(//**/.git/review)", "Read(//**/.git/review/**)"] } }
+   { "permissions": { "deny": ["Read(//**/.git/review)", "Read(//**/.git/review/**)", "Read(//**/.env)", "Read(//**/.env.*)", "Read(//**/secrets/**)", "Read(//**/*.pem)", "Read(//**/*.key)", "Read(//**/.git/config)"] } }
    ```
+
+   The reviewers' Read and Grep follow these rules, and the agent's `tools:` line can't narrow them to paths, so this is what keeps a reviewer off credentials. The rules apply to the whole session.
 
 3. Run `pnpm install` (the ledger needs `zod` and `tsx`, both in the Seed `package.json`; a repo whose own `package.json` lacks `tsx` gets it when it migrates
    to the Sandcastle section), then `pnpm run check:sandcastle`. Add `scripts/review.sh`, `.claude/skills/pre-push-review` and

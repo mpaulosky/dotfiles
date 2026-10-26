@@ -103,6 +103,7 @@ else
   echo -e "${YELLOW}⚠️  No origin/main to compare with — skipping the up-to-date check.${RESET}"
 fi
 
-"$ROOT/scripts/gate.sh"
+# A push never skips the review: GATE_SKIP_REVIEW=1 is for gate runs started by hand.
+env -u GATE_SKIP_REVIEW "$ROOT/scripts/gate.sh"
 
 echo -e "\n${GREEN}━━━ All gates passed — pushing ✅ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}\n"

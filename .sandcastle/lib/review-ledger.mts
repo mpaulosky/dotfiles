@@ -207,11 +207,16 @@ const isBlocking = (finding: Finding) => finding.status === "open" && (severityO
 // outcome. Never `accepted`: only a person running `scripts/review.sh accept`
 // accepts a finding, on the ledger it was raised in, so no acceptance carries
 // from one ledger to another.
+const reviewerAgentSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/, "reviewerAgent is an agent type name");
+
 export const reviewInputSchema = z
   .object({
     reviewedKey: z.string().min(1),
     reviewedHead: z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/, "reviewedHead is the commit id prepare printed"),
     rounds: z.number().int().min(1),
+    // The agent type that read the diff (pre-push-reviewer, or the one that
+    // stood in for it), so the report and the notes show who reviewed.
+    reviewerAgent: reviewerAgentSchema.optional(),
     findings: z.array(findingSchema),
   })
   .strict()
@@ -241,6 +246,7 @@ export const ledgerSchema = z
     head: z.string().min(1),
     recordedAt: z.string().min(1),
     rounds: z.number().int().min(1),
+    reviewerAgent: reviewerAgentSchema.optional(),
     findings: z.array(storedFindingSchema),
     // The highest id any review of the branch had used when this one was
     // recorded, so a review that found nothing still holds the ids taken.
@@ -579,6 +585,7 @@ export function recordReview(
     head,
     recordedAt: now.toISOString(),
     rounds: parsed.rounds,
+    ...(parsed.reviewerAgent === undefined ? {} : { reviewerAgent: parsed.reviewerAgent }),
     findings: parsed.findings,
   };
   withLock(cwd, () => {
@@ -686,7 +693,7 @@ const severityHeadings: Record<Severity, string> = { critical: "Critical", warni
 // happened to it, and the test or reason behind that. A severity no finding
 // has gets no section.
 export function renderReport(ledger: Ledger): string {
-  const header = `Review of ${ledger.branch === "" ? "HEAD" : cell(ledger.branch)} at ${ledger.head.slice(0, 12)}: ${ledger.rounds} round(s), ${ledger.findings.length} finding(s).`;
+  const header = `Review of ${ledger.branch === "" ? "HEAD" : cell(ledger.branch)} at ${ledger.head.slice(0, 12)}: ${ledger.rounds} round(s), ${ledger.findings.length} finding(s), reviewed by ${ledger.reviewerAgent ?? "an unrecorded agent"}.`;
   if (ledger.findings.length === 0) return `${header}\n\nNo findings.\n`;
   const sections = SEVERITIES.flatMap((severity) => {
     const rows = ledger.findings
@@ -731,11 +738,12 @@ export function renderReviewNotes(ledger: Ledger): string {
       ? []
       : ["", `${security.length} accepted security finding(s) are left out here and reported privately, as docs/SECURITY.md describes.`];
   const section = (...body: string[]) => [REVIEW_NOTES_START, "## Review notes", ...body, REVIEW_NOTES_END, ""].join("\n");
-  if (listed.length === 0) return section(...privately);
+  const reviewer = ledger.reviewerAgent === undefined || ledger.reviewerAgent === "pre-push-reviewer" ? [] : ["", `Reviewed by ${ledger.reviewerAgent}, not the read-only pre-push-reviewer.`];
+  if (listed.length === 0) return section(...privately, ...reviewer);
   const lines = listed.map(
     (finding) => `- ${plainText(`${finding.path}:${finding.line}`)}: ${plainText(finding.summary)} Accepted: ${plainText(finding.reason ?? "")}`,
   );
-  return section("", "The local review raised these and they were accepted, not changed:", "", ...lines, ...privately);
+  return section("", "The local review raised these and they were accepted, not changed:", "", ...lines, ...privately, ...reviewer);
 }
 
 // Which lines of a Markdown text are inside a fenced code block (the fence
@@ -910,7 +918,7 @@ const USAGE = `Usage: scripts/review.sh <command>
                          the round before printed) the fixes since to <dir>/fixes.patch; print the key, then HEAD
   key                    print the ledger key of HEAD's diff against origin/main
   check [<base>]         the gate's check: exit 1 unless HEAD's diff was reviewed clean
-  record <file>          record a review from JSON ({ reviewedKey, reviewedHead, rounds, findings }); - reads stdin
+  record <file>          record a review from JSON ({ reviewedKey, reviewedHead, rounds, reviewerAgent, findings }); - reads stdin
   accept <id> <reason>   accept an open finding on HEAD's review
   report                 print HEAD's review report
   notes                  print the "## Review notes" section for the PR description

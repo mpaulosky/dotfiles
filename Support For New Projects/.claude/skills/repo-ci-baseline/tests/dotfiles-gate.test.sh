@@ -112,6 +112,7 @@ check "and it doesn't run test.sh" not called "test.sh"
 git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN"
 
 # The Sandcastle check runs when a file its tests read changes, not only under .sandcastle/.
+n=0
 for path in scripts/review.sh .claude/skills/pre-push-review/SKILL.md .claude/agents/pre-push-reviewer.md \
   "$SKILL_REL/template/owned/scripts/review.sh" "$SKILL_REL/template/owned/.claude/skill.md"; do
   n=$((${n:-0} + 1))

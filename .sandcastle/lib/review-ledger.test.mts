@@ -1355,6 +1355,29 @@ describe("latestLedger", () => {
 });
 
 describe("renderReport", () => {
+  it("says which agent reviewed, or that none was recorded", () => {
+    const named = recordReview(repo, mergeBase(repo), { ...reviewed(), rounds: 1, reviewerAgent: "general-purpose", findings: [] });
+    assert.equal(named.reviewerAgent, "general-purpose");
+    assert.match(renderReport(named), /reviewed by general-purpose\./);
+    assert.match(renderReport(record([finding()])), /reviewed by an unrecorded agent\./);
+  });
+
+  it("refuses a reviewerAgent that isn't an agent type name", () => {
+    for (const reviewerAgent of ["", "two words", "a|b", "x\ny", "-lead", "a".repeat(65)]) {
+      assert.throws(() => recordReview(repo, mergeBase(repo), { ...reviewed(), rounds: 1, reviewerAgent, findings: [] }), /agent type name/, reviewerAgent);
+    }
+  });
+
+  it("names a stand-in reviewer in the Review notes, but not the pre-push-reviewer", () => {
+    const accepted = (reviewerAgent: string, id: string) => {
+      recordReview(repo, mergeBase(repo), { ...reviewed(), rounds: 1, reviewerAgent, findings: [finding({ id, status: "open", test: null, reason: null, fix: "Do it.", severity: "warning" })] });
+      return renderReviewNotes(acceptFinding(repo, mergeBase(repo), id, "Fine."));
+    };
+
+    assert.match(accepted("general-purpose", "R1"), /Reviewed by general-purpose, not the read-only pre-push-reviewer\./);
+    assert.doesNotMatch(accepted("pre-push-reviewer", "R2"), /Reviewed by/);
+  });
+
   it("lists every finding with its status and its test or reason, with pipes escaped", () => {
     const ledger = record([finding({ summary: "a | b" }), finding({ id: "R2", status: "accepted", test: null, reason: "Spec." })], 2);
 

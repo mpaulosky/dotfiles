@@ -294,11 +294,11 @@ describe("the pre-push-review skill's repository", () => {
   // What is wrong with the gh commands on one line: the first must directly follow the slug read, a later one a GH_REPO="$repo".
   const ghChainProblems = (line: string): string[] => {
     const problems: string[] = [];
-    const first = line.search(/(^|[`(\s;&|"])gh [a-z]/) + (/^gh [a-z]/.test(line) ? 0 : 1);
+    const first = line.search(/(^|[^A-Za-z0-9_.-])gh [a-z]/) + (/^gh [a-z]/.test(line) ? 0 : 1);
     const at = line.indexOf(prefix);
     if (at < 0 || at + prefix.length - 3 !== first) problems.push("the first gh doesn't follow the slug read");
     const rest = line.slice(first + 3).replaceAll('GH_REPO="$repo" gh ', "@");
-    if (/(^|[`(\s;&|])gh [a-z]/.test(rest)) problems.push("a later gh has no GH_REPO");
+    if (/(^|[^A-Za-z0-9_.-])gh [a-z]/.test(rest)) problems.push("a later gh has no GH_REPO");
     return problems;
   };
 
@@ -312,7 +312,7 @@ describe("the pre-push-review skill's repository", () => {
 
   it("starts every gh command with that chain, or continues one that already read the slug", () => {
     // Each line that runs gh: the slug is read first, and the first gh on it follows that read directly.
-    const lines = skill.split("\n").filter((line) => /(^|[`(\s;&|])gh [a-z]/.test(line));
+    const lines = skill.split("\n").filter((line) => /(^|[^A-Za-z0-9_.-])gh [a-z]/.test(line));
 
     assert.ok(lines.length >= 8, "too few gh commands found");
     for (const line of lines) {
@@ -326,6 +326,7 @@ describe("the pre-push-review skill's repository", () => {
     assert.notDeepEqual(ghChainProblems("1. `gh repo view`"), []);
     assert.notDeepEqual(ghChainProblems(`1. \`gh repo view && ${prefix}pr edit 1\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh repo view\``), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && sh -c "gh pr edit 1"\``), []);
     assert.deepEqual(ghChainProblems(`1. \`${prefix}pr view 1\`, then read it through a pipe`), []);
     assert.notDeepEqual(ghChainProblems(`1. \`gh pr view 1 && ${prefix}pr edit 1\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh pr edit 1\``), []);

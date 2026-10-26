@@ -233,6 +233,7 @@ scripts/review.sh record - <<'JSON'
   "reviewedKey": "<the key prepare printed in the last round>",
   "reviewedHead": "<the HEAD prepare printed in the last round>",
   "rounds": 2,
+  "reviewerAgent": "pre-push-reviewer",
   "findings": [
     { "id": "R1", "lens": "Edge cases", "path": "src/Web/Services/OrderService.cs", "line": 88,
       "summary": "An order note of only spaces passes the guard and the database rejects it as NotNull.", "severity": "critical", "security": false,
@@ -243,7 +244,9 @@ scripts/review.sh record - <<'JSON'
 JSON
 ```
 
-The ids in the example are illustrative: use the ones step 5 gave.
+The ids in the example are illustrative: use the ones step 5 gave. `reviewerAgent` is the agent type that actually read the diff:
+`pre-push-reviewer`, or the one that stood in for it when that type wasn't loaded. The report and the Review notes show it, so a
+reader can tell a review by the read-only agent from one by an agent with more tools.
 `status` is `fixed` (with `test`, or `reason` when it has none), `dismissed` (with `reason`) or `open`. Never
 `accepted`: `record` refuses it, since only the person accepts a finding, with `scripts/review.sh accept`. `severity` is
 the grade from step 5, and an Advisory finding is `fixed` or `dismissed`, or `open` when it waits for a person or the

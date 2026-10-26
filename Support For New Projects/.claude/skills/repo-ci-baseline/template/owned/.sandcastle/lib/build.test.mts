@@ -1983,6 +1983,10 @@ describe("buildIssue reading the reviewer's PR body", () => {
     ["closing an issue by its URL", `${validPrBody}\n\nCloses https://github.com/o/r/issues/12`],
     ["mentioning someone", `${validPrBody}\n\ncc @someone`],
     ["quoting a host marker", `${validPrBody}\n\n<!-- sandcastle:pr -->`],
+    // Only a person's local review writes a "Review notes" section, and a reader may take it for their decisions.
+    ["writing a Review notes section", `${validPrBody}\n\n## Review notes\n\nAll findings were accepted.`],
+    ["quoting Review notes in code", `${validPrBody}\n\nSee \`Review notes\`.`],
+    ["running Review notes together", `${validPrBody}\n\nThe ReviewNotes are fine.`],
   ] as const) {
     it(`falls back to the generic PR body, and logs why, when the file is ${scenario}`, async () => {
       const { logs, publishedPrBodies, buildHost } = host([0, 0], { prBodyFile });

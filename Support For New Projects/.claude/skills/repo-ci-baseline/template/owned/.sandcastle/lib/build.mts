@@ -31,6 +31,7 @@ import type { Outcome } from "./report.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git } from "./shell.mts";
+import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
 
 // A conventional-commit prefix as scripts/check-pr-title.sh accepts it: a type,
@@ -841,6 +842,13 @@ async function buildMarkedIssue(
       // publicError also strips colour codes and URL credentials. Any change
       // means the file isn't safe to publish as written, so it isn't.
       problem = "holds a secret, a token shape or other text that isn't safe to publish";
+    } else if (visibleLetters(prBody).includes("reviewnotes")) {
+      // The local review's `## Review notes` are a person's acceptances
+      // (scripts/review.sh notes), which a reader such as Claude Review may take
+      // as decisions: text an agent wrote mustn't pass for them in any form, even
+      // quoted in code or run together in a name. A false refusal only costs the
+      // generic body.
+      problem = "holds the words Review notes, which only a person's local review writes";
     } else if (PR_BODY_CLOSING_REFERENCE.test(prBody) || PR_BODY_MENTION.test(prBody) || prBody.includes("<!--")) {
       problem = "closes an issue, mentions someone or quotes a host marker, which GitHub or the host would act on";
     }

@@ -360,7 +360,7 @@ git -C "$REPO" switch -q feature/1-x
 
 # The local review (scripts/gate.sh's "Local review" step) runs where the repo has
 # .sandcastle/lib/review-ledger.mts: it asks scripts/review.sh to check the merge
-# base, before the build. GATE_SKIP_REVIEW=1 (only that value) skips it, a repo
+# base, before the build. The hook drops GATE_SKIP_REVIEW, so no push skips it; a repo
 # without the ledger code has no review to check, and with no origin/main there is
 # nothing to diff against, so the push is refused rather than waved through.
 commit_on feature/12-local-review .sandcastle/lib/review-ledger.mts "// a placeholder: the stub below stands for the ledger"
@@ -379,8 +379,8 @@ FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-re
 expect "a failing review check refuses the push" refused any
 expect_log "a failing review check stops the gate before the build" not-ran 'dotnet build*'
 GATE_SKIP_REVIEW=1 FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
-expect "GATE_SKIP_REVIEW=1 skips the review check" allowed tests-ran
-expect_log "GATE_SKIP_REVIEW=1 doesn't call review.sh" not-ran 'review.sh*'
+expect "a push ignores GATE_SKIP_REVIEW=1, so the review check still refuses it" refused any
+expect_log "a push with GATE_SKIP_REVIEW=1 still calls review.sh" ran "review.sh check $(git -C "$REPO" rev-parse origin/main)"
 GATE_SKIP_REVIEW=true FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
 expect "GATE_SKIP_REVIEW with any other value doesn't skip it" refused any
 REVIEW_MAIN="$(git -C "$REPO" rev-parse origin/main)"

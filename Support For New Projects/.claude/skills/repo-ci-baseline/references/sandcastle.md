@@ -101,8 +101,24 @@ and the local review's files ([pre-push-review.md](pre-push-review.md)), and its
 - **dotfiles' own tests:** `lib/repo-config.test.mts` (dotfiles' per-repo values and root copies), `lib/template.test.mts` (type-checks the
   Template's `.sandcastle/` as Apply writes it and runs its Owned tests there), `lib/dockerfile.test.mts`, `lib/role-prompts.test.mts`,
   `lib/owned-paths.test.mts` (keeps `OWNED_PATHS` in `lib/review-ledger.mts` equal to `template/owned/`) and `main.test.mts`, which read dotfiles' own files.
-- **`.github/workflows/sandcastle*.yml`.** Sandcastle's Actions token can't push a workflow change, so each repo keeps its own.
-  To add the workflow to the Template later, file the issue with the `Sandcastle:local` label.
+- **Other `.github/workflows/sandcastle*.yml` files.** Only `sandcastle.yml` is the Template's (below); a repo's own extra Sandcastle workflow stays its own.
+
+## The workflow
+
+`.github/workflows/sandcastle.yml` is Owned ([ADR 0009](../docs/adr/0009-sandcastle-workflow-is-owned.md)): it runs the host unattended on a schedule and on the events that
+start a follow-up, and Sandcastle can't change it (its token has no Workflows permission), so a change comes from a Template PR and reaches the repos by re-Apply.
+Apply writes it, and `.github/ci/sandcastle-prepare.sh`, only into a repo that runs Sandcastle (it has a `.sandcastle/` folder, or is new).
+
+- **A repo opts in with the `SANDCASTLE_GH_TOKEN` secret** (a fine-grained PAT with Contents, Issues, Pull requests and Actions read and write, and no Workflows permission),
+  and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
+  locally gets a green run with a notice on every trigger, not a failure every two hours. With the token but no Claude credential the run fails.
+- **`.github/ci/sandcastle-prepare.sh` is the repo's own setup (Seed).** It runs on the runner after the checkout and before git holds the PAT, with none of the
+  workflow's secrets in its environment. The Seed does nothing. A .NET repo that mounts the `dotnet-*` skills puts here the step that fetches them from the dotfiles
+  repository at a pinned commit, as Blazor-Server's workflow did, since a hosted runner has no `~/.claude/skills`.
+- **The CI workflows it follows are listed by name** (`workflow_run` can't read a variable): `Build and Test Suite` (the Template's `ci.yml`),
+  `repo-ci-baseline Template` (the workflow that tests the Template, in dotfiles) and `Claude Review`. A name the repo lacks matches nothing.
+- **A repo with its own `sandcastle.yml`** (Blazor-Server, auth0-management-app) drops it from `NOT_OWNED_BASELINE_PATHS` in its re-Apply, moves anything repo-specific
+  into `sandcastle-prepare.sh`, and sets no repository variable the Template's workflow doesn't read.
 
 ## Migrating a repo
 
@@ -116,7 +132,7 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 3. Diff the repo's role prompts, `Dockerfile` and `package.json` against the Template's Seed files, and bring over what the repo lacks.
 4. Run `pnpm install`, then commit `pnpm-lock.yaml` with the change.
 5. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.
-6. Leave the Sandcastle workflows out of the re-Apply.
+6. Take the Template's `sandcastle.yml` and drop the repo's own from `NOT_OWNED_BASELINE_PATHS`; move its repo-specific steps into `.github/ci/sandcastle-prepare.sh` ([The workflow](#the-workflow)).
 7. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
    those out and keeps the lints (its `.sandcastle/check.sh`), and points the gate-fixer and follow-up roles' instructions at it.
 8. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/check.sh` for the step above), and list in `CHECK_PATHS` every place

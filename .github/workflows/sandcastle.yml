@@ -2,10 +2,12 @@
 name: Sandcastle
 
 # Runs the Sandcastle host (.sandcastle/main.mts) unattended: it works the
-# issues labelled Sandcastle and follows up on its own PRs. It's a port of
-# Blazor-Server's workflow, whose design is in Blazor-Server's
-# docs/plans/sandcastle-workflow.md ("Trigger and run environment") and
-# docs/adr/0002-unattended-sandcastle-on-a-hosted-runner.md.
+# issues labelled Sandcastle and follows up on its own PRs. This file is Owned
+# by the repo-ci-baseline Template (references/sandcastle.md, "The workflow"):
+# Apply overwrites it, and a repo that runs Sandcastle in Actions needs only the
+# SANDCASTLE_GH_TOKEN secret and a Claude credential. A repo without the token
+# skips every step, so a run there ends green; the repo's own setup goes in
+# .github/ci/sandcastle-prepare.sh.
 #
 # Every trigger runs the host code checked out from main, never the event's
 # ref. Events can't filter by label name, branch or reviewer, so the job's if:
@@ -14,7 +16,7 @@ name: Sandcastle
 #
 # GITHUB_TOKEN is read-only. Every write goes through SANDCASTLE_GH_TOKEN, the
 # owner's PAT, whose pushes start CI. It has no Workflows permission, so
-# Sandcastle can't change this file.
+# Sandcastle can't change this file: a change to it comes from a Template PR.
 "on":  # zizmor: ignore[dangerous-triggers] workflow_run runs this file as it is on main, and the job checks out main, never PR code.
   issues:
     types: [labeled, unlabeled]
@@ -22,14 +24,16 @@ name: Sandcastle
     types: [unlabeled]
   pull_request_review:
     types: [submitted]
-  # The name: of repo-ci-baseline.yml and of claude-review.yml: workflow_run
-  # matches workflow names, not file names. Claude Review posts its review with
+  # The name: of ci.yml, of the workflow that tests the Template itself and of
+  # claude-review.yml: workflow_run matches workflow names, not file names (and
+  # can't read a variable), so each CI workflow is listed here by name and a
+  # name the repo lacks matches nothing. Claude Review posts its review with
   # GITHUB_TOKEN, which starts no pull_request_review run, so its completion is
   # followed here instead, as PR Auto-Merge does, to start a follow-up pass on
   # its threads. Claude Review's workflow also completes, skipped, on every PR
   # without the review:claude label, so only a successful run counts.
   workflow_run:
-    workflows: ["repo-ci-baseline Template", "Claude Review"]
+    workflows: ["Build and Test Suite", "repo-ci-baseline Template", "Claude Review"]
     types: [completed]
   workflow_dispatch:
   # A backstop for blockers cleared by merges and PRs that fell behind main.
@@ -74,28 +78,44 @@ jobs:
           || startsWith(github.event.workflow_run.head_branch, 'hotfix/')))
 
     steps:
+      # A repo that doesn't run Sandcastle in Actions has no SANDCASTLE_GH_TOKEN:
+      # every later step is skipped and the run ends green, with a notice saying
+      # why. With the token, a missing Claude credential still fails the run.
       - name: Check the secrets
+        id: secrets
         env:
           SANDCASTLE_GH_TOKEN: ${{ secrets.SANDCASTLE_GH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          missing=0
           if [ -z "$SANDCASTLE_GH_TOKEN" ]; then
-            echo "::error::The SANDCASTLE_GH_TOKEN secret isn't set. Add a fine-grained PAT for this repository with Contents, Issues, Pull requests and Actions read and write, and no Workflows permission."
-            missing=1
+            echo "::notice::The SANDCASTLE_GH_TOKEN secret isn't set, so this repository doesn't run Sandcastle in Actions." \
+              "To start, add a fine-grained PAT for this repository with Contents, Issues, Pull requests and Actions" \
+              "read and write and no Workflows permission, as that secret."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
             echo "::error::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set. Add the output of claude setup-token as CLAUDE_CODE_OAUTH_TOKEN."
-            missing=1
+            exit 1
           fi
-          exit "$missing"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
 
       - name: Check out main
+        if: steps.secrets.outputs.enabled == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           persist-credentials: false
+
+      # The repo's own setup for the run (extra tools, the skills its prompts
+      # name), in .github/ci/sandcastle-prepare.sh, a Seed file that does
+      # nothing until the repo fills it. It runs before the credential helper
+      # below is set up, so nothing it fetches is sent the PAT, and it sees
+      # only the secrets this step names (none).
+      - name: Prepare the run
+        if: steps.secrets.outputs.enabled == 'true'
+        run: .github/ci/sandcastle-prepare.sh
 
       # The host's git fetches and pushes authenticate through gh's credential
       # helper in the runner's global config, which reads GH_TOKEN from the
@@ -103,6 +123,7 @@ jobs:
       # gives the sandbox the host's git identity for its commits, so set the
       # PAT owner's.
       - name: Set up git for the PAT
+        if: steps.secrets.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.SANDCASTLE_GH_TOKEN }}
         run: |
@@ -113,22 +134,26 @@ jobs:
           git config --global user.email "${id}+${login}@users.noreply.github.com"
 
       - name: Setup pnpm
+        if: steps.secrets.outputs.enabled == 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Setup Node.js
+        if: steps.secrets.outputs.enabled == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
       - name: Install dependencies
+        if: steps.secrets.outputs.enabled == 'true'
         run: pnpm install --frozen-lockfile
 
       # Every sandbox runs in this image, and a fresh runner has none: without
-      # it every intake and build fails with "Image 'sandcastle:dotfiles'
+      # it every intake and build fails with "Image 'sandcastle:<repo>'
       # not found locally" while the job still ends green. Sandcastle names the
       # image after the checkout's folder and builds .sandcastle/Dockerfile, so
       # the defaults match what the host looks up.
       - name: Build the sandbox image
+        if: steps.secrets.outputs.enabled == 'true'
         run: pnpm exec sandcastle docker build-image
 
       # Sandcastle passes into the sandbox only the keys .sandcastle/.env
@@ -136,6 +161,7 @@ jobs:
       # is git-ignored, so it's written here with the key and no value: the
       # secret stays in the environment. Never GH_TOKEN, which the host refuses.
       - name: Run Sandcastle
+        if: steps.secrets.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ secrets.SANDCASTLE_GH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -156,7 +182,7 @@ jobs:
       # so a transcript that printed the sandbox's Claude credential would
       # publish it.
       - name: Upload the run report
-        if: always()
+        if: always() && steps.secrets.outputs.enabled == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sandcastle-report
@@ -171,6 +197,7 @@ jobs:
       # comments, so a run that handed anything back ends red: Actions emails
       # the person the run is attributed to.
       - name: Fail on hand-backs
+        if: steps.secrets.outputs.enabled == 'true'
         run: |
           handbacks=.sandcastle/logs/handbacks.json
           if [ ! -f "$handbacks" ]; then

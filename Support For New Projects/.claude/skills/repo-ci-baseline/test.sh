@@ -208,6 +208,7 @@ step "dotfiles' copies of Template files"
 # its own: it runs this script. Sandcastle's lib/repo-config.mts reads this list.
 dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
 for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.yml .github/workflows/pr-review-submitted.yml \
+  .github/workflows/sandcastle.yml \
   .github/scripts/post_claude_review.py \
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh \
   scripts/review.sh .claude/agents/pre-push-reviewer.md .claude/skills/pre-push-review/SKILL.md \
@@ -241,6 +242,31 @@ while IFS= read -r rel; do
   cmp -s "$owned/.sandcastle/$rel" "$dotfiles/.sandcastle/$rel" \
     || fail "dotfiles' .sandcastle/$rel differs from the Template's; copy it over"
 done < <(cd "$owned/.sandcastle" && find . -type f -printf '%P\n' | sort)
+
+step "Sandcastle workflow"
+# A repo without the SANDCASTLE_GH_TOKEN secret doesn't run Sandcastle in Actions, and its cron would fail every two hours if the workflow
+# didn't skip: the first step reports whether the secret is set, and every later step waits for it. The repo's own setup runs before the PAT
+# is wired into git, and the CI workflow names it follows include each Baseline repo's.
+python3 -I - "$owned/.github/workflows/sandcastle.yml" <<'PY' || fail "the Owned sandcastle.yml must skip every step but the secret check when SANDCASTLE_GH_TOKEN is unset"
+import sys, yaml
+doc = yaml.safe_load(open(sys.argv[1]))
+steps = doc["jobs"]["sandcastle"]["steps"]
+gate = "steps.secrets.outputs.enabled == 'true'"
+names = [step["name"] for step in steps]
+assert steps[0]["name"] == "Check the secrets" and steps[0]["id"] == "secrets", "the first step must be the secret check, with id secrets"
+for step in steps[1:]:
+    assert gate in step.get("if", ""), f"step '{step['name']}' doesn't wait for the secret check"
+assert names.index("Prepare the run") < names.index("Set up git for the PAT"), "the repo's own setup must run before git holds the PAT"
+assert steps[names.index("Prepare the run")]["run"] == ".github/ci/sandcastle-prepare.sh"
+workflows = doc["on"]["workflow_run"]["workflows"]
+for name in ("Build and Test Suite", "repo-ci-baseline Template", "Claude Review"):
+    assert name in workflows, f"workflow_run doesn't follow {name}"
+PY
+[[ -x "$seed/.github/ci/sandcastle-prepare.sh" ]] || fail "the Seed .github/ci/sandcastle-prepare.sh must be executable"
+if grep -qE 'sandcastle:dotfiles|Blazor-Server|dotfiles' "$owned/.github/workflows/sandcastle.yml"; then
+  grep -nE 'sandcastle:dotfiles|Blazor-Server|dotfiles' "$owned/.github/workflows/sandcastle.yml"
+  fail "the Owned sandcastle.yml names a repo; it carries no per-repo values"
+fi
 
 step "Seed Sandcastle files"
 # Written from dotfiles' copies, so none of dotfiles' own text may stay behind.

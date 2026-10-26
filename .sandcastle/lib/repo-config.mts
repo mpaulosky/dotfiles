@@ -105,7 +105,6 @@ export const REPO_SLUG = "mpaulosky/dotfiles";
 // Template's: lib/owned-paths.test.mts keeps this list exactly them.
 export const NOT_OWNED_BASELINE_PATHS: readonly string[] = [
   ".github/workflows/repo-ci-baseline.yml",
-  ".github/workflows/sandcastle.yml",
   ".gitignore",
   ".markdownlint-cli2.jsonc",
   ".sandcastle/lib/dockerfile.test.mts",
@@ -124,6 +123,7 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".github/workflows/claude-review.yml",
   ".github/workflows/pr-automerge.yml",
   ".github/workflows/pr-review-submitted.yml",
+  ".github/workflows/sandcastle.yml",
   ".github/scripts/post_claude_review.py",
   ".github/hooks/pre-commit",
   ".github/hooks/pre-push",

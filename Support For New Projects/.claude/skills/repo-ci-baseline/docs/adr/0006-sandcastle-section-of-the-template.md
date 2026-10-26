@@ -46,4 +46,4 @@ The Template now carries one, split by the same rule as the rest of it (ADR 0001
 - A repo moves onto the section by re-Apply, then Adapt: the Owned files arrive as drift to review, and each Seed file it already has is diffed
   against the Template's ([sandcastle.md](../../references/sandcastle.md#migrating-a-repo)).
 - Superseded by ADR 0007: a new repo gets the config and prompts but not the code: until `lib/` is in the Template, `main.mts` and the rest of `lib/` are copied by hand.
-- The Sandcastle workflows (`sandcastle*.yml`) stay each repo's own, since Sandcastle's Actions token can't push workflow changes.
+- Superseded by ADR 0009 for `sandcastle.yml`: the Sandcastle workflows stayed each repo's own, since Sandcastle's Actions token can't push workflow changes.

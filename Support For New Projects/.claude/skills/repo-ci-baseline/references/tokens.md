@@ -111,7 +111,7 @@ On a long watch during a busy round, raise `--interval` (say `--interval 300`), 
 
 ## Outside the Template
 
-Sandcastle's `SANDCASTLE_GH_TOKEN` is listed here but not split. `sandcastle.yml` is dotfiles' own (and Blazor-Server's), not a Template workflow.
+Sandcastle's `SANDCASTLE_GH_TOKEN` is listed here but not split. `sandcastle.yml` is an Owned Template workflow ([ADR 0009](../docs/adr/0009-sandcastle-workflow-is-owned.md)).
 Every host `gh` call Sandcastle makes, reads and writes alike, goes through its one `GH_TOKEN`, across `.sandcastle/lib/github.mts`, `gate.mts`, `intake.mts` and the rest,
 so splitting them means threading a second token through all of those call sites. A local run has only the owner's `gh` login anyway.
 Splitting its reads onto the workflow's `GITHUB_TOKEN` is a possible follow-up, next to the GitHub App.

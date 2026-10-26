@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { uiEnabled } from "./agents.mts";
+import { SANDBOX_SKILLS } from "./repo-config.mts";
 import { makeAgentSandbox, skillMounts, withCreateMounts, type SkillMount } from "./skills.mts";
 
 function skill(dir: string): string {
@@ -258,4 +260,56 @@ describe("makeAgentSandbox", () => {
 
     assert.deepEqual(stub.logs, []);
   });
+});
+
+// The skills a role prompt's "# SKILLS" section lists, as `- \`name\`: ...` bullets.
+function listedSkills(prompt: string): string[] {
+  const listed: string[] = [];
+  let inSection = false;
+  for (const line of prompt.split("\n")) {
+    if (/^# /.test(line)) inSection = line === "# SKILLS";
+    else if (inSection) {
+      const name = /^- `([^`]+)`:/.exec(line)?.[1];
+      if (name !== undefined) listed.push(name);
+    }
+  }
+  return listed;
+}
+
+describe("listedSkills", () => {
+  it("reads the bullets of the SKILLS section only", () => {
+    const prompt = "# TASK\n\n- `not-a-skill`: x\n\n# SKILLS\n\nIntro.\n\n- `dotnet-tdd`: a\n- `dotnet-xunit`: b\n\n# EXECUTION\n\n- `also-not`: y\n";
+
+    assert.deepEqual(listedSkills(prompt), ["dotnet-tdd", "dotnet-xunit"]);
+  });
+
+  it("finds none in a prompt without the section", () => {
+    assert.deepEqual(listedSkills("# TASK\n\n- `dotnet-tdd`: a\n"), []);
+  });
+});
+
+// SANDBOX_SKILLS mounts the skills; the prompts tell the agent to use them. The two must agree, or a prompt promises a skill the
+// sandbox doesn't have, or the sandbox mounts one no prompt mentions.
+describe("role prompts and SANDBOX_SKILLS", () => {
+  const rolesDir = new URL("../roles/", import.meta.url);
+  const prompt = (role: string) => readFileSync(new URL(`${role}.md`, rolesDir), "utf8");
+  const roles = readdirSync(rolesDir).filter((file) => file.endsWith(".md")).map((file) => file.slice(0, -3));
+
+  it("lists no skill that SANDBOX_SKILLS doesn't mount, in any role prompt", () => {
+    for (const role of roles) {
+      const unmounted = listedSkills(prompt(role)).filter((name) => !SANDBOX_SKILLS.includes(name));
+
+      assert.deepEqual(unmounted, [], `roles/${role}.md lists skills lib/repo-config.mts doesn't mount`);
+    }
+  });
+
+  // The roles that write code and tests each list every mounted skill; the ui role only in a repo that opted into it.
+  for (const role of ["tester", "backend", "ui"]) {
+    it(`lists every mounted skill in the ${role} prompt`, { skip: role === "ui" && !uiEnabled() && "the repo hasn't opted into the ui role" }, () => {
+      const listed = listedSkills(prompt(role));
+      const missing = SANDBOX_SKILLS.filter((name) => !listed.includes(name));
+
+      assert.deepEqual(missing, [], `roles/${role}.md doesn't list skills lib/repo-config.mts mounts`);
+    });
+  }
 });

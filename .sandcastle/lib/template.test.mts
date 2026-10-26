@@ -125,6 +125,43 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     }
   });
 
+  // skills.test.mts checks the role prompts against SANDBOX_SKILLS, which is empty under the Seed's values and so passes without
+  // checking anything. Here a skill is mounted, to show it fails when a prompt lacks it or lists one that isn't mounted.
+  it("fails skills.test.mts when a role prompt and SANDBOX_SKILLS disagree, and passes when they agree", { timeout: 120_000 }, () => {
+    const config = join(sandcastle, "lib/repo-config.mts");
+    const tester = join(sandcastle, "roles/tester.md");
+    const backend = join(sandcastle, "roles/backend.md");
+    const originals = new Map([config, tester, backend].map((file) => [file, readFileSync(file, "utf8")]));
+    const mounted = originals.get(config)!.replace(/^(export const SANDBOX_SKILLS: readonly string\[\] = )\[\];$/m, '$1["dotnet-tdd"];');
+    assert.notEqual(mounted, originals.get(config), "the Seed's repo-config.mts has no empty SANDBOX_SKILLS");
+    const section = (...names: string[]) => `\n# SKILLS\n\n${names.map((name) => `- \`${name}\`: x\n`).join("")}`;
+    const run = () =>
+      spawnSync(join(root, "node_modules/.bin/tsx"), ["--test", "--test-reporter=spec", ".sandcastle/lib/skills.test.mts"], {
+        cwd: scratch,
+        encoding: "utf8",
+        env: childEnv(),
+      });
+
+    try {
+      writeFileSync(config, mounted);
+
+      const unlisted = run();
+      assert.notEqual(unlisted.status, 0, "the check should fail when the prompts omit a mounted skill");
+      assert.match(unlisted.stdout, /✖[^\n]*lists every mounted skill in the tester prompt/);
+
+      for (const file of [tester, backend]) writeFileSync(file, `${originals.get(file)}${section("dotnet-tdd")}`);
+      const agreeing = run();
+      assert.equal(agreeing.status, 0, `${agreeing.stdout}${agreeing.stderr}`);
+
+      writeFileSync(tester, `${originals.get(tester)}${section("dotnet-tdd", "dotnet-nope")}`);
+      const unmounted = run();
+      assert.notEqual(unmounted.status, 0, "the check should fail when a prompt lists a skill that isn't mounted");
+      assert.match(unmounted.stdout, /✖[^\n]*lists no skill that SANDBOX_SKILLS doesn't mount/);
+    } finally {
+      for (const [file, text] of originals) writeFileSync(file, text);
+    }
+  });
+
   it("passes its Owned tests with the Seed's values", { timeout: 120_000 }, () => {
     const tests = filesUnder(sandcastle)
       .filter((file) => file.endsWith(".test.mts"))

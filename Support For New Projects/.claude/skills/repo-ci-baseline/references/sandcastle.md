@@ -62,6 +62,33 @@ The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-pr
 With it, the role runs after the backend developer,
 and `backend.md`'s `{{UI_DEVELOPER}}` tells the backend developer to leave the Blazor components and pages to it.
 
+**Skills.** `SANDBOX_SKILLS` in `lib/repo-config.mts` names the host skills the sandbox mounts read-only from `~/.claude/skills` (a name the host lacks is logged and skipped).
+It is empty in the Seed: a Seed prompt can't promise a skill a host may lack, and not every repo is .NET. A .NET repo opts in by listing the skills there:
+
+```ts
+export const SANDBOX_SKILLS: readonly string[] = [
+  "dotnet-tdd", "dotnet-add-testing", "dotnet-xunit", "dotnet-testing-strategy", "dotnet-project-analysis", "dotnet-inspect",
+];
+```
+
+and by adding this section to the `tester`, `backend` and `ui` prompts (before `# EXECUTION`), one bullet for each skill:
+
+```markdown
+# SKILLS
+
+For .NET work, these skills are mounted into the sandbox from the host's `~/.claude/skills/`. Use them where they apply:
+
+- `dotnet-tdd`: the red-green-refactor loop with xUnit v3
+- `dotnet-add-testing`: scaffolding a new test project
+- `dotnet-xunit`: xUnit v3 conventions
+- `dotnet-testing-strategy`: choosing unit, integration, or E2E tests
+- `dotnet-project-analysis`: solution, project, and Central Package Management wiring
+- `dotnet-inspect`: checking a NuGet package's API surface
+```
+
+Other roles may list the skills they need the same way. `lib/skills.test.mts` keeps the two in step: no prompt lists a skill that isn't mounted, and the `tester`, `backend`
+and (when opted in) `ui` prompts each list every mounted skill.
+
 ## When Apply adds it
 
 Only to a repo that has a `.sandcastle/` folder, or no commits yet.

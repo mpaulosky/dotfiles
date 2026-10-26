@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { backendPromptArgs } from "./prompts.mts";
-import { SANDBOX_SKILLS } from "./repo-config.mts";
 
 const sandcastleFile = (path: string) => new URL(`../${path}`, import.meta.url);
 const read = (path: string) => readFileSync(sandcastleFile(path), "utf8");
@@ -18,15 +17,7 @@ describe("developer role prompts", () => {
     });
   }
 
-  for (const role of ["tester", "backend"]) {
-    it(`lists every skill mounted into the sandbox for the ${role}`, () => {
-      const prompt = read(`roles/${role}.md`);
-
-      for (const skill of SANDBOX_SKILLS) {
-        assert.match(prompt, new RegExp(`^- \`${skill}\`:`, "m"));
-      }
-    });
-  }
+  // lib/skills.test.mts (Owned) checks the prompts against SANDBOX_SKILLS.
 });
 
 // Sandcastle builds dotfiles' Template (JavaScript, Python and shell, each with

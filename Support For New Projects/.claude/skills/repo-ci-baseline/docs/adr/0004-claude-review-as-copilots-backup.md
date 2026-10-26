@@ -112,7 +112,7 @@ It also replays three ordinary merged PRs to read for noise. Required findings c
   Copilot is still the first reviewer, and a Claude-only landing is still a weaker review than one by both.
 - **The benchmark is close to the workflow, not identical.** It runs the local `claude`, not the version the pinned action installs.
   Results files record the version from `noise-v2-opus-high` on (2.1.293 there, 2.1.294 for the v3 and v4 runs); the earlier files predate that, and the CLI updated during these runs.
-- **Cost (Opus):** about $1.20 to $1.70 a review uncapped, instead of $0.19 at API prices; about $0.40 to $1.70 under the turn cap with context pieces.
+- **Cost (Opus):** about $1.20 to $1.70 a review uncapped, instead of $0.19 for Sonnet at medium effort at API prices; about $0.40 to $1.70 under the turn cap with context pieces.
   That is acceptable, because the backup only runs while a PR carries `review:claude`.
   In CI, though, the review runs on a subscription token (`claude setup-token`), so it uses the plan's allowance for the model the workflow names (Opus until the move to
   Sonnet), and the plan has to include that model in Claude Code.
@@ -143,9 +143,9 @@ so a second turn of reads leaves none for the answer.
   - With the diff split into pieces (below) a review reads more files by design: on Blazor-Server#190 it read 14 in its one turn and reported 16.
     So the cap is now 30, and the prompt allows at most 24 Reads (about 26 reported). At 30, a review that ignored the prompt could make up to 30 round-trips,
     so `--max-budget-usd 3` caps what one review can spend instead.
-- **Cost under the cap: about $0.40 to $1.70 a review with context pieces**, against about $1.70 uncapped; it was $0.30 to $1.10 before them.
+- **Cost under the cap (Opus): about $0.40 to $1.70 a review with context pieces**, against about $1.70 uncapped; it was $0.30 to $1.10 before them.
   On the bench: IssueTracker#197 $0.38, IssueManager#249 $0.77, Articles#298 $1.39 to $1.70.
-- **Recall under the cap: 2 of 7 on the split diff alone, and 2, 4 and 4 of 7 with context pieces, against 3 to 4 uncapped.**
+- **Recall under the cap (Opus): 2 of 7 on the split diff alone, and 2, 4 and 4 of 7 with context pieces, against 3 to 4 uncapped.**
   - On the split diff alone (`bench/results/20261017T115004-capped-split-diff-recall-opus-high.json`, Claude Code 2.1.302),
     each review made one turn of 5 Reads, well under the 24 the prompt allows, and caught findings 3 and 4 on 4b90c96 only.
   - Asking for all 24 Reads in the prompt took it to 6 or 7 and changed nothing (`20261017T121258-full-budget-recall-opus-high.json`, 2 of 7):

@@ -1823,3 +1823,58 @@ def test_a_reference_definition_keeps_its_label_and_title_as_written(text, expec
 )
 def test_an_autolink_the_sanitizer_escapes_is_scanned_as_text(body, expected):
     assert rp.sanitize_markdown(body) == expected
+
+
+def test_list_reads_a_record_whose_text_holds_unicode_line_separators(monkeypatch):
+    # jq's @json leaves U+2028 and U+2029 unescaped, and str.splitlines() splits on both.
+    records = [{"filename": "a.md", "patch": "x\u2028y\u2029z"}, {"filename": "b.md", "patch": "plain"}]
+    output = "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records)
+    github = rp.GitHub(REPO)
+    monkeypatch.setattr(github, "_api", lambda path, jq=None: output)
+
+    assert github.files(42) == records
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Fix a\u2028b\r\n\nBody line", "Fix a\u2028b"),
+        ("Fix a\u2029b\nBody", "Fix a\u2029b"),
+        ("Fix\r# Heading", "Fix"),  # a lone CR is a Markdown line ending
+        ("Fix\rBody", "Fix"),
+        ("Fix\r```\rmore", "Fix"),
+        ("Fix\r[x]: y", "Fix"),
+    ],
+)
+def test_commit_subject_ends_at_markdowns_line_endings_and_keeps_other_separators(message, expected):
+    assert rp.commit_subject({"commit": {"message": message}}) == expected
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_a_subject_with_a_unicode_separator_renders_as_one_list_item(separator):
+    commits = [{"sha": "abc1234def", "commit": {"message": f"Fix a{separator}b\n\nBody"}}]
+
+    assert rp.render_commits(commits).split("\n")[2] == f"- Fix a{separator}b (`abc1234`)"
+
+
+def test_a_subject_with_a_lone_cr_renders_only_the_part_before_it():
+    commits = [{"sha": "abc1234def", "commit": {"message": "Fix\r# Heading"}}]
+
+    assert rp.render_commits(commits).split("\n")[2] == "- Fix (`abc1234`)"
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_blog_index_keeps_a_row_whose_title_holds_a_unicode_separator(tmp_path, separator):
+    blog_dir = make_repo(tmp_path) / "docs" / "blogs"
+    first, second = "2026-09-20-pr-7-fix-a.md", "2026-09-24-pr-8-feat-next.md"
+    for name in (first, second):
+        (blog_dir / name).write_text("post\n", encoding="utf-8")
+    row = f"| 2026-09-20 | [fix: A{separator}B]({first}) | release,automation |"
+
+    rp.update_blog_index(blog_dir, "2026-09-20", f"fix: A{separator}B", first)
+    rp.update_blog_index(blog_dir, "2026-09-24", "feat: Next", second)
+
+    index = (blog_dir / "README.md").read_text(encoding="utf-8")
+    assert sum(f"({first})" in line for line in index.split("\n")) == 1
+    assert row in index.split("\n")
+

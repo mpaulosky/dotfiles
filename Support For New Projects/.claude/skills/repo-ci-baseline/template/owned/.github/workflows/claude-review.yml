@@ -1699,8 +1699,11 @@ jobs:
             in which situation, then how to fix it. When the fix replaces the commented line
             with one different line, also give that line as a GitHub suggestion: a fenced block
             whose info string is suggestion and whose only content is the line's new text,
-            exactly as it should read. Give a suggestion only then, never for a change to
-            several lines or to a different line, and describe the fix in words otherwise.
+            exactly as it should read in the file: without the line number or the diff's
+            leading + or space, and with the line's own indentation. Give one suggestion at
+            most, only then, never for a change to several lines or to a different line, and
+            describe the fix in words otherwise. The posting step keeps a suggestion only when
+            it is one block of one line.
           claude_args: >-
             --model claude-sonnet-5-5
             --effort high

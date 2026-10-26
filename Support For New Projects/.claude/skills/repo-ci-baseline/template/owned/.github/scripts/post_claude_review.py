@@ -37,6 +37,12 @@ starts with MARKER: the review is posted as github-actions[bot], and the
 marker is how PR Auto-Merge and the skill's landing decision tell it apart
 from anything else posted under that login.
 
+A comment may carry one GitHub suggestion, a fenced block the reader applies to the commented
+line with one click, and only a single line (vet_suggestions): any other is turned into a
+plain text fence. So is every suggestion in a comment moved to the nearest diff line, which
+would replace the wrong line, and in a body finding, where none can be applied. A body
+finding is indented under its bullet so its paragraphs stay with it.
+
 Standard library only, like release_post.py; the gh CLI does the rest.
 """
 
@@ -72,9 +78,13 @@ CREDENTIAL = re.compile(
 )
 REDACTED = "[redacted]"
 
-# A fence whose info string is `suggestion`: GitHub shows its content as a change the reader can
-# apply with one click to the line the comment sits on.
-SUGGESTION_FENCE = re.compile(r"(?mi)^([ \t]{0,3}(?:`{3,}|~{3,}))[ \t]*suggestion\b")
+# A fence whose info string starts with `suggestion`, anywhere in a body (after a list or quote
+# marker, or a lone CR, too): GitHub shows its content as a change the reader can apply with
+# one click to the line the comment sits on, and the legacy `suggestion:-1+1` form changes more.
+SUGGESTION_FENCE = re.compile(r"(?i)(`{3,}|~{3,})[ \t]*suggestion\b")
+# The one form a comment may keep: a fence on its own lines whose info string is exactly
+# `suggestion`, holding one non-empty line.
+ONE_LINE_SUGGESTION = re.compile(r"(?m)^(`{3,}|~{3,})suggestion[ \t]*\n([^\n\r]*\S[^\n\r]*)\n\1[ \t]*$")
 
 
 class MalformedFindings(ValueError):
@@ -180,6 +190,22 @@ def defuse_suggestions(body):
     return SUGGESTION_FENCE.sub(r"\1text", body)
 
 
+def vet_suggestions(body):
+    """The body as it is when it holds no suggestion, or exactly one well-formed single-line suggestion.
+
+    Any other suggestion (several, several lines, the multi-line form, text redacted from a
+    credential) is defused: the prompt asks for one line only, but a suggestion is applied with one
+    click and what the model writes comes from a PR it read, so the script holds the rule.
+    """
+    fences = SUGGESTION_FENCE.findall(body)
+    if not fences:
+        return body
+    block = ONE_LINE_SUGGESTION.search(body)
+    if len(fences) == 1 and block and REDACTED not in block.group(2):
+        return body
+    return defuse_suggestions(body)
+
+
 def build_review(summary, findings, commentable, head, line_count=lambda path: None):
     """The review to post: inline comments for findings on the diff, the rest in the body.
 
@@ -191,7 +217,7 @@ def build_review(summary, findings, commentable, head, line_count=lambda path: N
         path, line, body = finding["path"], finding["line"], finding["body"]
         lines = commentable.get(path, ())
         if line in lines:
-            comments.append({"path": path, "line": line, "side": "RIGHT", "body": body})
+            comments.append({"path": path, "line": line, "side": "RIGHT", "body": vet_suggestions(body)})
         elif lines and (line < 1 or (length := line_count(path)) is not None and line > length):
             # Not a line of the file: Claude got the number wrong.
             nearest = min(lines, key=lambda n: (abs(n - line), n))

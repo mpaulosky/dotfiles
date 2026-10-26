@@ -374,9 +374,17 @@ rules, and a delta would need the same rules applied to a second diff, so it is 
 
 The owner found Copilot's reviews easier to read than Claude's one dense paragraph, so the prompt asks for the same shape: a summary in short Markdown sections
 (Overview, a Changes table of file and what changed, Advisory, Not reviewed) and findings whose body starts with a bold title, then what goes wrong and the fix.
-The model's answer is still the schema's `summary` string and each finding's `body` string, so the posting script and the checks that hold a merge don't change.
+The model's answer is still the schema's `summary` string and each finding's `body` string, so the schema and the checks that hold a merge don't change.
+The posting script changes only in how it handles suggestions, below, and in indenting an off-diff finding's body under its bullet so its paragraphs stay with it.
 
 A finding may carry a GitHub `suggestion` block, which a reader applies to the commented line with one click, only when the fix replaces that one line.
-Two things keep that safe. When Claude cites a line that isn't in the file, `post_claude_review.py` puts the comment on the nearest diff line and turns the suggestion fence
-into plain text, because applying it would change the wrong line. And a suggestion is text the model wrote from a PR it read, so the reader still has to read it before applying it.
-This changes only the prompt's formatting instructions, so the benchmark's recall figures were not rerun for it.
+That is the one place this review's text can change the PR's branch, so the script enforces the rule and the prompt only asks for it:
+
+- A comment keeps a suggestion only when it holds exactly one block, whose info string is exactly `suggestion` and whose content is one non-empty line with no redaction marker
+  (`vet_suggestions`). A suggestion with several lines, the `suggestion:-1+1` form, several blocks or a fence that isn't on its own lines is turned into a plain text fence.
+- A comment Claude cited at a line that isn't in the file goes on the nearest diff line, and a finding outside the diff goes in the review body: the first would replace the
+  wrong line and the second can't be applied, so both lose their suggestions (`defuse_suggestions`).
+- A suggestion changes only the PR's own branch, and only when a person clicks it. It is still text the model wrote from a PR it read, so a diff that steers the model
+  can steer the suggestion, which the reader has to read before applying: an accepted limit, the same as for the review text.
+
+This changes the prompt's formatting instructions and the script's handling of suggestions, so the benchmark's recall figures were not rerun for it.

@@ -175,6 +175,72 @@ def test_defuse_suggestions_changes_only_suggestion_fences(body, expected):
     assert pcr.defuse_suggestions(body) == expected
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "> ```suggestion\nx\n> ```",
+        "- ```suggestion\n  x\n  ```",
+        "a\r```suggestion\nx\n```",
+        "    ```suggestion\nx\n```",
+        "```suggestion foo\nx\n```",
+        "```suggestion:-1+1\nx\ny\n```",
+        "````\n```suggestion\nx\n```\n````",
+        "```suggestion\r\nx\r\n```",
+    ],
+)
+def test_defuse_suggestions_catches_every_form_a_fence_can_take(body):
+    assert not pcr.SUGGESTION_FENCE.search(pcr.defuse_suggestions(body))
+
+
+def test_a_suggestion_fence_after_a_quote_marker_is_defused_to_text():
+    assert pcr.defuse_suggestions("> ```suggestion\nx") == "> ```text\nx"
+
+
+GOOD = "**T**\n\nWhy.\n\n```suggestion\n    value = 1\n```"
+
+
+@pytest.mark.parametrize("body", ["No suggestion here.", GOOD, GOOD.replace("```", "~~~"), "```python\nsuggestion = 1\n```"])
+def test_vet_suggestions_keeps_no_suggestion_or_one_good_line(body):
+    assert pcr.vet_suggestions(body) == body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "```suggestion\na\nb\n```",  # two lines
+        "```suggestion\n\n```",  # nothing
+        "```suggestion\n   \n```",  # blank
+        "```suggestion:-1+1\nx\n```",  # the multi-line form
+        "```suggestion\nx\n```\n\n```suggestion\ny\n```",  # two blocks
+        "```suggestion\ntoken = [redacted]\n```",  # a click would write the redaction
+        "``` suggestion\nx\n```",  # not exactly the info string
+        "- ```suggestion\n  x\n  ```",  # not on its own lines
+        "```suggestion\nx\r\n```",  # a lone CR in the block
+    ],
+)
+def test_vet_suggestions_defuses_anything_but_one_good_line(body):
+    vetted = pcr.vet_suggestions(body)
+
+    assert vetted != body
+    assert not pcr.SUGGESTION_FENCE.search(vetted)
+
+
+def test_an_on_diff_comment_goes_through_vet_suggestions():
+    body = "**T**\n\n```suggestion\na\nb\n```"
+    _, review = run(findings_json(("src/app.py", 22, body))).posted[0]
+
+    assert "```suggestion" not in review["comments"][0]["body"]
+    assert "```text\na\nb\n```" in review["comments"][0]["body"]
+
+
+def test_a_finding_off_the_diff_keeps_a_table_and_a_list_under_its_bullet():
+    body = "**T**\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n- one\n- two"
+    _, review = run(findings_json(("src/app.py", 10, body))).posted[0]
+
+    for row in ("  | a | b |", "  | - | - |", "  | 1 | 2 |", "  - one", "  - two"):
+        assert row in review["body"].split("\n")
+
+
 def test_a_finding_off_the_diff_keeps_its_paragraphs_under_its_bullet_and_loses_its_suggestion():
     body = "**Title**\n\nWhat goes wrong.\n\n```suggestion\nx = 1\n```"
     _, review = run(findings_json(("src/app.py", 10, body))).posted[0]

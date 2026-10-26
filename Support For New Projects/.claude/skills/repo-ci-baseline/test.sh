@@ -101,7 +101,7 @@ shell_files=(
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
   "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh" "$owned/scripts/review.sh"
-  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.sandcastle/check.sh"
+  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.github/ci/sandcastle-prepare.sh" "$seed/.sandcastle/check.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )
@@ -203,7 +203,7 @@ fi
 
 step "dotfiles' copies of Template files"
 # dotfiles isn't a Baseline repo, so it carries Claude Review, PR Auto-Merge,
-# PR Review Submitted, the git hooks and Sandcastle's Owned files as copies of
+# PR Review Submitted, the Sandcastle workflow, the git hooks and Sandcastle's Owned files as copies of
 # the Template's files, which must not drift from them. Its scripts/gate.sh is
 # its own: it runs this script. Sandcastle's lib/repo-config.mts reads this list.
 dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
@@ -246,22 +246,48 @@ done < <(cd "$owned/.sandcastle" && find . -type f -printf '%P\n' | sort)
 step "Sandcastle workflow"
 # A repo without the SANDCASTLE_GH_TOKEN secret doesn't run Sandcastle in Actions, and its cron would fail every two hours if the workflow
 # didn't skip: the first step reports whether the secret is set, and every later step waits for it. The repo's own setup runs before the PAT
-# is wired into git, and the CI workflow names it follows include each Baseline repo's.
-python3 -I - "$owned/.github/workflows/sandcastle.yml" <<'PY' || fail "the Owned sandcastle.yml must skip every step but the secret check when SANDCASTLE_GH_TOKEN is unset"
+# is wired into git, and the CI workflow names it follows are the real ones.
+if python3 -I -c 'import yaml' &>/dev/null; then
+  yaml_py=(python3 -I)
+else
+  need uvx
+  yaml_py=(uvx --with pyyaml python -I)
+fi
+secrets_script="$(mktemp)"
+"${yaml_py[@]}" - "$owned/.github/workflows/sandcastle.yml" "$owned/.github/workflows/ci.yml" "$owned/.github/workflows/claude-review.yml" \
+  "$secrets_script" <<'PY' || fail "the Owned sandcastle.yml must skip every step but the secret check when SANDCASTLE_GH_TOKEN is unset"
 import sys, yaml
-doc = yaml.safe_load(open(sys.argv[1]))
+workflow, ci, review, secrets_out = sys.argv[1:5]
+doc = yaml.safe_load(open(workflow))
 steps = doc["jobs"]["sandcastle"]["steps"]
 gate = "steps.secrets.outputs.enabled == 'true'"
 names = [step["name"] for step in steps]
 assert steps[0]["name"] == "Check the secrets" and steps[0]["id"] == "secrets", "the first step must be the secret check, with id secrets"
 for step in steps[1:]:
-    assert gate in step.get("if", ""), f"step '{step['name']}' doesn't wait for the secret check"
+    assert step.get("if") in (gate, "always() && " + gate), f"step '{step['name']}' must wait for the secret check, exactly: {step.get('if')!r}"
 assert names.index("Prepare the run") < names.index("Set up git for the PAT"), "the repo's own setup must run before git holds the PAT"
-assert steps[names.index("Prepare the run")]["run"] == ".github/ci/sandcastle-prepare.sh"
+assert steps[names.index("Prepare the run")]["run"] == "bash .github/ci/sandcastle-prepare.sh"
 workflows = doc["on"]["workflow_run"]["workflows"]
-for name in ("Build and Test Suite", "repo-ci-baseline Template", "Claude Review"):
+for name in (yaml.safe_load(open(ci))["name"], yaml.safe_load(open(review))["name"], "repo-ci-baseline Template"):
     assert name in workflows, f"workflow_run doesn't follow {name}"
+open(secrets_out, "w").write(steps[0]["run"])
 PY
+# The secret check's own script, as GitHub runs it (bash -eo pipefail), with a temp GITHUB_OUTPUT.
+run_secrets() {
+  local out; out="$(mktemp)"; secrets_rc=0
+  env -i PATH="$PATH" SANDCASTLE_GH_TOKEN="$1" ANTHROPIC_API_KEY="$2" CLAUDE_CODE_OAUTH_TOKEN="$3" GITHUB_OUTPUT="$out" \
+    bash --noprofile --norc -eo pipefail "$secrets_script" &>/dev/null || secrets_rc=$?
+  secrets_out="$(<"$out")"; rm -f "$out"
+}
+run_secrets "" "" ""
+[[ $secrets_rc -eq 0 && $secrets_out == "enabled=false" ]] || fail "sandcastle.yml: no token must end green with enabled=false (exit $secrets_rc, output '$secrets_out')"
+run_secrets token "" ""
+[[ $secrets_rc -ne 0 && $secrets_out != *enabled=true* ]] || fail "sandcastle.yml: a token with no Claude credential must fail (exit $secrets_rc, output '$secrets_out')"
+run_secrets token key ""
+[[ $secrets_rc -eq 0 && $secrets_out == "enabled=true" ]] || fail "sandcastle.yml: a token and ANTHROPIC_API_KEY must give enabled=true (exit $secrets_rc, output '$secrets_out')"
+run_secrets token "" oauth
+[[ $secrets_rc -eq 0 && $secrets_out == "enabled=true" ]] || fail "sandcastle.yml: a token and CLAUDE_CODE_OAUTH_TOKEN must give enabled=true (exit $secrets_rc, output '$secrets_out')"
+rm -f "$secrets_script"
 [[ -x "$seed/.github/ci/sandcastle-prepare.sh" ]] || fail "the Seed .github/ci/sandcastle-prepare.sh must be executable"
 if grep -qE 'sandcastle:dotfiles|Blazor-Server|dotfiles' "$owned/.github/workflows/sandcastle.yml"; then
   grep -nE 'sandcastle:dotfiles|Blazor-Server|dotfiles' "$owned/.github/workflows/sandcastle.yml"

@@ -167,6 +167,8 @@ check "sandcastle, empty repo: {{REPO}} filled and {{TASK_ID}} kept" \
   'grep -qx "# Widget architect for issue {{TASK_ID}}" "$repo/.sandcastle/roles/architect.md"'
 check "sandcastle, empty repo: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 check "sandcastle, empty repo: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
+check "sandcastle, empty repo: the Seed hook keeps its execute bit" '[[ -x "$repo/.github/ci/sandcastle-prepare.sh" ]]'
+check "sandcastle, empty repo: the Sandcastle workflow written" '[[ -f "$repo/.github/workflows/sandcastle.yml" ]]'
 
 # A repo with history and no .sandcastle/ gets none of them, and its other files as before.
 repo="$work/sandcastle absent"
@@ -186,7 +188,7 @@ check "sandcastle, no .sandcastle/: the twelve are reported as left out" 'grep -
 check "sandcastle, no .sandcastle/: the report says how to add them" 'grep -q "create it and Apply again" <<< "$out"'
 check "sandcastle, no .sandcastle/: no .sandcastle/ folder made" '[[ ! -e "$repo/.sandcastle" ]]'
 
-# A dry run of the same repo reports the same three and writes nothing.
+# A dry run of the same repo reports the same twelve and writes nothing.
 repo="$work/sandcastle dry"
 new_repo "$repo"
 printf '# readme\n' > "$repo/README.md"
@@ -209,6 +211,7 @@ for f in "${sandcastle_files[@]}"; do
   check "sandcastle, .sandcastle/ present: $f written" '[[ -f "$repo/$f" ]]'
 done
 check "sandcastle, .sandcastle/ present: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
+check "sandcastle, .sandcastle/ present: the Seed hook keeps its execute bit" '[[ -x "$repo/.github/ci/sandcastle-prepare.sh" ]]'
 check "sandcastle, .sandcastle/ present: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never

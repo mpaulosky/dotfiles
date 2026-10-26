@@ -6,8 +6,8 @@ name: Sandcastle
 # by the repo-ci-baseline Template (references/sandcastle.md, "The workflow"):
 # Apply overwrites it, and a repo that runs Sandcastle in Actions needs only the
 # SANDCASTLE_GH_TOKEN secret and a Claude credential. A repo without the token
-# skips every step, so a run there ends green; the repo's own setup goes in
-# .github/ci/sandcastle-prepare.sh.
+# skips every step after the first, so a run there ends green with a notice; the
+# repo's own setup goes in .github/ci/sandcastle-prepare.sh.
 #
 # Every trigger runs the host code checked out from main, never the event's
 # ref. Events can't filter by label name, branch or reviewer, so the job's if:
@@ -111,11 +111,14 @@ jobs:
       # The repo's own setup for the run (extra tools, the skills its prompts
       # name), in .github/ci/sandcastle-prepare.sh, a Seed file that does
       # nothing until the repo fills it. It runs before the credential helper
-      # below is set up, so nothing it fetches is sent the PAT, and it sees
-      # only the secrets this step names (none).
+      # below is set up and has no secret in its environment, so nothing it
+      # fetches is sent the PAT. It is still code on the runner, outside the
+      # sandbox: what it writes to GITHUB_ENV, GITHUB_PATH or the global git
+      # config is trusted by the steps after it, so a change to it needs a
+      # person's review. Run with bash, so the file's mode doesn't matter.
       - name: Prepare the run
         if: steps.secrets.outputs.enabled == 'true'
-        run: .github/ci/sandcastle-prepare.sh
+        run: bash .github/ci/sandcastle-prepare.sh
 
       # The host's git fetches and pushes authenticate through gh's credential
       # helper in the runner's global config, which reads GH_TOKEN from the

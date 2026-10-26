@@ -262,8 +262,8 @@ describe("makeAgentSandbox", () => {
   });
 });
 
-// The skills a role prompt's "# SKILLS" section lists, as `- \`name\`: ...` bullets. Line endings may be CRLF, the heading may
-// carry trailing spaces, and lines inside a code fence are neither headings nor bullets.
+// The skills a role prompt's "# SKILLS" section lists, as `- \`name\`` bullets (a `: description` after the name is optional). Line
+// endings may be CRLF, the heading may carry trailing spaces, and lines inside a code fence are neither headings nor bullets.
 function listedSkills(prompt: string): string[] {
   const listed: string[] = [];
   let inSection = false;

@@ -126,4 +126,5 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 9. Add `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` to `lib/repo-config.mts` as one-line `export const` lines, and the settings deny rules, as [pre-push-review.md](pre-push-review.md#adapting) says.
 
 Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES
-list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and `lib/config.test.mts` fails until all three are in.
+list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and
+`lib/config.test.mts` fails while the repo has the `ui` entry but lacks the bullet or the `{{UI_DEVELOPER}}` line.

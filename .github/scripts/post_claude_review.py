@@ -105,6 +105,21 @@ def redact_credentials(text):
     text, found = CREDENTIAL.subn(REDACTED, text)
     return text, count + found
 
+
+MAX_PATH = 1024
+
+
+def redact_path(path):
+    """A finding's path with credential-shaped text replaced, and how many were replaced.
+
+    Not the long-run rule: a file name is one token, and a long one (a generated test's name, a
+    hash-named fixture) is no credential, while a path that no longer matches the diff leaves
+    its finding outside it. A path past MAX_PATH is no real path and gets the full rule.
+    """
+    if len(path) > MAX_PATH:
+        return redact_credentials(path)
+    return CREDENTIAL.subn(REDACTED, path)
+
 # A fence whose info string starts with `suggestion`, anywhere in a body (after a list or quote
 # marker, or a lone CR, too): GitHub shows its content as a change the reader can apply with
 # one click to the line the comment sits on, and the legacy `suggestion:-1+1` form changes more.
@@ -205,13 +220,13 @@ def diff_lines(files):
 def redact(summary, findings):
     """The summary and findings with credential-shaped text replaced, and how many were replaced."""
     count = 0
-    def clean(text):
+    def clean(text, scan=redact_credentials):
         nonlocal count
-        text, n = redact_credentials(text)
+        text, n = scan(text)
         count += n
         return text
     summary = clean(summary)
-    findings = [{**f, "path": clean(f["path"]), "body": clean(f["body"])} for f in findings]
+    findings = [{**f, "path": clean(f["path"], redact_path), "body": clean(f["body"])} for f in findings]
     return summary, findings, count
 
 

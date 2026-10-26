@@ -378,7 +378,10 @@ The model's answer is still the schema's `summary` string and each finding's `bo
 The posting script changes only in how it handles suggestions, below, and in indenting an off-diff finding's body under its bullet so its paragraphs stay with it.
 
 A finding may carry a GitHub `suggestion` block, which a reader applies to the commented line with one click, only when the fix replaces that one line.
-That is the one place this review's text can change the PR's branch, so the script enforces the rule and the prompt only asks for it:
+That is the one place this review's text can change the PR's branch, so the script enforces the rule. The prompt does **not** ask for suggestions yet: the post job runs the
+base's `post_claude_review.py`, taken from the merge commit's first parent, while the prompt comes from the PR's own workflow, so a prompt that asked for them would reach a PR
+(this one's, and a repo's first re-Apply) before the script that vets them. This change lands the script, its tests and the redaction first, as the two-step rule above says;
+a later change adds the instruction to the prompt once the script is on every base. The script vets any suggestion the model writes unasked all the same:
 
 - A comment keeps a suggestion only when it holds exactly one block, whose info string is exactly `suggestion` and whose content is one non-empty line
   with no redaction marker, no control, zero-width or bidirectional character, a visible character, and nothing that would close the block (an empty suggestion deletes the line)
@@ -397,3 +400,5 @@ of token characters: the first segment's characters include e, y and J, so a sta
 So both the posting script and the workflow's answer check (`redact_credentials`, mirrored, with a test that they redact alike) first replace any token, dots included, that holds a run of more
 than 128 token characters, which no legitimate review text has, and which leaves nothing of a long JWT's payload or signature. What `CREDENTIAL` then scans has short runs, so its cost is linear.
 A JWT glued straight onto a `ghp_` or `sk-ant-` token is redacted as it always was: the token's pattern takes the JWT's first segment too, and the rest is no longer a JWT.
+A finding's `path` gets only `CREDENTIAL` (`redact_path`), not the long-run rule: a long generated file name is no credential, and a path that no longer matched the diff would
+move its finding into the review body, where it holds the merge. A path past 1,024 characters is no real path and gets the full rule.

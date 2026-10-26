@@ -1696,14 +1696,7 @@ jobs:
               it out when you read everything.
 
             Start each finding's body with a bold one-line title, then say what goes wrong and
-            in which situation, then how to fix it. When the fix replaces the commented line
-            with one different line, also give that line as a GitHub suggestion: a fenced block
-            whose info string is suggestion and whose only content is the line's new text,
-            exactly as it should read in the file: without the line number or the diff's
-            leading + or space, and with the line's own indentation. Give one suggestion at
-            most, only then, never for a change to several lines or to a different line, and
-            describe the fix in words otherwise. The posting step keeps a suggestion only when
-            it is one block of one line.
+            in which situation, then how to fix it.
           claude_args: >-
             --model claude-sonnet-5-5
             --effort high
@@ -1800,6 +1793,13 @@ jobs:
               text = TOKEN_CHAIN.sub(long_chain, text)
               text, found = CREDENTIAL.subn("[redacted]", text)
               return text, count + found
+
+
+          def redact_path(path):
+              # Mirrors post_claude_review.py: a file name is no credential however long it is.
+              if len(path) > 1024:
+                  return redact_credentials(path)
+              return CREDENTIAL.subn("[redacted]", path)
 
 
           def answer_in(path):
@@ -1948,14 +1948,14 @@ jobs:
                                    for finding in answer["findings"]]}
 
 
-          def redact(value):
+          def redact(value, key=None):
               if isinstance(value, str):
-                  return redact_credentials(value)
+                  return redact_path(value) if key == "path" else redact_credentials(value)
               if isinstance(value, list):
-                  pairs = [redact(item) for item in value]
+                  pairs = [redact(item, key) for item in value]
                   return [item for item, _ in pairs], sum(n for _, n in pairs)
               if isinstance(value, dict):
-                  pairs = {key: redact(item) for key, item in value.items()}
+                  pairs = {name: redact(item, name) for name, item in value.items()}
                   return {key: item for key, (item, _) in pairs.items()}, sum(n for _, n in pairs.values())
               return value, 0
 

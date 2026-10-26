@@ -1030,7 +1030,9 @@ def test_the_prompt_asks_for_a_structured_summary_and_titled_findings():
     for section in ("**Overview**", "**Changes**", "**Advisory (not blocking)**", "**Not reviewed**"):
         assert section in prompt
     assert "Start each finding's body with a bold one-line title" in prompt
-    assert "GitHub suggestion" in prompt
+    # The posting script that vets suggestions reaches a repo with the re-Apply, but a PR's review
+    # runs the base's script: the prompt asks for suggestions only in a later change.
+    assert "suggestion" not in prompt.lower()
 
 
 @pytest.mark.parametrize(
@@ -1162,4 +1164,52 @@ def test_redacting_takes_linear_time_on_long_input(text):
     redact_workflow(text)
 
     assert time.monotonic() - start < 3
+
+
+LONG_NAME = "tests/Get_Articles_When_" + "A" * 130 + "_Returns_401.cs"
+
+
+def test_a_long_file_name_in_a_finding_path_is_left_alone():
+    summary, findings, count = pcr.redact("s", [{"path": LONG_NAME, "line": 3, "body": "b"}])
+
+    assert findings[0]["path"] == LONG_NAME
+    assert count == 0
+
+
+def test_a_credential_in_a_finding_path_is_still_redacted():
+    path = "src/" + a_jwt() + ".cs"
+    _, findings, count = pcr.redact("s", [{"path": path, "line": 3, "body": "b"}])
+
+    assert "bbbbbbbb" not in findings[0]["path"]
+    assert count >= 1
+
+
+def test_a_path_past_the_limit_gets_the_full_rule():
+    path = "x/" + "eyJ" * 70_000
+    start = time.monotonic()
+    _, findings, _ = pcr.redact("s", [{"path": path, "line": 3, "body": "b"}])
+
+    assert findings[0]["path"] == "x/[redacted]"
+    assert time.monotonic() - start < 3
+
+
+def test_the_workflow_redacts_paths_like_the_script():
+    redact = workflow_credentials()["redact_path"]
+
+    assert redact(LONG_NAME) == (LONG_NAME, 0)
+    assert redact("src/" + a_jwt()) == pcr.redact_path("src/" + a_jwt())
+    assert redact("x/" + "eyJ" * 1000) == pcr.redact_path("x/" + "eyJ" * 1000)
+
+
+def test_the_workflows_redact_leaves_a_long_file_name_in_a_path_field_alone():
+    script = answer_check_script()
+    namespace = workflow_credentials()
+    exec(script[script.index("def redact(value, key=None):"):script.index("def write_outputs")], namespace)
+    answer = {"summary": "see " + a_jwt(), "findings": [{"path": LONG_NAME, "line": 3, "body": "see " + a_jwt()}]}
+
+    redacted, count = namespace["redact"](answer)
+
+    assert redacted["findings"][0]["path"] == LONG_NAME
+    assert "bbbbbbbb" not in redacted["summary"] and "bbbbbbbb" not in redacted["findings"][0]["body"]
+    assert count == 2
 

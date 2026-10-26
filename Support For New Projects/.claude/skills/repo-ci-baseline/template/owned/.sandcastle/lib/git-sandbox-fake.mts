@@ -103,6 +103,6 @@ export function gitSandboxFake(): GitSandboxFake {
     main,
     globalConfig: () => readFileSync(globalConfigPath, "utf8"),
     headIdentity: () => run("git log -1 --format='%an <%ae>|%cn <%ce>'"),
-    cleanup: () => rmSync(root, { recursive: true, force: true }),
+    cleanup: () => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
   };
 }

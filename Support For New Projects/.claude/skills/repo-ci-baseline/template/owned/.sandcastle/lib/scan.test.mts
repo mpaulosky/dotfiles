@@ -96,7 +96,7 @@ describe("firstSecretMatch", () => {
     try {
       assert.equal(firstSecretMatch(base, leak, new Map([["ANTHROPIC_API_KEY", "unrelated-secret-value"]]), hostGit), undefined);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -114,7 +114,7 @@ describe("firstSecretMatch", () => {
       // Never the matched text itself.
       assert.ok(!JSON.stringify(match).includes(githubShaped));
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -128,7 +128,7 @@ describe("firstSecretMatch", () => {
       // Never the matched text itself.
       assert.ok(!JSON.stringify(match).includes(secretValue));
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -143,7 +143,7 @@ describe("firstSecretMatch", () => {
         // Never the matched text itself.
         assert.ok(!JSON.stringify(match).includes(secretValue));
       } finally {
-        rmSync(repo, { recursive: true, force: true });
+        rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     });
   }
@@ -158,7 +158,7 @@ describe("firstSecretMatch", () => {
       // Never the matched text itself.
       assert.ok(!JSON.stringify(match).includes(secretValue));
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -169,7 +169,7 @@ describe("firstSecretMatch", () => {
       try {
         assert.deepEqual(firstSecretMatch(base, leak, new Map(), hostGit)?.location, { commit: leak, field: "line", path: fileName, line: 1 });
       } finally {
-        rmSync(repo, { recursive: true, force: true });
+        rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     });
   }
@@ -184,7 +184,7 @@ describe("firstSecretMatch", () => {
 
       assert.deepEqual(firstSecretMatch(base, second, new Map(), hostGit)?.location, { commit: second, field: "line", path: "notes.txt", line: 4 });
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -199,7 +199,7 @@ describe("firstSecretMatch", () => {
 
       assert.equal(firstSecretMatch(base, leak, new Map([["ANTHROPIC_API_KEY", secretValue]]), hostGit)?.location.field, "message");
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -215,7 +215,7 @@ describe("firstSecretMatch", () => {
 
       assert.equal(firstSecretMatch(base, leak, new Map([["ANTHROPIC_API_KEY", secretValue]]), hostGit)?.location.field, "message");
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -260,7 +260,7 @@ describe("describeSecretMatch", () => {
         assert.ok(!text.includes(matched.slice(-8)), text);
       }
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -297,7 +297,7 @@ describe("firstSecretMatch with a merged main commit", () => {
     try {
       assert.deepEqual(firstSecretMatch(base, merged, new Map(), hostGit)?.location, { commit: main, field: "line", path: "main.txt", line: 1 });
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -306,7 +306,7 @@ describe("firstSecretMatch with a merged main commit", () => {
     try {
       assert.equal(firstSecretMatch(base, merged, new Map(), hostGit, main), undefined);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -318,7 +318,7 @@ describe("firstSecretMatch with a merged main commit", () => {
       assert.equal(match?.location.field, "line");
       assert.equal(match?.location.field === "line" ? match.location.path : undefined, "branch.txt");
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -334,7 +334,7 @@ describe("firstSecretMatch with a merged main commit", () => {
 
       assert.deepEqual(match?.location, { commit: mergeCommit, field: "line", path: "resolved.txt", line: 1 });
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -349,7 +349,7 @@ describe("firstSecretMatch with a merged main commit", () => {
 
       assert.deepEqual(match, { location: { commit: tip, field: "message" }, kind: { type: "secret", envKey: "ANTHROPIC_API_KEY" } });
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });

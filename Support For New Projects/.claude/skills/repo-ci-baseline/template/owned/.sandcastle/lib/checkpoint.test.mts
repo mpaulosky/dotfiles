@@ -344,7 +344,7 @@ describe("the gate guard in a git repository", () => {
       git("commit", "--quiet", "-m", "base");
       await test({ git, write, run });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   };
 
@@ -487,7 +487,7 @@ describe("changedFiles", () => {
       assert.deepEqual(await changedFiles(run, { base }, ["scripts/"]), ["scripts/a` closes #12 `b.sh", "scripts/gone.sh", "scripts/keep.sh"]);
       assert.equal(await changedFiles(run, { base: "0".repeat(40) }, ["scripts/"]), undefined);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });

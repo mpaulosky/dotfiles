@@ -46,7 +46,7 @@ describe("hostGitInvocation", () => {
       assert.equal(existsSync(ran), false, "the pre-push hook ran on the host");
       assert.equal(run(root, ["--git-dir", remote, "rev-parse", "refs/heads/fix/1-x"]), commit);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -60,7 +60,7 @@ describe("runHostGit", () => {
         /git rev-parse HEAD failed:\n.*(not a git repository|fatal)/s,
       );
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });

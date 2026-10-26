@@ -83,7 +83,8 @@ REDACTED = "[redacted]"
 # marker, or a lone CR, too): GitHub shows its content as a change the reader can apply with
 # one click to the line the comment sits on, and the legacy `suggestion:-1+1` form changes more.
 # Any whitespace but a line break may sit between the fence and the info string.
-SUGGESTION_FENCE = re.compile(r"(?i)(`{3,}|~{3,})[^\S\r\n]*suggestion\b")
+# A match starts only at the start of a run of fence characters, so a long run costs a linear scan.
+SUGGESTION_FENCE = re.compile(r"(?i)((?<!`)`{3,}|(?<!~)~{3,})[^\S\r\n]*suggestion\b")
 # The one form a comment may keep: a fence on its own lines whose info string is exactly
 # `suggestion`, holding one non-empty line. The leading class and \S are disjoint, so
 # matching is linear.
@@ -193,16 +194,23 @@ def defuse_suggestions(body):
     return SUGGESTION_FENCE.sub(r"\1text", body)
 
 
+# Characters that render blank but are letters or symbols (Hangul fillers, the blank Braille cell,
+# Khmer inherent vowels), which \s does not match.
+BLANK_FILLERS = "\u115f\u1160\u17b4\u17b5\u2800\u3164\uffa0"
+
+
 def suggestion_line_is_safe(fence, line):
     """Whether `line` can be the one line of a suggestion that `fence` opened.
 
     Not when it would close the block (a suggestion with no content deletes the line), nor when
     it holds a character the reader can't see in the diff: a control or format character
-    (zero-width, bidirectional) or a Unicode line or paragraph separator.
+    (zero-width, bidirectional) or a Unicode line or paragraph separator, or when nothing in it is
+    visible (spaces, combining marks and the blank fillers only).
     """
     closes = re.fullmatch(" {0,3}" + re.escape(fence[0]) + "{" + str(len(fence)) + ",}[ \t]*", line)
     hidden = any(unicodedata.category(c) in ("Cf", "Zl", "Zp") or (unicodedata.category(c) == "Cc" and c != "\t") for c in line)
-    return not closes and not hidden
+    blank = all(c in BLANK_FILLERS or unicodedata.category(c) in ("Zs", "Cc", "Mn") for c in line)
+    return not closes and not hidden and not blank
 
 
 def vet_suggestions(body):

@@ -6,6 +6,7 @@ import string
 import subprocess
 import sys
 import textwrap
+import time
 import unicodedata
 from pathlib import Path
 
@@ -239,6 +240,11 @@ def test_vet_suggestions_keeps_no_suggestion_or_one_good_line(body):
         "```suggestion\nvalue\u202e = 1\n```",  # a bidirectional override
         "```suggestion\nvalue\x00 = 1\n```",
         "```suggestion\nvalue\u2028= 1\n```",
+        "```suggestion\n\u3164\n```",  # a Hangul filler renders blank
+        "```suggestion\n \u2800 \n```",  # a blank Braille cell
+        "```suggestion\n\u0301\n```",  # a lone combining mark
+        "```suggestion\nx\n````",  # a closing fence longer than the opener
+        "```suggestion\nx\n  ```",  # a closing fence indented
         "```\x0bsuggestion\nx\ny\n```",
     ],
 )
@@ -1029,12 +1035,21 @@ def test_the_prompt_asks_for_a_structured_summary_and_titled_findings():
 
 
 
-def test_vet_suggestions_takes_linear_time_on_a_long_line():
-    import time
-
-    body = "```suggestion\n" + "a" * 200_000
-
+@pytest.mark.parametrize(
+    "body",
+    [
+        "```suggestion\n" + "a" * 200_000,
+        "`" * 200_000,
+        "~" * 200_000,
+        "`" * 100_000 + " " * 100_000,
+        "~" * 100_000 + "\t" * 100_000,
+        "```" + " " * 200_000,
+    ],
+    ids=["long line", "backticks", "tildes", "backticks then spaces", "tildes then tabs", "fence then spaces"],
+)
+def test_suggestion_handling_takes_linear_time_on_long_input(body):
     start = time.monotonic()
     pcr.vet_suggestions(body)
+    pcr.defuse_suggestions(body)
 
     assert time.monotonic() - start < 2

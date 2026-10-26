@@ -381,8 +381,9 @@ A finding may carry a GitHub `suggestion` block, which a reader applies to the c
 That is the one place this review's text can change the PR's branch, so the script enforces the rule and the prompt only asks for it:
 
 - A comment keeps a suggestion only when it holds exactly one block, whose info string is exactly `suggestion` and whose content is one non-empty line
-  with no redaction marker, no control, zero-width or bidirectional character, and nothing that would close the block (an empty suggestion deletes the line)
-  (`vet_suggestions`). A suggestion with several lines, the `suggestion:-1+1` form, several blocks or a fence that isn't on its own lines is turned into a plain text fence.
+  with no redaction marker, no control, zero-width or bidirectional character, a visible character, and nothing that would close the block (an empty suggestion deletes the line)
+  (`vet_suggestions`). A suggestion with several lines, the `suggestion:-1+1` form, several blocks, a fence that isn't on its own lines, or a closing fence that isn't exactly the
+  opener's marker and length at column 0 is turned into a plain text fence.
 - A comment Claude cited at a line that isn't in the file goes on the nearest diff line, and a finding outside the diff goes in the review body: the first would replace the
   wrong line and the second can't be applied, so both lose their suggestions (`defuse_suggestions`).
 - A suggestion changes only the PR's own branch, and only when a person clicks it. It is still text the model wrote from a PR it read, so a diff that steers the model

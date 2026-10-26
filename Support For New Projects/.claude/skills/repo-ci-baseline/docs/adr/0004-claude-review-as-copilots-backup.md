@@ -328,8 +328,8 @@ Since Claude Review first shipped, `--allowedTools "Read,Glob,Grep"` granted tho
 
 ## Moved to Sonnet
 
-The owner moved Claude Review, and the pre-push reviewers ([ADR 0008](0008-review-before-the-push.md)), from Opus 5.5 to Sonnet 5.5, both still at high effort.
-The benchmark above ran Opus: its only Sonnet run was at medium effort, and it caught none of the findings Copilot made on the same commits (#117).
-The benchmark has not been rerun on Sonnet at high effort, so the recall figures above describe the Opus workflow, not this one.
-Rerun `bench/claude-review-bench.py` with `--model sonnet --effort high` before relying on this review as the backup when Copilot's budget is out;
-if recall drops, move the workflow's `--model` back to `claude-opus-5-5`.
+The owner moved every Claude model the Baseline runs from Opus 5.5 to Sonnet 5.5, still at high effort where it was: Claude Review,
+the pre-push reviewers ([ADR 0008](0008-review-before-the-push.md)), the Sandcastle roles in the Seed `repo-config.mts`, and the `Co-Authored-By` line `reapply.sh` writes.
+The benchmark above ran Opus (its only Sonnet run was at medium effort and caught none of Copilot's findings, #117), so its recall figures describe the Opus workflow.
+The owner accepted that: the review now happens locally before the push, which is why GitHub's review no longer carries the whole load.
+The Seed is written once, so a repo that already has a `repo-config.mts` keeps its models until it changes them.

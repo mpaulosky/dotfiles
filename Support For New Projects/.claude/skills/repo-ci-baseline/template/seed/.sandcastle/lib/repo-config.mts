@@ -10,22 +10,22 @@
 
 import type { Role, RoleAgent } from "./config.mts";
 
-const opus = "claude-opus-5-5";
 const sonnet = "claude-sonnet-5-5";
 
 // Every role's agent and budget, from the "Roles, models and budgets" table in
-// Blazor-Server's docs/plans/sandcastle-workflow.md. Opus goes where a wrong
-// answer costs a whole round; Sonnet goes where the gate, the reviewer or CI
-// checks the output anyway. Structured-output roles must stay at one iteration.
+// Blazor-Server's docs/plans/sandcastle-workflow.md. Every role runs Sonnet
+// (the owner moved them off Opus to cut cost; a role whose wrong answer costs a
+// whole round can be pointed back at an Opus model here). Structured-output
+// roles must stay at one iteration.
 export const ROLE_AGENTS = {
   intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-  planner: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+  planner: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   critique: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
-  architect: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+  architect: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   tester: { model: sonnet, effort: "high", maxIterations: 3, timeoutMinutes: 45 },
-  backend: { model: opus, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
+  backend: { model: sonnet, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
   scribe: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
-  reviewer: { model: opus, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
+  reviewer: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   "gate-fixer": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 20 },
   "follow-up": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 30 },
 } as const satisfies Record<Role, RoleAgent>;

@@ -41,7 +41,7 @@ set -euo pipefail
 branch="chore/reapply-baseline"
 worktree_name="chore-reapply-baseline"
 commit_subject="chore: Apply repo-ci-baseline Template"
-co_author="Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+co_author="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 pr_title="chore: Re-apply the repo-ci-baseline Template"
 footer="🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 # "<n> <url>": n counts Copilot's review requests and its reviews of the head.

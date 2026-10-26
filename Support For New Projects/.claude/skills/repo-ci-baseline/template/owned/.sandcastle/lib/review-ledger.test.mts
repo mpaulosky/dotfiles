@@ -2372,7 +2372,7 @@ describe("scripts/review.sh", () => {
   });
 
   // A repo-config.mts that exports the given names, as the Seed's does.
-  const configWith = (names: string[]) => names.map((name) => `export const ${name} = ${name === "REPO_SLUG" ? '"o/r"' : "[]"};\n`).join("");
+  const configWith = (names: string[], keyword = "const") => names.map((name) => `export ${keyword} ${name} = ${name === "REPO_SLUG" ? '"o/r"' : "[]"};\n`).join("");
 
   // A copy of scripts/review.sh in a checkout with no packages, and a stub
   // pnpm (or none) on a PATH of its own. The stub logs its arguments; "works"
@@ -2423,7 +2423,7 @@ describe("scripts/review.sh", () => {
   }
 
   for (const missing of [["REPO_SLUG"], ["NOT_OWNED_BASELINE_PATHS"], ["REPO_SLUG", "NOT_OWNED_BASELINE_PATHS"]]) {
-    it(`says to add ${missing.join(" and ")} to repo-config.mts, before any install, when the repo's copy lacks them`, () => {
+    it(`says to add ${missing.join(" and ")} to repo-config.mts, before any install, when the repo's copy lacks ${missing.length > 1 ? "both" : "it"}`, () => {
       const { checkout, log, runScript } = bareCheckout("works");
       const present = ["REPO_SLUG", "NOT_OWNED_BASELINE_PATHS"].filter((name) => !missing.includes(name));
       writeFileSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"), configWith(present));
@@ -2435,6 +2435,36 @@ describe("scripts/review.sh", () => {
       assert.equal(existsSync(log), false, "installed packages before checking the config");
     });
   }
+
+  it("refuses names that only look exported: a longer name, a comment, an indented line", () => {
+    const { checkout, runScript } = bareCheckout("works");
+    const decoys = `export const REPO_SLUG_OLD = 1;\n// export const REPO_SLUG = "o/r";\n  export const REPO_SLUG = "o/r";\n${configWith(["NOT_OWNED_BASELINE_PATHS"])}`;
+    writeFileSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"), decoys);
+
+    const result = runScript("check");
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /no export of REPO_SLUG/);
+  });
+
+  it("takes names exported with let, or with extra spaces", () => {
+    const { checkout, runScript } = bareCheckout("works");
+    writeFileSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"), `${configWith(["REPO_SLUG"], "let")}export   const NOT_OWNED_BASELINE_PATHS = [];\n`);
+
+    const result = runScript("key");
+
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("says the config doesn't exist, rather than blaming its contents", () => {
+    const { checkout, runScript } = bareCheckout("works");
+    rmSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"));
+
+    const result = runScript("check");
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /doesn't exist/);
+  });
 
   it("says to enable pnpm when it isn't installed", () => {
     const result = bareCheckout("missing").runScript("check");

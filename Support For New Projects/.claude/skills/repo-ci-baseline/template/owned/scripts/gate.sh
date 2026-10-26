@@ -139,9 +139,9 @@ elif [[ -z "$BASE" ]]; then
   # (ls-remote exits 2 when nothing matches); a remote that has one, or that can't be reached,
   # fails: the first needs the fetch, and the second can't be told from a main we can't see.
   remote_main=0
-  git ls-remote --exit-code origin main > /dev/null 2>&1 || remote_main=$?
+  git ls-remote --exit-code origin refs/heads/main > /dev/null 2>&1 || remote_main=$?
   if [[ $remote_main -ne 2 ]]; then
-    echo "❌ No origin/main to diff against, so the review can't be checked: run git fetch origin main." >&2
+    echo "❌ No origin/main to diff against, so the review can't be checked: run git fetch origin main (or the remote could not be reached)." >&2
     exit 1
   fi
   echo -e "${YELLOW}⚠️  The remote has no main yet, so there is no diff to review: skipping the local review.${RESET}"

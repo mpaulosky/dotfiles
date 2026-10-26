@@ -41,6 +41,7 @@ printf '#!/usr/bin/env bash\n' > "$skill/template/owned/scripts/review.sh"
 printf '#!/usr/bin/env bash\n' > "$skill/template/owned/scripts/other.sh"
 printf '// ledger\n' > "$skill/template/owned/.sandcastle/lib/review-ledger.mts"
 printf '// ledger tests\n' > "$skill/template/owned/.sandcastle/lib/review-ledger.test.mts"
+printf '// skill tests, which import the ledger\n' > "$skill/template/owned/.sandcastle/lib/pre-push-review-skill.test.mts"
 printf 'agent\n' > "$skill/template/owned/.claude/agents/pre-push-reviewer.md"
 printf 'skill\n' > "$skill/template/owned/.claude/skills/pre-push-review/SKILL.md"
 printf 'lenses\n' > "$skill/template/owned/.claude/skills/pre-push-review/lenses.md"
@@ -147,7 +148,7 @@ check "no remote: unfilled reported" \
 # ── Sandcastle's files go only into a repo that runs Sandcastle (ADR 0006) ──
 sandcastle_files=(.sandcastle/tsconfig.json .sandcastle/roles/architect.md package.json scripts/review.sh .claude/agents/pre-push-reviewer.md \
   .claude/skills/pre-push-review/SKILL.md .claude/skills/pre-push-review/lenses.md \
-  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts)
+  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts)
 
 # An empty repo gets them. Sandcastle's own {{TASK_ID}} stays and isn't reported as unfilled.
 repo="$work/sandcastle empty"
@@ -176,7 +177,7 @@ check "sandcastle, no .sandcastle/: other Owned file written" '[[ -f "$repo/.git
 check "sandcastle, no .sandcastle/: other Seed file written" '[[ -f "$repo/docs/SECURITY.md" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring script is written" '[[ -f "$repo/scripts/other.sh" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring skill is written" '[[ -f "$repo/.claude/skills/other/SKILL.md" ]]'
-check "sandcastle, no .sandcastle/: the nine are reported as left out" 'grep -q "Sandcastle files left out.*: 9" <<< "$out"'
+check "sandcastle, no .sandcastle/: the ten are reported as left out" 'grep -q "Sandcastle files left out.*: 10" <<< "$out"'
 check "sandcastle, no .sandcastle/: the report says how to add them" 'grep -q "create it and Apply again" <<< "$out"'
 check "sandcastle, no .sandcastle/: no .sandcastle/ folder made" '[[ ! -e "$repo/.sandcastle" ]]'
 
@@ -186,7 +187,7 @@ new_repo "$repo"
 printf '# readme\n' > "$repo/README.md"
 commit_all "$repo" "init"
 dry="$("$apply" --dry-run "$repo")"
-check "sandcastle, dry run: the nine are reported as left out" 'grep -q "Sandcastle files left out.*: 9" <<< "$dry"'
+check "sandcastle, dry run: the ten are reported as left out" 'grep -q "Sandcastle files left out.*: 10" <<< "$dry"'
 check "sandcastle, dry run: the left-out files aren't listed as added" '! grep -q "^  .sandcastle/tsconfig.json" <<< "$dry"'
 check "sandcastle, dry run: nothing written" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
 
@@ -206,8 +207,8 @@ check "sandcastle, .sandcastle/ present: nothing left out" 'grep -q "Sandcastle 
 check "sandcastle, .sandcastle/ present: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never
-# rewritten): a repo whose copy lacks them gets the rest of the Sandcastle files, not the three that import it.
-ledger_files=(scripts/review.sh .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts)
+# rewritten): a repo whose copy lacks them gets the rest of the Sandcastle files, not the four that import it.
+ledger_files=(scripts/review.sh .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts)
 repo="$work/ledger waits"
 new_repo "$repo"
 mkdir -p "$repo/.sandcastle/lib"
@@ -221,8 +222,24 @@ done
 check "ledger waits: the rest of the Sandcastle files are written" '[[ -f "$repo/.sandcastle/tsconfig.json" ]]'
 check "ledger waits: the skill and agent are written" '[[ -f "$repo/.claude/agents/pre-push-reviewer.md" ]]'
 check "ledger waits: the repo's repo-config.mts is untouched" 'grep -qx "export const ROLE_AGENTS = {};" "$repo/.sandcastle/lib/repo-config.mts"'
-check "ledger waits: the report names the three and says what to add" \
-  'grep -A4 "Local review files left out" <<< "$out" | grep -q "review-ledger.mts" && grep -q "REPO_SLUG and NOT_OWNED_BASELINE_PATHS" <<< "$out"'
+check "ledger waits: the report names the four and says what to add" \
+  'grep -A4 "Local review files left out" <<< "$out" | grep -q "review-ledger.mts" && grep -q "REPO_SLUG or NOT_OWNED_BASELINE_PATHS" <<< "$out"'
+
+# Each name is checked on its own, as a whole word, on a line of its own that isn't a comment.
+n=0
+for config in 'export const REPO_SLUG = "o/r";' \
+  $'export const REPO_SLUG_OLD = 1;\nexport const NOT_OWNED_BASELINE_PATHS = [];' \
+  $'// export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];'; do
+  n=$((n + 1))
+  repo="$work/ledger waits $n"
+  new_repo "$repo"
+  mkdir -p "$repo/.sandcastle/lib"
+  printf '%s\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
+  commit_all "$repo" "init"
+  git_q -C "$repo" switch -q -c chore/standardize-baseline
+  out="$("$apply" "$repo")"
+  check "ledger waits ($n): the ledger is held back" '[[ ! -e "$repo/.sandcastle/lib/review-ledger.mts" ]]'
+done
 
 repo="$work/ledger ready"
 new_repo "$repo"
@@ -234,7 +251,7 @@ out="$("$apply" "$repo")"
 for f in "${ledger_files[@]}"; do
   check "ledger ready: $f written" '[[ -f "$repo/$f" ]]'
 done
-check "ledger ready: nothing held back" '! grep -q "Local review files left out" <<< "$out" || grep -A1 "Local review files left out" <<< "$out" | grep -q "(0)"'
+check "ledger ready: nothing held back" '! grep -q "Local review files left out" <<< "$out"'
 
 # A Seed file with an Apply placeholder still counts as unfilled under .sandcastle/ (no remote, so {{REPO}} stays).
 repo="$work/sandcastle unfilled"

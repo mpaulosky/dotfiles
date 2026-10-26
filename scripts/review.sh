@@ -19,9 +19,13 @@ TSX="$ROOT/node_modules/.bin/tsx"
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own
 # repo-config.mts; without them tsx stops at link time with an error that doesn't say why.
 CONFIG="$ROOT/.sandcastle/lib/repo-config.mts"
+if [[ ! -f "$CONFIG" ]]; then
+  echo "❌ $CONFIG doesn't exist: the ledger needs it (the repo-ci-baseline skill's references/pre-push-review.md, Adapting step 1)." >&2
+  exit 1
+fi
 for name in REPO_SLUG NOT_OWNED_BASELINE_PATHS; do
-  if ! grep -qE "^export (const|let) $name\b" "$CONFIG" 2>/dev/null; then
-    echo "❌ $CONFIG has no export of $name. Add REPO_SLUG and NOT_OWNED_BASELINE_PATHS to it (the repo-ci-baseline skill's references/pre-push-review.md, Adapting step 1)." >&2
+  if ! grep -qE "^export[[:space:]]+(const|let)[[:space:]]+$name\b" "$CONFIG"; then
+    echo "❌ $CONFIG has no export of $name. Add REPO_SLUG and NOT_OWNED_BASELINE_PATHS to it, each as a one-line export const (the repo-ci-baseline skill's references/pre-push-review.md, Adapting step 1)." >&2
     exit 1
   fi
 done

@@ -43,7 +43,7 @@ review-only round raises (step 7), goes to the branch's follow-up issue (step 9)
   Agent tool doesn't offer `pre-push-reviewer` (Claude Code loads agents when a session starts, from the checkout it
   started in), stop and ask the person to start Claude Code again in a checkout that has
   `.claude/agents/pre-push-reviewer.md`, such as the branch's worktree: never start them as another type, whatever the
-  prompt says. You verify, fix and record.
+  prompt says, unless the person, asked, says to use a stand-in: then record that agent type as `reviewerAgent`. You verify, fix and record.
 
 ## Steps
 
@@ -299,10 +299,10 @@ with its first line and marker, and run
 `repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh issue comment <n> --body-file <run>/advisory.md`.
 
 Keep the PR description's `## Review notes` section in step with the ledger, for people reading the PR: when findings
-were accepted it holds the output of `scripts/review.sh notes`, between the lines `<!-- review-notes -->` and
-`<!-- /review-notes -->`, and when none were it has no such section, since an earlier review's acceptances no longer
-hold. Never splice it in by hand: `scripts/review.sh body` does it. It replaces only the marked section, adds one above
-`Fixes #` (else above the footer, else at the end) when there's none, removes it when nothing is accepted, and refuses a
+were accepted, or a stand-in agent read the diff, it holds the output of `scripts/review.sh notes`, between the lines
+`<!-- review-notes -->` and `<!-- /review-notes -->`, and otherwise it has no such section, since an earlier review's
+acceptances no longer hold. Never splice it in by hand: `scripts/review.sh body` does it. It replaces only the marked section, adds one above
+`Fixes #` (else above the footer, else at the end) when there's none, removes it when nothing is accepted and no stand-in reviewed, and refuses a
 body whose section it can't bound safely. When it refuses, show the person the body and ask what to keep.
 
 Run each command below as one `&&` chain in one Bash call, and stop when any part fails. `body` removes

@@ -725,7 +725,7 @@ export const REVIEW_NOTES_END = "<!-- /review-notes -->";
 // owner." reply as every thread left for the owner (docs/PROCESS.md), which doesn't
 // say which thread a security finding is on; the reason stays in the ledger
 // and, for a finding that isn't a security one, in these notes. Empty when
-// none was accepted.
+// none was accepted and the reviewer was the pre-push-reviewer (or unrecorded).
 export function renderReviewNotes(ledger: Ledger): string {
   const accepted = ledger.findings.filter((finding) => finding.status === "accepted");
   // An accepted security finding is a known weakness left as it is, and the

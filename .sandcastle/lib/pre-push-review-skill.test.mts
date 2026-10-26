@@ -79,6 +79,11 @@ describe("the pre-push-review skill's reviewers, as started", () => {
   it("are started as that agent, and never as another type", () => {
     assert.match(skill, /`subagent_type: "pre-push-reviewer"`/);
     assert.match(skill, /never start them as another type/);
+    assert.match(skill, /unless the person, asked, says to use a stand-in/);
+  });
+
+  it("run on Sonnet, in the skill's instructions and in the agent file", () => {
+    assert.match(agent, /^model: sonnet$/m);
   });
 });
 
@@ -330,7 +335,7 @@ describe("the pre-push-review skill's repository", () => {
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && sh -c 'gh pr edit 1'\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && $(gh pr edit 1)\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`sh -c 'gh pr view 1' && ${prefix}pr edit 1\``), []);
-    assert.notDeepEqual(ghChainProblems(`1. \`x=gh pr view 1\``), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && x=gh pr edit 1\``), []);
     assert.deepEqual(ghChainProblems(`1. \`${prefix}pr view 1\`, then read it through a pipe`), []);
     assert.notDeepEqual(ghChainProblems(`1. \`gh pr view 1 && ${prefix}pr edit 1\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh pr edit 1\``), []);

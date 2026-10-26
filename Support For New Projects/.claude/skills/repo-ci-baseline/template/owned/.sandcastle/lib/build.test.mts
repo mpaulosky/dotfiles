@@ -1988,7 +1988,7 @@ describe("buildIssue reading the reviewer's PR body", () => {
     ["quoting Review notes in code", `${validPrBody}\n\nSee \`Review notes\`.`],
     ["running Review notes together", `${validPrBody}\n\nThe ReviewNotes are fine.`],
     ["splitting Review notes with Markdown emphasis", `${validPrBody}\n\n## Re*view* **notes**`],
-    ["spelling Review notes with a character reference", `${validPrBody}\n\nReview&#32;notes`],
+    ["spelling Review notes with a character reference", `${validPrBody}\n\nReview n&#111;tes`],
   ] as const) {
     it(`falls back to the generic PR body, and logs why, when the file is ${scenario}`, async () => {
       const { logs, publishedPrBodies, buildHost } = host([0, 0], { prBodyFile });

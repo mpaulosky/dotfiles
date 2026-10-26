@@ -353,7 +353,8 @@ It reads the PR description's `## Review notes` as accepted findings, between th
   A deleted fork's head repository is empty and never matches. Sandcastle opens its PRs with the owner's token, so its descriptions count as the owner's, as its resolved threads do.
 - **What a note can't do.** The prompt says a note never covers a security weakness.
   That is an instruction the model follows, not a rule the workflow enforces. The ledger's notes only count accepted security findings, so a legitimate note never needs that cover.
-  An accepted Critical finding, on merge-gate code too, is listed in the notes and honoured like any other.
+  An accepted Critical finding that isn't a security finding, on merge-gate code too, is listed in the notes and honoured like any other;
+  an accepted security finding is only counted there.
 - **Accepted limits.** A PR opened with the owner's token, Sandcastle's included, counts as the owner's, so a prompt-injected agent can write notes that silence findings.
   A note is free text that can name a problem before anyone raises it, and nothing checks it against the local ledger. A section that an HTML comment or `<details>` hides
   on the rendered page still counts. What the step honoured or ignored goes to the job log.

@@ -32,11 +32,12 @@ Fixed vulnerabilities are published in the repository's
 
 ## Accepted security findings from the local review
 
-The pre-push review ([ADR 0008](<Support For New Projects/.claude/skills/repo-ci-baseline/docs/adr/0008-review-before-the-push.md>))
+The pre-push review ([ADR 0008](<../Support For New Projects/.claude/skills/repo-ci-baseline/docs/adr/0008-review-before-the-push.md>))
 never lists an accepted security finding in a public PR description: the notes only count them.
-The person who accepted one keeps its reason in the review's ledger and reports the weakness here, privately, as above.
+The person who accepted one keeps its reason in the review's ledger under `.git/review` on their own machine, which is not shared,
+so they put the reason into a private report, as above, before pushing the branch.
 
 ## Contributors
 
 - Never commit secrets, API keys or passwords; keep them in untracked local configuration and in repository or environment secrets for CI.
-- Keep dependencies current, act on Dependabot security alerts, and check for known vulnerabilities with the ecosystem's audit tool before a release.
+- Keep dependencies current, act on Dependabot security alerts, and check for known vulnerabilities with the ecosystem's audit tool before merging a dependency change.

@@ -1742,7 +1742,7 @@ jobs:
       # can push a change to a PR's scripts but not to this file, which a
       # pull_request run takes from the PR's merge commit. It also means a PR
       # cut before this check gets the check its workflow expects.
-      # post_claude_review.py's CREDENTIAL, MAX_TOKEN_RUN and redact_credentials must match the ones here.
+      # post_claude_review.py's CREDENTIAL, MAX_TOKEN_RUN, CREDENTIAL_START and redact_credentials must match the ones here.
       - name: Check Claude's answer for secrets
         id: answer
         if: steps.secret.outputs.enabled == 'true' && steps.claude.outputs.structured_output != ''
@@ -1773,10 +1773,12 @@ jobs:
           )
           LEAK_WINDOW = 16
 
-          # Mirrors post_claude_review.py: a token holding a run longer than MAX_TOKEN_RUN is replaced
-          # whole before CREDENTIAL looks, so a long run of `eyJ` isn't rescanned from each one.
+          # Mirrors post_claude_review.py: a token holding a run longer than MAX_TOKEN_RUN and one of the
+          # strings CREDENTIAL starts with is replaced whole before CREDENTIAL looks, so a long run of
+          # `eyJ` isn't rescanned from each one. A long token without one is left alone.
           MAX_TOKEN_RUN = 128
           TOKEN_CHAIN = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
+          CREDENTIAL_START = re.compile(r"eyJ|gh[pousr]_|sk-ant-|github_pat_")
 
 
           def redact_credentials(text):
@@ -1785,7 +1787,7 @@ jobs:
               def long_chain(match):
                   nonlocal count
                   chain = match.group()
-                  if any(len(run) > MAX_TOKEN_RUN for run in chain.split(".")):
+                  if any(len(run) > MAX_TOKEN_RUN for run in chain.split(".")) and CREDENTIAL_START.search(chain):
                       count += 1
                       return "[redacted]"
                   return chain
@@ -1796,7 +1798,7 @@ jobs:
 
 
           def redact_path(path):
-              # Mirrors post_claude_review.py: a file name is no credential however long it is.
+              # Mirrors post_claude_review.py: a long name that merely holds a credential start is no credential.
               if len(path) > 1024:
                   return redact_credentials(path)
               return CREDENTIAL.subn("[redacted]", path)

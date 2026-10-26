@@ -81,12 +81,16 @@ REDACTED = "[redacted]"
 
 # CREDENTIAL scans from every `eyJ`, and a long run of token characters (the first segment of a JWT
 # holds the letters e, y and J) is rescanned from each one: quadratic on text a diff can steer.
-# So a token, with the dots joining its segments, that holds a run longer than MAX_TOKEN_RUN is
-# replaced whole before CREDENTIAL looks at the text: no legitimate review text has one, and it
-# leaves nothing of a long JWT (its signature included) behind. What is left has runs of at most
-# MAX_TOKEN_RUN characters, which CREDENTIAL scans in time linear in the text.
+# So a token, with the dots joining its segments, that holds a run longer than MAX_TOKEN_RUN and
+# one of the strings every CREDENTIAL alternative starts with (CREDENTIAL_START) is replaced whole
+# before CREDENTIAL looks at the text: it leaves nothing of a long JWT (its signature included)
+# behind. A long token without one can't match CREDENTIAL, and legitimate review text has them (a
+# generated test's file name, a long identifier, a digest), so it is left alone. What is left has
+# no run holding a start longer than MAX_TOKEN_RUN characters, which CREDENTIAL scans in time
+# linear in the text.
 MAX_TOKEN_RUN = 128
 TOKEN_CHAIN = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
+CREDENTIAL_START = re.compile(r"eyJ|gh[pousr]_|sk-ant-|github_pat_")
 
 
 def redact_credentials(text):
@@ -96,7 +100,7 @@ def redact_credentials(text):
     def long_chain(match):
         nonlocal count
         chain = match.group()
-        if any(len(run) > MAX_TOKEN_RUN for run in chain.split(".")):
+        if any(len(run) > MAX_TOKEN_RUN for run in chain.split(".")) and CREDENTIAL_START.search(chain):
             count += 1
             return REDACTED
         return chain
@@ -112,9 +116,11 @@ MAX_PATH = 1024
 def redact_path(path):
     """A finding's path with credential-shaped text replaced, and how many were replaced.
 
-    Not the long-run rule: a file name is one token, and a long one (a generated test's name, a
-    hash-named fixture) is no credential, while a path that no longer matches the diff leaves
-    its finding outside it. A path past MAX_PATH is no real path and gets the full rule.
+    Not the long-run rule: a long name that holds one of CREDENTIAL_START's strings without being
+    a credential (a generated test's name with `eyJ` in it) would be replaced whole by it, and a
+    path that no longer matches the diff leaves its finding outside it. A long name with none of
+    them is left alone by redact_credentials already. A path past MAX_PATH is no real path and
+    gets the full rule.
     """
     if len(path) > MAX_PATH:
         return redact_credentials(path)

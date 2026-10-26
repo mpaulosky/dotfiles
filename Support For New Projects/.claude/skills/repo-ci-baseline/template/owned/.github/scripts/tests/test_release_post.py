@@ -1862,3 +1862,19 @@ def test_a_subject_with_a_lone_cr_renders_only_the_part_before_it():
 
     assert rp.render_commits(commits).split("\n")[2] == "- Fix (`abc1234`)"
 
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+def test_blog_index_keeps_a_row_whose_title_holds_a_unicode_separator(tmp_path, separator):
+    blog_dir = make_repo(tmp_path) / "docs" / "blogs"
+    first, second = "2026-09-20-pr-7-fix-a.md", "2026-09-24-pr-8-feat-next.md"
+    for name in (first, second):
+        (blog_dir / name).write_text("post\n", encoding="utf-8")
+    row = f"| 2026-09-20 | [fix: A{separator}B]({first}) | release,automation |"
+
+    rp.update_blog_index(blog_dir, "2026-09-20", f"fix: A{separator}B", first)
+    rp.update_blog_index(blog_dir, "2026-09-24", "feat: Next", second)
+
+    index = (blog_dir / "README.md").read_text(encoding="utf-8")
+    assert sum(f"({first})" in line for line in index.split("\n")) == 1
+    assert row in index.split("\n")
+

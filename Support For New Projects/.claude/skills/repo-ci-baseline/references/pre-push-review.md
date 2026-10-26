@@ -78,6 +78,6 @@ A repo that already has Sandcastle:
 ## Not in it yet
 
 - **Sandcastle running the review.** Its builds skip the check and keep their own reviewer role.
-- **Claude Review taking the local review into account.** The planned follow-up: on `synchronize` review only what changed since the last review, open
-  threads only for bugs, security and GitHub behaviour (list the rest as Advisory in the review body), and honour a PR description's `## Review notes`.
-  That changes the Owned `claude-review.yml`, so it is its own PR.
+- **Claude Review reviewing only what a push changed.** Claude Review now opens findings only for what a local review can't check and reads the PR's
+  `## Review notes` as accepted findings ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#claude-review-after-the-local-review)),
+  but it still reads the PR's whole diff on every push. A delta needs the diff step's exclusion and holding rules applied to a second diff.

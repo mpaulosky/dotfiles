@@ -337,3 +337,13 @@ the pre-push reviewers ([ADR 0008](0008-review-before-the-push.md)), the Sandcas
 The benchmark above ran Opus (its only Sonnet run was at medium effort and caught none of Copilot's findings, #117), so its recall figures describe the Opus workflow.
 The owner accepted that: the review now happens locally before the push, which is why GitHub's review no longer carries the whole load.
 The Seed is written once, so a repo that already has a `repo-config.mts` keeps its models until it changes them.
+
+## Claude Review after the local review
+
+With the review before the push ([ADR 0008](0008-review-before-the-push.md)), Claude Review is a backstop for what a local review can't check.
+The prompt asks for findings only on bugs in code that runs, security weaknesses, tests and GitHub's own behaviour, and has Claude list
+docs, comments and conventions under "Advisory" in its summary, since a finding holds the merge and these shouldn't.
+It reads the PR description's `## Review notes` as accepted findings, between its markers, indented between nonce lines like the resolved threads, and only
+for a same-repo PR by an `OWNER`, `MEMBER` or `COLLABORATOR`.
+Not done: reviewing only what a push changed since the last review. The diff step packs the whole diff into pieces with its own exclusion and holding
+rules, and a delta would need the same rules applied to a second diff, so it is left for its own change.

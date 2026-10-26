@@ -109,6 +109,9 @@ def render(text, pr, temp, pieces=None, context=None):
     # A case reviews its PR's head as a first review would: no thread of it is resolved yet.
     text = text.replace("${{ steps.resolved.outputs.threads || 'Not known: the threads could not be read.' }}",
                         "None: no thread of this PR from Copilot or Claude Review is resolved yet.")
+    # And with no accepted findings recorded in its description.
+    text = text.replace("${{ steps.notes.outputs.notes || 'Not known: the description could not be read.' }}",
+                        "None: the PR's description records no accepted findings.")
     text = text.replace("${{ github.event.pull_request.number }}", str(pr))
     text = text.replace("${{ runner.temp }}", str(temp))
     text = text.replace("${{ github.workspace }}", str(Path(temp) / "work" / "repo" / "repo"))

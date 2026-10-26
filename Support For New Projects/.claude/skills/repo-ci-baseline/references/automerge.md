@@ -189,6 +189,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Its prompt also holds the PR's resolved Copilot and Claude Review threads, with the replies of the PR's author, whoever resolved the thread and the repo's owner,
   and tells it not to raise a resolved thread's problem again unless the code has changed in a way that brings it back,
   so a finding a maintainer declined doesn't come back on every push (auth0-management-app#59 had one four times).
+  The author's local review ([pre-push-review.md](pre-push-review.md)) has already reviewed the whole branch, so the prompt asks for findings (each of which holds the merge)
+  only for bugs in code that runs, security weaknesses, tests and how GitHub itself behaves, and has docs, comments and conventions go under "Advisory" in the summary.
+  It also holds the findings the author accepted, from the PR description's `## Review notes`, as decisions like a resolved thread's; they count only on a same-repo PR
+  whose author is the `OWNER`, a `MEMBER` or a `COLLABORATOR`, so a fork's author can't silence a finding by listing it.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.

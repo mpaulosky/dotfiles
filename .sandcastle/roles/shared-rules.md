@@ -9,6 +9,7 @@ the Template. `<skill>` below is `Support For New Projects/.claude/skills/repo-c
   Template and the decisions behind it.
 - The Template's files are under `<skill>/template/owned/` (Owned: Apply always overwrites a repo's copy) and `<skill>/template/seed/` (Seed: written only when a repo has none).
 - dotfiles carries copies of some Owned files at the repo root: `.github/workflows/claude-review.yml`, `.github/workflows/pr-automerge.yml`,
+  `.github/workflows/pr-review-submitted.yml`, `.github/workflows/sandcastle.yml`,
   `.github/scripts/post_claude_review.py`, `.github/hooks/*`, `scripts/check-branch-name.sh` and the Owned files under `.sandcastle/`.
   Edit the Template's file, then copy it over the root copy, mode included. The gate fails when a copy differs from the Template's.
 - An Owned file is copied into other repos, where a bare `#N` reads as that repo's own issue. Write `mpaulosky/dotfiles#N` (or `<Repo>#N` for another repo's) in Owned files.

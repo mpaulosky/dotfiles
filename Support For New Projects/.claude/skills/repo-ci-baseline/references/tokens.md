@@ -1,7 +1,7 @@
 # Which token each call uses
 
 Template files (Owned): `.github/workflows/pr-automerge.yml` and its tests in `.github/scripts/tests/pr-automerge.test.mjs`,
-`.github/workflows/release.yml`, `.github/workflows/backfill-blog-posts.yml` and `.github/workflows/code-metrics.yml`,
+`.github/workflows/release.yml`, `.github/workflows/backfill-blog-posts.yml`, `.github/workflows/code-metrics.yml` and `.github/workflows/sandcastle.yml`,
 with the blog PR steps' tests in `.github/scripts/tests/test_pat_calls.py`.
 History: mpaulosky/dotfiles#231 moved PR Auto-Merge's and the blog PR steps' reads from `RELEASE_PR_PAT` to `GITHUB_TOKEN`.
 
@@ -109,7 +109,7 @@ The 5,000 REST requests an hour, the allowance that ran out on 2026-10-18, are l
 
 On a long watch during a busy round, raise `--interval` (say `--interval 300`), and check what's left with `gh api rate_limit`.
 
-## Outside the Template
+## Not split
 
 Sandcastle's `SANDCASTLE_GH_TOKEN` is listed here but not split. `sandcastle.yml` is an Owned Template workflow ([ADR 0009](../docs/adr/0009-sandcastle-workflow-is-owned.md)).
 Every host `gh` call Sandcastle makes, reads and writes alike, goes through its one `GH_TOKEN`, across `.sandcastle/lib/github.mts`, `gate.mts`, `intake.mts` and the rest,

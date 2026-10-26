@@ -42,6 +42,7 @@ A file in a directory the Template owns (workflows, hooks, CI scripts) that the 
 _Avoid_: Orphan, stale file
 
 **Sandcastle section**:
-The Template's files under `.sandcastle/`, with the Seed `package.json` and `pnpm-workspace.yaml`, and the local review's skill, agent and `scripts/review.sh`, that a repo running Sandcastle shares.
+The Template's files under `.sandcastle/`, with the Seed `package.json` and `pnpm-workspace.yaml`, the Sandcastle workflow and its Seed hook
+`.github/ci/sandcastle-prepare.sh`, and the local review's skill, agent and `scripts/review.sh`, that a repo running Sandcastle shares.
 Apply adds them only to a repo that has a `.sandcastle/` folder or no commits yet.
 _Avoid_: Sandcastle template, agent kit

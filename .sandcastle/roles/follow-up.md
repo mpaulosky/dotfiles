@@ -94,8 +94,8 @@ You can't reach GitHub from here, and don't need to: everything the PR and the i
 
 - Never rebase, amend, reset, squash or otherwise rewrite a commit that's already on the branch, and never force anything. The host pushes your commits without force, so a
   rewritten history is refused.
-- A fix to a Template workflow goes in the Template's copy. Only `claude-review.yml` and `pr-automerge.yml` have a root copy in dotfiles'
-  `.github/workflows/`; for those two, make the same change there too, which `test.sh` checks for drift. Don't touch any other file there, and
+- A fix to a Template workflow goes in the Template's copy. Only `claude-review.yml`, `pr-automerge.yml`, `pr-review-submitted.yml` and `sandcastle.yml` have a root copy in dotfiles'
+  `.github/workflows/`; for those, make the same change there too, which `test.sh` checks for drift. Don't touch any other file there, and
   never create one. A run in Actions can't push a workflow change; the host then hands the PR back to a person.
 - Commit every change you keep, and leave the worktree clean apart from `.sandcastle/follow-up.json`. The host runs `scripts/gate.sh` after you, and pushes only if it
   passes.

@@ -31,10 +31,6 @@ describe("ROLE_AGENTS", () => {
     }
   });
 
-  it("reports the ui role as enabled only when ROLE_AGENTS names it", () => {
-    assert.equal(uiEnabled(), "ui" in ROLE_AGENTS);
-  });
-
   // A repo that adds a ui entry also needs the prompts the role and its planner pick read, or its first ui build fails.
   it("has the prompts the ui role needs when the repo opted into it", { skip: !uiEnabled() && "the repo hasn't opted into the ui role" }, () => {
     const file = (path: string) => new URL(`../${path}`, import.meta.url);

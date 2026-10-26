@@ -262,14 +262,18 @@ describe("makeAgentSandbox", () => {
   });
 });
 
-// The skills a role prompt's "# SKILLS" section lists, as `- \`name\`: ...` bullets.
+// The skills a role prompt's "# SKILLS" section lists, as `- \`name\`: ...` bullets. Line endings may be CRLF, the heading may
+// carry trailing spaces, and lines inside a code fence are neither headings nor bullets.
 function listedSkills(prompt: string): string[] {
   const listed: string[] = [];
   let inSection = false;
-  for (const line of prompt.split("\n")) {
-    if (/^# /.test(line)) inSection = line === "# SKILLS";
+  let inFence = false;
+  for (const line of prompt.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    else if (inFence) continue;
+    else if (/^# /.test(line)) inSection = /^# SKILLS\s*$/.test(line);
     else if (inSection) {
-      const name = /^- `([^`]+)`:/.exec(line)?.[1];
+      const name = /^- `([^`]+)`/.exec(line)?.[1];
       if (name !== undefined) listed.push(name);
     }
   }
@@ -279,6 +283,18 @@ function listedSkills(prompt: string): string[] {
 describe("listedSkills", () => {
   it("reads the bullets of the SKILLS section only", () => {
     const prompt = "# TASK\n\n- `not-a-skill`: x\n\n# SKILLS\n\nIntro.\n\n- `dotnet-tdd`: a\n- `dotnet-xunit`: b\n\n# EXECUTION\n\n- `also-not`: y\n";
+
+    assert.deepEqual(listedSkills(prompt), ["dotnet-tdd", "dotnet-xunit"]);
+  });
+
+  it("reads a prompt with CRLF line endings, a heading with trailing spaces and a bullet without a colon", () => {
+    const prompt = "# TASK\r\n\r\n# SKILLS  \r\n\r\n- `dotnet-tdd`: a\r\n- `dotnet-xunit`\r\n\r\n# EXECUTION\r\n";
+
+    assert.deepEqual(listedSkills(prompt), ["dotnet-tdd", "dotnet-xunit"]);
+  });
+
+  it("ignores a heading or bullet inside a code fence", () => {
+    const prompt = "# SKILLS\n\n- `dotnet-tdd`: a\n\n```markdown\n# EXECUTION\n- `in-fence`: b\n```\n\n- `dotnet-xunit`: c\n";
 
     assert.deepEqual(listedSkills(prompt), ["dotnet-tdd", "dotnet-xunit"]);
   });

@@ -23,6 +23,7 @@ export type Role = (typeof ROLES)[number];
 // or plans the role until it has.
 export type OptInRole = "ui";
 
+// Every role the Owned modules can run: the ones every repo names, plus the opt-in one.
 export type AnyRole = Role | OptInRole;
 
 // The agent and budget lib/repo-config.mts#ROLE_AGENTS gives one role.

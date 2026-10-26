@@ -58,8 +58,9 @@ export const copyToWorktree = ["node_modules"];
 
 // The host skills the role prompts tell the agent to use, from the host
 // user's ~/.claude/skills (lib/skills.mts mounts each one read-only). None by
-// default: name a skill here only when a role prompt names it and it isn't in
-// the worktree.
+// default: name a skill here only when it isn't in the worktree and you also
+// list it in a `# SKILLS` section of the tester and backend prompts (and of the
+// ui prompt, once the repo opts into that role); lib/skills.test.mts checks it.
 export const SANDBOX_SKILLS: readonly string[] = [];
 
 // The CI checks scripts/gate.sh reproduces, which a follow-up pass re-runs

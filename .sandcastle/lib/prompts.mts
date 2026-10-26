@@ -76,8 +76,7 @@ export function backendPromptArgs(issue: SandcastleIssue, branch: string, uiRuns
       ? "The UI developer runs after you for this issue. Leave Blazor components and pages (`.razor` files, their code-behind and their " +
         "bUnit tests) to it, and make every other test pass. If the gate is still red only on those tests when you finish, say so in your " +
         "last commit's body."
-      : "No UI developer runs for this issue, so your run is the last developer run: every test must pass by its end, Blazor components " +
-        "and pages included.",
+      : "No UI developer runs for this issue, so your run is the last developer run: every test must pass by its end.",
   };
 }
 

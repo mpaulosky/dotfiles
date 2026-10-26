@@ -2,8 +2,8 @@
 name: pre-push-review
 description: >-
   The heavy local review every branch passes before it's pushed. Reviews the branch's whole diff against origin/main
-  with parallel reviewers, grades each finding Critical, Warning or Advisory, fixes the Critical ones behind a regression
-  test and the Advisory ones as they're found, reviews the fixes again, and records the result the gate checks. Use
+  with parallel reviewers, grades each finding Critical, Warning or Advisory, fixes all of them behind a regression
+  test or check as they're found, reviews the fixes again, and records the result the gate checks. Use
   before every push (the first and every fix), when asked to review a branch before pushing, or when the gate says no
   review is recorded for this diff.
 ---
@@ -24,12 +24,12 @@ Every finding has a severity, and the severity decides what happens to it:
 | Severity | What it covers | Fix | Blocks the push? |
 | --- | --- | --- | --- |
 | **Critical** | Bugs in code that runs: application code (`src/`), tests (`tests/`), the repository's tooling (`.sandcastle/`, `scripts/`, `.github/ci/`, `.github/scripts/`, workflows, git hooks) and build and dependency configuration (`*.csproj`, `Directory.*.props`, `global.json`, `package.json`, pnpm files), and new or changed behaviour with no test | Fixed in the review, behind a regression test | Yes, until fixed, or until the person accepts one left open for them (`needsPerson`, an earlier decision, or one the last, review-only round raised) |
-| **Warning** | Security weaknesses, whatever file they're in | Suggested; the person chooses to fix it or accept it | Yes, until the person decides |
+| **Warning** | Security weaknesses, whatever file they're in | Fixed in the review, behind a regression test | Yes, until fixed, or until the person accepts one left open for them (`needsPerson`, an earlier decision, or one the last, review-only round raised) |
 | **Advisory** | Docs, comments, skill and prompt text, conventions, everything else | Fixed in the review, with a gate check when one can pin it | Never: one left for a person goes to the follow-up issue |
 
 Tooling counts as code that runs: it decides what merges and releases. A security weakness is always a Warning, never
-Critical or Advisory, so it never passes unseen and accepting it stays one command. Advisory findings are fixed in the
-review too, so a stale doc or comment never waits for a later branch. Only one that needs a person, or that the last,
+Critical or Advisory, so it never passes unseen and accepting it stays one command. Warnings and Advisory findings are
+fixed in the review too, so a stale doc or comment never waits for a later branch. Only an Advisory one that needs a person, or that the last,
 review-only round raises (step 7), goes to the branch's follow-up issue (step 9).
 
 ## Rules
@@ -179,15 +179,14 @@ in doubt, and then it's a Warning. The follow-up issue and the notes publish onl
 misgraded under a lens that doesn't say security is still held back. Read the
 code at each finding's line yourself, then give it one outcome:
 
-- **Fix it** when it's a real Critical or Advisory finding, `needsPerson` is false, and the round isn't the last,
-  review-only one (step 7).
-- **Leave it open with its suggested fix** when it's a real Warning: the person decides whether it's fixed or accepted
-  (step 9). Never fix a Warning they haven't asked you to fix.
+- **Fix it** when it's a real Critical, Warning or Advisory finding, `needsPerson` is false, and the round isn't the last,
+  review-only one (step 7). A Warning is a security weakness: fix it with the same care and a test that fails without
+  the fix, and never loosen a check to make it pass.
 - **Leave it open for the follow-up issue** when it's a real Advisory finding whose `needsPerson` is true, or one the
   last, review-only round raised (step 7).
 - **Dismiss it** when the code shows the reviewer was wrong. Its reason cites the code (`file:line`) that shows it.
   Never dismiss a finding because it's hard to fix.
-- **Leave it open** for a person when a Critical finding's `needsPerson` is true, or the last, review-only round raised
+- **Leave it open** for a person, with its suggested fix, when a Critical or Warning finding's `needsPerson` is true, or the last, review-only round raised
   it (step 7), or when it's a problem a person decided needs no change, in
   the earlier review or in the owner's own PR-thread reply (step 3), or one the earlier review left open: the person
   decides it again for this code (step 9). Name the earlier finding or thread and its reason in the summary, so they can.
@@ -202,7 +201,7 @@ branch's own commits, took, so a person reading an older report can't accept a d
 
 ### 6. Fix behind a regression test
 
-Fix the Critical and Advisory findings, and the Warnings the person asks you to fix. For each one:
+Fix the Critical, Warning and Advisory findings. For each one:
 
 1. Write the test first, in the test project that mirrors the code (`tests/<Project>.Tests.<Kind>/`, a
    `.sandcastle/lib/*.test.mts`). Run it and see it fail for the reason the finding names.

@@ -25,9 +25,10 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
 
 - `/pre-push-review` reviews the branch's whole diff against `origin/main` with parallel reviewers (the bar, plus one per matching lens),
   grades each finding **Critical** (a bug in code that runs, or behaviour with no test), **Warning** (a security weakness, whatever the file) or
-  **Advisory** (docs, comments, conventions), fixes Critical ones behind a regression test and Advisory ones in the review (with a gate check when one can pin it),
+  **Advisory** (docs, comments, conventions), fixes all three kinds in the review (Critical and Warning ones behind a regression test, Advisory ones with a gate check when one can pin it),
   reviews the fixes again until a round fixes nothing, and records the result.
-- Critical and Warning findings left open block the push until the person fixes them or accepts them with `scripts/review.sh accept` (never on their behalf).
+- Critical and Warning findings left open (because they need a person, or the last, review-only round raised them) block the push until the person fixes them or accepts
+  them with `scripts/review.sh accept` (never on their behalf).
   Advisory findings never block: one that needs a person goes to one follow-up issue per branch.
 - The ledger is keyed by the branch's hunks against its merge base with `origin/main`. A clean merge of `main` keeps the review; a new commit, a conflict
   resolution or a `main` change inside one of the branch's hunks needs a new one. A re-Apply on `chore/reapply-baseline` passes without one only when every

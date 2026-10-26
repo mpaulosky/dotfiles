@@ -269,6 +269,16 @@ describe("the pre-push-review skill's follow-up issue text", () => {
   });
 });
 
+describe("the pre-push-review skill's fixing", () => {
+  it("fixes Critical, Warning and Advisory findings alike, and leaves one open only for a person", () => {
+    assert.match(skill, /Fix the Critical, Warning and Advisory findings\. For each one:/);
+    assert.match(skill, /\*\*Fix it\*\* when it's a real Critical, Warning or Advisory finding, `needsPerson` is false/);
+    assert.match(skill, /\| \*\*Warning\*\* \|[^|]*\| Fixed in the review, behind a regression test \|/);
+    assert.doesNotMatch(skill, /Never fix a Warning they haven't asked you to fix/);
+    assert.doesNotMatch(skill, /the Warnings the person asks you to fix/);
+  });
+});
+
 describe("the pre-push-review skill's reviewer effort", () => {
   it("is high, asked for explicitly", () => {
     assert.match(skill, /`model: "sonnet"` and `effort: "high"`/);

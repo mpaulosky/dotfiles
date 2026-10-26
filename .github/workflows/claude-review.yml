@@ -1684,7 +1684,23 @@ jobs:
             file (not in the diff) and make sure it is the line the finding is about. Say what
             goes wrong, in which situation, and how to fix it.
 
-            Answer with a short summary of the change and your verdict, and your findings.
+            Answer with a summary and your findings. Write the summary in Markdown, as short
+            sections a reader can skim:
+
+            - **Overview**: two or three sentences on what the PR changes, and your verdict.
+            - **Changes**: a table with the columns File and What changed, one row for each
+              file or group of related files.
+            - **Advisory (not blocking)**: a bullet list of what the instructions above send
+              there. Leave the section out when there is nothing to list.
+            - **Not reviewed**: the diff pieces and files you couldn't read, as above. Leave
+              it out when you read everything.
+
+            Start each finding's body with a bold one-line title, then say what goes wrong and
+            in which situation, then how to fix it. When the fix replaces the commented line
+            with one different line, also give that line as a GitHub suggestion: a fenced block
+            whose info string is suggestion and whose only content is the line's new text,
+            exactly as it should read. Give a suggestion only then, never for a change to
+            several lines or to a different line, and describe the fix in words otherwise.
           claude_args: >-
             --model claude-sonnet-5-5
             --effort high

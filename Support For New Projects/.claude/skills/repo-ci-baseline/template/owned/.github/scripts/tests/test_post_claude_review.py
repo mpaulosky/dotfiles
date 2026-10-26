@@ -139,6 +139,51 @@ def test_a_line_past_the_end_of_a_changed_file_goes_on_its_nearest_diff_line(cap
     assert "::warning::" not in capsys.readouterr().out
 
 
+SUGGESTED = "**Wrong default**\n\nIt is 0.\n\n```suggestion\nvalue = 1\n```"
+
+
+def test_a_suggestion_on_the_cited_line_is_kept():
+    gh = run(findings_json(("src/app.py", 22, SUGGESTED)))
+
+    _, review = gh.posted[0]
+    assert review["comments"][0]["body"] == SUGGESTED
+
+
+def test_a_suggestion_on_the_nearest_line_is_turned_into_plain_text():
+    # The suggestion would replace the nearest diff line, not the line Claude meant.
+    gh = run(findings_json(("src/app.py", 598, SUGGESTED)))
+
+    _, review = gh.posted[0]
+    body = review["comments"][0]["body"]
+    assert "```suggestion" not in body
+    assert "```text\nvalue = 1\n```" in body
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("```suggestion\nx\n```", "```text\nx\n```"),
+        ("````suggestion\nx\n````", "````text\nx\n````"),
+        ("~~~ suggestion\nx\n~~~", "~~~text\nx\n~~~"),
+        ("```SUGGESTION\nx\n```", "```text\nx\n```"),
+        ("   ```suggestion\nx\n```", "   ```text\nx\n```"),
+        ("a `suggestion` word and ```suggestions``` inline", "a `suggestion` word and ```suggestions``` inline"),
+        ("```python\nsuggestion = 1\n```", "```python\nsuggestion = 1\n```"),
+    ],
+)
+def test_defuse_suggestions_changes_only_suggestion_fences(body, expected):
+    assert pcr.defuse_suggestions(body) == expected
+
+
+def test_a_finding_off_the_diff_keeps_its_paragraphs_under_its_bullet_and_loses_its_suggestion():
+    body = "**Title**\n\nWhat goes wrong.\n\n```suggestion\nx = 1\n```"
+    _, review = run(findings_json(("src/app.py", 10, body))).posted[0]
+
+    assert "- `src/app.py:10`: **Title**\n  \n  What goes wrong." in review["body"]
+    assert "```suggestion" not in review["body"]
+    assert "  ```text\n  x = 1\n  ```" in review["body"]
+
+
 def test_a_real_line_outside_the_hunks_still_holds_the_merge():
     _, review = run(findings_json(("src/app.py", 10, "Unchanged code."))).posted[0]
 
@@ -881,3 +926,13 @@ def test_header_names_pr_automerge_among_what_adds_review_claude():
     adders = [s for s in sentences if re.search(r"\badds?\b", s) and "review:claude" in s]
     assert adders, "the header has no sentence about what adds review:claude"
     assert any("PR Auto-Merge" in s for s in adders), adders
+
+
+def test_the_prompt_asks_for_a_structured_summary_and_titled_findings():
+    prompt = " ".join(WORKFLOW.read_text().split())
+
+    for section in ("**Overview**", "**Changes**", "**Advisory (not blocking)**", "**Not reviewed**"):
+        assert section in prompt
+    assert "Start each finding's body with a bold one-line title" in prompt
+    assert "GitHub suggestion" in prompt
+

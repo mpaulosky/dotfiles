@@ -72,6 +72,10 @@ CREDENTIAL = re.compile(
 )
 REDACTED = "[redacted]"
 
+# A fence whose info string is `suggestion`: GitHub shows its content as a change the reader can
+# apply with one click to the line the comment sits on.
+SUGGESTION_FENCE = re.compile(r"(?mi)^([ \t]{0,3}(?:`{3,}|~{3,}))[ \t]*suggestion\b")
+
 
 class MalformedFindings(ValueError):
     pass
@@ -171,6 +175,11 @@ def redact(summary, findings):
     return summary, findings, count
 
 
+def defuse_suggestions(body):
+    """The body with each suggestion fence turned into a plain text fence, so no one-click suggestion applies."""
+    return SUGGESTION_FENCE.sub(r"\1text", body)
+
+
 def build_review(summary, findings, commentable, head, line_count=lambda path: None):
     """The review to post: inline comments for findings on the diff, the rest in the body.
 
@@ -187,9 +196,13 @@ def build_review(summary, findings, commentable, head, line_count=lambda path: N
             # Not a line of the file: Claude got the number wrong.
             nearest = min(lines, key=lambda n: (abs(n - line), n))
             note = f"_Claude cited line {line}, which isn't a line of this file, so this is on the nearest line in the diff._"
-            comments.append({"path": path, "line": nearest, "side": "RIGHT", "body": f"{note}\n\n{body}"})
+            # A suggestion would replace the nearest line, not the one Claude meant.
+            comments.append({"path": path, "line": nearest, "side": "RIGHT", "body": f"{note}\n\n{defuse_suggestions(body)}"})
         else:
-            off_diff.append(f"- `{path}:{line}`: {body}")
+            # In the review body a suggestion can't be applied, and a body of several
+            # paragraphs stays under its bullet when indented.
+            indented = defuse_suggestions(body).replace("\n", "\n  ")
+            off_diff.append(f"- `{path}:{line}`: {indented}")
 
     parts = ["**Claude Review**", summary.strip()]
     if not findings:

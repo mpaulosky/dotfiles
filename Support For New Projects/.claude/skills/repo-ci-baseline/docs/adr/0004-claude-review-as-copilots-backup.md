@@ -369,3 +369,14 @@ It reads the PR description's `## Review notes` as accepted findings, between th
 The benchmark above scored the old prompt, which asked for convention findings too, and it has not been rerun on this one: the local review now carries those, and a rerun is for the owner to ask for.
 Not done: reviewing only what a push changed since the last review. The diff step packs the whole diff into pieces with its own exclusion and holding
 rules, and a delta would need the same rules applied to a second diff, so it is left for its own change.
+
+## How the review reads (#299)
+
+The owner found Copilot's reviews easier to read than Claude's one dense paragraph, so the prompt asks for the same shape: a summary in short Markdown sections
+(Overview, a Changes table of file and what changed, Advisory, Not reviewed) and findings whose body starts with a bold title, then what goes wrong and the fix.
+The model's answer is still the schema's `summary` string and each finding's `body` string, so the posting script and the checks that hold a merge don't change.
+
+A finding may carry a GitHub `suggestion` block, which a reader applies to the commented line with one click, only when the fix replaces that one line.
+Two things keep that safe. When Claude cites a line that isn't in the file, `post_claude_review.py` puts the comment on the nearest diff line and turns the suggestion fence
+into plain text, because applying it would change the wrong line. And a suggestion is text the model wrote from a PR it read, so the reader still has to read it before applying it.
+This changes only the prompt's formatting instructions, so the benchmark's recall figures were not rerun for it.

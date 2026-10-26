@@ -65,8 +65,8 @@ and the local review's files ([pre-push-review.md](pre-push-review.md)), and its
 ## What isn't in it
 
 - **dotfiles' own tests:** `lib/repo-config.test.mts` (dotfiles' per-repo values and root copies), `lib/template.test.mts` (type-checks the
-  Template's `.sandcastle/` as Apply writes it and runs its Owned tests there), `lib/dockerfile.test.mts`, `lib/role-prompts.test.mts` and
-  `main.test.mts`, which read dotfiles' own files.
+  Template's `.sandcastle/` as Apply writes it and runs its Owned tests there), `lib/dockerfile.test.mts`, `lib/role-prompts.test.mts`,
+  `lib/owned-paths.test.mts` (keeps `OWNED_PATHS` in `lib/review-ledger.mts` equal to `template/owned/`) and `main.test.mts`, which read dotfiles' own files.
 - **`.github/workflows/sandcastle*.yml`.** Sandcastle's Actions token can't push a workflow change, so each repo keeps its own.
   To add the workflow to the Template later, file the issue with the `Sandcastle:local` label.
 

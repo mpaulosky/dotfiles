@@ -21,7 +21,7 @@ docs, comments, prompts and conventions. Every finding has a suggested fix.
 | Sandcastle host | `.sandcastle/` | Does it fail closed? Does a failure end the run red rather than green or crashing? Is every label it claims released on every path? Does no agent gain a way to reach GitHub? |
 | Shell | `*.sh`, hooks | Does it hold under `set -euo pipefail`, an empty variable, a path with spaces, GNU and BSD tools, a missing tool, and the `GIT_*` variables a hook sets? Does every failure exit non-zero? |
 | GitHub Actions | `.github/workflows/`, `.github/scripts/` | Which events start it, from which actor, with which token and permissions? What does a skipped, cancelled or failed run do to the PR's merge state? Can a fork's PR reach the secrets? Is every action pinned to a commit no older than `main`'s? |
-| Repo conventions | Any file | Does it keep the repository's own boundaries and conventions (`CLAUDE.md`, `docs/CODING_STANDARDS.md`, its ADRs and `.claude/rules/`), and leave the Owned Baseline files as the Template has them? |
+| Repo conventions | Any file | Does it keep the repository's own boundaries and conventions (`CLAUDE.md`, `.sandcastle/CODING_STANDARDS.md`, its ADRs and `.claude/rules/`), and leave the Owned Baseline files as the Template has them? |
 
 A diff that changes only Markdown gets the **Docs match the code** and **Repo conventions** lenses.
 

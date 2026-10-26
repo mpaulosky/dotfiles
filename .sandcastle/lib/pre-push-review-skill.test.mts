@@ -54,9 +54,9 @@ describe("the pre-push-review skill's Review notes", () => {
     // One && chain, so a failed fetch or a refused splice never reaches gh.
     assert.match(
       skill,
-      /gh pr view <n> --json body -q \.body > <run>\/old-body\.md && scripts\/review\.sh body <run>\/old-body\.md <run>\/body\.md && GH_REPO="[^"]+" gh pr edit <n> --body-file <run>\/body\.md/,
+      /gh pr view <n> --json body -q \.body > <run>\/old-body\.md && scripts\/review\.sh body <run>\/old-body\.md <run>\/body\.md && GH_REPO="\$repo" gh pr edit <n> --body-file <run>\/body\.md/,
     );
-    assert.match(skill, /scripts\/review\.sh body <run>\/old-body\.md <run>\/body\.md && GH_REPO="[^"]+" gh pr create [^`\n]*--body-file <run>\/body\.md$/m);
+    assert.match(skill, /scripts\/review\.sh body <run>\/old-body\.md <run>\/body\.md && repo="\$\(scripts\/review\.sh repo\)" && GH_REPO="\$repo" gh pr create [^`\n]*--body-file <run>\/body\.md$/m);
   });
 
   it("name the markers renderReviewNotes writes", () => {
@@ -289,8 +289,25 @@ describe("the pre-push-review skill's lenses", () => {
 });
 
 describe("the pre-push-review skill's repository", () => {
-  it("is told to gh by scripts/review.sh repo, never by a name written into the skill", () => {
-    assert.match(skill, /GH_REPO="\$\(scripts\/review\.sh repo\)" gh /);
-    assert.doesNotMatch(skill, /GH_REPO=[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+ /);
+  const prefix = 'repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh ';
+
+  it("is told to gh by scripts/review.sh repo, read first in a chain that stops when it fails, never by a name written into the skill", () => {
+    const assignments = skill.match(/GH_REPO=("[^"]*"|\S+)/g) ?? [];
+
+    assert.ok(assignments.length > 0, "the skill runs no gh command");
+    for (const assignment of assignments) assert.equal(assignment, 'GH_REPO="$repo"', assignment);
+    assert.doesNotMatch(skill, /GH_REPO=[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/);
+  });
+
+  it("starts every gh command with that chain, or continues one that already read the slug", () => {
+    // Each line that runs gh: the first on it must come right after the slug is read; a later one after && GH_REPO="$repo".
+    const lines = skill.split("\n").filter((line) => /(^|[`(\s])gh (api|issue|pr) /.test(line) && !/^\s*-? ?(Run|run)\b/.test(line));
+
+    assert.ok(lines.length >= 8, "too few gh commands found");
+    for (const line of lines) {
+      if (/^- Every `gh` command here/.test(line)) continue;
+      assert.ok(line.includes(prefix) || line.includes('GH_REPO="$repo" gh '), line);
+      assert.ok(!/(^|[^"])gh (api|issue|pr) /.test(line.replaceAll(prefix, "").replaceAll('GH_REPO="$repo" gh ', "")), line);
+    }
   });
 });

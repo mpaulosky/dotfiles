@@ -1,6 +1,6 @@
 // Untrusted text (an agent's or a reviewer's words, an issue title) made safe
 // to post on GitHub, and Markdown read as a reader sees it (visibleLetters,
-// which lib/build.mts and lib/review-ledger.mts use to refuse text that reads
+// which lib/review-ledger.mts uses to refuse text that reads
 // "Review notes"). Kept apart from lib/intake.mts so a command-line tool,
 // lib/review-ledger.mts, can use it without loading Sandcastle.
 
@@ -148,7 +148,7 @@ function letters(text: string): string {
 // dropped from all. So `## Re*view*&#32;**notes**` reads "reviewnotes", as it
 // renders. A link's destination and title stay in: over-reading only refuses
 // more. A named reference without its semicolon is left alone: where its name
-// ends can't be told, so build.mts refuses it. Test for a phrase with
+// ends can't be told, so a caller that refuses text must allow for one. Test for a phrase with
 // `includes` (or, for a line's start, `startsWith` on each space-separated
 // reading).
 export function visibleLetters(text: string): string {

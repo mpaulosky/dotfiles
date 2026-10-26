@@ -97,6 +97,8 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
   `origin/main`, using CI's configs, and prefer installed tools with pinned fallbacks. Then build and run each test
   project, where the stack allows it locally. Which steps it runs depends on the repo; what's standard is that
   everything it checks, CI checks too.
+  After the lints it checks that the branch's diff passed the local review (`scripts/review.sh check`, [pre-push-review.md](pre-push-review.md)) in a repo that
+  has `.sandcastle/lib/review-ledger.mts`; `GATE_SKIP_REVIEW=1` skips that for gate runs, and it is the one check CI doesn't repeat.
   Between the lints and the build it runs the Seed `.github/ci/gate-checks.sh <merge-base>` when the repo has one:
   checks only that repo needs, such as Blazor-Server's Sandcastle TypeScript check and Copilot review sync. The merge
   base is empty without an `origin/main`.

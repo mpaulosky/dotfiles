@@ -41,6 +41,8 @@ for tool in dotnet pnpm markdownlint-cli2 yamllint actionlint zizmor shellcheck;
 done
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+# The caller may be iterating with the review check skipped; the cases set what they need.
+unset GATE_SKIP_REVIEW FAIL_REVIEW
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
@@ -354,6 +356,40 @@ expect_log "gate-checks.sh gets the merge base" ran "repo-check base=$(git -C "$
 FAIL_REPO_CHECK=1 run_hook feature/9-repo-checks "$(push_stdin feature/9-repo-checks)"
 expect "a failing gate-checks.sh refuses the push" refused any
 expect_log "a failing gate-checks.sh stops the gate before the build" not-ran 'dotnet build*'
+git -C "$REPO" switch -q feature/1-x
+
+# The local review (scripts/gate.sh's "Local review" step) runs where the repo has
+# .sandcastle/lib/review-ledger.mts: it asks scripts/review.sh to check the merge
+# base, before the build. GATE_SKIP_REVIEW=1 (only that value) skips it, a repo
+# without the ledger code has no review to check, and with no origin/main there is
+# nothing to diff against, so the push is refused rather than waved through.
+commit_on feature/12-local-review .sandcastle/lib/review-ledger.mts "// a placeholder: the stub below stands for the ledger"
+cat > "$REPO/scripts/review.sh" <<EOF
+#!/usr/bin/env bash
+echo "review.sh \$*" >> "$LOG"
+[[ -z "\${FAIL_REVIEW:-}" ]]
+EOF
+chmod +x "$REPO/scripts/review.sh"
+git -C "$REPO" add scripts/review.sh
+git -C "$REPO" commit -q -m "stub review.sh"
+run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "a passing review check lets the push through to the tests" allowed tests-ran
+expect_log "the review check gets the merge base" ran "review.sh check $(git -C "$REPO" rev-parse origin/main)"
+FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "a failing review check refuses the push" refused any
+expect_log "a failing review check stops the gate before the build" not-ran 'dotnet build*'
+GATE_SKIP_REVIEW=1 FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "GATE_SKIP_REVIEW=1 skips the review check" allowed tests-ran
+expect_log "GATE_SKIP_REVIEW=1 doesn't call review.sh" not-ran 'review.sh*'
+GATE_SKIP_REVIEW=true FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "GATE_SKIP_REVIEW with any other value doesn't skip it" refused any
+REVIEW_MAIN="$(git -C "$REPO" rev-parse origin/main)"
+git -C "$REPO" update-ref -d refs/remotes/origin/main
+run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
+expect "without an origin/main the review can't be checked, so the push is refused" refused any "No origin/main to diff against"
+git -C "$REPO" update-ref refs/remotes/origin/main "$REVIEW_MAIN"
+run_hook feature/1-x "$(push_stdin feature/1-x)"
+expect_log "a repo without the ledger code never calls review.sh" not-ran 'review.sh*'
 git -C "$REPO" switch -q feature/1-x
 
 # The old sandcastle.gatedHead marker no longer skips the gate: a Sandcastle

@@ -19,6 +19,7 @@ import {
   latestLedger,
   readLedger,
   recordReview,
+  repoSlugProblem,
   takenIds,
   renderAdvisories,
   renderReport,
@@ -836,6 +837,45 @@ describe("checkReview", () => {
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });
 
+  it("reviews a re-Apply that deletes an Owned file, which Apply never does", () => {
+    commit(upstream, "global.json", "{}\n", "main has an Owned file");
+    run(repo, "fetch", "--quiet", "origin", "main");
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    run(repo, "rm", "--quiet", "global.json");
+    run(repo, "commit", "--quiet", "-m", "delete an Owned file");
+
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
+  });
+
+  it("reviews a re-Apply that turns an Owned path into a symlink", () => {
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    symlinkSync("/etc/passwd", join(repo, "global.json"));
+    run(repo, "add", "global.json");
+    run(repo, "commit", "--quiet", "-m", "symlink");
+
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
+  });
+
+  it("reviews a re-Apply that adds a submodule at an Owned path", () => {
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    run(repo, "update-index", "--add", "--cacheinfo", `160000,${run(repo, "rev-parse", "HEAD")},scripts/tests/vendor`);
+    run(repo, "commit", "--quiet", "-m", "gitlink");
+
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
+  });
+
+  it("still passes a re-Apply that adds a new executable Owned file and edits another", () => {
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    writeFileSync(join(repo, "scripts/check-pr-title.sh"), "#!/bin/sh\n");
+    chmodSync(join(repo, "scripts/check-pr-title.sh"), 0o755);
+    run(repo, "add", "scripts/check-pr-title.sh");
+    run(repo, "commit", "--quiet", "-m", "re-Apply");
+    commit(repo, "global.json", "{}\n", "re-Apply");
+
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
+  });
+
   it("reviews Owned-only changes on any other branch", () => {
     run(repo, "switch", "--quiet", "-C", "chore/edit-global", "origin/main");
     commit(repo, "global.json", "{}\n", "edit");
@@ -913,11 +953,19 @@ describe("recordReview", () => {
     assert.throws(() => record([finding({ status: "dismissed", test: null })]), /dismissed without a reason/);
   });
 
-  for (const path of ["a b.cs", "a<b.cs", "a>b.cs", "a`b.cs"]) {
+  for (const path of ["a<b.cs", "a>b.cs", "a`b.cs", "a\tb.cs", "a\nb.cs", "a  b.cs", "a\u2028b.cs"]) {
     it(`refuses a path that isn't a plain repository path: ${JSON.stringify(path)}`, () => {
       assert.throws(() => record([finding({ path })]), /a path has no whitespace/);
     });
   }
+
+  it("takes a path with single spaces, as every file of the Template has under \"Support For New Projects/\"", () => {
+    const path = "Support For New Projects/.claude/skills/repo-ci-baseline/apply.sh";
+
+    const ledger = record([finding({ path })]);
+
+    assert.match(renderReport(ledger), /Support For New Projects/);
+  });
 
   it("refuses a finding given as accepted: only the person accepts, with scripts/review.sh accept", () => {
     assert.throws(
@@ -2330,6 +2378,47 @@ describe("scripts/review.sh", () => {
   });
 });
 
+// The Seed's value before Apply fills it in, spelled so this Owned file carries no placeholder.
+const UNFILLED = `{{${"OWNER"}}}/{{${"REPO"}}}`;
+
+describe("repoSlugProblem and the repo command", () => {
+  it("accepts OWNER/REPO and nothing else", () => {
+    for (const slug of ["mpaulosky/dotfiles", "o/r", "my-org/my.repo_1"]) assert.equal(repoSlugProblem(slug), undefined, slug);
+    for (const slug of [UNFILLED, "", "o", "o/r/x", "github.com/o/r", "o/r\n", " o/r", "o /r", "/r", "o/"]) {
+      assert.match(repoSlugProblem(slug) ?? "", /not OWNER\/REPO/, JSON.stringify(slug));
+    }
+  });
+
+  it("prints a valid slug alone on one line and exits 0", () => {
+    const written: string[] = [];
+    const write = process.stdout.write;
+    process.stdout.write = ((text: string) => (written.push(text), true)) as typeof process.stdout.write;
+    try {
+      assert.equal(main(["repo"], repo, {}, "mpaulosky/dotfiles"), 0);
+    } finally {
+      process.stdout.write = write;
+    }
+
+    assert.deepEqual(written, ["mpaulosky/dotfiles\n"]);
+  });
+
+  it("exits 1 and prints nothing to stdout for the unfilled Seed value", () => {
+    const written: string[] = [];
+    const out = process.stdout.write;
+    const err = process.stderr.write;
+    process.stdout.write = ((text: string) => (written.push(text), true)) as typeof process.stdout.write;
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+    try {
+      assert.equal(main(["repo"], repo, {}, UNFILLED), 1);
+    } finally {
+      process.stdout.write = out;
+      process.stderr.write = err;
+    }
+
+    assert.deepEqual(written, []);
+  });
+});
+
 describe("OWNED_PATHS", () => {
   it("matches folders and globs as the rule means them", () => {
     for (const path of [".github/workflows/ci.yml", ".github/hooks/tests/pre-push.test.sh", ".github/scripts/a/b/c.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".sandcastle/lib/build.mts"]) {
@@ -2352,6 +2441,8 @@ describe("OWNED_PATHS", () => {
 
   it("leaves out the files the repository lists as its own, which are Owned patterns' otherwise", () => {
     for (const path of NOT_OWNED_BASELINE_PATHS) {
+      // A file, exactly as git names it: NOT_OWNED is matched by exact string, so a folder, a "./" or a stray space excludes nothing.
+      assert.ok(!path.endsWith("/") && !path.startsWith("./") && path === path.trim(), `${JSON.stringify(path)} must be a file path, not a folder, "./" or padded`);
       assert.equal(underOwnedPattern(path), true, `${path} isn't under an Owned pattern, so listing it does nothing`);
       assert.equal(isOwnedPath(path), false, path);
     }

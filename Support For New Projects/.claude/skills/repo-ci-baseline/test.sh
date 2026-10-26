@@ -96,7 +96,7 @@ step "shellcheck"
 shell_files=(
   "$skill_dir/apply.sh" "$skill_dir/reapply.sh" "$skill_dir/test.sh" "$skill_dir/github-settings.sh" "$skill_dir/status.sh"
   "$skill_dir/land.sh" "$skill_dir/rollout.sh"
-  "$skill_dir/tests/apply.test.sh" "$skill_dir/tests/reapply.test.sh"
+  "$skill_dir/tests/apply.test.sh" "$skill_dir/tests/reapply.test.sh" "$skill_dir/tests/dotfiles-gate.test.sh"
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
   "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh" "$owned/scripts/review.sh"
@@ -261,6 +261,7 @@ channel="$(sed -nE 's/^ARG DOTNET_CHANNEL=([^ ]+).*/\1/p' "$seed/.sandcastle/Doc
 
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
+"$skill_dir/tests/dotfiles-gate.test.sh" || fail "dotfiles-gate.test.sh"
 
 step "reapply.sh smoke test"
 "$skill_dir/tests/reapply.test.sh" || fail "reapply.test.sh"

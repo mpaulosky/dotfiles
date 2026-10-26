@@ -17,8 +17,8 @@ set -euo pipefail
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 TSX="$ROOT/node_modules/.bin/tsx"
 # A fresh worktree (the Baseline's re-Apply makes one) has no packages yet:
-# install them, as the UI build does. Its output goes to stderr, since callers
-# read what every command prints.
+# install them. Its output goes to stderr, since callers read what every
+# command prints.
 if [[ ! -x "$TSX" ]]; then
   if ! command -v pnpm > /dev/null 2>&1; then
     echo "❌ $TSX not found, and pnpm isn't installed: run corepack enable pnpm, then pnpm install." >&2

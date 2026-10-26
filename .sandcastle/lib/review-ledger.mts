@@ -47,9 +47,11 @@ export const EMPTY_DIFF_KEY = "empty";
 export const REAPPLY_BRANCH = "chore/reapply-baseline";
 
 // The Owned Baseline files, as the Template ships them (a test in dotfiles
-// keeps this list and template/owned the same). A re-Apply changes only these,
-// and they're reviewed in the Template's own PRs; a repository must never
-// change them, so a review there could only raise findings nobody there may fix.
+// keeps this list and template/owned the same). A re-Apply overwrites only
+// these (and writes any Seed file the repository lacks, which is not on this
+// list and needs a review), and they're reviewed in the Template's own PRs; a
+// repository must never change them, so a review there could only raise
+// findings nobody there may fix.
 export const OWNED_PATHS = [
   ".github/workflows/*.yml",
   ".github/hooks/**",
@@ -120,9 +122,12 @@ export type Severity = (typeof SEVERITIES)[number];
 const findingFields = z.object({
   id: z.string().regex(/^R[1-9]\d{0,5}$/, "ids are R1, R2, ... up to R999999, with no leading zero"),
   lens: z.string().trim().min(1),
-  // A repository path: no whitespace, markup or backtick, so it can't carry
-  // anything into the PR description that plainText would have to undo.
-  path: z.string().trim().min(1).regex(/^[^\s<>`]+$/, "a path has no whitespace, <, > or backtick"),
+  // A repository path: no markup or backtick, and no whitespace but single
+  // spaces between its parts (the Template's own files sit under "Support For
+  // New Projects/"), so it can't carry anything into the PR description that
+  // plainText would have to undo: renderReport and the notes run it through
+  // plainText, and a tab, newline or double space never gets that far.
+  path: z.string().trim().min(1).regex(/^[^\s<>`]+( [^\s<>`]+)*$/, "a path has no whitespace but single spaces between its parts, and no <, > or backtick"),
   line: z.number().int().nonnegative(),
   summary: z.string().trim().min(1),
   status: z.enum(["fixed", "dismissed", "accepted", "open"]),
@@ -622,12 +627,22 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
   if (git(cwd, "branch", "--show-current") === REAPPLY_BRANCH) {
     // The key's own pins: no renames (a file moved into an Owned folder is
     // still a change elsewhere), no ignored submodules, no relative paths, and
-    // no trimming, so a name starting with a space keeps it.
-    const paths = gitBytes(cwd, ["-c", "diff.relative=false", "diff", "--name-only", "--no-renames", "--ignore-submodules=none", "-z", base, head])
+    // no trimming, so a name starting with a space keeps it. The raw form, not
+    // just the names, because Apply only adds or overwrites regular files and
+    // never deletes: a deleted Owned file, a symlink or a submodule under an
+    // Owned path is not what a re-Apply writes, and is reviewed.
+    const raw = gitBytes(cwd, ["-c", "diff.relative=false", "diff", "--raw", "--no-renames", "--ignore-submodules=none", "-z", base, head])
       .toString("utf8")
       .split("\0")
-      .filter((path) => path !== "");
-    if (paths.every(isOwnedPath)) {
+      .filter((entry) => entry !== "");
+    const changes: { status: string; mode: string; path: string }[] = [];
+    for (let index = 0; index + 1 < raw.length; index += 2) {
+      const [, mode = "", , , status = ""] = raw[index]!.split(" ");
+      changes.push({ status, mode, path: raw[index + 1]! });
+    }
+    const writtenByApply = (change: { status: string; mode: string; path: string }) =>
+      (change.status === "A" || change.status === "M") && (change.mode === "100644" || change.mode === "100755") && isOwnedPath(change.path);
+    if (changes.length > 0 && changes.every(writtenByApply)) {
       return { ok: true, message: "A Baseline re-Apply that changes only Owned files: the Template's own review covers them." };
     }
   }
@@ -688,9 +703,8 @@ export function renderReport(ledger: Ledger): string {
 
 // The markers around the PR description's `## Review notes`, so the section
 // can be replaced without touching what follows it (`Fixes #`, the footer).
-// They're the pair mpaulosky/auth0-management-app#82's own description used: its request to the
-// Template's Claude Review names the first, and mpaulosky/auth0-management-app#81's names both. The
-// release blog drops HTML comments.
+// The release blog drops HTML comments, so the markers don't reach the published
+// notes.
 export const REVIEW_NOTES_START = "<!-- review-notes -->";
 export const REVIEW_NOTES_END = "<!-- /review-notes -->";
 
@@ -700,7 +714,7 @@ export const REVIEW_NOTES_END = "<!-- /review-notes -->";
 // counted, so the maintainer knows to wait for the
 // private report. GitHub's reviewers aren't known to read the description, so
 // a thread one opens on an accepted finding gets the same "Left for the
-// owner." reply as every thread left for the owner (CLAUDE.md), which doesn't
+// owner." reply as every thread left for the owner (docs/PROCESS.md), which doesn't
 // say which thread a security finding is on; the reason stays in the ledger
 // and, for a finding that isn't a security one, in these notes. Empty when
 // none was accepted.
@@ -907,9 +921,15 @@ const USAGE = `Usage: scripts/review.sh <command>
   repo                   print this repository as OWNER/REPO, for GH_REPO (lib/repo-config.mts's REPO_SLUG)
   next                   print the first finding id this run may use`;
 
+// Why `slug` isn't a repository gh can be told (GH_REPO), or undefined when it is: exactly OWNER/REPO, each
+// part a GitHub name, with nothing around it. The Seed's unfilled owner-and-repo placeholder fails.
+export function repoSlugProblem(slug: string): string | undefined {
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(slug) ? undefined : `REPO_SLUG in lib/repo-config.mts is ${JSON.stringify(slug)}, not OWNER/REPO.`;
+}
+
 // The command line. Returns the exit code: 0 only for a command that did
 // what it was asked, so the gate can't pass on a failure.
-export function main(args: readonly string[], cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): number {
+export function main(args: readonly string[], cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env, slug: string = REPO_SLUG): number {
   const [command, ...rest] = args;
   const out = (text: string) => process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
   const fail = (text: string) => {
@@ -995,11 +1015,14 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
       case "next":
         out(`R${takenIds(cwd, mergeBase(cwd)) + 1}`);
         return 0;
-      case "repo":
-        // gh ignores an empty GH_REPO, so a slug that isn't OWNER/REPO fails here, not as a quiet default.
-        if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(REPO_SLUG)) return fail(`REPO_SLUG in lib/repo-config.mts is "${REPO_SLUG}", not OWNER/REPO.`);
-        out(REPO_SLUG);
+      case "repo": {
+        // gh ignores an empty GH_REPO and falls back to its default repository, so a slug that isn't
+        // OWNER/REPO fails here with a non-zero exit, and the skill stops its command chain on it.
+        const problem = repoSlugProblem(slug);
+        if (problem !== undefined) return fail(problem);
+        out(slug);
         return 0;
+      }
       default:
         return fail(USAGE);
     }

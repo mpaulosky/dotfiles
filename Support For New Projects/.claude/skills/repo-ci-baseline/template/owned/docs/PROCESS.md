@@ -57,8 +57,8 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 
 - **Review before you push** (in a repo with Sandcastle, where `.sandcastle/lib/review-ledger.mts` exists: the review and its gate
   step are added only there). `/pre-push-review` (`.claude/skills/pre-push-review/`) reviews the branch's whole diff
-  against `origin/main` with parallel read-only reviewers, fixes each Critical and Advisory finding behind a regression
-  test, reviews the fixes again until a round fixes nothing, and records the result under `.git/review/`. GitHub's
+  against `origin/main` with parallel read-only reviewers, fixes each Critical finding behind a regression test and each
+  Advisory one in the review, reviews the fixes again until a round fixes nothing, and records the result under `.git/review/`. GitHub's
   reviewers are then a backstop that finds little. A Critical or Warning finding left open blocks the push until it is
   fixed or the person accepts it with `scripts/review.sh accept R3 "<reason>"`, never on their behalf. Advisory findings
   (docs, comments, conventions) never block: one that needs a person goes to one follow-up issue per branch.
@@ -75,10 +75,12 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   before the push: PR Auto-Merge merges once the last thread is resolved, fix or not. On every other thread, whoever
   opened it (one you decline, one raising a finding someone accepted, one waiting on a person's decision), reply only
   "Left for the owner." and leave it unresolved, so the hold keeps it for the owner. The same reply on all of them
-  doesn't say which thread an accepted security finding is on. A Claude Code session ends every reply and comment it
+  doesn't say which thread an accepted security finding is on. (This is for people and Claude Code sessions; Sandcastle's follow-up
+  pass keeps replying with its reason.) A Claude Code session ends every reply and comment it
   posts with `<!-- claude-session -->`: it posts with the owner's token, so nothing else tells its comments from the
   owner's. When a reviewer on GitHub finds a problem the local review missed, fix it with a lesson, so the next branch
-  catches it locally: a test, a check in `.github/ci/gate-checks.sh`, or a sharper lens or review-bar instruction.
+  catches it locally: a test, a check in `.github/ci/gate-checks.sh`, or a sharper lens in the repo's `code-review` skill. The review's own
+  `lenses.md` and `review-bar.md` are Owned, so a lesson for them goes to the Template first.
 - **PR Auto-Merge squash-merges** a same-repo PR once its checks pass, Copilot has reviewed its latest commit and every
   thread is resolved. After three review rounds it stops waiting for a review of the latest commit, so a PR can't chase
   reviews forever, but every unresolved thread still holds it, Copilot's and Claude's included. At that point, once

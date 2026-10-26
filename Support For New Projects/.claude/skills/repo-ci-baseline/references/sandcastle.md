@@ -89,7 +89,7 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
    the gate reads its checks from: its scripts and tests, `.github/workflows/` and `package.json`. A gate whose branch changes `GATE_SCRIPT`, or a `GATE_SCRIPT` that isn't a file at the
    branch's base, fails without running.
 
-9. Add `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` to `lib/repo-config.mts`, and the settings deny rules, as [pre-push-review.md](pre-push-review.md#adapting) says.
+9. Add `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` to `lib/repo-config.mts` as one-line `export const` lines, and the settings deny rules, as [pre-push-review.md](pre-push-review.md#adapting) says.
 
 Blazor-Server's UI developer role has to come into the Template (`ROLES`, `OPTIONAL_ROLES` and the build) before Blazor-Server migrates,
 or it loses that role.

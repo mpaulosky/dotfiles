@@ -229,7 +229,11 @@ check "ledger waits: the report names the four and says what to add" \
 n=0
 for config in 'export const REPO_SLUG = "o/r";' \
   $'export const REPO_SLUG_OLD = 1;\nexport const NOT_OWNED_BASELINE_PATHS = [];' \
-  $'// export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];'; do
+  $'// export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];' \
+  $'  export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];' \
+  $'export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS_OLD = [];' \
+  $'export const REPO_SLUG = "o/r";\n  export const NOT_OWNED_BASELINE_PATHS = [];' \
+  $'export const REPO_SLUG = "o/r";\n// export let NOT_OWNED_BASELINE_PATHS = [];'; do
   n=$((n + 1))
   repo="$work/ledger waits $n"
   new_repo "$repo"
@@ -240,6 +244,17 @@ for config in 'export const REPO_SLUG = "o/r";' \
   out="$("$apply" "$repo")"
   check "ledger waits ($n): the ledger is held back" '[[ ! -e "$repo/.sandcastle/lib/review-ledger.mts" ]]'
 done
+
+# One-line exports with a `let`, or with extra spaces, count: the same forms review.sh takes.
+repo="$work/ledger ready forms"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle/lib"
+printf 'export  let   REPO_SLUG = "o/r";\nexport   const   NOT_OWNED_BASELINE_PATHS: string[] = [];\n' > "$repo/.sandcastle/lib/repo-config.mts"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$("$apply" "$repo")"
+check "ledger ready (let, extra spaces): the ledger is written" '[[ -f "$repo/.sandcastle/lib/review-ledger.mts" ]]'
+check "ledger ready (let, extra spaces): nothing held back" '! grep -q "Local review files left out" <<< "$out"'
 
 repo="$work/ledger ready"
 new_repo "$repo"

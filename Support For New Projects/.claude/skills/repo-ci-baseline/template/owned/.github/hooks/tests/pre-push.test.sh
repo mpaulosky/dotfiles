@@ -416,6 +416,17 @@ expect_log "a remote with no main yet doesn't call review.sh" not-ran 'review.sh
 git -C "$EMPTY_REMOTE" fetch -q "$REPO" "$REVIEW_MAIN:refs/heads/main"
 run_gate feature/12-local-review
 expect "a remote whose main isn't fetched still needs the fetch" refused any "git fetch origin main"
+# Only refs that end in /main but aren't refs/heads/main: still no main to diff against.
+git -C "$EMPTY_REMOTE" update-ref -d refs/heads/main
+git -C "$EMPTY_REMOTE" update-ref refs/heads/feature/main "$REVIEW_MAIN"
+git -C "$EMPTY_REMOTE" update-ref refs/tags/main "$REVIEW_MAIN"
+FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a remote with only feature/main and a main tag has no main either" allowed any
+expect_log "a remote with only feature/main and a main tag doesn't call review.sh" not-ran 'review.sh*'
+# A remote that can't be reached is refused, not mistaken for one with no main.
+git -C "$REPO" remote set-url origin "$EMPTY_REMOTE/does-not-exist"
+run_gate feature/12-local-review
+expect "an unreachable remote refuses the push" refused any "could not be reached"
 git -C "$REPO" remote remove origin
 rm -rf "$EMPTY_REMOTE"
 git -C "$REPO" update-ref refs/remotes/origin/main "$REVIEW_MAIN"

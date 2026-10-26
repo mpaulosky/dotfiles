@@ -2449,7 +2449,7 @@ describe("scripts/review.sh", () => {
 
   it("takes names exported with let, or with extra spaces", () => {
     const { checkout, runScript } = bareCheckout("works");
-    writeFileSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"), `${configWith(["REPO_SLUG"], "let")}export   const NOT_OWNED_BASELINE_PATHS = [];\n`);
+    writeFileSync(join(checkout, ".sandcastle", "lib", "repo-config.mts"), `export  let   REPO_SLUG = "o/r";\nexport   const   NOT_OWNED_BASELINE_PATHS = [];\n`);
 
     const result = runScript("key");
 

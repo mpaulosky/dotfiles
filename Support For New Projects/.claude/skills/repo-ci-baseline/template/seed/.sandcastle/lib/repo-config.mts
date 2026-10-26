@@ -88,7 +88,9 @@ export const CHECK_PATHS: readonly string[] = [".sandcastle/", "scripts/", ".git
 
 // This repository as OWNER/REPO, which the pre-push-review skill gives every gh
 // command as GH_REPO (`scripts/review.sh repo`): in a clone whose only remote is
-// a fork, gh's default repository is the fork. Apply fills it in.
+// a fork, gh's default repository is the fork. Apply fills it in. Keep both this and
+// NOT_OWNED_BASELINE_PATHS as a one-line `export const NAME` or `export let NAME`: Apply and
+// scripts/review.sh look for them that way.
 export const REPO_SLUG = "{{OWNER}}/{{REPO}}";
 
 // The files under an Owned Baseline pattern (see OWNED_PATHS in

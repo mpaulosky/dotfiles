@@ -1122,7 +1122,7 @@ def test_ordinary_text_with_short_words_is_left_alone():
 
 def test_the_script_and_the_workflow_redact_alike():
     rng = random.Random(299)
-    pieces = [a_jwt(), a_jwt(second=200), GLUED, "ghs_9_" + a_jwt(), "sk-ant-" + "q" * 25, "x-", "eyJ", ".", " ", "/", "a" * 130, "ok"]
+    pieces = [a_jwt(), a_jwt(second=200), GLUED, "ghs_9_" + a_jwt(), "sk-ant-" + "q" * 25, "x-", "eyJ", ".", " ", "/", "a" * 130, "ok", LONG_NAME]
     redact_workflow = workflow_credentials()["redact_credentials"]
     for _ in range(300):
         text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 6)))
@@ -1167,6 +1167,43 @@ def test_redacting_takes_linear_time_on_long_input(text):
 
 
 LONG_NAME = "tests/Get_Articles_When_" + "A" * 130 + "_Returns_401.cs"
+
+# Long tokens that start no credential: a generated test's name, an identifier, a hex digest, a base64 blob.
+LONG_PLAIN_TOKENS = {
+    "test name": LONG_NAME,
+    "identifier": "Get" + "Articles" * 30 + "ForTheCurrentUser",
+    "sha512 digest": "9f86d081884c7d659a2feaa0c55ad015" * 8,
+    "base64 blob": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo" * 5 + "==",
+    "dotted name": "Company." + "Segment" * 30 + ".Service",
+}
+
+
+@pytest.mark.parametrize("text", LONG_PLAIN_TOKENS.values(), ids=LONG_PLAIN_TOKENS.keys())
+def test_a_long_token_that_starts_no_credential_is_left_alone_with_no_warning(text):
+    sentence = f"The finding is in {text}, which is not a secret."
+    for redact_text in (pcr.redact_credentials, workflow_credentials()["redact_credentials"]):
+        assert redact_text(sentence) == (sentence, 0)
+
+
+def test_a_long_file_name_quoted_in_a_finding_body_and_the_summary_is_left_alone():
+    summary, findings, count = pcr.redact(f"| {LONG_NAME} | added |", [{"path": "a.py", "line": 3, "body": f"See `{LONG_NAME}`."}])
+
+    assert LONG_NAME in summary
+    assert LONG_NAME in findings[0]["body"]
+    assert count == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["ghp_" + "A" * 300, "sk-ant-" + "a" * 300, "github_pat_" + "a" * 300, "prefix" + "q" * 140 + "eyJ" + "q" * 140],
+    ids=["ghp", "sk-ant", "github_pat", "eyJ in the middle"],
+)
+def test_a_long_token_that_starts_a_credential_is_still_replaced_whole(text):
+    for redact_text in (pcr.redact_credentials, workflow_credentials()["redact_credentials"]):
+        redacted, count = redact_text(f"see {text} end")
+
+        assert redacted == "see [redacted] end"
+        assert count == 1
 
 
 def test_a_long_file_name_in_a_finding_path_is_left_alone():

@@ -398,7 +398,9 @@ The regexes that run on the model's text also had to stay linear, because that t
 fence characters. `CREDENTIAL` is unchanged, since a rewrite that started its JWT forms later in a run would miss a JWT glued to the end of another token, but it was quadratic on a long run
 of token characters: the first segment's characters include e, y and J, so a start at every `eyJ` rescanned the run each time, about 0.5 s at 60,000 characters and minutes at 200,000.
 So both the posting script and the workflow's answer check (`redact_credentials`, mirrored, with a test that they redact alike) first replace any token, dots included, that holds a run of more
-than 128 token characters, which no legitimate review text has, and which leaves nothing of a long JWT's payload or signature. What `CREDENTIAL` then scans has short runs, so its cost is linear.
+than 128 token characters and one of the strings every `CREDENTIAL` alternative starts with (`eyJ`, `gh[pousr]_`, `sk-ant-`, `github_pat_`), which leaves nothing of a long JWT's payload or
+signature. What `CREDENTIAL` then scans has no long run holding a start, so its cost is linear. A long token without one is left alone: it can't match `CREDENTIAL`, and legitimate review
+text has them (a generated test's file name quoted in a finding, a long identifier, a digest), where replacing them dropped the file reference and raised a false warning (#301).
 A JWT glued straight onto a `ghp_` or `sk-ant-` token is redacted as it always was: the token's pattern takes the JWT's first segment too, and the rest is no longer a JWT.
 A finding's `path` gets only `CREDENTIAL` (`redact_path`), not the long-run rule: a long generated file name is no credential, and a path that no longer matched the diff would
 move its finding into the review body, where it holds the merge. A path past 1,024 characters is no real path and gets the full rule.

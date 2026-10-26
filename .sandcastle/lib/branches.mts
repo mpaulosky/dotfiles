@@ -64,6 +64,18 @@ export function parseHeads(lsRemote: string): string[] {
     .map((line) => line.split("\t")[1]!.replace(/^refs\/heads\//, ""));
 }
 
+// The commit that `git ls-remote origin refs/heads/<branch>` printed for exactly
+// that branch, or undefined when it printed none. ls-remote matches refs by their
+// tail, so a branch like a/refs/heads/<branch> comes back too, and can sort
+// before the real one.
+export function headOfRef(lsRemote: string, branch: string): string | undefined {
+  const ref = `refs/heads/${branch}`;
+  return lsRemote
+    .split("\n")
+    .map((line) => line.split(/\s+/))
+    .find((fields) => fields[1] === ref)?.[0] || undefined;
+}
+
 // The remote git operations prepareBranches needs; tests pass a stub.
 export type RemoteGit = {
   // The feature/*, fix/* and hotfix/* branches on origin.
@@ -140,7 +152,7 @@ function exitStatus(error: unknown): unknown {
 // The live BranchRefs, whose `contains` lib/follow-up-pass.mts also asks
 // whether a PR's head already has main.
 export const originRefs: BranchRefs = {
-  remoteHead: (branch) => git("ls-remote", "origin", `refs/heads/${branch}`).split(/\s/)[0] || undefined,
+  remoteHead: (branch) => headOfRef(git("ls-remote", "origin", `refs/heads/${branch}`), branch),
   localHead: (ref) => {
     try {
       return git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`);

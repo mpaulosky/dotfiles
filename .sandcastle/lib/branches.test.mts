@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { branchFor, discardClosedWork, fetchMain, isIssueBranch, parseHeads, prepareBranches, slugFor, type BranchRefs } from "./branches.mts";
+import { branchFor, discardClosedWork, fetchMain, headOfRef, isIssueBranch, parseHeads, prepareBranches, slugFor, type BranchRefs } from "./branches.mts";
 
 // The branch standard, from the script the pre-push hook and CI's Branch name check share.
 const checkBranchName = fileURLToPath(new URL("../../scripts/check-branch-name.sh", import.meta.url));
@@ -154,6 +154,37 @@ describe("parseHeads", () => {
 
   it("returns nothing for empty output", () => {
     assert.deepEqual(parseHeads(""), []);
+  });
+});
+
+describe("headOfRef", () => {
+  it("reads the commit on the branch's own line", () => {
+    assert.equal(headOfRef("abc123\trefs/heads/fix/4-foo\n", "fix/4-foo"), "abc123");
+  });
+
+  it("skips a ref that only matches by its tail, even when it sorts first", () => {
+    const output = "bad111\trefs/heads/a/refs/heads/fix/4-foo\nabc123\trefs/heads/fix/4-foo\n";
+
+    assert.equal(headOfRef(output, "fix/4-foo"), "abc123");
+  });
+
+  it("skips a ref that only matches by its tail when it sorts after the real one", () => {
+    const output = "abc123\trefs/heads/fix/4-foo\nbad111\trefs/heads/z/refs/heads/fix/4-foo\n";
+
+    assert.equal(headOfRef(output, "fix/4-foo"), "abc123");
+  });
+
+  it("reads lines that end in a carriage return", () => {
+    assert.equal(headOfRef("abc123\trefs/heads/fix/4-foo\r\n", "fix/4-foo"), "abc123");
+  });
+
+  it("returns undefined for a line with no commit before the ref", () => {
+    assert.equal(headOfRef("\trefs/heads/fix/4-foo\n", "fix/4-foo"), undefined);
+  });
+
+  it("returns undefined when only a tail match exists, or nothing", () => {
+    assert.equal(headOfRef("bad111\trefs/heads/a/refs/heads/fix/4-foo\n", "fix/4-foo"), undefined);
+    assert.equal(headOfRef("", "fix/4-foo"), undefined);
   });
 });
 

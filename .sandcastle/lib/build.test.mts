@@ -2696,6 +2696,10 @@ describe("remoteBranchIsOnOrigin", () => {
     assert.equal(remoteBranchIsOnOrigin(branch, () => ""), false);
   });
 
+  it("is false when the branch's line names no commit", () => {
+    assert.equal(remoteBranchIsOnOrigin(branch, () => `\trefs/heads/${branch}\n`), false);
+  });
+
   it("is false when only a branch that matches by its tail exists", () => {
     const run = () => `${"c".repeat(40)}\trefs/heads/a/refs/heads/${branch}\n`;
 

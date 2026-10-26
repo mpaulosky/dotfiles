@@ -7,7 +7,7 @@ import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { isRoleTimeout, runRoleInSandbox } from "./agents.mts";
-import { commitsAhead, fetchMain } from "./branches.mts";
+import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
 import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
 import {
   BASE_BRANCH,
@@ -533,21 +533,15 @@ export async function createCheckedSandbox(
 // picked by its exact ref name: a branch like a/refs/heads/main also matches
 // and can sort first.
 export function remoteMainIs(commit: string, run: (...args: string[]) => string = git): boolean {
-  const tip = run("ls-remote", "origin", "refs/heads/main")
-    .split("\n")
-    .map((line) => line.split(/\s+/))
-    .find(([, ref]) => ref === "refs/heads/main")?.[0];
-  return tip !== undefined && tip !== "" && tip === commit;
+  const tip = headOfRef(run("ls-remote", "origin", "refs/heads/main"), "main");
+  return tip !== undefined && tip === commit;
 }
 
 // Whether origin has `branch` now, by its answer to git ls-remote, picking the
-// line by its exact ref name as remoteMainIs does: ls-remote matches refs by
-// their tail, so a branch like a/refs/heads/<branch> matches too.
+// line by its exact ref name with headOfRef: ls-remote matches refs by their
+// tail, so a branch like a/refs/heads/<branch> matches too.
 export function remoteBranchIsOnOrigin(branch: string, run: (...args: string[]) => string = git): boolean {
-  const ref = `refs/heads/${branch}`;
-  return run("ls-remote", "origin", ref)
-    .split("\n")
-    .some((line) => line.split(/\s+/)[1] === ref);
+  return headOfRef(run("ls-remote", "origin", `refs/heads/${branch}`), branch) !== undefined;
 }
 
 const liveHost: BuildHost = {

@@ -211,7 +211,7 @@ Fix the Critical, Warning and Advisory findings. For each one:
 3. Commit the test and the fix together: `fix(<scope>): <Summary>`.
 
 A finding no test can pin, such as one in a workflow or in prose, gets a deterministic check in
-`.github/ci/gate-checks.sh` when one can express it, or a reason saying why it has no test. A Warning (a security weakness) is
+`.github/ci/gate-checks.sh` when one can express it, or a reason saying why it has no test. A security finding (every Warning) is
 recorded `fixed` only with a `test`, which may name that gate check: a reason alone leaves it `open` with its suggested fix. Most Advisory findings are
 prose: fix them, commit them as `docs(<scope>): <Summary>`, and record the reason. Fix every Advisory finding of a round
 in that round, with its Critical and Warning ones, so the next round reviews them together.
@@ -250,7 +250,7 @@ JSON
 The ids in the example are illustrative: use the ones step 5 gave. `reviewerAgent` is the agent type that actually read the diff:
 `pre-push-reviewer`, or another type only when the person chose it as a stand-in after you asked (see the rule on running reviewers). The report and the Review notes show it, so a
 reader can tell a review by the read-only agent from one by an agent with more tools.
-`status` is `fixed` (with `test`, or `reason` when it has none), `dismissed` (with `reason`) or `open`. Never
+`status` is `fixed` (with `test`, or `reason` when it has none, except that a security finding, any Warning, needs a `test`, which may name a gate check), `dismissed` (with `reason`) or `open`. Never
 `accepted`: `record` refuses it, since only the person accepts a finding, with `scripts/review.sh accept`. `severity` is
 the grade from step 5, and an Advisory finding is `fixed` or `dismissed`, or `open` when it waits for a person or the
 last, review-only round raised it. `security` is the mark from step 5:

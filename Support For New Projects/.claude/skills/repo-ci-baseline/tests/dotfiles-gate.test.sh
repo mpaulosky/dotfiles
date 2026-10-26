@@ -30,7 +30,7 @@ EOF
 chmod +x "$STUBS/pnpm"
 
 git init -q -b main "$REPO"
-mkdir -p "$REPO/scripts" "$REPO/$SKILL_REL/template/owned/scripts" "$REPO/$SKILL_REL/template/owned/.claude" "$REPO/.claude/skills/pre-push-review" "$REPO/.claude/agents" "$REPO/other"
+mkdir -p "$REPO/scripts" "$REPO/$SKILL_REL/template/owned/scripts" "$REPO/$SKILL_REL/template/owned/.claude" "$REPO/.claude/skills/pre-push-review" "$REPO/.claude/agents" "$REPO/.github/workflows" "$REPO/$SKILL_REL/template/owned/.github/workflows" "$REPO/other"
 cp "$GATE" "$REPO/scripts/gate.sh"
 cat > "$REPO/scripts/review.sh" <<EOF
 #!/usr/bin/env bash
@@ -45,6 +45,8 @@ chmod +x "$REPO/scripts/review.sh" "$REPO/$SKILL_REL/test.sh" "$REPO/scripts/gat
 echo skill > "$REPO/.claude/skills/pre-push-review/SKILL.md"
 echo other > "$REPO/other/file.txt"
 echo agent > "$REPO/.claude/agents/pre-push-reviewer.md"
+echo workflow > "$REPO/.github/workflows/claude-review.yml"
+echo workflow > "$REPO/$SKILL_REL/template/owned/.github/workflows/claude-review.yml"
 echo owned > "$REPO/$SKILL_REL/template/owned/scripts/review.sh"
 echo owned > "$REPO/$SKILL_REL/template/owned/.claude/skill.md"
 git -C "$REPO" add .
@@ -114,7 +116,8 @@ git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN"
 # The Sandcastle check runs when a file its tests read changes, not only under .sandcastle/.
 n=0
 for path in scripts/review.sh .claude/skills/pre-push-review/SKILL.md .claude/agents/pre-push-reviewer.md \
-  "$SKILL_REL/template/owned/scripts/review.sh" "$SKILL_REL/template/owned/.claude/skill.md"; do
+  "$SKILL_REL/template/owned/scripts/review.sh" "$SKILL_REL/template/owned/.claude/skill.md" .github/workflows/claude-review.yml \
+  "$SKILL_REL/template/owned/.github/workflows/claude-review.yml"; do
   n=$((${n:-0} + 1))
   if ! git -C "$REPO" switch -q -c "touch-$n" origin/main; then
     check "a branch for $path" false

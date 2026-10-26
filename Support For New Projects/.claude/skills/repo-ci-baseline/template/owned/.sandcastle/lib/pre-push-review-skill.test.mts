@@ -282,13 +282,14 @@ describe("the pre-push-review skill's fixing", () => {
 
 describe("the pre-push-review skill's fixing, in the rest of its text", () => {
   it("still names Warnings with the Critical ones to fix in a round, and the Warning bullet for a person", () => {
-    assert.match(skill, /in that round, with its Critical and Warning ones/);
+    assert.match(skill, /in\s+that\s+round,\s+with\s+its\s+Critical\s+and\s+Warning\s+ones/);
     assert.match(skill, /\*\*Leave it open\*\* for a person, with its suggested fix, when a Critical or Warning finding's `needsPerson` is true/);
   });
 
   it("records a Warning fixed only with a test, and keeps an agent from loosening a guard or accepting for a person", () => {
-    assert.match(skill, /A Warning \(a security weakness\) is\s+recorded `fixed` only with a `test`/);
-    assert.match(skill, /never weaken, skip or delete a test, a gate check, a validation or a permission/);
+    assert.match(skill, /A\s+security\s+finding\s+\(every\s+Warning\)\s+is\s+recorded\s+`fixed`\s+only\s+with\s+a\s+`test`/);
+    assert.match(skill, /except\s+that\s+a\s+security\s+finding,\s+any\s+Warning,\s+needs\s+a\s+`test`/);
+    assert.match(skill, /never\s+weaken,\s+skip\s+or\s+delete\s+a\s+test,\s+a\s+gate\s+check,\s+a\s+validation\s+or\s+a\s+permission/);
     assert.match(skill, /A fix that changes the gate, the ledger, the reviewer agent, `\.claude\/settings\.json` or a workflow's permissions is\s+`needsPerson`/);
     assert.match(skill, /Never accept a finding on a person's behalf/);
   });

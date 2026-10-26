@@ -950,6 +950,11 @@ describe("recordReview", () => {
     assert.equal(record([finding({ ...weakness, test: ".github/ci/gate-checks.sh::no-token-in-env", reason: null })]).findings[0]?.status, "fixed");
   });
 
+  it("holds a Warning marked security: false, or a finding whose lens names security, to the same rule", () => {
+    assert.throws(() => record([finding({ severity: "warning", security: false, status: "fixed", test: null, reason: "Reworded." })]), /recorded fixed without a test/);
+    assert.throws(() => record([finding({ lens: "Security", severity: "critical", security: false, status: "fixed", test: null, reason: "Reworded." })]), /recorded fixed without a test/);
+  });
+
   it("refuses a fixed finding that names neither a test nor why it has none", () => {
     assert.throws(() => record([finding({ test: null })]), /neither its test/);
   });

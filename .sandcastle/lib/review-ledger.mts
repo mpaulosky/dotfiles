@@ -155,6 +155,8 @@ function checkOutcome(finding: z.infer<typeof findingFields>, context: z.Refinem
 // always given, and a security weakness is always a Warning. A finding whose
 // lens names security is never Advisory: it would pass the check without a
 // person deciding it, and go to the public follow-up issue.
+// A security weakness (isSecurity) is recorded fixed only with a test, which may
+// name a gate check: a reason alone leaves it open.
 // Its `fix` is always given, null when unused, and given for every open
 // finding: the person deciding it, or the follow-up issue, needs it.
 export const findingSchema = findingFields
@@ -165,7 +167,8 @@ export const findingSchema = findingFields
     if (finding.status === "open" && finding.fix === null) {
       context.addIssue({ code: "custom", message: `${finding.id} is open without a suggested fix` });
     }
-    if (finding.security && finding.status === "fixed" && finding.test === null) {
+    // The same test as isSecurity, which the check and the notes use, so the agent-written `security` flag alone can't dodge it.
+    if (finding.status === "fixed" && finding.test === null && (finding.security || finding.severity === "warning" || /security/i.test(finding.lens))) {
       context.addIssue({ code: "custom", message: `${finding.id} is a security weakness recorded fixed without a test: name its test or gate check, or leave it open with its suggested fix` });
     }
     if (finding.security && finding.severity !== "warning") {

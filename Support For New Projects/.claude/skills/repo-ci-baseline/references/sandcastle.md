@@ -53,7 +53,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 
 The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-prompts.test.mts` checks).
 `test.sh` keeps dotfiles' own text out of them, and checks that the Dockerfile's linter versions match the Owned `scripts/gate.sh` and its .NET channel matches `global.json`.
-`roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo, where it stays unused. To opt in, add a `ui` entry to
+`roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo that gets `.sandcastle/`, where it stays unused. To opt in, add a `ui` entry to
 `ROLE_AGENTS` in `lib/repo-config.mts` (the Seed carries it commented out) and add this bullet to `plan-prompt.md`'s ROLES list, so the planner can pick the role:
 `` - `ui`: the issue adds or changes Blazor components or pages (`.razor` files, their code-behind, layout or styling). Leave it out when the issue changes no markup. ``
 `config.test.mts` fails when a repo has the entry but lacks `roles/ui.md`, `backend.md`'s `{{UI_DEVELOPER}}` or that bullet.
@@ -98,4 +98,4 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 
 9. Add `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` to `lib/repo-config.mts` as one-line `export const` lines, and the settings deny rules, as [pre-push-review.md](pre-push-review.md#adapting) says.
 
-Blazor-Server keeps its UI developer role by adding the `ui` entry to its `ROLE_AGENTS` and the `ui` line to its `plan-prompt.md`.
+Blazor-Server keeps its UI developer role by uncommenting the `ui` entry in its `ROLE_AGENTS` and adding the `ui` bullet to its `plan-prompt.md`'s ROLES list.

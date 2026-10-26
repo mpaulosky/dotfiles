@@ -84,6 +84,42 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     }
   });
 
+  // config.test.mts skips its check of the ui prompts in a repo that hasn't opted in, which is every config this repo runs it under, so
+  // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented, once without the planner's ui bullet and
+  // once with it.
+  it("fails config.test.mts's ui prompt check for an opted-in repo without the planner's ui bullet or roles/ui.md, and passes with both", { timeout: 120_000 }, () => {
+    const config = join(sandcastle, "lib/repo-config.mts");
+    const plan = join(sandcastle, "plan-prompt.md");
+    const uiPrompt = join(sandcastle, "roles/ui.md");
+    const originals = new Map([config, plan, uiPrompt].map((file) => [file, readFileSync(file, "utf8")]));
+    const optedIn = originals.get(config)!.replace(/^\/\/ {3}(ui: .*)$/m, "  $1");
+    assert.notEqual(optedIn, originals.get(config), "the Seed's repo-config.mts has no commented ui entry");
+    const bullet = "\n- `ui`: the issue adds or changes Blazor components or pages. Leave it out when the issue changes no markup.\n";
+    const run = () =>
+      spawnSync(join(root, "node_modules/.bin/tsx"), ["--test", ".sandcastle/lib/config.test.mts"], { cwd: scratch, encoding: "utf8", env: childEnv() });
+    const check = /has the prompts the ui role needs/;
+
+    try {
+      writeFileSync(config, optedIn);
+
+      const withoutBullet = run();
+      assert.notEqual(withoutBullet.status, 0, "the check should fail without the planner's ui bullet");
+      assert.match(`${withoutBullet.stdout}${withoutBullet.stderr}`, check);
+
+      writeFileSync(plan, `${originals.get(plan)}${bullet}`);
+      rmSync(uiPrompt);
+      const withoutPrompt = run();
+      assert.notEqual(withoutPrompt.status, 0, "the check should fail without roles/ui.md");
+
+      writeFileSync(uiPrompt, originals.get(uiPrompt)!);
+      const complete = run();
+      assert.equal(complete.status, 0, `${complete.stdout}${complete.stderr}`);
+      assert.match(complete.stdout, /skipped 0/, "the check should run, not be skipped");
+    } finally {
+      for (const [file, text] of originals) writeFileSync(file, text);
+    }
+  });
+
   it("passes its Owned tests with the Seed's values", { timeout: 120_000 }, () => {
     const tests = filesUnder(sandcastle)
       .filter((file) => file.endsWith(".test.mts"))

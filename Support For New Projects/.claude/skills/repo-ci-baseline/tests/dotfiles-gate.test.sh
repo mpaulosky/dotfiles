@@ -114,7 +114,11 @@ git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN"
 # The Sandcastle check runs when a file its tests read changes, not only under .sandcastle/.
 for path in scripts/review.sh .claude/skills/pre-push-review/SKILL.md .claude/agents/pre-push-reviewer.md \
   "$SKILL_REL/template/owned/scripts/review.sh" "$SKILL_REL/template/owned/.claude/skill.md"; do
-  git -C "$REPO" switch -q -c "touch-${path//\//-}" origin/main
+  n=$((${n:-0} + 1))
+  if ! git -C "$REPO" switch -q -c "touch-$n" origin/main; then
+    check "a branch for $path" false
+    continue
+  fi
   echo "# change" >> "$REPO/$path"
   git -C "$REPO" commit -qam "touch $path"
   run_gate

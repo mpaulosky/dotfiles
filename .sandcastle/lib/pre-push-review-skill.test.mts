@@ -298,7 +298,7 @@ describe("the pre-push-review skill's repository", () => {
     const at = line.indexOf(prefix);
     if (at < 0 || at + prefix.length - 3 !== first) problems.push("the first gh doesn't follow the slug read");
     const rest = line.slice(first + 3).replaceAll('GH_REPO="$repo" gh ', "@");
-    if (/(^|[^"=])gh [a-z]/.test(rest)) problems.push("a later gh has no GH_REPO");
+    if (/(^|[`(\s;&|])gh [a-z]/.test(rest)) problems.push("a later gh has no GH_REPO");
     return problems;
   };
 
@@ -324,6 +324,9 @@ describe("the pre-push-review skill's repository", () => {
     assert.notDeepEqual(ghChainProblems('1. `GH_REPO="$repo" gh issue create --title x`'), []);
     assert.notDeepEqual(ghChainProblems("1. `gh issue create --title x`"), []);
     assert.notDeepEqual(ghChainProblems("1. `gh repo view`"), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`gh repo view && ${prefix}pr edit 1\``), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh repo view\``), []);
+    assert.deepEqual(ghChainProblems(`1. \`${prefix}pr view 1\`, then read it through a pipe`), []);
     assert.notDeepEqual(ghChainProblems(`1. \`gh pr view 1 && ${prefix}pr edit 1\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh pr edit 1\``), []);
     assert.deepEqual(ghChainProblems(`1. \`${prefix}issue create --title x\``), []);

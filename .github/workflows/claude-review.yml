@@ -1798,7 +1798,7 @@ jobs:
 
 
           def redact_path(path):
-              # Mirrors post_claude_review.py: a file name is no credential however long it is.
+              # Mirrors post_claude_review.py: a long name that merely holds a credential start is no credential.
               if len(path) > 1024:
                   return redact_credentials(path)
               return CREDENTIAL.subn("[redacted]", path)

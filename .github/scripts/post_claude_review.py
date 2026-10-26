@@ -116,9 +116,11 @@ MAX_PATH = 1024
 def redact_path(path):
     """A finding's path with credential-shaped text replaced, and how many were replaced.
 
-    Not the long-run rule: a file name is one token, and a long one (a generated test's name, a
-    hash-named fixture) is no credential, while a path that no longer matches the diff leaves
-    its finding outside it. A path past MAX_PATH is no real path and gets the full rule.
+    Not the long-run rule: a long name that holds one of CREDENTIAL_START's strings without being
+    a credential (a generated test's name with `eyJ` in it) would be replaced whole by it, and a
+    path that no longer matches the diff leaves its finding outside it. A long name with none of
+    them is left alone by redact_credentials already. A path past MAX_PATH is no real path and
+    gets the full rule.
     """
     if len(path) > MAX_PATH:
         return redact_credentials(path)

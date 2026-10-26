@@ -402,5 +402,5 @@ than 128 token characters and one of the strings every `CREDENTIAL` alternative 
 signature. What `CREDENTIAL` then scans has no long run holding a start, so its cost is linear. A long token without one is left alone: it can't match `CREDENTIAL`, and legitimate review
 text has them (a generated test's file name quoted in a finding, a long identifier, a digest), where replacing them dropped the file reference and raised a false warning (#301).
 A JWT glued straight onto a `ghp_` or `sk-ant-` token is redacted as it always was: the token's pattern takes the JWT's first segment too, and the rest is no longer a JWT.
-A finding's `path` gets only `CREDENTIAL` (`redact_path`), not the long-run rule: a long generated file name is no credential, and a path that no longer matched the diff would
-move its finding into the review body, where it holds the merge. A path past 1,024 characters is no real path and gets the full rule.
+A finding's `path` gets only `CREDENTIAL` (`redact_path`), not the long-run rule: a long generated file name that holds a credential start without being one is no credential,
+and a path that no longer matched the diff would move its finding into the review body, where it holds the merge. A path past 1,024 characters is no real path and gets the full rule.

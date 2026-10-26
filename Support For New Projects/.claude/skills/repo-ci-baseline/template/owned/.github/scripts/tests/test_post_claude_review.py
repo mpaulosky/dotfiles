@@ -1193,11 +1193,20 @@ def test_a_long_file_name_quoted_in_a_finding_body_and_the_summary_is_left_alone
     assert count == 0
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["ghp_" + "A" * 300, "sk-ant-" + "a" * 300, "github_pat_" + "a" * 300, "prefix" + "q" * 140 + "eyJ" + "q" * 140],
-    ids=["ghp", "sk-ant", "github_pat", "eyJ in the middle"],
-)
+# Each one starts a credential and holds a run over MAX_TOKEN_RUN, with a remainder CREDENTIAL alone would leave behind (or
+# the start in another dot-separated segment than the long run), so each alternative of CREDENTIAL_START is pinned.
+LONG_CREDENTIAL_STARTS = {
+    "ghp": "ghp_" + "A" * 40 + "_" + "b" * 200,
+    "sk-ant": "sk-ant-" + "a" * 30 + "." + "b" * 200,
+    "github_pat": "github_pat_" + "a" * 300,
+    "eyJ in the middle": "prefix" + "q" * 140 + "eyJ" + "q" * 140,
+    "start in the first segment": "ghp_1." + "b" * 200,
+    "start in a later segment": "a" * 200 + ".eyJ" + "b" * 20,
+    "start before the long segment": "sk-ant-" + "a" * 5 + "." + "b" * 200,
+}
+
+
+@pytest.mark.parametrize("text", LONG_CREDENTIAL_STARTS.values(), ids=LONG_CREDENTIAL_STARTS.keys())
 def test_a_long_token_that_starts_a_credential_is_still_replaced_whole(text):
     for redact_text in (pcr.redact_credentials, workflow_credentials()["redact_credentials"]):
         redacted, count = redact_text(f"see {text} end")
@@ -1206,11 +1215,57 @@ def test_a_long_token_that_starts_a_credential_is_still_replaced_whole(text):
         assert count == 1
 
 
+def test_a_long_run_in_a_chain_with_no_start_is_left_alone_wherever_it_sits():
+    text = "see " + "x" * 200 + ".Service and Company." + "y" * 200 + " end"
+    for redact_text in (pcr.redact_credentials, workflow_credentials()["redact_credentials"]):
+        assert redact_text(text) == (text, 0)
+
+
+def test_the_workflow_carries_the_scripts_long_run_rule():
+    workflow = workflow_credentials()
+
+    assert workflow["CREDENTIAL_START"].pattern == pcr.CREDENTIAL_START.pattern
+    assert workflow["MAX_TOKEN_RUN"] == pcr.MAX_TOKEN_RUN
+    assert workflow["TOKEN_CHAIN"].pattern == pcr.TOKEN_CHAIN.pattern
+    assert workflow["CREDENTIAL"].pattern == pcr.CREDENTIAL.pattern
+
+
+@pytest.mark.parametrize(
+    "sample",
+    [
+        "sk-ant-" + "a" * 20,
+        "ghp_" + "A" * 36,
+        "ghs_" + "A" * 36,
+        "ghs_123_" + a_jwt(),
+        "github_pat_" + "a" * 22 + "_" + "b" * 59,
+        a_jwt(),
+    ],
+    ids=["sk-ant", "ghp", "ghs", "installation token", "github_pat", "jwt"],
+)
+def test_every_text_credential_matches_starts_with_a_credential_start(sample):
+    # CREDENTIAL can only match inside a token that CREDENTIAL_START finds, or the long-run rule would skip a run CREDENTIAL scans slowly.
+    for credential, start in ((pcr.CREDENTIAL, pcr.CREDENTIAL_START), (workflow_credentials()["CREDENTIAL"], workflow_credentials()["CREDENTIAL_START"])):
+        match = credential.search(sample)
+
+        assert match, sample
+        assert start.search(match.group())
+
+
 def test_a_long_file_name_in_a_finding_path_is_left_alone():
     summary, findings, count = pcr.redact("s", [{"path": LONG_NAME, "line": 3, "body": "b"}])
 
     assert findings[0]["path"] == LONG_NAME
     assert count == 0
+
+
+def test_a_long_name_that_holds_a_credential_start_without_being_one_is_left_alone_in_a_finding_path():
+    path = "tests/Get_eyJ_" + "A" * 130 + "_Returns_401.cs"
+    _, findings, count = pcr.redact("s", [{"path": path, "line": 3, "body": "b"}])
+
+    assert findings[0]["path"] == path
+    assert count == 0
+    # The long-run rule, which a path does not get, would have replaced it whole.
+    assert pcr.redact_credentials(path) == ("tests/[redacted]", 1)
 
 
 def test_a_credential_in_a_finding_path_is_still_redacted():

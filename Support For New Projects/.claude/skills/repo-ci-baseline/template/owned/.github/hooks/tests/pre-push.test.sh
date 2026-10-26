@@ -84,6 +84,15 @@ run_hook() {
   STATUS=$?
 }
 
+# run_gate <checked-out branch>: scripts/gate.sh by itself, as a gate run started by hand
+# or a Sandcastle checkpoint does, without the hook in front of it.
+run_gate() {
+  switch_to "$1"
+  : > "$LOG"
+  OUTPUT="$(cd "$REPO" && PATH="$STUBS:$PATH" bash scripts/gate.sh 2>&1)"
+  STATUS=$?
+}
+
 # run_hook_without_stdin <checked-out branch>
 run_hook_without_stdin() {
   switch_to "$1"
@@ -381,8 +390,15 @@ expect_log "a failing review check stops the gate before the build" not-ran 'dot
 GATE_SKIP_REVIEW=1 FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
 expect "a push ignores GATE_SKIP_REVIEW=1, so the review check still refuses it" refused any
 expect_log "a push with GATE_SKIP_REVIEW=1 still calls review.sh" ran "review.sh check $(git -C "$REPO" rev-parse origin/main)"
-GATE_SKIP_REVIEW=true FAIL_REVIEW=1 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"
-expect "GATE_SKIP_REVIEW with any other value doesn't skip it" refused any
+# The gate itself still honours GATE_SKIP_REVIEW=1, and only that value: gate runs
+# while iterating and Sandcastle's checkpoints rely on it.
+GATE_SKIP_REVIEW=1 FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a gate run with GATE_SKIP_REVIEW=1 skips the review check" allowed tests-ran
+expect_log "a gate run with GATE_SKIP_REVIEW=1 doesn't call review.sh" not-ran 'review.sh*'
+GATE_SKIP_REVIEW=true FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a gate run with GATE_SKIP_REVIEW set to any other value doesn't skip it" refused any
+FAIL_REVIEW=1 run_gate feature/12-local-review
+expect "a gate run without GATE_SKIP_REVIEW refuses a failing review" refused any
 REVIEW_MAIN="$(git -C "$REPO" rev-parse origin/main)"
 git -C "$REPO" update-ref -d refs/remotes/origin/main
 run_hook feature/12-local-review "$(push_stdin feature/12-local-review)"

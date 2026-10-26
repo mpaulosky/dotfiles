@@ -201,14 +201,15 @@ export const isSecurity = (finding: Finding) =>
 // finding whatever its grade.
 const isBlocking = (finding: Finding) => finding.status === "open" && (severityOf(finding) !== "advisory" || isSecurity(finding));
 
+// An agent type name, with the optional plugin namespace (plugin:agent). No dot: www.example would autolink in the PR body.
+const reviewerAgentSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9_-]{0,63})?$/, "reviewerAgent is an agent type name");
+
 // What the skill hands to `record`: the key and the HEAD `scripts/review.sh
 // prepare` printed when the last round started, from the patch its reviewers
 // read; how many rounds ran; and every finding this run raised, with its
 // outcome. Never `accepted`: only a person running `scripts/review.sh accept`
 // accepts a finding, on the ledger it was raised in, so no acceptance carries
 // from one ledger to another.
-const reviewerAgentSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/, "reviewerAgent is an agent type name");
-
 export const reviewInputSchema = z
   .object({
     reviewedKey: z.string().min(1),
@@ -693,7 +694,7 @@ const severityHeadings: Record<Severity, string> = { critical: "Critical", warni
 // happened to it, and the test or reason behind that. A severity no finding
 // has gets no section.
 export function renderReport(ledger: Ledger): string {
-  const header = `Review of ${ledger.branch === "" ? "HEAD" : cell(ledger.branch)} at ${ledger.head.slice(0, 12)}: ${ledger.rounds} round(s), ${ledger.findings.length} finding(s), reviewed by ${ledger.reviewerAgent ?? "an unrecorded agent"}.`;
+  const header = `Review of ${ledger.branch === "" ? "HEAD" : cell(ledger.branch)} at ${ledger.head.slice(0, 12)}: ${ledger.rounds} round(s), ${ledger.findings.length} finding(s), reviewed by ${plainText(ledger.reviewerAgent ?? "an unrecorded agent")}.`;
   if (ledger.findings.length === 0) return `${header}\n\nNo findings.\n`;
   const sections = SEVERITIES.flatMap((severity) => {
     const rows = ledger.findings
@@ -732,13 +733,14 @@ export function renderReviewNotes(ledger: Ledger): string {
   // (docs/SECURITY.md), and only counted here.
   const security = accepted.filter(isSecurity);
   const listed = accepted.filter((finding) => !security.includes(finding));
-  if (accepted.length === 0) return "";
+  const standIn = ledger.reviewerAgent !== undefined && ledger.reviewerAgent !== "pre-push-reviewer";
+  if (accepted.length === 0 && !standIn) return "";
   const privately =
     security.length === 0
       ? []
       : ["", `${security.length} accepted security finding(s) are left out here and reported privately, as docs/SECURITY.md describes.`];
   const section = (...body: string[]) => [REVIEW_NOTES_START, "## Review notes", ...body, REVIEW_NOTES_END, ""].join("\n");
-  const reviewer = ledger.reviewerAgent === undefined || ledger.reviewerAgent === "pre-push-reviewer" ? [] : ["", `Reviewed by ${ledger.reviewerAgent}, not the read-only pre-push-reviewer.`];
+  const reviewer = standIn ? ["", `Reviewed by ${plainText(ledger.reviewerAgent ?? "")}, not the read-only pre-push-reviewer.`] : [];
   if (listed.length === 0) return section(...privately, ...reviewer);
   const lines = listed.map(
     (finding) => `- ${plainText(`${finding.path}:${finding.line}`)}: ${plainText(finding.summary)} Accepted: ${plainText(finding.reason ?? "")}`,

@@ -39,7 +39,7 @@ Read a part's reference before changing it: each holds the design, the review fi
 Lessons that cut across parts are in [gotchas.md](references/gotchas.md).
 Which token each workflow call uses, and the allowance they share, is in [tokens.md](references/tokens.md).
 Claude Code settings (`.claude/settings.json`) are not part of the Template: permissions are set per user, so don't add the file back.
-The one rule worth adding to it, denying Claude Code the local review's ledgers, is in [pre-push-review.md](references/pre-push-review.md#adapting).
+The one rule worth adding to it, denying Claude Code the local review's ledgers and credential files, is in [pre-push-review.md](references/pre-push-review.md#adapting).
 The one hook worth adding by hand, `scripts/check-git-hooks.sh`, is in [git-hooks.md](references/git-hooks.md#session-start-check).
 A repo that got it from an earlier Apply deletes it by hand, since `apply.sh` never deletes.
 

@@ -1363,9 +1363,40 @@ describe("renderReport", () => {
   });
 
   it("refuses a reviewerAgent that isn't an agent type name", () => {
-    for (const reviewerAgent of ["", "two words", "a|b", "x\ny", "-lead", "a".repeat(65)]) {
+    for (const reviewerAgent of ["", "two words", "a|b", "x\ny", "-lead", "a".repeat(65), "www.evil.example", "a:", ":b", "a:b:c"]) {
       assert.throws(() => recordReview(repo, mergeBase(repo), { ...reviewed(), rounds: 1, reviewerAgent, findings: [] }), /agent type name/, reviewerAgent);
     }
+  });
+
+  it("records a plugin agent type, and the notes break a cross-reference in it", () => {
+    const ledger = recordReview(repo, mergeBase(repo), { ...reviewed(), rounds: 1, reviewerAgent: "my-plugin:GH-12", findings: [] });
+
+    assert.equal(ledger.reviewerAgent, "my-plugin:GH-12");
+    assert.doesNotMatch(renderReport(ledger), /GH-12/);
+    assert.doesNotMatch(renderReviewNotes(ledger), /GH-12/);
+  });
+
+  it("writes Review notes for a stand-in reviewer even when nothing was accepted, and none for the pre-push-reviewer", () => {
+    const standIn = recordReview(repo, mergeBase(repo), { ...reviewed(), rounds: 1, reviewerAgent: "general-purpose", findings: [] });
+    assert.match(renderReviewNotes(standIn), /^<!-- review-notes -->\n## Review notes\n[\s\S]*Reviewed by general-purpose, not the read-only pre-push-reviewer\./);
+
+    const proper = recordReview(repo, mergeBase(repo), { ...reviewed(), rounds: 1, reviewerAgent: "pre-push-reviewer", findings: [] });
+    assert.equal(renderReviewNotes(proper), "");
+    assert.equal(renderReviewNotes(record([])), "");
+  });
+
+  it("names a stand-in reviewer beside an accepted finding that the notes list", () => {
+    recordReview(repo, mergeBase(repo), {
+      ...reviewed(),
+      rounds: 1,
+      reviewerAgent: "general-purpose",
+      findings: [finding({ id: "R2", severity: "advisory", security: false, status: "open", test: null, reason: null, fix: "Do it." })],
+    });
+    const notes = renderReviewNotes(acceptFinding(repo, mergeBase(repo), "R2", "Spec."));
+
+    assert.match(notes, /were accepted, not changed/);
+    assert.match(notes, /Accepted: Spec\./);
+    assert.match(notes, /Reviewed by general-purpose, not the read-only pre-push-reviewer\./);
   });
 
   it("names a stand-in reviewer in the Review notes, but not the pre-push-reviewer", () => {

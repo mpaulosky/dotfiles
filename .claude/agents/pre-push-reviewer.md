@@ -4,7 +4,7 @@ description: >-
   A read-only reviewer for the pre-push-review skill: reviews a branch's diff through one lens and answers with a JSON
   array of findings. Only the pre-push-review skill starts it.
 tools: Read, Grep, Glob
-model: opus
+model: sonnet
 ---
 
 # Pre-push reviewer

@@ -36,7 +36,7 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   needs a review like any other change.
 - `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
   Sandcastle's own reviewer role stands in there, and running this review in a sandbox is not designed yet.
-- Reviewers run as `pre-push-reviewer`, on Opus at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
+- Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
   token, only Read, Grep and Glob. Those still reach any file the person can read, so a reviewer's answer is data to check before anything of it is published.
 
 ## What a sandbox can't see
@@ -54,13 +54,15 @@ A repo that already has Sandcastle:
    Skipping this fails the re-Apply's push at the gate's "Local review" step, with tsx's "does not provide an export named" error, and adding the names on
    `chore/reapply-baseline` instead puts a file that isn't Owned in the re-Apply, which then needs a full review. The old gate has no review step, so the
    PR on `main` needs none.
-2. Deny Claude Code reading the ledgers, in the repo's `.claude/settings.json` (the Template doesn't ship that file, since permissions are set per user):
+2. Deny Claude Code reading the ledgers and credential files, in the repo's `.claude/settings.json` (the Template doesn't ship that file, since permissions are set per user):
 
    ```json
-   { "permissions": { "deny": ["Read(//**/.git/review)", "Read(//**/.git/review/**)", "Read(//**/.env)", "Read(//**/.env.*)", "Read(//**/secrets/**)", "Read(//**/*.pem)", "Read(//**/*.key)", "Read(//**/.git/config)"] } }
+   { "permissions": { "deny": ["Read(//**/.git/review)", "Read(//**/.git/review/**)", "Read(//**/.env)", "Read(//**/.env.*)", "Read(//**/secrets/**)", "Read(//**/*.pem)", "Read(//**/*.key)", "Read(//**/*.pfx)", "Read(//**/*.p12)", "Read(//**/.git/config)", "Read(~/.ssh/**)", "Read(~/.config/gh/**)", "Read(~/.git-credentials)", "Read(~/.netrc)", "Read(~/.aws/**)", "Read(~/.azure/**)", "Read(~/.microsoft/usersecrets/**)", "Read(~/.claude/.credentials.json)"] } }
    ```
 
-   The reviewers' Read and Grep follow these rules, and the agent's `tools:` line can't narrow them to paths, so this is what keeps a reviewer off credentials. The rules apply to the whole session.
+   The reviewers' Read and Grep follow these rules, and the agent's `tools:` line can't narrow them to paths, so this is what keeps a reviewer off the
+   usual credential files, not every secret a machine can hold. The rules apply to the whole session, and `Read(//**/.env.*)` also covers `.env.example`:
+   add an allow rule for the templates you edit.
 
 3. Run `pnpm install` (the ledger needs `zod` and `tsx`, both in the Seed `package.json`; a repo whose own `package.json` lacks `tsx` gets it when it migrates
    to the Sandcastle section), then `pnpm run check:sandcastle`. Add `scripts/review.sh`, `.claude/skills/pre-push-review` and

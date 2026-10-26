@@ -266,7 +266,7 @@ describe("the pre-push-review skill's follow-up issue text", () => {
 
 describe("the pre-push-review skill's reviewer effort", () => {
   it("is high, asked for explicitly", () => {
-    assert.match(skill, /`model: "opus"` and `effort: "high"`/);
+    assert.match(skill, /`model: "sonnet"` and `effort: "high"`/);
     assert.doesNotMatch(skill, /xhigh/);
   });
 });
@@ -327,6 +327,10 @@ describe("the pre-push-review skill's repository", () => {
     assert.notDeepEqual(ghChainProblems(`1. \`gh repo view && ${prefix}pr edit 1\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh repo view\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && sh -c "gh pr edit 1"\``), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && sh -c 'gh pr edit 1'\``), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && $(gh pr edit 1)\``), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`sh -c 'gh pr view 1' && ${prefix}pr edit 1\``), []);
+    assert.notDeepEqual(ghChainProblems(`1. \`x=gh pr view 1\``), []);
     assert.deepEqual(ghChainProblems(`1. \`${prefix}pr view 1\`, then read it through a pipe`), []);
     assert.notDeepEqual(ghChainProblems(`1. \`gh pr view 1 && ${prefix}pr edit 1\``), []);
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh pr edit 1\``), []);

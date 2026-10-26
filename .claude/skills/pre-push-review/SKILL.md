@@ -37,7 +37,7 @@ review-only round raises (step 7), goes to the branch's follow-up issue (step 9)
 - Never push from this skill. Never push with `--no-verify` or with `GATE_SKIP_REVIEW` set: the variable is only for
   gate runs before the push (this review's own, and while iterating), never for the push itself.
 - Never accept a finding on a person's behalf, and never weaken, skip or delete a test to get past a finding or the gate.
-- Run reviewers with the Agent tool, `subagent_type: "pre-push-reviewer"`, `model: "opus"` and `effort: "high"`. This
+- Run reviewers with the Agent tool, `subagent_type: "pre-push-reviewer"`, `model: "sonnet"` and `effort: "high"`. This
   skill asks for that effort explicitly. That agent (`.claude/agents/pre-push-reviewer.md`) has only Read, Grep and
   Glob: reviewers read text people without write access wrote, so they get no shell, network or GitHub token. If the
   Agent tool doesn't offer `pre-push-reviewer` (Claude Code loads agents when a session starts, from the checkout it
@@ -245,7 +245,7 @@ JSON
 ```
 
 The ids in the example are illustrative: use the ones step 5 gave. `reviewerAgent` is the agent type that actually read the diff:
-`pre-push-reviewer`, or the one that stood in for it when that type wasn't loaded. The report and the Review notes show it, so a
+`pre-push-reviewer`, or another type only when the person chose it as a stand-in after you asked (see the rule on running reviewers). The report and the Review notes show it, so a
 reader can tell a review by the read-only agent from one by an agent with more tools.
 `status` is `fixed` (with `test`, or `reason` when it has none), `dismissed` (with `reason`) or `open`. Never
 `accepted`: `record` refuses it, since only the person accepts a finding, with `scripts/review.sh accept`. `severity` is

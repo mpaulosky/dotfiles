@@ -1452,8 +1452,8 @@ jobs:
           # quote marks and list markers: a fence in a quote or a list item counts, and so does one indented
           # four or more spaces, because hiding markers wrongly only drops the notes. A backtick fence's info
           # string has no backtick: ```x``` is inline code, not a fence. It closes on a line of only the same
-          # character, at least as many; a fence opened at the top level closes only with at most three spaces
-          # of indentation, one opened inside a quote or list item with any. A marker is a line of its own with
+          # character, at least as many; a fence closes only with at most three spaces of indentation, except
+          # one opened inside a quote or list item, or indented four or more spaces, which closes with any. A marker is a line of its own with
           # at most three spaces of indentation. This is for the owner's convenience in showing the markers in
           # an example, not a security boundary: whoever can write the description as the owner can write a
           # real section.

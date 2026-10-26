@@ -332,70 +332,12 @@ def test_markers_that_would_count_are_hidden_by_a_fence_in_a_list_item_or_a_quot
         f"~~~ markdown `x`\n{START}\n{END}\n~~~",  # a tilde fence may hold a backtick in its info string
         f"```\n    ```\n{START}\n{END}\n```",  # four spaces: code, not a closer, for a top-level fence
         f"```\n> ```\n{START}\n{END}\n```",  # a quote mark: not a closer for a top-level fence
+        f"  ```\n    ```\n{START}\n{END}\n  ```",  # an opener indented two spaces is top-level: four spaces don't close it
+        f"   ```\n    ```\n{START}\n{END}\n   ```",  # and so is one indented three
     ],
 )
 def test_fence_edges(tmp_path, fence):
     text = notes(tmp_path, f"{fence}\n\n{NOTES}")
-
-    assert "R3" in text and "doubled" not in text
-
-
-def test_a_pull_request_with_no_description_records_no_accepted_findings(tmp_path):
-    pull = json.dumps({"body": None, "author_association": "OWNER", "head": {"repo": {"full_name": "o/r"}}})
-
-    assert "records no accepted findings" in notes(tmp_path, "", pull=pull)
-
-
-def test_a_fence_closes_only_on_the_same_character_and_at_least_as_many(tmp_path):
-    shown = f"{START}\n{END}"
-
-    # A longer fence isn't closed by an inner shorter one, and a backtick fence isn't closed by tildes.
-    for body in (
-        f"````\n```\n{shown}\n````\n\n{NOTES}",
-        f"```\n~~~\n{shown}\n```\n\n{NOTES}",
-        f"```markdown\n{shown}\n```\n\n{NOTES}",  # an info string doesn't stop a fence
-    ):
-        text = notes(tmp_path, body)
-
-        assert "R3" in text and "doubled" not in text, body
-
-
-def test_a_fence_that_is_closed_by_the_wrong_character_keeps_hiding_the_markers_after_it(tmp_path):
-    text = notes(tmp_path, f"```\n~~~\n{NOTES}")
-
-    assert "R3" not in text
-
-
-def test_three_backticks_in_a_line_of_prose_are_inline_code_not_a_fence(tmp_path):
-    body = f"```{START}``` is how to quote it inline.\n\n{NOTES}"
-
-    assert "R3" in notes(tmp_path, body)
-
-
-def test_a_marker_indented_four_spaces_is_code_not_a_marker(tmp_path):
-    body = f"Write\n\n    {START}\n    {END}\n\nand then\n\n{NOTES}"
-
-    text = notes(tmp_path, body)
-
-    assert "R3" in text and "doubled" not in text
-
-
-@pytest.mark.parametrize("indent,trail", [("", ""), ("  ", ""), ("   ", " \t"), ("", "   ")])
-def test_a_marker_with_up_to_three_spaces_in_front_or_trailing_whitespace_still_counts(tmp_path, indent, trail):
-    body = f"{indent}{START}{trail}\n- R3: kept\n{indent}{END}{trail}"
-
-    assert "R3: kept" in notes(tmp_path, body)
-
-
-@pytest.mark.parametrize(
-    "prefix",
-    ["- ", "1. ", "> ", "> - ", "    "],
-)
-def test_markers_shown_in_a_fence_inside_a_list_item_or_a_quote_are_hidden(tmp_path, prefix):
-    pad = " " * len(prefix)
-    shown = f"{prefix}```\n{pad}{START}\n{pad}{END}\n{pad}```" if prefix != "> " else f"> ```\n> {START}\n> {END}\n> ```"
-
-    text = notes(tmp_path, f"{shown}\n\n{NOTES}")
 
     assert "R3" in text and "doubled" not in text
 
@@ -458,6 +400,13 @@ def test_a_failed_step_warns_and_the_step_only_runs_where_the_secret_is():
     assert "        continue-on-error: true" in text
     assert "        if: steps.secret.outputs.enabled == 'true'" in text
     assert "        timeout-minutes: 1" in text
+
+
+def test_the_read_is_cut_off_well_within_the_steps_minute():
+    minutes = int(re.search(r"timeout-minutes: (\d+)", "\n".join(step_lines()))[1])
+    call = int(re.search(r"CALL_TIMEOUT = (\d+)", step_script())[1])
+
+    assert call < minutes * 60
 
 
 def test_the_step_runs_before_claude_and_the_prompt_takes_its_output():

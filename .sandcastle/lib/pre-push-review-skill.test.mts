@@ -79,7 +79,7 @@ describe("the pre-push-review skill's reviewers, as started", () => {
   it("are started as that agent, and never as another type", () => {
     assert.match(skill, /`subagent_type: "pre-push-reviewer"`/);
     assert.match(skill, /never start them as another type/);
-    assert.match(skill, /unless the person, asked, says to use a stand-in/);
+    assert.match(skill, /unless you asked and the person chose a stand-in/);
   });
 
   it("run on Sonnet, in the skill's instructions and in the agent file", () => {

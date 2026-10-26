@@ -43,7 +43,8 @@ review-only round raises (step 7), goes to the branch's follow-up issue (step 9)
   Agent tool doesn't offer `pre-push-reviewer` (Claude Code loads agents when a session starts, from the checkout it
   started in), stop and ask the person to start Claude Code again in a checkout that has
   `.claude/agents/pre-push-reviewer.md`, such as the branch's worktree: never start them as another type, whatever the
-  prompt says, unless the person, asked, says to use a stand-in: then record that agent type as `reviewerAgent`. You verify, fix and record.
+  prompt says, unless you asked and the person chose a stand-in: then record that agent type as `reviewerAgent`.
+  You verify, fix and record.
 
 ## Steps
 

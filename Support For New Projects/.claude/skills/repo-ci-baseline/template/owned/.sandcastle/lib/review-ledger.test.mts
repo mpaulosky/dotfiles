@@ -545,6 +545,22 @@ describe("diffKey", () => {
     });
   }
 
+  it("lets a branch delete or empty a text file a diff attribute marks binary, since the new side has no text to hide", () => {
+    commit(repo, ".gitattributes", "*.cs -diff\n", "attributes");
+    run(repo, "rm", "--quiet", "app.cs");
+    run(repo, "commit", "--quiet", "-m", "delete");
+
+    assert.doesNotThrow(() => reviewPatch(repo, mergeBase(repo), run(repo, "rev-parse", "HEAD")));
+    assert.doesNotThrow(() => diffKey(repo, mergeBase(repo)));
+  });
+
+  it("lets a branch empty a text file a diff attribute marks binary", () => {
+    commit(repo, ".gitattributes", "*.cs -diff\n", "attributes");
+    commit(repo, "app.cs", "", "empty it");
+
+    assert.doesNotThrow(() => reviewPatch(repo, mergeBase(repo), run(repo, "rev-parse", "HEAD")));
+  });
+
   it("reads and keys commits as they are, not as a replace ref shows them", () => {
     const base = mergeBase(repo);
     const key = diffKey(repo, base);

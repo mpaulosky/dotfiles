@@ -55,7 +55,8 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 
 ## Checks, review and merging
 
-- **Review before you push.** `/pre-push-review` (`.claude/skills/pre-push-review/`) reviews the branch's whole diff
+- **Review before you push** (in a repo with Sandcastle, where `.sandcastle/lib/review-ledger.mts` exists: the review and its gate
+  step are added only there). `/pre-push-review` (`.claude/skills/pre-push-review/`) reviews the branch's whole diff
   against `origin/main` with parallel read-only reviewers, fixes each Critical and Advisory finding behind a regression
   test, reviews the fixes again until a round fixes nothing, and records the result under `.git/review/`. GitHub's
   reviewers are then a backstop that finds little. A Critical or Warning finding left open blocks the push until it is

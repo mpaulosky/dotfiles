@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The local review's ledger: what /pre-push-review found on this branch's diff
 # and what became of each finding. The gate refuses a diff without a clean
-# review (.github/ci/gate-checks.sh).
+# review (the "Local review" step of scripts/gate.sh).
 #   scripts/review.sh report                 the review of HEAD's diff
 #   scripts/review.sh accept R3 "<reason>"   the person accepts a finding (never on their behalf)
 #   scripts/review.sh notes                  the PR description's "## Review notes"

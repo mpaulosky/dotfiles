@@ -359,7 +359,8 @@ export function reviewPatch(cwd: string, base: string, head: string = headCommit
     if (binary(before) && !absent(after) && !binary(after) && !emptied) {
       throw new Error(`${file}: the branch turns a binary file (or UTF-16 or UTF-32 text) into text, which git shows only as "Binary files differ", so the reviewers couldn't read the text. Add the text at a new path instead.`);
     }
-    if (!binary(before) && !binary(after)) {
+    // Not for a deleted or emptied file either: the old text is on main and the new side has none.
+    if (!absent(after) && !emptied && !binary(before) && !binary(after)) {
       throw new Error(`${file}: a diff attribute marks this text file binary, so the reviewers couldn't read its change. Remove the attribute.`);
     }
   }

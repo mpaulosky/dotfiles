@@ -7,21 +7,7 @@ import { UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
-
-// Runs `run` with the repo's `ui` role opted in or out of ROLE_AGENTS, whatever
-// lib/repo-config.mts says, then puts ROLE_AGENTS back as it was.
-async function withUiRole<T>(enabled: boolean, run: () => T | Promise<T>): Promise<T> {
-  const agents: Record<string, unknown> = ROLE_AGENTS;
-  const original = agents.ui;
-  if (enabled) agents.ui = { ...ROLE_AGENTS.backend };
-  else delete agents.ui;
-  try {
-    return await run();
-  } finally {
-    if (original === undefined) delete agents.ui;
-    else agents.ui = original;
-  }
-}
+import { withUiRole } from "./ui-role-fixture.mts";
 
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
 

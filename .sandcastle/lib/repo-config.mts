@@ -196,6 +196,7 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/shell.test.mts",
   ".sandcastle/lib/skills.mts",
   ".sandcastle/lib/skills.test.mts",
+  ".sandcastle/lib/ui-role-fixture.mts",
   ".sandcastle/lib/umbrella.mts",
   ".sandcastle/lib/umbrella.test.mts",
   ".sandcastle/lib/work.mts",

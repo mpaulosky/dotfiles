@@ -38,7 +38,8 @@ import { TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
-import { GATE_COMMAND, GATE_SCRIPT, ROLE_AGENTS } from "./repo-config.mts";
+import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
+import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
 // GATE_COMMAND is: the fake sandbox reports the configured one as the default.
@@ -1730,24 +1731,9 @@ describe("buildIssue publishing a new branch after main changed a workflow", () 
   });
 });
 
-// Runs `run` with the repo's `ui` role opted in (or out) in ROLE_AGENTS, whatever
-// lib/repo-config.mts says, then puts ROLE_AGENTS back as it was.
-async function withUiRole<T>(run: () => Promise<T>, enabled = true): Promise<T> {
-  const agents: Record<string, unknown> = ROLE_AGENTS;
-  const original = agents.ui;
-  if (enabled) agents.ui = { ...ROLE_AGENTS.backend };
-  else delete agents.ui;
-  try {
-    return await run();
-  } finally {
-    if (original === undefined) delete agents.ui;
-    else agents.ui = original;
-  }
-}
-
 describe("buildIssue ui role", () => {
   it("runs the UI developer after the backend developer and before checkpoint 1, when the plan picks it", async () => {
-    await withUiRole(async () => {
+    await withUiRole(true, async () => {
       const { steps, buildHost } = host([0, 0]);
 
       await buildIssue(withRoles(["ui"]), branch, base, buildHost);
@@ -1766,7 +1752,7 @@ describe("buildIssue ui role", () => {
   });
 
   it("runs every optional role in build order when the plan picks them all", async () => {
-    await withUiRole(async () => {
+    await withUiRole(true, async () => {
       const { steps, buildHost } = host([0, 0]);
 
       await buildIssue(withRoles(["architect", "ui", "scribe"]), branch, base, buildHost);
@@ -1776,7 +1762,7 @@ describe("buildIssue ui role", () => {
   });
 
   it("tells the backend developer the UI developer follows, and that it is the last developer run otherwise", async () => {
-    await withUiRole(async () => {
+    await withUiRole(true, async () => {
       const withUi = host([0, 0]);
       await buildIssue(withRoles(["ui"]), branch, base, withUi.buildHost);
       const without = host([0, 0]);
@@ -1788,7 +1774,7 @@ describe("buildIssue ui role", () => {
   });
 
   it("runs the UI developer from roles/ui.md with the issue's prompt arguments and the shared rules", async () => {
-    await withUiRole(async () => {
+    await withUiRole(true, async () => {
       const { runs, buildHost } = host([0, 0]);
 
       await buildIssue(withRoles(["ui"]), branch, base, buildHost);
@@ -1802,7 +1788,7 @@ describe("buildIssue ui role", () => {
   });
 
   it("skips the UI developer, and tells the backend developer it is the last developer run, when the plan names ui in a repo that hasn't opted in", async () => {
-    await withUiRole(async () => {
+    await withUiRole(false, async () => {
       const { steps, runs, buildHost } = host([0, 0]);
 
       const result = await buildIssue(withRoles(["ui"]), branch, base, buildHost);
@@ -1810,11 +1796,11 @@ describe("buildIssue ui role", () => {
       assert.ok(!steps.includes("ui"));
       assert.equal(result.prUrl, "https://github.com/o/r/pull/1");
       assert.match(String(runs.find((run) => run.name === "backend")?.promptArgs?.UI_DEVELOPER), /last developer run/);
-    }, false);
+    });
   });
 
   it("publishes nothing and comments on the issue when the UI developer runs out of iterations unfinished", async () => {
-    await withUiRole(async () => {
+    await withUiRole(true, async () => {
       const { steps, comments, recordBuildFailureCalls, buildHost } = host([0, 0], { unfinished: ["ui"] });
 
       const result = await buildIssue(withRoles(["ui"]), branch, base, buildHost);
@@ -1827,7 +1813,7 @@ describe("buildIssue ui role", () => {
   });
 
   it("stops the build, without publishing, and counts a failed attempt when the UI developer fails", async () => {
-    await withUiRole(async () => {
+    await withUiRole(true, async () => {
       const { steps, recordBuildFailureCalls, buildHost } = host([0, 0], { failing: ["ui"] });
 
       const result = await buildIssue(withRoles(["ui"]), branch, base, buildHost);
@@ -1839,7 +1825,7 @@ describe("buildIssue ui role", () => {
   });
 
   it("rethrows a usage-limit stop from the UI developer instead of counting a failed attempt", async () => {
-    await withUiRole(async () => {
+    await withUiRole(true, async () => {
       const stop = new UncountedStopError("usage limit reached");
       const { recordBuildFailureCalls, buildHost } = host([0, 0], { failing: ["ui"], failWith: { ui: stop } });
 
@@ -2281,7 +2267,7 @@ describe("buildIssue marking the issue as building", () => {
     // (see config.test.mts) must outlast.
     const { runs, buildHost } = host([1, 1, 0, 1, 1, 0]);
 
-    const result = await withUiRole(() => buildIssue(withRoles(["architect", "ui", "scribe"]), branch, base, buildHost));
+    const result = await withUiRole(true, () => buildIssue(withRoles(["architect", "ui", "scribe"]), branch, base, buildHost));
 
     const roles = runs.map((run) => run.name!);
     const others = roles.filter((role) => role !== "gate-fixer");

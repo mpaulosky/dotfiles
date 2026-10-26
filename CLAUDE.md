@@ -23,7 +23,9 @@ commit `pnpm-lock.yaml` with the change.
 
 ```bash
 pnpm install                                   # Sandcastle's packages
-scripts/gate.sh                                # the full check: test.sh, then the Sandcastle check when its files changed
+scripts/gate.sh                                # the full check: the local review's record, test.sh, then the Sandcastle check when its files changed
+GATE_SKIP_REVIEW=1 scripts/gate.sh              # the same without the review check, while iterating; never for a push
+scripts/review.sh report                        # the local review (/pre-push-review) of this branch's diff
 pnpm run check:sandcastle                      # type-check and test .sandcastle/
 SANDCASTLE_ISSUE=<n> pnpm run sandcastle       # build one issue (and its PR) locally
 SANDCASTLE_LABEL=<label> pnpm run sandcastle   # work the issues labelled <label>

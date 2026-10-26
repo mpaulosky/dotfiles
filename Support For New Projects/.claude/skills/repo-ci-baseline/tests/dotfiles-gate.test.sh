@@ -30,7 +30,7 @@ EOF
 chmod +x "$STUBS/pnpm"
 
 git init -q -b main "$REPO"
-mkdir -p "$REPO/scripts" "$REPO/$SKILL_REL" "$REPO/.claude/skills/pre-push-review" "$REPO/other"
+mkdir -p "$REPO/scripts" "$REPO/$SKILL_REL/template/owned/scripts" "$REPO/$SKILL_REL/template/owned/.claude" "$REPO/.claude/skills/pre-push-review" "$REPO/.claude/agents" "$REPO/other"
 cp "$GATE" "$REPO/scripts/gate.sh"
 cat > "$REPO/scripts/review.sh" <<EOF
 #!/usr/bin/env bash
@@ -44,6 +44,9 @@ EOF
 chmod +x "$REPO/scripts/review.sh" "$REPO/$SKILL_REL/test.sh" "$REPO/scripts/gate.sh"
 echo skill > "$REPO/.claude/skills/pre-push-review/SKILL.md"
 echo other > "$REPO/other/file.txt"
+echo agent > "$REPO/.claude/agents/pre-push-reviewer.md"
+echo owned > "$REPO/$SKILL_REL/template/owned/scripts/review.sh"
+echo owned > "$REPO/$SKILL_REL/template/owned/.claude/skill.md"
 git -C "$REPO" add .
 git -C "$REPO" commit -q -m init
 git -C "$REPO" update-ref refs/remotes/origin/main main
@@ -109,8 +112,9 @@ check "and it doesn't run test.sh" not called "test.sh"
 git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN"
 
 # The Sandcastle check runs when a file its tests read changes, not only under .sandcastle/.
-for path in scripts/review.sh .claude/skills/pre-push-review/SKILL.md; do
-  git -C "$REPO" switch -q -c "touch-$(basename "$path")" origin/main
+for path in scripts/review.sh .claude/skills/pre-push-review/SKILL.md .claude/agents/pre-push-reviewer.md \
+  "$SKILL_REL/template/owned/scripts/review.sh" "$SKILL_REL/template/owned/.claude/skill.md"; do
+  git -C "$REPO" switch -q -c "touch-${path//\//-}" origin/main
   echo "# change" >> "$REPO/$path"
   git -C "$REPO" commit -qam "touch $path"
   run_gate

@@ -864,7 +864,9 @@ describe("checkReview", () => {
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });
 
-  it("still passes a re-Apply that adds a new executable Owned file and edits another", () => {
+  it("still passes a re-Apply that adds a new executable Owned file and edits one main already has", () => {
+    commit(upstream, "global.json", "[]\n", "main has an Owned file");
+    run(repo, "fetch", "--quiet", "origin", "main");
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, "scripts"), { recursive: true });
     writeFileSync(join(repo, "scripts/check-pr-title.sh"), "#!/bin/sh\n");

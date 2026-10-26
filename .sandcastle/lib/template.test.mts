@@ -197,3 +197,22 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     assert.deepEqual(both, []);
   });
 });
+
+// A test removes its scratch git repository while git may still be writing into it (background maintenance after a commit), which fails a
+// bare recursive rmSync with ENOTEMPTY and turned a green run red. rmSync retries that error when it is given maxRetries.
+describe("the Template's tests remove scratch directories with retries", () => {
+  it("passes maxRetries to every recursive rmSync in the Owned lib/ modules", () => {
+    const lib = join(owned, ".sandcastle/lib");
+    const bare: string[] = [];
+    let found = 0;
+    for (const file of filesUnder(lib).filter((entry) => entry.endsWith(".mts"))) {
+      for (const call of readFileSync(join(lib, file), "utf8").matchAll(/rmSync\([^;]*?recursive: true[^;]*?\)/g)) {
+        found += 1;
+        if (!call[0].includes("maxRetries")) bare.push(`${file}: ${call[0].replace(/\s+/g, " ")}`);
+      }
+    }
+
+    assert.ok(found > 0, "no recursive rmSync found in the Owned lib/ modules: the scan checks nothing");
+    assert.deepEqual(bare, []);
+  });
+});

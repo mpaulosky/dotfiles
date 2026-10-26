@@ -139,7 +139,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 describe("diffKey", () => {
@@ -498,7 +498,7 @@ describe("diffKey", () => {
       assert.doesNotThrow(() => diffKey(repo, mergeBase(repo)));
     } finally {
       process.env.PATH = path;
-      rmSync(bin, { recursive: true, force: true });
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -732,7 +732,7 @@ describe("checkReview", () => {
       return checkReview(repo, mergeBase(repo), {});
     } finally {
       process.env.PATH = path;
-      rmSync(bin, { recursive: true, force: true });
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }
 

@@ -15,7 +15,7 @@ describe("worktreeConfigProblem", () => {
       setup(join(root, "repo", ".git"));
       return worktreeConfigProblem(join(root, "repo", ".git"));
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   };
   const setExtension = (value: string) => (gitDir: string) =>
@@ -44,7 +44,7 @@ describe("configIncludeProblem", () => {
       setup(join(gitDir, "config"), join(root, "outside"));
       return configIncludeProblem(gitDir);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   };
   const set = (key: string, value: string) => (config: string) => execFileSync("git", ["config", "--file", config, key, value]);
@@ -97,7 +97,7 @@ describe("protectHostGit", () => {
         encoding: "utf8",
       });
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   };
 
@@ -155,7 +155,7 @@ describe("withoutGitHooks", () => {
       git(process.env, "commit", "--quiet", "--allow-empty", "-m", "unguarded");
       assert.equal(existsSync(ran), true);
     } finally {
-      rmSync(repo, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -200,7 +200,7 @@ describe("protectedGitMounts", () => {
 
       assert.equal(existsSync(join(gitDir, "review")), true);
     } finally {
-      rmSync(gitDir, { recursive: true, force: true });
+      rmSync(gitDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -212,7 +212,7 @@ describe("protectedGitMounts", () => {
 
       assert.throws(() => protectedGitMounts(gitDir, existsSync, "/empty"), (error: Error) => error.message.startsWith(`${join(gitDir, "review")} isn't a real folder`));
     } finally {
-      rmSync(gitDir, { recursive: true, force: true });
+      rmSync(gitDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -227,7 +227,7 @@ describe("protectedGitMounts", () => {
 
         assert.throws(() => protectedGitMounts(gitDir, existsSync, "/empty"), (error: Error) => error.message.startsWith(`${join(gitDir, "review")} isn't a real folder`));
       } finally {
-        rmSync(gitDir, { recursive: true, force: true });
+        rmSync(gitDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     });
   }
@@ -243,7 +243,7 @@ describe("protectedGitMounts", () => {
 
       assert.equal(statSync(join(gitDir, "review")).mode & 0o777, 0o700);
     } finally {
-      rmSync(gitDir, { recursive: true, force: true });
+      rmSync(gitDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -274,7 +274,7 @@ describe("worktreeLinkProblems", () => {
     try {
       assert.deepEqual(worktreeLinkProblems(worktree, commonDir), []);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -285,7 +285,7 @@ describe("worktreeLinkProblems", () => {
       writeFileSync(join(worktree, ".git"), `gitdir: ${join(worktree, "evil")}\n`);
       assert.match(worktreeLinkProblems(worktree, commonDir).join(), /doesn't point into/);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -295,7 +295,7 @@ describe("worktreeLinkProblems", () => {
       writeFileSync(join(commonDir, "worktrees", "feature-1-x", "commondir"), `${join(root, "evil")}\n`);
       assert.match(worktreeLinkProblems(worktree, commonDir).join(), /doesn't lead back/);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -307,7 +307,7 @@ describe("worktreeLinkProblems", () => {
       symlinkSync(`${admin}-moved`, admin);
       assert.match(worktreeLinkProblems(worktree, commonDir).join(), /symlink/);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -346,7 +346,7 @@ describe("hostGitEnv", () => {
       }
       assert.equal(existsSync(ran), true);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -358,7 +358,7 @@ describe("mainGitDir", () => {
       execFileSync("git", ["init", "--quiet"], { cwd: root, stdio: "ignore" });
       assert.equal(mainGitDir(root), join(root, ".git"));
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -369,7 +369,7 @@ describe("mainGitDir", () => {
       writeFileSync(join(root, ".git", "commondir"), "evil\n");
       assert.throws(() => mainGitDir(root), /commondir exists/);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 
@@ -378,7 +378,7 @@ describe("mainGitDir", () => {
     try {
       assert.throws(() => mainGitDir(root), /isn't a directory/);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });

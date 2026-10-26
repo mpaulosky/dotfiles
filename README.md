@@ -16,7 +16,7 @@ BaseNewProject/          Starter template for new .NET Blazor projects
 Bashrc/                  Linux shell profile templates (.bashrc, .profile)
 PowerShell 7/            PowerShell profile template
 Posh-Git Themes/         Posh-Git theme files for PowerShell prompt
-docs/                    Documentation templates (CONTRIBUTING, SECURITY, etc.)
+docs/                    This repository's own docs (SECURITY.md)
 .devcontainer/           Dev Container definition (.NET 10)
 .github/
   instructions/          Copilot instruction files (Blazor, MongoDB DBA)
@@ -44,7 +44,7 @@ git config core.hooksPath .github/hooks
 ### Using a Starter Template
 
 1. Copy the `BaseNewProject/` folder contents into your new repository
-2. Copy relevant files from `docs/` for project documentation
+2. Take the project documentation (`SECURITY.md` and the rest) from the repo-ci-baseline skill's Seed: `Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/docs/`
 3. Copy `.github/instructions/copilot-instructions.md` for Copilot guidance
 4. Adjust to your project's specifics
 
@@ -265,16 +265,11 @@ person, and it won't auto-merge until the owner removes it.
 
 Finally, mention `.sandcastle/` and the `check:sandcastle` command in the repo's `README.md` and `CLAUDE.md`.
 
-## Documentation Templates
+## Documentation
 
-The `docs/` folder contains **template documentation** meant to be copied into other projects:
-
-- `CONTRIBUTING.md` — contribution guidelines template
-- `SECURITY.md` — security policy template
-- `REFERENCES.md` — project references template
-- `CODE_OF_CONDUCT.md` — code of conduct template
-
-> **Note:** These are templates — do not modify them for this repository specifically.
+The `docs/` folder holds this repository's own docs: `SECURITY.md`, its security policy.
+Templates of the docs for other projects are the repo-ci-baseline skill's Seed files under
+`Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/docs/`, which Apply copies into a repository.
 
 ## Squad AI Team
 

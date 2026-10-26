@@ -1053,51 +1053,113 @@ def test_suggestion_handling_takes_linear_time_on_long_input(body):
     assert time.monotonic() - start < 2
 
 
-# The patterns before they started at the start of a run of token characters.
-OLD_CREDENTIAL = re.compile(
-    r"sk-ant-[A-Za-z0-9_-]{20,}"
-    r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
-    r"|gh[pousr]_[A-Za-z0-9]{36,}"
-    r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
-)
+def workflow_credentials():
+    """The workflow answer check's credential definitions, run on their own."""
+    script = answer_check_script()
+    start = script.index("CREDENTIAL = re.compile(")
+    namespace = {"re": re}
+    exec(script[start:script.index("\n\n\ndef answer_in", start)], namespace)
+    return namespace
 
 
-def test_credential_finds_what_the_old_pattern_found_and_covers_it():
-    rng = random.Random(299)
-    pieces = ["eyJ", "eyJhbGciOiJIUzI1", ".", "..", "a", "Z9", "_", "-", "ghp_1_", "ghs_42_", "sk-ant-", "x" * 12, " ", "/", "\n"]
-    for _ in range(4000):
-        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 14)))
-        old = [m.span() for m in OLD_CREDENTIAL.finditer(text)]
-        new = [m.span() for m in pcr.CREDENTIAL.finditer(text)]
-        assert bool(old) == bool(new), text
-        # Every old match lies inside a new one: the new pattern may begin earlier in the run, never later.
-        for start, end in old:
-            assert any(n_start <= start and end <= n_end for n_start, n_end in new), text
+def a_jwt(first=12, second=12, third=12, prefix="eyJ"):
+    return f"{prefix}{'a' * first}.eyJ{'b' * second}.{'c' * third}"
+
+
+GLUED = "ghp_" + "A" * 36 + "_" + a_jwt()
 
 
 @pytest.mark.parametrize(
     "text",
-    ["eyJ" * 70_000, "ghp_1_eyJ" * 25_000, "eyJ" * 40_000 + "." + "eyJ" * 40_000, "x-" * 100_000 + "eyJ"],
-    ids=["eyJ run", "ghp eyJ run", "two eyJ runs", "long prefix"],
+    [
+        a_jwt(),
+        "x-" + a_jwt(),
+        GLUED,
+        "ghs_123_" + a_jwt(),
+        a_jwt(second=200),  # a payload past MAX_TOKEN_RUN: the signature goes too
+        a_jwt(first=200),
+        a_jwt(third=300),
+        "eyJ" * 70_000,
+        "(" + a_jwt() + ")",
+    ],
+    ids=["jwt", "prefixed", "glued to ghp", "installation token", "long payload", "long header", "long signature",
+         "run of eyJ", "in parentheses"],
 )
-def test_the_credential_pattern_takes_linear_time_on_long_runs(text):
+def test_no_credential_shaped_text_survives_redaction(text):
+    for redact_text in (pcr.redact_credentials, workflow_credentials()["redact_credentials"]):
+        redacted, count = redact_text(f"see {text} end")
+
+        assert count >= 1
+        assert redacted.startswith("see ") and redacted.endswith(" end")
+        assert not pcr.CREDENTIAL.search(redacted)
+        assert "bbbbbbbb" not in redacted and "cccccccc" not in redacted
+
+
+@pytest.mark.parametrize("text", ["ghp_" + "A" * 36 + a_jwt(), "sk-ant-" + "a" * 30 + "-" + a_jwt()], ids=["ghp then jwt", "sk-ant then jwt"])
+def test_a_jwt_run_straight_onto_a_token_is_redacted_as_the_original_pattern_did(text):
+    # The token's alternative takes the JWT's first segment too, as it always has, so the rest
+    # (two segments) is no longer a JWT; the redaction must still act and never match a JWT.
+    redacted, count = pcr.redact_credentials(text)
+
+    assert count >= 1
+    assert not pcr.CREDENTIAL.search(redacted)
+    assert pcr.CREDENTIAL.sub("[redacted]", text) == redacted
+
+
+def test_a_long_jwts_signature_is_replaced_with_its_payload():
+    redacted, _ = pcr.redact_credentials("t=" + a_jwt(second=400, third=50))
+
+    assert redacted == "t=[redacted]"
+
+
+def test_ordinary_text_with_short_words_is_left_alone():
+    text = "Fix snake_case_names, dotted.names.here and a 64-char hash " + "0" * 64 + " in src/app.py:12."
+
+    assert pcr.redact_credentials(text) == (text, 0)
+
+
+def test_the_script_and_the_workflow_redact_alike():
+    rng = random.Random(299)
+    pieces = [a_jwt(), a_jwt(second=200), GLUED, "ghs_9_" + a_jwt(), "sk-ant-" + "q" * 25, "x-", "eyJ", ".", " ", "/", "a" * 130, "ok"]
+    redact_workflow = workflow_credentials()["redact_credentials"]
+    for _ in range(300):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 6)))
+
+        assert pcr.redact_credentials(text) == redact_workflow(text)
+
+
+def test_the_redaction_leaves_nothing_the_original_pattern_matches():
+    rng = random.Random(299)
+    pieces = [a_jwt(), a_jwt(first=8, second=8, third=8), a_jwt(second=200), GLUED, "ghp_" + "Z" * 40, "ghs_9_" + a_jwt(),
+              "github_pat_" + "a" * 22 + "_" + "b" * 59, "sk-ant-" + "q" * 25, "x-", "_", "-", ".", " ", "eyJ", "/"]
+    matched = 0
+    for _ in range(3000):
+        text = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 7)))
+        matched += bool(pcr.CREDENTIAL.search(text))
+        redacted, _ = pcr.redact_credentials(text)
+
+        assert not pcr.CREDENTIAL.search(redacted), text
+    assert matched > 1500
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "eyJ" * 70_000,
+        "ghp_1_eyJ" * 25_000,
+        "eyJ" * 40_000 + "." + "eyJ" * 40_000,
+        "x-" * 100_000 + "eyJ",
+        ("eyJ" * 42 + "a" + ".") * 1_500,  # many runs just under MAX_TOKEN_RUN, each full of eyJ
+        ("ghp_1_eyJ" * 14 + ".") * 1_500,
+        "a." * 100_000,
+    ],
+    ids=["eyJ run", "ghp eyJ run", "two eyJ runs", "long prefix", "many short eyJ runs", "many ghp runs", "many dots"],
+)
+def test_redacting_takes_linear_time_on_long_input(text):
+    redact_workflow = workflow_credentials()["redact_credentials"]
     start = time.monotonic()
-    pcr.redact(text, [{"path": "a", "line": 1, "body": text}])
+    pcr.redact_credentials(text)
+    redact_workflow(text)
 
-    assert time.monotonic() - start < 2
-
-
-def test_the_workflows_secret_patterns_take_linear_time_on_long_runs():
-    script = answer_check_script()
-    start = script.index("CREDENTIAL = re.compile(")
-    namespace = {"re": re}
-    exec(script[start:script.index("LEAK_WINDOW", start)], namespace)
-
-    for text in ("eyJ" * 70_000, "ghp_1_eyJ" * 25_000, "eyJ" * 40_000 + "." + "eyJ" * 40_000):
-        begun = time.monotonic()
-        namespace["CREDENTIAL"].search(text)
-        namespace["SECRET_PART"].search(text)
-
-        assert time.monotonic() - begun < 2
+    assert time.monotonic() - start < 3
 

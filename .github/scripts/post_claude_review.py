@@ -70,19 +70,40 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 # today's ghs_<digits>_<JWT> installation tokens), and JWTs. No boundary on
 # the left, so text run up against a token (token_ghp_..., x-eyJ...) can't
 # hide it; a match only warns, so redacting a little too much costs little.
-# The two JWT forms start at the start of a run of token characters and skip to its first
-# `eyJ`: the first segment's characters include e, y and J, so a start at every `eyJ` of a long
-# run would rescan the run each time. Only the first `eyJ` of a run can match, because every
-# `eyJ` in the run ends at the same dot, so this finds what a start at each one would, and a
-# match may begin a few characters earlier, at the run's start.
 CREDENTIAL = re.compile(
     r"sk-ant-[A-Za-z0-9_-]{20,}"
-    r"|(?<![A-Za-z0-9_-])(?:(?!gh[pousr]_[0-9]+_eyJ)[A-Za-z0-9_-])*gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+    r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
     r"|gh[pousr]_[A-Za-z0-9]{36,}"
     r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
-    r"|(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
 )
 REDACTED = "[redacted]"
+
+# CREDENTIAL scans from every `eyJ`, and a long run of token characters (the first segment of a JWT
+# holds the letters e, y and J) is rescanned from each one: quadratic on text a diff can steer.
+# So a token, with the dots joining its segments, that holds a run longer than MAX_TOKEN_RUN is
+# replaced whole before CREDENTIAL looks at the text: no legitimate review text has one, and it
+# leaves nothing of a long JWT (its signature included) behind. What is left has runs of at most
+# MAX_TOKEN_RUN characters, which CREDENTIAL scans in time linear in the text.
+MAX_TOKEN_RUN = 128
+TOKEN_CHAIN = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
+
+
+def redact_credentials(text):
+    """The text with credential-shaped text replaced, and how many were replaced."""
+    count = 0
+
+    def long_chain(match):
+        nonlocal count
+        chain = match.group()
+        if any(len(run) > MAX_TOKEN_RUN for run in chain.split(".")):
+            count += 1
+            return REDACTED
+        return chain
+
+    text = TOKEN_CHAIN.sub(long_chain, text)
+    text, found = CREDENTIAL.subn(REDACTED, text)
+    return text, count + found
 
 # A fence whose info string starts with `suggestion`, anywhere in a body (after a list or quote
 # marker, or a lone CR, too): GitHub shows its content as a change the reader can apply with
@@ -186,7 +207,7 @@ def redact(summary, findings):
     count = 0
     def clean(text):
         nonlocal count
-        text, n = CREDENTIAL.subn(REDACTED, text)
+        text, n = redact_credentials(text)
         count += n
         return text
     summary = clean(summary)

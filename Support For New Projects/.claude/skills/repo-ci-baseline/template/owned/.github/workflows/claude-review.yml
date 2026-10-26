@@ -1749,7 +1749,7 @@ jobs:
       # can push a change to a PR's scripts but not to this file, which a
       # pull_request run takes from the PR's merge commit. It also means a PR
       # cut before this check gets the check its workflow expects.
-      # post_claude_review.py's CREDENTIAL must match the one here.
+      # post_claude_review.py's CREDENTIAL, MAX_TOKEN_RUN and redact_credentials must match the ones here.
       - name: Check Claude's answer for secrets
         id: answer
         if: steps.secret.outputs.enabled == 'true' && steps.claude.outputs.structured_output != ''
@@ -1767,18 +1767,39 @@ jobs:
 
           CREDENTIAL = re.compile(
               r"sk-ant-[A-Za-z0-9_-]{20,}"
-              r"|(?<![A-Za-z0-9_-])(?:(?!gh[pousr]_[0-9]+_eyJ)[A-Za-z0-9_-])*gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+              r"|gh[pousr]_[0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
               r"|gh[pousr]_[A-Za-z0-9]{36,}"
               r"|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}"
-              r"|(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+              r"|eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
           )
           SECRET_PART = re.compile(
               r"sk-ant-(?:[a-z]+[0-9]+-)?([A-Za-z0-9_-]{20,})"
-              r"|(?<![A-Za-z0-9_-])(?:(?!eyJ)[A-Za-z0-9_-])*eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)"
+              r"|eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)"
               r"|gh[pousr]_([A-Za-z0-9]{36,})"
               r"|github_pat_([A-Za-z0-9_]{82})"
           )
           LEAK_WINDOW = 16
+
+          # Mirrors post_claude_review.py: a token holding a run longer than MAX_TOKEN_RUN is replaced
+          # whole before CREDENTIAL looks, so a long run of `eyJ` isn't rescanned from each one.
+          MAX_TOKEN_RUN = 128
+          TOKEN_CHAIN = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
+
+
+          def redact_credentials(text):
+              count = 0
+
+              def long_chain(match):
+                  nonlocal count
+                  chain = match.group()
+                  if any(len(run) > MAX_TOKEN_RUN for run in chain.split(".")):
+                      count += 1
+                      return "[redacted]"
+                  return chain
+
+              text = TOKEN_CHAIN.sub(long_chain, text)
+              text, found = CREDENTIAL.subn("[redacted]", text)
+              return text, count + found
 
 
           def answer_in(path):
@@ -1929,7 +1950,7 @@ jobs:
 
           def redact(value):
               if isinstance(value, str):
-                  return CREDENTIAL.subn("[redacted]", value)
+                  return redact_credentials(value)
               if isinstance(value, list):
                   pairs = [redact(item) for item in value]
                   return [item for item, _ in pairs], sum(n for _, n in pairs)

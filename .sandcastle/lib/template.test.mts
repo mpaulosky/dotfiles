@@ -96,8 +96,9 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     assert.notEqual(optedIn, originals.get(config), "the Seed's repo-config.mts has no commented ui entry");
     const bullet = "\n- `ui`: the issue adds or changes Blazor components or pages. Leave it out when the issue changes no markup.\n";
     const run = () =>
-      spawnSync(join(root, "node_modules/.bin/tsx"), ["--test", ".sandcastle/lib/config.test.mts"], { cwd: scratch, encoding: "utf8", env: childEnv() });
-    // The check's own failure line, not just its name, which the reporter prints whether the test passed or not.
+      spawnSync(join(root, "node_modules/.bin/tsx"), ["--test", "--test-reporter=spec", ".sandcastle/lib/config.test.mts"], { cwd: scratch, encoding: "utf8", env: childEnv() });
+    // The check's own failure line, not just its name, which the reporter prints whether the test passed or not. The spec reporter is
+    // pinned: Node 22 prints TAP instead when stdout is a pipe.
     const failedCheck = /✖[^\n]*has the prompts the ui role needs/;
 
     try {

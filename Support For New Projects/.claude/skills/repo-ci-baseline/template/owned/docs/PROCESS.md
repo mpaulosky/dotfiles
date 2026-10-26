@@ -57,7 +57,7 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 
 - **Review before you push** (in a repo with Sandcastle, where `.sandcastle/lib/review-ledger.mts` exists: the review and its gate
   step are added only there). `/pre-push-review` (`.claude/skills/pre-push-review/`) reviews the branch's whole diff
-  against `origin/main` with parallel read-only reviewers, fixes each Critical finding behind a regression test and each
+  against `origin/main` with parallel read-only reviewers, fixes each Critical and Warning finding behind a regression test and each
   Advisory one in the review, reviews the fixes again until a round fixes nothing, and records the result under `.git/review/`. GitHub's
   reviewers are then a backstop that finds little. A Critical or Warning finding left open blocks the push until it is
   fixed or the person accepts it with `scripts/review.sh accept R3 "<reason>"`, never on their behalf. Advisory findings

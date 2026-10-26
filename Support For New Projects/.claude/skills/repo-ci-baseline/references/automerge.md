@@ -192,8 +192,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   The author's local review ([pre-push-review.md](pre-push-review.md)) has already reviewed the whole branch, so the prompt asks for findings (each of which holds the merge)
   only for bugs in code that runs, security weaknesses, tests and how GitHub itself behaves, and has docs, comments and conventions go under "Advisory" in the summary.
   It also holds the findings the author accepted, from the PR description's `## Review notes`, as decisions like a resolved thread's; they count only on a same-repo PR
-  whose author is the `OWNER` (a `MEMBER` or `COLLABORATOR` may have read access only), read from the API when the run starts, never cover a security weakness or a
-  merge-gate flaw, and need their markers on lines of their own outside a code fence.
+  whose author is the `OWNER` (a `MEMBER` or `COLLABORATOR` may have read access only). The step reads the description from the API as it runs.
+  The prompt tells Claude that a note never covers a security weakness or a flaw in code that decides a merge, release or permission, which is an instruction, not an enforced rule.
+  The markers must sit on lines of their own outside a code fence. A PR opened with the owner's token, Sandcastle's included, counts as the owner's.
   A second job runs `post_claude_review.py`, which posts one `COMMENT` review pinned to the head,
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.

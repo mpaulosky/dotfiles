@@ -36,7 +36,9 @@ review-only round raises (step 7), goes to the branch's follow-up issue (step 9)
 
 - Never push from this skill. Never push with `--no-verify` or with `GATE_SKIP_REVIEW` set: the variable is only for
   gate runs before the push (this review's own, and while iterating), never for the push itself.
-- Never accept a finding on a person's behalf, and never weaken, skip or delete a test to get past a finding or the gate.
+- Never accept a finding on a person's behalf, and never weaken, skip or delete a test, a gate check, a validation or a permission to get past a
+  finding or the gate. A fix that changes the gate, the ledger, the reviewer agent, `.claude/settings.json` or a workflow's permissions is
+  `needsPerson`: it stays open with its suggested fix.
 - Run reviewers with the Agent tool, `subagent_type: "pre-push-reviewer"`, `model: "sonnet"` and `effort: "high"`. This
   skill asks for that effort explicitly. That agent (`.claude/agents/pre-push-reviewer.md`) has only Read, Grep and
   Glob: reviewers read text people without write access wrote, so they get no shell, network or GitHub token. If the
@@ -209,9 +211,10 @@ Fix the Critical, Warning and Advisory findings. For each one:
 3. Commit the test and the fix together: `fix(<scope>): <Summary>`.
 
 A finding no test can pin, such as one in a workflow or in prose, gets a deterministic check in
-`.github/ci/gate-checks.sh` when one can express it, or a reason saying why it has no test. Most Advisory findings are
+`.github/ci/gate-checks.sh` when one can express it, or a reason saying why it has no test. A Warning (a security weakness) is
+recorded `fixed` only with a `test`, which may name that gate check: a reason alone leaves it `open` with its suggested fix. Most Advisory findings are
 prose: fix them, commit them as `docs(<scope>): <Summary>`, and record the reason. Fix every Advisory finding of a round
-in that round, with its Critical ones, so the next round reviews them together.
+in that round, with its Critical and Warning ones, so the next round reviews them together.
 
 ### 7. Review the fixes until a round fixes nothing
 
@@ -324,7 +327,9 @@ repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh pr view <n> --json body -
 
 Editing the description starts PR Auto-Merge, which is why it waits for the push: before it, the PR could merge the head
 without this run's fixes. Push a thread's fix before replying to or resolving its thread, for the same reason. Claude
-Review reads the notes as accepted findings, but Copilot isn't known to, so a thread may still be raised on an accepted finding: its thread gets the reply
+Review reads the notes' accepted non-security findings on an owner's same-repo PR while it carries `review:claude`, and raises a
+security finding again, since the notes only count it. Copilot isn't known to read them, so a thread may still be raised on an
+accepted finding: its thread gets the reply
 every thread left for the owner gets (docs/PROCESS.md), only "Left for the owner." and the `<!-- claude-session -->` marker.
 
 The description becomes public release notes, so the notes list the accepted Critical and Advisory findings, leave out

@@ -48,7 +48,7 @@ The review body starts with `<!-- claude-review -->`: that marker, not the login
   The post job warns instead of failing. A failing check couldn't hold the merge on its own: a later run with its jobs skipped (another label added) replaces it.
   And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges. The review's marker holds past the review cap too (#146).
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
-- A Review step that fails, times out (its own 25 minutes, under the job's 30) or is refused at the usage limit doesn't fail the job either (#123):
+- A Review step that fails, times out (its own 25 minutes, under the job's 31) or is refused at the usage limit doesn't fail the job either (#123):
   `continue-on-error` lets a warning step say so, and the post job skips when there's nothing to post (an empty output would fail it as malformed).
   The PR then has no Claude review of its head, so PR Auto-Merge waits for Copilot's or a rerun, instead of the PR going `UNSTABLE`.
   The prompt also has Claude skip the files Copilot code review excludes (see the split-diff decision below).
@@ -352,11 +352,16 @@ It reads the PR description's `## Review notes` as accepted findings, between th
   A `MEMBER` or `COLLABORATOR` may have read access only, so a same-repo PR from one proves no write access, and a note could silence a finding on code they didn't push.
   A deleted fork's head repository is empty and never matches. Sandcastle opens its PRs with the owner's token, so its descriptions count as the owner's, as its resolved threads do.
 - **What a note can't do.** The prompt says a note never covers a security weakness or a flaw in code that decides a merge, release or permission.
-  The ledger's notes only count accepted security findings anyway, so no legitimate note needs that cover.
+  That is an instruction the model follows, not a rule the workflow enforces. The ledger's notes only count accepted security findings, so a legitimate note never needs that
+  cover for them; an accepted Critical finding on merge-gate code is listed in the notes and re-raised by Claude Review every time.
+- **Accepted limits.** A PR opened with the owner's token, Sandcastle's included, counts as the owner's, so a prompt-injected agent can write notes that silence findings.
+  A note is free text that can name a problem before anyone raises it, and nothing checks it against the local ledger. A section that an HTML comment or `<details>` hides
+  on the rendered page still counts. What the step honoured or ignored goes to the job log.
 - **When it is read.** The description, its author's association and the head repository are read from the API as the step runs.
   The event's payload is a snapshot: editing a description starts no run, and a re-run reuses the payload, so notes added after the last push would be missed and removed ones kept.
   The workflow still has no `edited` trigger, which would spend a Claude review on every description edit. A failed read leaves the notes out ("could not be read") and warns.
-- **Markers.** A marker counts only on a line of its own outside a fenced code block, so a description can show them in a fence or quote them in prose.
+- **Markers.** A marker counts only on a line of its own, indented three spaces at most, outside a fenced code block (CommonMark's rules, applied so a
+  doubt hides markers rather than shows them), so a description can show them in a fence or quote them in prose.
   Outside fences, one start and one end, start first, make a section; anything else is reported as markers nobody can bound, not as no notes.
 - **Cost.** The step has its own minute; the job's limit rose from 30 to 31 minutes to keep the 2 minutes the other steps' comment leaves for what has no limit of its own.
 

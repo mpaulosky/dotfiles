@@ -1405,10 +1405,18 @@ jobs:
       # weakness or a flaw in code that decides a merge, release or permission,
       # and the ledger's own notes only count accepted security findings.
       #
-      # Accepted limit: an OWNER's PR includes the ones Sandcastle opens with
-      # the owner's token, so the agent's description is honoured like the
-      # owner's, as its resolved threads are. A failed step warns, and the
-      # review goes on without the notes.
+      # Accepted limits: a PR opened with the owner's token, Sandcastle's
+      # included, counts as the owner's, so an agent that was prompt-injected
+      # can write notes that silence findings. Unlike a resolved thread, which
+      # answers a finding that exists, a note is free text that can name a
+      # problem before anyone raises it, and nothing checks it against the
+      # local ledger. The one hard limit, that a note never covers a security
+      # weakness or a flaw in code that decides a merge, release or permission,
+      # is a sentence in the prompt that the model follows, not an enforced
+      # rule. A section that an HTML comment or `<details>` hides on the
+      # rendered page still counts. What the step honoured or ignored is
+      # printed to the job log. A failed step warns, and the review goes on
+      # without the notes.
       - name: Read the author's accepted findings
         id: notes
         if: steps.secret.outputs.enabled == 'true'
@@ -1428,31 +1436,47 @@ jobs:
           CALL_TIMEOUT = 15  # seconds, so the read fits in the step's minute
 
           repository = os.environ["REPOSITORY"]
-          read = subprocess.run(
-              ["gh", "api", f"repos/{repository}/pulls/{os.environ['PR_NUMBER']}"],
-              capture_output=True, text=True, timeout=CALL_TIMEOUT, check=True,
-          )
-          pull = json.loads(read.stdout)
-          body = pull.get("body") or ""
-          head_repository = ((pull.get("head") or {}).get("repo") or {}).get("full_name") or ""
-          honoured = pull.get("author_association") == "OWNER" and head_repository == repository
+          try:
+              read = subprocess.run(
+                  ["gh", "api", f"repos/{repository}/pulls/{os.environ['PR_NUMBER']}"],
+                  capture_output=True, text=True, encoding="utf-8", timeout=CALL_TIMEOUT, check=True,
+              )
+              pull = json.loads(read.stdout)
+              body = pull.get("body") or ""
+              head_repository = ((pull.get("head") or {}).get("repo") or {}).get("full_name") or ""
+              honoured = pull.get("author_association") == "OWNER" and head_repository == repository
+          except (subprocess.SubprocessError, ValueError, AttributeError) as error:
+              print(f"::warning::Couldn't read the PR's description ({type(error).__name__}), so Claude reviews without the author's accepted findings.")
+              raise SystemExit(1)
+
+
+          # A fence opens on a line of three or more backticks or tildes, after any indentation, quote marks
+          # and list markers (a fence in a list item or a quote counts, and one indented four or more spaces
+          # does too: hiding markers wrongly only drops the notes). A backtick fence's info string has no
+          # backtick: ```x``` is inline code, not a fence. It closes on a line of only the same character, at
+          # least as many. A marker is a line of its own with at most three spaces of indentation.
+          OPENING = re.compile(r"[ \t>]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)*(`{3,}|~{3,})(.*)$")
+          CLOSING = re.compile(r"[ \t>]*(`{3,}|~{3,})[ \t]*$")
+          START_LINE = re.compile(r" {0,3}" + re.escape(START) + r"[ \t]*")
+          END_LINE = re.compile(r" {0,3}" + re.escape(END) + r"[ \t]*")
 
 
           def markers(text):
               """Lines that are exactly a marker, outside fenced code blocks: (starts, ends) as line indexes."""
               starts, ends, fence = [], [], None
               for index, line in enumerate(text.splitlines()):
-                  opening = re.match(r" {0,3}(`{3,}|~{3,})", line)
-                  if fence is None and opening:
-                      fence = opening.group(1)
-                  elif fence is not None:
-                      closing = re.fullmatch(r" {0,3}(`{3,}|~{3,})[ \t]*", line)
+                  if fence is None:
+                      opening = OPENING.match(line)
+                      if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+                          fence = opening.group(1)
+                      elif START_LINE.fullmatch(line):
+                          starts.append(index)
+                      elif END_LINE.fullmatch(line):
+                          ends.append(index)
+                  else:
+                      closing = CLOSING.fullmatch(line)
                       if closing and closing.group(1)[0] == fence[0] and len(closing.group(1)) >= len(fence):
                           fence = None
-                  elif line.strip() == START:
-                      starts.append(index)
-                  elif line.strip() == END:
-                      ends.append(index)
               return starts, ends
 
 

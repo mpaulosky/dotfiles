@@ -943,6 +943,13 @@ describe("recordReview", () => {
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
   });
 
+  it("refuses a security weakness recorded fixed on a reason alone, and takes one that names its test", () => {
+    const weakness = { severity: "warning" as const, security: true, status: "fixed" as const };
+
+    assert.throws(() => record([finding({ ...weakness, test: null, reason: "Reworded." })]), /R1 is a security weakness recorded fixed without a test/);
+    assert.equal(record([finding({ ...weakness, test: ".github/ci/gate-checks.sh::no-token-in-env", reason: null })]).findings[0]?.status, "fixed");
+  });
+
   it("refuses a fixed finding that names neither a test nor why it has none", () => {
     assert.throws(() => record([finding({ test: null })]), /neither its test/);
   });

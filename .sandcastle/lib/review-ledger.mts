@@ -165,6 +165,9 @@ export const findingSchema = findingFields
     if (finding.status === "open" && finding.fix === null) {
       context.addIssue({ code: "custom", message: `${finding.id} is open without a suggested fix` });
     }
+    if (finding.security && finding.status === "fixed" && finding.test === null) {
+      context.addIssue({ code: "custom", message: `${finding.id} is a security weakness recorded fixed without a test: name its test or gate check, or leave it open with its suggested fix` });
+    }
     if (finding.security && finding.severity !== "warning") {
       context.addIssue({ code: "custom", message: `${finding.id} is a security weakness: grade it warning, not ${finding.severity}` });
     }
@@ -720,7 +723,8 @@ export const REVIEW_NOTES_END = "<!-- /review-notes -->";
 // person accepted, for people reading the PR. Security findings (see
 // isSecurity: graded Warning, a lens naming security, or unmarked) are only
 // counted, so the maintainer knows to wait for the
-// private report. Claude Review reads the notes as accepted findings, but Copilot isn't known to, so
+// private report. Claude Review reads the notes' accepted non-security findings on an owner's same-repo PR, but
+// raises a security finding again (the notes only count it), and Copilot isn't known to read them, so
 // a thread one opens on an accepted finding gets the same "Left for the
 // owner." reply as every thread left for the owner (docs/PROCESS.md), which doesn't
 // say which thread a security finding is on; the reason stays in the ledger

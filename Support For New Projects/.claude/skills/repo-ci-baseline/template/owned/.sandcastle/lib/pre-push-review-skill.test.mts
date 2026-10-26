@@ -8,6 +8,7 @@ import { REVIEW_NOTES_END, REVIEW_NOTES_START } from "./review-ledger.mts";
 // Claude Code reads both files, not this repository's code.
 const agent = readFileSync(new URL("../../.claude/agents/pre-push-reviewer.md", import.meta.url), "utf8");
 const skill = readFileSync(new URL("../../.claude/skills/pre-push-review/SKILL.md", import.meta.url), "utf8");
+const workflow = readFileSync(new URL("../../.github/workflows/claude-review.yml", import.meta.url), "utf8");
 const bar = readFileSync(new URL("../../.claude/skills/pre-push-review/review-bar.md", import.meta.url), "utf8");
 
 describe("the pre-push-review skill's reviewers", () => {
@@ -276,6 +277,29 @@ describe("the pre-push-review skill's fixing", () => {
     assert.match(skill, /\| \*\*Warning\*\* \|[^|]*\| Fixed in the review, behind a regression test \|/);
     assert.doesNotMatch(skill, /Never fix a Warning they haven't asked you to fix/);
     assert.doesNotMatch(skill, /the Warnings the person asks you to fix/);
+  });
+});
+
+describe("the pre-push-review skill's fixing, in the rest of its text", () => {
+  it("still names Warnings with the Critical ones to fix in a round, and the Warning bullet for a person", () => {
+    assert.match(skill, /in that round, with its Critical and Warning ones/);
+    assert.match(skill, /\*\*Leave it open\*\* for a person, with its suggested fix, when a Critical or Warning finding's `needsPerson` is true/);
+  });
+
+  it("records a Warning fixed only with a test, and keeps an agent from loosening a guard or accepting for a person", () => {
+    assert.match(skill, /A Warning \(a security weakness\) is\s+recorded `fixed` only with a `test`/);
+    assert.match(skill, /never weaken, skip or delete a test, a gate check, a validation or a permission/);
+    assert.match(skill, /A fix that changes the gate, the ledger, the reviewer agent, `\.claude\/settings\.json` or a workflow's permissions is\s+`needsPerson`/);
+    assert.match(skill, /Never accept a finding on a person's behalf/);
+  });
+});
+
+describe("Claude Review's accepted-findings step and the ledger", () => {
+  // The workflow is Owned by every Baseline repo and the ledger by every Sandcastle repo, so this is the one
+  // place that sees both: the step reads the markers the ledger writes.
+  it("look for the markers the ledger writes", () => {
+    assert.ok(workflow.includes(`START = "${REVIEW_NOTES_START}"`), "the step's START is not the ledger's");
+    assert.ok(workflow.includes(`END = "${REVIEW_NOTES_END}"`), "the step's END is not the ledger's");
   });
 });
 

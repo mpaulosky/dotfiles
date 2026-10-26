@@ -65,7 +65,7 @@ test out, or delete one. When a test is wrong rather than the code, leave it as 
 
 # THE ISSUE
 
-Your run is the last developer run: every test must pass by its end. If the task is not complete, say what was done and what remains in your last commit's body.
+{{UI_DEVELOPER}} If the task is not complete, say what was done and what remains in your last commit's body.
 
 Once complete, output <promise>COMPLETE</promise>.
 

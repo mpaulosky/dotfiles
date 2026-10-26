@@ -66,6 +66,20 @@ export function architectPromptArgs(issue: SandcastleIssue, branch: string, desi
   return { ...issuePromptArgs(issue, branch), DESIGN_NOTE: designNote ?? "(no earlier design note)" };
 }
 
+// The backend developer needs to know whether the UI developer runs after it
+// for this issue: when it does, the Blazor components and pages are the UI
+// developer's, and the backend's run needn't leave every test green.
+export function backendPromptArgs(issue: SandcastleIssue, branch: string, uiRuns: boolean): PromptArgs {
+  return {
+    ...issuePromptArgs(issue, branch),
+    UI_DEVELOPER: uiRuns
+      ? "The UI developer runs after you for this issue. Leave Blazor components and pages (`.razor` files, their code-behind and their " +
+        "bUnit tests) to it, and make every other test pass. If the gate is still red only on those tests when you finish, say so in your " +
+        "last commit's body."
+      : "No UI developer runs for this issue, so your run is the last developer run: every test must pass by its end.",
+  };
+}
+
 // The host names branches and has already dropped issues with an open PR, so
 // the planner needs only the ready issues.
 export function plannerPromptArgs(ready: SandcastleIssue[]) {

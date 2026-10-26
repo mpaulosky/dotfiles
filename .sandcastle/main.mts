@@ -69,8 +69,10 @@
 //                               planner picked it, writes a design note the
 //                               host posts on the issue. The tester commits
 //                               failing tests, then the backend developer
-//                               makes them pass; if either fails, the issue
-//                               stops for the
+//                               makes them pass, then the UI developer (when
+//                               the planner picked it, in a repo that opted
+//                               in) builds the Blazor components and pages;
+//                               if any fails, the issue stops for the
 //                               round. If the branch is then ahead of main (this
 //                               run's commits or earlier ones), the host runs
 //                               scripts/gate.sh in the sandbox (checkpoint 1),
@@ -80,7 +82,7 @@
 //                               again (checkpoint 2). A red gate gets two gate-fixer
 //                               attempts per checkpoint; past that nothing is
 //                               pushed. A red checkpoint or a failed architect,
-//                               tester or backend run is a failed build
+//                               tester, backend or UI run is a failed build
 //                               attempt: the first gets a comment, the second
 //                               hands the issue back with sandcastle:needs-human
 //                               (lib/handback.mts). A failed scribe or reviewer

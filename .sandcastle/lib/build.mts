@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { isRoleTimeout, runRoleInSandbox } from "./agents.mts";
+import { isRoleTimeout, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
 import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
 import {
@@ -26,7 +26,7 @@ import { commentOnIssue, markerComments, openPullRequest, repoName, type Sandcas
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
-import { architectPromptArgs, gateFixerPromptArgs, issuePromptArgs } from "./prompts.mts";
+import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
@@ -81,7 +81,7 @@ export { UncountedStopError };
 // person needs to look at it regardless.
 //
 // `docsFailed` is true when the planner picked the scribe for this issue and
-// its run failed. Unlike an architect, tester or backend failure, that
+// its run failed. Unlike an architect, tester, backend or UI failure, that
 // doesn't stop the pipeline (see "When a role fails" in
 // Blazor-Server's docs/plans/sandcastle-workflow.md): the PR still publishes, with a note
 // that the documentation step failed.
@@ -169,7 +169,7 @@ export async function retryOnServerError<T>(step: () => T, wait: (ms: number) =>
   }
 }
 
-// The issue comment for an architect, tester or backend run that stopped
+// The issue comment for an architect, tester, backend or UI run that stopped
 // the build. `error` is the run's error, already made safe to post (see
 // publicErrorText): it carries claude-code's stderr or last output lines, so
 // it's quoted in a text block, which no mention or reference fires in, with
@@ -272,14 +272,14 @@ export function latestDesignNote(
 }
 
 // An issue with the optional roles the planner picked for it (see
-// resolveRoles in lib/plan.mts): the architect and/or the scribe, each
+// resolveRoles in lib/plan.mts): the architect, the UI developer and/or the scribe, each
 // run only when listed, alongside the tester, developer and reviewer, which always run (see "Phase 6: Build" in
 // Blazor-Server's docs/plans/sandcastle-workflow.md).
 export type RoledIssue = SandcastleIssue & { roles: readonly OptionalRole[] };
 
 // The roles that write the design, the tests or the code. When one fails, the
 // issue stops for the round, unlike the scribe or the reviewer.
-type DeveloperRole = "architect" | "tester" | "backend";
+type DeveloperRole = "architect" | "tester" | "backend" | "ui";
 
 // What buildIssue needs from outside the pipeline; tests pass stubs.
 export type BuildHost = {
@@ -691,16 +691,24 @@ async function buildMarkedIssue(
   const designNotePath = `.sandcastle/work/${issue.number}/design.md`;
   const prBodyPath = `.sandcastle/work/${issue.number}/pr-body.md`;
 
+  // The UI developer runs only for an issue whose plan picked it in a repo that
+  // opted in. resolveRoles already keeps `ui` out of an opted-out repo's plan;
+  // this keeps a RoledIssue built another way from running a role the repo has
+  // no agent or prompt for, after a tester and backend run it can't use.
+  const uiRuns = issue.roles.includes("ui") && uiEnabled();
+
   function developerPromptArgs(role: DeveloperRole): sandcastle.PromptArgs {
     switch (role) {
       case "architect":
         return architectPromptArgs(issue, branch, host.latestDesignNote(issue.number));
+      case "backend":
+        return backendPromptArgs(issue, branch, uiRuns);
       default:
         return promptArgs;
     }
   }
 
-  // Run the architect, the tester or the developer (the backend role).
+  // Run the architect, the tester, the developer (the backend role) or the UI developer.
   // Returns undefined when the run finished. When it threw, timed out or used
   // up its iterations without signalling completion, the design, the tests or
   // the code aren't done, so it returns the build's result and the issue stops
@@ -1098,6 +1106,7 @@ async function buildMarkedIssue(
       ...(issue.roles.includes("architect") ? ["architect" as const] : []),
       "tester",
       "backend",
+      ...(uiRuns ? ["ui" as const] : []),
     ];
     for (const role of developers) {
       const failed = await developerFails(role);

@@ -8,7 +8,7 @@
 // every Sandcastle repo shares and imports nothing from here.
 // ---------------------------------------------------------------------------
 
-import type { Role, RoleAgent } from "./config.mts";
+import type { OptInRole, Role, RoleAgent } from "./config.mts";
 
 const sonnet = "claude-sonnet-5-5";
 
@@ -16,7 +16,10 @@ const sonnet = "claude-sonnet-5-5";
 // Blazor-Server's docs/plans/sandcastle-workflow.md. Every role runs Sonnet
 // (the owner moved them off Opus to cut cost; a role whose wrong answer costs a
 // whole round can be pointed back at an Opus model here). Structured-output
-// roles must stay at one iteration.
+// roles must stay at one iteration. A repo with Blazor components and pages
+// opts into the UI developer by uncommenting the `ui` entry at the end
+// (roles/ui.md is its prompt, and plan-prompt.md must offer the role to the
+// planner with a `ui` bullet in its ROLES list).
 export const ROLE_AGENTS = {
   intake: { model: sonnet, effort: "medium", maxIterations: 1, timeoutMinutes: 15 },
   planner: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
@@ -28,7 +31,8 @@ export const ROLE_AGENTS = {
   reviewer: { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 15 },
   "gate-fixer": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 20 },
   "follow-up": { model: sonnet, effort: "high", maxIterations: 1, timeoutMinutes: 30 },
-} as const satisfies Record<Role, RoleAgent>;
+//   ui: { model: sonnet, effort: "high", maxIterations: 10, timeoutMinutes: 45 },
+} as const satisfies Record<Role, RoleAgent> & Partial<Record<OptInRole, RoleAgent>>;
 
 // Maximum number of plan→execute→merge cycles before stopping.
 // Raise this if your backlog is large; lower it for a quick smoke-test run.
@@ -54,8 +58,9 @@ export const copyToWorktree = ["node_modules"];
 
 // The host skills the role prompts tell the agent to use, from the host
 // user's ~/.claude/skills (lib/skills.mts mounts each one read-only). None by
-// default: name a skill here only when a role prompt names it and it isn't in
-// the worktree.
+// default: name a skill here only when it isn't in the worktree and you also
+// list it in a `# SKILLS` section of the tester and backend prompts (and of the
+// ui prompt, once the repo opts into that role); lib/skills.test.mts checks it.
 export const SANDBOX_SKILLS: readonly string[] = [];
 
 // The CI checks scripts/gate.sh reproduces, which a follow-up pass re-runs

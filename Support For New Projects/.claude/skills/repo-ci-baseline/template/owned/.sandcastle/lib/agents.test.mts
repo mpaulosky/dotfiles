@@ -2,15 +2,41 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
-import { isRoleTimeout, roleOptions, runRoleInSandbox, runWithinLimits, withSharedRules } from "./agents.mts";
+import { isRoleTimeout, roleOptions, uiEnabled, runRoleInSandbox, runWithinLimits, withSharedRules } from "./agents.mts";
 import { UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
 
+// Runs `run` with the repo's `ui` role opted in or out of ROLE_AGENTS, whatever
+// lib/repo-config.mts says, then puts ROLE_AGENTS back as it was.
+async function withUiRole<T>(enabled: boolean, run: () => T | Promise<T>): Promise<T> {
+  const agents: Record<string, unknown> = ROLE_AGENTS;
+  const original = agents.ui;
+  if (enabled) agents.ui = { ...ROLE_AGENTS.backend };
+  else delete agents.ui;
+  try {
+    return await run();
+  } finally {
+    if (original === undefined) delete agents.ui;
+    else agents.ui = original;
+  }
+}
+
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
 
 describe("roleOptions", () => {
+  it("builds the ui role's options from its ROLE_AGENTS entry, and refuses it when the repo has none", async () => {
+    await withUiRole(true, () => {
+      assert.equal(uiEnabled(), true);
+      assert.equal(roleOptions("ui").name, "ui");
+    });
+    await withUiRole(false, () => {
+      assert.equal(uiEnabled(), false);
+      assert.throws(() => roleOptions("ui"), /no ui entry/);
+    });
+  });
+
   it("names the run after the role and applies its iteration cap", () => {
     const options = roleOptions("tester");
 

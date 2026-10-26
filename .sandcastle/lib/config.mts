@@ -9,10 +9,22 @@ import type { ClaudeCodeOptions } from "@ai-hero/sandcastle";
 
 // Every role Sandcastle runs. lib/repo-config.mts gives each one its agent
 // and budget (ROLE_AGENTS) and must name every one: a role it leaves out,
-// or one it adds, fails the type-check rather than a run.
+// or one it adds besides the opt-in `ui` (OptInRole), fails the type-check
+// rather than a run.
 export const ROLES = ["intake", "planner", "critique", "architect", "tester", "backend", "scribe", "reviewer", "gate-fixer", "follow-up"] as const;
 
 export type Role = (typeof ROLES)[number];
+
+// The role a repo opts into by giving ROLE_AGENTS a `ui` entry: the UI
+// developer, who builds the Blazor components and pages after the backend
+// developer. It is left out of ROLES so that a repo-config.mts written before
+// it existed, whose ROLE_AGENTS must name every Role, still type-checks.
+// lib/agents.mts#uiEnabled says whether the repo opted in, and nothing runs
+// or plans the role until it has.
+export type OptInRole = "ui";
+
+// Every role the Owned modules can run: the ones every repo names, plus the opt-in one.
+export type AnyRole = Role | OptInRole;
 
 // The agent and budget lib/repo-config.mts#ROLE_AGENTS gives one role.
 export type RoleAgent = {
@@ -26,8 +38,10 @@ export type RoleAgent = {
 // (the backend role) and reviewer, which always run (see "Phase 4: Plan" and
 // "Phase 6: Build" in Blazor-Server's docs/plans/sandcastle-workflow.md). lib/plan.mts#resolveRoles
 // validates the planner's roles field against this list, falling back to
-// every one of them when the field is missing or invalid.
-export const OPTIONAL_ROLES = ["architect", "scribe"] as const satisfies readonly Role[];
+// every one of them when the field is missing or invalid. `ui` counts only in a
+// repo that opted in (lib/agents.mts#uiEnabled): elsewhere it is neither
+// recognised nor part of the fallback.
+export const OPTIONAL_ROLES = ["architect", "ui", "scribe"] as const satisfies readonly AnyRole[];
 
 export type OptionalRole = (typeof OPTIONAL_ROLES)[number];
 
@@ -41,7 +55,7 @@ export const DESIGN_MARKER = "<!-- sandcastle:design -->";
 // checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts:
 // config.test.mts checks the sum fits, and build.test.mts that buildIssue runs
 // no role outside the list.
-export const BUILD_ROLES = ["architect", "tester", "backend", "scribe", "reviewer"] as const satisfies readonly Role[];
+export const BUILD_ROLES = ["architect", "tester", "backend", "ui", "scribe", "reviewer"] as const satisfies readonly AnyRole[];
 
 // The ref each issue branch is compared with: every issue PR targets main,
 // and fetchMain() refreshes origin/main before each round. The sandbox mounts

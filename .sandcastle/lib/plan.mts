@@ -1,6 +1,6 @@
 import * as sandcastle from "@ai-hero/sandcastle";
 import { z } from "zod";
-import { runRole } from "./agents.mts";
+import { runRole, uiEnabled } from "./agents.mts";
 import { OPTIONAL_ROLES, type OptionalRole } from "./config.mts";
 import { hooks } from "./repo-config.mts";
 import type { SandcastleIssue } from "./github.mts";
@@ -26,18 +26,21 @@ const planSchema = z.object({
 
 export type PlannedIssue = z.infer<typeof planSchema>["issues"][number];
 
-// The optional roles (architect, scribe) resolveRoles picks for
+// The optional roles (architect, UI developer, scribe) resolveRoles picks for
 // one issue from the planner's raw `roles` field: the recognised ones,
 // deduplicated and in build order, or every optional role when the field is
 // missing, isn't an array, or names anything resolveRoles doesn't recognise
 // (see OPTIONAL_ROLES in lib/config.mts). An empty array is valid on its own:
-// it means the planner deliberately picked none.
+// it means the planner deliberately picked none. The `ui` role counts only in
+// a repo that opted into it (see uiEnabled in lib/agents.mts): elsewhere it is
+// neither recognised nor part of "every optional role".
 export function resolveRoles(roles: unknown): OptionalRole[] {
-  const known: readonly string[] = OPTIONAL_ROLES;
+  const available = OPTIONAL_ROLES.filter((role) => role !== "ui" || uiEnabled());
+  const known: readonly string[] = available;
   if (!Array.isArray(roles) || !roles.every((role) => typeof role === "string" && known.includes(role))) {
-    return [...OPTIONAL_ROLES];
+    return [...available];
   }
-  return OPTIONAL_ROLES.filter((role) => roles.includes(role));
+  return available.filter((role) => roles.includes(role));
 }
 
 // Where the repository is checked out inside the sandbox the planner runs in.

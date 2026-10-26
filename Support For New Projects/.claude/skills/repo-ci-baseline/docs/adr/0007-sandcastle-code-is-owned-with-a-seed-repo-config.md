@@ -46,6 +46,7 @@ which mixed shared limits and markers with per-repo values. A new repo had to co
 
 - A change to Sandcastle's code in dotfiles changes the Template's copy too: `test.sh` fails when they differ, and the overlap check
   counts each pair as one path.
-- The Owned build only knows the Template's roles. Blazor-Server's UI developer role has to come into the Template before
-  Blazor-Server migrates, or it loses that role.
+- The Owned build knows the Template's roles and one opt-in role, the UI developer (`ui`). A repo opts in with a `ui` entry in
+  its `ROLE_AGENTS`, which is how Blazor-Server keeps that role when it migrates. `ui` is outside `ROLES`, so a `repo-config.mts`
+  written before it existed still type-checks.
 - The older repos take every Owned file at their migration and fill `repo-config.mts`, which gives them a `ROLE_AGENTS` map for the first time.

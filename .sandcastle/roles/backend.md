@@ -64,7 +64,7 @@ test out, or delete one. When a test is wrong rather than the code, leave it as 
 
 # THE ISSUE
 
-Your run is the last developer run: every test must pass by its end. When the issue changes an Owned file dotfiles carries a copy of, copy the Template's file over the copy
+{{UI_DEVELOPER}} When the issue changes an Owned file dotfiles carries a copy of, copy the Template's file over the copy
 before you finish. If the task is not complete, say what was done and what remains in your last commit's body.
 
 Once complete, output <promise>COMPLETE</promise>.

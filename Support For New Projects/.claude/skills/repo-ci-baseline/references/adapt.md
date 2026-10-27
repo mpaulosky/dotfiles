@@ -30,6 +30,7 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
 ## Per-repo CI setup
 
 Move whatever the old `scripts/gate.sh` checked for this repo alone into `.github/ci/gate-checks.sh`, guarded by the paths each check covers.
+Leave out the Copilot review sync: `scripts/gate.sh` runs it ([copilot-review-sync.md](copilot-review-sync.md)); a repo that already has the step deletes it.
 
 Move whatever the old `ci.yml` did for this repo alone into `.github/ci/prepare.sh` (`build`, or `test <name>`):
 

@@ -72,6 +72,7 @@ export const OWNED_PATHS = [
   "scripts/check-branch-name.sh",
   "scripts/check-git-hooks.sh",
   "scripts/check-pr-title.sh",
+  "scripts/sync-copilot-review.sh",
   "scripts/review.sh",
   "scripts/tests/**",
   "docs/PROCESS.md",

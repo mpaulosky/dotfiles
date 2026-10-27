@@ -1,0 +1,32 @@
+---
+name: Copilot Review Sync
+# .github/copilot-instructions.md is generated from the code-review skill, so
+# GitHub's Copilot review and Claude Code review against the same rules. This
+# workflow is Owned by the repo-ci-baseline Template (references/copilot-review-sync.md):
+# a repo without the skill passes this job with nothing to check, and adds the
+# skill to opt in.
+
+"on":
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  copilot-review-sync:
+    name: Copilot review instructions in sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check copilot-instructions.md matches the code-review skill
+        run: bash scripts/sync-copilot-review.sh --check

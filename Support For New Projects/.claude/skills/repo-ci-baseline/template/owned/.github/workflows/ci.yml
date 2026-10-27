@@ -244,7 +244,8 @@ jobs:
         run: python -m pytest .github/scripts/tests
 
   # Tests for .github/hooks/pre-commit, .github/hooks/pre-push and scripts/gate.sh,
-  # with stubbed tools.
+  # with stubbed tools, and for scripts/check-branch-name.sh, check-pr-title.sh
+  # and sync-copilot-review.sh.
   # Also not a required status check.
   hook-tests:
     name: Hook tests
@@ -268,6 +269,9 @@ jobs:
 
       - name: Run PR-title script tests
         run: bash scripts/tests/check-pr-title.test.sh
+
+      - name: Run Copilot review sync script tests
+        run: bash scripts/tests/sync-copilot-review.test.sh
 
   # Tests for the inline script in .github/workflows/pr-automerge.yml, run
   # against a fake GitHub client. Also not a required status check.

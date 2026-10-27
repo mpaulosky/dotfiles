@@ -589,6 +589,7 @@ function stubGithub({
   followsHandOffs = true,
   pullRequestComments,
   mergeOfMain = () => ({ problem: "not stubbed" }),
+  recordApprovedHead = () => {},
 }: {
   prs?: SweepPullRequest[];
   closed?: ClosedPullRequest[];
@@ -609,6 +610,7 @@ function stubGithub({
   pullRequestComments?: (number: number) => TimestampedComment[];
   // Whether a commit is a merge of main GitHub made for the host; by default none is.
   mergeOfMain?: (commit: string) => MainMerge;
+  recordApprovedHead?: (number: number, head: string) => void;
 } = {}) {
   const reviewThreadCalls: number[] = [];
   const requestedReviews: string[] = [];
@@ -638,6 +640,7 @@ function stubGithub({
       pullRequestComments?.(number) ??
       prs.filter((candidate) => candidate.number === number).map((candidate) => headRecord(candidate.headRefOid, host)),
     mergeOfMain,
+    recordApprovedHead,
     reviewThreads: (number) => {
       reviewThreadCalls.push(number);
       if (reviewThreads !== undefined) return reviewThreads(number);
@@ -882,6 +885,7 @@ describe("sweepPullRequests", () => {
       repositoryOwner: () => "owner",
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
+      recordApprovedHead: () => {},
     };
 
     sweepPullRequests(github, () => {}, NOW);
@@ -1191,6 +1195,7 @@ describe("sweepPullRequests", () => {
       repositoryOwner: () => "owner",
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
+      recordApprovedHead: () => {},
     };
     const lines: string[] = [];
 
@@ -1360,6 +1365,7 @@ describe("sweepPullRequests", () => {
       repositoryOwner: () => "owner",
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
+      recordApprovedHead: () => {},
     };
     const outcomes = new OutcomeReport();
 
@@ -1975,12 +1981,13 @@ describe("handOffApproval", () => {
   const HOST = "the-host";
   const PR = { number: 201, author: OWNER, headRefOid: HEAD_SHA };
   function github(
-    overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; comments?: TimestampedComment[]; mergeOfMain?: (commit: string) => MainMerge; isOwner?: (login: string | null) => boolean | undefined } = {},
+    overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; comments?: TimestampedComment[]; mergeOfMain?: (commit: string) => MainMerge; recordFails?: boolean; isOwner?: (login: string | null) => boolean | undefined } = {},
   ) {
     const eventReads: number[] = [];
     const editReads: number[] = [];
     const commentReads: number[] = [];
     const mergeReads: string[] = [];
+    const recordings: { number: number; head: string }[] = [];
     const stub = {
       pullRequestEvents: (number: number) => {
         eventReads.push(number);
@@ -1998,10 +2005,14 @@ describe("handOffApproval", () => {
         mergeReads.push(commit);
         return overrides.mergeOfMain?.(commit) ?? { problem: `${commit.slice(0, 7)} isn't a merge` };
       },
+      recordApprovedHead: (number: number, head: string) => {
+        if (overrides.recordFails) throw new Error("post failed");
+        recordings.push({ number, head });
+      },
       isOwner: overrides.isOwner ?? ownerIs(OWNER),
       repositoryOwner: () => OWNER,
     };
-    return { stub, eventReads, editReads, commentReads, mergeReads };
+    return { stub, eventReads, editReads, commentReads, mergeReads, recordings };
   }
   const reasonOf = (result: Approval) => (result.approved ? "" : result.reason);
 
@@ -2328,6 +2339,36 @@ describe("handOffApproval", () => {
 
         assert.equal(mergeReads.length, MAX_MAIN_MERGES);
         assert.match(reason, new RegExp(`\\(more than ${MAX_MAIN_MERGES} merges of main on top of the last recorded head\\)`));
+      });
+
+      it("records the head it reached through merges, so the next walk starts there", () => {
+        const { stub, recordings } = github({ mergeOfMain });
+
+        handOffApproval({ ...PR, headRefOid: PUSHED_SHA.toUpperCase() }, stub, HOST);
+
+        assert.deepEqual(recordings, [{ number: 201, head: PUSHED_SHA }]);
+      });
+
+      it("records nothing for a head that is recorded itself", () => {
+        const { stub, recordings } = github({ mergeOfMain });
+
+        handOffApproval(PR, stub, HOST);
+
+        assert.deepEqual(recordings, []);
+      });
+
+      it("records nothing for a head that is refused", () => {
+        const { stub, recordings } = github({ mergeOfMain });
+
+        refused(handOffApproval({ ...PR, headRefOid: "c".repeat(40) }, stub, HOST));
+
+        assert.deepEqual(recordings, []);
+      });
+
+      it("still approves when the record can't be posted", () => {
+        const { stub } = github({ mergeOfMain, recordFails: true });
+
+        assert.deepEqual(handOffApproval({ ...PR, headRefOid: MERGE_SHA }, stub, HOST), { approved: true });
       });
 
       it("counts through a merge case-insensitively", () => {

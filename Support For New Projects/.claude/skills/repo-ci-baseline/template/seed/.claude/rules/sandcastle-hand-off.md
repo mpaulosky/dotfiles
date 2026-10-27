@@ -14,7 +14,7 @@ and neither does one followed by someone else editing the pull request's title o
 It covers the commits the pull request had when you added it: a workflow comment records that head, and Sandcastle records the heads it pushes
 itself. Updating the branch from `main` keeps it covered when the update is made as the account of `SANDCASTLE_GH_TOKEN` (PR Auto-Merge
 with a `RELEASE_PR_PAT` of that account, or the Update branch button when you are that account). A commit pushed by anyone
-else afterwards, a force-push, or more than five merges of `main` since the last record stops the follow-up until you remove the label and add it again. To keep a
+else afterwards, a force-push, or more than five merges of `main` between two sweeps stops the follow-up until you remove the label and add it again. To keep a
 collaborator from handing off their own pull request, it must have been opened by the repository's owner or by a session (the owner's token).
 A repository an organisation owns has no owner login to match, so nothing can be handed off there.
 

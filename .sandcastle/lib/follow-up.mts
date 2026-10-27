@@ -230,7 +230,8 @@ export function recordApprovedHead(number: number, head: string, post: (number: 
   post(number, approvedHeadComment(head));
 }
 
-// How many merges of main handOffApproval looks through from a head to reach a recorded one. More than this is not followed up.
+// How many merges of main handOffApproval looks through from a head to reach a recorded one. More than this is not followed up. It only
+// binds when the sweep didn't see the PR for that many updates, since a head reached through merges is recorded as it is found.
 export const MAX_MAIN_MERGES = 5;
 
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
@@ -248,7 +249,7 @@ export const MAX_MAIN_MERGES = 5;
 // The author check keeps a collaborator from handing off a PR of their own.
 export function handOffApproval(
   pr: Pick<SweepPullRequest, "number" | "author" | "headRefOid">,
-  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "isOwner" | "repositoryOwner">,
+  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "recordApprovedHead" | "isOwner" | "repositoryOwner">,
   host: string,
 ): Approval {
   if (!sameLogin(pr.author, host) && !sameLogin(pr.author, github.repositoryOwner())) {
@@ -270,7 +271,18 @@ export function handOffApproval(
   let head = pr.headRefOid.toLowerCase();
   let problem = "";
   for (let merges = 0; merges <= MAX_MAIN_MERGES; merges++) {
-    if (recorded.has(head)) return labelled;
+    if (recorded.has(head)) {
+      // The head was reached through merges of main: record the one the PR has now, so the next walk starts there and the cap
+      // counts merges since the last sweep rather than since the label. Best effort: the approval stands either way.
+      if (merges > 0) {
+        try {
+          github.recordApprovedHead(pr.number, pr.headRefOid.toLowerCase());
+        } catch {
+          // The next sweep walks the same merges and tries again.
+        }
+      }
+      return labelled;
+    }
     if (merges === MAX_MAIN_MERGES) {
       problem = `more than ${MAX_MAIN_MERGES} merges of main on top of the last recorded head`;
       break;
@@ -445,6 +457,8 @@ export type FollowUpGitHub = {
   pullRequestComments(number: number): TimestampedComment[];
   // Whether `commit` is a merge of main GitHub made for the host, and its first parent if so. live: mainMergeOf.
   mergeOfMain(commit: string): MainMerge;
+  // Records a head that handOffApproval verified through merges of main, as the host. live: recordApprovedHead.
+  recordApprovedHead(number: number, head: string): void;
 };
 
 // mainMergeOf for the signed-in host: the merge must be authored by that login. `host` and `merge` are injectable for the test.
@@ -472,6 +486,7 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   repositoryOwner: () => repositoryOwnerLogin(),
   pullRequestComments: (number) => issueComments(number),
   mergeOfMain: (commit) => liveMergeOfMain(commit),
+  recordApprovedHead: (number, head) => recordApprovedHead(number, head),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the
@@ -622,6 +637,7 @@ export function sweepPullRequests(
           pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
           pullRequestComments: (number) => github.pullRequestComments(number),
           mergeOfMain: (commit) => github.mergeOfMain(commit),
+          recordApprovedHead: (number, head) => github.recordApprovedHead(number, head),
           isOwner: github.isOwner,
           repositoryOwner: () => github.repositoryOwner(),
         }, host),

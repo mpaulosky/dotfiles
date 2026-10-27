@@ -168,6 +168,7 @@ describe("liveSweep", () => {
       repositoryOwner: () => "owner",
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
+      recordApprovedHead: () => {},
     };
     return { github, closedCalls, handBacks };
   }

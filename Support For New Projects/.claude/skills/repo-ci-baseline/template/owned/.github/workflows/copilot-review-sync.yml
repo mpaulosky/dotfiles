@@ -29,4 +29,4 @@ jobs:
           persist-credentials: false
 
       - name: Check copilot-instructions.md matches the code-review skill
-        run: scripts/sync-copilot-review.sh --check
+        run: bash scripts/sync-copilot-review.sh --check

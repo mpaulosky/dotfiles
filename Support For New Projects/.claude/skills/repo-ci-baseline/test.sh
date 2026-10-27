@@ -44,9 +44,12 @@ bash "$owned/scripts/tests/check-branch-name.test.sh" || fail "check-branch-name
 bash "$owned/scripts/tests/check-pr-title.test.sh" || fail "check-pr-title.test.sh"
 bash "$owned/scripts/tests/sync-copilot-review.test.sh" || fail "sync-copilot-review.test.sh"
 # Both places that enforce the sync run the script's --check, which skips a repo without the code-review skill.
-grep -qF 'scripts/sync-copilot-review.sh --check' "$owned/scripts/gate.sh" || fail "the Owned gate.sh must run scripts/sync-copilot-review.sh --check"
-grep -qF 'scripts/sync-copilot-review.sh --check' "$owned/.github/workflows/copilot-review-sync.yml" \
-  || fail "the Owned copilot-review-sync.yml must run scripts/sync-copilot-review.sh --check"
+# It runs through bash, so a lost mode bit fails loudly instead of skipping the check, and the anchors are the invocation lines (a step's label names the script too).
+grep -qxF '  bash scripts/sync-copilot-review.sh --check' "$owned/scripts/gate.sh" || fail "the Owned gate.sh must run: bash scripts/sync-copilot-review.sh --check"
+grep -qxF '        run: bash scripts/sync-copilot-review.sh --check' "$owned/.github/workflows/copilot-review-sync.yml" \
+  || fail "the Owned copilot-review-sync.yml must run: bash scripts/sync-copilot-review.sh --check"
+grep -qxF '        run: bash scripts/tests/sync-copilot-review.test.sh' "$owned/.github/workflows/ci.yml" \
+  || fail "the Owned ci.yml's hook-tests job must run scripts/tests/sync-copilot-review.test.sh, so every repo tests its copy"
 bash "$owned/scripts/tests/check-git-hooks.test.sh" || fail "check-git-hooks.test.sh"
 
 step "Auto-merge script tests"

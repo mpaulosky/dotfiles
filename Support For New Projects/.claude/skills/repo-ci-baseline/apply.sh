@@ -6,9 +6,10 @@
 # Owned files (template/owned) always overwrite the repo's copy, mode included. Seed files
 # (template/seed) are written only where the repo has none, with {{OWNER}},
 # {{REPO}} and {{SOLUTION}} filled in. Then core.hooksPath is pointed at
-# .github/hooks. Nothing is ever deleted. Sandcastle's files (.sandcastle/, and
-# the package.json and pnpm-workspace.yaml it runs with) go only into a repo
-# with a .sandcastle/ folder or no commits yet (docs/adr/0006).
+# .github/hooks. Nothing is ever deleted. Sandcastle's files (.sandcastle/, its
+# workflow and the Seed skills list the workflow reads, and the package.json and
+# pnpm-workspace.yaml it runs with) go only into a repo with a .sandcastle/
+# folder or no commits yet (docs/adr/0006).
 #
 # The report lists what Adapt has to look at: Owned files whose local copy
 # differed (drift to drop, or a local fix to move into the Template first),
@@ -64,13 +65,14 @@ if ! $dry_run; then
   fi
 fi
 
-# Sandcastle's files (.sandcastle/, and the package.json and pnpm-workspace.yaml it runs with) go only into a repo that runs
-# Sandcastle, or a new one (ADR 0006): a repo starts using it by creating .sandcastle/ and Applying again.
+# Sandcastle's files (.sandcastle/, its workflow and the skills list that workflow reads, and the package.json and pnpm-workspace.yaml it runs
+# with) go only into a repo that runs Sandcastle, or a new one (ADR 0006): a repo starts using it by creating .sandcastle/ and Applying again.
 with_sandcastle=false
 if [[ -d "$target/.sandcastle" ]] || ! git -C "$target" rev-parse --verify --quiet HEAD >/dev/null; then with_sandcastle=true; fi
 # The local review's skill, agent and script too: its ledger is .sandcastle/lib/review-ledger.mts.
 sandcastle_path() {
   [[ "$1" == .sandcastle/* || "$1" == package.json || "$1" == pnpm-workspace.yaml || "$1" == scripts/review.sh \
+    || "$1" == .github/workflows/sandcastle.yml || "$1" == .github/ci/sandcastle-skills.txt \
     || "$1" == .claude/agents/pre-push-reviewer.md || "$1" == .claude/skills/pre-push-review/* ]]
 }
 

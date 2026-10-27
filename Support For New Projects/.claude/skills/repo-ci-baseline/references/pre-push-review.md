@@ -52,7 +52,7 @@ A repo that already has Sandcastle:
 1. **First, in a PR of its own on `main`, before the re-Apply that brings the ledger**: add `REPO_SLUG` (`"<owner>/<repo>"`) and `NOT_OWNED_BASELINE_PATHS` to
    `.sandcastle/lib/repo-config.mts`, which Apply never rewrites, each as a one-line `export const NAME` (or `export let`) at the start of a line. List
    in `NOT_OWNED_BASELINE_PATHS` each file (not a folder) under an Owned pattern (see
-   `OWNED_PATHS` in `lib/review-ledger.mts`) that is the repo's own, such as its `sandcastle.yml` workflow and Sandcastle tests the Template lacks.
+   `OWNED_PATHS` in `lib/review-ledger.mts`) that is the repo's own, such as a workflow of its own and Sandcastle tests the Template lacks.
    Until this is on `main`, Apply holds back the four files that import it (`scripts/review.sh`, `lib/review-ledger.mts`, and the tests
    `review-ledger.test.mts` and `pre-push-review-skill.test.mts`) and lists them in
    its report, so the re-Apply passes the gate without a review step; Apply again after this PR merges to bring them. `scripts/review.sh` also stops with a

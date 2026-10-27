@@ -1,0 +1,16 @@
+# The skills the Sandcastle workflow installs on the runner for the run, which
+# lib/skills.mts mounts into the sandbox from ~/.claude/skills (they are the
+# SANDBOX_SKILLS in .sandcastle/lib/repo-config.mts). A hosted runner has none.
+#
+# The workflow (Owned by the repo-ci-baseline Template) reads this file as data
+# and runs no script of the repo's. Blank (or whitespace-only) lines and comments (a # in column 0)
+# are ignored, LF line endings only, and any other line is one of two kinds:
+#
+#   dotfiles-sha <40 lowercase hex digits>   the commit of mpaulosky/dotfiles' main to take them from, given once
+#   skill <name>                             a skill under "Support For New Projects/.claude/skills/" there, once each
+#
+# Pin the commit like an action, so a push to dotfiles can't change what the
+# agents are told until the pin moves. The skills become the agents'
+# instructions, so have a person review every change to this file.
+#
+# With neither kind of line, the workflow installs nothing.

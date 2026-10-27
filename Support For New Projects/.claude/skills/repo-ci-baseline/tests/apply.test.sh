@@ -46,6 +46,9 @@ printf 'agent\n' > "$skill/template/owned/.claude/agents/pre-push-reviewer.md"
 printf 'skill\n' > "$skill/template/owned/.claude/skills/pre-push-review/SKILL.md"
 printf 'lenses\n' > "$skill/template/owned/.claude/skills/pre-push-review/lenses.md"
 printf 'other\n' > "$skill/template/owned/.claude/skills/other/SKILL.md"
+# The Sandcastle workflow and the Seed skills list it reads are part of the Sandcastle section too.
+printf 'name: Sandcastle\n' > "$skill/template/owned/.github/workflows/sandcastle.yml"
+printf '# skills\n' > "$skill/template/seed/.github/ci/sandcastle-skills.txt"
 apply="$skill/apply.sh"
 
 # Hooks off: a global init.templateDir can install hooks (such as a
@@ -148,7 +151,8 @@ check "no remote: unfilled reported" \
 # ── Sandcastle's files go only into a repo that runs Sandcastle (ADR 0006) ──
 sandcastle_files=(.sandcastle/tsconfig.json .sandcastle/roles/architect.md package.json scripts/review.sh .claude/agents/pre-push-reviewer.md \
   .claude/skills/pre-push-review/SKILL.md .claude/skills/pre-push-review/lenses.md \
-  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts)
+  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts \
+  .github/workflows/sandcastle.yml .github/ci/sandcastle-skills.txt)
 
 # An empty repo gets them. Sandcastle's own {{TASK_ID}} stays and isn't reported as unfilled.
 repo="$work/sandcastle empty"
@@ -162,6 +166,7 @@ check "sandcastle, empty repo: {{REPO}} filled and {{TASK_ID}} kept" \
   'grep -qx "# Widget architect for issue {{TASK_ID}}" "$repo/.sandcastle/roles/architect.md"'
 check "sandcastle, empty repo: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 check "sandcastle, empty repo: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
+check "sandcastle, empty repo: the Sandcastle workflow written" '[[ -f "$repo/.github/workflows/sandcastle.yml" ]]'
 
 # A repo with history and no .sandcastle/ gets none of them, and its other files as before.
 repo="$work/sandcastle absent"
@@ -177,17 +182,17 @@ check "sandcastle, no .sandcastle/: other Owned file written" '[[ -f "$repo/.git
 check "sandcastle, no .sandcastle/: other Seed file written" '[[ -f "$repo/docs/SECURITY.md" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring script is written" '[[ -f "$repo/scripts/other.sh" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring skill is written" '[[ -f "$repo/.claude/skills/other/SKILL.md" ]]'
-check "sandcastle, no .sandcastle/: the ten are reported as left out" 'grep -q "Sandcastle files left out.*: 10" <<< "$out"'
+check "sandcastle, no .sandcastle/: the twelve are reported as left out" 'grep -q "Sandcastle files left out.*: 12" <<< "$out"'
 check "sandcastle, no .sandcastle/: the report says how to add them" 'grep -q "create it and Apply again" <<< "$out"'
 check "sandcastle, no .sandcastle/: no .sandcastle/ folder made" '[[ ! -e "$repo/.sandcastle" ]]'
 
-# A dry run of the same repo reports the same three and writes nothing.
+# A dry run of the same repo reports the same twelve and writes nothing.
 repo="$work/sandcastle dry"
 new_repo "$repo"
 printf '# readme\n' > "$repo/README.md"
 commit_all "$repo" "init"
 dry="$("$apply" --dry-run "$repo")"
-check "sandcastle, dry run: the ten are reported as left out" 'grep -q "Sandcastle files left out.*: 10" <<< "$dry"'
+check "sandcastle, dry run: the twelve are reported as left out" 'grep -q "Sandcastle files left out.*: 12" <<< "$dry"'
 check "sandcastle, dry run: the left-out files aren't listed as added" '! grep -q "^  .sandcastle/tsconfig.json" <<< "$dry"'
 check "sandcastle, dry run: nothing written" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
 

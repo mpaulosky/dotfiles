@@ -1,0 +1,315 @@
+---
+name: Sandcastle
+
+# Runs the Sandcastle host (.sandcastle/main.mts) unattended: it works the
+# issues labelled Sandcastle and follows up on its own PRs. This file is Owned
+# by the repo-ci-baseline Template (references/sandcastle.md, "The workflow"):
+# Apply overwrites it, and a repo that runs Sandcastle in Actions needs only the
+# SANDCASTLE_GH_TOKEN secret and a Claude credential. A repo without the token
+# skips every step after the first, so a run there ends green with a notice; the
+# skills it mounts are listed in .github/ci/sandcastle-skills.txt.
+#
+# Every trigger runs the host code checked out from main, never the event's
+# ref. Events can't filter by label name, branch or reviewer, so the job's if:
+# does, and anything else ends as a skipped job. The concurrency group is on
+# the job, not the workflow, so a skipped event never takes the pending slot.
+#
+# GITHUB_TOKEN is read-only. Every write goes through SANDCASTLE_GH_TOKEN, the
+# owner's PAT, whose pushes start CI. It has no Workflows permission, so
+# Sandcastle can't change this file: a change to it comes from a Template PR.
+"on":  # zizmor: ignore[dangerous-triggers] workflow_run runs this file as it is on main, and the job checks out main, never PR code.
+  issues:
+    types: [labeled, unlabeled]
+  pull_request:
+    types: [unlabeled]
+  pull_request_review:
+    types: [submitted]
+  # The name: of ci.yml, of the workflow that tests the Template itself and of
+  # claude-review.yml: workflow_run matches workflow names, not file names (and
+  # can't read a variable), so each CI workflow is listed here by name and a
+  # name the repo lacks matches nothing. Claude Review posts its review with
+  # GITHUB_TOKEN, which starts no pull_request_review run, so its completion is
+  # followed here instead, as PR Auto-Merge does, to start a follow-up pass on
+  # its threads. Claude Review's workflow also completes, skipped, on every PR
+  # without the review:claude label, so only a successful run counts.
+  workflow_run:
+    workflows: ["Build and Test Suite", "repo-ci-baseline Template", "Claude Review"]
+    types: [completed]
+  workflow_dispatch:
+  # A backstop for blockers cleared by merges and PRs that fell behind main.
+  schedule:
+    - cron: "17 */2 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  sandcastle:
+    name: Sandcastle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    concurrency:
+      group: sandcastle
+      cancel-in-progress: false
+    # Label events start a run only when the owner adds Sandcastle or removes a
+    # hand-back label, so the labels the host applies itself (sandcastle:ready,
+    # bug) end here. A review or CI run counts only for a same-repo issue
+    # branch, so a fork never runs with the secrets.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+      || github.event_name == 'schedule'
+      || (github.event_name == 'issues' && github.event.action == 'labeled'
+        && github.event.label.name == 'Sandcastle'
+        && github.event.sender.login == github.repository_owner)
+      || ((github.event_name == 'issues' || github.event_name == 'pull_request') && github.event.action == 'unlabeled'
+        && (github.event.label.name == 'sandcastle:needs-info' || github.event.label.name == 'sandcastle:needs-human')
+        && github.event.sender.login == github.repository_owner)
+      || (github.event_name == 'pull_request_review'
+        && github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+        && github.event.pull_request.head.repo.full_name == github.repository
+        && (startsWith(github.event.pull_request.head.ref, 'feature/')
+          || startsWith(github.event.pull_request.head.ref, 'fix/')
+          || startsWith(github.event.pull_request.head.ref, 'hotfix/')))
+      || (github.event_name == 'workflow_run'
+        && (github.event.workflow_run.name != 'Claude Review' || github.event.workflow_run.conclusion == 'success')
+        && github.event.workflow_run.head_repository.full_name == github.repository
+        && (startsWith(github.event.workflow_run.head_branch, 'feature/')
+          || startsWith(github.event.workflow_run.head_branch, 'fix/')
+          || startsWith(github.event.workflow_run.head_branch, 'hotfix/')))
+
+    steps:
+      # A repo that doesn't run Sandcastle in Actions has no SANDCASTLE_GH_TOKEN:
+      # every later step is skipped and the run ends green, with a notice saying
+      # why. With the token, a missing Claude credential still fails the run.
+      - name: Check the secrets
+        id: secrets
+        env:
+          SANDCASTLE_GH_TOKEN: ${{ secrets.SANDCASTLE_GH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$SANDCASTLE_GH_TOKEN" ]; then
+            echo "::notice::The SANDCASTLE_GH_TOKEN secret isn't set, so this repository doesn't run Sandcastle in Actions." \
+              "To start, add a fine-grained PAT for this repository with Contents, Issues, Pull requests and Actions" \
+              "read and write and no Workflows permission, as that secret."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is set. Add the output of claude setup-token as CLAUDE_CODE_OAUTH_TOKEN."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check out main
+        if: steps.secrets.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      # lib/skills.mts mounts the skills the roles name (SANDBOX_SKILLS) into
+      # the sandbox from ~/.claude/skills, which a hosted runner doesn't have.
+      # The repo lists them in .github/ci/sandcastle-skills.txt, a Seed data
+      # file: one dotfiles-sha line (the commit to take them from, 40 hex
+      # digits) and one skill line per skill name. This step is Owned and
+      # reads that file as data only: it rejects any line that isn't blank, a
+      # # comment in column 0 or one of those two shapes (LF line endings), fetches
+      # the pinned commit of the Template owner's public dotfiles repository,
+      # refuses a commit that isn't in that repository's main (GitHub serves a
+      # fork's commit by hash too), a skill that is missing and a symlink in a
+      # listed skill or above it, and links only the listed skills into ~/.claude/skills.
+      # This step runs no script of the repo's, so nothing its file says can
+      # change what the later steps trust (they still run the repo's package.json
+      # scripts and .sandcastle/ code from main, which a PR to main reviews).
+      # It runs before the credential helper is set up, so the fetch never sends
+      # the PAT. A change to the file needs a person's review, as the skills
+      # become the agents' instructions. It prints no line of the file, so a
+      # line can't forge a workflow command in the log.
+      - name: Install the skills
+        if: steps.secrets.outputs.enabled == 'true'
+        env:
+          DOTFILES_URL: https://github.com/mpaulosky/dotfiles.git
+        run: |
+          set -euo pipefail
+          list=.github/ci/sandcastle-skills.txt
+          [ -f "$list" ] || exit 0
+          sha=""
+          skills=()
+          n=0
+          while IFS= read -r line || [ -n "$line" ]; do
+            n=$((n + 1))
+            [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+            case "$line" in '#'*) continue ;; esac
+            key="" value="" extra=""
+            read -r key value extra <<< "$line"
+            if [ -n "$extra" ] || [ -z "$value" ]; then
+              echo "::error file=$list,line=$n::A line is a key and one value (LF line endings; a comment starts in column 0)."
+              exit 1
+            fi
+            case "$key" in
+              dotfiles-sha)
+                if [ -n "$sha" ] || ! [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
+                  echo "::error file=$list,line=$n::dotfiles-sha is given once, as a full 40-digit lowercase hex commit."
+                  exit 1
+                fi
+                sha="$value"
+                ;;
+              skill)
+                if ! [[ "$value" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#value}" -gt 64 ] || [ "${#skills[@]}" -ge 32 ]; then
+                  echo "::error file=$list,line=$n::A skill is a lowercase name of letters, digits and single hyphens (up to 64), and at most 32 are listed."
+                  exit 1
+                fi
+                for known in "${skills[@]}"; do
+                  if [ "$known" = "$value" ]; then
+                    echo "::error file=$list,line=$n::A skill is listed once."
+                    exit 1
+                  fi
+                done
+                skills+=("$value")
+                ;;
+              *)
+                echo "::error file=$list,line=$n::A line starts with dotfiles-sha or skill."
+                exit 1
+                ;;
+            esac
+          done < "$list"
+          if [ -z "$sha" ] && [ "${#skills[@]}" -eq 0 ]; then
+            exit 0
+          fi
+          if [ -z "$sha" ] || [ "${#skills[@]}" -eq 0 ]; then
+            echo "::error file=$list::The file needs a dotfiles-sha line and at least one skill line, or neither."
+            exit 1
+          fi
+          base="Support For New Projects/.claude/skills"
+          dotfiles="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dotfiles.XXXXXX")"
+          git init --quiet "$dotfiles"
+          paths=()
+          for skill in "${skills[@]}"; do
+            paths+=("$base/$skill")
+          done
+          git -C "$dotfiles" sparse-checkout set "${paths[@]}"
+          git -C "$dotfiles" fetch --quiet --depth 1 --filter=blob:none "$DOTFILES_URL" "$sha"
+          git -C "$dotfiles" checkout --quiet FETCH_HEAD
+          # GitHub serves a fork's commit by its hash, so the pin must be in dotfiles' own main.
+          git -C "$dotfiles" fetch --quiet --no-tags --filter=tree:0 "$DOTFILES_URL" refs/heads/main:refs/remotes/dotfiles/main
+          if ! git -C "$dotfiles" merge-base --is-ancestor "$sha" refs/remotes/dotfiles/main; then
+            echo "::error file=$list::The dotfiles-sha commit isn't in the main branch of dotfiles."
+            exit 1
+          fi
+          # The sandbox mount follows symlinks (lib/skills.mts mounts each skill's real path), so refuse one in
+          # a listed skill, in the skill folder itself or in any folder above it. Others in the commit are not ours.
+          for folder in "$dotfiles/Support For New Projects" "$dotfiles/Support For New Projects/.claude" "$dotfiles/$base"; do
+            if [ -L "$folder" ]; then
+              echo "::error::The dotfiles commit holds a symlink above the skills, which the sandbox mount would follow."
+              exit 1
+            fi
+          done
+          for skill in "${skills[@]}"; do
+            if [ -n "$(find "$dotfiles/$base/$skill" -type l -print -quit)" ]; then
+              echo "::error::The $skill skill holds a symlink, which the sandbox mount would follow."
+              exit 1
+            fi
+            if [ ! -f "$dotfiles/$base/$skill/SKILL.md" ]; then
+              echo "::error::dotfiles $sha has no $skill skill."
+              exit 1
+            fi
+          done
+          mkdir -p "$HOME/.claude/skills"
+          for skill in "${skills[@]}"; do
+            ln -sT "$dotfiles/$base/$skill" "$HOME/.claude/skills/$skill"
+          done
+
+      # The host's git fetches and pushes authenticate through gh's credential
+      # helper in the runner's global config, which reads GH_TOKEN from the
+      # host's environment, so the repository's .git holds no token. Sandcastle
+      # gives the sandbox the host's git identity for its commits, so set the
+      # PAT owner's.
+      - name: Set up git for the PAT
+        if: steps.secrets.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SANDCASTLE_GH_TOKEN }}
+        run: |
+          gh auth setup-git
+          login="$(gh api user --jq .login)"
+          id="$(gh api user --jq .id)"
+          git config --global user.name "$login"
+          git config --global user.email "${id}+${login}@users.noreply.github.com"
+
+      - name: Setup pnpm
+        if: steps.secrets.outputs.enabled == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node.js
+        if: steps.secrets.outputs.enabled == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        if: steps.secrets.outputs.enabled == 'true'
+        run: pnpm install --frozen-lockfile
+
+      # Every sandbox runs in this image, and a fresh runner has none: without
+      # it every intake and build fails with "Image 'sandcastle:<repo>'
+      # not found locally" while the job still ends green. Sandcastle names the
+      # image after the checkout's folder and builds .sandcastle/Dockerfile, so
+      # the defaults match what the host looks up.
+      - name: Build the sandbox image
+        if: steps.secrets.outputs.enabled == 'true'
+        run: pnpm exec sandcastle docker build-image
+
+      # Sandcastle passes into the sandbox only the keys .sandcastle/.env
+      # names, taking a blank one's value from the host's environment. The file
+      # is git-ignored, so it's written here with the key and no value: the
+      # secret stays in the environment. Never GH_TOKEN, which the host refuses.
+      - name: Run Sandcastle
+        if: steps.secrets.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SANDCASTLE_GH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            unset CLAUDE_CODE_OAUTH_TOKEN
+            echo "ANTHROPIC_API_KEY=" > .sandcastle/.env
+          else
+            unset ANTHROPIC_API_KEY
+            echo "CLAUDE_CODE_OAUTH_TOKEN=" > .sandcastle/.env
+          fi
+          pnpm run sandcastle
+
+      # Only the run report and the hand-backs: the role transcripts stay on
+      # the runner. Artifacts of a public repository can be downloaded by any
+      # signed-in user, and GitHub masks secrets in step logs, not artifacts,
+      # so a transcript that printed the sandbox's Claude credential would
+      # publish it.
+      - name: Upload the run report
+        if: always() && steps.secrets.outputs.enabled == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sandcastle-report
+          path: |
+            .sandcastle/logs/summary.md
+            .sandcastle/logs/handbacks.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+      # GitHub doesn't notify the owner about the PAT's own labels and
+      # comments, so a run that handed anything back ends red: Actions emails
+      # the person the run is attributed to.
+      - name: Fail on hand-backs
+        if: steps.secrets.outputs.enabled == 'true'
+        run: |
+          handbacks=.sandcastle/logs/handbacks.json
+          if [ ! -f "$handbacks" ]; then
+            echo "::error::$handbacks is missing, so this run's hand-backs are unknown."
+            exit 1
+          fi
+          count="$(jq length "$handbacks")"
+          if [ "$count" -gt 0 ]; then
+            echo "::error::This run handed back $count issue(s) or PR(s) to a human. See the job summary."
+            jq -r '.[] | "\(.kind) #\(.number): \(.label) \(.url)"' "$handbacks"
+            exit 1
+          fi

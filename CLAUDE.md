@@ -8,11 +8,11 @@ other repo copies (see its `SKILL.md` and `CONTEXT.md`).
 
 - `Support For New Projects/.claude/skills/repo-ci-baseline/`: the skill. `template/owned/` and `template/seed/` hold the Template's files,
   `references/` and `docs/adr/` describe them, and `test.sh` tests all of it.
-- `.github/workflows/claude-review.yml`, `pr-automerge.yml`, `pr-review-submitted.yml`, `.github/scripts/post_claude_review.py`, `.github/hooks/*`,
+- `.github/workflows/claude-review.yml`, `pr-automerge.yml`, `pr-review-submitted.yml`, `sandcastle.yml`, `.github/scripts/post_claude_review.py`, `.github/hooks/*`,
   `scripts/check-branch-name.sh`, `scripts/review.sh`, the pre-push review's skill and agent (`.claude/skills/pre-push-review/`,
   `.claude/agents/pre-push-reviewer.md`) and the Owned files under `.sandcastle/` (`main.mts`, every `lib/` module but `repo-config.mts`, and their tests):
   copies of the Template's Owned files. Edit the Template's file and copy it over; `test.sh` fails when a copy drifts.
-- `scripts/gate.sh` and `.github/workflows/repo-ci-baseline.yml` are dotfiles' own.
+- `scripts/gate.sh` and `.github/workflows/repo-ci-baseline.yml` are dotfiles' own, and so is `.github/ci/sandcastle-skills.txt`, the Seed list of skills `sandcastle.yml` installs (empty here).
 - `.sandcastle/`: the unattended agent pipeline (TypeScript, run with Claude Code), ported from Blazor-Server's. Its rules are in
   `.claude/rules/sandcastle.md`.
 
@@ -34,8 +34,8 @@ SANDCASTLE_LABEL=<label> pnpm run sandcastle   # work the issues labelled <label
 ## Which Sandcastle label
 
 The Sandcastle workflow in GitHub Actions works the issues labelled `Sandcastle`. Its token has no Workflows permission, so GitHub
-refuses its push of any change under `.github/workflows/`. Here that's most changes to Claude Review or PR Auto-Merge, since
-dotfiles' copies of those Template files must match. Label such an issue `Sandcastle:local` instead: Actions never builds it, and
+refuses its push of any change under `.github/workflows/`. Here that's most changes to Claude Review, PR Auto-Merge or the Sandcastle
+workflow itself, since dotfiles' copies of those Template files must match. Label such an issue `Sandcastle:local` instead: Actions never builds it, and
 `SANDCASTLE_LABEL=Sandcastle:local pnpm run sandcastle` builds it from the main checkout, pushing with your own `gh` login. Its PR's
 follow-up passes then run locally too. When GitHub refuses Actions' push of a new branch for a workflow change main made after the
 build started, Sandcastle moves the issue to `Sandcastle:local` itself, with a comment saying why.

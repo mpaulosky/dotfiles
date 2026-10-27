@@ -203,11 +203,12 @@ fi
 
 step "dotfiles' copies of Template files"
 # dotfiles isn't a Baseline repo, so it carries Claude Review, PR Auto-Merge,
-# PR Review Submitted, the git hooks and Sandcastle's Owned files as copies of
+# PR Review Submitted, the Sandcastle workflow, the git hooks and Sandcastle's Owned files as copies of
 # the Template's files, which must not drift from them. Its scripts/gate.sh is
 # its own: it runs this script. Sandcastle's lib/repo-config.mts reads this list.
 dotfiles="$(cd "$skill_dir/../../../.." && pwd)"
 for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.yml .github/workflows/pr-review-submitted.yml \
+  .github/workflows/sandcastle.yml \
   .github/scripts/post_claude_review.py \
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh \
   scripts/review.sh .claude/agents/pre-push-reviewer.md .claude/skills/pre-push-review/SKILL.md \
@@ -241,6 +242,196 @@ while IFS= read -r rel; do
   cmp -s "$owned/.sandcastle/$rel" "$dotfiles/.sandcastle/$rel" \
     || fail "dotfiles' .sandcastle/$rel differs from the Template's; copy it over"
 done < <(cd "$owned/.sandcastle" && find . -type f -printf '%P\n' | sort)
+
+step "Sandcastle workflow"
+# A repo without the SANDCASTLE_GH_TOKEN secret doesn't run Sandcastle in Actions, and its cron would fail every two hours if the workflow
+# didn't skip: the first step reports whether the secret is set, and every later step waits for it. The skills step reads the repo's list as
+# data, before the PAT is wired into git, and runs none of the repo's code; the CI workflow names it follows are the real ones.
+if python3 -I -c 'import yaml' &>/dev/null; then
+  yaml_py=(python3 -I)
+else
+  need uvx
+  yaml_py=(uvx --with pyyaml python -I)
+fi
+secrets_script="$md_tmp/sandcastle-secrets.sh"
+skills_script="$md_tmp/sandcastle-skills.sh"
+"${yaml_py[@]}" - "$owned/.github/workflows/sandcastle.yml" "$owned/.github/workflows/ci.yml" "$owned/.github/workflows/claude-review.yml" \
+  "$secrets_script" "$skills_script" <<'PY' || fail "the Owned sandcastle.yml must skip every step but the secret check when SANDCASTLE_GH_TOKEN is unset"
+import sys, yaml
+workflow, ci, review, secrets_out, skills_out = sys.argv[1:6]
+doc = yaml.safe_load(open(workflow))
+steps = doc["jobs"]["sandcastle"]["steps"]
+gate = "steps.secrets.outputs.enabled == 'true'"
+names = [step["name"] for step in steps]
+assert steps[0]["name"] == "Check the secrets" and steps[0]["id"] == "secrets", "the first step must be the secret check, with id secrets"
+for step in steps[1:]:
+    assert step.get("if") in (gate, "always() && " + gate), f"step '{step['name']}' must wait for the secret check, exactly: {step.get('if')!r}"
+assert names.index("Install the skills") < names.index("Set up git for the PAT"), "the skills must be installed before git holds the PAT"
+skills = steps[names.index("Install the skills")]
+assert "secrets" not in str(skills.get("env", {})).lower() and "token" not in str(skills.get("env", {})).lower(), "the skills step must get no secret"
+assert "sandcastle-prepare" not in open(workflow).read() and ".github/ci/sandcastle-skills.txt" in skills["run"], "the skills step reads the data file and runs no repo script"
+workflows = doc["on"]["workflow_run"]["workflows"]
+for name in (yaml.safe_load(open(ci))["name"], yaml.safe_load(open(review))["name"], "repo-ci-baseline Template"):
+    assert name in workflows, f"workflow_run doesn't follow {name}"
+open(secrets_out, "w").write(steps[0]["run"])
+open(skills_out, "w").write(skills["run"])
+PY
+# The secret check's own script, run like a run: step with no shell: set (bash -e), with a temp GITHUB_OUTPUT.
+run_secrets() {
+  local out; out="$(mktemp)"; secrets_rc=0
+  env -i PATH="$PATH" SANDCASTLE_GH_TOKEN="$1" ANTHROPIC_API_KEY="$2" CLAUDE_CODE_OAUTH_TOKEN="$3" GITHUB_OUTPUT="$out" \
+    bash --noprofile --norc -e "$secrets_script" &>/dev/null || secrets_rc=$?
+  secrets_out="$(<"$out")"; rm -f "$out"
+}
+run_secrets "" "" ""
+[[ $secrets_rc -eq 0 && $secrets_out == "enabled=false" ]] || fail "sandcastle.yml: no token must end green with enabled=false (exit $secrets_rc, output '$secrets_out')"
+run_secrets token "" ""
+[[ $secrets_rc -ne 0 && $secrets_out != *enabled=true* ]] || fail "sandcastle.yml: a token with no Claude credential must fail (exit $secrets_rc, output '$secrets_out')"
+run_secrets token key ""
+[[ $secrets_rc -eq 0 && $secrets_out == "enabled=true" ]] || fail "sandcastle.yml: a token and ANTHROPIC_API_KEY must give enabled=true (exit $secrets_rc, output '$secrets_out')"
+run_secrets token "" oauth
+[[ $secrets_rc -eq 0 && $secrets_out == "enabled=true" ]] || fail "sandcastle.yml: a token and CLAUDE_CODE_OAUTH_TOKEN must give enabled=true (exit $secrets_rc, output '$secrets_out')"
+# The skills step, run for real against a local repository standing in for dotfiles. The workspace holds the repo's list; HOME is empty.
+fixture="$md_tmp/skills-fixture"
+fixture_skills="Support For New Projects/.claude/skills"
+fixture_git() { git -C "$1" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.com "${@:2}"; }
+fixture_repo() { git init -q -b main "$1"; git -C "$1" config uploadpack.allowFilter true; git -C "$1" config uploadpack.allowAnySHA1InWant true; }
+fixture_repo "$fixture"
+long_name="$(printf 'a%.0s' {1..64})"
+max_names=(); for i in {1..32}; do max_names+=("s$i"); done
+for name in alpha beta linked "$long_name" "${max_names[@]}"; do
+  mkdir -p "$fixture/$fixture_skills/$name"
+  echo "$name" > "$fixture/$fixture_skills/$name/SKILL.md"
+done
+ln -s /etc "$fixture/$fixture_skills/linked/escape"
+ln -s alpha "$fixture/rootlink"  # a symlink the skills don't touch, which must not matter
+fixture_git "$fixture" add -A
+fixture_git "$fixture" commit -q -m skills
+good_sha="$(git -C "$fixture" rev-parse HEAD)"
+# A commit that is not in main, as a fork's commit served by hash would be.
+fixture_git "$fixture" checkout -q -b fork
+echo forked > "$fixture/$fixture_skills/alpha/SKILL.md"
+fixture_git "$fixture" commit -q -am forked
+fork_sha="$(git -C "$fixture" rev-parse HEAD)"
+fixture_git "$fixture" checkout -q main
+# A skill folder that is itself a symlink, beside the others.
+ln -s alpha "$fixture/$fixture_skills/dirlink"
+fixture_git "$fixture" add -A
+fixture_git "$fixture" commit -q -m "a symlinked skill folder"
+dirlink_sha="$(git -C "$fixture" rev-parse HEAD)"
+# A folder above the skills that is a symlink: the skill's own folder and the files in it are real.
+fixture2="$md_tmp/skills-fixture-ancestor"
+fixture_repo "$fixture2"
+mkdir -p "$fixture2/real/.claude/skills/alpha"
+echo alpha > "$fixture2/real/.claude/skills/alpha/SKILL.md"
+ln -s real "$fixture2/Support For New Projects"
+fixture_git "$fixture2" add -A
+fixture_git "$fixture2" commit -q -m ancestor
+ancestor_sha="$(git -C "$fixture2" rev-parse HEAD)"
+skills_url="file://$fixture"
+run_skills() { # the list's text; sets skills_rc, skills_log, skills_home
+  local ws="$md_tmp/skills-ws" log
+  rm -rf "$ws" "$md_tmp/skills-home" "$md_tmp/skills-runner"
+  mkdir -p "$ws/.github/ci" "$md_tmp/skills-home" "$md_tmp/skills-runner"
+  [[ $1 == "<none>" ]] || printf '%s' "$1" > "$ws/.github/ci/sandcastle-skills.txt"
+  [[ -z ${skills_preexisting:-} ]] || mkdir -p "$md_tmp/skills-home/.claude/skills/$skills_preexisting"
+  skills_home="$md_tmp/skills-home"; skills_rc=0; log="$md_tmp/skills.log"
+  (cd "$ws" && env -i PATH="$PATH" HOME="$skills_home" RUNNER_TEMP="$md_tmp/skills-runner" DOTFILES_URL="$skills_url" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash --noprofile --norc -e "$skills_script") &>"$log" || skills_rc=$?
+  skills_log="$(<"$log")"
+  # No line of the list is ever run as a command, whatever the outcome.
+  [[ ! -e "$ws/pwned" ]] || fail "sandcastle.yml: the skills list was run as a command (list '$1')"
+}
+skills_installed() { [[ -e "$skills_home/.claude/skills/$1/SKILL.md" ]]; }
+for list in "<none>" "" $'# only a comment\n\n'; do
+  run_skills "$list"
+  [[ $skills_rc -eq 0 && ! -e "$skills_home/.claude" ]] || fail "sandcastle.yml: a skills list without entries must install nothing and pass (exit $skills_rc, list '$list')"
+done
+run_skills $'# pinned\ndotfiles-sha '"$good_sha"$'\nskill alpha\nskill beta\n'
+{ [[ $skills_rc -eq 0 ]] && skills_installed alpha && skills_installed beta && [[ ! -e "$skills_home/.claude/skills/linked" ]]; } \
+  || fail "sandcastle.yml: the listed skills, and only those, must be installed (exit $skills_rc): $skills_log"
+run_skills "dotfiles-sha $good_sha"$'\nskill alpha'
+{ [[ $skills_rc -eq 0 ]] && skills_installed alpha; } || fail "sandcastle.yml: a list with no trailing newline must install its skills (exit $skills_rc)"
+run_skills "dotfiles-sha $dirlink_sha"$'\n \t \nskill alpha\n'
+{ [[ $skills_rc -eq 0 ]] && skills_installed alpha && [[ ! -e "$skills_home/.claude/skills/dirlink" ]]; } \
+  || fail "sandcastle.yml: a symlink beside the listed skills, and a whitespace-only line, must not matter (exit $skills_rc): $skills_log"
+# The caps' boundaries: 32 skills and a 64-character name pass.
+max_list="dotfiles-sha $good_sha"; for name in "${max_names[@]}"; do max_list+=$'\nskill '"$name"; done
+run_skills "$max_list"
+{ [[ $skills_rc -eq 0 ]] && skills_installed s1 && skills_installed s32; } || fail "sandcastle.yml: 32 skills must be installed (exit $skills_rc): $skills_log"
+run_skills "dotfiles-sha $good_sha"$'\nskill '"$long_name"
+{ [[ $skills_rc -eq 0 ]] && skills_installed "$long_name"; } || fail "sandcastle.yml: a 64-character skill name must be installed (exit $skills_rc): $skills_log"
+over_list="dotfiles-sha $good_sha"; for i in {1..33}; do over_list+=$'\nskill s'"$i"; done
+bad_lists=(
+  $'skill alpha\n' "dotfiles-sha $good_sha"$'\n'
+  "dotfiles-sha ${good_sha:0:39}"$'\nskill alpha\n' "dotfiles-sha ${good_sha^^}"$'\nskill alpha\n'
+  "dotfiles-sha $good_sha"$'\ndotfiles-sha '"$good_sha"$'\nskill alpha\n'
+  "dotfiles-sha $good_sha"$'\nskill Alpha\n' "dotfiles-sha $good_sha"$'\nskill ../alpha\n' "dotfiles-sha $good_sha"$'\nskill alpha beta\n'
+  "dotfiles-sha $good_sha"$'\nskill alpha\nskill alpha\n' "dotfiles-sha $good_sha"$'\nskill\n' "dotfiles-sha $good_sha"$'\nskill -alpha\n'
+  "dotfiles-sha $good_sha"$'\nplugin alpha\n' "dotfiles-sha $good_sha"$'\nskill alpha # trailing\n'
+  "dotfiles-sha $good_sha"$'\nskill alpha\n$(touch pwned)\n' "dotfiles-sha $good_sha"$'\nskill alpha;touch pwned\n'
+  "dotfiles-sha $good_sha"$'\nskill alpha\n`touch pwned`\n'
+  "dotfiles-sha ${good_sha//[0-9a-f]/0}"$'\nskill alpha\n' "dotfiles-sha $good_sha"$'\nskill missing\n' "dotfiles-sha $good_sha"$'\nskill linked\n'
+  "dotfiles-sha $good_sha"$'\r\nskill alpha\r\n' "dotfiles-sha $good_sha"$'\n  # indented\nskill alpha\n'
+  "dotfiles-sha $fork_sha"$'\nskill alpha\n' "dotfiles-sha $dirlink_sha"$'\nskill dirlink\n' "$over_list"
+  "dotfiles-sha $good_sha"$'\nskill '"${long_name}a"
+)
+for list in "${bad_lists[@]}"; do
+  run_skills "$list"
+  [[ $skills_rc -ne 0 && ! -e "$skills_home/.claude" ]] || fail "sandcastle.yml: a bad skills list must fail and install nothing (exit $skills_rc, list '$list')"
+done
+# The rules are the step's own, not git's or the file system's: each bad list is refused for its reason.
+check_refused() { # the list's text, the part of the error it must give
+  run_skills "$1"
+  [[ $skills_rc -ne 0 && $skills_log == *"$2"* ]] || fail "sandcastle.yml: a skills list '$1' must be refused with '$2' (exit $skills_rc): $skills_log"
+}
+check_refused "dotfiles-sha ${good_sha^^}"$'\nskill alpha' "40-digit"
+check_refused "dotfiles-sha ${good_sha:0:39}"$'\nskill alpha' "40-digit"
+check_refused "dotfiles-sha $good_sha"$'\r\nskill alpha\r\n' "40-digit"
+check_refused "dotfiles-sha $good_sha"$'\nskill Alpha' "lowercase name"
+check_refused "dotfiles-sha $good_sha"$'\nskill ../alpha' "lowercase name"
+check_refused "dotfiles-sha $good_sha"$'\nskill -alpha' "lowercase name"
+check_refused "dotfiles-sha $good_sha"$'\nskill '"${long_name}a" "up to 64"
+check_refused "$over_list" "at most 32"
+check_refused "dotfiles-sha $good_sha"$'\nskill alpha\nskill alpha' "listed once"
+check_refused "dotfiles-sha $good_sha"$'\nplugin alpha' "starts with"
+check_refused "dotfiles-sha $good_sha"$'\n  # indented\nskill alpha' "starts with"
+check_refused "dotfiles-sha $good_sha"$'\nskill alpha beta' "a key and one value"
+check_refused "dotfiles-sha $good_sha" "needs a dotfiles-sha line"
+check_refused "skill alpha" "needs a dotfiles-sha line"
+check_refused "dotfiles-sha $good_sha"$'\nskill missing' "has no missing skill"
+check_refused "dotfiles-sha $good_sha"$'\nskill linked' "holds a symlink"
+check_refused "dotfiles-sha $dirlink_sha"$'\nskill dirlink' "holds a symlink"
+check_refused "dotfiles-sha $fork_sha"$'\nskill alpha' "main branch"
+skills_url="file://$fixture2"
+check_refused "dotfiles-sha $ancestor_sha"$'\nskill alpha' "holds a symlink"
+skills_url="file://$fixture"
+skills_preexisting=alpha
+check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "File exists"
+[[ ! -e "$skills_home/.claude/skills/alpha/alpha" ]] || fail "sandcastle.yml: a skill linked itself inside an existing folder"
+skills_preexisting=
+# A line is never printed, whichever rule rejects it: one starting with :: would otherwise run as a workflow command from the log.
+for list in "::add-mask::secretvalue" "::add-mask::secretvalue x" "skill ::add-mask::secretvalue" "dotfiles-sha ::add-mask::secretvalue" \
+  "dotfiles-sha $good_sha"$'\nskill alpha ::add-mask::secretvalue' "dotfiles-sha $good_sha"$'\nbogus ::add-mask::secretvalue'; do
+  run_skills "$list"
+  [[ $skills_rc -ne 0 && $skills_log != *add-mask* && $skills_log != *secretvalue* ]] \
+    || fail "sandcastle.yml: a rejected skills line must not be echoed (exit $skills_rc, list '$list'): $skills_log"
+done
+[[ ! -e "$seed/.github/ci/sandcastle-prepare.sh" ]] || fail "the Seed carries a repo script the Owned sandcastle.yml would run; the skills list replaced it (ADR 0009)"
+run_skills "$(<"$seed/.github/ci/sandcastle-skills.txt")"
+[[ $skills_rc -eq 0 && ! -e "$skills_home/.claude" ]] || fail "the Seed .github/ci/sandcastle-skills.txt must install nothing"
+if grep -vF 'mpaulosky/dotfiles.git' "$owned/.github/workflows/sandcastle.yml" | grep -qE 'sandcastle:dotfiles|Blazor-Server|TicketManager|IssueTracker|IssueManager|Articles|auth0'; then
+  grep -nE 'sandcastle:dotfiles|Blazor-Server|TicketManager|IssueTracker|IssueManager|Articles|auth0' "$owned/.github/workflows/sandcastle.yml"
+  fail "the Owned sandcastle.yml names a repo; it carries no per-repo values"
+fi
+
+# The skills step's claims stay limited to what it does, and its ancestor test names the branch, not a ref git could resolve to a tag.
+grep -qF 'refs/heads/main:refs/remotes/dotfiles/main' "$owned/.github/workflows/sandcastle.yml" \
+  || fail "the Owned sandcastle.yml must fetch dotfiles' main as refs/heads/main, never a bare main"
+for file in "$owned/.github/workflows/sandcastle.yml" "$skill_dir/references/sandcastle.md"; do
+  grep -qF "still run the repo's" "$file" \
+    || fail "${file#"$skill_dir"/} must say the later steps still run the repo's own code from main, so the skills step's claim stays limited to that step"
+done
 
 step "Seed Sandcastle files"
 # Written from dotfiles' copies, so none of dotfiles' own text may stay behind.

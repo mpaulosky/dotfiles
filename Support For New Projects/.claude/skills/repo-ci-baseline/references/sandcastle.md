@@ -33,6 +33,8 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 The Owned modules read only the names `lib/repo-config.mts` exports (below), and `config.mts` imports nothing from it.
 A change to an Owned module that reads a new name breaks every repo until it adds that name, and `tsc --noEmit` reports it in the repo's own check.
 
+Outside `.sandcastle/`, the Owned Sandcastle section also has `.github/workflows/sandcastle.yml` ([The workflow](#the-workflow)), a root copy in dotfiles like the rest.
+
 Under `.sandcastle/`, the no-placeholders check refuses only Apply's `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}`:
 Sandcastle fills its own `{{NAME}}`s (`{{ISSUES_JSON}}`, `{{SHARED_RULES}}` and the rest) when it runs a prompt.
 
@@ -49,6 +51,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, and an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`) |
 | `.sandcastle/check.sh` | Sandcastle's check, which the Seed `.github/ci/gate-checks.sh` runs when it's there |
 | `package.json`, `pnpm-workspace.yaml` | Sandcastle's packages and scripts; a repo with its own Node tooling merges them |
+| `.github/ci/sandcastle-skills.txt` | The skills the Sandcastle workflow installs on the runner for the run (a pinned dotfiles commit and skill names, read as data); empty until filled ([The workflow](#the-workflow)) |
 | `.sandcastle/lib/repo-config.mts` | `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` for the local review ([pre-push-review.md](pre-push-review.md)), `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
 
 The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-prompts.test.mts` checks).
@@ -92,8 +95,8 @@ and (when opted in) `ui` prompts each list every mounted skill.
 ## When Apply adds it
 
 Only to a repo that has a `.sandcastle/` folder, or no commits yet.
-In any other repo, Apply leaves out every file under `.sandcastle/`, plus `package.json`, `pnpm-workspace.yaml`
-and the local review's files ([pre-push-review.md](pre-push-review.md)), and its report counts them as
+In any other repo, Apply leaves out every file under `.sandcastle/`, plus `package.json`, `pnpm-workspace.yaml`, the Sandcastle workflow,
+`.github/ci/sandcastle-skills.txt` and the local review's files ([pre-push-review.md](pre-push-review.md)), and its report counts them as
 "Sandcastle files left out". A repo starts using Sandcastle by creating `.sandcastle/` and Applying again.
 
 ## What isn't in it
@@ -101,8 +104,37 @@ and the local review's files ([pre-push-review.md](pre-push-review.md)), and its
 - **dotfiles' own tests:** `lib/repo-config.test.mts` (dotfiles' per-repo values and root copies), `lib/template.test.mts` (type-checks the
   Template's `.sandcastle/` as Apply writes it and runs its Owned tests there), `lib/dockerfile.test.mts`, `lib/role-prompts.test.mts`,
   `lib/owned-paths.test.mts` (keeps `OWNED_PATHS` in `lib/review-ledger.mts` equal to `template/owned/`) and `main.test.mts`, which read dotfiles' own files.
-- **`.github/workflows/sandcastle*.yml`.** Sandcastle's Actions token can't push a workflow change, so each repo keeps its own.
-  To add the workflow to the Template later, file the issue with the `Sandcastle:local` label.
+- **Other `.github/workflows/sandcastle*.yml` files.** Only `sandcastle.yml` is the Template's (below); a repo's own extra Sandcastle workflow stays its own.
+
+## The workflow
+
+`.github/workflows/sandcastle.yml` is Owned ([ADR 0009](../docs/adr/0009-sandcastle-workflow-is-owned.md)): it runs the host unattended on a schedule and on the events that
+start a follow-up, and Sandcastle can't change it (its token has no Workflows permission), so a change comes from a Template PR and reaches the repos by re-Apply.
+Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that runs Sandcastle (it has a `.sandcastle/` folder, or is new).
+
+- **A repo opts in with the `SANDCASTLE_GH_TOKEN` secret** (a fine-grained PAT with Contents, Issues, Pull requests and Actions read and write, and no Workflows permission),
+  and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
+  locally gets a green run with a notice on every trigger the job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
+- **`.github/ci/sandcastle-skills.txt` lists the skills the run mounts (Seed).** A hosted runner has no `~/.claude/skills`, which `lib/skills.mts` mounts
+  the `SANDBOX_SKILLS` from. The file is data: a `dotfiles-sha` line (the commit of mpaulosky/dotfiles' `main` to take them from, 40 lowercase hex digits, pinned like an action)
+  and a `skill` line per skill name; the Seed has neither, and installs nothing.
+  The Owned step "Install the skills" rejects any line that isn't blank, a `#` comment in column 0 or one of those two (and prints none of the file),
+  fetches the commit before git holds the PAT and with no secret in its environment, refuses a commit that isn't in dotfiles' `main`,
+  a missing skill and a symlink in a listed skill or above it, and links only the listed skills.
+  The step runs no script of the repo's, so its file can't change what the steps that hold the PAT and the Claude credential trust;
+  those steps still run the repo's `package.json` scripts and `.sandcastle/` code from `main`, which a PR to `main` reviews.
+- **The CI workflows it follows are listed by name** (`workflow_run` can't read a variable): `Build and Test Suite` (the Template's `ci.yml`),
+  `repo-ci-baseline Template` (the workflow that tests the Template, in dotfiles) and `Claude Review`. A name the repo lacks matches nothing.
+- **A repo with its own `sandcastle.yml`** has it overwritten by its re-Apply (`apply.sh` can't skip an Owned file; `NOT_OWNED_BASELINE_PATHS` only tells the local review
+  which files are the repo's own). It drops the file from that list in the same PR and moves the skills it installs into `sandcastle-skills.txt`.
+  Anything else its workflow does that the Template's doesn't needs a Template change first.
+  The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
+  A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones, mpaulosky/dotfiles#313 and #314) must not be
+  re-Applied until those land, or its re-Apply drops them. `rollout.sh` re-Applies every repo in `github/repos.txt` and can't leave one out
+  (once TicketManager's re-Apply PR has merged, a run re-Applies all the others, auth0-management-app included), so until then don't run it:
+  re-Apply each repo except auth0-management-app one at a time with `reapply.sh`, TicketManager first.
+- **A change to the skills list needs a person's review.** The skills become the agents' instructions. The step refuses a commit outside dotfiles' `main`
+  (GitHub serves a fork's commit by hash), but any older commit of `main` passes, so check the pin is the one meant.
 
 ## Migrating a repo
 
@@ -116,7 +148,7 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 3. Diff the repo's role prompts, `Dockerfile` and `package.json` against the Template's Seed files, and bring over what the repo lacks.
 4. Run `pnpm install`, then commit `pnpm-lock.yaml` with the change.
 5. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.
-6. Leave the Sandcastle workflows out of the re-Apply.
+6. Take the Template's `sandcastle.yml` and drop the repo's own from `NOT_OWNED_BASELINE_PATHS`; move the skills it installs into `.github/ci/sandcastle-skills.txt` ([The workflow](#the-workflow)).
 7. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
    those out and keeps the lints (its `.sandcastle/check.sh`), and points the gate-fixer and follow-up roles' instructions at it.
 8. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/check.sh` for the step above), and list in `CHECK_PATHS` every place

@@ -120,7 +120,30 @@ def untold(path):
     return found
 
 
+# Repo-relative paths --repo skips (the Owned Baseline files); a trailing / is a folder.
+OWNED = ()
+# The folders --repo walks.
+SCOPE = ()
+
+
+def untold_markdown(path):
+    """Each line of the Markdown file path with a gh command in code not told its repository."""
+    raise NotImplementedError("Not implemented")
+
+
+def kind(path):
+    """'markdown', 'shell' or None for a file --repo doesn't check."""
+    raise NotImplementedError("Not implemented")
+
+
+def check_repo(root):
+    """Each untold gh command in the repo at root, as relative-path:line: text."""
+    raise NotImplementedError("Not implemented")
+
+
 def main(argv):
+    if argv[:1] == ["--repo"]:
+        raise NotImplementedError("Not implemented")
     found = []
     for root in argv:
         if not Path(root).is_dir():

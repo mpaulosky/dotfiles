@@ -185,7 +185,7 @@ step "gh commands in Owned scripts are told their repository"
 # check_gh_repo.py holds the rule; its tests run first, so a check that stopped
 # refusing anything can't pass the scripts.
 (cd "$skill_dir/tests/gh_repo" && "${pytest_cmd[@]}" -q -p no:cacheprovider .) || fail "gh_repo pytest"
-python3 -I "$skill_dir/tests/gh_repo/check_gh_repo.py" "$owned/scripts" \
+python3 -I "$owned/.github/scripts/check_gh_repo.py" "$owned/scripts" \
   || fail "export GH_REPO before an Owned script's first gh command, and give gh repo's subcommands their repository"
 
 step ".gitignore keeps secrets out"

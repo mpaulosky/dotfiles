@@ -1,7 +1,11 @@
 # Dependabot version updates. Every label used below must exist in the repo:
 # Dependabot doesn't create them, and silently leaves them off the PR.
-# This file is Seed, so it belongs to the repo: add its other ecosystems (such
-# as npm for a pnpm project) and its own ignores here.
+# This file is Seed, so it belongs to the repo: add its other ecosystems and
+# its own ignores here, and drop an ecosystem the repo doesn't use. The npm
+# block covers pnpm too (it reads pnpm-lock.yaml) and suits a repo with a root
+# package.json, as every Sandcastle repo has. A repo with none, such as a plain
+# .NET repo, drops the block: Dependabot's npm updater would report
+# dependency_file_not_found every week.
 # https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
 ---
 
@@ -91,5 +95,30 @@ updates:
       - "dependencies"
     groups:
       dotnet-sdk:
+        patterns:
+          - "*"
+
+  # Maintain dependencies for npm (the root package.json and pnpm lockfile)
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "main"
+    schedule:
+      interval: "weekly"
+      day: "sunday"
+      time: "16:00"
+    open-pull-requests-limit: 10
+    # Conventional commits, like the repo's own: "chore(deps): bump ...".
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Wait a week before proposing a new release, so a compromised or broken
+    # one is usually caught upstream before it reaches a PR here.
+    cooldown:
+      default-days: 7
+    labels:
+      - "dependencies"
+      - "npm"
+    groups:
+      all-npm:
         patterns:
           - "*"

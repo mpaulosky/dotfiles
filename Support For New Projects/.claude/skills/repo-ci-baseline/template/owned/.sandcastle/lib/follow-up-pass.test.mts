@@ -794,6 +794,7 @@ function passHostFake(
     markPullRequestBuildingResult?: boolean;
     // Claiming the issue a hand-off branch names, or releasing the issue's or the PR's claim, fails.
     markBuildingThrows?: boolean;
+    markPullRequestBuildingThrows?: boolean;
     unmarkBuildingThrows?: boolean;
     unmarkPullRequestBuildingThrows?: boolean;
     sandbox?: ReturnType<typeof sandboxFake>;
@@ -869,6 +870,7 @@ function passHostFake(
     },
     markPullRequestBuilding: (pr) => {
       calls.markPullRequestBuilding.push(pr);
+      if (options.markPullRequestBuildingThrows) throw new Error("gh pr edit failed");
       return options.markPullRequestBuildingResult ?? true;
     },
     unmarkPullRequestBuilding: (pr) => {
@@ -917,6 +919,15 @@ function passHostFake(
 }
 
 describe("runPass", () => {
+  it("rejects without creating a sandbox when claiming the issue fails, since the pass would run unclaimed", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, markBuildingThrows: true });
+
+    await assert.rejects(runPass(passTarget(), issue, BASE, passHost), /gh issue view failed/);
+
+    assert.deepEqual(calls.createSandbox, []);
+    assert.deepEqual(calls.releases, []);
+  });
+
   // Acceptance criterion: "A settled PR with an open Copilot thread gets one
   // pass: a fix commit, a reply on the thread, the thread resolved, and a
   // pass-summary comment."
@@ -2226,7 +2237,17 @@ describe("runPass on a hand-off PR", () => {
     assert.deepEqual(calls.unmarkBuilding, []);
   });
 
-  it("claims the PR before creating a sandbox, and releases it even when the pass throws", async () => {
+  it("rejects without creating a sandbox when claiming the PR fails, since the pass would run unclaimed", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, markPullRequestBuildingThrows: true });
+
+    await assert.rejects(runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost), /gh pr edit failed/);
+
+    assert.deepEqual(calls.createSandbox, []);
+    assert.deepEqual(calls.markBuilding, []);
+    assert.deepEqual(calls.releases, []);
+  });
+
+  it("claims the PR and releases it even when the pass throws", async () => {
     const sandbox = sandboxFake({ roleFailing: ["follow-up"] });
     const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
 

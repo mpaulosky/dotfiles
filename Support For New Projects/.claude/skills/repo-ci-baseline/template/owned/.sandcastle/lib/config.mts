@@ -260,7 +260,7 @@ export const SANDCASTLE_LABELS: readonly SandcastleLabel[] = [
   {
     name: BUILDING_LABEL,
     color: "1D76DB",
-    description: "Sandcastle is building this issue right now. Leave it alone until the label clears.",
+    description: "Sandcastle is working on this issue or pull request now. Leave it alone until the label clears.",
   },
   {
     name: "sandcastle:needs-info",
@@ -284,7 +284,7 @@ export const FOLLOW_UP_LABEL = "sandcastle:follow-up";
 export const FOLLOW_UP_LABEL_DEFINITION: SandcastleLabel = {
   name: FOLLOW_UP_LABEL,
   color: "C5DEF5",
-  description: "Sandcastle follows this pull request up. Only the repository owner's label counts.",
+  description: "Sandcastle follows this pull request up. Counts only from the owner or a login with push access.",
 };
 
 // Every label the host creates at startup (lib/github.mts#ensureLabels): SANDCASTLE_LABELS, the local queue's label and

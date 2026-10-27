@@ -211,8 +211,10 @@ const sameLogin = (login: string | null, other: string) => login !== null && log
 
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
 // its latest labeled event is the owner's, and nobody but the owner has renamed it or edited its description since
-// (lib/queue.mts#approval). The label isn't tied to the commits the owner looked at, so a PR whose author is anyone
-// else, a collaborator with push access included, never counts: they could keep pushing to its branch.
+// (lib/queue.mts#approval), where "the owner" is `isOwner`: the host or any login with push access. The label isn't tied
+// to the commits the owner looked at, so a later push to the branch by a login with push access is accepted, as for the
+// issue queue (binding the label to its head is a separate change). What the author check does is keep a collaborator
+// from handing off a PR of their own: one whose author is anyone else never counts.
 export function handOffApproval(
   pr: Pick<SweepPullRequest, "number" | "author">,
   github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner" | "repositoryOwner">,

@@ -112,12 +112,14 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   A Sandcastle pull request carrying the label is never a hand-off:
   it is swept as its issue's when `sweepSkipReason` lets it through, and skipped otherwise. Only the default queue scope (`isDefaultQueueScope`: the `Sandcastle` label,
   what GitHub Actions always runs) follows hand-offs.
-- **Who.** Only the owner's label counts, checked from the pull request's events and its title and description edits (`handOffApproval`, built on `lib/queue.mts#approval`):
-  the latest `labeled` event must be the owner's, and a rename or description edit by anyone else at or after it voids it until the owner adds the label again.
+- **Who.** The label must come from the owner, checked from the pull request's events and its title and description edits (`handOffApproval`, built on `lib/queue.mts#approval`):
+  the latest `labeled` event must be an owner's (`isOwner`: the host login or any login with push access, as for `sandcastle:ready`), and a rename or description edit by anyone else at or after it
+  voids it until the owner adds the label again.
   The pull request must also have been opened by the repository's owner (a session posts under the owner's token) or by the host login,
-  so a collaborator's pull request is never followed, whoever labels it:
-  a push to the branch after the label is not checked, and a collaborator with write access could keep pushing. (`isOwner` counts every login with push access, so it can't tell them apart;
-  `handOffApproval` compares the author with the account the repository belongs to.) A repository an organisation owns follows only the host's pull requests.
+  so a collaborator can't hand off a pull request of their own (`isOwner` counts every login with push access, so it can't tell them apart;
+  `handOffApproval` compares the author with the account the repository belongs to). This does not bind the label to the commits:
+  a push to the branch after the label is not checked, and a login with push access can still push to an owner's pull request, the same trust as the issue queue.
+  Binding the label to the head the owner labelled is tracked in mpaulosky/dotfiles#334. A repository an organisation owns follows only the host's pull requests.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
   When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
   That claim is best effort: a number that names no issue, or the pull request's own number, is passed on without it, and only a build already holding the issue makes the pass skip.

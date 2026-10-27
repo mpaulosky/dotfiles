@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BranchRefs } from "./branches.mts";
-import { COPILOT_REVIEWER, FOLLOW_UP_LABEL, FOLLOW_UP_REPLY_MARKER, PR_MARKER, SESSION_REPLY_MARKER } from "./config.mts";
+import {
+  COPILOT_REVIEWER,
+  FOLLOW_UP_LABEL,
+  FOLLOW_UP_REPLY_MARKER,
+  LOCAL_QUEUE_LABEL,
+  PR_MARKER,
+  QUEUE_LABEL,
+  SESSION_REPLY_MARKER,
+  type QueueScope,
+} from "./config.mts";
 import type { ClosedPullRequest, ContentEdit, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent } from "./github.mts";
 import {
   closedPrHandBackComment,
@@ -10,6 +19,7 @@ import {
   followUpPhase,
   handOffApproval,
   isCopilot,
+  liveFollowUpGitHub,
   isSandcastlePullRequest,
   issueNumberOf,
   startFromMain,
@@ -21,7 +31,7 @@ import {
   type SweepContext,
   type SweepPullRequest,
 } from "./follow-up.mts";
-import type { Approval } from "./queue.mts";
+import { activeQueueScope, useQueueScope, type Approval } from "./queue.mts";
 import { OutcomeReport, WaitingPrReport } from "./report.mts";
 
 const HOST = "sandcastle-bot";
@@ -1946,6 +1956,26 @@ describe("handOffApproval", () => {
     assert.match(reasonOf(result), /a deleted account opened it/);
   });
 
+  it("doesn't approve a stranger's edit or rename made in the same second as the owner's label", () => {
+    const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: LABELLED_AT }];
+    const renamed: IssueEvent[] = [...ownerLabelled, { event: "renamed", actor: "a-stranger", label: null, createdAt: LABELLED_AT }];
+
+    assert.equal(handOffApproval(PR, github({ edits }).stub, HOST).approved, false);
+    assert.equal(handOffApproval(PR, github({ events: renamed }).stub, HOST).approved, false);
+  });
+
+  it("doesn't approve a stranger's edit whose time can't be read", () => {
+    const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "not a time" }];
+
+    assert.equal(handOffApproval(PR, github({ edits }).stub, HOST).approved, false);
+  });
+
+  it("still approves the owner's own edit made in the same second as the label", () => {
+    const edits: ContentEdit[] = [{ editor: OWNER, editedAt: LABELLED_AT }];
+
+    assert.deepEqual(handOffApproval(PR, github({ edits }).stub, HOST), { approved: true });
+  });
+
   it("doesn't read the PR's events when its author already rules it out", () => {
     const { stub, eventReads } = github();
 
@@ -2395,5 +2425,32 @@ describe("startFromMain", () => {
 
     assert.throws(() => startFromMain(issueNumber, BRANCH, base, github, refs), /HTTP 502/);
     assert.ok(!calls.some((call) => call.startsWith("delete")), calls.join("\n"));
+  });
+});
+
+describe("liveFollowUpGitHub.followsHandOffs", () => {
+  // The gate that keeps a SANDCASTLE_ISSUE run or a Sandcastle:local run off hand-off PRs: wired to the active queue scope.
+  function withScope<T>(scope: QueueScope, read: () => T): T {
+    let before: QueueScope | undefined;
+    try {
+      before = activeQueueScope();
+    } catch {
+      before = undefined;
+    }
+    useQueueScope(scope);
+    try {
+      return read();
+    } finally {
+      if (before !== undefined) useQueueScope(before);
+    }
+  }
+
+  it("follows hand-offs on the default queue", () => {
+    assert.equal(withScope({ kind: "label", label: QUEUE_LABEL }, () => liveFollowUpGitHub.followsHandOffs()), true);
+  });
+
+  it("doesn't on the local queue's label or an issue scope", () => {
+    assert.equal(withScope({ kind: "label", label: LOCAL_QUEUE_LABEL }, () => liveFollowUpGitHub.followsHandOffs()), false);
+    assert.equal(withScope({ kind: "issue", number: 7 }, () => liveFollowUpGitHub.followsHandOffs()), false);
   });
 });

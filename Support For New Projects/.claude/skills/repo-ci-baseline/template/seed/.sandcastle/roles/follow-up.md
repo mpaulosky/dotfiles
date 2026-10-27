@@ -72,7 +72,7 @@ The host checks every `threadId` against the threads it gave you and ignores any
 
 # THE ISSUE
 
-The branch implements issue {{TASK_ID}}: {{ISSUE_TITLE}}
+The branch implements #{{TASK_ID}}: {{ISSUE_TITLE}}
 
 <issue>
 

@@ -133,6 +133,13 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   and the pull request is not followed up until the owner removes and re-adds the label.
   The record needs the Sandcastle workflow in Actions with `SANDCASTLE_GH_TOKEN` set, and that token must belong to the account the sweep runs as (`signedInHostLogin`):
   a repo that runs Sandcastle only locally, or whose token is another account's, can't hand a pull request off.
+  A pull request labelled before a repo got this job has no record and stops being followed up (the log says why): remove the label and add it again.
+  An update-branch made under any other account than `SANDCASTLE_GH_TOKEN`'s ends the follow-up the same way, so a repo whose `RELEASE_PR_PAT` is another account's should expect to re-add the label
+  after PR Auto-Merge updates a branch.
+  Two behaviours of GitHub are assumed and not checked here. One: `update-branch` makes a two-parent commit that web-flow signs and the calling account authors,
+  and no API lets another account produce one with the host as author. Two: a fresh comment's `updated_at` equals its `created_at`
+  (`handOffApproval` counts a record only then, so a change in GitHub would stop every hand-off, and the log would say the head isn't recorded).
+  The Seed `.claude/rules/sandcastle-hand-off.md` is never overwritten, so a repo that has it keeps the older text (which says a push after the label isn't checked) until it deletes the file and re-Applies.
   A repository an organisation owns, which has no owner login to match, follows no hand-off.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
   When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.

@@ -482,8 +482,8 @@ grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
 sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
 head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
 [[ -n "$head_marker" ]] || fail "lib/config.mts must export APPROVED_HEAD_MARKER as a one-line string"
-# Only the record-head job's own text is searched: the sandcastle job's if: has some of the same clauses.
-record_job="$(sed -n '/^  record-head:$/,$p' "$sandcastle_yml")"
+# Only the record-head job's own text is searched, up to the next job (a line at two spaces' indent): the sandcastle job's if: has some of the same clauses.
+record_job="$(sed -n '/^  record-head:$/,$p' "$sandcastle_yml" | sed -n '1p;2,${/^  [A-Za-z_-]*:/q;p}')"
 [[ -n "$record_job" ]] || fail "sandcastle.yml must have a record-head job"
 for needle in "body=\"$head_marker \$HEAD_SHA -->" "github.event_name == 'pull_request_target'" 'github.run_attempt == 1' \
   "github.event.label.name == 'sandcastle:follow-up'" 'github.event.sender.login == github.repository_owner' \

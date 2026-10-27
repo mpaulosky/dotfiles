@@ -18,6 +18,8 @@ else afterwards, a force-push, or more than five merges of `main` since the last
 collaborator from handing off their own pull request, it must have been opened by the repository's owner or by a session (the owner's token).
 A repository an organisation owns has no owner login to match, so nothing can be handed off there.
 
+A pull request labelled before the repository began recording heads has no record, so it is not followed up: remove the label and add it again.
+
 ## Which pull requests
 
 - Opened by the repository's owner (a session's pull request counts), in the same repository (not a fork), into `main`, not a draft.

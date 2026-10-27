@@ -26,8 +26,9 @@ name: Sandcastle
   pull_request:
     types: [unlabeled]
   # The owner's sandcastle:follow-up label starts only the record-head job. pull_request_target, not pull_request, so the
-  # job is the one on main: a pull_request run uses the workflow file of the PR's own branch, with the secrets, and that
-  # branch can be anyone's with push access.
+  # job comes from the PR's base branch, not its head: a pull_request run uses the workflow file of the PR's own branch, with
+  # the secrets, and that branch can be anyone's with push access. For a PR into main that is main's copy; the sweep follows
+  # up only PRs into main, so a record made for a PR into another branch is never read.
   pull_request_target:
     types: [labeled]
   pull_request_review:

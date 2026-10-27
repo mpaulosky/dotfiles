@@ -5,5 +5,6 @@
   {"name": "review:claude", "color": "D97757", "description": "Claude reviews each head, a backup to Copilot's review"},
   {"name": "sandcastle:needs-human", "color": "D93F0B", "description": "Sandcastle tried and couldn't; a person takes over (removal by the owner re-queues)"},
   {"name": "dependencies", "color": "0366D6", "description": "Pull requests that update a dependency"},
-  {"name": "github-actions", "color": "000000", "description": "Pull requests that update GitHub Actions"}
+  {"name": "github-actions", "color": "000000", "description": "Pull requests that update GitHub Actions"},
+  {"name": "npm", "color": "E99695", "description": "Pull requests that update npm or pnpm packages"}
 ]

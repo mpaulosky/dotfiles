@@ -18,6 +18,7 @@ else
 fi
 
 "${yaml_py[@]}" - "$DEPENDABOT" <<'PY'
+import json
 import sys
 import yaml
 
@@ -82,6 +83,11 @@ if start is not None:
 # The header no longer sends a pnpm project off to write the npm block itself.
 header = text.split("---", 1)[0]
 check("the header no longer suggests adding npm by hand", "such as npm" not in " ".join(header.split()), header)
+header_text = " ".join(header.split())
+check("the header says a repo without a root package.json drops the npm block", "package.json" in header_text and "drops the block" in header_text, header)
+check("the header says the npm block covers pnpm", "covers pnpm" in header_text, header)
+labels = [l["name"] for l in json.load(open(sys.argv[1].replace("template/seed/.github/dependabot.yml", "github/labels.json")))]
+check("labels.json creates every label the npm block uses", set(npm.get("labels", [])) <= set(labels), repr(labels))
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

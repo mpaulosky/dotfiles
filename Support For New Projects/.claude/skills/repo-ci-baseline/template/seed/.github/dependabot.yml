@@ -1,7 +1,11 @@
 # Dependabot version updates. Every label used below must exist in the repo:
 # Dependabot doesn't create them, and silently leaves them off the PR.
 # This file is Seed, so it belongs to the repo: add its other ecosystems and
-# its own ignores here, and drop an ecosystem the repo doesn't use.
+# its own ignores here, and drop an ecosystem the repo doesn't use. The npm
+# block covers pnpm too (it reads pnpm-lock.yaml) and suits a repo with a root
+# package.json, as every Sandcastle repo has. A repo with none, such as a plain
+# .NET repo, drops the block: Dependabot's npm updater would report
+# dependency_file_not_found every week.
 # https://docs.github.com/code-security/dependabot/working-with-dependabot/dependabot-options-reference
 ---
 

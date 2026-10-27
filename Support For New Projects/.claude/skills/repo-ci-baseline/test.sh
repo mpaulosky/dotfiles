@@ -294,26 +294,52 @@ run_secrets token "" oauth
 # The skills step, run for real against a local repository standing in for dotfiles. The workspace holds the repo's list; HOME is empty.
 fixture="$md_tmp/skills-fixture"
 fixture_skills="Support For New Projects/.claude/skills"
-git init -q -b main "$fixture"
-git -C "$fixture" config uploadpack.allowFilter true
-git -C "$fixture" config uploadpack.allowAnySHA1InWant true
-mkdir -p "$fixture/$fixture_skills/alpha" "$fixture/$fixture_skills/beta" "$fixture/$fixture_skills/linked"
-echo alpha > "$fixture/$fixture_skills/alpha/SKILL.md"
-echo beta > "$fixture/$fixture_skills/beta/SKILL.md"
-echo linked > "$fixture/$fixture_skills/linked/SKILL.md"
+fixture_git() { git -C "$1" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.com "${@:2}"; }
+fixture_repo() { git init -q -b main "$1"; git -C "$1" config uploadpack.allowFilter true; git -C "$1" config uploadpack.allowAnySHA1InWant true; }
+fixture_repo "$fixture"
+long_name="$(printf 'a%.0s' {1..64})"
+max_names=(); for i in {1..32}; do max_names+=("s$i"); done
+for name in alpha beta linked "$long_name" "${max_names[@]}"; do
+  mkdir -p "$fixture/$fixture_skills/$name"
+  echo "$name" > "$fixture/$fixture_skills/$name/SKILL.md"
+done
 ln -s /etc "$fixture/$fixture_skills/linked/escape"
-git -C "$fixture" add -A
-git -C "$fixture" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.com commit -q -m skills
+fixture_git "$fixture" add -A
+fixture_git "$fixture" commit -q -m skills
 good_sha="$(git -C "$fixture" rev-parse HEAD)"
+# A commit that is not in main, as a fork's commit served by hash would be.
+fixture_git "$fixture" checkout -q -b fork
+echo forked > "$fixture/$fixture_skills/alpha/SKILL.md"
+fixture_git "$fixture" commit -q -am forked
+fork_sha="$(git -C "$fixture" rev-parse HEAD)"
+fixture_git "$fixture" checkout -q main
+# A skill folder that is itself a symlink.
+ln -s alpha "$fixture/$fixture_skills/dirlink"
+fixture_git "$fixture" add -A
+fixture_git "$fixture" commit -q -m "a symlinked skill folder"
+dirlink_sha="$(git -C "$fixture" rev-parse HEAD)"
+# A folder above the skills that is a symlink: the skill's own folder and the files in it are real.
+fixture2="$md_tmp/skills-fixture-ancestor"
+fixture_repo "$fixture2"
+mkdir -p "$fixture2/real/.claude/skills/alpha"
+echo alpha > "$fixture2/real/.claude/skills/alpha/SKILL.md"
+ln -s real "$fixture2/Support For New Projects"
+fixture_git "$fixture2" add -A
+fixture_git "$fixture2" commit -q -m ancestor
+ancestor_sha="$(git -C "$fixture2" rev-parse HEAD)"
+skills_url="file://$fixture"
 run_skills() { # the list's text; sets skills_rc, skills_log, skills_home
   local ws="$md_tmp/skills-ws" log
   rm -rf "$ws" "$md_tmp/skills-home" "$md_tmp/skills-runner"
   mkdir -p "$ws/.github/ci" "$md_tmp/skills-home" "$md_tmp/skills-runner"
   [[ $1 == "<none>" ]] || printf '%s' "$1" > "$ws/.github/ci/sandcastle-skills.txt"
+  [[ -z ${skills_preexisting:-} ]] || mkdir -p "$md_tmp/skills-home/.claude/skills/$skills_preexisting"
   skills_home="$md_tmp/skills-home"; skills_rc=0; log="$md_tmp/skills.log"
-  (cd "$ws" && env -i PATH="$PATH" HOME="$skills_home" RUNNER_TEMP="$md_tmp/skills-runner" DOTFILES_URL="file://$fixture" \
+  (cd "$ws" && env -i PATH="$PATH" HOME="$skills_home" RUNNER_TEMP="$md_tmp/skills-runner" DOTFILES_URL="$skills_url" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash --noprofile --norc -e "$skills_script") &>"$log" || skills_rc=$?
   skills_log="$(<"$log")"
+  # No line of the list is ever run as a command, whatever the outcome.
+  [[ ! -e "$ws/pwned" ]] || fail "sandcastle.yml: the skills list was run as a command (list '$1')"
 }
 skills_installed() { [[ -e "$skills_home/.claude/skills/$1/SKILL.md" ]]; }
 for list in "<none>" "" $'# only a comment\n\n'; do
@@ -321,10 +347,17 @@ for list in "<none>" "" $'# only a comment\n\n'; do
   [[ $skills_rc -eq 0 && ! -e "$skills_home/.claude" ]] || fail "sandcastle.yml: a skills list without entries must install nothing and pass (exit $skills_rc, list '$list')"
 done
 run_skills $'# pinned\ndotfiles-sha '"$good_sha"$'\nskill alpha\nskill beta\n'
-[[ $skills_rc -eq 0 ]] && skills_installed alpha && skills_installed beta && [[ ! -e "$skills_home/.claude/skills/linked" ]] \
+{ [[ $skills_rc -eq 0 ]] && skills_installed alpha && skills_installed beta && [[ ! -e "$skills_home/.claude/skills/linked" ]]; } \
   || fail "sandcastle.yml: the listed skills, and only those, must be installed (exit $skills_rc): $skills_log"
 run_skills "dotfiles-sha $good_sha"$'\nskill alpha'
 { [[ $skills_rc -eq 0 ]] && skills_installed alpha; } || fail "sandcastle.yml: a list with no trailing newline must install its skills (exit $skills_rc)"
+# The caps' boundaries: 32 skills and a 64-character name pass.
+max_list="dotfiles-sha $good_sha"; for name in "${max_names[@]}"; do max_list+=$'\nskill '"$name"; done
+run_skills "$max_list"
+{ [[ $skills_rc -eq 0 ]] && skills_installed s1 && skills_installed s32; } || fail "sandcastle.yml: 32 skills must be installed (exit $skills_rc): $skills_log"
+run_skills "dotfiles-sha $good_sha"$'\nskill '"$long_name"
+{ [[ $skills_rc -eq 0 ]] && skills_installed "$long_name"; } || fail "sandcastle.yml: a 64-character skill name must be installed (exit $skills_rc): $skills_log"
+over_list="dotfiles-sha $good_sha"; for i in {1..33}; do over_list+=$'\nskill s'"$i"; done
 bad_lists=(
   $'skill alpha\n' "dotfiles-sha $good_sha"$'\n'
   "dotfiles-sha ${good_sha:0:39}"$'\nskill alpha\n' "dotfiles-sha ${good_sha^^}"$'\nskill alpha\n'
@@ -332,31 +365,53 @@ bad_lists=(
   "dotfiles-sha $good_sha"$'\nskill Alpha\n' "dotfiles-sha $good_sha"$'\nskill ../alpha\n' "dotfiles-sha $good_sha"$'\nskill alpha beta\n'
   "dotfiles-sha $good_sha"$'\nskill alpha\nskill alpha\n' "dotfiles-sha $good_sha"$'\nskill\n' "dotfiles-sha $good_sha"$'\nskill -alpha\n'
   "dotfiles-sha $good_sha"$'\nplugin alpha\n' "dotfiles-sha $good_sha"$'\nskill alpha # trailing\n'
-  "dotfiles-sha $good_sha"$'\nskill alpha\n$(touch pwned)\n'
+  "dotfiles-sha $good_sha"$'\nskill alpha\n$(touch pwned)\n' "dotfiles-sha $good_sha"$'\nskill alpha;touch pwned\n'
+  "dotfiles-sha $good_sha"$'\nskill alpha\n`touch pwned`\n'
   "dotfiles-sha ${good_sha//[0-9a-f]/0}"$'\nskill alpha\n' "dotfiles-sha $good_sha"$'\nskill missing\n' "dotfiles-sha $good_sha"$'\nskill linked\n'
+  "dotfiles-sha $good_sha"$'\r\nskill alpha\r\n' "dotfiles-sha $good_sha"$'\n  # indented\nskill alpha\n'
+  "dotfiles-sha $fork_sha"$'\nskill alpha\n' "dotfiles-sha $dirlink_sha"$'\nskill alpha\n' "$over_list"
+  "dotfiles-sha $good_sha"$'\nskill '"${long_name}a"
 )
 for list in "${bad_lists[@]}"; do
   run_skills "$list"
   [[ $skills_rc -ne 0 && ! -e "$skills_home/.claude" ]] || fail "sandcastle.yml: a bad skills list must fail and install nothing (exit $skills_rc, list '$list')"
 done
-# The rules are the step's own, not git's or the file system's: each bad line is refused for its reason, before anything is fetched.
+# The rules are the step's own, not git's or the file system's: each bad list is refused for its reason.
 check_refused() { # the list's text, the part of the error it must give
   run_skills "$1"
   [[ $skills_rc -ne 0 && $skills_log == *"$2"* ]] || fail "sandcastle.yml: a skills list '$1' must be refused with '$2' (exit $skills_rc): $skills_log"
 }
 check_refused "dotfiles-sha ${good_sha^^}"$'\nskill alpha' "40-digit"
 check_refused "dotfiles-sha ${good_sha:0:39}"$'\nskill alpha' "40-digit"
+check_refused "dotfiles-sha $good_sha"$'\r\nskill alpha\r\n' "40-digit"
 check_refused "dotfiles-sha $good_sha"$'\nskill Alpha' "lowercase name"
 check_refused "dotfiles-sha $good_sha"$'\nskill ../alpha' "lowercase name"
 check_refused "dotfiles-sha $good_sha"$'\nskill -alpha' "lowercase name"
+check_refused "dotfiles-sha $good_sha"$'\nskill '"${long_name}a" "up to 64"
+check_refused "$over_list" "at most 32"
 check_refused "dotfiles-sha $good_sha"$'\nskill alpha\nskill alpha' "listed once"
 check_refused "dotfiles-sha $good_sha"$'\nplugin alpha' "starts with"
+check_refused "dotfiles-sha $good_sha"$'\n  # indented\nskill alpha' "starts with"
 check_refused "dotfiles-sha $good_sha"$'\nskill alpha beta' "a key and one value"
-# A line is never printed: one starting with :: would otherwise run as a workflow command from the log.
-run_skills "::add-mask::secretvalue"
-[[ $skills_rc -ne 0 && $skills_log != *add-mask* && $skills_log != *secretvalue* ]] \
-  || fail "sandcastle.yml: a rejected skills line must not be echoed (exit $skills_rc): $skills_log"
-[[ ! -e "$md_tmp/skills-ws/pwned" ]] || fail "sandcastle.yml: the skills list was run as a command"
+check_refused "dotfiles-sha $good_sha" "needs a dotfiles-sha line"
+check_refused "skill alpha" "needs a dotfiles-sha line"
+check_refused "dotfiles-sha $good_sha"$'\nskill missing' "has no missing skill"
+check_refused "dotfiles-sha $good_sha"$'\nskill linked' "holds a symlink"
+check_refused "dotfiles-sha $dirlink_sha"$'\nskill alpha' "holds a symlink"
+check_refused "dotfiles-sha $fork_sha"$'\nskill alpha' "main branch"
+skills_url="file://$fixture2"
+check_refused "dotfiles-sha $ancestor_sha"$'\nskill alpha' "holds a symlink"
+skills_url="file://$fixture"
+skills_preexisting=alpha
+check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "alpha"
+skills_preexisting=
+# A line is never printed, whichever rule rejects it: one starting with :: would otherwise run as a workflow command from the log.
+for list in "::add-mask::secretvalue" "::add-mask::secretvalue x" "skill ::add-mask::secretvalue" "dotfiles-sha ::add-mask::secretvalue" \
+  "dotfiles-sha $good_sha"$'\nskill alpha ::add-mask::secretvalue' "dotfiles-sha $good_sha"$'\nbogus ::add-mask::secretvalue'; do
+  run_skills "$list"
+  [[ $skills_rc -ne 0 && $skills_log != *add-mask* && $skills_log != *secretvalue* ]] \
+    || fail "sandcastle.yml: a rejected skills line must not be echoed (exit $skills_rc, list '$list'): $skills_log"
+done
 [[ ! -e "$seed/.github/ci/sandcastle-prepare.sh" ]] || fail "the Seed carries a repo script the Owned sandcastle.yml would run; the skills list replaced it (ADR 0009)"
 run_skills "$(<"$seed/.github/ci/sandcastle-skills.txt")"
 [[ $skills_rc -eq 0 && ! -e "$skills_home/.claude" ]] || fail "the Seed .github/ci/sandcastle-skills.txt must install nothing"

@@ -117,9 +117,11 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   locally gets a green run with a notice on every trigger the job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
 - **`.github/ci/sandcastle-skills.txt` lists the skills the run mounts (Seed).** A hosted runner has no `~/.claude/skills`, which `lib/skills.mts` mounts
   the `SANDBOX_SKILLS` from. The file is data: a `dotfiles-sha` line (the commit of mpaulosky/dotfiles to take them from, 40 lowercase hex digits, pinned like an action)
-  and a `skill` line per skill name; the Seed has neither, and installs nothing. The Owned step "Install the skills" rejects any other line (and prints none of the file),
-  fetches the commit before git holds the PAT and with no secret in its environment, refuses a skill that is missing or holds a symlink, and links only the listed skills.
-  No script of the repo's runs on the runner, so a repo file can't change what the steps that hold the PAT and the Claude credential trust.
+  The Owned step "Install the skills" rejects any line that isn't blank, a `#` comment in column 0 or one of those two (and prints none of the file),
+  fetches the commit before git holds the PAT and with no secret in its environment, refuses a commit that isn't in dotfiles' `main`,
+  a missing skill and any symlink in the checkout, and links only the listed skills.
+  The step runs no script of the repo's, so its file can't change what the steps that hold the PAT and the Claude credential trust;
+  those steps still run the repo's `package.json` scripts and `.sandcastle/` code from `main`, which a PR to `main` reviews.
 - **The CI workflows it follows are listed by name** (`workflow_run` can't read a variable): `Build and Test Suite` (the Template's `ci.yml`),
   `repo-ci-baseline Template` (the workflow that tests the Template, in dotfiles) and `Claude Review`. A name the repo lacks matches nothing.
 - **A repo with its own `sandcastle.yml`** drops it from `NOT_OWNED_BASELINE_PATHS` in its re-Apply and moves the skills it installs into `sandcastle-skills.txt`.
@@ -127,8 +129,8 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
   A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones, mpaulosky/dotfiles#313 and #314) keeps its file in
   `NOT_OWNED_BASELINE_PATHS` until those land, or its re-Apply drops them.
-- **A change to the skills list needs a person's review.** The skills become the agents' instructions, and a commit is fetched by its hash from the public repository
-  (GitHub also serves a fork's commit by hash), so check that the pinned commit is on dotfiles' `main`.
+- **A change to the skills list needs a person's review.** The skills become the agents' instructions. The step refuses a commit outside dotfiles' `main`
+  (GitHub serves a fork's commit by hash), but any older commit of `main` passes, so check the pin is the one meant.
 
 ## Migrating a repo
 

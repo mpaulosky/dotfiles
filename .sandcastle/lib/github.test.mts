@@ -55,6 +55,10 @@ import {
   type TimelineLabelEvent,
   type TimestampedComment,
   updatePullRequestBranch,
+  headAfterBranchUpdate,
+  issueComments,
+  UPDATED_HEAD_ATTEMPTS,
+  UPDATED_HEAD_WAIT_MS,
 } from "./github.mts";
 import { HandBackReport, targetUrl } from "./report.mts";
 
@@ -1020,6 +1024,95 @@ describe("updatePullRequestBranch", () => {
     assert.deepEqual(calls[0]!.args, [
       "api", "--method", "PUT", "repos/o/r/pulls/42/update-branch", "-f", `expected_head_sha=${"a".repeat(40)}`,
     ]);
+  });
+});
+
+describe("issueComments", () => {
+  it("pages through the comments of the issue or PR with their author and time", () => {
+    const { calls, run } = recordingGh([[JSON.stringify({ body: "a", createdAt: "2026-01-01T00:00:00Z", author: "o" }), "", JSON.stringify({ body: "b", createdAt: "2026-01-02T00:00:00Z", author: "p" })].join("\n")]);
+
+    const comments = issueComments(7, run, "o/r");
+
+    assert.deepEqual(comments.map((comment) => comment.body), ["a", "b"]);
+    assert.deepEqual(calls[0]!.args.slice(0, 3), ["api", "--paginate", "repos/o/r/issues/7/comments"]);
+  });
+});
+
+describe("headAfterBranchUpdate", () => {
+  const OLD = "a".repeat(40);
+  const NEW = "b".repeat(40);
+  const MAIN = "c".repeat(40);
+  const merge = (overrides: Partial<{ parents: string[]; committer: string | null; verified: boolean }> = {}) =>
+    JSON.stringify({ parents: [OLD, MAIN], committer: "web-flow", verified: true, ...overrides });
+
+  // A gh stub: `heads` are the PR heads successive reads see (the last repeats), `commit` is the answer for the head's
+  // commit and `status` for the compare of the second parent with main. Every call is recorded.
+  const stub = (heads: string[], commit: string, status = "ahead") => {
+    const calls: string[] = [];
+    const waits: number[] = [];
+    let reads = 0;
+    const run = ((_cmd: string, args: readonly string[]) => {
+      calls.push(args.join(" "));
+      const path = args[1]!;
+      if (path.endsWith("/pulls/9")) return `${heads[Math.min(reads++, heads.length - 1)]}\n`;
+      if (path.includes("/commits/")) return commit;
+      if (path.includes("/compare/")) return `${status}\n`;
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    }) as unknown as typeof execFileSync;
+    return { run, calls, waits, wait: (ms: number) => void waits.push(ms) };
+  };
+  const head = (heads: string[], commit: string, status?: string) => {
+    const { run, calls, waits, wait } = stub(heads, commit, status);
+    return { result: headAfterBranchUpdate(9, OLD, run, "o/r", wait), calls, waits };
+  };
+
+  it("returns the head of GitHub's own merge of main into the head that was updated", () => {
+    const { result, calls } = head([NEW], merge());
+
+    assert.deepEqual(result, { head: NEW });
+    assert.ok(calls.some((call) => call.includes(`compare/${MAIN}...main`)), calls.join("\n"));
+    assert.ok(calls.some((call) => call.includes(`commits/${NEW}`)), calls.join("\n"));
+  });
+
+  it("accepts a second parent that is main's own head", () => {
+    assert.deepEqual(head([NEW], merge(), "identical").result, { head: NEW });
+  });
+
+  it("waits, UPDATED_HEAD_WAIT_MS at a time, until the head moves", () => {
+    const { result, waits } = head([OLD, OLD, NEW], merge());
+
+    assert.deepEqual(result, { head: NEW });
+    assert.deepEqual(waits, [UPDATED_HEAD_WAIT_MS, UPDATED_HEAD_WAIT_MS]);
+  });
+
+  it("gives up with a problem when the head never moves", () => {
+    const { result, waits } = head([OLD], merge());
+
+    assert.deepEqual(result, { problem: "the head hadn't moved after the update" });
+    assert.equal(waits.length, UPDATED_HEAD_ATTEMPTS - 1);
+  });
+
+  for (const [what, commit, status] of [
+    ["a commit someone else committed", merge({ committer: "a-collaborator" }), "ahead"],
+    ["a commit with no committer account", merge({ committer: null }), "ahead"],
+    ["a commit GitHub didn't verify", merge({ verified: false }), "ahead"],
+    ["a commit with one parent, such as a push on top of the head", merge({ parents: [OLD] }), "ahead"],
+    ["a commit with three parents", merge({ parents: [OLD, MAIN, MAIN] }), "ahead"],
+    ["a merge into some other head", merge({ parents: [MAIN, OLD] }), "ahead"],
+    ["a merge of something main doesn't contain", merge(), "diverged"],
+    ["a merge of something main is behind", merge(), "behind"],
+  ] as const) {
+    it(`refuses ${what}`, () => {
+      const { result } = head([NEW], commit, status);
+
+      assert.ok("problem" in result, JSON.stringify(result));
+    });
+  }
+
+  it("names the short hash in a problem", () => {
+    const { result } = head([NEW], merge({ verified: false }));
+
+    assert.deepEqual(result, { problem: `${NEW.slice(0, 7)} isn't a commit GitHub made and signed itself` });
   });
 });
 

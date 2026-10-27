@@ -284,7 +284,7 @@ export const FOLLOW_UP_LABEL = "sandcastle:follow-up";
 export const FOLLOW_UP_LABEL_DEFINITION: SandcastleLabel = {
   name: FOLLOW_UP_LABEL,
   color: "C5DEF5",
-  description: "Sandcastle follows this pull request up. Counts only from the owner or a login with push access.",
+  description: "Sandcastle follows this pull request up. Counts only from the owner, at the head they labelled.",
 };
 
 // Every label the host creates at startup (lib/github.mts#ensureLabels): SANDCASTLE_LABELS, the local queue's label and
@@ -294,6 +294,11 @@ export const HOST_LABELS: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LO
 // The marker a Claude Code session ends every reply and comment with (docs/PROCESS.md): it posts under the owner's token,
 // so nothing else tells its comments from the owner's.
 export const SESSION_REPLY_MARKER = "<!-- claude-session -->";
+
+// What opens the comment that records a head of a hand-off PR as approved (lib/follow-up.mts#approvedHeadComment): the Sandcastle
+// workflow posts it when the owner adds the hand-off label, and the host posts it after each push it makes to the branch. The
+// workflow's own copy of the text is pinned to this one by the Template's test.sh.
+export const APPROVED_HEAD_MARKER = "<!-- sandcastle:approved-head";
 
 // Whether `scope` is the queue GitHub Actions always runs, every issue labelled QUEUE_LABEL. Only that run follows
 // hand-off pull requests.

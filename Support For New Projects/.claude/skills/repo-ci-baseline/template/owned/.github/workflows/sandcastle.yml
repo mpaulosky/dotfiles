@@ -17,11 +17,16 @@ name: Sandcastle
 # GITHUB_TOKEN is read-only. Every write goes through SANDCASTLE_GH_TOKEN, the
 # owner's PAT, whose pushes start CI. It has no Workflows permission, so
 # Sandcastle can't change this file: a change to it comes from a Template PR.
-"on":  # zizmor: ignore[dangerous-triggers] workflow_run runs this file as it is on main, and the job checks out main, never PR code.
+"on":  # zizmor: ignore[dangerous-triggers] workflow_run and pull_request_target run this file as it is on main, and no job checks out or runs PR code.
   issues:
     types: [labeled, unlabeled]
   pull_request:
     types: [unlabeled]
+  # The owner's sandcastle:follow-up label starts only the record-head job. pull_request_target, not pull_request, so the
+  # job is the one on main: a pull_request run uses the workflow file of the PR's own branch, with the secrets, and that
+  # branch can be anyone's with push access.
+  pull_request_target:
+    types: [labeled]
   pull_request_review:
     types: [submitted]
   # The name: of ci.yml, of the workflow that tests the Template itself and of
@@ -313,3 +318,40 @@ jobs:
             jq -r '.[] | "\(.kind) #\(.number): \(.label) \(.url)"' "$handbacks"
             exit 1
           fi
+
+  # Records the head a pull request had when the owner handed it off with the sandcastle:follow-up label. The follow-up sweep
+  # (lib/follow-up.mts#handOffApproval) follows the pull request up only at a head recorded this way or by the host itself
+  # after a push of its own, so a commit pushed after the label stops the follow-up until the owner adds the label again.
+  # The head comes from the event, never from a later read of the pull request, which a push could have moved. The comment
+  # is posted with SANDCASTLE_GH_TOKEN, the host's login, so the sweep can trust it; the job checks nothing out and runs
+  # nothing from the pull request. Its text opens with the marker that config.mts calls APPROVED_HEAD_MARKER, which the
+  # Template's test.sh pins. Only the repository owner's own label records a head, and only for a pull request from this repository.
+  record-head:
+    name: Record the approved head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    if: >-
+      github.event_name == 'pull_request_target' && github.event.action == 'labeled'
+      && github.event.label.name == 'sandcastle:follow-up'
+      && github.event.sender.login == github.repository_owner
+      && github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Post the head
+        env:
+          SANDCASTLE_GH_TOKEN: ${{ secrets.SANDCASTLE_GH_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$SANDCASTLE_GH_TOKEN" ]; then
+            echo "::notice::The SANDCASTLE_GH_TOKEN secret isn't set, so this repository doesn't run Sandcastle in Actions."
+            exit 0
+          fi
+          if ! [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The labeled event's head isn't a full commit SHA."
+            exit 1
+          fi
+          body="<!-- sandcastle:approved-head $HEAD_SHA -->
+          Sandcastle follows this pull request up from ${HEAD_SHA:0:7}, the head the owner approved."
+          GH_TOKEN="$SANDCASTLE_GH_TOKEN" gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$body" --silent

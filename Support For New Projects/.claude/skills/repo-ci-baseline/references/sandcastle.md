@@ -117,9 +117,15 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   voids it until the owner adds the label again.
   The pull request must also have been opened by the repository's owner (a session posts under the owner's token) or by the host login,
   so a collaborator can't hand off a pull request of their own (`isOwner` counts every login with push access, so it can't tell them apart;
-  `handOffApproval` compares the author with the account the repository belongs to). This does not bind the label to the commits:
-  a push to the branch after the label is not checked, and a login with push access can still push to an owner's pull request, the same trust as the issue queue.
-  Binding the label to the head the owner labelled is tracked in mpaulosky/dotfiles#334. A repository an organisation owns follows only the host's pull requests.
+  `handOffApproval` compares the author with the account the repository belongs to).
+- **The head.** The label is bound to the commits the owner labelled. When the repository owner adds it, the `record-head` job of `sandcastle.yml` (a `pull_request_target` run on `labeled`,
+  for a same-repository pull request) comments `<!-- sandcastle:approved-head {sha} -->` as the host login, with the head from the event itself (`APPROVED_HEAD_MARKER`).
+  `handOffApproval` follows the pull request up only when its head is in such a comment from the host posted at or after the latest `labeled` event.
+  The host records each head it pushes the same way: a pass records the commit it pushed, and a branch update from `main` records the new head
+  once `headAfterBranchUpdate` finds it is GitHub's own signed merge of `main` (two parents: the head it updated, then a commit `main` contains).
+  A commit anyone else pushes after the label, a force-push, or a record that failed to post leaves the head unrecorded, so the pull request is not followed up
+  until the owner removes and re-adds the label. Only the repository owner's own label records a head, so a collaborator's label never starts a follow-up,
+  and a repository an organisation owns, which has no owner login to match, follows no hand-off.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
   When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
   That claim is best effort: a number that names no issue, or the pull request's own number, is passed on without it, and only a build already holding the issue makes the pass skip.
@@ -132,8 +138,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
 - **The session guidance** is the Seed `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
   which Apply can't edit. It is the repo's once written, so Apply never overwrites it.
 
-The workflow's triggers for the label (a `pull_request` `labeled` trigger from the owner, and `chore/` branches in the `workflow_run` and review lists) are not in the Template's
-`sandcastle.yml` yet: until they are, the schedule and the existing triggers pick a labelled pull request up.
+The workflow's `pull_request_target` `labeled` trigger starts only the `record-head` job, never a Sandcastle run: the schedule and the existing triggers pick a labelled pull request up,
+and `chore/` branches are not in the `workflow_run` and review lists.
 
 ## When Apply adds it
 

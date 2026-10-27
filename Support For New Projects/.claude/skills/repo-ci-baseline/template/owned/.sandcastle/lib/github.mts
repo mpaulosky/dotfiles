@@ -523,6 +523,54 @@ export function updatePullRequestBranch(
   ghWithStderr(run, ["api", "--method", "PUT", `repos/${repo}/pulls/${number}/update-branch`, "-f", `expected_head_sha=${expectedHeadSha}`]);
 }
 
+// What headAfterBranchUpdate found: the head that GitHub's update of the branch made, or why no head can be vouched for.
+export type UpdatedHead = { head: string } | { problem: string };
+
+// GitHub answers update-branch with 202 and merges main in a moment later, so the new head is looked for this many
+// times, this far apart, before the update counts as not having happened.
+export const UPDATED_HEAD_ATTEMPTS = 12;
+export const UPDATED_HEAD_WAIT_MS = 5000;
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// The head of PR `number` once updatePullRequestBranch has merged main into `expectedHead`, but only when it is GitHub's own
+// merge of main: a verified commit by web-flow with `expectedHead` and a commit that main contains as its parents. A push
+// that raced the update, or a merge commit someone built themselves, gives a problem instead, so the approval of a
+// hand-off PR (lib/follow-up.mts#handOffApproval) never vouches for a head the owner and the host didn't produce.
+export function headAfterBranchUpdate(
+  number: number,
+  expectedHead: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+  wait: (ms: number) => void = sleepSync,
+): UpdatedHead {
+  const headOf = () => ghWithStderr(run, ["api", `repos/${repo}/pulls/${number}`, "--jq", ".head.sha"]).trim();
+  let head = headOf();
+  for (let attempt = 1; head === expectedHead && attempt < UPDATED_HEAD_ATTEMPTS; attempt++) {
+    wait(UPDATED_HEAD_WAIT_MS);
+    head = headOf();
+  }
+  if (head === expectedHead) return { problem: "the head hadn't moved after the update" };
+  const commit = JSON.parse(
+    ghWithStderr(run, [
+      "api", `repos/${repo}/commits/${head}`,
+      "--jq", "{parents: [.parents[].sha], committer: .committer.login, verified: .commit.verification.verified}",
+    ]),
+  ) as { parents: string[]; committer: string | null; verified: boolean };
+  if (commit.committer !== "web-flow" || commit.verified !== true) {
+    return { problem: `${head.slice(0, 7)} isn't a commit GitHub made and signed itself` };
+  }
+  const [first, second] = commit.parents;
+  if (commit.parents.length !== 2 || first !== expectedHead || second === undefined) {
+    return { problem: `${head.slice(0, 7)} isn't a merge into ${expectedHead.slice(0, 7)}` };
+  }
+  const status = ghWithStderr(run, ["api", `repos/${repo}/compare/${second}...main`, "--jq", ".status"]).trim();
+  if (status !== "ahead" && status !== "identical") return { problem: `${head.slice(0, 7)} merges ${second.slice(0, 7)}, which main doesn't contain` };
+  return { head };
+}
+
 // One comment in a review thread, first comment first (lib/github.mts#reviewThreadsOf).
 // byBot: whether its author.__typename is "Bot".
 export type ThreadComment = { author: string | null; byBot: boolean; body: string; url: string };
@@ -1339,15 +1387,20 @@ export function markerComments(
   run: typeof execFileSync = execFileSync,
   poster: string = (signedInLogin ??= hostLogin(run)),
 ): TimestampedComment[] {
-  const comments = jsonLines(
+  const comments = issueComments(number, run, repo);
+  const timeline = labelTimeline(number, run, repo);
+  const createdAt = ghWithStderr(run, ["api", `repos/${repo}/issues/${number}`, "--jq", ".created_at"]).trim();
+  return markerCommentsSince(comments, timeline, label, marker, createdAt, poster);
+}
+
+// Every comment on the issue or PR `number`, oldest first (PRs share the issues API).
+export function issueComments(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): TimestampedComment[] {
+  return jsonLines(
     ghWithStderr(run, [
       "api", "--paginate", `repos/${repo}/issues/${number}/comments`,
       "--jq", ".[] | {body, createdAt: .created_at, author: .user.login} | @json",
     ]),
   ) as TimestampedComment[];
-  const timeline = labelTimeline(number, run, repo);
-  const createdAt = ghWithStderr(run, ["api", `repos/${repo}/issues/${number}`, "--jq", ".created_at"]).trim();
-  return markerCommentsSince(comments, timeline, label, marker, createdAt, poster);
 }
 
 // A label only the host or a human applies to hand work back: the issue's or

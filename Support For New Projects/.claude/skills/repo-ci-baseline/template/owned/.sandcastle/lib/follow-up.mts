@@ -18,6 +18,7 @@
 
 import { discardClosedWork, isHandOffBranch, isIssueBranch, type BranchRefs } from "./branches.mts";
 import {
+  APPROVED_HEAD_MARKER,
   BUILDING_LABEL,
   COPILOT_REREQUEST_AFTER_MS,
   FOLLOW_UP_LABEL,
@@ -30,9 +31,12 @@ import {
 import {
   addPullRequestLabel,
   closedPullRequests,
+  commentOnPullRequest,
   handBack,
   hasLabel,
+  headAfterBranchUpdate,
   isCopilot,
+  issueComments,
   issueEvents,
   labelTimeline,
   openPullRequestsForSweep,
@@ -50,6 +54,8 @@ import {
   type PullRequestIdentity,
   type ReviewThread,
   type TimelineLabelEvent,
+  type TimestampedComment,
+  type UpdatedHead,
 } from "./github.mts";
 import { activeQueueScope, approval, labelOriginFixes, loadQueue, ownerCheck, type Approval, type IsOwner } from "./queue.mts";
 import { outcomeReport, waitingPrReport, type OutcomeReport, type WaitingPrEntry, type WaitingPrReport } from "./report.mts";
@@ -209,21 +215,48 @@ export function sweepSubject(
 // Whether `login` is `other`: GitHub logins are case-insensitive.
 const sameLogin = (login: string | null, other: string) => login !== null && login.toLowerCase() === other.toLowerCase();
 
+// The comment that records `head` as a head of a hand-off PR the owner approved (see handOffApproval).
+export function approvedHeadComment(head: string): string {
+  return `${APPROVED_HEAD_MARKER} ${head} -->\nSandcastle follows this pull request up from ${head.slice(0, 7)}, the head the owner approved.`;
+}
+
+// The head a comment records as approved, or undefined when it doesn't open with the marker.
+export function approvedHeadOf(body: string): string | undefined {
+  return new RegExp(`^${APPROVED_HEAD_MARKER} ([0-9a-f]{40}) -->`).exec(body)?.[1];
+}
+
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
-// its latest labeled event is the owner's, and nobody but the owner has renamed it or edited its description since
-// (lib/queue.mts#approval), where "the owner" is `isOwner`: the host or any login with push access. The label isn't tied
-// to the commits the owner looked at, so a later push to the branch by a login with push access is accepted, as for the
-// issue queue (binding the label to its head is a separate change). What the author check does is keep a collaborator
-// from handing off a PR of their own: one whose author is anyone else never counts.
+// its latest labeled event is the owner's, nobody but the owner has renamed it or edited its description since
+// (lib/queue.mts#approval), where "the owner" is `isOwner`: the host or any login with push access, and its head is one
+// the host recorded as approved after that label. The Sandcastle workflow records the head the label was added to, from
+// the event itself, and the host records each head it pushes. A commit anyone else pushes later leaves the head
+// unrecorded, so the PR isn't followed up until the owner removes and re-adds the label. Only the host's own comments
+// count, and only those posted at or after the label, so a stranger can't record a head and an earlier label's record
+// doesn't carry over. The author check keeps a collaborator from handing off a PR of their own.
 export function handOffApproval(
-  pr: Pick<SweepPullRequest, "number" | "author">,
-  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner" | "repositoryOwner">,
+  pr: Pick<SweepPullRequest, "number" | "author" | "headRefOid">,
+  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "isOwner" | "repositoryOwner">,
   host: string,
 ): Approval {
   if (!sameLogin(pr.author, host) && !sameLogin(pr.author, github.repositoryOwner())) {
     return { approved: false, reason: `${pr.author ?? "a deleted account"} opened it, and is neither the repository's owner nor ${host}` };
   }
-  return approval(FOLLOW_UP_LABEL, github.pullRequestEvents(pr.number), github.pullRequestBodyEdits(pr.number), github.isOwner);
+  const events = github.pullRequestEvents(pr.number);
+  const labelled = approval(FOLLOW_UP_LABEL, events, github.pullRequestBodyEdits(pr.number), github.isOwner);
+  if (!labelled.approved) return labelled;
+  const addedAt = events.filter((event) => event.event === "labeled" && event.label?.toLowerCase() === FOLLOW_UP_LABEL.toLowerCase()).map((event) => Date.parse(event.createdAt));
+  const since = addedAt[addedAt.length - 1] as number;
+  const recorded = github
+    .pullRequestComments(pr.number)
+    .filter((comment) => sameLogin(comment.author, host) && Date.parse(comment.createdAt) >= since)
+    .map((comment) => approvedHeadOf(comment.body));
+  if (recorded.includes(pr.headRefOid.toLowerCase())) return labelled;
+  return {
+    approved: false,
+    reason:
+      `its head ${pr.headRefOid.slice(0, 7)} isn't one ${host} recorded as approved since the owner added the label, so a commit was pushed after it: ` +
+      `remove and re-add ${FOLLOW_UP_LABEL} once the owner has looked at the branch`,
+  };
 }
 
 // What the sweep does about one PR, decided by `decide`.
@@ -376,6 +409,12 @@ export type FollowUpGitHub = {
   // The login of the account the repository belongs to, whom a hand-off PR's author must be (or the host). live:
   // repositoryOwnerLogin().
   repositoryOwner(): string;
+  // Every comment on a PR, for the heads the host recorded as approved. live: issueComments.
+  pullRequestComments(number: number): TimestampedComment[];
+  // Records `head` as a head of a hand-off PR the owner approved (approvedHeadComment). live: commentOnPullRequest.
+  recordApprovedHead(number: number, head: string): void;
+  // The head of PR `number` once GitHub has merged main into `expectedHead`, if GitHub made it. live: headAfterBranchUpdate.
+  headAfterUpdate(number: number, expectedHead: string): UpdatedHead;
 };
 
 export const liveFollowUpGitHub: FollowUpGitHub = {
@@ -396,6 +435,9 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   pullRequestBodyEdits: (number) => pullRequestBodyEdits(number),
   followsHandOffs: () => isDefaultQueueScope(activeQueueScope()),
   repositoryOwner: () => repositoryOwnerLogin(),
+  pullRequestComments: (number) => issueComments(number),
+  recordApprovedHead: (number, head) => commentOnPullRequest(number, approvedHeadComment(head)),
+  headAfterUpdate: (number, expectedHead) => headAfterBranchUpdate(number, expectedHead),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the
@@ -544,6 +586,7 @@ export function sweepPullRequests(
         handOffApproval(pr, {
           pullRequestEvents: eventsOfPr,
           pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
+          pullRequestComments: (number) => github.pullRequestComments(number),
           isOwner: github.isOwner,
           repositoryOwner: () => github.repositoryOwner(),
         }, host),
@@ -584,7 +627,7 @@ export function sweepPullRequests(
       const waitingThreads = countHumanThreads(thin.threads);
       if (waitingThreads > 0 || answered > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered });
       const decision = decide(thin, now, github.isOwner);
-      followUp(thin, decision, github, log, outcomes);
+      followUp(thin, decision, github, log, outcomes, subject);
       if (decision.action === "needs-pass") {
         needsPass.push(pr.number);
         passes.push(passTarget(thin, subject, decision.reasons));
@@ -652,6 +695,22 @@ function passTarget(pr: SweepPullRequest, subject: SweepSubject, reasons: string
   return { ...common, issueNumber: subject.issueNumber };
 }
 
+// A branch update the host asked GitHub for is a push the owner's label must still cover: the new head is recorded as approved
+// when GitHub's own merge of main made it. Anything else, or a failed record, only logs: the approval then lapses until the
+// owner re-adds the label, which fails closed.
+function recordUpdatedHead(pr: SweepPullRequest, github: FollowUpGitHub, log: (line: string) => void): void {
+  try {
+    const updated = github.headAfterUpdate(pr.number, pr.headRefOid);
+    if ("problem" in updated) {
+      log(`  ⚠ PR #${pr.number}: ${updated.problem}, so its ${FOLLOW_UP_LABEL} approval lapses until the owner adds the label again`);
+      return;
+    }
+    github.recordApprovedHead(pr.number, updated.head);
+  } catch (error) {
+    log(`  ⚠ PR #${pr.number}: couldn't record the updated head as approved, so its ${FOLLOW_UP_LABEL} approval lapses until the owner adds the label again: ${error}`);
+  }
+}
+
 // Carries out one PR's decision and logs it, recording an updated branch in
 // the run report once GitHub has accepted the update.
 function followUp(
@@ -660,6 +719,7 @@ function followUp(
   github: FollowUpGitHub,
   log: (line: string) => void,
   outcomes: OutcomeReport,
+  subject: SweepSubject,
 ): void {
   switch (decision.action) {
     case "request-review":
@@ -670,6 +730,7 @@ function followUp(
       github.updateBranch(pr.number, pr.headRefOid);
       outcomes.record({ kind: "pr", number: pr.number, outcome: "updated", detail: "was only behind main" });
       log(`  ⤴ PR #${pr.number} (${pr.headRefName}) was only behind main: updated it on GitHub`);
+      if (subject.kind === "hand-off") recordUpdatedHead(pr, github, log);
       return;
     case "needs-pass":
       log(`  ⚑ PR #${pr.number} needs a follow-up pass: ${decision.reasons.join("; ")}`);

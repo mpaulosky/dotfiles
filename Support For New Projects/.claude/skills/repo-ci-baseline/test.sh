@@ -478,6 +478,17 @@ for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' 'opene
 done
 grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
   || fail "SESSION_REPLY_MARKER in lib/config.mts must be the marker docs/PROCESS.md tells a session to end its replies with"
+# The record-head job of the Owned sandcastle.yml posts the comment lib/follow-up.mts#approvedHeadOf reads, from the label event's head.
+sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
+head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
+[[ -n "$head_marker" ]] || fail "lib/config.mts must export APPROVED_HEAD_MARKER as a one-line string"
+grep -qF -- "body=\"$head_marker \$HEAD_SHA -->" "$sandcastle_yml" \
+  || fail "sandcastle.yml's record-head comment must open with '$head_marker \$HEAD_SHA -->' (APPROVED_HEAD_MARKER)"
+grep -qE '^  pull_request_target:$' "$sandcastle_yml" || fail "sandcastle.yml must record the approved head on pull_request_target: a pull_request run uses the workflow file of the PR's own branch, with the secrets"
+grep -qF "github.event.label.name == 'sandcastle:follow-up'" "$sandcastle_yml" || fail "sandcastle.yml's record-head job must run only for the sandcastle:follow-up label"
+grep -qF 'github.event.sender.login == github.repository_owner' "$sandcastle_yml" || fail "sandcastle.yml's record-head job must run only for the repository owner's label"
+grep -A1 '^  pull_request:$' "$sandcastle_yml" | grep -qF 'types: [unlabeled]' \
+  || fail "sandcastle.yml's pull_request trigger must stay unlabeled only: the owner's label is recorded on pull_request_target"
 if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then
   fail "the Seed .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
 fi

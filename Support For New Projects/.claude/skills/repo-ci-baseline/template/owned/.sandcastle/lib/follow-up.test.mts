@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BranchRefs } from "./branches.mts";
 import {
+  APPROVED_HEAD_MARKER,
   COPILOT_REVIEWER,
   FOLLOW_UP_LABEL,
   FOLLOW_UP_REPLY_MARKER,
@@ -11,12 +12,14 @@ import {
   SESSION_REPLY_MARKER,
   type QueueScope,
 } from "./config.mts";
-import type { ClosedPullRequest, ContentEdit, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent } from "./github.mts";
+import type { ClosedPullRequest, ContentEdit, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent, TimestampedComment, UpdatedHead } from "./github.mts";
 import {
   closedPrHandBackComment,
   closedWithoutMerging,
   decide,
   followUpPhase,
+  approvedHeadComment,
+  approvedHeadOf,
   handOffApproval,
   isCopilot,
   liveFollowUpGitHub,
@@ -581,6 +584,10 @@ function stubGithub({
   reviewThreads,
   pullRequestBodyEdits = () => [],
   followsHandOffs = true,
+  pullRequestComments,
+  updatedHead = { head: "b".repeat(40) },
+  headAfterUpdateThrows = false,
+  recordThrows = false,
 }: {
   prs?: SweepPullRequest[];
   closed?: ClosedPullRequest[];
@@ -597,6 +604,12 @@ function stubGithub({
   pullRequestBodyEdits?: (number: number) => ContentEdit[];
   // Whether this run follows hand-off PRs; true unless a test says otherwise.
   followsHandOffs?: boolean;
+  // A PR's comments, read for the heads the host recorded as approved; by default each PR has the host's record of its own head.
+  pullRequestComments?: (number: number) => TimestampedComment[];
+  // What GitHub's update of a branch made of the head (host.headAfterUpdate), and whether reading it or recording it throws.
+  updatedHead?: UpdatedHead;
+  headAfterUpdateThrows?: boolean;
+  recordThrows?: boolean;
 } = {}) {
   const reviewThreadCalls: number[] = [];
   const requestedReviews: string[] = [];
@@ -604,6 +617,8 @@ function stubGithub({
   const handBacks: { issueNumber: number; reason: string; body: string }[] = [];
   const closedCalls: string[] = [];
   const addedPrLabels: { number: number; label: string }[] = [];
+  const recordedHeads: { number: number; head: string }[] = [];
+  const headUpdates: { number: number; expectedHead: string }[] = [];
   const github: FollowUpGitHub = {
     hostLogin: () => host,
     openPullRequests: () => prs,
@@ -622,6 +637,18 @@ function stubGithub({
     pullRequestBodyEdits,
     followsHandOffs: () => followsHandOffs,
     repositoryOwner: () => OWNER,
+    pullRequestComments: (number) =>
+      pullRequestComments?.(number) ??
+      prs.filter((candidate) => candidate.number === number).map((candidate) => headRecord(candidate.headRefOid, host)),
+    recordApprovedHead: (number, head) => {
+      if (recordThrows) throw new Error("gh pr comment failed");
+      recordedHeads.push({ number, head });
+    },
+    headAfterUpdate: (number, expectedHead) => {
+      headUpdates.push({ number, expectedHead });
+      if (headAfterUpdateThrows) throw new Error("gh api failed");
+      return updatedHead;
+    },
     reviewThreads: (number) => {
       reviewThreadCalls.push(number);
       if (reviewThreads !== undefined) return reviewThreads(number);
@@ -635,7 +662,7 @@ function stubGithub({
       }));
     },
   };
-  return { github, requestedReviews, updatedBranches, handBacks, closedCalls, addedPrLabels, reviewThreadCalls };
+  return { github, requestedReviews, updatedBranches, handBacks, closedCalls, addedPrLabels, reviewThreadCalls, recordedHeads, headUpdates };
 }
 
 // A thread of review comments, the first by `author`. `byBot` marks a bot's
@@ -864,6 +891,9 @@ describe("sweepPullRequests", () => {
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
       repositoryOwner: () => "owner",
+      pullRequestComments: () => [],
+      recordApprovedHead: () => {},
+      headAfterUpdate: () => ({ problem: "not stubbed" }),
     };
 
     sweepPullRequests(github, () => {}, NOW);
@@ -1171,6 +1201,9 @@ describe("sweepPullRequests", () => {
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
       repositoryOwner: () => "owner",
+      pullRequestComments: () => [],
+      recordApprovedHead: () => {},
+      headAfterUpdate: () => ({ problem: "not stubbed" }),
     };
     const lines: string[] = [];
 
@@ -1338,6 +1371,9 @@ describe("sweepPullRequests", () => {
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
       repositoryOwner: () => "owner",
+      pullRequestComments: () => [],
+      recordApprovedHead: () => {},
+      headAfterUpdate: () => ({ problem: "not stubbed" }),
     };
     const outcomes = new OutcomeReport();
 
@@ -1670,6 +1706,9 @@ describe("threadStanding and a session's replies", () => {
 
 const OWNER = "owner";
 const LABELLED_AT = "2026-10-09T10:00:00Z";
+// The head of a hand-off PR when the owner labelled it, and one pushed after.
+const HEAD_SHA = "a".repeat(40);
+const PUSHED_SHA = "d".repeat(40);
 
 // A PR the owner opened on a chore/ branch with no Sandcastle marker, labelled sandcastle:follow-up.
 function handOffPr(overrides: Partial<SweepPullRequest> = {}): SweepPullRequest {
@@ -1687,6 +1726,15 @@ function handOffPr(overrides: Partial<SweepPullRequest> = {}): SweepPullRequest 
 
 const labelledBy = (actor: string | null, createdAt = LABELLED_AT): IssueEvent => ({ event: "labeled", actor, label: FOLLOW_UP_LABEL, createdAt });
 const ownerLabelled: IssueEvent[] = [labelledBy(OWNER)];
+
+// Five minutes after LABELLED_AT, when the Sandcastle workflow has posted its record.
+const RECORDED_AT = "2026-10-09T10:05:00Z";
+// The comment that records `head` as approved, posted by `author` at `createdAt`.
+const headRecord = (head: string, author: string, createdAt = RECORDED_AT): TimestampedComment => ({
+  author,
+  createdAt,
+  body: approvedHeadComment(head),
+});
 
 const sweepContext = (overrides: Partial<SweepContext> = {}): SweepContext => ({
   inScope: IN_SCOPE,
@@ -1897,12 +1945,38 @@ describe("sweepSubject", () => {
   });
 });
 
+describe("approvedHeadComment and approvedHeadOf", () => {
+  it("round-trip a head", () => {
+    assert.equal(approvedHeadOf(approvedHeadComment("0123456789abcdef0123456789abcdef01234567")), "0123456789abcdef0123456789abcdef01234567");
+  });
+
+  it("open with the marker the Sandcastle workflow also posts, which the Template's test.sh pins", () => {
+    assert.ok(approvedHeadComment("a".repeat(40)).startsWith(`${APPROVED_HEAD_MARKER} `));
+  });
+
+  for (const [what, body] of [
+    ["a short hash", `${APPROVED_HEAD_MARKER} ${"a".repeat(39)} -->`],
+    ["an upper-case hash", `${APPROVED_HEAD_MARKER} ${"A".repeat(40)} -->`],
+    ["a hash with more after it", `${APPROVED_HEAD_MARKER} ${"a".repeat(41)} -->`],
+    ["no marker", "a".repeat(40)],
+    ["a marker that isn't first", `Hello\n${approvedHeadComment("a".repeat(40))}`],
+    ["an unclosed marker", `${APPROVED_HEAD_MARKER} ${"a".repeat(40)}`],
+  ] as const) {
+    it(`read no head from ${what}`, () => {
+      assert.equal(approvedHeadOf(body), undefined);
+    });
+  }
+});
+
 describe("handOffApproval", () => {
   const HOST = "the-host";
-  const PR = { number: 201, author: OWNER };
-  function github(overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; isOwner?: (login: string | null) => boolean | undefined } = {}) {
+  const PR = { number: 201, author: OWNER, headRefOid: HEAD_SHA };
+  function github(
+    overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; comments?: TimestampedComment[]; isOwner?: (login: string | null) => boolean | undefined } = {},
+  ) {
     const eventReads: number[] = [];
     const editReads: number[] = [];
+    const commentReads: number[] = [];
     const stub = {
       pullRequestEvents: (number: number) => {
         eventReads.push(number);
@@ -1912,10 +1986,14 @@ describe("handOffApproval", () => {
         editReads.push(number);
         return overrides.edits ?? [];
       },
+      pullRequestComments: (number: number) => {
+        commentReads.push(number);
+        return overrides.comments ?? [headRecord(HEAD_SHA, HOST)];
+      },
       isOwner: overrides.isOwner ?? ownerIs(OWNER),
       repositoryOwner: () => OWNER,
     };
-    return { stub, eventReads, editReads };
+    return { stub, eventReads, editReads, commentReads };
   }
   const reasonOf = (result: Approval) => (result.approved ? "" : result.reason);
 
@@ -1933,24 +2011,24 @@ describe("handOffApproval", () => {
   });
 
   it("approves a PR the host opened, whoever the owner check says it is", () => {
-    assert.deepEqual(handOffApproval({ number: 201, author: HOST }, github().stub, HOST), { approved: true });
+    assert.deepEqual(handOffApproval({ ...PR, author: HOST }, github().stub, HOST), { approved: true });
   });
 
   it("matches the author with the repository's owner or the host without regard to case", () => {
-    assert.equal(handOffApproval({ number: 201, author: OWNER.toUpperCase() }, github().stub, HOST).approved, true);
-    assert.equal(handOffApproval({ number: 201, author: HOST.toUpperCase() }, github().stub, HOST).approved, true);
+    assert.equal(handOffApproval({ ...PR, author: OWNER.toUpperCase() }, github().stub, HOST).approved, true);
+    assert.equal(handOffApproval({ ...PR, author: HOST.toUpperCase() }, github().stub, HOST).approved, true);
   });
 
   it("doesn't approve a PR a collaborator with push access opened, even with the owner's label", () => {
     const stub = github({ isOwner: () => true }).stub;
-    const result = handOffApproval({ number: 201, author: "a-collaborator" }, stub, HOST);
+    const result = handOffApproval({ ...PR, author: "a-collaborator" }, stub, HOST);
 
     assert.equal(result.approved, false);
     assert.match(reasonOf(result), /a-collaborator opened it/);
   });
 
   it("doesn't approve a PR whose author is gone", () => {
-    const result = handOffApproval({ number: 201, author: null }, github().stub, HOST);
+    const result = handOffApproval({ ...PR, author: null }, github().stub, HOST);
 
     assert.equal(result.approved, false);
     assert.match(reasonOf(result), /a deleted account opened it/);
@@ -1979,7 +2057,7 @@ describe("handOffApproval", () => {
   it("doesn't read the PR's events when its author already rules it out", () => {
     const { stub, eventReads } = github();
 
-    handOffApproval({ number: 201, author: "a-stranger" }, stub, HOST);
+    handOffApproval({ ...PR, author: "a-stranger" }, stub, HOST);
 
     assert.deepEqual(eventReads, []);
   });
@@ -2036,7 +2114,9 @@ describe("handOffApproval", () => {
     const events = [labelledBy(OWNER, "2026-10-09T10:00:00Z"), labelledBy(OWNER, "2026-10-09T12:00:00Z")];
     const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "2026-10-09T11:00:00Z" }];
 
-    assert.deepEqual(handOffApproval(PR, github({ events, edits }).stub, HOST), { approved: true });
+    const comments = [headRecord(HEAD_SHA, HOST, "2026-10-09T12:00:05Z")];
+
+    assert.deepEqual(handOffApproval(PR, github({ events, edits, comments }).stub, HOST), { approved: true });
   });
 
   it("ignores an edit by a stranger made before the label", () => {
@@ -2051,7 +2131,100 @@ describe("handOffApproval", () => {
 
     assert.equal(handOffApproval(PR, github({ edits, isOwner }).stub, HOST).approved, false);
   });
+  describe("the head", () => {
+    const refused = (result: Approval) => {
+      assert.equal(result.approved, false);
+      return reasonOf(result);
+    };
+
+    it("approves the head the host recorded when the label was added", () => {
+      assert.deepEqual(handOffApproval(PR, github({ comments: [headRecord(HEAD_SHA, HOST)] }).stub, HOST), { approved: true });
+    });
+
+    it("refuses a head pushed after the label, which no record covers", () => {
+      const reason = refused(handOffApproval({ ...PR, headRefOid: PUSHED_SHA }, github({ comments: [headRecord(HEAD_SHA, HOST)] }).stub, HOST));
+
+      assert.match(reason, /isn't one the-host recorded as approved/);
+      assert.match(reason, /remove and re-add sandcastle:follow-up/);
+    });
+
+    it("refuses when nothing was recorded, such as before the workflow has posted its record", () => {
+      refused(handOffApproval(PR, github({ comments: [] }).stub, HOST));
+    });
+
+    it("approves a head the host pushed and recorded after the label", () => {
+      const comments = [headRecord(HEAD_SHA, HOST), headRecord(PUSHED_SHA, HOST, "2026-10-09T12:00:00Z")];
+
+      assert.deepEqual(handOffApproval({ ...PR, headRefOid: PUSHED_SHA }, github({ comments }).stub, HOST), { approved: true });
+    });
+
+    it("refuses a head the host pushed but couldn't record", () => {
+      refused(handOffApproval({ ...PR, headRefOid: PUSHED_SHA }, github({ comments: [headRecord(HEAD_SHA, HOST)] }).stub, HOST));
+    });
+
+    it("refuses a force-pushed head", () => {
+      refused(handOffApproval({ ...PR, headRefOid: "c".repeat(40) }, github({ comments: [headRecord(HEAD_SHA, HOST), headRecord(PUSHED_SHA, HOST, "2026-10-09T12:00:00Z")] }).stub, HOST));
+    });
+
+    it("doesn't count a record anyone but the host posted", () => {
+      refused(handOffApproval(PR, github({ comments: [headRecord(HEAD_SHA, "a-collaborator"), headRecord(HEAD_SHA, OWNER)] }).stub, HOST));
+    });
+
+    it("counts the host's login whatever its case", () => {
+      assert.deepEqual(handOffApproval(PR, github({ comments: [headRecord(HEAD_SHA, HOST.toUpperCase())] }).stub, HOST), { approved: true });
+    });
+
+    it("doesn't count a record posted before the label was added", () => {
+      refused(handOffApproval(PR, github({ comments: [headRecord(HEAD_SHA, HOST, "2026-10-09T09:59:59Z")] }).stub, HOST));
+    });
+
+    it("counts a record posted in the same second as the label", () => {
+      assert.deepEqual(handOffApproval(PR, github({ comments: [headRecord(HEAD_SHA, HOST, LABELLED_AT)] }).stub, HOST), { approved: true });
+    });
+
+    it("doesn't count a record with a time that doesn't parse", () => {
+      refused(handOffApproval(PR, github({ comments: [headRecord(HEAD_SHA, HOST, "garbage")] }).stub, HOST));
+    });
+
+    it("measures a record against the label added last, so a label added again drops the heads recorded before it", () => {
+      const events = [labelledBy(OWNER), labelledBy(OWNER, "2026-10-09T13:00:00Z")];
+      const before = [headRecord(HEAD_SHA, HOST), headRecord(PUSHED_SHA, HOST, "2026-10-09T12:00:00Z")];
+
+      refused(handOffApproval({ ...PR, headRefOid: PUSHED_SHA }, github({ events, comments: before }).stub, HOST));
+      assert.deepEqual(
+        handOffApproval({ ...PR, headRefOid: PUSHED_SHA }, github({ events, comments: [...before, headRecord(PUSHED_SHA, HOST, "2026-10-09T13:00:05Z")] }).stub, HOST),
+        { approved: true },
+      );
+    });
+
+    it("counts a record only when the comment opens with the marker, not when it quotes one", () => {
+      const quoted: TimestampedComment = { author: HOST, createdAt: RECORDED_AT, body: `> ${approvedHeadComment(HEAD_SHA)}` };
+      const later: TimestampedComment = { author: HOST, createdAt: RECORDED_AT, body: `Done.\n${approvedHeadComment(HEAD_SHA)}` };
+
+      refused(handOffApproval(PR, github({ comments: [quoted, later] }).stub, HOST));
+    });
+
+    it("compares the head whatever its case", () => {
+      assert.deepEqual(handOffApproval({ ...PR, headRefOid: HEAD_SHA.toUpperCase() }, github().stub, HOST), { approved: true });
+    });
+
+    it("reads the comments only when the label itself counts", () => {
+      const { stub, commentReads } = github({ events: [] });
+
+      refused(handOffApproval(PR, stub, HOST));
+      assert.deepEqual(commentReads, []);
+    });
+
+    it("reads the PR's comments for the PR's own number, once", () => {
+      const { stub, commentReads } = github();
+
+      handOffApproval(PR, stub, HOST);
+
+      assert.deepEqual(commentReads, [201]);
+    });
+  });
 });
+
 
 describe("sweepPullRequests and hand-off PRs", () => {
   const behind = (overrides: Partial<SweepPullRequest> = {}) => handOffPr({ mergeStateStatus: "BEHIND", ...overrides });
@@ -2072,6 +2245,68 @@ describe("sweepPullRequests and hand-off PRs", () => {
       lines.some((line) => line.includes("PR #201 is followed up as a hand-off") && line.includes(FOLLOW_UP_LABEL)),
       lines.join("\n"),
     );
+  });
+
+  describe("recording the head a branch update makes", () => {
+    const oldHead = "a".repeat(40);
+    const newHead = "b".repeat(40);
+
+    it("records the head GitHub's update made, for the hand-off PR it updated", () => {
+      const { updatedBranches, headUpdates, recordedHeads, github } = stubGithub(owned({ prs: [behind()], updatedHead: { head: newHead } }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(updatedBranches, [{ number: 201, expectedHeadSha: oldHead }]);
+      assert.deepEqual(headUpdates, [{ number: 201, expectedHead: oldHead }]);
+      assert.deepEqual(recordedHeads, [{ number: 201, head: newHead }]);
+    });
+
+    it("records nothing, and says the approval lapses, when the new head isn't GitHub's own merge", () => {
+      const { recordedHeads, github } = stubGithub(owned({ prs: [behind()], updatedHead: { problem: "bbbbbbb isn't a commit GitHub made and signed itself" } }));
+      const lines: string[] = [];
+
+      sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+      assert.deepEqual(recordedHeads, []);
+      assert.ok(lines.some((line) => line.includes("PR #201") && line.includes("isn't a commit GitHub made") && line.includes("approval lapses")), lines.join("\n"));
+    });
+
+    for (const [what, options] of [
+      ["reading the new head", { headAfterUpdateThrows: true }],
+      ["posting the record", { recordThrows: true }],
+    ] as const) {
+      it(`logs, and goes on, when ${what} fails`, () => {
+        const { updatedBranches, github } = stubGithub(owned({ prs: [behind(), behind({ number: 202, id: "PR_202", headRefName: "chore/other" })], ...options }));
+        const lines: string[] = [];
+
+        const result = sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+        assert.equal(updatedBranches.length, 2);
+        assert.deepEqual(result.needsPass, []);
+        assert.ok(lines.some((line) => line.includes("PR #201") && line.includes("approval lapses")), lines.join("\n"));
+      });
+    }
+
+    it("records nothing for a Sandcastle issue's PR, which no label approved", () => {
+      const { updatedBranches, headUpdates, recordedHeads, github } = stubGithub({ prs: [pr({ mergeStateStatus: "BEHIND" })] });
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.equal(updatedBranches.length, 1);
+      assert.deepEqual(headUpdates, []);
+      assert.deepEqual(recordedHeads, []);
+    });
+
+    it("sweeps nothing, and updates nothing, for a hand-off PR whose head isn't recorded", () => {
+      const { updatedBranches, headUpdates, github } = stubGithub(owned({ prs: [behind()], pullRequestComments: () => [] }));
+      const lines: string[] = [];
+
+      sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+      assert.deepEqual(updatedBranches, []);
+      assert.deepEqual(headUpdates, []);
+      assert.ok(lines.some((line) => line.includes("PR #201 isn't swept") && line.includes("recorded as approved")), lines.join("\n"));
+    });
   });
 
   it("asks Copilot again for a hand-off PR that has no review, as it does for a Sandcastle PR", () => {
@@ -2219,7 +2454,13 @@ describe("sweepPullRequests and hand-off PRs", () => {
   it("leaves alone a PR a stranger renamed after the owner's label, and follows it again once the owner re-adds the label", () => {
     const renamed: IssueEvent = { event: "renamed", actor: "a-stranger", label: null, createdAt: "2026-10-09T11:00:00Z" };
     const before = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [...ownerLabelled, renamed] }));
-    const after = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [...ownerLabelled, renamed, labelledBy(OWNER, "2026-10-09T12:00:00Z")] }));
+    const after = stubGithub(
+      owned({
+        prs: [behind()],
+        pullRequestEvents: () => [...ownerLabelled, renamed, labelledBy(OWNER, "2026-10-09T12:00:00Z")],
+        pullRequestComments: () => [headRecord("a".repeat(40), HOST, "2026-10-09T12:00:05Z")],
+      }),
+    );
 
     sweepPullRequests(before.github, () => {}, NOW);
     sweepPullRequests(after.github, () => {}, NOW);

@@ -90,6 +90,24 @@ export function budgetMinutesFrom(env: Record<string, string | undefined>): numb
   return Number(value);
 }
 
+// What one run does: every phase (`full`, the default), or only the follow-up sweep and passes, once
+// (`follow-up`, lib/follow-up-run.mts).
+export type RunMode = "full" | "follow-up";
+
+// Thrown by runModeFrom for a SANDCASTLE_MODE that names no run mode.
+export class RunModeError extends Error {}
+
+// SANDCASTLE_MODE from `env`: unset or blank gives "full". Otherwise it must be "full" or "follow-up"
+// after trim. Anything else ("followup") throws RunModeError rather than falling back to a full run,
+// which builds issues, when the workflow asked for a follow-up-only one. Allowed in GitHub Actions too,
+// unlike the scope variables: the workflow sets it.
+export function runModeFrom(env: Record<string, string | undefined>): RunMode {
+  const value = env.SANDCASTLE_MODE?.trim();
+  if (!value || value === "full") return "full";
+  if (value === "follow-up") return "follow-up";
+  throw new RunModeError(`SANDCASTLE_MODE must be "full" or "follow-up", not "${value}".`);
+}
+
 // How many issues one intake run judges. A malformed or truncated <intake>
 // block costs every verdict in it, so a large backlog is judged in several
 // runs of this many issues each.

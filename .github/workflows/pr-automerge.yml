@@ -5,8 +5,9 @@ name: PR Auto-Merge
 # pass, a reviewer has reviewed the PR's head commit, and every review thread
 # is resolved. The reviewer is Copilot, or Claude as its backup: Claude
 # Review (claude-review.yml) posts a review under github-actions[bot] whose
-# body starts with CLAUDE_MARKER, and counts only for a head whose Copilot
-# review is the quota note below. The main ruleset asks Copilot to review
+# body starts with CLAUDE_MARKER, and counts only for a head Copilot can't
+# review: its review is the quota note below, or it has no review of it and no
+# request pending (a dropped request, mpaulosky/dotfiles#318). The main ruleset asks Copilot to review
 # each push but doesn't require its review, so merging on green alone would
 # usually land a PR before that review arrives. Each trigger below is a
 # moment one of those conditions can become true; the job re-checks all of
@@ -28,7 +29,12 @@ name: PR Auto-Merge
 # Template, where its own PR is reviewed, then arrives with the next round
 # (ADR 0002).
 # When Copilot's quota is used up it answers a head with a note instead of a
-# review, and no review of that head is coming. The run then calls in Claude
+# review, and no review of that head is coming. Often it answers nothing: GitHub
+# drops the request, so the head has neither a review nor a pending request,
+# and COPILOT_GRACE_MS after its checks finished the run treats it the same
+# way (mpaulosky/dotfiles#318; a sweep notices it, so allow up to an hour more).
+# If Copilot does review the head, Claude's review of it stops counting and the
+# label comes off. The run then calls in Claude
 # Review by adding review:claude (mpaulosky/dotfiles#190), on the terms land.sh uses
 # (github/landing.py): every other check on the head passed, Claude has
 # reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
@@ -234,6 +240,11 @@ jobs:
             // test_copilot_no_review.py holds the three together). Copilot's
             // "wasn't able to review any files" (every file excluded) still counts.
             const COPILOT_NO_REVIEW = /^[ \t\r\n]*Copilot was unable to review/;
+            // A head Copilot has not reviewed and has no pending request for
+            // (GitHub drops the request once the Copilot code review budget is
+            // used up, with no note) is given this long after its checks finish
+            // before Claude is called in (mpaulosky/dotfiles#318).
+            const COPILOT_GRACE_MS = 10 * 60 * 1000;
             // How many merges from main in a row a reviewed commit can sit
             // under and still count as reviewed: each one costs a few API
             // calls, and a PR that chased main further gets a fresh review.
@@ -309,6 +320,7 @@ jobs:
                                      name
                                      status
                                      conclusion
+                                     completedAt
                                      isRequired(pullRequestNumber: $number)
                                    }
                                    ... on StatusContext {
@@ -320,6 +332,17 @@ jobs:
                                  }
                                }
                              }
+                           }
+                         }
+                       }
+                       # Copilot's pending request: with none and no review of the
+                       # head, GitHub dropped it (mpaulosky/dotfiles#318).
+                       reviewRequests(first: 20) {
+                         nodes {
+                           requestedReviewer {
+                             __typename
+                             ... on Bot { login }
+                             ... on User { login }
                            }
                          }
                        }
@@ -889,14 +912,25 @@ jobs:
               });
               const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
               // Claude is Copilot's backup only: its review of a commit
-              // qualifies when Copilot's quota note is on that same commit.
+              // qualifies when Copilot's quota note is on that same commit, or
+              // when Copilot never reviewed the commit and has no request
+              // pending for it (a dropped request, mpaulosky/dotfiles#318). Once Copilot really
+              // reviews a commit, Claude's review of it stops counting.
+              const copilotReviewedCommits = new Set(copilotReviews.map((review) => review.commit?.oid).filter(Boolean));
+              const copilotPendingOnHead = copilotPending(pr);
               const declinedCommits = new Set(
                 pr.copilotReviews.nodes
                   .filter((review) => COPILOT_NO_REVIEW.test(review.body ?? ""))
                   .map((review) => review.commit?.oid)
                   .filter(Boolean)
               );
-              const backupReviews = claudeReviews.filter((review) => declinedCommits.has(review.commit?.oid));
+              const backupReviews = claudeReviews.filter((review) => {
+                const oid = review.commit?.oid;
+                if (copilotReviewedCommits.has(oid)) {
+                  return false;
+                }
+                return declinedCommits.has(oid) || !(oid === pr.headRefOid && copilotPendingOnHead);
+              });
               const reviewed = [...copilotReviews, ...backupReviews]
                 .map((review) => review.commit)
                 .filter(Boolean);
@@ -1072,18 +1106,60 @@ jobs:
               }
             }
 
-            // Copilot answered the head with its quota note, so no review of
-            // it is coming: add review:claude, on land.sh's terms (see the
-            // header). Called only for a head no review covers, below the cap.
+            // Whether Copilot's review of the head is still on its way.
+            function copilotPending(pr) {
+              return (pr.reviewRequests?.nodes ?? []).some((request) => /copilot/i.test(request.requestedReviewer?.login ?? ""));
+            }
+
+            // Whether the head's checks all finished at least COPILOT_GRACE_MS
+            // ago (the newest finish counts; none finished or one still
+            // running is not yet).
+            function graceElapsed(pr) {
+              const contexts = headCommit(pr)?.statusCheckRollup?.contexts;
+              if (!contexts) {
+                return false;
+              }
+              let newest = -Infinity;
+              for (const [name, check] of newestChecks(contexts)) {
+                if (name === SELF_CHECK || CLAUDE_CHECKS.includes(name)) {
+                  continue;
+                }
+                const finished = check.__typename === "StatusContext" ? check.createdAt : check.completedAt;
+                if ((check.__typename === "CheckRun" && check.status !== "COMPLETED") || !finished) {
+                  return false;
+                }
+                newest = Math.max(newest, Date.parse(finished));
+              }
+              return Number.isFinite(newest) && Date.now() - newest >= COPILOT_GRACE_MS;
+            }
+
+            // Copilot can't review the head, so no review of it is coming:
+            // its quota note is on the head, or it has no review of the head
+            // and no pending request and the grace period since the checks
+            // finished is over (a dropped request, mpaulosky/dotfiles#318). Add review:claude,
+            // on land.sh's terms (see the header). Called only for a head no
+            // review covers, below the cap.
             // Never throws on a PR event, where a failure would be a failed
             // check on the PR; a sweep stops on an error that holds for the
             // whole run, as an update does.
             async function callInClaude(pullNumber, pr, claudeReviews) {
-              const declined = pr.copilotReviews.nodes.some((review) => {
+              const noted = pr.copilotReviews.nodes.some((review) => {
                 return review.commit?.oid === pr.headRefOid && COPILOT_NO_REVIEW.test(review.body ?? "");
               });
-              if (!declined) {
-                return;
+              if (!noted) {
+                const copilotReviewed = pr.copilotReviews.nodes.some((review) => {
+                  return review.commit?.oid === pr.headRefOid && !COPILOT_NO_REVIEW.test(review.body ?? "");
+                });
+                if (copilotReviewed || copilotPending(pr)) {
+                  return;
+                }
+                if (!graceElapsed(pr)) {
+                  core.info(
+                    `Not calling in Claude for PR #${pullNumber} yet: Copilot has not reviewed ${pr.headRefOid} and has no ` +
+                    `request pending, but the head's checks have not been finished for ${COPILOT_GRACE_MS / 60000} minutes.`
+                  );
+                  return;
+                }
               }
               // Claude Review skips Dependabot's PRs (its merge-from-main job's
               // condition), so the label would bring no review: a notice, as no
@@ -1145,7 +1221,7 @@ jobs:
               }
               if (process.env.HAS_RELEASE_PR_PAT !== "true") {
                 core.notice(
-                  `PR #${pullNumber}: Copilot couldn't review ${head} (its quota is used up). RELEASE_PR_PAT is not ` +
+                  `PR #${pullNumber}: Copilot couldn't review ${head} (a quota note, or no review and no request pending). RELEASE_PR_PAT is not ` +
                   `set, and a label added with GITHUB_TOKEN starts no workflow, so add ${CLAUDE_LABEL} by hand.`
                 );
                 return;
@@ -1174,7 +1250,7 @@ jobs:
                   return;
                 }
                 await patClient.rest.issues.addLabels({ owner, repo, issue_number: pullNumber, labels: [CLAUDE_LABEL] });
-                core.info(`Copilot couldn't review ${head} (its quota is used up): added ${CLAUDE_LABEL} to PR #${pullNumber}, so Claude Review reviews it.`);
+                core.info(`Copilot couldn't review ${head} (a quota note, or no review and no request pending): added ${CLAUDE_LABEL} to PR #${pullNumber}, so Claude Review reviews it.`);
                 if (noneRequired) {
                   // A notice, as the rulesets may be missing a required check.
                   // Only now: it says Claude was called in (mpaulosky/dotfiles#233).

@@ -80,7 +80,7 @@ def reviewed_by_filter(reviews):
     return set(run.stdout.split("\n")) - {""}
 
 
-def test_claude_review_counts_in_the_jq_filter_only_with_the_note_on_the_same_commit():
+def test_claude_review_counts_in_the_jq_filter_with_or_without_the_note():
     claude = "<!-- claude-review -->\nNo findings."
     reviews = [
         {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "noted"},
@@ -89,4 +89,5 @@ def test_claude_review_counts_in_the_jq_filter_only_with_the_note_on_the_same_co
         {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "noted"},
         {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "elsewhere"},
     ]
-    assert reviewed_by_filter(reviews) == {"noted"}
+    # Claude's review only keeps a commit from being reviewed twice, so a note isn't needed (#318).
+    assert reviewed_by_filter(reviews) == {"noted", "bare", "other"}

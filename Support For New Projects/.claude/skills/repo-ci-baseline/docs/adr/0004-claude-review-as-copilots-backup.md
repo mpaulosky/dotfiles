@@ -14,6 +14,17 @@ PR Auto-Merge accepts a review of the head by either reviewer, holds on either's
 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 The review body starts with `<!-- claude-review -->`: that marker, not the login alone, is how the gate tells Claude's review from anything else posted as `github-actions[bot]`.
 
+## Update (#318): a dropped request counts too
+
+The first version counted Claude's review only where Copilot's quota note was on the same commit, on the reasoning that silence can't be told from a Copilot review that is merely late.
+That left the commonest case stranded: once the budget is used up GitHub usually drops the request with no note, so a PR sat with no review until a person added `review:claude`
+and merged it by hand (dotfiles#325, #326).
+Now a head Copilot can't review is one with its note, or with no Copilot review and no pending Copilot request.
+PR Auto-Merge waits `COPILOT_GRACE_MS` (10 minutes) after the head's checks finished before it calls in Claude for the second kind,
+and `land.sh` does so as soon as its own request for the head read back as dropped.
+A Claude review of a commit Copilot really reviews stops counting, and the label comes off (#271). The cost is a small window where a Copilot review that is merely very late arrives after Claude's;
+its threads still hold the merge, and the 10-minute grace keeps that window short.
+
 ## Considered Options
 
 - **Replace Copilot with Claude**: rejected because rounds the size of #82's come from working out the Baseline process; once work is back on one project, Copilot's budget covers it at no cost.

@@ -1069,7 +1069,8 @@ export function issueLabels(
   ) as string[];
 }
 
-// The numbers of the open issues carrying `label`. As with
+// The numbers of the issues carrying `label`, open or closed: a hand-off pass can label the closed issue its branch
+// names (lib/follow-up-pass.mts#runPass), and a run killed meanwhile must not leave the label there. As with
 // listSandcastleIssues, the cap sits far above any real queue.
 export function issuesWithLabel(
   label: string,
@@ -1078,7 +1079,7 @@ export function issuesWithLabel(
 ): number[] {
   return JSON.parse(
     ghWithStderr(run, [
-      "issue", "list", "--repo", repo, "--state", "open", "--label", label, "--limit", "1000", "--json", "number", "--jq", "[.[].number]",
+      "issue", "list", "--repo", repo, "--state", "all", "--label", label, "--limit", "1000", "--json", "number", "--jq", "[.[].number]",
     ]),
   ) as number[];
 }

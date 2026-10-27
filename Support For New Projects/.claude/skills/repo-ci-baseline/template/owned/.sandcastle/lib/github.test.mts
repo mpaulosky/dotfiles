@@ -704,13 +704,13 @@ describe("issue labels", () => {
     assert.deepEqual(calls[0]!.args, ["issue", "view", "150", "--repo", "o/r", "--json", "labels", "--jq", "[.labels[].name]"]);
   });
 
-  it("lists the open issues carrying a label", () => {
+  it("lists the issues carrying a label, closed ones too", () => {
     const { calls, run } = recordingGh(["[71,150]\n"]);
 
     const numbers = issuesWithLabel("sandcastle:building", run, "o/r");
 
     assert.deepEqual(numbers, [71, 150]);
-    assert.deepEqual(calls[0]!.args.slice(0, 8), ["issue", "list", "--repo", "o/r", "--state", "open", "--label", "sandcastle:building"]);
+    assert.deepEqual(calls[0]!.args.slice(0, 8), ["issue", "list", "--repo", "o/r", "--state", "all", "--label", "sandcastle:building"]);
   });
 });
 

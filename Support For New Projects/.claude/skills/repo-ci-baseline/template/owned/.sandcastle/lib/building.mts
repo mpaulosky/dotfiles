@@ -38,7 +38,7 @@ export function labelIsStale(
 
 // What clearStaleBuildingLabels needs from GitHub; tests pass a stub.
 export type BuildingGitHub = {
-  // Numbers of the open issues currently carrying `label`.
+  // Numbers of the issues, open or closed, currently carrying `label`.
   issuesWithLabel(label: string): number[];
   // The issue's own "labeled"/"unlabeled" timeline events.
   labelTimeline(issueNumber: number): TimelineLabelEvent[];

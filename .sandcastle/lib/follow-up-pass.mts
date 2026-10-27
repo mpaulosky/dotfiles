@@ -768,8 +768,9 @@ export async function runPass(
   // branch (branchFor reuses it), and the gate holds an issue back only for its own label. That claim is best effort:
   // a branch number need not name an issue (a deleted one, a typo, the PR's own number), and a label read or add that
   // fails must not keep the PR from being followed up. A build already holding the issue still makes the pass skip.
-  // An add that fails after the labels were read stays remembered for releaseAllBuildingLabels, which retries it (and
-  // warns) each round until it ages out.
+  // A failed add is undone at once (claimBuildingLabel); if the undo fails too, the issue stays remembered and
+  // releaseAllBuildingLabels retries it each round, warning if it fails again, until the claim ages out. Startup clears a
+  // stale label from a closed issue too (clearStaleBuildingLabels).
   type Claim = { name: string; mark: () => boolean; unmark: () => void; bestEffort?: true };
   const claims: Claim[] =
     target.handOff !== undefined

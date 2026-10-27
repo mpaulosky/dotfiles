@@ -426,6 +426,8 @@ export function threadStanding(
 ): ThreadStanding {
   if (thread.resolved) return "resolved";
   // The host's own reply, or a session's: the owner's token is the owner's login, which needn't be the host's.
+  // The marker counts anywhere in the body, by design: a host or owner comment that quotes it is taken for a session's
+  // reply too. That is the trade for a rule that needs no parsing of the body.
   const hostReply = (comment: ReviewThread["comments"][number] | undefined) =>
     comment !== undefined &&
     ((comment.author === hostLogin && comment.body.startsWith(FOLLOW_UP_REPLY_MARKER)) ||

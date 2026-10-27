@@ -125,7 +125,7 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   a person adds and removes it, and `SANDCASTLE_LABEL` can't name it as a queue.
 - **A session's reply.** A Claude Code session posts under the owner's token and ends every reply with `<!-- claude-session -->` (`SESSION_REPLY_MARKER`,
   [PROCESS.md](../template/owned/docs/PROCESS.md)). A thread whose last bot, host or owner comment carries it, posted under the host's login or another owner's, counts as answered,
-  and the follow-up role is not shown it.
+  and the follow-up role is not shown it. The marker counts anywhere in the comment's body, so a host or owner comment that quotes it is taken for a session's reply too.
 - **The prompt.** The follow-up role gets the pull request's number, title and description in the place of an issue's, under a note saying it is not an issue.
 - **The session guidance** is the Seed `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
   which Apply can't edit. It is the repo's once written, so Apply never overwrites it.

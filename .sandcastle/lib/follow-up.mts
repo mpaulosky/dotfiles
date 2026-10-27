@@ -15,7 +15,7 @@
 // ---------------------------------------------------------------------------
 
 import { discardClosedWork, isIssueBranch, type BranchRefs } from "./branches.mts";
-import { COPILOT_REREQUEST_AFTER_MS, FOLLOW_UP_REPLY_MARKER, PR_MARKER, withoutOwnCheck } from "./config.mts";
+import { BUILDING_LABEL, COPILOT_REREQUEST_AFTER_MS, FOLLOW_UP_REPLY_MARKER, PR_MARKER, withoutOwnCheck } from "./config.mts";
 import {
   addPullRequestLabel,
   closedPullRequests,
@@ -109,15 +109,24 @@ export function isSandcastlePullRequest(pr: PullRequestIdentity, host: string): 
 }
 
 // The first reason the sweep skips `pr`, checked in this order: a fork, not
-// into main, not an issue branch, the issue isn't open and in scope, a draft,
-// labelled sandcastle:needs-human, not the host's, no PR_MARKER, or
-// truncated. Undefined when none applies, so the sweep decides from it.
-export function sweepSkipReason(pr: SweepPullRequest, inScope: ReadonlySet<number>, host: string): string | undefined {
+// into main, not an issue branch, the issue isn't open and in scope, the
+// issue is being built (`building`: a full run builds it and answers its PR
+// itself, so a follow-up-only run beside it must not start a pass on the same
+// branch), a draft, labelled sandcastle:needs-human, not the host's, no
+// PR_MARKER, or truncated. Undefined when none applies, so the sweep decides
+// from it.
+export function sweepSkipReason(
+  pr: SweepPullRequest,
+  inScope: ReadonlySet<number>,
+  host: string,
+  building: ReadonlySet<number> = new Set(),
+): string | undefined {
   if (pr.isCrossRepository !== false) return "it's from a fork";
   if (pr.baseRefName !== "main") return `it's into ${pr.baseRefName}, not main`;
   const issueNumber = issueNumberOf(pr.headRefName);
   if (issueNumber === undefined) return `${pr.headRefName} isn't an issue branch`;
   if (!inScope.has(issueNumber)) return `#${issueNumber} isn't an open Sandcastle issue`;
+  if (building.has(issueNumber)) return `#${issueNumber} is labelled ${BUILDING_LABEL}, so a run is building it`;
   if (pr.isDraft) return "it's a draft";
   if (hasLabel(pr, NEEDS_HUMAN)) return `it's labelled ${NEEDS_HUMAN}`;
   if (pr.author !== host) return `${pr.author ?? "a deleted account"} opened it, not ${host}`;
@@ -125,6 +134,10 @@ export function sweepSkipReason(pr: SweepPullRequest, inScope: ReadonlySet<numbe
   if (pr.truncated) return "it has more reviews, threads or checks than one read holds";
   return undefined;
 }
+
+// What a caller can switch off in sweepPullRequests. handBackClosed (default true): hand back an issue
+// whose latest PR closed without merging. A follow-up-only run turns it off.
+export type SweepOptions = { handBackClosed?: boolean };
 
 // What the sweep does about one PR, decided by `decide`.
 export type SweepDecision =
@@ -388,17 +401,22 @@ export type SweepResult = { needsPass: number[]; passes: PassTarget[] };
 // report shows the latest sweep's view. Once that's done, hands
 // back any in-scope issue, not labelled sandcastle:needs-human and with no
 // open PR, whose latest Sandcastle PR closed without merging
-// (closedWithoutMerging), each in its own try/catch too.
+// (closedWithoutMerging), each in its own try/catch too, unless
+// `options.handBackClosed` is false (a follow-up-only run, which leaves that
+// to the full run beside it and doesn't even read the closed PRs). A PR whose
+// issue is labelled sandcastle:building is skipped (sweepSkipReason).
 export function sweepPullRequests(
   github: FollowUpGitHub = liveFollowUpGitHub,
   log: (line: string) => void = console.log,
   now: number = Date.now(),
   outcomes: OutcomeReport = outcomeReport,
   waiting: WaitingPrReport = waitingPrReport,
+  options: SweepOptions = {},
 ): SweepResult {
   const host = github.hostLogin();
   const issues = github.inScopeIssues();
   const inScope = new Set(issues.map((issue) => issue.number));
+  const building = new Set(issues.filter((issue) => hasLabel(issue, BUILDING_LABEL)).map((issue) => issue.number));
   const openPrs = github.openPullRequests();
   const needsPass: number[] = [];
   const passes: PassTarget[] = [];
@@ -412,7 +430,7 @@ export function sweepPullRequests(
 
   for (const pr of openPrs) {
     try {
-      const skip = sweepSkipReason(pr, inScope, host);
+      const skip = sweepSkipReason(pr, inScope, host, building);
       if (skip !== undefined) {
         log(`  · PR #${pr.number} isn't swept: ${skip}.`);
         continue;
@@ -461,6 +479,7 @@ export function sweepPullRequests(
   const withOpenPr = new Set(
     openPrs.filter((pr) => pr.isCrossRepository === false).flatMap((pr) => issueNumberOf(pr.headRefName) ?? []),
   );
+  if (options.handBackClosed === false) return { needsPass, passes };
   const candidates = issues.filter((issue) => !hasLabel(issue, NEEDS_HUMAN) && !withOpenPr.has(issue.number));
   if (candidates.length === 0) return { needsPass, passes };
   const closed = github.closedPullRequests(host);

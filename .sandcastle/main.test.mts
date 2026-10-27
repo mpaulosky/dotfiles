@@ -411,3 +411,114 @@ describe("main.mts's file overlap wiring", () => {
     assert.doesNotMatch(mainMts.slice(loop), /planRound\(ready\)/);
   });
 });
+
+// The follow-up-only run (SANDCASTLE_MODE=follow-up): a run that answers its PRs' reviews and red checks once, with no
+// intake, builds or rounds, while a full run is busy building.
+describe("main.mts's run mode wiring", () => {
+  it("resolves the run mode before protectHostGit() and ensureLabels(), so a bad value exits like a bad scope", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const modeCall = mainMts.indexOf("runModeFrom(");
+
+    assert.notEqual(modeCall, -1, "main.mts doesn't call runModeFrom(");
+    assert.ok(modeCall < mainMts.indexOf("protectHostGit()"), "main.mts doesn't resolve the run mode before protectHostGit()");
+    assert.ok(modeCall < mainMts.indexOf("ensureLabels()"), "main.mts doesn't resolve the run mode before ensureLabels()");
+  });
+
+  it("catches RunModeError and exits 2 with its message, as it does for a bad queue scope", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const handler = mainMts.slice(mainMts.indexOf("RunModeError"));
+
+    assert.match(handler, /instanceof RunModeError/);
+    assert.match(handler.slice(handler.indexOf("instanceof RunModeError"), handler.indexOf("instanceof RunModeError") + 200), /process\.exit\(2\)/);
+  });
+
+  it("runs followUpOnlyRun() once startup has finished, and before the round loop", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const startedUp = mainMts.indexOf("startedUp = true;");
+    const runCall = mainMts.indexOf("followUpOnlyRun(");
+    const loop = mainMts.indexOf("for (let iteration = 1;");
+
+    assert.notEqual(runCall, -1, "main.mts doesn't call followUpOnlyRun(");
+    assert.ok(startedUp < runCall && runCall < loop, "main.mts doesn't run the follow-up-only run after startup and before the round loop");
+  });
+
+  it("leaves the follow-up-only run to the try that writes the run report and catches an UncountedStopError", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const tryStart = mainMts.indexOf("try {\n  const envFile");
+    const catchStart = mainMts.indexOf("} catch (error) {\n  if (!(error instanceof UncountedStopError))");
+
+    assert.ok(tryStart < mainMts.indexOf("followUpOnlyRun(") && mainMts.indexOf("followUpOnlyRun(") < catchStart);
+  });
+
+  it("branches on the mode it read, and takes the full run's phases only for a full run", () => {
+    const mainMts = read(".sandcastle/main.mts");
+
+    assert.match(mainMts, /if \(runMode === "follow-up"\) \{\s*await followUpOnlyRun\(/);
+    // Without this gate a follow-up-only run would go on to intake, planning and builds after its sweep.
+    assert.match(mainMts, /for \(let iteration = 1; runMode === "full" && iteration <= MAX_ITERATIONS; iteration\+\+\)/);
+  });
+
+  it("states the mode in the run's log, as it does the queue and the time budget", () => {
+    assert.match(read(".sandcastle/main.mts"), /console\.log\(`Mode: /);
+  });
+
+  it("documents SANDCASTLE_MODE=follow-up in its usage note", () => {
+    assert.match(usageNote(), /SANDCASTLE_MODE=follow-up/);
+  });
+});
+
+// A bad SANDCASTLE_MODE must stop the run before it touches git, gh or a sandbox, like a bad queue scope.
+describe("main.mts entry point with a bad SANDCASTLE_MODE", () => {
+  it("exits non-zero naming the variable and touches nothing", () => {
+    const binDir = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-mode-bin-")));
+    const stubLog = join(binDir, "stub-calls.log");
+    try {
+      for (const name of ["gh", "git", "docker"]) {
+        const path = join(binDir, name);
+        writeFileSync(path, `#!/bin/sh\necho "$0 $*" >> "${stubLog}"\nexit 1\n`);
+        chmodSync(path, 0o755);
+      }
+      const env = {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        HOME: process.env.HOME ?? "",
+        SANDCASTLE_ISSUE: "1",
+        SANDCASTLE_MODE: "followup",
+      };
+      let status: number | null = null;
+      let stderr = "";
+
+      try {
+        execFileSync("node", ["--import", "tsx", ".sandcastle/main.mts"], {
+          cwd: repoRoot,
+          env,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (error) {
+        status = (error as { status: number | null }).status;
+        stderr = String((error as { stderr?: unknown }).stderr ?? "");
+      }
+
+      assert.equal(status, 2, `expected main.mts to exit 2; stderr:\n${stderr}`);
+      assert.match(stderr, /SANDCASTLE_MODE/);
+      assert.equal(existsSync(stubLog), false, "main.mts shelled out to gh, git or docker before exiting");
+    } finally {
+      rmSync(binDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+});
+
+// Like the other SANDCASTLE_* variables, the mode reaches the sandbox if it's set in this file, and the host reads it from
+// its own environment (the workflow's env or the command line), so it stays commented out.
+describe(".sandcastle/.env.example mode", () => {
+  it("mentions SANDCASTLE_MODE only on commented-out lines", () => {
+    const envExample = read(".sandcastle/.env.example");
+
+    assert.match(envExample, /SANDCASTLE_MODE/);
+    for (const line of envExample.split("\n")) {
+      if (line.includes("SANDCASTLE_MODE")) {
+        assert.match(line.trim(), /^#/, `expected "${line}" to be commented out`);
+      }
+    }
+  });
+});

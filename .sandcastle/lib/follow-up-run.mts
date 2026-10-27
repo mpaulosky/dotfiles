@@ -9,8 +9,11 @@
 // sandcastle:building (lib/follow-up.mts#sweepSkipReason).
 // ---------------------------------------------------------------------------
 
+import { fetchMain } from "./branches.mts";
+import { followUpPassPhase } from "./follow-up-pass.mts";
+import { followUpPhase, sweepPullRequests, type PassTarget, type SweepResult } from "./follow-up.mts";
 import type { SandcastleIssue } from "./github.mts";
-import type { PassTarget, SweepResult } from "./follow-up.mts";
+import { loadQueue, startQueueRound } from "./queue.mts";
 
 // What the follow-up-only run needs from the rest of Sandcastle; tests pass a stub.
 export type FollowUpRunSteps = {
@@ -22,28 +25,33 @@ export type FollowUpRunSteps = {
   runPasses(targets: readonly PassTarget[], issues: readonly SandcastleIssue[], base: string): Promise<unknown>;
 };
 
+// The live steps. The sweep leaves the hand-back of a closed PR's issue to the full run beside this one:
+// two runs doing it would comment twice, and this run has no build to start from the issue afterwards.
 export const liveFollowUpRunSteps: FollowUpRunSteps = {
-  startRound: () => {
-    throw new Error("Not implemented");
-  },
-  sweep: () => {
-    throw new Error("Not implemented");
-  },
-  fetchMain: () => {
-    throw new Error("Not implemented");
-  },
-  queue: () => {
-    throw new Error("Not implemented");
-  },
-  runPasses: () => {
-    throw new Error("Not implemented");
-  },
+  startRound: startQueueRound,
+  sweep: () =>
+    followUpPhase(() =>
+      sweepPullRequests(undefined, undefined, undefined, undefined, undefined, { handBackClosed: false }),
+    ),
+  fetchMain: () => fetchMain(),
+  queue: loadQueue,
+  runPasses: followUpPassPhase,
 };
 
-// Sweeps the open PRs once and runs a follow-up pass on each one that needs it.
+// Sweeps the open PRs once and runs a follow-up pass on each one that needs it, then returns. It never loops
+// back for a second round: the next scheduled run sweeps again. An UncountedStopError from a pass (the time
+// budget or Claude's usage limit) propagates, and main.mts's catch ends the run cleanly on it.
 export async function followUpOnlyRun(
-  _steps: FollowUpRunSteps = liveFollowUpRunSteps,
-  _log: (line: string) => void = console.log,
+  steps: FollowUpRunSteps = liveFollowUpRunSteps,
+  log: (line: string) => void = console.log,
 ): Promise<SweepResult> {
-  throw new Error("Not implemented");
+  steps.startRound();
+  const result = steps.sweep();
+  if (result.passes.length === 0) {
+    log("Nothing to do: no PR needs a follow-up pass.");
+    return result;
+  }
+  const base = steps.fetchMain();
+  await steps.runPasses(result.passes, steps.queue(), base);
+  return result;
 }

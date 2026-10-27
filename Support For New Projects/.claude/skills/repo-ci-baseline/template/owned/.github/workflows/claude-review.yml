@@ -63,7 +63,9 @@ name: Claude Review
 # otherwise let the stale review join the concurrency group last and cancel
 # the newer one. Not when the newer head only merges main into this one: an
 # app or Copilot may have pushed it, and this job skips their runs, so this
-# head is reviewed instead, which covers the merge.
+# head is reviewed instead if it carries Copilot's note (the gate counts a
+# review of a commit that is no longer the head only then), which covers the
+# merge.
 #
 # Each review also gets the PR's resolved Copilot and Claude Review threads,
 # and doesn't raise a resolved thread's problem again unless the code has

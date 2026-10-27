@@ -138,7 +138,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   in a job of its own so a skipped run can't cancel a review in progress; the two copies must agree.
   It reviews anyway when the base's `pr-automerge.yml` lacks the rule (a re-Apply PR's `main` has the old one),
   and skips a run whose head is no longer the PR's, unless the newer head only merges `main` into it
-  and no run for it got past the job's condition (an app's or Copilot's push of that merge starts no review, so the older head is reviewed, which covers the merge).
+  and no run for it got past the job's condition (an app's or Copilot's push of that merge starts no review, so the older head is reviewed
+  if it carries Copilot's note, which covers the merge; otherwise the run skips it with a notice).
   That review and its post take concurrency groups keyed by the older head, so they can't cancel the newer head's review,
   and a Claude Review run's completion evaluates every open PR holding its commit, not only the PR whose head it is.
 - **Bringing a ready PR up to date.** A PR that passes every check above but is `BEHIND` (and `MERGEABLE`, every required check's newest run passed,

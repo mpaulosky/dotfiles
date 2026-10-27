@@ -3,9 +3,10 @@
 # Lints the Markdown, YAML, workflow and shell files changed since origin/main
 # (every unpushed commit, with the same configs as CI), checks that the
 # branch's diff passed the local review (/pre-push-review), that
-# .github/copilot-instructions.md matches the repo's code-review skill (when it
-# has one), runs the repo's own checks in .github/ci/gate-checks.sh, builds the solution, then runs each test
-# project CI's discover_tests.py finds under tests/. Exits non-zero on the first
+# .github/copilot-instructions.md matches the repo's code-review skill (when
+# it has one), runs the repo's own checks in .github/ci/gate-checks.sh, builds
+# the solution, then runs each test project CI's discover_tests.py finds under
+# tests/. Exits non-zero on the first
 # failing gate. GATE_SKIP_REVIEW=1 skips the review check, for gate runs before
 # the push (the review's own, and while iterating), never for a push.
 set -euo pipefail

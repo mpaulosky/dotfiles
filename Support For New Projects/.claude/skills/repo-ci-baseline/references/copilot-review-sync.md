@@ -31,8 +31,8 @@ and a generic skill would fail their check the moment it replaced them.
 ## Migrating
 
 Blazor-Server and auth0-management-app have both files, byte-identical, and a "Copilot review instructions sync" step in their own
-`.github/ci/gate-checks.sh`. Their re-Apply replaces the workflow and script with the Template's, which differ only in the workflow's header
-comment and in the script's skip for a missing skill, its line-ending and front-matter handling. Apply never edits a Seed, so their Adapt deletes the
-step from `gate-checks.sh` by hand, since `scripts/gate.sh` runs the check now; until then it runs twice.
+`.github/ci/gate-checks.sh`. Their re-Apply replaces the workflow and script with the Template's, which differ in the workflow's header
+comment and its `bash` prefix, and in the script's skip for a missing skill, its argument check, its line-ending and front-matter handling. Apply never edits a Seed, so their Adapt deletes the
+step from `gate-checks.sh` by hand, since `scripts/gate.sh` runs the check now; until then it runs a second time whenever the skill, the instructions file or the script changed.
 
 The check isn't a required status check: a repo that hasn't re-Applied yet has no such job, and requiring it would block that repo's PRs.

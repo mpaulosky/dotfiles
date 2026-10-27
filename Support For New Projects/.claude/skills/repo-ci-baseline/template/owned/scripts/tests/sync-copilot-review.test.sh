@@ -100,8 +100,9 @@ check "an edited skill fails --check" status_is 1
 
 # The same from a folder inside the repository.
 run_in_subfolder
+check "from a subfolder: writing succeeds" status_is 0
+run_in_subfolder --check
 check "from a subfolder: --check passes" status_is 0
-run_in_subfolder
 echo "hand edit" >> "$(target)"
 run_in_subfolder --check
 check "from a subfolder: a hand edit fails --check" status_is 1
@@ -120,7 +121,7 @@ run
 check "a CRLF skill is written without carriage returns" not grep -q $'\r' "$(target)"
 check "a CRLF skill gives the file an LF skill gives" target_is "$expected_header"$'\n\n# Rules\n\n- Check the thing.'
 # A CRLF working copy of the generated file still matches.
-sed -i 's/$/\r/' "$(target)"
+awk '{ printf "%s\r\n", $0 }' "$(target)" > "$work/crlf" && command mv -f "$work/crlf" "$(target)"
 run --check
 check "a CRLF copy of the generated file passes --check" status_is 0
 

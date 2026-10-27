@@ -165,6 +165,7 @@ describe("liveSweep", () => {
       reviewThreads: () => [],
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
     return { github, closedCalls, handBacks };
   }
@@ -214,7 +215,7 @@ describe("liveSweep", () => {
 });
 
 describe("followUpOnlyRun and a hand-off PR", () => {
-  const handOffTarget = {
+  const handOffTarget: PassTarget = {
     number: 201,
     id: "PR_201",
     headRefName: "chore/tidy-the-build",
@@ -222,7 +223,7 @@ describe("followUpOnlyRun and a hand-off PR", () => {
     handOff: { title: "chore: Tidy the build", body: "Tidies the build scripts." },
     reasons: ["it has merge conflicts"],
     conflicted: true,
-  } as PassTarget;
+  };
 
   it("runs the passes for a sweep that flagged only a hand-off PR, though the queue is empty", async () => {
     const { steps, calls, passCalls } = stubSteps({ sweep: { needsPass: [201], passes: [handOffTarget] }, queue: [] });

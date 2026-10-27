@@ -39,7 +39,7 @@ import {
   SESSION_REPLY_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import { threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
+import { issueNumberOf, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
   failedCheckLogs,
@@ -97,10 +97,10 @@ export type PromptThread = {
   comments: { author: string | null; body: string }[];
 };
 
-// Whether `comment` is a Claude Code session's: posted under the host login (the owner's token) and carrying
-// SESSION_REPLY_MARKER, which a session ends every reply with.
-function isSessionComment(comment: ReviewThread["comments"][number], hostLogin: string): boolean {
-  return comment.author === hostLogin && comment.body.includes(SESSION_REPLY_MARKER);
+// Whether `comment` is a Claude Code session's: posted under the owner's login (the owner's token, which is the host
+// login or another owner's) and carrying SESSION_REPLY_MARKER, which a session ends every reply with.
+function isSessionComment(comment: ReviewThread["comments"][number], hostLogin: string, isOwner: IsOwner): boolean {
+  return (comment.author === hostLogin || isOwner(comment.author) === true) && comment.body.includes(SESSION_REPLY_MARKER);
 }
 
 // Sorts a PR's open review threads for the follow-up role (runPass's step
@@ -144,10 +144,10 @@ export function threadsForRole(
           // A comment whose author's ownership can't be confirmed is dropped
           // too: only what's known to be a bot's or the owner's reaches the
           // role.
-          // A session's comment is the host login's, so it isn't the owner's
+          // A session's comment is under the owner's login, so it isn't the owner's
           // words either (SESSION_REPLY_MARKER).
           comments: thread.comments
-            .filter((comment) => !isSessionComment(comment, hostLogin))
+            .filter((comment) => !isSessionComment(comment, hostLogin, isOwner))
             .filter((comment) => comment.byBot || isOwner(comment.author) === true)
             .map((comment) => ({ author: comment.author, body: comment.body })),
         });
@@ -763,21 +763,36 @@ export async function runPass(
   // Claimed as a build claims it, so two runs never pass on one PR or share
   // its worktree, and a build of the same issue stands aside meanwhile. A
   // hand-off PR has no issue to carry the claim, so the PR carries it.
-  const claim =
+  // A hand-off PR on an issue's branch (feature/{n}-…) claims that issue too: a build of the issue pushes to the same
+  // branch (branchFor reuses it), and the gate holds an issue back only for its own label.
+  const claims: { name: string; mark: () => boolean; unmark: () => void }[] =
     target.handOff !== undefined
-      ? { name: `PR #${target.number}`, mark: () => host.markPullRequestBuilding(target.number), unmark: () => host.unmarkPullRequestBuilding(target.number) }
-      : { name: `#${issue.number}`, mark: () => host.markBuilding(issue.number), unmark: () => host.unmarkBuilding(issue.number) };
-  if (!claim.mark()) return skip(`another run marked ${claim.name} ${BUILDING_LABEL}`);
+      ? [{ name: `PR #${target.number}`, mark: () => host.markPullRequestBuilding(target.number), unmark: () => host.unmarkPullRequestBuilding(target.number) }]
+      : [{ name: `#${issue.number}`, mark: () => host.markBuilding(issue.number), unmark: () => host.unmarkBuilding(issue.number) }];
+  const branchIssue = target.handOff !== undefined ? issueNumberOf(target.headRefName) : undefined;
+  if (branchIssue !== undefined) {
+    claims.push({ name: `#${branchIssue}`, mark: () => host.markBuilding(branchIssue), unmark: () => host.unmarkBuilding(branchIssue) });
+  }
+  const held: typeof claims = [];
+  const releaseHeld = () => {
+    for (const claim of held.splice(0).reverse()) {
+      try {
+        claim.unmark();
+      } catch (error) {
+        console.error(`  ⚠ ${claim.name}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`);
+      }
+    }
+  };
   try {
+    for (const claim of claims) {
+      if (!claim.mark()) return skip(`another run marked ${claim.name} ${BUILDING_LABEL}`);
+      held.push(claim);
+    }
     const plan = planPass(target, base, host, skip, true);
     if (!("forRole" in plan)) return plan;
     return await passOnMarkedIssue(target, issue, base, host, plan);
   } finally {
-    try {
-      claim.unmark();
-    } catch (error) {
-      console.error(`  ⚠ ${claim.name}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`);
-    }
+    releaseHeld();
   }
 }
 

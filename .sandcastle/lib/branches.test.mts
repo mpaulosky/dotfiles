@@ -133,10 +133,19 @@ describe("isHandOffBranch", () => {
       "feature/5-add-search", "fix/12-a-b", "hotfix/1-x", "chore/tidy-up", "chore/1-x", "chore/", "feature/5-", "feature/5",
       "Feature/5-x", "claude/x", "dependabot/x", "docs/release-notes", "main", "feature/5-x\n", "fix/4-$(x)", "fix/4-a b", "",
       "feature/0-zero", "hotfix/007-bond", "chore/a-1-b", "chore/a_b", "fix/9-A",
+      "chore/a\t", "chore/a\r", "feature/5-x ", "chore/ ",
     ];
 
     for (const branch of corpus) assert.equal(isHandOffBranch(branch), passesBranchStandard(branch), JSON.stringify(branch));
   });
+
+  // Not in the corpus above: bash's [a-z] and [0-9] take letters and digits of other scripts in some locales, so the
+  // script's answer depends on the machine. A hand-off branch stays ASCII, whatever the script says.
+  for (const branch of ["fix/4-é", "feature/٣-x", "fix/4-ａ", "chore/é", "chore/a\u00a0b"]) {
+    it(`refuses ${JSON.stringify(branch)}, whatever the locale's [a-z] takes`, () => {
+      assert.equal(isHandOffBranch(branch), false);
+    });
+  }
 
   it("accepts every issue branch isIssueBranch accepts, since the branch standard does", () => {
     for (const branch of ["feature/4-add-search", "fix/4-stop-the-crash", "hotfix/4-stop-the-crash"]) {

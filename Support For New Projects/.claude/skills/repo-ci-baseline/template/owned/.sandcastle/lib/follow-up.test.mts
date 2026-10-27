@@ -611,6 +611,7 @@ function stubGithub({
     addPullRequestLabel: (number, label) => void addedPrLabels.push({ number, label }),
     pullRequestBodyEdits,
     followsHandOffs: () => followsHandOffs,
+    repositoryOwner: () => OWNER,
     reviewThreads: (number) => {
       reviewThreadCalls.push(number);
       if (reviewThreads !== undefined) return reviewThreads(number);
@@ -852,6 +853,7 @@ describe("sweepPullRequests", () => {
       reviewThreads: () => [],
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
 
     sweepPullRequests(github, () => {}, NOW);
@@ -1158,6 +1160,7 @@ describe("sweepPullRequests", () => {
       reviewThreads: () => [],
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
     const lines: string[] = [];
 
@@ -1324,6 +1327,7 @@ describe("sweepPullRequests", () => {
       reviewThreads: () => [],
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
     const outcomes = new OutcomeReport();
 
@@ -1778,6 +1782,14 @@ describe("sweepSubject", () => {
       assert.deepEqual(subjectOf(handOffPr({ author: HOST, headRefName: BRANCH, body: "Closes #42" })).result, { subject: { kind: "hand-off" } });
     });
 
+    it("leaves a Sandcastle issue's PR to its own run when the issue is outside this run's scope, label or not", () => {
+      const sandcastles = pr({ number: 77, headRefName: "feature/77-other-scope", labels: [FOLLOW_UP_LABEL] });
+      const { result, approvalReads } = subjectOf(sandcastles);
+
+      assert.ok("skip" in result);
+      assert.equal(approvalReads(), 0);
+    });
+
     it("takes the label in any case, as GitHub matches labels", () => {
       assert.deepEqual(subjectOf(handOffPr({ labels: ["Sandcastle:Follow-Up"] })).result, { subject: { kind: "hand-off" } });
     });
@@ -1884,6 +1896,7 @@ describe("handOffApproval", () => {
         return overrides.edits ?? [];
       },
       isOwner: overrides.isOwner ?? ownerIs(OWNER),
+      repositoryOwner: () => OWNER,
     };
     return { stub, eventReads, editReads };
   }
@@ -1903,21 +1916,35 @@ describe("handOffApproval", () => {
   });
 
   it("approves a PR the host opened, whoever the owner check says it is", () => {
-    const stub = github({ isOwner: () => false }).stub;
-
-    assert.deepEqual(handOffApproval({ number: 201, author: HOST }, { ...stub, isOwner: (login) => (login === OWNER ? true : false) }, HOST), { approved: true });
+    assert.deepEqual(handOffApproval({ number: 201, author: HOST }, github().stub, HOST), { approved: true });
   });
 
-  it("doesn't approve a PR someone else opened, even with the owner's label", () => {
-    const result = handOffApproval({ number: 201, author: "a-stranger" }, github().stub, HOST);
+  it("matches the author with the repository's owner or the host without regard to case", () => {
+    assert.equal(handOffApproval({ number: 201, author: OWNER.toUpperCase() }, github().stub, HOST).approved, true);
+    assert.equal(handOffApproval({ number: 201, author: HOST.toUpperCase() }, github().stub, HOST).approved, true);
+  });
+
+  it("doesn't approve a PR a collaborator with push access opened, even with the owner's label", () => {
+    const stub = github({ isOwner: () => true }).stub;
+    const result = handOffApproval({ number: 201, author: "a-collaborator" }, stub, HOST);
 
     assert.equal(result.approved, false);
-    assert.match(reasonOf(result), /a-stranger opened it/);
+    assert.match(reasonOf(result), /a-collaborator opened it/);
   });
 
-  it("doesn't approve a PR whose author is gone or can't be checked", () => {
-    assert.equal(handOffApproval({ number: 201, author: null }, github().stub, HOST).approved, false);
-    assert.equal(handOffApproval(PR, github({ isOwner: () => undefined }).stub, HOST).approved, false);
+  it("doesn't approve a PR whose author is gone", () => {
+    const result = handOffApproval({ number: 201, author: null }, github().stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /a deleted account opened it/);
+  });
+
+  it("doesn't read the PR's events when its author already rules it out", () => {
+    const { stub, eventReads } = github();
+
+    handOffApproval({ number: 201, author: "a-stranger" }, stub, HOST);
+
+    assert.deepEqual(eventReads, []);
   });
 
   it("doesn't approve a label added by someone who isn't the owner", () => {

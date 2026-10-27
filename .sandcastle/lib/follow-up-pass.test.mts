@@ -4,7 +4,7 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { createCheckedSandbox } from "./build.mts";
 import { BUILDING_LABEL, FOLLOW_UP_MARKER, FOLLOW_UP_PASS_CAP, FOLLOW_UP_REPLY_MARKER, SESSION_REPLY_MARKER } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import type { CheckState, PassTarget } from "./follow-up.mts";
+import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
   followUpPassPhase,
@@ -56,7 +56,7 @@ const sampleSecretMatch: SecretMatch = {
 
 const issue: SandcastleIssue = { number: ISSUE_NUMBER, title: "Fix the widget", body: "", labels: ["Sandcastle"], comments: [] };
 
-function passTarget(overrides: Partial<PassTarget> = {}): PassTarget {
+function passTarget(overrides: Partial<Extract<PassTarget, { issueNumber: number }>> = {}): PassTarget {
   return {
     number: PR_NUMBER,
     id: "PR_7",
@@ -66,7 +66,7 @@ function passTarget(overrides: Partial<PassTarget> = {}): PassTarget {
     reasons: ["1 unresolved bot thread(s)"],
     conflicted: false,
     ...overrides,
-  } as PassTarget;
+  };
 }
 
 // A red check (completed, not green) with an Actions run behind it; tests
@@ -2143,8 +2143,8 @@ describe("runPass's merge of main in a sandbox from createCheckedSandbox", () =>
 
 // A pull request the repository owner handed to Sandcastle with the sandcastle:follow-up label has no issue: the pass
 // claims the PR itself, and the prompt shows the PR's own title and description.
-const HAND_OFF_BRANCH = "feature/60-owner-pr";
-const handOffTarget = (overrides: Partial<PassTarget> = {}): PassTarget =>
+const HAND_OFF_BRANCH = "chore/owner-pr";
+const handOffTarget = (overrides: Partial<Extract<PassTarget, { handOff: HandOffTarget }>> = {}): PassTarget =>
   ({
     number: PR_NUMBER,
     id: "PR_7",
@@ -2154,9 +2154,13 @@ const handOffTarget = (overrides: Partial<PassTarget> = {}): PassTarget =>
     reasons: ["1 unresolved bot thread(s)"],
     conflicted: false,
     ...overrides,
-  }) as PassTarget;
+  });
 
 describe("handOffIssue", () => {
+  it("refuses a target that wasn't handed off", () => {
+    assert.throws(() => handOffIssue(passTarget()), /was not handed off/);
+  });
+
   it("takes the PR's number as the issue number and its title as the title", () => {
     const view = handOffIssue(handOffTarget());
 
@@ -2214,6 +2218,31 @@ describe("runPass on a hand-off PR", () => {
     await runPass(handOffTarget(), view(), BASE, passHost).catch(() => undefined);
 
     assert.deepEqual(calls.markPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkBuilding, []);
+  });
+
+  it("also claims the issue a hand-off PR's issue branch names, and releases both after the pass", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.markPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.markBuilding, [60]);
+    assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkBuilding, [60]);
+  });
+
+  it("skips and gives the PR claim back when a build already holds the issue its branch names", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, markBuildingResult: false });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "skipped");
+    assert.equal(outcome.kind === "skipped" ? outcome.reason : "", "another run marked #60 " + BUILDING_LABEL);
+    assert.deepEqual(calls.createSandbox, []);
     assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
     assert.deepEqual(calls.unmarkBuilding, []);
   });
@@ -2334,6 +2363,14 @@ describe("threadsForRole and a session's replies", () => {
     assert.deepEqual(forRole, []);
     assert.deepEqual(leftForHuman, []);
     assert.deepEqual(unknown, []);
+  });
+
+  it("counts a session's reply under an owner's login that isn't the host's", () => {
+    const answered = botThread({ comments: [...botThread().comments, sessionReply()] });
+
+    const { forRole } = threadsForRole([answered], isOwner, "the-app[bot]");
+
+    assert.deepEqual(forRole, []);
   });
 
   it("drops an owner thread whose last owner or host comment is a session's reply", () => {

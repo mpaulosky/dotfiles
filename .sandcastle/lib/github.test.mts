@@ -1631,6 +1631,9 @@ describe("pullRequestBodyEdits", () => {
     assert.doesNotMatch(query, /issue\(number/);
     assert.match(query, /userContentEdits/);
     assert.ok(args.includes("owner=o") && args.includes("name=r") && args.includes("number=70"));
+    const jq = args[args.indexOf("--jq") + 1]!;
+    assert.match(jq, /\.data\.repository\.pullRequest /);
+    assert.doesNotMatch(jq, /\.data\.repository\.issue/);
   });
 
   it("returns no edits for a pull request nobody has edited", () => {
@@ -1639,7 +1642,7 @@ describe("pullRequestBodyEdits", () => {
     assert.deepEqual(pullRequestBodyEdits(70, run, "o/r"), []);
   });
 
-  it("throws when the answer names no such pull request, rather than reading it as unedited", () => {
+  it("throws on an answer that isn't edit lines, rather than reading it as unedited", () => {
     const run = (() => JSON.stringify({ data: { repository: { pullRequest: null } } })) as unknown as typeof execFileSync;
 
     assert.throws(() => pullRequestBodyEdits(70, run, "o/r"), /no such pull request|pull request 70/i);

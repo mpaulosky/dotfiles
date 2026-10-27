@@ -38,6 +38,7 @@ import {
   openPullRequestsForSweep,
   pullRequestBodyEdits,
   pushAccess,
+  repositoryOwnerLogin,
   requestCopilotReview,
   reviewThreadsOf,
   signedInHostLogin,
@@ -184,7 +185,7 @@ export function sweepSubject(
   // A Sandcastle PR that is a draft, needs a human, is being built or is truncated stays skipped: the label doesn't turn it
   // into a hand-off.
   const issueNumber = issueNumberOf(pr.headRefName);
-  const isSandcastles = issueNumber !== undefined && inScope.has(issueNumber) && isSandcastlePullRequest(pr, host);
+  const isSandcastles = issueNumber !== undefined && isSandcastlePullRequest(pr, host);
   if (isSandcastles || !hasLabel(pr, FOLLOW_UP_LABEL)) return { skip: reason };
 
   if (pr.isCrossRepository !== false) return { skip: "it's from a fork" };
@@ -205,19 +206,20 @@ export function sweepSubject(
   return { subject: { kind: "hand-off" } };
 }
 
-// Whether the repository owner's sandcastle:follow-up label stands on `pr`: the owner or the host opened it, its latest
-// labeled event is the owner's, and nobody but the owner has renamed it or edited its description since
-// (lib/queue.mts#approval). The label isn't tied to the commits the owner looked at, so a PR someone else opened, whose
-// branch they can keep pushing to, never counts.
+// Whether `login` is `other`: GitHub logins are case-insensitive.
+const sameLogin = (login: string | null, other: string) => login !== null && login.toLowerCase() === other.toLowerCase();
+
+// Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
+// its latest labeled event is the owner's, and nobody but the owner has renamed it or edited its description since
+// (lib/queue.mts#approval). The label isn't tied to the commits the owner looked at, so a PR whose author is anyone
+// else, a collaborator with push access included, never counts: they could keep pushing to its branch.
 export function handOffApproval(
   pr: Pick<SweepPullRequest, "number" | "author">,
-  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner">,
+  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner" | "repositoryOwner">,
   host: string,
 ): Approval {
-  if (pr.author !== host) {
-    const isOwner = github.isOwner(pr.author);
-    if (isOwner === undefined) return { approved: false, reason: `couldn't check whether ${pr.author ?? "its author"} is the repository owner` };
-    if (!isOwner) return { approved: false, reason: `${pr.author ?? "a deleted account"} opened it, and is neither the repository owner nor ${host}` };
+  if (!sameLogin(pr.author, host) && !sameLogin(pr.author, github.repositoryOwner())) {
+    return { approved: false, reason: `${pr.author ?? "a deleted account"} opened it, and is neither the repository's owner nor ${host}` };
   }
   return approval(FOLLOW_UP_LABEL, github.pullRequestEvents(pr.number), github.pullRequestBodyEdits(pr.number), github.isOwner);
 }
@@ -369,6 +371,9 @@ export type FollowUpGitHub = {
   // Whether this run follows hand-off PRs: only one with the default queue scope does. live:
   // isDefaultQueueScope(activeQueueScope()).
   followsHandOffs(): boolean;
+  // The login of the account the repository belongs to, whom a hand-off PR's author must be (or the host). live:
+  // repositoryOwnerLogin().
+  repositoryOwner(): string;
 };
 
 export const liveFollowUpGitHub: FollowUpGitHub = {
@@ -388,6 +393,7 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   reviewThreads: (number) => reviewThreadsOf(number).threads,
   pullRequestBodyEdits: (number) => pullRequestBodyEdits(number),
   followsHandOffs: () => isDefaultQueueScope(activeQueueScope()),
+  repositoryOwner: () => repositoryOwnerLogin(),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the
@@ -418,9 +424,11 @@ export function threadStanding(
   hostLogin: string,
 ): ThreadStanding {
   if (thread.resolved) return "resolved";
+  // The host's own reply, or a session's: the owner's token is the owner's login, which needn't be the host's.
   const hostReply = (comment: ReviewThread["comments"][number] | undefined) =>
-    comment?.author === hostLogin &&
-    (comment.body.startsWith(FOLLOW_UP_REPLY_MARKER) || comment.body.includes(SESSION_REPLY_MARKER));
+    comment !== undefined &&
+    ((comment.author === hostLogin && comment.body.startsWith(FOLLOW_UP_REPLY_MARKER)) ||
+      (comment.body.includes(SESSION_REPLY_MARKER) && (comment.author === hostLogin || isOwner(comment.author) === true)));
   const first = thread.comments[0];
   if (first?.byBot === true) {
     const last = thread.comments.findLast(
@@ -532,6 +540,7 @@ export function sweepPullRequests(
           pullRequestEvents: eventsOfPr,
           pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
           isOwner: github.isOwner,
+          repositoryOwner: () => github.repositoryOwner(),
         }, host),
       );
       if ("skip" in swept) {

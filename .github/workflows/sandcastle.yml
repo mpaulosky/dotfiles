@@ -2,17 +2,20 @@
 name: Sandcastle
 
 # Runs the Sandcastle host (.sandcastle/main.mts) unattended: it works the
-# issues labelled Sandcastle and follows up on its own PRs. This file is Owned
+# issues labelled Sandcastle and follows up on its own PRs. A second job,
+# record-head, records the head of a pull request the owner hands off with the
+# sandcastle:follow-up label and runs none of the host. This file is Owned
 # by the repo-ci-baseline Template (references/sandcastle.md, "The workflow"):
 # Apply overwrites it, and a repo that runs Sandcastle in Actions needs only the
 # SANDCASTLE_GH_TOKEN secret and a Claude credential. A repo without the token
 # skips every step after the first, so a run there ends green with a notice; the
 # skills it mounts are listed in .github/ci/sandcastle-skills.txt.
 #
-# Every trigger runs the host code checked out from main, never the event's
-# ref. Events can't filter by label name, branch or reviewer, so the job's if:
-# does, and anything else ends as a skipped job. The concurrency group is on
-# the job, not the workflow, so a skipped event never takes the pending slot.
+# Every trigger of the sandcastle job runs the host code checked out from main,
+# never the event's ref. Events can't filter by label name, branch or reviewer,
+# so each job's if: does, and anything else ends as a skipped job. The
+# concurrency group is on the sandcastle job, not the workflow, so a skipped
+# event never takes the pending slot.
 #
 # GITHUB_TOKEN is read-only. Every write goes through SANDCASTLE_GH_TOKEN, the
 # owner's PAT, whose pushes start CI. It has no Workflows permission, so
@@ -58,7 +61,8 @@ jobs:
       cancel-in-progress: false
     # Label events start a run only when the owner adds Sandcastle or removes a
     # hand-back label, so the labels the host applies itself (sandcastle:ready,
-    # bug) end here. A review or CI run counts only for a same-repo issue
+    # bug) end here, and so does the owner's sandcastle:follow-up (record-head
+    # takes that one). A review or CI run counts only for a same-repo issue
     # branch, so a fork never runs with the secrets.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
@@ -325,7 +329,9 @@ jobs:
   # The head comes from the event, never from a later read of the pull request, which a push could have moved. The comment
   # is posted with SANDCASTLE_GH_TOKEN, the host's login, so the sweep can trust it; the job checks nothing out and runs
   # nothing from the pull request. Its text opens with the marker that config.mts calls APPROVED_HEAD_MARKER, which the
-  # Template's test.sh pins. Only the repository owner's own label records a head, and only for a pull request from this repository.
+  # Template's test.sh pins. Only the repository owner's own label records a head, and only for a pull request from this
+  # repository. A re-run records nothing (it would replay the first run's head, long after the label), and the job records
+  # nothing when the pull request's head is no longer the event's, so a push between the click and this job is never approved.
   record-head:
     name: Record the approved head
     runs-on: ubuntu-24.04
@@ -333,6 +339,7 @@ jobs:
     permissions: {}
     if: >-
       github.event_name == 'pull_request_target' && github.event.action == 'labeled'
+      && github.run_attempt == 1
       && github.event.label.name == 'sandcastle:follow-up'
       && github.event.sender.login == github.repository_owner
       && github.event.pull_request.head.repo.full_name == github.repository
@@ -345,13 +352,25 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           if [ -z "$SANDCASTLE_GH_TOKEN" ]; then
-            echo "::notice::The SANDCASTLE_GH_TOKEN secret isn't set, so this repository doesn't run Sandcastle in Actions."
+            echo "::warning::The SANDCASTLE_GH_TOKEN secret isn't set, so no head is recorded and Sandcastle will not follow this pull request up."
             exit 0
           fi
           if ! [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::The labeled event's head isn't a full commit SHA."
             exit 1
           fi
+          current="$(GH_TOKEN="$SANDCASTLE_GH_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)"
+          if [ "$current" != "$HEAD_SHA" ]; then
+            echo "::error::The pull request's head is ${current:0:7}, not ${HEAD_SHA:0:7} from the labeled event, so no head is recorded. Add the label again once the branch is as you want it."
+            exit 1
+          fi
           body="<!-- sandcastle:approved-head $HEAD_SHA -->
           Sandcastle follows this pull request up from ${HEAD_SHA:0:7}, the head the owner approved."
-          GH_TOKEN="$SANDCASTLE_GH_TOKEN" gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$body" --silent
+          for attempt in 1 2 3; do
+            if GH_TOKEN="$SANDCASTLE_GH_TOKEN" gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -f body="$body" --silent; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::Posting the head failed three times, so no head is recorded. Remove and add the label again."
+          exit 1

@@ -523,52 +523,35 @@ export function updatePullRequestBranch(
   ghWithStderr(run, ["api", "--method", "PUT", `repos/${repo}/pulls/${number}/update-branch`, "-f", `expected_head_sha=${expectedHeadSha}`]);
 }
 
-// What headAfterBranchUpdate found: the head that GitHub's update of the branch made, or why no head can be vouched for.
-export type UpdatedHead = { head: string } | { problem: string };
+// What mainMergeOf found: the first parent of a merge GitHub made of main into a branch the host updated, or why the commit is not one.
+export type MainMerge = { firstParent: string } | { problem: string };
 
-// GitHub answers update-branch with 202 and merges main in a moment later, so the new head is looked for this many
-// times, this far apart, before the update counts as not having happened.
-export const UPDATED_HEAD_ATTEMPTS = 12;
-export const UPDATED_HEAD_WAIT_MS = 5000;
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-// The head of PR `number` once updatePullRequestBranch has merged main into `expectedHead`, but only when it is GitHub's own
-// merge of main: a verified commit by web-flow with `expectedHead` and a commit that main contains as its parents. A push
-// that raced the update, or a merge commit someone built themselves, gives a problem instead, so the approval of a
-// hand-off PR (lib/follow-up.mts#handOffApproval) never vouches for a head the owner and the host didn't produce.
-export function headAfterBranchUpdate(
-  number: number,
-  expectedHead: string,
+// Whether `commit` is GitHub's own merge of main into a branch, made for the host: committed by web-flow with a signature GitHub
+// verified, authored by `host` (a merge someone else makes, through the web conflict editor or the merges API, carries their
+// login, and so does one built by hand, which can't be signed as web-flow), with two parents, the second a commit main
+// contains. Main's tip is read as a commit first, since a bare `main` in the compare API can resolve to a tag. Used by
+// lib/follow-up.mts#handOffApproval to accept the heads that update-branch makes, PR Auto-Merge's and the owner's included.
+export function mainMergeOf(
+  commit: string,
+  host: string,
   run: typeof execFileSync = execFileSync,
   repo: string = repoName(),
-  wait: (ms: number) => void = sleepSync,
-): UpdatedHead {
-  const headOf = () => ghWithStderr(run, ["api", `repos/${repo}/pulls/${number}`, "--jq", ".head.sha"]).trim();
-  let head = headOf();
-  for (let attempt = 1; head === expectedHead && attempt < UPDATED_HEAD_ATTEMPTS; attempt++) {
-    wait(UPDATED_HEAD_WAIT_MS);
-    head = headOf();
-  }
-  if (head === expectedHead) return { problem: "the head hadn't moved after the update" };
-  const commit = JSON.parse(
+): MainMerge {
+  const info = JSON.parse(
     ghWithStderr(run, [
-      "api", `repos/${repo}/commits/${head}`,
-      "--jq", "{parents: [.parents[].sha], committer: .committer.login, verified: .commit.verification.verified}",
+      "api", `repos/${repo}/commits/${commit}`,
+      "--jq", "{parents: [.parents[].sha], committer: .committer.login, author: .author.login, verified: .commit.verification.verified}",
     ]),
-  ) as { parents: string[]; committer: string | null; verified: boolean };
-  if (commit.committer !== "web-flow" || commit.verified !== true) {
-    return { problem: `${head.slice(0, 7)} isn't a commit GitHub made and signed itself` };
-  }
-  const [first, second] = commit.parents;
-  if (commit.parents.length !== 2 || first !== expectedHead || second === undefined) {
-    return { problem: `${head.slice(0, 7)} isn't a merge into ${expectedHead.slice(0, 7)}` };
-  }
-  const status = ghWithStderr(run, ["api", `repos/${repo}/compare/${second}...main`, "--jq", ".status"]).trim();
-  if (status !== "ahead" && status !== "identical") return { problem: `${head.slice(0, 7)} merges ${second.slice(0, 7)}, which main doesn't contain` };
-  return { head };
+  ) as { parents: string[]; committer: string | null; author: string | null; verified: boolean };
+  const short = commit.slice(0, 7);
+  if (info.committer !== "web-flow" || info.verified !== true) return { problem: `${short} isn't a commit GitHub made and signed itself` };
+  if (info.author === null || info.author.toLowerCase() !== host.toLowerCase()) return { problem: `${short} wasn't made for ${host}` };
+  const [first, second] = info.parents;
+  if (info.parents.length !== 2 || first === undefined || second === undefined) return { problem: `${short} isn't a merge` };
+  const tip = ghWithStderr(run, ["api", `repos/${repo}/git/ref/heads/main`, "--jq", ".object.sha"]).trim();
+  const status = ghWithStderr(run, ["api", `repos/${repo}/compare/${second}...${tip}`, "--jq", ".status"]).trim();
+  if (status !== "ahead" && status !== "identical") return { problem: `${short} merges ${second.slice(0, 7)}, which main doesn't contain` };
+  return { firstParent: first };
 }
 
 // One comment in a review thread, first comment first (lib/github.mts#reviewThreadsOf).
@@ -848,9 +831,9 @@ export function resolveReviewThread(threadId: string, run: typeof execFileSync =
   ghWithStderr(run, ["api", "graphql", "-f", `query=${mutation}`, "-f", `threadId=${threadId}`]);
 }
 
-// Posts the follow-up pass's summary comment on a pull request
-// (lib/follow-up-pass.mts#runPass#passSummaryComment), through gh pr comment,
-// with the body on stdin.
+// Posts a comment on a pull request through gh pr comment, with the body on stdin: the follow-up pass's summary
+// (lib/follow-up-pass.mts#runPass#passSummaryComment) and the record of an approved head (lib/follow-up.mts#recordApprovedHead).
+// It posts as the signed-in login, the host's, and handOffApproval trusts a record only from that login.
 export function commentOnPullRequest(
   number: number,
   body: string,
@@ -1309,7 +1292,8 @@ function isContentEdit(value: unknown): value is ContentEdit {
 
 // One comment, with when it was posted, so markerCommentsSince can tell
 // which side of a label's removal it falls on, and who posted it.
-export type TimestampedComment = { body: string; createdAt: string; author: string };
+// `updatedAt` is when the comment was last edited (GitHub sets it to the creation time for a comment never edited); only issueComments reads it.
+export type TimestampedComment = { body: string; createdAt: string; updatedAt?: string; author: string };
 
 // The comments in `comments` that `poster` posted and that carry `marker`,
 // posted after `label` was last removed from this issue or PR (its most
@@ -1398,7 +1382,7 @@ export function issueComments(number: number, run: typeof execFileSync = execFil
   return jsonLines(
     ghWithStderr(run, [
       "api", "--paginate", `repos/${repo}/issues/${number}/comments`,
-      "--jq", ".[] | {body, createdAt: .created_at, author: .user.login} | @json",
+      "--jq", ".[] | {body, createdAt: .created_at, updatedAt: .updated_at, author: .user.login} | @json",
     ]),
   ) as TimestampedComment[];
 }

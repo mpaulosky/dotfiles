@@ -167,8 +167,7 @@ describe("liveSweep", () => {
       followsHandOffs: () => true,
       repositoryOwner: () => "owner",
       pullRequestComments: () => [],
-      recordApprovedHead: () => {},
-      headAfterUpdate: () => ({ problem: "not stubbed" }),
+      mergeOfMain: () => ({ problem: "not stubbed" }),
     };
     return { github, closedCalls, handBacks };
   }
@@ -208,7 +207,7 @@ describe("liveSweep", () => {
     github.openPullRequests = () => [handOffPr];
     github.pullRequestEvents = () => [{ event: "labeled", actor: "owner", label: FOLLOW_UP_LABEL, createdAt: "2026-10-09T10:00:00Z" }];
     github.isOwner = (login) => login === "owner";
-    github.pullRequestComments = () => [{ author: "host", body: approvedHeadComment("b".repeat(40)), createdAt: "2026-10-09T10:05:00Z" }];
+    github.pullRequestComments = () => [{ author: "host", body: approvedHeadComment("b".repeat(40)), createdAt: "2026-10-09T10:05:00Z", updatedAt: "2026-10-09T10:05:00Z" }];
 
     const result = liveSweep(github, () => {});
 

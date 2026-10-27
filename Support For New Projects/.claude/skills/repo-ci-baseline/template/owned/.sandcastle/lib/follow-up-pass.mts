@@ -40,7 +40,7 @@ import {
   SESSION_REPLY_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import { approvedHeadComment, issueNumberOf, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
+import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
   failedCheckLogs,
@@ -593,7 +593,7 @@ export const livePassHost: PassHost = {
   replyToThread: (threadId, body) => replyToReviewThread(threadId, body),
   resolveThread: (threadId) => resolveReviewThread(threadId),
   commentOnPullRequest: (pr, body) => commentOnPullRequest(pr, body),
-  recordApprovedHead: (pr, head) => commentOnPullRequest(pr, approvedHeadComment(head)),
+  recordApprovedHead: (pr, head) => recordApprovedHead(pr, head),
   handBack: (pr, reason, body) => handBack({ kind: "pr", number: pr }, "sandcastle:needs-human", reason, body),
   // A thread left for a person is found again every round a pass looks at
   // its PR, so the run's report lists it once.

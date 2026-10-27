@@ -34,11 +34,11 @@ import {
   commentOnPullRequest,
   handBack,
   hasLabel,
-  headAfterBranchUpdate,
   isCopilot,
   issueComments,
   issueEvents,
   labelTimeline,
+  mainMergeOf,
   openPullRequestsForSweep,
   pullRequestBodyEdits,
   pushAccess,
@@ -55,7 +55,7 @@ import {
   type ReviewThread,
   type TimelineLabelEvent,
   type TimestampedComment,
-  type UpdatedHead,
+  type MainMerge,
 } from "./github.mts";
 import { activeQueueScope, approval, labelOriginFixes, loadQueue, ownerCheck, type Approval, type IsOwner } from "./queue.mts";
 import { outcomeReport, waitingPrReport, type OutcomeReport, type WaitingPrEntry, type WaitingPrReport } from "./report.mts";
@@ -225,17 +225,28 @@ export function approvedHeadOf(body: string): string | undefined {
   return new RegExp(`^${APPROVED_HEAD_MARKER} ([0-9a-f]{40}) -->`).exec(body)?.[1];
 }
 
+// Records `head` as a head of PR `number` the owner approved, as the host: handOffApproval trusts the comment because of who posted it.
+export function recordApprovedHead(number: number, head: string, post: (number: number, body: string) => void = commentOnPullRequest): void {
+  post(number, approvedHeadComment(head));
+}
+
+// How many merges of main handOffApproval looks through from a head to reach a recorded one. More than this is not followed up.
+export const MAX_MAIN_MERGES = 5;
+
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
 // its latest labeled event is the owner's, nobody but the owner has renamed it or edited its description since
 // (lib/queue.mts#approval), where "the owner" is `isOwner`: the host or any login with push access, and its head is one
-// the host recorded as approved after that label. The Sandcastle workflow records the head the label was added to, from
-// the event itself, and the host records each head it pushes. A commit anyone else pushes later leaves the head
-// unrecorded, so the PR isn't followed up until the owner removes and re-adds the label. Only the host's own comments
-// count, and only those posted at or after the label, so a stranger can't record a head and an earlier label's record
-// doesn't carry over. The author check keeps a collaborator from handing off a PR of their own.
+// the owner approved. The Sandcastle workflow records the head the label was added to, from the event itself (and only for
+// the repository owner's own label, so another login's label passes the event check and is never followed up), and the host
+// records each head it pushes. A head also counts when it is a merge of main that GitHub made for the host (lib/github.mts#mainMergeOf)
+// on top of one that counts, up to MAX_MAIN_MERGES deep, so PR Auto-Merge's and the owner's own update of the branch don't end the follow-up.
+// A commit anyone else pushes later leaves the head unapproved, so the PR isn't followed up until the owner removes and
+// re-adds the label. Only the host's own comments count, posted at or after the label and never edited since (a login with
+// push access can edit a comment), so a stranger can't record a head and an earlier label's record doesn't carry over.
+// The author check keeps a collaborator from handing off a PR of their own.
 export function handOffApproval(
   pr: Pick<SweepPullRequest, "number" | "author" | "headRefOid">,
-  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "isOwner" | "repositoryOwner">,
+  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "isOwner" | "repositoryOwner">,
   host: string,
 ): Approval {
   if (!sameLogin(pr.author, host) && !sameLogin(pr.author, github.repositoryOwner())) {
@@ -244,18 +255,33 @@ export function handOffApproval(
   const events = github.pullRequestEvents(pr.number);
   const labelled = approval(FOLLOW_UP_LABEL, events, github.pullRequestBodyEdits(pr.number), github.isOwner);
   if (!labelled.approved) return labelled;
-  const addedAt = events.filter((event) => event.event === "labeled" && event.label?.toLowerCase() === FOLLOW_UP_LABEL.toLowerCase()).map((event) => Date.parse(event.createdAt));
-  const since = addedAt[addedAt.length - 1] as number;
-  const recorded = github
-    .pullRequestComments(pr.number)
-    .filter((comment) => sameLogin(comment.author, host) && Date.parse(comment.createdAt) >= since)
-    .map((comment) => approvedHeadOf(comment.body));
-  if (recorded.includes(pr.headRefOid.toLowerCase())) return labelled;
+  // The latest by time, as approval() picks it. A time that doesn't parse makes this NaN, which no comment is at or after.
+  const since = Math.max(
+    ...events.filter((event) => event.event === "labeled" && event.label?.toLowerCase() === FOLLOW_UP_LABEL.toLowerCase()).map((event) => Date.parse(event.createdAt)),
+  );
+  const recorded = new Set(
+    github
+      .pullRequestComments(pr.number)
+      .filter((comment) => sameLogin(comment.author, host) && Date.parse(comment.createdAt) >= since && comment.updatedAt === comment.createdAt)
+      .map((comment) => approvedHeadOf(comment.body)),
+  );
+  let head = pr.headRefOid.toLowerCase();
+  let problem = "";
+  for (let merges = 0; merges <= MAX_MAIN_MERGES; merges++) {
+    if (recorded.has(head)) return labelled;
+    if (merges === MAX_MAIN_MERGES) break;
+    const merge: MainMerge = github.mergeOfMain(head);
+    if ("problem" in merge) {
+      problem = merge.problem;
+      break;
+    }
+    head = merge.firstParent.toLowerCase();
+  }
   return {
     approved: false,
     reason:
-      `its head ${pr.headRefOid.slice(0, 7)} isn't one ${host} recorded as approved since the owner added the label, so a commit was pushed after it: ` +
-      `remove and re-add ${FOLLOW_UP_LABEL} once the owner has looked at the branch`,
+      `its head ${pr.headRefOid.slice(0, 7)} isn't one ${host} recorded as approved since the owner added the label${problem === "" ? "" : ` (${problem})`}: ` +
+      `a commit was pushed after the label, or the record isn't posted yet. Once the owner has looked at the branch, remove and re-add ${FOLLOW_UP_LABEL}`,
   };
 }
 
@@ -409,12 +435,10 @@ export type FollowUpGitHub = {
   // The login of the account the repository belongs to, whom a hand-off PR's author must be (or the host). live:
   // repositoryOwnerLogin().
   repositoryOwner(): string;
-  // Every comment on a PR, for the heads the host recorded as approved. live: issueComments.
+  // Every comment on a PR, with when it was posted and last edited, for the heads the host recorded as approved. live: issueComments.
   pullRequestComments(number: number): TimestampedComment[];
-  // Records `head` as a head of a hand-off PR the owner approved (approvedHeadComment). live: commentOnPullRequest.
-  recordApprovedHead(number: number, head: string): void;
-  // The head of PR `number` once GitHub has merged main into `expectedHead`, if GitHub made it. live: headAfterBranchUpdate.
-  headAfterUpdate(number: number, expectedHead: string): UpdatedHead;
+  // Whether `commit` is a merge of main GitHub made for the host, and its first parent if so. live: mainMergeOf.
+  mergeOfMain(commit: string): MainMerge;
 };
 
 export const liveFollowUpGitHub: FollowUpGitHub = {
@@ -436,8 +460,7 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   followsHandOffs: () => isDefaultQueueScope(activeQueueScope()),
   repositoryOwner: () => repositoryOwnerLogin(),
   pullRequestComments: (number) => issueComments(number),
-  recordApprovedHead: (number, head) => commentOnPullRequest(number, approvedHeadComment(head)),
-  headAfterUpdate: (number, expectedHead) => headAfterBranchUpdate(number, expectedHead),
+  mergeOfMain: (commit) => mainMergeOf(commit, signedInHostLogin()),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the
@@ -587,6 +610,7 @@ export function sweepPullRequests(
           pullRequestEvents: eventsOfPr,
           pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
           pullRequestComments: (number) => github.pullRequestComments(number),
+          mergeOfMain: (commit) => github.mergeOfMain(commit),
           isOwner: github.isOwner,
           repositoryOwner: () => github.repositoryOwner(),
         }, host),
@@ -627,7 +651,7 @@ export function sweepPullRequests(
       const waitingThreads = countHumanThreads(thin.threads);
       if (waitingThreads > 0 || answered > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered });
       const decision = decide(thin, now, github.isOwner);
-      followUp(thin, decision, github, log, outcomes, subject);
+      followUp(thin, decision, github, log, outcomes);
       if (decision.action === "needs-pass") {
         needsPass.push(pr.number);
         passes.push(passTarget(thin, subject, decision.reasons));
@@ -695,22 +719,6 @@ function passTarget(pr: SweepPullRequest, subject: SweepSubject, reasons: string
   return { ...common, issueNumber: subject.issueNumber };
 }
 
-// A branch update the host asked GitHub for is a push the owner's label must still cover: the new head is recorded as approved
-// when GitHub's own merge of main made it. Anything else, or a failed record, only logs: the approval then lapses until the
-// owner re-adds the label, which fails closed.
-function recordUpdatedHead(pr: SweepPullRequest, github: FollowUpGitHub, log: (line: string) => void): void {
-  try {
-    const updated = github.headAfterUpdate(pr.number, pr.headRefOid);
-    if ("problem" in updated) {
-      log(`  ⚠ PR #${pr.number}: ${updated.problem}, so its ${FOLLOW_UP_LABEL} approval lapses until the owner adds the label again`);
-      return;
-    }
-    github.recordApprovedHead(pr.number, updated.head);
-  } catch (error) {
-    log(`  ⚠ PR #${pr.number}: couldn't record the updated head as approved, so its ${FOLLOW_UP_LABEL} approval lapses until the owner adds the label again: ${error}`);
-  }
-}
-
 // Carries out one PR's decision and logs it, recording an updated branch in
 // the run report once GitHub has accepted the update.
 function followUp(
@@ -719,7 +727,6 @@ function followUp(
   github: FollowUpGitHub,
   log: (line: string) => void,
   outcomes: OutcomeReport,
-  subject: SweepSubject,
 ): void {
   switch (decision.action) {
     case "request-review":
@@ -730,7 +737,6 @@ function followUp(
       github.updateBranch(pr.number, pr.headRefOid);
       outcomes.record({ kind: "pr", number: pr.number, outcome: "updated", detail: "was only behind main" });
       log(`  ⤴ PR #${pr.number} (${pr.headRefName}) was only behind main: updated it on GitHub`);
-      if (subject.kind === "hand-off") recordUpdatedHead(pr, github, log);
       return;
     case "needs-pass":
       log(`  ⚑ PR #${pr.number} needs a follow-up pass: ${decision.reasons.join("; ")}`);

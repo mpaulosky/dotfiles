@@ -12,7 +12,8 @@ merge commits and fixes to the branch. After three passes it gives up and labels
 The label counts when the repository's owner adds it, or a session adds it under the owner's token. A label from anyone else does not count,
 and neither does one followed by someone else editing the pull request's title or description (add the label again to approve it).
 It covers the commits the pull request had when you added it: a workflow comment records that head, and Sandcastle records the heads it pushes
-itself. A commit pushed by anyone else afterwards, or a force-push, stops the follow-up until you remove the label and add it again. To keep a
+itself. Updating the branch from `main` (PR Auto-Merge's update, or the Update branch button under your login) keeps it covered. A commit pushed by anyone
+else afterwards, or a force-push, stops the follow-up until you remove the label and add it again. To keep a
 collaborator from handing off their own pull request, it must have been opened by the repository's owner or by a session (the owner's token).
 A repository an organisation owns has no owner login to match, so nothing can be handed off there.
 
@@ -22,6 +23,8 @@ A repository an organisation owns has no owner login to match, so nothing can be
 - A branch name `scripts/check-branch-name.sh` accepts.
 - Only a run whose queue is the default `Sandcastle` label follows hand-offs: GitHub Actions always, a local run only with `SANDCASTLE_LABEL=Sandcastle`.
   `SANDCASTLE_ISSUE`, or any other `SANDCASTLE_LABEL`, does not.
+- The repository runs Sandcastle in GitHub Actions with its `SANDCASTLE_GH_TOKEN` secret set to the account the runs use, since a workflow there records the head you label.
+  A repository without that cannot hand a pull request off.
 
 ## How to hand one off
 

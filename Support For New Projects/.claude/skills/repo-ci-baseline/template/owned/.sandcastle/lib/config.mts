@@ -340,8 +340,9 @@ export const COPILOT_REVIEWER = "copilot-pull-request-reviewer[bot]";
 // (lib/follow-up.mts#decide).
 export const COPILOT_REREQUEST_AFTER_MS = 60 * 60 * 1000;
 
-// The check run the Sandcastle workflow's own job reports
-// (.github/workflows/sandcastle.yml's `name:` for its one job), together with
+// The check run the Sandcastle workflow's sandcastle job reports
+// (.github/workflows/sandcastle.yml's `name:` for that job; its record-head job reports "Record the approved head" on a
+// hand-off PR's head and is not left out: running, it holds the sweep for a round, and red, it shows the owner the record failed), together with
 // SANDCASTLE_WORKFLOW below. A run started
 // by a pull_request_review or unlabeled event reports it on the head of the
 // PR it sweeps, so the sweep and the follow-up pass leave it out

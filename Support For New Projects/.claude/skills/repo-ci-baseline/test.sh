@@ -482,11 +482,22 @@ grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
 sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
 head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
 [[ -n "$head_marker" ]] || fail "lib/config.mts must export APPROVED_HEAD_MARKER as a one-line string"
-grep -qF -- "body=\"$head_marker \$HEAD_SHA -->" "$sandcastle_yml" \
-  || fail "sandcastle.yml's record-head comment must open with '$head_marker \$HEAD_SHA -->' (APPROVED_HEAD_MARKER)"
-grep -qE '^  pull_request_target:$' "$sandcastle_yml" || fail "sandcastle.yml must record the approved head on pull_request_target: a pull_request run uses the workflow file of the PR's own branch, with the secrets"
-grep -qF "github.event.label.name == 'sandcastle:follow-up'" "$sandcastle_yml" || fail "sandcastle.yml's record-head job must run only for the sandcastle:follow-up label"
-grep -qF 'github.event.sender.login == github.repository_owner' "$sandcastle_yml" || fail "sandcastle.yml's record-head job must run only for the repository owner's label"
+# Only the record-head job's own text is searched: the sandcastle job's if: has some of the same clauses.
+record_job="$(sed -n '/^  record-head:$/,$p' "$sandcastle_yml")"
+[[ -n "$record_job" ]] || fail "sandcastle.yml must have a record-head job"
+for needle in "body=\"$head_marker \$HEAD_SHA -->" "github.event_name == 'pull_request_target'" 'github.run_attempt == 1' \
+  "github.event.label.name == 'sandcastle:follow-up'" 'github.event.sender.login == github.repository_owner' \
+  'github.event.pull_request.head.repo.full_name == github.repository' 'permissions: {}' '^[0-9a-f]{40}$'; do
+  grep -qF -- "$needle" <<<"$record_job" || fail "sandcastle.yml's record-head job must carry '$needle' (the comment's marker, the owner-only, same-repository and first-run guards, no token permissions, the SHA check)"
+done
+if grep -qE 'uses:|actions/checkout' <<<"$record_job"; then
+  fail "sandcastle.yml's record-head job holds the host token on pull_request_target: it must use no action and check nothing out"
+fi
+if sed -n '/^        run: |$/,$p' <<<"$record_job" | grep -qF "\${{"; then
+  fail "sandcastle.yml's record-head job must pass event data to its script through env, never inline in run:"
+fi
+grep -A1 '^  pull_request_target:$' "$sandcastle_yml" | grep -qF 'types: [labeled]' \
+  || fail "sandcastle.yml's pull_request_target trigger must be types: [labeled] only"
 grep -A1 '^  pull_request:$' "$sandcastle_yml" | grep -qF 'types: [unlabeled]' \
   || fail "sandcastle.yml's pull_request trigger must stay unlabeled only: the owner's label is recorded on pull_request_target"
 if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then

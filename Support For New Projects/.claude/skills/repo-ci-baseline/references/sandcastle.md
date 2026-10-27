@@ -114,18 +114,23 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   what GitHub Actions always runs) follows hand-offs.
 - **Who.** The label must come from the owner, checked from the pull request's events and its title and description edits (`handOffApproval`, built on `lib/queue.mts#approval`):
   the latest `labeled` event must be an owner's (`isOwner`: the host login or any login with push access, as for `sandcastle:ready`), and a rename or description edit by anyone else at or after it
-  voids it until the owner adds the label again.
+  voids it until the owner adds the label again. In practice only the repository owner's own label counts, because only that label records a head (next bullet):
+  a label from another login with push access passes this check and is never followed up.
   The pull request must also have been opened by the repository's owner (a session posts under the owner's token) or by the host login,
   so a collaborator can't hand off a pull request of their own (`isOwner` counts every login with push access, so it can't tell them apart;
   `handOffApproval` compares the author with the account the repository belongs to).
 - **The head.** The label is bound to the commits the owner labelled. When the repository owner adds it, the `record-head` job of `sandcastle.yml` (a `pull_request_target` run on `labeled`,
-  for a same-repository pull request) comments `<!-- sandcastle:approved-head {sha} -->` as the host login, with the head from the event itself (`APPROVED_HEAD_MARKER`).
-  `handOffApproval` follows the pull request up only when its head is in such a comment from the host posted at or after the latest `labeled` event.
-  The host records each head it pushes the same way: a pass records the commit it pushed, and a branch update from `main` records the new head
-  once `headAfterBranchUpdate` finds it is GitHub's own signed merge of `main` (two parents: the head it updated, then a commit `main` contains).
-  A commit anyone else pushes after the label, a force-push, or a record that failed to post leaves the head unrecorded, so the pull request is not followed up
-  until the owner removes and re-adds the label. Only the repository owner's own label records a head, so a collaborator's label never starts a follow-up,
-  and a repository an organisation owns, which has no owner login to match, follows no hand-off.
+  for a same-repository pull request, first attempt only) comments `<!-- sandcastle:approved-head {sha} -->` with the head from the event itself (`APPROVED_HEAD_MARKER`),
+  and records nothing when the pull request's head has already moved on. `handOffApproval` follows the pull request up only when its head is in such a comment
+  from the host login, posted at or after the latest `labeled` event and never edited (a login with push access can edit a comment).
+  A head the host pushed counts too: a pass records the commit it pushed. So does a merge of `main` that GitHub made for the host on top of a head that counts,
+  up to `MAX_MAIN_MERGES` deep (`mainMergeOf` in `lib/github.mts`: committed by web-flow with a verified signature, authored by the host login, two parents, the second a commit `main` contains).
+  That covers PR Auto-Merge's update and the owner's Update branch button, but not a merge a collaborator makes.
+  A commit anyone else pushes after the label, a force-push, or a record that failed to post leaves the head unapproved,
+  and the pull request is not followed up until the owner removes and re-adds the label.
+  The record needs the Sandcastle workflow in Actions with `SANDCASTLE_GH_TOKEN` set, and that token must belong to the account the sweep runs as (`signedInHostLogin`):
+  a repo that runs Sandcastle only locally, or whose token is another account's, can't hand a pull request off.
+  A repository an organisation owns, which has no owner login to match, follows no hand-off.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
   When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
   That claim is best effort: a number that names no issue, or the pull request's own number, is passed on without it, and only a build already holding the issue makes the pass skip.
@@ -161,9 +166,12 @@ In any other repo, Apply leaves out every file under `.sandcastle/`, plus `packa
 start a follow-up, and Sandcastle can't change it (its token has no Workflows permission), so a change comes from a Template PR and reaches the repos by re-Apply.
 Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that runs Sandcastle (it has a `.sandcastle/` folder, or is new).
 
+- **A second job, `record-head`, runs on `pull_request_target` `labeled`.** It posts the approved-head comment for the owner's `sandcastle:follow-up` label
+  (permissions `{}`, no checkout, no action, a no-op with a warning when the secret is unset), so a hand-off is followed up only in a repo that runs Sandcastle in Actions.
+  `pull_request_target`, not `pull_request`, so the job is the one on `main`, not the pull request branch's. `test.sh` pins its guards.
 - **A repo opts in with the `SANDCASTLE_GH_TOKEN` secret** (a fine-grained PAT with Contents, Issues, Pull requests and Actions read and write, and no Workflows permission),
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
-  locally gets a green run with a notice on every trigger the job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
+  locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
 - **`.github/ci/sandcastle-skills.txt` lists the skills the run mounts (Seed).** A hosted runner has no `~/.claude/skills`, which `lib/skills.mts` mounts
   the `SANDBOX_SKILLS` from. The file is data: a `dotfiles-sha` line (the commit of mpaulosky/dotfiles' `main` to take them from, 40 lowercase hex digits, pinned like an action)
   and a `skill` line per skill name; the Seed has neither, and installs nothing.

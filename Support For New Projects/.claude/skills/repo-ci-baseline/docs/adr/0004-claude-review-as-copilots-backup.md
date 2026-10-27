@@ -24,7 +24,9 @@ PR Auto-Merge waits `COPILOT_GRACE_MS` (10 minutes) after the head's checks fini
 and `land.sh` does so as soon as its own request for the head read back as dropped.
 Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
 A request the run can't read in full counts as pending, so the rule fails closed.
-Once Copilot really reviews the head, Claude's review of it stops counting and the label comes off (#271). The new path applies to any same-repo PR,
+Claude's review of the head also waits for the grace to be over, so a label added by hand right after a push, before the ruleset's request registers, is not taken for Copilot's review.
+That rests on GitHub keeping Copilot's request in `reviewRequests` until its review is submitted.
+Once Copilot really reviews the head, Copilot's review covers it and the label comes off (#271). The new path applies to any same-repo PR,
 so a repo whose ruleset never requests Copilot gets Claude's review too. The cost is a small window where a Copilot review that is merely very late arrives after Claude's;
 its threads still hold the merge, and the 10-minute grace keeps that window short.
 

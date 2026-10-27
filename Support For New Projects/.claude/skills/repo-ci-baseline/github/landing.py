@@ -26,7 +26,8 @@ skill lands PRs by (references/automerge.md):
   head, so the PR goes on to its threads and checks like a reviewed one;
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
-  /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note, or a dropped request): Claude Review posts as
+  /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note,
+  or a dropped request): Claude Review posts as
   github-actions[bot] with CLAUDE_MARKER first in the body. When Claude's
   latest review of the head has findings outside the diff (OFF_DIFF_MARKER
   on its second line), they open no thread, so the PR waits for a new head;
@@ -78,8 +79,8 @@ CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", 
 # review cap's 3, so a fix for a second round's findings is reviewed too (#193):
 # Claude reviews every push while review:claude is on, until a review comes
 # back clean. PR Auto-Merge calls in Claude too, when Copilot's quota note is
-# the head's only review (#190) or it has no review and no request pending after a
-# grace period (#318), and takes review:claude off once Claude has
+# the head's only review (#190) or it has no review and no request pending after
+# a grace period (#318), and takes review:claude off once Claude has
 # reviewed this many commits: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must
 # match these.
 MAX_CLAUDE_ROUNDS = 3

@@ -5,9 +5,10 @@ name: PR Auto-Merge
 # pass, a reviewer has reviewed the PR's head commit, and every review thread
 # is resolved. The reviewer is Copilot, or Claude as its backup: Claude
 # Review (claude-review.yml) posts a review under github-actions[bot] whose
-# body starts with CLAUDE_MARKER, and counts only for a head Copilot can't
-# review: its review is the quota note below, or it has no review of it and no
-# request pending (a dropped request, mpaulosky/dotfiles#318). The main ruleset asks Copilot to review
+# body starts with CLAUDE_MARKER, and counts only for a commit Copilot can't
+# review: its review is the quota note below, or it has no review of it, no
+# request pending and its checks finished COPILOT_GRACE_MS ago (a dropped
+# request, mpaulosky/dotfiles#318). The main ruleset asks Copilot to review
 # each push but doesn't require its review, so merging on green alone would
 # usually land a PR before that review arrives. Each trigger below is a
 # moment one of those conditions can become true; the job re-checks all of
@@ -49,8 +50,10 @@ name: PR Auto-Merge
 # owner's cost rule.
 # The run takes review:claude off a PR once Copilot has really reviewed its head
 # (mpaulosky/dotfiles#270): Copilot has budget, and Claude's review would cover
-# nothing (a Claude review of the head counts only while Copilot has no review of
-# it and no request pending; a request it can't read counts as pending). At the cap it takes it off too (mpaulosky/dotfiles#170), once Claude has
+# nothing (a Claude review counts for a commit with Copilot's quota note, and for
+# the head while Copilot has no request pending and the grace is over; a request
+# it can't read counts as pending). At the cap it takes it off too
+# (mpaulosky/dotfiles#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
 # so the PR would go on chasing them past the cap.
@@ -914,11 +917,13 @@ jobs:
               const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
               // Claude is Copilot's backup only: its review of a commit
               // qualifies when Copilot's quota note is on that same commit, or
-              // when it is the head and Copilot has no request pending for
-              // it (a dropped request, mpaulosky/dotfiles#318). That is
-              // landing.py's rule too. A request that can't be read counts
-              // as pending.
-              const copilotPendingOnHead = copilotPending(pr);
+              // when it is the head, Copilot has no request pending for it and
+              // the grace since the head's checks finished is over (a dropped
+              // request, mpaulosky/dotfiles#318; land.py, which saw the drop
+              // itself, waits for no grace). A request that can't be read
+              // counts as pending, and so does one the query can't tell from
+              // Copilot's: none is assumed absent.
+              const copilotAbsentOnHead = !copilotPending(pr) && graceState(pr) !== "waiting";
               const declinedCommits = new Set(
                 pr.copilotReviews.nodes
                   .filter((review) => COPILOT_NO_REVIEW.test(review.body ?? ""))
@@ -927,7 +932,7 @@ jobs:
               );
               const backupReviews = claudeReviews.filter((review) => {
                 const oid = review.commit?.oid;
-                return declinedCommits.has(oid) || (oid === pr.headRefOid && !copilotPendingOnHead);
+                return declinedCommits.has(oid) || (oid === pr.headRefOid && copilotAbsentOnHead);
               });
               const reviewed = [...copilotReviews, ...backupReviews]
                 .map((review) => review.commit)
@@ -1106,8 +1111,9 @@ jobs:
 
             // Whether Copilot's review of the head may still be on its way.
             // Fails closed: a request list that wasn't read, that holds more
-            // than the page, or has a request whose reviewer can't be read
-            // counts as pending, so Claude's review isn't taken for Copilot's.
+            // than the page, or has a request with no reviewer counts as
+            // pending, so Claude's review isn't taken for Copilot's. A Team's
+            // or Mannequin's request (no login comes back) isn't Copilot's.
             function copilotPending(pr) {
               const requests = pr.reviewRequests;
               if (!requests || requests.totalCount > requests.nodes.length) {
@@ -1115,7 +1121,7 @@ jobs:
               }
               return requests.nodes.some((request) => {
                 const reviewer = request.requestedReviewer;
-                return !reviewer || /copilot/i.test(reviewer.login ?? reviewer.name ?? "");
+                return !reviewer || /copilot/i.test(reviewer.login ?? "");
               });
             }
 

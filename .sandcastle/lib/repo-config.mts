@@ -156,6 +156,8 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/errors.mts",
   ".sandcastle/lib/follow-up-pass.mts",
   ".sandcastle/lib/follow-up-pass.test.mts",
+  ".sandcastle/lib/follow-up-run.mts",
+  ".sandcastle/lib/follow-up-run.test.mts",
   ".sandcastle/lib/follow-up.mts",
   ".sandcastle/lib/follow-up.test.mts",
   ".sandcastle/lib/gate.mts",

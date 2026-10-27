@@ -20,7 +20,8 @@ The first version counted Claude's review only where Copilot's quota note was on
 That left the commonest case stranded: once the budget is used up GitHub usually drops the request with no note, so a PR sat with no review until a person added `review:claude`
 and merged it by hand (dotfiles#325, #326).
 Now a head Copilot can't review is one with its note, or with no Copilot review and no pending Copilot request.
-PR Auto-Merge waits `COPILOT_GRACE_MS` (10 minutes) after the head's checks finished before it calls in Claude for the second kind,
+PR Auto-Merge waits `COPILOT_GRACE_MS` (10 minutes) after the head's checks finished, and after the PR last became reviewable
+(marked ready or reopened, when GitHub requests Copilot's review), before it calls in Claude for the second kind,
 and `land.sh` does so as soon as its own request for the head read back as dropped.
 Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
 A request the run can't read in full counts as pending, so the rule fails closed.

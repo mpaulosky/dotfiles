@@ -58,6 +58,7 @@ function readyPr({ quotaNotes = true, ...overrides } = {}) {
     headRef: checksOn(HEAD, requiredCheck("Build Solution")),
     copilotReviews: { nodes: [{ commit: { oid: HEAD } }] },
     reviewRequests: { totalCount: 0, nodes: [] },
+    reviewableEvents: { nodes: [] },
     claudeReviews: { nodes: [] },
     reviewThreads: { totalCount: 0, nodes: [] },
     labels: { totalCount: 0, nodes: [] },
@@ -1271,6 +1272,63 @@ test("counts Claude's review of the head when Copilot posted no quota note, has 
   const { merges } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
+});
+
+// A PR that sat as a draft with green CI is marked ready, or reopened: GitHub requests Copilot's review then,
+// asynchronously, long after the head's checks finished (mpaulosky/dotfiles#318).
+const MINUTES_AGO = (minutes) => new Date(Date.now() - minutes * 60 * 1000).toISOString();
+const finishedLongAgo = { headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })) };
+
+test("counts Claude's review of the head when the PR became reviewable more than the grace ago (mpaulosky/dotfiles#318)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    reviewableEvents: { nodes: [{ __typename: "ReadyForReviewEvent", createdAt: MINUTES_AGO(11) }] },
+    ...finishedLongAgo,
+    quotaNotes: false
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
+});
+
+for (const [name, event] of [["marked ready for review", "ReadyForReviewEvent"], ["reopened", "ReopenedEvent"]]) {
+  test(`doesn't count Claude's review, or call it in, while the grace since the PR was ${name} is running (mpaulosky/dotfiles#318)`, async () => {
+    const reviewableEvents = { nodes: [{ __typename: "ReadyForReviewEvent", createdAt: MINUTES_AGO(600) }, { __typename: event, createdAt: MINUTES_AGO(1) }] };
+    const counted = await evaluate(readyPr({
+      copilotReviews: copilotReviewsOf(),
+      claudeReviews: claudeReviewsOf(HEAD),
+      labels: labelled(CLAUDE_LABEL),
+      reviewableEvents,
+      ...finishedLongAgo,
+      quotaNotes: false
+    }));
+    assert.deepEqual(counted.merges, []);
+    const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents, ...finishedLongAgo }));
+    assert.deepEqual(called.addedLabels, []);
+    assert.ok(called.logs.some((line) => line.includes("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), called.logs.join("\n"));
+  });
+}
+
+test("treats a PR whose ready and reopened times can't be read as still in the grace (mpaulosky/dotfiles#318)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    reviewableEvents: undefined,
+    ...finishedLongAgo,
+    quotaNotes: false
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+});
+
+test("asks for the PR's latest ready-for-review and reopened events (mpaulosky/dotfiles#318)", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.every((query) => /timelineItems\(last: \d+, itemTypes: \[READY_FOR_REVIEW_EVENT, REOPENED_EVENT\]\)[^]*?createdAt/.test(query)), queries.join("\n"));
 });
 
 test("doesn't count Claude's review of the head while the grace since its checks finished is running (mpaulosky/dotfiles#318)", async () => {

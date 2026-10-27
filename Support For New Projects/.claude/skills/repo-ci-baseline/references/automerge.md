@@ -116,7 +116,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   (see [Verify live](#verify-live)), so the next scheduled sweep adds it, often an hour or more later. That's accepted:
   the PR would otherwise wait for a person, and the held run creates no check on the head, so it doesn't hold the label back.
   A dropped request brings no event when `COPILOT_GRACE_MS` runs out either, so the next scheduled sweep, up to an hour later, adds the label.
-  The grace counts from the newest finish of the head's checks (a commit status still pending, a check without a finish time or more checks than one page
+  The grace counts from the later of the newest finish of the head's checks and the PR's latest ready-for-review or reopened event,
+  since GitHub requests Copilot's review then (a commit status still pending, a check without a finish time or more checks than one page
   holds keep it waiting); a head with no check but Claude Review's and this job's own goes to the owner's notices above.
 - **Reviewing until a review comes back clean (#193).** Claude Review reviews every push while the label is on,
   so a fix for its findings is reviewed in turn. Reviewing is done when a review of the head comes back clean

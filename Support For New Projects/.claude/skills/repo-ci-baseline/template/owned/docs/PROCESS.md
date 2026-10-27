@@ -83,7 +83,7 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   `lenses.md` and `review-bar.md` are Owned, so a lesson for them goes to the Template first.
 - **PR Auto-Merge squash-merges** a same-repo PR once its checks pass, Copilot has reviewed its latest commit and every
   thread is resolved. Where Copilot can't review it (a quota note, or a request GitHub dropped, with no review or request
-  showing 10 minutes after the checks finished), it adds `review:claude` itself and accepts Claude's review instead.
+  showing 10 minutes after the checks finished and the PR was last marked ready or reopened), it adds `review:claude` itself and accepts Claude's review instead.
   After three review rounds it stops waiting for a review of the latest commit, so a PR can't chase
   reviews forever, but every unresolved thread still holds it, Copilot's and Claude's included. At that point, once
   Claude has reviewed since `review:claude` was last added, it also takes the label off, so Claude stops reviewing new

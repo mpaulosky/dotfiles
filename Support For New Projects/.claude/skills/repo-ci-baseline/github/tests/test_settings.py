@@ -530,6 +530,22 @@ def test_labels_are_created_and_corrected_and_squad_labels_deleted():
     assert "bug" in fake.labels, "labels outside the standard and not retired are left alone"
 
 
+def test_fix_creates_the_nuget_and_dotnet_sdk_labels_the_seed_dependabot_uses():
+    wanted = ("nuget", "dotnet-sdk")
+    labels = {label["name"]: dict(label) for label in LABELS if label["name"] not in wanted}
+    fake = FakeGitHub(labels=labels)
+
+    assert statuses(fake)["label nuget"] == gs.DRIFT
+    assert statuses(fake)["label dotnet-sdk"] == gs.DRIFT
+    status, output = run(fake, "--fix")
+
+    assert status == 0, output
+    for name in wanted:
+        assert name in fake.labels, f"--fix creates the {name} label"
+        assert fake.labels[name]["color"] and fake.labels[name]["description"]
+        assert ("POST", f"repos/{REPO}/labels", fake.labels[name]) in fake.writes
+
+
 def test_the_review_cap_is_checked_in_pr_automerge():
     assert statuses(FakeGitHub())["review cap"] == gs.OK
 

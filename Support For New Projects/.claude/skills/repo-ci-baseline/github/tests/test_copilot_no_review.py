@@ -1,7 +1,7 @@
-"""The three spellings of "Copilot's note isn't a review" agree.
+"""The spellings of "Copilot's note isn't a review" agree.
 
-PR Auto-Merge (JS), claude-review.yml (jq) and the landing scripts (Python)
-each decide whether a Copilot review is its quota note. If they disagreed, one
+PR Auto-Merge (JS), claude-review.yml (two jq filters) and the landing scripts
+(Python) each decide whether a Copilot review is its quota note. If they disagreed, one
 would count a commit as reviewed that another doesn't: Claude Review would
 skip a head the merge gate still waits on, or the merge gate would count a
 note claude-review.yml re-reviews. This runs each real pattern on the same
@@ -81,14 +81,13 @@ def test_claude_review_noted_filter_lists_only_commits_with_copilots_note():
     claude = "<!-- claude-review -->\nNo findings."
     reviews = [
         {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "claude only"},
-        {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "noted"},
-        {"user": {"login": LOGIN}, "body": "Looks good.", "commit_id": "reviewed"},
         {"user": {"login": "someone"}, "body": NOTE, "commit_id": "not copilot"},
-    ]
-    pages = [reviews[:2], reviews[2:]]
+    ] + [{"user": {"login": LOGIN}, "body": body, "commit_id": name} for name, (body, _) in BODIES.items()]
+    pages = [reviews[: len(reviews) // 2], reviews[len(reviews) // 2:]]
     run = subprocess.run([shutil.which("jq"), "-r", noted_program()], input=json.dumps(pages), capture_output=True,
                          text=True, check=True)
-    assert set(run.stdout.split("\n")) - {""} == {"noted"}
+    # Every spelling of the note agrees on the shared bodies, so a drifted pattern here fails too.
+    assert set(run.stdout.split("\n")) - {""} == {name for name, (_, is_note) in BODIES.items() if is_note}
 
 
 def reviewed_by_filter(reviews, head="head"):

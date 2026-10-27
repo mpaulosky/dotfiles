@@ -48,8 +48,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   `github/tests/test_copilot_no_review.py` runs the JS, jq and Python patterns on the same bodies.
   `claude-review.yml`'s reviewed list holds a Claude review of a commit with Copilot's note and of the PR's current head (whatever the grace or a pending request, so a head isn't reviewed twice),
   and none of an earlier commit without a note,
-  so a clean merge of main into an earlier commit Claude reviewed under a dropped request gets a review of its own instead of waiting for a person.
-  When a bot's push of a clean merge H2 leaves Claude Review running for the stale H1, it reviews H1 only if H1 carries Copilot's note, since the gate counts
+  so a clean merge of main into an earlier commit Claude reviewed under a dropped request gets a review of its own when its push starts a run, instead of waiting for a person.
+  When a bot pushes a clean merge H2 of main while Claude Review is running for the earlier head H1, that run reviews H1 only if H1 carries Copilot's note, since the gate counts
   a review of a commit that is no longer the head only then; without the note it skips with a notice, and the PR waits for a person or a push that starts its own run.
   `land.sh` treats a head Copilot answered with the note as it treats a dropped request: it adds `review:claude` rather than asking Copilot again.
   PR Auto-Merge does the same (#190), so a PR nobody lands with `land.sh` gets Claude's review too (#189 waited for one that never came).

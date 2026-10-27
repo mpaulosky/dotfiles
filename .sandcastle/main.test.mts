@@ -453,8 +453,9 @@ describe("main.mts's run mode wiring", () => {
   it("branches on the mode it read, and takes the full run's phases only for a full run", () => {
     const mainMts = read(".sandcastle/main.mts");
 
-    assert.match(mainMts, /["']follow-up["']/);
-    assert.match(mainMts, /runMode/);
+    assert.match(mainMts, /if \(runMode === "follow-up"\) \{\s*await followUpOnlyRun\(/);
+    // Without this gate a follow-up-only run would go on to intake, planning and builds after its sweep.
+    assert.match(mainMts, /for \(let iteration = 1; runMode === "full" && iteration <= MAX_ITERATIONS; iteration\+\+\)/);
   });
 
   it("states the mode in the run's log, as it does the queue and the time budget", () => {

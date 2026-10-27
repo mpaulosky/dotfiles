@@ -27,7 +27,7 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 | `intake-prompt.md`, `critique-prompt.md` | Judge an issue or a plan against the issue alone, with no repo-specific text |
 | `lib/host-safety.mts`, `lib/shell.mts` and their tests | The guardrails that keep agent-written code off the host; they import only each other, so a repo's own code can't break them |
 | `main.mts` | The run's phases and round loop; it reads its round cap from `lib/repo-config.mts` |
-| `lib/config.mts` and its test | What every Sandcastle repo shares: the role names (`ROLES`, plus the opt-in `ui` as `OptInRole`), limits, labels, markers, the Copilot reviewer settings, and the queue-scope and budget parsing |
+| `lib/config.mts` and its test | What every Sandcastle repo shares: the role names (`ROLES`, plus the opt-in `ui` as `OptInRole`), limits, labels (`SANDCASTLE_LABELS`, and `FOLLOW_UP_LABEL` kept apart from them, with `HOST_LABELS` the host creates), markers (`SESSION_REPLY_MARKER` too), the Copilot reviewer settings, and the queue-scope (`isDefaultQueueScope`) and budget parsing |
 | The other `lib/` modules and their tests, `lib/errors.mts`, `lib/git-sandbox-fake.mts` and `lib/ui-role-fixture.mts` (the test helper for the opt-in `ui` role) | They import each other as one cluster, so they're Owned together; their tests pin no per-repo value |
 
 The Owned modules read only the names `lib/repo-config.mts` exports (below), and `config.mts` imports nothing from it.
@@ -51,6 +51,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, and an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`) |
 | `.sandcastle/check.sh` | Sandcastle's check, which the Seed `.github/ci/gate-checks.sh` runs when it's there |
 | `package.json`, `pnpm-workspace.yaml` | Sandcastle's packages and scripts; a repo with its own Node tooling merges them |
+| `.claude/rules/sandcastle-hand-off.md` | The session guidance for handing a pull request off to Sandcastle with `sandcastle:follow-up` ([Hand-off PRs](#hand-off-prs)); it loads in every session, and a repo can keep or reword it |
 | `.github/ci/sandcastle-skills.txt` | The skills the Sandcastle workflow installs on the runner for the run (a pinned dotfiles commit and skill names, read as data); empty until filled ([The workflow](#the-workflow)) |
 | `.sandcastle/lib/repo-config.mts` | `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` for the local review ([pre-push-review.md](pre-push-review.md)), `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
 
@@ -95,15 +96,50 @@ and (when opted in) `ui` prompts each list every mounted skill.
 **Run modes.** `SANDCASTLE_MODE` (commented out in `.env.example`) picks what a run does; `runModeFrom` in `lib/config.mts` reads it. Unset, blank or `full` is a full run: intake, builds and rounds.
 `follow-up` is a follow-up-only run (`followUpOnlyRun` in `lib/follow-up-run.mts`): it sweeps the open PRs once, runs one follow-up pass when the sweep flagged something, and exits,
 so a review or a red check on a PR is answered while a full run is still busy building. Any other value fails with `RunModeError` and exit code 2.
-The two runs stay off each other's PRs through `sandcastle:building`: the sweep skips a PR whose issue carries that label. A follow-up-only run also leaves closed PRs alone
+The two runs stay off each other's PRs through `sandcastle:building`: the sweep skips a PR whose issue carries that label,
+or, for a hand-off PR, a PR that carries it itself. A follow-up-only run also leaves closed PRs alone
 and keeps its own Sandcastle check out of the head checks it reads.
 The workflow side (the `mode` input, `SANDCASTLE_FOLLOW_UP_JOB` and the run's own concurrency group) is not in the Template's `sandcastle.yml` yet.
+
+## Hand-off PRs
+
+The sweep follows up a pull request Sandcastle didn't open when the repository owner puts the `sandcastle:follow-up` label on it
+(`FOLLOW_UP_LABEL` in `lib/config.mts`). Without it, a pull request opened by a person or a Claude Code session gets no help with review threads,
+red checks or falling behind `main`, and PR Auto-Merge holds it on every unresolved thread.
+
+- **Which.** `sweepSubject` in `lib/follow-up.mts` accepts a labelled pull request that isn't a Sandcastle issue's (host-authored, marked, on an issue's branch, in this run's scope or not) when it is
+  from the same repository, into `main`, not a draft, and its branch name passes `scripts/check-branch-name.sh` (`isHandOffBranch` in `lib/branches.mts`).
+  A Sandcastle pull request carrying the label is never a hand-off:
+  it is swept as its issue's when `sweepSkipReason` lets it through, and skipped otherwise. Only the default queue scope (`isDefaultQueueScope`: the `Sandcastle` label,
+  what GitHub Actions always runs) follows hand-offs.
+- **Who.** The label must come from the owner, checked from the pull request's events and its title and description edits (`handOffApproval`, built on `lib/queue.mts#approval`):
+  the latest `labeled` event must be an owner's (`isOwner`: the host login or any login with push access, as for `sandcastle:ready`), and a rename or description edit by anyone else at or after it
+  voids it until the owner adds the label again.
+  The pull request must also have been opened by the repository's owner (a session posts under the owner's token) or by the host login,
+  so a collaborator can't hand off a pull request of their own (`isOwner` counts every login with push access, so it can't tell them apart;
+  `handOffApproval` compares the author with the account the repository belongs to). This does not bind the label to the commits:
+  a push to the branch after the label is not checked, and a login with push access can still push to an owner's pull request, the same trust as the issue queue.
+  Binding the label to the head the owner labelled is tracked in mpaulosky/dotfiles#334. A repository an organisation owns follows only the host's pull requests.
+- **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
+  When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
+  That claim is best effort: a number that names no issue, or the pull request's own number, is passed on without it, and only a build already holding the issue makes the pass skip.
+- **The label.** `FOLLOW_UP_LABEL` is created at startup with `SANDCASTLE_LABELS` and `Sandcastle:local` (`HOST_LABELS`), but it is not one of `SANDCASTLE_LABELS`:
+  a person adds and removes it, and `SANDCASTLE_LABEL` can't name it as a queue.
+- **A session's reply.** A Claude Code session posts under the owner's token and ends every reply with `<!-- claude-session -->` (`SESSION_REPLY_MARKER`,
+  [PROCESS.md](../template/owned/docs/PROCESS.md)). A thread whose last bot, host or owner comment carries it, posted under the host's login or another owner's, counts as answered,
+  and the follow-up role is not shown it. The marker counts anywhere in the comment's body, so a host or owner comment that quotes it is taken for a session's reply too.
+- **The prompt.** The follow-up role gets the pull request's number, title and description in the place of an issue's, under a note saying it is not an issue.
+- **The session guidance** is the Seed `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
+  which Apply can't edit. It is the repo's once written, so Apply never overwrites it.
+
+The workflow's triggers for the label (a `pull_request` `labeled` trigger from the owner, and `chore/` branches in the `workflow_run` and review lists) are not in the Template's
+`sandcastle.yml` yet: until they are, the schedule and the existing triggers pick a labelled pull request up.
 
 ## When Apply adds it
 
 Only to a repo that has a `.sandcastle/` folder, or no commits yet.
 In any other repo, Apply leaves out every file under `.sandcastle/`, plus `package.json`, `pnpm-workspace.yaml`, the Sandcastle workflow,
-`.github/ci/sandcastle-skills.txt` and the local review's files ([pre-push-review.md](pre-push-review.md)), and its report counts them as
+`.github/ci/sandcastle-skills.txt`, `.claude/rules/sandcastle-hand-off.md` and the local review's files ([pre-push-review.md](pre-push-review.md)), and its report counts them as
 "Sandcastle files left out". A repo starts using Sandcastle by creating `.sandcastle/` and Applying again.
 
 ## What isn't in it
@@ -137,7 +173,7 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   Anything else its workflow does that the Template's doesn't needs a Template change first.
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
   A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones;
-  the run mode is in the Template (mpaulosky/dotfiles#313), the workflow triggers and #314 are not) must not be
+  the run mode (mpaulosky/dotfiles#313) and the hand-off code (mpaulosky/dotfiles#314) are in the Template, the workflow triggers are not) must not be
   re-Applied until those land, or its re-Apply drops them. `rollout.sh` re-Applies every repo in `github/repos.txt` and can't leave one out
   (once TicketManager's re-Apply PR has merged, a run re-Applies all the others, auth0-management-app included), so until then don't run it:
   re-Apply each repo except auth0-management-app one at a time with `reapply.sh`, TicketManager first.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
-import { COPILOT_REVIEWER, LOCAL_QUEUE_LABEL, LOCAL_QUEUE_LABEL_DEFINITION, SANDCASTLE_LABELS } from "./config.mts";
+import { COPILOT_REVIEWER, FOLLOW_UP_LABEL, FOLLOW_UP_LABEL_DEFINITION, HOST_LABELS, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
 import {
   addIssueLabel,
   addPullRequestLabel,
@@ -34,9 +34,14 @@ import {
   openPullRequest,
   openPullRequestsForSweep,
   ownerApproved,
+  pullRequestBodyEdits,
   pullRequestFiles,
+  pullRequestLabels,
+  pullRequestsWithLabel,
   pushAccess,
+  repositoryOwnerLogin,
   removeIssueLabel,
+  removePullRequestLabel,
   replaceIssueLabel,
   replyToReviewThread,
   requestCopilotReview,
@@ -528,11 +533,35 @@ describe("ensureLabels", () => {
     ensureLabels(undefined, run, "o/r");
 
     const created = calls.filter((call) => call.args[1] === "create").map((call) => call.args[2]);
-    assert.deepEqual(created, [...SANDCASTLE_LABELS.map((label) => label.name), LOCAL_QUEUE_LABEL]);
+    assert.ok(created.includes(LOCAL_QUEUE_LABEL));
+    assert.deepEqual(created, HOST_LABELS.map((label) => label.name));
+  });
+
+  it("creates sandcastle:follow-up by default when the repository lacks it, with its colour and description", () => {
+    const { calls, run } = recordingGh(["[]"]);
+
+    ensureLabels(undefined, run, "o/r");
+
+    const call = calls.find((candidate) => candidate.args[1] === "create" && candidate.args[2] === FOLLOW_UP_LABEL);
+    assert.ok(call, "no label create call for the hand-off label");
+    assert.deepEqual(call.args, [
+      "label", "create", FOLLOW_UP_LABEL, "--repo", "o/r", "--color", FOLLOW_UP_LABEL_DEFINITION.color,
+      "--description", FOLLOW_UP_LABEL_DEFINITION.description,
+    ]);
+  });
+
+  it("doesn't recreate sandcastle:follow-up when the repository has it, in any case", () => {
+    const { calls, run } = recordingGh([JSON.stringify(["Sandcastle:Follow-Up"])]);
+
+    ensureLabels(undefined, run, "o/r");
+
+    const created = calls.filter((call) => call.args[1] === "create").map((call) => call.args[2]);
+    assert.ok(!created.includes(FOLLOW_UP_LABEL));
+    assert.ok(created.includes("sandcastle:ready"));
   });
 
   it("gives every label it creates by default a description GitHub accepts, at most 100 characters", () => {
-    for (const label of [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION]) {
+    for (const label of HOST_LABELS) {
       assert.ok(label.description.length <= 100, `${label.name}'s description is ${label.description.length} characters`);
     }
   });
@@ -675,13 +704,13 @@ describe("issue labels", () => {
     assert.deepEqual(calls[0]!.args, ["issue", "view", "150", "--repo", "o/r", "--json", "labels", "--jq", "[.labels[].name]"]);
   });
 
-  it("lists the open issues carrying a label", () => {
+  it("lists the issues carrying a label, closed ones too", () => {
     const { calls, run } = recordingGh(["[71,150]\n"]);
 
     const numbers = issuesWithLabel("sandcastle:building", run, "o/r");
 
     assert.deepEqual(numbers, [71, 150]);
-    assert.deepEqual(calls[0]!.args.slice(0, 8), ["issue", "list", "--repo", "o/r", "--state", "open", "--label", "sandcastle:building"]);
+    assert.deepEqual(calls[0]!.args.slice(0, 8), ["issue", "list", "--repo", "o/r", "--state", "all", "--label", "sandcastle:building"]);
   });
 });
 
@@ -925,6 +954,13 @@ describe("hasLabel", () => {
   });
 });
 
+describe("repositoryOwnerLogin", () => {
+  it("is the first part of the repository's owner/name", () => {
+    assert.equal(repositoryOwnerLogin("o/r"), "o");
+    assert.equal(repositoryOwnerLogin("some-org/the-repo"), "some-org");
+  });
+});
+
 // The follow-up sweep's own login, read and cached the same way
 // hostLogin's other callers already do (see cacheHostLogin and
 // markerComments above).
@@ -1091,6 +1127,18 @@ describe("openPullRequestsForSweep", () => {
     ]);
     assert.deepEqual(pr!.checks, [{ name: "build", completed: true, green: true, completedAt: "2026-10-01T00:00:00Z", workflow: "CI" }]);
     assert.equal(pr!.truncated, false);
+  });
+
+  it("asks for each pull request's title and returns it, which a hand-off pull request's prompt shows", () => {
+    const titled = page();
+    (titled.data.repository.pullRequests.nodes[0] as unknown as Record<string, unknown>).title = "feat: Add search";
+    const { calls, run } = recordingGh([JSON.stringify(titled)]);
+
+    const [pr] = openPullRequestsForSweep(run, "o/r");
+
+    const query = calls[0]!.args.find((arg) => arg.startsWith("query="))!;
+    assert.match(query, /\bnumber title\b|\btitle\b[^{]*\bisDraft\b|\bisDraft\b[^{]*\btitle\b/);
+    assert.equal(pr!.title, "feat: Add search");
   });
 
   // Each list is read from the end it pages from: reviews and timelineItems
@@ -1572,6 +1620,85 @@ describe("bodyEdits", () => {
     const run = (() => JSON.stringify({ data: { repository: { issue: null } } })) as unknown as typeof execFileSync;
 
     assert.throws(() => bodyEdits(146, run, "o/r"), /no such issue|issue 146/i);
+  });
+});
+
+// A pull request's body edits come from pullRequest(number:): issue(number:) answers null for a pull request.
+describe("pullRequestBodyEdits", () => {
+  it("reads every page of the pull request's title and body edits through the pull request query", () => {
+    const first = { editor: "stranger", editedAt: "2026-10-01T00:00:00Z" };
+    const second = { editor: null, editedAt: "2026-10-02T00:00:00Z" };
+    const { calls, run } = recordingGh([`${JSON.stringify(first)}\n${JSON.stringify(second)}\n`]);
+
+    assert.deepEqual(pullRequestBodyEdits(70, run, "o/r"), [first, second]);
+
+    const args = calls[0]!.args;
+    assert.deepEqual(args.slice(0, 3), ["api", "graphql", "--paginate"]);
+    const query = args.find((arg) => arg.startsWith("query="))!;
+    assert.match(query, /pullRequest\(number: \$number\)/);
+    assert.doesNotMatch(query, /issue\(number/);
+    assert.match(query, /userContentEdits/);
+    assert.ok(args.includes("owner=o") && args.includes("name=r") && args.includes("number=70"));
+    const jq = args[args.indexOf("--jq") + 1]!;
+    assert.match(jq, /\.data\.repository\.pullRequest /);
+    assert.doesNotMatch(jq, /\.data\.repository\.issue/);
+  });
+
+  it("returns no edits for a pull request nobody has edited", () => {
+    const { run } = recordingGh([""]);
+
+    assert.deepEqual(pullRequestBodyEdits(70, run, "o/r"), []);
+  });
+
+  it("throws on an answer that isn't edit lines, rather than reading it as unedited", () => {
+    const run = (() => JSON.stringify({ data: { repository: { pullRequest: null } } })) as unknown as typeof execFileSync;
+
+    assert.throws(() => pullRequestBodyEdits(70, run, "o/r"), /no such pull request|pull request 70/i);
+  });
+
+  it("throws on an edit that doesn't fit ContentEdit", () => {
+    const { run } = recordingGh([`${JSON.stringify({ editor: 5, editedAt: "2026-10-01T00:00:00Z" })}\n`]);
+
+    assert.throws(() => pullRequestBodyEdits(70, run, "o/r"), /pull request 70|body edits/i);
+  });
+
+  it("leaves bodyEdits asking for the issue", () => {
+    const { calls, run } = recordingGh([""]);
+
+    bodyEdits(146, run, "o/r");
+
+    const query = calls[0]!.args.find((arg) => arg.startsWith("query="))!;
+    assert.match(query, /issue\(number: \$number\)/);
+  });
+});
+
+describe("pull request labels", () => {
+  it("lists the open pull requests carrying a label with gh pr list, which gh issue list leaves out", () => {
+    const { calls, run } = recordingGh(["[71,150]\n"]);
+
+    const numbers = pullRequestsWithLabel("sandcastle:building", run, "o/r");
+
+    assert.deepEqual(numbers, [71, 150]);
+    assert.deepEqual(calls[0]!.args.slice(0, 8), ["pr", "list", "--repo", "o/r", "--state", "open", "--label", "sandcastle:building"]);
+    assert.ok(calls[0]!.args.includes("--json"));
+    assert.ok(calls[0]!.args.includes("number"));
+  });
+
+  it("reads a pull request's labels fresh with gh pr view", () => {
+    const { calls, run } = recordingGh(['["sandcastle:follow-up","sandcastle:building"]\n']);
+
+    const labels = pullRequestLabels(70, run, "o/r");
+
+    assert.deepEqual(labels, ["sandcastle:follow-up", "sandcastle:building"]);
+    assert.deepEqual(calls[0]!.args, ["pr", "view", "70", "--repo", "o/r", "--json", "labels", "--jq", "[.labels[].name]"]);
+  });
+
+  it("removes a label from a pull request with gh pr edit, not gh issue edit", () => {
+    const { calls, run } = recordingGh();
+
+    removePullRequestLabel(70, "sandcastle:building", run, "o/r");
+
+    assert.deepEqual(calls.map((call) => call.args), [["pr", "edit", "70", "--repo", "o/r", "--remove-label", "sandcastle:building"]]);
   });
 });
 

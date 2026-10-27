@@ -6,7 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { endOf } from "./checkpoint.mts";
-import { BASE_BRANCH, COPILOT_REVIEWER, LOCAL_QUEUE_LABEL_DEFINITION, QUEUE_LABEL, SANDCASTLE_LABELS, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { BASE_BRANCH, COPILOT_REVIEWER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 import { sh } from "./shell.mts";
@@ -19,6 +19,12 @@ let repo: string | undefined;
 export function repoName(): string {
   repo ??= sh(process.cwd(), "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
   return repo;
+}
+
+// The login in `repoName()`'s "owner/name": the account the repository belongs to. For an organisation's repository it
+// is the organisation's, which never opens a pull request.
+export function repositoryOwnerLogin(repo: string = repoName()): string {
+  return repo.split("/")[0] as string;
 }
 
 export type GhIssue = {
@@ -314,7 +320,7 @@ query($owner: String!, $name: String!, $cursor: String) {
     pullRequests(states: OPEN, baseRefName: "main", first: 50, after: $cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        id number isDraft isCrossRepository baseRefName headRefName headRefOid body mergeStateStatus
+        id number title isDraft isCrossRepository baseRefName headRefName headRefOid body mergeStateStatus
         author { login }
         labels(first: 50) { pageInfo { hasNextPage } nodes { name } }
         reviewRequests(first: 20) {
@@ -369,6 +375,7 @@ type CheckContext = {
 type SweepNode = {
   id: string;
   number: number;
+  title: string;
   isDraft: boolean;
   isCrossRepository: boolean;
   baseRefName: string;
@@ -426,6 +433,7 @@ function sweepPullRequest(node: SweepNode): SweepPullRequest {
   return {
     id: node.id,
     number: node.number,
+    title: node.title,
     author: authorLogin(node.author),
     body: node.body ?? "",
     baseRefName: node.baseRefName,
@@ -975,10 +983,10 @@ export function commentOnIssue(
 // colour and description. Run once at the host's startup, before the first
 // round, so a fresh repository (or one whose labels were deleted) always has
 // them (see Blazor-Server's docs/plans/sandcastle-workflow.md, "Labels"). By default that's
-// SANDCASTLE_LABELS and `Sandcastle:local`, which isn't one of them but must
-// exist before an issue moves to it.
+// HOST_LABELS: SANDCASTLE_LABELS, `Sandcastle:local` (not one of them, but it must exist
+// before an issue moves to it) and the owner's hand-off label.
 export function ensureLabels(
-  labels: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION],
+  labels: readonly SandcastleLabel[] = HOST_LABELS,
   run: typeof execFileSync = execFileSync,
   repo: string = repoName(),
 ): void {
@@ -1061,7 +1069,8 @@ export function issueLabels(
   ) as string[];
 }
 
-// The numbers of the open issues carrying `label`. As with
+// The numbers of the issues carrying `label`, open or closed: a hand-off pass can label the closed issue its branch
+// names (lib/follow-up-pass.mts#runPass), and a run killed meanwhile must not leave the label there. As with
 // listSandcastleIssues, the cap sits far above any real queue.
 export function issuesWithLabel(
   label: string,
@@ -1070,7 +1079,7 @@ export function issuesWithLabel(
 ): number[] {
   return JSON.parse(
     ghWithStderr(run, [
-      "issue", "list", "--repo", repo, "--state", "open", "--label", label, "--limit", "1000", "--json", "number", "--jq", "[.[].number]",
+      "issue", "list", "--repo", repo, "--state", "all", "--label", label, "--limit", "1000", "--json", "number", "--jq", "[.[].number]",
     ]),
   ) as number[];
 }
@@ -1159,26 +1168,16 @@ export function bodyEdits(
   run: typeof execFileSync = execFileSync,
   repo: string = repoName(),
 ): ContentEdit[] {
-  const [owner, name] = repo.split("/") as [string, string];
-  return jsonLines(
-    ghWithStderr(run, [
-      "api", "graphql", "--paginate", "-f", `query=${BODY_EDITS_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`,
-      "-F", `number=${number}`,
-      // A missing issue prints null, which the check below throws on, rather
-      // than nothing, which would read as an issue nobody has edited.
-      "--jq",
-      ".data.repository.issue | if . == null then null | @json" +
-        " else .userContentEdits.nodes[] | {editor: .editor.login, editedAt} | @json end",
-    ]),
-  ).map((edit) => {
-    if (!isContentEdit(edit)) throw new Error(`GitHub's answer names no issue ${number}'s body edits: ${JSON.stringify(edit)}`);
-    return edit;
-  });
+  return contentEdits("issue", number, run, repo);
 }
 
-const BODY_EDITS_QUERY = `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+// The edits to the issue's or pull request's body behind bodyEdits and pullRequestBodyEdits. `kind` is the GraphQL field:
+// issue(number:) answers null for a pull request, so a pull request is asked as pullRequest(number:).
+function contentEdits(kind: "issue" | "pullRequest", number: number, run: typeof execFileSync, repo: string): ContentEdit[] {
+  const [owner, name] = repo.split("/") as [string, string];
+  const query = `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
-    issue(number: $number) {
+    ${kind}(number: $number) {
       userContentEdits(first: 100, after: $endCursor) {
         nodes { editedAt editor { login } }
         pageInfo { hasNextPage endCursor }
@@ -1186,6 +1185,70 @@ const BODY_EDITS_QUERY = `query($owner: String!, $name: String!, $number: Int!, 
     }
   }
 }`;
+  return jsonLines(
+    ghWithStderr(run, [
+      "api", "graphql", "--paginate", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`,
+      "-F", `number=${number}`,
+      // A missing issue or pull request prints null, which the check below throws on, rather
+      // than nothing, which would read as one nobody has edited.
+      "--jq",
+      `.data.repository.${kind} | if . == null then null | @json` +
+        " else .userContentEdits.nodes[] | {editor: .editor.login, editedAt} | @json end",
+    ]),
+  ).map((edit) => {
+    if (!isContentEdit(edit)) {
+      const subject = kind === "issue" ? "issue" : "pull request";
+      throw new Error(`GitHub's answer names no ${subject} ${number}'s body edits: ${JSON.stringify(edit)}`);
+    }
+    return edit;
+  });
+}
+
+// Every edit to the pull request `number`'s title-and-body, every page, as bodyEdits reads an issue's (GraphQL
+// issue(number:) answers null for a PR, so this asks pullRequest(number:)). Throws when the answer names no such pull
+// request, or any edit doesn't fit ContentEdit.
+export function pullRequestBodyEdits(
+  number: number,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): ContentEdit[] {
+  return contentEdits("pullRequest", number, run, repo);
+}
+
+// The numbers of the open pull requests carrying `label` (gh issue list leaves pull requests out, so
+// issuesWithLabel can't see them). The cap sits far above any real number of open pull requests.
+export function pullRequestsWithLabel(
+  label: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): number[] {
+  return JSON.parse(
+    ghWithStderr(run, [
+      "pr", "list", "--repo", repo, "--state", "open", "--label", label, "--limit", "1000", "--json", "number", "--jq", "[.[].number]",
+    ]),
+  ) as number[];
+}
+
+// The names of the labels the pull request `number` carries now, read fresh.
+export function pullRequestLabels(
+  number: number,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): string[] {
+  return JSON.parse(
+    ghWithStderr(run, ["pr", "view", String(number), "--repo", repo, "--json", "labels", "--jq", "[.labels[].name]"]),
+  ) as string[];
+}
+
+// Removes `label` from the pull request `number` (gh issue edit refuses a pull request's number).
+export function removePullRequestLabel(
+  number: number,
+  label: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): void {
+  ghWithStderr(run, ["pr", "edit", String(number), "--repo", repo, "--remove-label", label]);
+}
 
 function isContentEdit(value: unknown): value is ContentEdit {
   const edit = value as Partial<Record<keyof ContentEdit, unknown>> | null;

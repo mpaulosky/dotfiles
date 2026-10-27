@@ -4,7 +4,9 @@
 //   Phase 0 (Housekeeping):     Two steps that need no agent. First the
 //                               follow-up sweep (lib/follow-up.mts): for each
 //                               open PR the host published for an in-scope
-//                               issue, it re-requests a Copilot review that
+//                               issue, or that the owner handed off with the
+//                               sandcastle:follow-up label (default queue
+//                               scope only), it re-requests a Copilot review that
 //                               never came, updates a settled PR that's only
 //                               behind main on GitHub, and logs one that needs
 //                               a follow-up pass; and it hands back an issue
@@ -265,10 +267,10 @@ try {
   // lib/building.mts).
   installBuildingLabelRelease(process);
 
-  // A run that crashed left sandcastle:building on the issue it was building.
+  // A run that crashed left sandcastle:building on the issue (or hand-off pull request) it was building.
   // Only a label older than any real build is cleared, so a live run's stays.
   for (const issueNumber of clearStaleBuildingLabels()) {
-    console.log(`  🧹 #${issueNumber}: cleared a stale ${BUILDING_LABEL} label left by a run that didn't finish.`);
+    console.log(`  🧹 #${issueNumber} (an issue or a hand-off pull request): cleared a stale ${BUILDING_LABEL} label left by a run that didn't finish.`);
   }
 
   startedUp = true;
@@ -314,7 +316,7 @@ try {
     // and the gate, which would otherwise hold the issue back for the rest
     // of the run.
     for (const issueNumber of releaseAllBuildingLabels()) {
-      console.log(`  🧹 #${issueNumber}: removed ${BUILDING_LABEL}, which an earlier round couldn't.`);
+      console.log(`  🧹 #${issueNumber} (an issue or a hand-off pull request): removed ${BUILDING_LABEL}, which an earlier round couldn't.`);
     }
 
     // The early exit: before intake, the first step that can start Claude,

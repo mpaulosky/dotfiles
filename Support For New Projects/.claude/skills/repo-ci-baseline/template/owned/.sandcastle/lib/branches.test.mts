@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { branchFor, discardClosedWork, fetchMain, headOfRef, isIssueBranch, parseHeads, prepareBranches, slugFor, type BranchRefs } from "./branches.mts";
+import { branchFor, discardClosedWork, fetchMain, headOfRef, isHandOffBranch, isIssueBranch, parseHeads, prepareBranches, slugFor, type BranchRefs } from "./branches.mts";
 
 // The branch standard, from the script the pre-push hook and CI's Branch name check share.
 const checkBranchName = fileURLToPath(new URL("../../scripts/check-branch-name.sh", import.meta.url));
@@ -86,6 +86,71 @@ describe("isIssueBranch", () => {
     ]) {
       assert.ok(!isIssueBranch(branch, 4), branch);
       assert.ok(!passesBranchStandard(branch), branch);
+    }
+  });
+});
+
+// The branches of a pull request handed to Sandcastle with the sandcastle:follow-up label: the same names
+// scripts/check-branch-name.sh lets through, so a name that reaches a shell is as strict as an issue branch's.
+describe("isHandOffBranch", () => {
+  for (const branch of ["feature/5-add-search", "fix/12-stop-the-crash", "hotfix/1-patch", "chore/tidy-up", "chore/a", "chore/bump-v2-deps", "feature/314-x"]) {
+    it(`accepts ${branch}`, () => {
+      assert.equal(isHandOffBranch(branch), true);
+    });
+  }
+
+  for (const branch of [
+    "chore/1-x",
+    "chore/",
+    "chore/Tidy-Up",
+    "chore/tidy--up",
+    "chore/tidy-up-",
+    "Feature/5-add-search",
+    "feature/5",
+    "feature/x-add-search",
+    "feature/5-Add-Search",
+    "claude/x",
+    "dependabot/npm_and_yarn/x",
+    "docs/release-notes",
+    "docs/backfill-blog-posts",
+    "main",
+    "feature/5-add-search\n",
+    "fix/4-$(touch-x)",
+    "fix/4-add;rm",
+    "fix/4-add search",
+    "fix/4-add-search/more",
+    "xfix/4-add-search",
+    "",
+    " ",
+  ]) {
+    it(`refuses ${JSON.stringify(branch)}`, () => {
+      assert.equal(isHandOffBranch(branch), false);
+    });
+  }
+
+  it("accepts exactly the names scripts/check-branch-name.sh exits 0 for, over a corpus of good and bad names", () => {
+    const corpus = [
+      "feature/5-add-search", "fix/12-a-b", "hotfix/1-x", "chore/tidy-up", "chore/1-x", "chore/", "feature/5-", "feature/5",
+      "Feature/5-x", "claude/x", "dependabot/x", "docs/release-notes", "main", "feature/5-x\n", "fix/4-$(x)", "fix/4-a b", "",
+      "feature/0-zero", "hotfix/007-bond", "chore/a-1-b", "chore/a_b", "fix/9-A",
+      "chore/a\t", "chore/a\r", "feature/5-x ", "chore/ ",
+    ];
+
+    for (const branch of corpus) assert.equal(isHandOffBranch(branch), passesBranchStandard(branch), JSON.stringify(branch));
+  });
+
+  // Not in the corpus above: bash's [a-z] and [0-9] take letters and digits of other scripts in some locales, so the
+  // script's answer depends on the machine. A hand-off branch stays ASCII, whatever the script says.
+  for (const branch of ["fix/4-é", "feature/٣-x", "fix/4-ａ", "chore/é", "chore/a\u00a0b"]) {
+    it(`refuses ${JSON.stringify(branch)}, whatever the locale's [a-z] takes`, () => {
+      assert.equal(isHandOffBranch(branch), false);
+    });
+  }
+
+  it("accepts every issue branch isIssueBranch accepts, since the branch standard does", () => {
+    for (const branch of ["feature/4-add-search", "fix/4-stop-the-crash", "hotfix/4-stop-the-crash"]) {
+      assert.ok(isIssueBranch(branch, 4));
+      assert.equal(isHandOffBranch(branch), true, branch);
     }
   });
 });

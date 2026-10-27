@@ -1,23 +1,37 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BranchRefs } from "./branches.mts";
-import { COPILOT_REVIEWER, FOLLOW_UP_REPLY_MARKER, PR_MARKER } from "./config.mts";
-import type { ClosedPullRequest, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent } from "./github.mts";
+import {
+  COPILOT_REVIEWER,
+  FOLLOW_UP_LABEL,
+  FOLLOW_UP_REPLY_MARKER,
+  LOCAL_QUEUE_LABEL,
+  PR_MARKER,
+  QUEUE_LABEL,
+  SESSION_REPLY_MARKER,
+  type QueueScope,
+} from "./config.mts";
+import type { ClosedPullRequest, ContentEdit, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent } from "./github.mts";
 import {
   closedPrHandBackComment,
   closedWithoutMerging,
   decide,
   followUpPhase,
+  handOffApproval,
   isCopilot,
+  liveFollowUpGitHub,
   isSandcastlePullRequest,
   issueNumberOf,
   startFromMain,
   sweepPullRequests,
   sweepSkipReason,
+  sweepSubject,
   threadStanding,
   type FollowUpGitHub,
+  type SweepContext,
   type SweepPullRequest,
 } from "./follow-up.mts";
+import { activeQueueScope, useQueueScope, type Approval } from "./queue.mts";
 import { OutcomeReport, WaitingPrReport } from "./report.mts";
 
 const HOST = "sandcastle-bot";
@@ -31,6 +45,7 @@ const IN_SCOPE = new Set([42]);
 function pr(overrides: Partial<SweepPullRequest> = {}): SweepPullRequest {
   return {
     number: 101,
+    title: "feat: Add search",
     author: HOST,
     body: `${PR_MARKER}\nCloses #42`,
     baseRefName: "main",
@@ -564,6 +579,8 @@ function stubGithub({
   isOwner = () => true,
   pullRequestEvents = () => [],
   reviewThreads,
+  pullRequestBodyEdits = () => [],
+  followsHandOffs = true,
 }: {
   prs?: SweepPullRequest[];
   closed?: ClosedPullRequest[];
@@ -576,6 +593,10 @@ function stubGithub({
   // comment each, so a sweep test that doesn't care about replies sees the
   // threads it set up.
   reviewThreads?: (number: number) => ReviewThread[];
+  // A PR's description edits, read for a hand-off PR's approval.
+  pullRequestBodyEdits?: (number: number) => ContentEdit[];
+  // Whether this run follows hand-off PRs; true unless a test says otherwise.
+  followsHandOffs?: boolean;
 } = {}) {
   const reviewThreadCalls: number[] = [];
   const requestedReviews: string[] = [];
@@ -598,6 +619,9 @@ function stubGithub({
     isOwner,
     pullRequestEvents,
     addPullRequestLabel: (number, label) => void addedPrLabels.push({ number, label }),
+    pullRequestBodyEdits,
+    followsHandOffs: () => followsHandOffs,
+    repositoryOwner: () => OWNER,
     reviewThreads: (number) => {
       reviewThreadCalls.push(number);
       if (reviewThreads !== undefined) return reviewThreads(number);
@@ -837,6 +861,9 @@ describe("sweepPullRequests", () => {
       pullRequestEvents: () => [],
       addPullRequestLabel: () => {},
       reviewThreads: () => [],
+      pullRequestBodyEdits: () => [],
+      followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
 
     sweepPullRequests(github, () => {}, NOW);
@@ -1141,6 +1168,9 @@ describe("sweepPullRequests", () => {
       pullRequestEvents: () => [],
       addPullRequestLabel: () => {},
       reviewThreads: () => [],
+      pullRequestBodyEdits: () => [],
+      followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
     const lines: string[] = [];
 
@@ -1305,6 +1335,9 @@ describe("sweepPullRequests", () => {
       pullRequestEvents: () => [],
       addPullRequestLabel: () => {},
       reviewThreads: () => [],
+      pullRequestBodyEdits: () => [],
+      followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
     const outcomes = new OutcomeReport();
 
@@ -1565,6 +1598,733 @@ describe("sweepPullRequests' needsPass and passes result", () => {
   });
 });
 
+// A session's reply (lib/config.mts#SESSION_REPLY_MARKER) is posted under the owner's token, so it is the host login's
+// or another owner's comment carrying the marker anywhere in its body. Like the host's own reply, it answers the thread it ends.
+describe("threadStanding and a session's replies", () => {
+  const sessionReply = (body = "Fixed in abc1234.") => ({ author: HOST, body: `${body}\n\n${SESSION_REPLY_MARKER}` });
+  const hostIsOwner = ownerIs(HOST);
+
+  it("is \"answered\" for a bot thread whose last bot, host or owner comment is a session's reply", () => {
+    assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [sessionReply()]), hostIsOwner, HOST), "answered");
+  });
+
+  it("is \"answered\" for an owner thread whose last owner or host comment is a session's reply", () => {
+    assert.equal(threadStanding(thread("owner", false, [sessionReply()]), ownerIs("owner"), HOST), "answered");
+  });
+
+  it("counts the marker anywhere in the body, not only at its start", () => {
+    for (const body of [`${SESSION_REPLY_MARKER} Fixed.`, `Fixed.\n${SESSION_REPLY_MARKER}\nMore text.`]) {
+      assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [{ author: HOST, body }]), hostIsOwner, HOST), "answered", body);
+    }
+  });
+
+  it("is \"answered\" for a thread a session opened itself, with its marker in the first comment", () => {
+    const opened: Pick<ReviewThread, "resolved" | "comments"> = {
+      resolved: false,
+      comments: [{ author: HOST, byBot: false, body: `Left for the owner.\n${SESSION_REPLY_MARKER}`, url: "" }],
+    };
+
+    assert.equal(threadStanding(opened, hostIsOwner, HOST), "answered");
+  });
+
+  it("is \"bot\" again once the bot comments after the session's reply", () => {
+    const later = { author: COPILOT_REVIEWER, body: "Please reconsider." };
+    const bot = thread(COPILOT_REVIEWER, true, [sessionReply(), later]);
+    bot.comments[2]!.byBot = true;
+
+    assert.equal(threadStanding(bot, hostIsOwner, HOST), "bot");
+  });
+
+  it("is \"owner\" again once the owner replies after the session's reply", () => {
+    const owner = thread("owner", false, [sessionReply(), { author: "owner", body: "Still not convinced." }]);
+
+    assert.equal(threadStanding(owner, ownerIs("owner"), HOST), "owner");
+  });
+
+  it("is \"answered\" when the session replied under an owner's login that isn't the host's", () => {
+    const reply = { author: "owner", body: `Fixed.\n\n${SESSION_REPLY_MARKER}` };
+
+    assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [reply]), ownerIs("owner"), "the-app[bot]"), "answered");
+    assert.equal(threadStanding(thread("owner", false, [reply]), ownerIs("owner"), "the-app[bot]"), "answered");
+  });
+
+  it("ignores a marker quoted by a collaborator or a stranger, since only the host's and the owner's logins count", () => {
+    const quoted = { author: "stranger", body: `Fixed.\n${SESSION_REPLY_MARKER}` };
+
+    assert.equal(threadStanding(thread("owner", false, [quoted]), ownerIs("owner"), HOST), "owner");
+    assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [quoted]), ownerIs("owner"), HOST), "bot");
+  });
+
+  it("ignores the marker in a comment by a login that is neither the host's nor a confirmed owner's", () => {
+    assert.equal(threadStanding(thread("owner", false, [sessionReply()]), ownerIs("owner"), "someone-else"), "owner");
+  });
+
+  it("doesn't count a host comment without the marker as an answer", () => {
+    assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [{ author: HOST, body: "I'll look at it." }]), hostIsOwner, HOST), "bot");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hand-off PRs: a PR Sandcastle didn't open, carrying the repository owner's sandcastle:follow-up label
+// ---------------------------------------------------------------------------
+
+const OWNER = "owner";
+const LABELLED_AT = "2026-10-09T10:00:00Z";
+
+// A PR the owner opened on a chore/ branch with no Sandcastle marker, labelled sandcastle:follow-up.
+function handOffPr(overrides: Partial<SweepPullRequest> = {}): SweepPullRequest {
+  return pr({
+    number: 201,
+    id: "PR_201",
+    title: "chore: Tidy the build",
+    author: OWNER,
+    body: "Tidies the build scripts.",
+    headRefName: "chore/tidy-the-build",
+    labels: [FOLLOW_UP_LABEL],
+    ...overrides,
+  });
+}
+
+const labelledBy = (actor: string | null, createdAt = LABELLED_AT): IssueEvent => ({ event: "labeled", actor, label: FOLLOW_UP_LABEL, createdAt });
+const ownerLabelled: IssueEvent[] = [labelledBy(OWNER)];
+
+const sweepContext = (overrides: Partial<SweepContext> = {}): SweepContext => ({
+  inScope: IN_SCOPE,
+  host: HOST,
+  building: new Set<number>(),
+  followsHandOffs: true,
+  ...overrides,
+});
+const approved = (): Approval => ({ approved: true });
+
+// A sweepSubject call with an approval that records whether it was read.
+function subjectOf(candidate: SweepPullRequest, context: SweepContext = sweepContext(), approval: () => Approval = approved) {
+  let approvalReads = 0;
+  const result = sweepSubject(candidate, context, () => {
+    approvalReads++;
+    return approval();
+  });
+  return { result, approvalReads: () => approvalReads };
+}
+
+describe("sweepSubject", () => {
+  describe("a Sandcastle issue's PR", () => {
+    it("is swept as the issue's, without reading the hand-off approval", () => {
+      const { result, approvalReads } = subjectOf(pr());
+
+      assert.deepEqual(result, { subject: { kind: "issue", issueNumber: 42 } });
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("is swept as the issue's even when it carries the follow-up label", () => {
+      const { result, approvalReads } = subjectOf(pr({ labels: [FOLLOW_UP_LABEL] }));
+
+      assert.deepEqual(result, { subject: { kind: "issue", issueNumber: 42 } });
+      assert.equal(approvalReads(), 0);
+    });
+  });
+
+  describe("a PR that isn't Sandcastle's and doesn't carry the label", () => {
+    const strangerPr = (overrides: Partial<SweepPullRequest> = {}) => handOffPr({ labels: [], ...overrides });
+
+    it("is skipped with the reason sweepSkipReason gives, reading no approval", () => {
+      const candidate = strangerPr();
+      const { result, approvalReads } = subjectOf(candidate);
+
+      assert.deepEqual(result, { skip: sweepSkipReason(candidate, IN_SCOPE, HOST, new Set()) });
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("keeps today's reason for a branch that isn't an issue branch", () => {
+      const { result } = subjectOf(strangerPr());
+
+      assert.deepEqual(result, { skip: "chore/tidy-the-build isn't an issue branch" });
+    });
+
+    it("keeps today's reasons for a fork and for a base other than main", () => {
+      assert.deepEqual(subjectOf(strangerPr({ isCrossRepository: true })).result, { skip: "it's from a fork" });
+      assert.deepEqual(subjectOf(strangerPr({ baseRefName: "develop" })).result, { skip: "it's into develop, not main" });
+    });
+
+    it("keeps today's reason for a collaborator's PR on an issue branch, whose issue is in scope", () => {
+      const candidate = strangerPr({ headRefName: BRANCH, author: "a-collaborator" });
+
+      assert.deepEqual(subjectOf(candidate).result, { skip: "a-collaborator opened it, not sandcastle-bot" });
+    });
+  });
+
+  describe("a Sandcastle-identity PR that also carries the label", () => {
+    // It has an in-scope issue branch, the host's authorship and the marker, so the hand-off path is never taken for it.
+    for (const [name, overrides] of [
+      ["a draft", { isDraft: true }],
+      ["labelled sandcastle:needs-human", { labels: [FOLLOW_UP_LABEL, "sandcastle:needs-human"] }],
+      ["truncated", { truncated: true }],
+    ] as [string, Partial<SweepPullRequest>][]) {
+      it(`stays skipped when it is ${name}, with sweepSkipReason's reason`, () => {
+        const candidate = pr({ labels: [FOLLOW_UP_LABEL], ...overrides });
+        const { result, approvalReads } = subjectOf(candidate);
+
+        assert.deepEqual(result, { skip: sweepSkipReason(candidate, IN_SCOPE, HOST, new Set()) });
+        assert.ok("skip" in result && result.skip.length > 0);
+        assert.equal(approvalReads(), 0);
+      });
+    }
+
+    it("stays skipped when its issue is labelled sandcastle:building", () => {
+      const candidate = pr({ labels: [FOLLOW_UP_LABEL] });
+      const { result, approvalReads } = subjectOf(candidate, sweepContext({ building: new Set([42]) }));
+
+      assert.match("skip" in result ? result.skip : "", /sandcastle:building/);
+      assert.equal(approvalReads(), 0);
+    });
+  });
+
+  describe("a labelled PR with no Sandcastle marker, issue branch or in-scope issue", () => {
+    it("is followed as a hand-off when the owner's label stands", () => {
+      const { result, approvalReads } = subjectOf(handOffPr());
+
+      assert.deepEqual(result, { subject: { kind: "hand-off" } });
+      assert.equal(approvalReads(), 1);
+    });
+
+    it("is followed on a feature/ branch whose issue isn't in scope", () => {
+      assert.deepEqual(subjectOf(handOffPr({ headRefName: "feature/99-owner-change" })).result, { subject: { kind: "hand-off" } });
+    });
+
+    it("is followed on an issue branch the host didn't author", () => {
+      assert.deepEqual(subjectOf(handOffPr({ headRefName: BRANCH })).result, { subject: { kind: "hand-off" } });
+    });
+
+    it("is followed when the host opened it but its body carries no marker", () => {
+      assert.deepEqual(subjectOf(handOffPr({ author: HOST, headRefName: BRANCH, body: "Closes #42" })).result, { subject: { kind: "hand-off" } });
+    });
+
+    it("leaves a Sandcastle issue's PR to its own run when the issue is outside this run's scope, label or not", () => {
+      const sandcastles = pr({ number: 77, headRefName: "feature/77-other-scope", labels: [FOLLOW_UP_LABEL] });
+      const { result, approvalReads } = subjectOf(sandcastles);
+
+      assert.ok("skip" in result);
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("takes the label in any case, as GitHub matches labels", () => {
+      assert.deepEqual(subjectOf(handOffPr({ labels: ["Sandcastle:Follow-Up"] })).result, { subject: { kind: "hand-off" } });
+    });
+  });
+
+  describe("a labelled PR that is not followed", () => {
+    it("is skipped when it comes from a fork, saying so, before reading the approval", () => {
+      const { result, approvalReads } = subjectOf(handOffPr({ isCrossRepository: true }));
+
+      assert.deepEqual(result, { skip: "it's from a fork" });
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("is skipped when it targets a branch other than main, saying which", () => {
+      const { result } = subjectOf(handOffPr({ baseRefName: "develop" }));
+
+      assert.deepEqual(result, { skip: "it's into develop, not main" });
+    });
+
+    it("is skipped by a run without the default queue scope, saying only the default scope follows hand-offs", () => {
+      const { result, approvalReads } = subjectOf(handOffPr(), sweepContext({ followsHandOffs: false }));
+
+      assert.match("skip" in result ? result.skip : "", /sandcastle:follow-up/);
+      assert.match("skip" in result ? result.skip : "", /default queue scope/);
+      assert.equal(approvalReads(), 0);
+    });
+
+    for (const branch of ["docs/release-notes", "dependabot/npm_and_yarn/x", "claude/fix-it", "chore/1-x", "Feature/5-x", "fix/4-$(x)"]) {
+      it(`is skipped on the branch ${branch}, which scripts/check-branch-name.sh refuses`, () => {
+        const { result, approvalReads } = subjectOf(handOffPr({ headRefName: branch }));
+
+        assert.match("skip" in result ? result.skip : "", /check-branch-name\.sh/);
+        assert.equal(approvalReads(), 0);
+      });
+    }
+
+    it("is skipped when the PR itself carries sandcastle:building, saying a run is passing on it", () => {
+      const { result, approvalReads } = subjectOf(handOffPr({ labels: [FOLLOW_UP_LABEL, "Sandcastle:Building"] }));
+
+      assert.match("skip" in result ? result.skip : "", /sandcastle:building/);
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("is skipped when the issue its branch names is labelled sandcastle:building", () => {
+      const { result, approvalReads } = subjectOf(handOffPr({ headRefName: "feature/43-owner-change" }), sweepContext({ building: new Set([43]) }));
+
+      assert.match("skip" in result ? result.skip : "", /sandcastle:building/);
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("is skipped as a draft", () => {
+      const { result, approvalReads } = subjectOf(handOffPr({ isDraft: true }));
+
+      assert.match("skip" in result ? result.skip : "", /draft/);
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("is skipped when labelled sandcastle:needs-human", () => {
+      const { result, approvalReads } = subjectOf(handOffPr({ labels: [FOLLOW_UP_LABEL, "sandcastle:needs-human"] }));
+
+      assert.match("skip" in result ? result.skip : "", /sandcastle:needs-human/);
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("is skipped when truncated, rather than decided from part of its data", () => {
+      const { result, approvalReads } = subjectOf(handOffPr({ truncated: true }));
+
+      assert.match("skip" in result ? result.skip : "", /more reviews, threads or checks/);
+      assert.equal(approvalReads(), 0);
+    });
+
+    it("is skipped when the label doesn't count, saying why", () => {
+      const { result, approvalReads } = subjectOf(handOffPr(), sweepContext(), () => ({ approved: false, reason: "a-stranger added sandcastle:follow-up, not the repository owner" }));
+
+      assert.equal(approvalReads(), 1);
+      assert.match("skip" in result ? result.skip : "", /its sandcastle:follow-up label doesn't count: a-stranger added sandcastle:follow-up, not the repository owner/);
+    });
+
+    it("lets a throw from the approval's reads reach the caller, which logs it and sweeps the PR again next round", () => {
+      assert.throws(
+        () =>
+          subjectOf(handOffPr(), sweepContext(), () => {
+            throw new Error("gh api failed: HTTP 502");
+          }),
+        /502/,
+      );
+    });
+  });
+});
+
+describe("handOffApproval", () => {
+  const HOST = "the-host";
+  const PR = { number: 201, author: OWNER };
+  function github(overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; isOwner?: (login: string | null) => boolean | undefined } = {}) {
+    const eventReads: number[] = [];
+    const editReads: number[] = [];
+    const stub = {
+      pullRequestEvents: (number: number) => {
+        eventReads.push(number);
+        return overrides.events ?? ownerLabelled;
+      },
+      pullRequestBodyEdits: (number: number) => {
+        editReads.push(number);
+        return overrides.edits ?? [];
+      },
+      isOwner: overrides.isOwner ?? ownerIs(OWNER),
+      repositoryOwner: () => OWNER,
+    };
+    return { stub, eventReads, editReads };
+  }
+  const reasonOf = (result: Approval) => (result.approved ? "" : result.reason);
+
+  it("approves a label the repository owner added last", () => {
+    assert.deepEqual(handOffApproval(PR, github().stub, HOST), { approved: true });
+  });
+
+  it("reads the PR's events and description edits for the PR's own number, once each", () => {
+    const { stub, eventReads, editReads } = github();
+
+    handOffApproval(PR, stub, HOST);
+
+    assert.deepEqual(eventReads, [201]);
+    assert.deepEqual(editReads, [201]);
+  });
+
+  it("approves a PR the host opened, whoever the owner check says it is", () => {
+    assert.deepEqual(handOffApproval({ number: 201, author: HOST }, github().stub, HOST), { approved: true });
+  });
+
+  it("matches the author with the repository's owner or the host without regard to case", () => {
+    assert.equal(handOffApproval({ number: 201, author: OWNER.toUpperCase() }, github().stub, HOST).approved, true);
+    assert.equal(handOffApproval({ number: 201, author: HOST.toUpperCase() }, github().stub, HOST).approved, true);
+  });
+
+  it("doesn't approve a PR a collaborator with push access opened, even with the owner's label", () => {
+    const stub = github({ isOwner: () => true }).stub;
+    const result = handOffApproval({ number: 201, author: "a-collaborator" }, stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /a-collaborator opened it/);
+  });
+
+  it("doesn't approve a PR whose author is gone", () => {
+    const result = handOffApproval({ number: 201, author: null }, github().stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /a deleted account opened it/);
+  });
+
+  it("doesn't approve a stranger's edit or rename made in the same second as the owner's label", () => {
+    const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: LABELLED_AT }];
+    const renamed: IssueEvent[] = [...ownerLabelled, { event: "renamed", actor: "a-stranger", label: null, createdAt: LABELLED_AT }];
+
+    assert.equal(handOffApproval(PR, github({ edits }).stub, HOST).approved, false);
+    assert.equal(handOffApproval(PR, github({ events: renamed }).stub, HOST).approved, false);
+  });
+
+  it("doesn't approve a stranger's edit whose time can't be read", () => {
+    const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "not a time" }];
+
+    assert.equal(handOffApproval(PR, github({ edits }).stub, HOST).approved, false);
+  });
+
+  it("still approves the owner's own edit made in the same second as the label", () => {
+    const edits: ContentEdit[] = [{ editor: OWNER, editedAt: LABELLED_AT }];
+
+    assert.deepEqual(handOffApproval(PR, github({ edits }).stub, HOST), { approved: true });
+  });
+
+  it("doesn't read the PR's events when its author already rules it out", () => {
+    const { stub, eventReads } = github();
+
+    handOffApproval({ number: 201, author: "a-stranger" }, stub, HOST);
+
+    assert.deepEqual(eventReads, []);
+  });
+
+  it("doesn't approve a label added by someone who isn't the owner", () => {
+    const result = handOffApproval(PR, github({ events: [labelledBy("a-stranger")] }).stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /a-stranger.*not the repository owner/);
+  });
+
+  it("doesn't approve a label added by an actor GitHub no longer knows", () => {
+    assert.equal(handOffApproval(PR, github({ events: [labelledBy(null)] }).stub, HOST).approved, false);
+  });
+
+  it("doesn't approve a label when the owner check couldn't be made", () => {
+    const result = handOffApproval(PR, github({ isOwner: () => undefined }).stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /couldn't check/);
+  });
+
+  it("doesn't approve a PR with no labeled event for sandcastle:follow-up", () => {
+    const other: IssueEvent = { event: "labeled", actor: OWNER, label: "sandcastle:ready", createdAt: LABELLED_AT };
+    const result = handOffApproval(PR, github({ events: [other] }).stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /sandcastle:follow-up/);
+  });
+
+  it("uses the latest labeled event: a stranger's label after the owner's doesn't count", () => {
+    const events = [labelledBy(OWNER, "2026-10-09T10:00:00Z"), labelledBy("a-stranger", "2026-10-09T11:00:00Z")];
+
+    assert.equal(handOffApproval(PR, github({ events }).stub, HOST).approved, false);
+  });
+
+  it("doesn't approve once a stranger renamed the PR after the owner's label", () => {
+    const events: IssueEvent[] = [...ownerLabelled, { event: "renamed", actor: "a-stranger", label: null, createdAt: "2026-10-09T11:00:00Z" }];
+    const result = handOffApproval(PR, github({ events }).stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /title/);
+  });
+
+  it("doesn't approve once a stranger edited the PR's description after the owner's label", () => {
+    const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "2026-10-09T11:00:00Z" }];
+    const result = handOffApproval(PR, github({ edits }).stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /body/);
+  });
+
+  it("approves again when the owner re-adds the label after a stranger's edit", () => {
+    const events = [labelledBy(OWNER, "2026-10-09T10:00:00Z"), labelledBy(OWNER, "2026-10-09T12:00:00Z")];
+    const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "2026-10-09T11:00:00Z" }];
+
+    assert.deepEqual(handOffApproval(PR, github({ events, edits }).stub, HOST), { approved: true });
+  });
+
+  it("ignores an edit by a stranger made before the label", () => {
+    const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "2026-10-08T11:00:00Z" }];
+
+    assert.deepEqual(handOffApproval(PR, github({ edits }).stub, HOST), { approved: true });
+  });
+
+  it("doesn't approve when an edit's author can't be checked", () => {
+    const edits: ContentEdit[] = [{ editor: "maybe-owner", editedAt: "2026-10-09T11:00:00Z" }];
+    const isOwner = (login: string | null) => (login === OWNER ? true : undefined);
+
+    assert.equal(handOffApproval(PR, github({ edits, isOwner }).stub, HOST).approved, false);
+  });
+});
+
+describe("sweepPullRequests and hand-off PRs", () => {
+  const behind = (overrides: Partial<SweepPullRequest> = {}) => handOffPr({ mergeStateStatus: "BEHIND", ...overrides });
+  const owned = (extra: Parameters<typeof stubGithub>[0] = {}): Parameters<typeof stubGithub>[0] => ({
+    isOwner: ownerIs(OWNER),
+    pullRequestEvents: () => ownerLabelled,
+    ...extra,
+  });
+
+  it("updates a settled, owner-labelled hand-off PR that's only behind main, and logs that it is followed up as a hand-off", () => {
+    const { updatedBranches, github } = stubGithub(owned({ prs: [behind()] }));
+    const lines: string[] = [];
+
+    sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+    assert.deepEqual(updatedBranches, [{ number: 201, expectedHeadSha: "a".repeat(40) }]);
+    assert.ok(
+      lines.some((line) => line.includes("PR #201 is followed up as a hand-off") && line.includes(FOLLOW_UP_LABEL)),
+      lines.join("\n"),
+    );
+  });
+
+  it("asks Copilot again for a hand-off PR that has no review, as it does for a Sandcastle PR", () => {
+    const completedAt = new Date(NOW - 61 * 60 * 1000).toISOString();
+    const { requestedReviews, github } = stubGithub(
+      owned({ prs: [handOffPr({ reviews: [], reviewRequests: [], checks: [{ name: "build", completed: true, green: true, completedAt }] })] }),
+    );
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(requestedReviews, ["PR_201"]);
+  });
+
+  it("flags a conflicted hand-off PR for a pass, with a target carrying the PR's title and description and no issue number", () => {
+    const { github } = stubGithub(owned({ prs: [handOffPr({ mergeStateStatus: "DIRTY", headRefOid: "b".repeat(40) })] }));
+
+    const result = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(result.needsPass, [201]);
+    assert.deepEqual(result.passes, [
+      {
+        number: 201,
+        id: "PR_201",
+        headRefName: "chore/tidy-the-build",
+        headRefOid: "b".repeat(40),
+        handOff: { title: "chore: Tidy the build", body: "Tidies the build scripts." },
+        reasons: ["it has merge conflicts"],
+        conflicted: true,
+      },
+    ]);
+    assert.ok(!("issueNumber" in result.passes[0]!) || result.passes[0]!.issueNumber === undefined);
+  });
+
+  it("flags a hand-off PR with a red check for a pass", () => {
+    const red = [{ name: "lint", completed: true, green: false, completedAt: "2026-10-10T09:00:00Z" }];
+    const { github } = stubGithub(owned({ prs: [handOffPr({ checks: red })] }));
+
+    const result = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(result.needsPass, [201]);
+    assert.deepEqual(result.passes[0]!.reasons, ["check lint is red"]);
+  });
+
+  it("flags a hand-off PR with an unresolved bot thread, and not when a session already answered it", () => {
+    const botThreads = [{ resolved: false, byBot: true, author: COPILOT_REVIEWER }];
+    const open = stubGithub(owned({ prs: [handOffPr({ threads: botThreads })] }));
+    const answered = stubGithub(
+      owned({
+        prs: [handOffPr({ threads: botThreads })],
+        reviewThreads: () => [thread(COPILOT_REVIEWER, true, [{ author: HOST, body: `Fixed.\n\n${SESSION_REPLY_MARKER}` }])],
+      }),
+    );
+
+    assert.deepEqual(sweepPullRequests(open.github, () => {}, NOW).needsPass, [201]);
+    assert.deepEqual(sweepPullRequests(answered.github, () => {}, NOW).needsPass, []);
+  });
+
+  it("doesn't flag a Sandcastle PR for a bot thread a session answered either", () => {
+    const { github } = stubGithub({
+      prs: [pr({ threads: [{ resolved: false, byBot: true, author: COPILOT_REVIEWER }] })],
+      isOwner: ownerIs(HOST),
+      reviewThreads: () => [thread(COPILOT_REVIEWER, true, [{ author: HOST, body: `Fixed.\n\n${SESSION_REPLY_MARKER}` }])],
+    });
+
+    assert.deepEqual(sweepPullRequests(github, () => {}, NOW).needsPass, []);
+  });
+
+  it("counts a thread a session answered as waiting on the owner in the run report", () => {
+    const { github } = stubGithub(
+      owned({
+        prs: [handOffPr({ threads: [{ resolved: false, byBot: true, author: COPILOT_REVIEWER }] })],
+        reviewThreads: () => [thread(COPILOT_REVIEWER, true, [{ author: HOST, body: `Fixed.\n\n${SESSION_REPLY_MARKER}` }])],
+      }),
+    );
+    const waiting = new WaitingPrReport();
+
+    sweepPullRequests(github, () => {}, NOW, undefined, waiting);
+
+    assert.deepEqual(waiting.items(), [{ pr: 201, threads: 0, answered: 1 }]);
+  });
+
+  it("leaves an unlabelled PR that isn't Sandcastle's alone, reading neither its events nor its edits", () => {
+    const eventReads: number[] = [];
+    const editReads: number[] = [];
+    const { updatedBranches, github } = stubGithub(
+      owned({
+        prs: [behind({ labels: [] })],
+        pullRequestEvents: (number) => (eventReads.push(number), ownerLabelled),
+        pullRequestBodyEdits: (number) => (editReads.push(number), []),
+      }),
+    );
+    const lines: string[] = [];
+
+    sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+    assert.deepEqual(updatedBranches, []);
+    assert.deepEqual(eventReads, []);
+    assert.deepEqual(editReads, []);
+    assert.ok(lines.some((line) => line.includes("#201") && line.includes("isn't swept")), lines.join("\n"));
+  });
+
+  it("leaves a labelled PR alone in a run without the default queue scope, saying why", () => {
+    const { updatedBranches, github } = stubGithub(owned({ prs: [behind()], followsHandOffs: false }));
+    const lines: string[] = [];
+
+    const result = sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+    assert.deepEqual(updatedBranches, []);
+    assert.deepEqual(result, { needsPass: [], passes: [] });
+    assert.ok(lines.some((line) => line.includes("#201") && line.includes("default queue scope")), lines.join("\n"));
+  });
+
+  it("leaves alone a PR labelled by someone who isn't the owner, saying the label doesn't count", () => {
+    const { updatedBranches, github } = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [labelledBy("a-stranger")] }));
+    const lines: string[] = [];
+
+    sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+    assert.deepEqual(updatedBranches, []);
+    assert.ok(lines.some((line) => line.includes("#201") && line.includes("doesn't count")), lines.join("\n"));
+  });
+
+  it("leaves alone a PR labelled by an actor the owner check can't place (lookup undefined)", () => {
+    const { updatedBranches, github } = stubGithub({
+      prs: [behind()],
+      isOwner: (login) => (login === OWNER ? true : undefined),
+      pullRequestEvents: () => [labelledBy("unknown-actor")],
+    });
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(updatedBranches, []);
+  });
+
+  it("leaves alone a PR whose description a stranger edited after the owner's label", () => {
+    const { updatedBranches, github } = stubGithub(
+      owned({ prs: [behind()], pullRequestBodyEdits: () => [{ editor: "a-stranger", editedAt: "2026-10-09T11:00:00Z" }] }),
+    );
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(updatedBranches, []);
+  });
+
+  it("leaves alone a PR a stranger renamed after the owner's label, and follows it again once the owner re-adds the label", () => {
+    const renamed: IssueEvent = { event: "renamed", actor: "a-stranger", label: null, createdAt: "2026-10-09T11:00:00Z" };
+    const before = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [...ownerLabelled, renamed] }));
+    const after = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [...ownerLabelled, renamed, labelledBy(OWNER, "2026-10-09T12:00:00Z")] }));
+
+    sweepPullRequests(before.github, () => {}, NOW);
+    sweepPullRequests(after.github, () => {}, NOW);
+
+    assert.deepEqual(before.updatedBranches, []);
+    assert.equal(after.updatedBranches.length, 1);
+  });
+
+  for (const [name, overrides] of [
+    ["a fork", { isCrossRepository: true }],
+    ["into a branch other than main", { baseRefName: "develop" }],
+    ["a draft", { isDraft: true }],
+    ["labelled sandcastle:needs-human", { labels: [FOLLOW_UP_LABEL, "sandcastle:needs-human"] }],
+    ["labelled sandcastle:building", { labels: [FOLLOW_UP_LABEL, "sandcastle:building"] }],
+    ["truncated", { truncated: true }],
+    ["on a branch scripts/check-branch-name.sh refuses", { headRefName: "docs/release-notes" }],
+  ] as [string, Partial<SweepPullRequest>][]) {
+    it(`leaves a labelled PR alone when it is ${name}`, () => {
+      const { updatedBranches, github } = stubGithub(owned({ prs: [behind(overrides)] }));
+
+      const result = sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(updatedBranches, []);
+      assert.deepEqual(result, { needsPass: [], passes: [] });
+    });
+  }
+
+  it("leaves a labelled PR alone while the issue its branch names is being built", () => {
+    const { updatedBranches, github } = stubGithub(
+      owned({ prs: [behind({ headRefName: "feature/43-owner-change" })], issues: [{ number: 43, labels: ["sandcastle:building"] }] }),
+    );
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(updatedBranches, []);
+  });
+
+  it("reads a hand-off PR's events once, the one read serving both the approval and the needs-human check", () => {
+    const eventReads: number[] = [];
+    const { github } = stubGithub(owned({ prs: [behind()], pullRequestEvents: (number) => (eventReads.push(number), ownerLabelled) }));
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(eventReads, [201]);
+  });
+
+  it("reads the events of a Sandcastle issue's PR once too", () => {
+    const eventReads: number[] = [];
+    const { github } = stubGithub({ prs: [pr({ mergeStateStatus: "BEHIND" })], pullRequestEvents: (number) => (eventReads.push(number), []) });
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(eventReads, [101]);
+  });
+
+  it("puts back sandcastle:needs-human a stranger removed from a hand-off PR, and leaves the PR alone", () => {
+    const strangerUnlabelled: IssueEvent = { event: "unlabeled", actor: "a-stranger", label: "sandcastle:needs-human", createdAt: "2026-10-09T12:00:00Z" };
+    const { addedPrLabels, updatedBranches, github } = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [...ownerLabelled, strangerUnlabelled] }));
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(addedPrLabels, [{ number: 201, label: "sandcastle:needs-human" }]);
+    assert.deepEqual(updatedBranches, []);
+  });
+
+  it("logs a failed read of the approval and still sweeps the other PRs", () => {
+    const failing = behind();
+    const ok = pr({ number: 102, id: "PR_102", headRefName: "feature/43-add-sorting", mergeStateStatus: "BEHIND" });
+    const { updatedBranches, github } = stubGithub(
+      owned({
+        prs: [failing, ok],
+        issues: [{ number: 42, labels: [] }, { number: 43, labels: [] }],
+        pullRequestEvents: (number) => {
+          if (number === 201) throw new Error("gh api failed: HTTP 502");
+          return [];
+        },
+      }),
+    );
+    const lines: string[] = [];
+
+    sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+    assert.deepEqual(updatedBranches.map((update) => update.number), [102]);
+    assert.ok(lines.some((line) => line.includes("#201") && line.includes("502") && line.includes("swept again next round")), lines.join("\n"));
+  });
+
+  it("still sweeps a Sandcastle PR as before beside a hand-off PR", () => {
+    const sandcastlePr = pr({ number: 102, id: "PR_102", mergeStateStatus: "BEHIND" });
+    const { updatedBranches, github } = stubGithub(owned({ prs: [behind(), sandcastlePr] }));
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(updatedBranches.map((update) => update.number).toSorted(), [102, 201]);
+  });
+
+  it("passes a Sandcastle PR's target with its issue number and no hand-off", () => {
+    const { github } = stubGithub({ prs: [pr({ mergeStateStatus: "DIRTY" })] });
+
+    const result = sweepPullRequests(github, () => {}, NOW);
+
+    assert.equal(result.passes[0]!.issueNumber, 42);
+    assert.equal(result.passes[0]!.handOff, undefined);
+  });
+});
+
 describe("startFromMain", () => {
   const issueNumber = 42;
   const base = "m".repeat(40);
@@ -1665,5 +2425,33 @@ describe("startFromMain", () => {
 
     assert.throws(() => startFromMain(issueNumber, BRANCH, base, github, refs), /HTTP 502/);
     assert.ok(!calls.some((call) => call.startsWith("delete")), calls.join("\n"));
+  });
+});
+
+describe("liveFollowUpGitHub.followsHandOffs", () => {
+  // The gate that keeps a SANDCASTLE_ISSUE run or a Sandcastle:local run off hand-off PRs: wired to the active queue scope.
+  // queue.mts has no way to unset the scope, so one that was unset before stays at the last scope applied here.
+  function withScope<T>(scope: QueueScope, read: () => T): T {
+    let before: QueueScope | undefined;
+    try {
+      before = activeQueueScope();
+    } catch {
+      before = undefined;
+    }
+    useQueueScope(scope);
+    try {
+      return read();
+    } finally {
+      if (before !== undefined) useQueueScope(before);
+    }
+  }
+
+  it("follows hand-offs on the default queue", () => {
+    assert.equal(withScope({ kind: "label", label: QUEUE_LABEL }, () => liveFollowUpGitHub.followsHandOffs()), true);
+  });
+
+  it("doesn't on the local queue's label or an issue scope", () => {
+    assert.equal(withScope({ kind: "label", label: LOCAL_QUEUE_LABEL }, () => liveFollowUpGitHub.followsHandOffs()), false);
+    assert.equal(withScope({ kind: "issue", number: 7 }, () => liveFollowUpGitHub.followsHandOffs()), false);
   });
 });

@@ -6,7 +6,7 @@
 // follow-up passes once, then exits: no intake, no builds, no rounds, so it
 // answers a PR in minutes while a full run is still building. It runs in its
 // own concurrency group, and the two stay off each other's PRs through
-// sandcastle:building (lib/follow-up.mts#sweepSkipReason).
+// sandcastle:building (lib/follow-up.mts#sweepSubject: the issue's label, or a hand-off PR's own).
 // ---------------------------------------------------------------------------
 
 import { fetchMain } from "./branches.mts";

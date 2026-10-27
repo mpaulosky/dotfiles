@@ -190,8 +190,8 @@ Set it on the command line, not in .sandcastle/.env. In GitHub Actions the queue
 // and its PR) or SANDCASTLE_LABEL (a local run working a label of the
 // owner's choosing, so it doesn't compete with Actions over the whole
 // queue) must be set. Throws QueueScopeError for anything else, including a
-// SANDCASTLE_LABEL naming a label the host manages (SANDCASTLE_LABELS or
-// bug), compared case-insensitively.
+// SANDCASTLE_LABEL naming a label the host manages (SANDCASTLE_LABELS or bug)
+// or the owner's hand-off label (FOLLOW_UP_LABEL), compared case-insensitively.
 export function queueScopeFrom(env: Record<string, string | undefined>): QueueScope {
   const issue = env.SANDCASTLE_ISSUE?.trim() || undefined;
   const label = env.SANDCASTLE_LABEL?.trim() || undefined;
@@ -212,6 +212,9 @@ export function queueScopeFrom(env: Record<string, string | undefined>): QueueSc
   // quote would fail gh's parse.
   if (/[,"]/.test(label)) throw scopeError(`SANDCASTLE_LABEL can't contain a comma or a double quote, which gh reads as a list: "${label}".`);
   const managed = [...SANDCASTLE_LABELS.map((managedLabel) => managedLabel.name), "bug"];
+  if (label.toLowerCase() === FOLLOW_UP_LABEL.toLowerCase()) {
+    throw scopeError(`SANDCASTLE_LABEL can't be "${label}": it is the owner's hand-off label for a pull request, not a queue.`);
+  }
   if (managed.some((name) => name.toLowerCase() === label.toLowerCase())) {
     throw scopeError(`SANDCASTLE_LABEL can't be "${label}": Sandcastle adds and removes that label itself.`);
   }
@@ -235,9 +238,9 @@ export function describeQueueScope(scope: QueueScope): string {
   return scope.kind === "label" ? `issues labelled ${scope.label}` : `issue #${scope.number} and its PR`;
 }
 
-// Marks an issue while a sandbox is building it (see lib/build.mts#buildIssue
-// and lib/gate.mts), so a second Sandcastle run doesn't start building the
-// same issue too (a near-miss once).
+// Marks an issue, or a hand-off pull request (lib/building.mts), while a
+// sandbox is working on it (see lib/build.mts#buildIssue and lib/gate.mts), so
+// a second Sandcastle run doesn't start on the same one too (a near-miss once).
 export const BUILDING_LABEL = "sandcastle:building";
 
 // How old a sandcastle:building label must be before startup clears it as a
@@ -257,7 +260,7 @@ export const SANDCASTLE_LABELS: readonly SandcastleLabel[] = [
   {
     name: BUILDING_LABEL,
     color: "1D76DB",
-    description: "Sandcastle is building this issue right now. Leave it alone until the label clears.",
+    description: "Sandcastle is working on this issue or pull request now. Leave it alone until the label clears.",
   },
   {
     name: "sandcastle:needs-info",
@@ -271,6 +274,32 @@ export const SANDCASTLE_LABELS: readonly SandcastleLabel[] = [
   },
   { name: "bug", color: "d73a4a", description: "Something isn't working" },
 ];
+
+// The label the repository owner puts on a pull request Sandcastle didn't open, to have Sandcastle follow it up like one
+// of its own (lib/follow-up.mts#sweepSubject). Not one of SANDCASTLE_LABELS: it is a person's to add, and a run never
+// adds or removes it.
+export const FOLLOW_UP_LABEL = "sandcastle:follow-up";
+
+// How the host creates FOLLOW_UP_LABEL at startup. GitHub refuses a label description over 100 characters.
+export const FOLLOW_UP_LABEL_DEFINITION: SandcastleLabel = {
+  name: FOLLOW_UP_LABEL,
+  color: "C5DEF5",
+  description: "Sandcastle follows this pull request up. Counts only from the owner or a login with push access.",
+};
+
+// Every label the host creates at startup (lib/github.mts#ensureLabels): SANDCASTLE_LABELS, the local queue's label and
+// the hand-off label.
+export const HOST_LABELS: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION, FOLLOW_UP_LABEL_DEFINITION];
+
+// The marker a Claude Code session ends every reply and comment with (docs/PROCESS.md): it posts under the owner's token,
+// so nothing else tells its comments from the owner's.
+export const SESSION_REPLY_MARKER = "<!-- claude-session -->";
+
+// Whether `scope` is the queue GitHub Actions always runs, every issue labelled QUEUE_LABEL. Only that run follows
+// hand-off pull requests.
+export function isDefaultQueueScope(scope: QueueScope): boolean {
+  return scope.kind === "label" && scope.label.toLowerCase() === QUEUE_LABEL.toLowerCase();
+}
 
 // The HTML comment marking an issue comment as a failed build attempt, so the
 // count survives a restart (see lib/github.mts#markerCommentsSince).

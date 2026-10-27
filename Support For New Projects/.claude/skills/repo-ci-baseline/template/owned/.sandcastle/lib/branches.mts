@@ -41,6 +41,13 @@ export function isIssueBranch(branch: string, issueNumber: number): boolean {
   return new RegExp(`^(?:${issuePrefixes.join("|")})/${issueNumber}-[a-z0-9]+(?:-[a-z0-9]+)*$`).test(branch);
 }
 
+// Whether a branch is one scripts/check-branch-name.sh accepts, without --pr: feature/, fix/ or hotfix/{n}-{slug}, or
+// chore/{slug}. The branch of a pull request the owner handed to Sandcastle (lib/follow-up.mts#sweepSubject) has to pass
+// it, because its name reaches a shell the way an issue branch's does ({{BRANCH}} in review-prompt.md, git in the sandbox).
+export function isHandOffBranch(branch: string): boolean {
+  return /^(?:(?:feature|fix|hotfix)\/[0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*|chore\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/.test(branch);
+}
+
 // The issue's branch: its existing feature/, fix/ or hotfix/{n}-{slug} branch on the
 // remote when there is one, even if the title or labels have changed since, so
 // earlier work is built on rather than redone. Otherwise fix/{n}-{slug} for a

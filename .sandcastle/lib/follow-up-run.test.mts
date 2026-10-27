@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { UncountedStopError } from "./errors.mts";
-import type { FollowUpGitHub, PassTarget, SweepResult } from "./follow-up.mts";
+import { FOLLOW_UP_LABEL } from "./config.mts";
+import type { FollowUpGitHub, PassTarget, SweepPullRequest, SweepResult } from "./follow-up.mts";
 import { followUpOnlyRun, liveFollowUpRunSteps, liveSweep, type FollowUpRunSteps } from "./follow-up-run.mts";
 import type { ClosedPullRequest, SandcastleIssue } from "./github.mts";
 
@@ -162,6 +163,9 @@ describe("liveSweep", () => {
       pullRequestEvents: () => [],
       addPullRequestLabel: () => {},
       reviewThreads: () => [],
+      pullRequestBodyEdits: () => [],
+      followsHandOffs: () => true,
+      repositoryOwner: () => "owner",
     };
     return { github, closedCalls, handBacks };
   }
@@ -173,5 +177,60 @@ describe("liveSweep", () => {
 
     assert.deepEqual(closedCalls, []);
     assert.deepEqual(handBacks, []);
+  });
+
+  // A PR the owner handed off has no issue in the queue, so the follow-up-only run must still pass on it.
+  it("returns a labelled hand-off PR's pass target, which has no issue in the queue, with the closed PRs still unread", () => {
+    const handOffPr: SweepPullRequest = {
+      number: 201,
+      id: "PR_201",
+      title: "chore: Tidy the build",
+      author: "owner",
+      body: "Tidies the build scripts.",
+      baseRefName: "main",
+      headRefName: "chore/tidy-the-build",
+      headRefOid: "b".repeat(40),
+      isCrossRepository: false,
+      isDraft: false,
+      labels: [FOLLOW_UP_LABEL],
+      mergeStateStatus: "DIRTY",
+      reviewRequests: [],
+      reviews: [],
+      threads: [],
+      checks: [],
+      copilotRequestedAt: [],
+      truncated: false,
+    };
+    const { github, closedCalls } = stubGithub();
+    github.openPullRequests = () => [handOffPr];
+    github.pullRequestEvents = () => [{ event: "labeled", actor: "owner", label: FOLLOW_UP_LABEL, createdAt: "2026-10-09T10:00:00Z" }];
+    github.isOwner = (login) => login === "owner";
+
+    const result = liveSweep(github, () => {});
+
+    assert.deepEqual(result.needsPass, [201]);
+    assert.deepEqual(result.passes[0]?.handOff, { title: "chore: Tidy the build", body: "Tidies the build scripts." });
+    assert.deepEqual(closedCalls, []);
+  });
+});
+
+describe("followUpOnlyRun and a hand-off PR", () => {
+  const handOffTarget: PassTarget = {
+    number: 201,
+    id: "PR_201",
+    headRefName: "chore/tidy-the-build",
+    headRefOid: "b".repeat(40),
+    handOff: { title: "chore: Tidy the build", body: "Tidies the build scripts." },
+    reasons: ["it has merge conflicts"],
+    conflicted: true,
+  };
+
+  it("runs the passes for a sweep that flagged only a hand-off PR, though the queue is empty", async () => {
+    const { steps, calls, passCalls } = stubSteps({ sweep: { needsPass: [201], passes: [handOffTarget] }, queue: [] });
+
+    await followUpOnlyRun(steps, () => {});
+
+    assert.deepEqual(calls, ["startRound", "sweep", "fetchMain", "queue", "runPasses"]);
+    assert.deepEqual(passCalls, [{ targets: [handOffTarget], issues: [], base: "base-sha" }]);
   });
 });

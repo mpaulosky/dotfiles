@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { createCheckedSandbox } from "./build.mts";
-import { FOLLOW_UP_MARKER, FOLLOW_UP_PASS_CAP, FOLLOW_UP_REPLY_MARKER } from "./config.mts";
+import { BUILDING_LABEL, FOLLOW_UP_MARKER, FOLLOW_UP_PASS_CAP, FOLLOW_UP_REPLY_MARKER, SESSION_REPLY_MARKER } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import type { CheckState, PassTarget } from "./follow-up.mts";
+import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
   followUpPassPhase,
   giveUpComment,
+  handOffIssue,
   isGateCovered,
   parseVerdicts,
   passOutcomeEntry,
@@ -55,7 +56,7 @@ const sampleSecretMatch: SecretMatch = {
 
 const issue: SandcastleIssue = { number: ISSUE_NUMBER, title: "Fix the widget", body: "", labels: ["Sandcastle"], comments: [] };
 
-function passTarget(overrides: Partial<PassTarget> = {}): PassTarget {
+function passTarget(overrides: Partial<Extract<PassTarget, { issueNumber: number }>> = {}): PassTarget {
   return {
     number: PR_NUMBER,
     id: "PR_7",
@@ -789,6 +790,13 @@ function passHostFake(
     containsBase?: boolean;
     passCount?: number;
     markBuildingResult?: boolean;
+    // What claiming a hand-off PR's building label answers.
+    markPullRequestBuildingResult?: boolean;
+    // Claiming the issue a hand-off branch names, or releasing the issue's or the PR's claim, fails.
+    markBuildingThrows?: boolean;
+    markPullRequestBuildingThrows?: boolean;
+    unmarkBuildingThrows?: boolean;
+    unmarkPullRequestBuildingThrows?: boolean;
     sandbox?: ReturnType<typeof sandboxFake>;
     pushError?: Error;
     leaksSecret?: SecretMatch;
@@ -821,6 +829,10 @@ function passHostFake(
     fetchBranch: [] as string[],
     markBuilding: [] as number[],
     unmarkBuilding: [] as number[],
+    // Every release, in the order it was made.
+    releases: [] as string[],
+    markPullRequestBuilding: [] as number[],
+    unmarkPullRequestBuilding: [] as number[],
     createSandbox: [] as string[],
     push: [] as { branch: string; commit: string }[],
     replyToThread: [] as { threadId: string; body: string }[],
@@ -834,22 +846,38 @@ function passHostFake(
     log: [] as string[],
   };
   const sandbox = options.sandbox ?? sandboxFake();
+  const claimed = () => calls.markBuilding.length + calls.markPullRequestBuilding.length > 0;
   const passHost: PassHost = {
     gateCovered: options.gateCovered ?? covered,
     fetchBranch: (branch) => void calls.fetchBranch.push(branch),
     reviewThreads: () => ({
       headRefOid: options.headRefOid ?? HEAD,
-      threads: (calls.markBuilding.length > 0 ? options.threadsAfterClaim : undefined) ?? options.threads ?? [],
+      threads: (claimed() ? options.threadsAfterClaim : undefined) ?? options.threads ?? [],
     }),
     isOwner: options.isOwnerFn ?? isOwner,
     hostLogin: () => options.hostLogin ?? HOST_LOGIN,
-    passCount: () => (calls.markBuilding.length > 0 ? options.passCountAfterClaim : undefined) ?? options.passCount ?? 0,
+    passCount: () => (claimed() ? options.passCountAfterClaim : undefined) ?? options.passCount ?? 0,
     contains: () => options.containsBase ?? true,
     markBuilding: (issueNumber) => {
       calls.markBuilding.push(issueNumber);
+      if (options.markBuildingThrows) throw new Error("gh issue view failed");
       return options.markBuildingResult ?? true;
     },
-    unmarkBuilding: (issueNumber) => void calls.unmarkBuilding.push(issueNumber),
+    unmarkBuilding: (issueNumber) => {
+      calls.unmarkBuilding.push(issueNumber);
+      calls.releases.push(`#${issueNumber}`);
+      if (options.unmarkBuildingThrows) throw new Error("gh issue edit failed");
+    },
+    markPullRequestBuilding: (pr) => {
+      calls.markPullRequestBuilding.push(pr);
+      if (options.markPullRequestBuildingThrows) throw new Error("gh pr edit failed");
+      return options.markPullRequestBuildingResult ?? true;
+    },
+    unmarkPullRequestBuilding: (pr) => {
+      calls.unmarkPullRequestBuilding.push(pr);
+      calls.releases.push(`PR #${pr}`);
+      if (options.unmarkPullRequestBuildingThrows) throw new Error("gh pr edit failed");
+    },
     createSandbox: async (branch) => {
       calls.createSandbox.push(branch);
       return sandbox.sandbox;
@@ -891,6 +919,15 @@ function passHostFake(
 }
 
 describe("runPass", () => {
+  it("rejects without creating a sandbox when claiming the issue fails, since the pass would run unclaimed", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, markBuildingThrows: true });
+
+    await assert.rejects(runPass(passTarget(), issue, BASE, passHost), /gh issue view failed/);
+
+    assert.deepEqual(calls.createSandbox, []);
+    assert.deepEqual(calls.releases, []);
+  });
+
   // Acceptance criterion: "A settled PR with an open Copilot thread gets one
   // pass: a fix commit, a reply on the thread, the thread resolved, and a
   // pass-summary comment."
@@ -2127,5 +2164,386 @@ describe("runPass's merge of main in a sandbox from createCheckedSandbox", () =>
 
     assert.ok(!calls.log.some((line) => /merging main into the branch failed/.test(line)), calls.log.join("\n"));
     assert.ok(!calls.handBack.some((handBack) => /Committer identity unknown/.test(handBack.body)));
+  });
+});
+
+// A pull request the repository owner handed to Sandcastle with the sandcastle:follow-up label has no issue: the pass
+// claims the PR itself, and the prompt shows the PR's own title and description.
+const HAND_OFF_BRANCH = "chore/owner-pr";
+const handOffTarget = (overrides: Partial<Extract<PassTarget, { handOff: HandOffTarget }>> = {}): PassTarget =>
+  ({
+    number: PR_NUMBER,
+    id: "PR_7",
+    headRefName: HAND_OFF_BRANCH,
+    headRefOid: HEAD,
+    handOff: { title: "feat: Add widget search", body: "Adds search to the widget.\n\nSecond paragraph." },
+    reasons: ["1 unresolved bot thread(s)"],
+    conflicted: false,
+    ...overrides,
+  });
+
+describe("handOffIssue", () => {
+  it("refuses a target that wasn't handed off", () => {
+    assert.throws(() => handOffIssue(passTarget()), /was not handed off/);
+  });
+
+  it("takes the PR's number as the issue number and its title as the title", () => {
+    const view = handOffIssue(handOffTarget());
+
+    assert.equal(view.number, PR_NUMBER);
+    assert.equal(view.title, "feat: Add widget search");
+  });
+
+  it("opens the body with a note that this is not an issue but a pull request handed off, naming the PR's number", () => {
+    const view = handOffIssue(handOffTarget());
+
+    assert.match(view.body, /^\(This is not an issue\. The pull request was handed off to Sandcastle by the repository owner;/);
+    assert.match(view.body, new RegExp(`#${PR_NUMBER} is the pull request's number`));
+  });
+
+  it("follows the note with the PR's description unchanged", () => {
+    const view = handOffIssue(handOffTarget());
+
+    assert.ok(view.body.endsWith("\n\nAdds search to the widget.\n\nSecond paragraph."), view.body);
+  });
+
+  it("gives no labels and no comments, since a PR has no issue's queue labels or discussion", () => {
+    const view = handOffIssue(handOffTarget());
+
+    assert.deepEqual(view.labels, []);
+    assert.deepEqual(view.comments, []);
+  });
+
+  it("still carries the note for a PR with an empty description", () => {
+    const view = handOffIssue(handOffTarget({ handOff: { title: "chore: Tidy", body: "" } }));
+
+    assert.match(view.body, /^\(This is not an issue\./);
+  });
+});
+
+describe("runPass on a hand-off PR", () => {
+  const view = () => handOffIssue(handOffTarget());
+
+  it("claims sandcastle:building on the PR, never on an issue, and releases that claim after the pass", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.markPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.markBuilding, []);
+    assert.deepEqual(calls.unmarkBuilding, []);
+  });
+
+  it("rejects without creating a sandbox when claiming the PR fails, since the pass would run unclaimed", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, markPullRequestBuildingThrows: true });
+
+    await assert.rejects(runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost), /gh pr edit failed/);
+
+    assert.deepEqual(calls.createSandbox, []);
+    assert.deepEqual(calls.markBuilding, []);
+    assert.deepEqual(calls.releases, []);
+  });
+
+  it("claims the PR and releases it even when the pass throws", async () => {
+    const sandbox = sandboxFake({ roleFailing: ["follow-up"] });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    await runPass(handOffTarget(), view(), BASE, passHost).catch(() => undefined);
+
+    assert.deepEqual(calls.markPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkBuilding, []);
+  });
+
+  it("also claims the issue a hand-off PR's issue branch names, and releases both after the pass", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.markPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.markBuilding, [60]);
+    assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkBuilding, [60]);
+  });
+
+  it("skips and gives the PR claim back when a build already holds the issue its branch names", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, markBuildingResult: false });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "skipped");
+    assert.equal(outcome.kind === "skipped" ? outcome.reason : "", "another run marked #60 " + BUILDING_LABEL);
+    assert.deepEqual(calls.createSandbox, []);
+    assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkBuilding, []);
+  });
+
+  it("is still passed on, with only the PR claimed, when claiming the branch's issue fails", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox, markBuildingThrows: true });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/999-no-such-issue" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.markBuilding, [999]);
+    assert.deepEqual(calls.releases, [`PR #${PR_NUMBER}`]);
+  });
+
+  it("doesn't claim an issue whose number is the PR's own", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    const outcome = await runPass(handOffTarget({ headRefName: `feature/${PR_NUMBER}-the-same-number` }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.markBuilding, []);
+  });
+
+  it("releases both claims, the issue's first, when the re-read finds nothing left to pass on", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], threadsAfterClaim: [], containsBase: true });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "skipped");
+    assert.deepEqual(calls.releases, ["#60", `PR #${PR_NUMBER}`]);
+  });
+
+  it("releases both claims, the issue's first, when the pass throws", async () => {
+    const sandbox = sandboxFake({ roleFailing: ["follow-up"] });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost).catch(() => undefined);
+
+    assert.deepEqual(calls.releases, ["#60", `PR #${PR_NUMBER}`]);
+  });
+
+  it("doesn't reject when releasing the PR's claim fails", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox, unmarkPullRequestBuildingThrows: true });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.releases, ["#60", `PR #${PR_NUMBER}`]);
+  });
+
+  it("still releases the PR's claim when releasing the issue's, which comes first, fails", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox, unmarkBuildingThrows: true });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.releases, ["#60", `PR #${PR_NUMBER}`]);
+  });
+
+  it("skips, naming the PR rather than an issue, when another run already marked the PR sandcastle:building", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, markPullRequestBuildingResult: false });
+
+    const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "skipped");
+    assert.equal(outcome.kind === "skipped" ? outcome.reason : "", `another run marked PR #${PR_NUMBER} ${BUILDING_LABEL}`);
+    assert.deepEqual(calls.createSandbox, []);
+    assert.deepEqual(calls.markBuilding, []);
+  });
+
+  it("doesn't claim the PR when there's nothing a follow-up pass handles", async () => {
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: true });
+
+    const outcome = await runPass(handOffTarget({ reasons: [] }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "skipped");
+    assert.deepEqual(calls.markPullRequestBuilding, []);
+    assert.deepEqual(calls.markBuilding, []);
+  });
+
+  it("hands the follow-up role the PR's number, title and description in the issue's prompt arguments", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    await runPass(handOffTarget(), view(), BASE, passHost);
+
+    const roleRun = sandbox.runs.find((run) => run.name === "follow-up");
+    assert.ok(roleRun !== undefined, "the bot thread starts a pass");
+    const args = roleRun.promptArgs as Record<string, string>;
+    assert.equal(args.TASK_ID, String(PR_NUMBER));
+    assert.equal(args.PR_NUMBER, String(PR_NUMBER));
+    assert.equal(args.ISSUE_TITLE, "feat: Add widget search");
+    assert.equal(args.BRANCH, HAND_OFF_BRANCH);
+    assert.match(args.ISSUE_BODY ?? "", /This is not an issue/);
+    assert.match(args.ISSUE_BODY ?? "", /Adds search to the widget\./);
+    assert.equal(args.ISSUE_COMMENTS, "(no comments)");
+  });
+
+  it("gives up on the PR itself, with sandcastle:needs-human on the PR, once it has had the cap of passes", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, passCount: FOLLOW_UP_PASS_CAP });
+
+    const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "gave-up");
+    assert.deepEqual(calls.handBack.map((handBack) => handBack.pr), [PR_NUMBER]);
+    assert.deepEqual(calls.unmarkPullRequestBuilding, [PR_NUMBER]);
+  });
+});
+
+describe("followUpPassPhase with a hand-off PR", () => {
+  it("runs a hand-off target although the queue holds no issue for it, claiming the PR", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox: sandboxFake({ followUpJson: "[]" }) });
+
+    const outcomes = await followUpPassPhase([handOffTarget()], [], BASE, passHost);
+
+    assert.deepEqual(calls.fetchBranch, [HAND_OFF_BRANCH]);
+    assert.deepEqual(calls.markPullRequestBuilding, [PR_NUMBER]);
+    assert.deepEqual(calls.markBuilding, []);
+    assert.equal(outcomes[0]!.kind, "passed");
+  });
+
+  it("runs it with handOffIssue(target) as the issue, whatever the queue holds under the PR's number", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+    const unrelated: SandcastleIssue = { number: PR_NUMBER, title: "An unrelated issue", body: "x", labels: ["Sandcastle"], comments: [] };
+
+    await followUpPassPhase([handOffTarget()], [unrelated], BASE, passHost);
+
+    const args = sandbox.runs.find((run) => run.name === "follow-up")?.promptArgs as Record<string, string> | undefined;
+    assert.equal(args?.ISSUE_TITLE, "feat: Add widget search");
+  });
+
+  it("still skips a target for an issue that is missing from the queue, beside a hand-off target", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox: sandboxFake({ followUpJson: "[]" }) });
+    const missing = passTarget({ number: 8, id: "PR_8", issueNumber: 99, headRefName: "feature/99-gone" });
+
+    const outcomes = await followUpPassPhase([missing, handOffTarget()], [], BASE, passHost);
+
+    assert.equal(outcomes[0]!.kind, "skipped");
+    assert.deepEqual(calls.fetchBranch, [HAND_OFF_BRANCH]);
+    assert.equal(outcomes[1]!.kind, "passed");
+  });
+
+  it("skips a hand-off target whose branch fails to fetch", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.fetchBranch = () => {
+      throw new Error("git fetch failed");
+    };
+
+    const outcomes = await followUpPassPhase([handOffTarget()], [], BASE, passHost);
+
+    assert.equal(outcomes[0]!.kind, "skipped");
+    assert.deepEqual(calls.markPullRequestBuilding, []);
+  });
+});
+
+// A Claude Code session posts under the owner's token, ending each reply with SESSION_REPLY_MARKER; its words are not
+// the owner's, so the role is never shown them, and a thread whose last word is one needs no second answer.
+describe("threadsForRole and a session's replies", () => {
+  const SESSION = "owner";
+  const sessionReply = (body = "Fixed in abc1234.") => ({
+    author: SESSION,
+    byBot: false,
+    body: `${body}\n\n${SESSION_REPLY_MARKER}`,
+    url: "https://github.com/o/r/pull/7#discussion_r9",
+  });
+
+  it("drops a bot thread whose last bot, host or owner comment is a session's reply", () => {
+    const answered = botThread({ comments: [...botThread().comments, sessionReply()] });
+
+    const { forRole, leftForHuman, unknown } = threadsForRole([answered], isOwner, SESSION);
+
+    assert.deepEqual(forRole, []);
+    assert.deepEqual(leftForHuman, []);
+    assert.deepEqual(unknown, []);
+  });
+
+  it("counts a session's reply under an owner's login that isn't the host's", () => {
+    const answered = botThread({ comments: [...botThread().comments, sessionReply()] });
+
+    const { forRole } = threadsForRole([answered], isOwner, "the-app[bot]");
+
+    assert.deepEqual(forRole, []);
+  });
+
+  it("drops an owner thread whose last owner or host comment is a session's reply", () => {
+    const answered = ownerThread({ comments: [...ownerThread().comments, sessionReply()] });
+
+    assert.deepEqual(threadsForRole([answered], isOwner, SESSION).forRole, []);
+  });
+
+  it("drops a thread a session opened itself", () => {
+    const opened = ownerThread({ comments: [sessionReply("Left for the owner.")] });
+
+    const sorted = threadsForRole([opened], isOwner, SESSION);
+
+    assert.deepEqual(sorted.forRole, []);
+    assert.deepEqual(sorted.leftForHuman, []);
+  });
+
+  it("shows the role a bot thread again once the bot comments after a session's reply, without the session's comment", () => {
+    const again = botThread({
+      comments: [
+        ...botThread().comments,
+        sessionReply("I'll leave this one."),
+        { author: "copilot-pull-request-reviewer", byBot: true, body: "Please reconsider.", url: "https://github.com/o/r/pull/7#discussion_r10" },
+      ],
+    });
+
+    const { forRole } = threadsForRole([again], isOwner, SESSION);
+
+    assert.equal(forRole.length, 1);
+    assert.deepEqual(
+      forRole[0]!.comments.map((comment) => comment.body),
+      ["Consider returning a Result<T> here.", "Please reconsider."],
+    );
+  });
+
+  it("drops a session's comment from an owner thread the owner wrote in again, keeping the owner's own words", () => {
+    const again = ownerThread({
+      comments: [...ownerThread().comments, sessionReply("Declined."), { author: "owner", byBot: false, body: "Still not convinced.", url: "" }],
+    });
+
+    const { forRole } = threadsForRole([again], isOwner, SESSION);
+
+    assert.equal(forRole.length, 1);
+    assert.deepEqual(
+      forRole[0]!.comments.map((comment) => comment.body),
+      ["Why not use pattern matching here?", "Still not convinced."],
+    );
+  });
+
+  it("doesn't look a bot's comment up as an owner when it can tell by the missing marker", () => {
+    const looked: (string | null)[] = [];
+    const spy: IsOwner = (login) => {
+      looked.push(login);
+      return isOwner(login);
+    };
+
+    threadsForRole([botThread()], spy, "the-app[bot]");
+
+    assert.deepEqual(looked, []);
+  });
+
+  it("keeps a session's reply under an owner login that isn't the host's out of what the role is shown", () => {
+    const later = { author: "copilot", byBot: true, body: "Still wrong.", url: "https://github.com/o/r/pull/7#discussion_r10" };
+    const thread = botThread({ comments: [...botThread().comments, sessionReply(), later] });
+
+    const { forRole } = threadsForRole([thread], isOwner, "the-app[bot]");
+
+    assert.equal(forRole.length, 1);
+    assert.ok(forRole[0]!.comments.every((comment) => !comment.body.includes(SESSION_REPLY_MARKER)));
+  });
+
+  it("still gives the role a thread when a stranger quotes the session marker, since only the owner's and the host's logins count", () => {
+    const spoofed = ownerThread({
+      comments: [...ownerThread().comments, { author: "stranger", byBot: false, body: `Noted.\n${SESSION_REPLY_MARKER}`, url: "" }],
+    });
+
+    const { forRole } = threadsForRole([spoofed], isOwner, SESSION);
+
+    assert.deepEqual(forRole.map((thread) => thread.threadId), ["RT_owner"]);
   });
 });

@@ -25,7 +25,7 @@ mkdir -p "$skill/template/owned/.github/workflows" "$skill/template/owned/.githu
   "$skill/template/seed/docs" "$skill/template/seed/.github/ci" \
   "$skill/template/owned/.sandcastle" "$skill/template/seed/.sandcastle/roles" \
   "$skill/template/owned/scripts" "$skill/template/owned/.sandcastle/lib" "$skill/template/owned/.claude/agents" "$skill/template/owned/.claude/skills/pre-push-review" \
-  "$skill/template/owned/.claude/skills/other"
+  "$skill/template/owned/.claude/skills/other" "$skill/template/seed/.claude/rules"
 command cp -f "$skill_dir/apply.sh" "$skill/"
 printf 'name: CI\n' > "$skill/template/owned/.github/workflows/ci.yml"
 printf 'stale\n' > "$skill/template/owned/.github/scripts/__pycache__/x.pyc"
@@ -49,6 +49,8 @@ printf 'other\n' > "$skill/template/owned/.claude/skills/other/SKILL.md"
 # The Sandcastle workflow and the Seed skills list it reads are part of the Sandcastle section too.
 printf 'name: Sandcastle\n' > "$skill/template/owned/.github/workflows/sandcastle.yml"
 printf '# skills\n' > "$skill/template/seed/.github/ci/sandcastle-skills.txt"
+# The session guidance for handing a pull request off to Sandcastle (a Seed rules file, so a repo can keep or change it).
+printf '# Hand a pull request off to Sandcastle\n' > "$skill/template/seed/.claude/rules/sandcastle-hand-off.md"
 apply="$skill/apply.sh"
 
 # Hooks off: a global init.templateDir can install hooks (such as a
@@ -152,7 +154,7 @@ check "no remote: unfilled reported" \
 sandcastle_files=(.sandcastle/tsconfig.json .sandcastle/roles/architect.md package.json scripts/review.sh .claude/agents/pre-push-reviewer.md \
   .claude/skills/pre-push-review/SKILL.md .claude/skills/pre-push-review/lenses.md \
   .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts \
-  .github/workflows/sandcastle.yml .github/ci/sandcastle-skills.txt)
+  .github/workflows/sandcastle.yml .github/ci/sandcastle-skills.txt .claude/rules/sandcastle-hand-off.md)
 
 # An empty repo gets them. Sandcastle's own {{TASK_ID}} stays and isn't reported as unfilled.
 repo="$work/sandcastle empty"
@@ -182,17 +184,17 @@ check "sandcastle, no .sandcastle/: other Owned file written" '[[ -f "$repo/.git
 check "sandcastle, no .sandcastle/: other Seed file written" '[[ -f "$repo/docs/SECURITY.md" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring script is written" '[[ -f "$repo/scripts/other.sh" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring skill is written" '[[ -f "$repo/.claude/skills/other/SKILL.md" ]]'
-check "sandcastle, no .sandcastle/: the twelve are reported as left out" 'grep -q "Sandcastle files left out.*: 12" <<< "$out"'
+check "sandcastle, no .sandcastle/: the thirteen are reported as left out" 'grep -q "Sandcastle files left out.*: 13" <<< "$out"'
 check "sandcastle, no .sandcastle/: the report says how to add them" 'grep -q "create it and Apply again" <<< "$out"'
 check "sandcastle, no .sandcastle/: no .sandcastle/ folder made" '[[ ! -e "$repo/.sandcastle" ]]'
 
-# A dry run of the same repo reports the same twelve and writes nothing.
+# A dry run of the same repo reports the same thirteen and writes nothing.
 repo="$work/sandcastle dry"
 new_repo "$repo"
 printf '# readme\n' > "$repo/README.md"
 commit_all "$repo" "init"
 dry="$("$apply" --dry-run "$repo")"
-check "sandcastle, dry run: the twelve are reported as left out" 'grep -q "Sandcastle files left out.*: 12" <<< "$dry"'
+check "sandcastle, dry run: the thirteen are reported as left out" 'grep -q "Sandcastle files left out.*: 13" <<< "$dry"'
 check "sandcastle, dry run: the left-out files aren't listed as added" '! grep -q "^  .sandcastle/tsconfig.json" <<< "$dry"'
 check "sandcastle, dry run: nothing written" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
 
@@ -208,8 +210,21 @@ out="$("$apply" "$repo")"
 for f in "${sandcastle_files[@]}"; do
   check "sandcastle, .sandcastle/ present: $f written" '[[ -f "$repo/$f" ]]'
 done
+check "sandcastle, .sandcastle/ present: the hand-off guidance is written" '[[ -f "$repo/.claude/rules/sandcastle-hand-off.md" ]]'
 check "sandcastle, .sandcastle/ present: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
 check "sandcastle, .sandcastle/ present: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
+
+# The hand-off guidance is a Seed file: a repo that changed it keeps its version, and the report says it was skipped.
+repo="$work/sandcastle own hand-off guidance"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle" "$repo/.claude/rules"
+printf 'x\n' > "$repo/.sandcastle/.gitkeep"
+printf '# our own hand-off rule\n' > "$repo/.claude/rules/sandcastle-hand-off.md"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$("$apply" "$repo")"
+check "sandcastle, own hand-off guidance: kept" 'grep -qx "# our own hand-off rule" "$repo/.claude/rules/sandcastle-hand-off.md"'
+check "sandcastle, own hand-off guidance: reported as a kept Seed file" 'grep -A3 "Seed files skipped" <<< "$out" | grep -q "sandcastle-hand-off.md"'
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never
 # rewritten): a repo whose copy lacks them gets the rest of the Sandcastle files, not the four that import it.

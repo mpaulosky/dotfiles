@@ -9,7 +9,9 @@
 // doesn't cover, gates and pushes the result, re-runs a flaky check the gate
 // passes, then replies to and resolves the role's verdicts and posts a
 // pass-summary comment. See Blazor-Server's docs/plans/sandcastle-workflow.md,
-// "Phase 1: Follow-up sweep", for the step-by-step this module follows.
+// "Phase 1: Follow-up sweep", for the step-by-step this module follows. A PR the
+// owner handed off with the sandcastle:follow-up label has no issue: its pass
+// claims the PR itself and the prompt shows the PR's own title and description.
 // ---------------------------------------------------------------------------
 
 import { setTimeout as sleep } from "node:timers/promises";
@@ -25,7 +27,7 @@ import {
   publicErrorText,
   retryOnServerError,
 } from "./build.mts";
-import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
+import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel, releasePullRequestBuildingLabel } from "./building.mts";
 import { runCheckpoint, runGate, tail, type GateRun } from "./checkpoint.mts";
 import {
   BUILDING_LABEL,
@@ -34,9 +36,10 @@ import {
   FOLLOW_UP_REPLY_MARKER,
   GATE_COMMENT_LINES,
   GATE_FIXER_ATTEMPTS,
+  SESSION_REPLY_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import { threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
+import { issueNumberOf, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
   failedCheckLogs,
@@ -94,6 +97,13 @@ export type PromptThread = {
   comments: { author: string | null; body: string }[];
 };
 
+// Whether `comment` is a Claude Code session's: posted under the owner's login (the owner's token, which is the host
+// login or another owner's) and carrying SESSION_REPLY_MARKER, which a session ends every reply with.
+// The marker is checked first, so a comment without it (a bot's, say) costs no owner lookup.
+function isSessionComment(comment: ReviewThread["comments"][number], hostLogin: string, isOwner: IsOwner): boolean {
+  return comment.body.includes(SESSION_REPLY_MARKER) && (comment.author === hostLogin || isOwner(comment.author) === true);
+}
+
 // Sorts a PR's open review threads for the follow-up role (runPass's step
 // 2) by their threadStanding (lib/follow-up.mts), the rule the sweep flags
 // a PR by too. A resolved thread, or one the host has already answered, is
@@ -135,7 +145,10 @@ export function threadsForRole(
           // A comment whose author's ownership can't be confirmed is dropped
           // too: only what's known to be a bot's or the owner's reaches the
           // role.
+          // A session's comment is under the owner's login, so it isn't the owner's
+          // words either (SESSION_REPLY_MARKER).
           comments: thread.comments
+            .filter((comment) => !isSessionComment(comment, hostLogin, isOwner))
             .filter((comment) => comment.byBot || isOwner(comment.author) === true)
             .map((comment) => ({ author: comment.author, body: comment.body })),
         });
@@ -450,6 +463,16 @@ export function passOutcomeEntry(target: PassTarget, outcome: PassOutcome): Outc
   }
 }
 
+// The prompt's view of the hand-off PR `target`: an issue-shaped record whose number is the PR's, whose title is the PR's
+// and whose body is the PR's description under a note saying it isn't an issue.
+export function handOffIssue(target: PassTarget): SandcastleIssue {
+  if (target.handOff === undefined) throw new Error(`PR #${target.number} was not handed off: it has an issue`);
+  const note =
+    "(This is not an issue. The pull request was handed off to Sandcastle by the repository owner; the text below is the " +
+    `pull request's description, and #${target.number} is the pull request's number.)`;
+  return { number: target.number, title: target.handOff.title, body: `${note}\n\n${target.handOff.body}`, labels: [], comments: [] };
+}
+
 // What runPass needs from outside the pass itself; tests pass a stub. The
 // live wiring sits at the bottom of this module.
 export type PassHost = {
@@ -472,8 +495,12 @@ export type PassHost = {
   contains(commit: string, ancestor: string): boolean;
   // lib/building.mts#claimBuildingLabel.
   markBuilding(issue: number): boolean;
+  // lib/building.mts#claimPullRequestBuildingLabel: the claim on a hand-off PR, which has no issue to carry it.
+  markPullRequestBuilding(pr: number): boolean;
   // lib/building.mts#releaseBuildingLabel.
   unmarkBuilding(issue: number): void;
+  // lib/building.mts#releasePullRequestBuildingLabel.
+  unmarkPullRequestBuilding(pr: number): void;
   createSandbox(branch: string): Promise<sandcastle.Sandbox>;
   // lib/host-safety.mts's worktree-tamper check, as lib/build.mts#BuildHost
   // already exposes it.
@@ -546,6 +573,8 @@ export const livePassHost: PassHost = {
   contains: (commit, ancestor) => originRefs.contains(commit, ancestor),
   markBuilding: (issue) => claimBuildingLabel(issue),
   unmarkBuilding: (issue) => releaseBuildingLabel(issue),
+  markPullRequestBuilding: (pr) => claimPullRequestBuildingLabel(pr),
+  unmarkPullRequestBuilding: (pr) => releasePullRequestBuildingLabel(pr),
   createSandbox: (branch) => createCheckedSandbox(branch),
   worktreeProblems: (path) => worktreeLinkProblems(path, repoGitDir()),
   leaksSecret: (base, commit) => firstSecretMatch(base, commit, sandboxSecrets()),
@@ -708,7 +737,7 @@ export function planRedCi(gatePassed: boolean, redChecks: readonly CheckState[],
 }
 
 // Runs one follow-up pass on `target`, a PR the sweep (lib/follow-up.mts)
-// marked as needing one, for its issue. See this module's header for the
+// marked as needing one, for its issue or, for a hand-off PR, for the PR itself. See this module's header for the
 // step-by-step: reset the PR's worktree to its head, merge main in when the PR needs it, run the
 // follow-up role, gate and push, then reply to and resolve the role's
 // verdicts and post the pass summary. `base` is the commit fetchMain()
@@ -733,18 +762,52 @@ export async function runPass(
   if (!("forRole" in before)) return before;
 
   // Claimed as a build claims it, so two runs never pass on one PR or share
-  // its worktree, and a build of the same issue stands aside meanwhile.
-  if (!host.markBuilding(issue.number)) return skip(`another run marked #${issue.number} ${BUILDING_LABEL}`);
+  // its worktree, and a build of the same issue stands aside meanwhile. A
+  // hand-off PR has no issue to carry the claim, so the PR carries it.
+  // A hand-off PR on an issue's branch (feature/{n}-…) claims that issue too: a build of the issue pushes to the same
+  // branch (branchFor reuses it), and the gate holds an issue back only for its own label. That claim is best effort:
+  // a branch number need not name an issue (a deleted one, a typo, the PR's own number), and a label read or add that
+  // fails must not keep the PR from being followed up. A build already holding the issue still makes the pass skip.
+  // A failed add is undone at once (claimBuildingLabel); if the undo fails too, the issue stays remembered and
+  // releaseAllBuildingLabels retries it each round, warning if it fails again, until the claim ages out. Startup clears a
+  // stale label from a closed issue too (clearStaleBuildingLabels).
+  type Claim = { name: string; mark: () => boolean; unmark: () => void; bestEffort?: true };
+  const claims: Claim[] =
+    target.handOff !== undefined
+      ? [{ name: `PR #${target.number}`, mark: () => host.markPullRequestBuilding(target.number), unmark: () => host.unmarkPullRequestBuilding(target.number) }]
+      : [{ name: `#${issue.number}`, mark: () => host.markBuilding(issue.number), unmark: () => host.unmarkBuilding(issue.number) }];
+  const branchIssue = target.handOff !== undefined ? issueNumberOf(target.headRefName) : undefined;
+  if (branchIssue !== undefined && branchIssue !== target.number) {
+    claims.push({ name: `#${branchIssue}`, mark: () => host.markBuilding(branchIssue), unmark: () => host.unmarkBuilding(branchIssue), bestEffort: true });
+  }
+  const held: typeof claims = [];
+  const releaseHeld = () => {
+    for (const claim of held.splice(0).reverse()) {
+      try {
+        claim.unmark();
+      } catch (error) {
+        console.error(`  ⚠ ${claim.name}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`);
+      }
+    }
+  };
   try {
+    for (const claim of claims) {
+      let marked: boolean;
+      try {
+        marked = claim.mark();
+      } catch (error) {
+        if (claim.bestEffort === undefined) throw error;
+        console.error(`  ⚠ ${claim.name}: claiming ${BUILDING_LABEL} failed, so PR #${target.number} is passed on without it: ${error}`);
+        continue;
+      }
+      if (!marked) return skip(`another run marked ${claim.name} ${BUILDING_LABEL}`);
+      held.push(claim);
+    }
     const plan = planPass(target, base, host, skip, true);
     if (!("forRole" in plan)) return plan;
     return await passOnMarkedIssue(target, issue, base, host, plan);
   } finally {
-    try {
-      host.unmarkBuilding(issue.number);
-    } catch (error) {
-      console.error(`  ⚠ #${issue.number}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`);
-    }
+    releaseHeld();
   }
 }
 
@@ -851,7 +914,7 @@ type PassPlan = {
   passCount: number;
 };
 
-// runPass's work once the issue is marked: everything from creating the
+// runPass's work once the issue (or a hand-off PR) is marked: everything from creating the
 // sandbox to closing it.
 async function passOnMarkedIssue(
   target: PassTarget,
@@ -1199,7 +1262,7 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
 // main.mts's pass phase: fetches every target's branch serially first (a
 // failed fetch skips that PR for the round, as prepareBranches'
 // lib/branches.mts#fetchMain-style fetches do), then runs runPass for each
-// PR whose issue is in `issues` with Promise.allSettled, logging each
+// PR whose issue is in `issues` (a hand-off PR needs none) with Promise.allSettled, logging each
 // outcome. A rejection is logged and the PR is swept again next round. Once
 // every pass has settled, the first UncountedStopError among them (a usage
 // or time-budget stop from the follow-up role or the gate-fixer) is
@@ -1220,7 +1283,8 @@ export async function followUpPassPhase(
   const started: { index: number; issue: SandcastleIssue }[] = [];
   // Serially, because concurrent fetches contend on the same ref lock.
   for (const [index, target] of targets.entries()) {
-    const issue = byNumber.get(target.issueNumber);
+    // A hand-off PR has no issue in the queue: the prompt sees the PR itself.
+    const issue = target.handOff !== undefined ? handOffIssue(target) : byNumber.get(target.issueNumber);
     if (issue === undefined) {
       outcomes[index] = { kind: "skipped", reason: `#${target.issueNumber} isn't in this round's queue` };
       continue;

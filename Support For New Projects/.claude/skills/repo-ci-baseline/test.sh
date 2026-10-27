@@ -461,6 +461,32 @@ channel="$(sed -nE 's/^ARG DOTNET_CHANNEL=([^ ]+).*/\1/p' "$seed/.sandcastle/Doc
 [[ "$channel" == "$(cut -d. -f1-2 <<< "$sdk")" ]] \
   || fail "the Seed .sandcastle/Dockerfile's DOTNET_CHANNEL is '$channel'; global.json's SDK is $sdk"
 
+step "Hand-off PRs (the sandcastle:follow-up label)"
+# The session guidance is a Seed rules file, so a repo can keep or change it and Apply never overwrites it. It loads in every
+# session (no paths: frontmatter), says what the label does, who may add it, and the marker a session ends its replies with.
+hand_off="$seed/.claude/rules/sandcastle-hand-off.md"
+[[ -f "$hand_off" ]] || fail "the Seed must carry .claude/rules/sandcastle-hand-off.md, the session guidance for handing a PR off with sandcastle:follow-up"
+if grep -q '^paths:' "$hand_off"; then
+  fail "the Seed .claude/rules/sandcastle-hand-off.md must load in every session: it takes no paths: frontmatter"
+fi
+session_marker="$(sed -nE 's/^export const SESSION_REPLY_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
+[[ -n "$session_marker" ]] || fail "lib/config.mts must export SESSION_REPLY_MARKER as a one-line string"
+for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' 'opened by the repository' "$session_marker"; do
+  if [[ -z "$needle" ]] || ! grep -qF -- "$needle" "$hand_off"; then
+    fail "the Seed .claude/rules/sandcastle-hand-off.md must mention '$needle'"
+  fi
+done
+grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
+  || fail "SESSION_REPLY_MARKER in lib/config.mts must be the marker docs/PROCESS.md tells a session to end its replies with"
+if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then
+  fail "the Seed .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
+fi
+for needle in 'sandcastle:follow-up' '.claude/rules/sandcastle-hand-off.md' 'SANDCASTLE_LABELS' 'claude-session'; do
+  grep -qF -- "$needle" "$skill_dir/references/sandcastle.md" || fail "references/sandcastle.md must document the hand-off PRs: it doesn't mention '$needle'"
+done
+grep -qF -- '.claude/rules/sandcastle-hand-off.md' "$skill_dir/CONTEXT.md" \
+  || fail "CONTEXT.md's Sandcastle section must list the Seed .claude/rules/sandcastle-hand-off.md"
+
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
 "$skill_dir/tests/dotfiles-gate.test.sh" || fail "dotfiles-gate.test.sh"

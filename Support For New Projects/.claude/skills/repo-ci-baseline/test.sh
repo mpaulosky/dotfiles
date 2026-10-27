@@ -497,6 +497,53 @@ fi
 if sed -n '/^        run: |$/,$p' <<<"$record_job" | grep -qF "\${{"; then
   fail "sandcastle.yml's record-head job must pass event data to its script through env, never inline in run:"
 fi
+# The job's script, run for real under env -i with stubs for gh and sleep on PATH: the greps above only see fragments, so an inverted
+# comparison, a dropped exit or a body that approvedHeadOf's regex no longer reads would pass them.
+record_script="$md_tmp/record-head.sh"
+"${yaml_py[@]}" - "$sandcastle_yml" "$record_script" <<'PY' || fail "sandcastle.yml's record-head job must have one step with a run: script"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["record-head"]["steps"]
+assert len(steps) == 1, "record-head must be a single step"
+open(sys.argv[2], "w").write(steps[0]["run"])
+PY
+record_bin="$md_tmp/record-bin"; mkdir -p "$record_bin"
+cat > "$record_bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+cat > "$record_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# GET returns RECORD_CURRENT; a POST appends its body to RECORD_POSTS and fails while RECORD_FAILS has attempts left.
+if [[ " $* " == *" --method POST "* ]]; then
+  for arg in "$@"; do [[ $arg == body=* ]] && printf '%s\n--\n' "${arg#body=}" >> "$RECORD_POSTS"; done
+  left="$(<"$RECORD_FAILS")"
+  if (( left > 0 )); then echo $((left - 1)) > "$RECORD_FAILS"; exit 1; fi
+  exit 0
+fi
+echo "$RECORD_CURRENT"
+STUB
+chmod +x "$record_bin/gh" "$record_bin/sleep"
+run_record() { # token head current post-failures
+  record_posts="$md_tmp/record-posts"; : > "$record_posts"; echo "$4" > "$md_tmp/record-fails"; record_rc=0
+  env -i PATH="$record_bin:$PATH" SANDCASTLE_GH_TOKEN="$1" HEAD_SHA="$2" RECORD_CURRENT="$3" PR_NUMBER=7 REPO=o/r \
+    RECORD_POSTS="$record_posts" RECORD_FAILS="$md_tmp/record-fails" bash --noprofile --norc -e "$record_script" &>/dev/null || record_rc=$?
+  record_count="$(grep -c '^--$' "$record_posts" || true)"
+}
+sha_a="$(printf 'a%.0s' {1..40})"; sha_b="$(printf 'b%.0s' {1..40})"
+run_record "" "$sha_a" "$sha_a" 0
+[[ $record_rc -eq 0 && $record_count -eq 0 ]] || fail "record-head: no token must warn, post nothing and exit 0 (exit $record_rc, posts $record_count)"
+run_record token "not-a-sha" "$sha_a" 0
+[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a head that isn't 40 hex must fail and post nothing (exit $record_rc, posts $record_count)"
+run_record token "$sha_a" "$sha_b" 0
+[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a head that moved since the event must fail and post nothing (exit $record_rc, posts $record_count)"
+run_record token "$sha_a" "$sha_a" 0
+[[ $record_rc -eq 0 && $record_count -eq 1 ]] || fail "record-head: the event's head must be posted once (exit $record_rc, posts $record_count)"
+grep -qE "^$head_marker $sha_a -->\$" <(head -n1 "$record_posts") \
+  || fail "record-head: the comment's first line must be '$head_marker <sha> -->', which lib/follow-up.mts#approvedHeadOf reads"
+run_record token "$sha_a" "$sha_a" 2
+[[ $record_rc -eq 0 && $record_count -eq 3 ]] || fail "record-head: two failed posts then a good one must exit 0 after three tries (exit $record_rc, posts $record_count)"
+run_record token "$sha_a" "$sha_a" 3
+[[ $record_rc -ne 0 && $record_count -eq 3 ]] || fail "record-head: three failed posts must exit non-zero after three tries (exit $record_rc, posts $record_count)"
 grep -A1 '^  pull_request_target:$' "$sandcastle_yml" | grep -qF 'types: [labeled]' \
   || fail "sandcastle.yml's pull_request_target trigger must be types: [labeled] only"
 grep -A1 '^  pull_request:$' "$sandcastle_yml" | grep -qF 'types: [unlabeled]' \

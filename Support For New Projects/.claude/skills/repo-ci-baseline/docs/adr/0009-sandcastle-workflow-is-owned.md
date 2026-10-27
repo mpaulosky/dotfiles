@@ -27,7 +27,7 @@ feature had to be landed by hand in each. A Template file reaches every repo by 
   notice. A variable would be an explicit switch, but it would stop the three repos that run Sandcastle today silently at the re-Apply if it were not set first.
 - **The repo's own setup is data, not a script.** The one thing a repo needs on the runner is the skills `lib/skills.mts` mounts, so the Seed
   `.github/ci/sandcastle-skills.txt` lists them (a pinned dotfiles commit and skill names). An Owned step validates it strictly, fetches the commit before git holds the PAT,
-  refuses a commit that isn't in dotfiles' `main` and any symlink in the checkout, and links only the listed skills. A setup the list can't express needs a Template change.
+  refuses a commit that isn't in dotfiles' `main` and a symlink in a listed skill or above it, and links only the listed skills. A setup the list can't express needs a Template change.
 - **`workflow_run` lists the CI workflows by name** (it can't read a variable): the Template's `ci.yml`, the workflow that tests the Template in dotfiles, and Claude Review.
   The follow-up-run and hand-opened-PR triggers of auth0-management-app are not included: they land with the host code that uses them
   (mpaulosky/dotfiles#313 and mpaulosky/dotfiles#314), now that a Template PR can change the workflow and `lib/` together.

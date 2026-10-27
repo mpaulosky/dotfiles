@@ -117,8 +117,8 @@ jobs:
       # # comment in column 0 or one of those two shapes (LF line endings), fetches
       # the pinned commit of the Template owner's public dotfiles repository,
       # refuses a commit that isn't in that repository's main (GitHub serves a
-      # fork's commit by hash too), a skill that is missing and any symlink in
-      # the checkout, and links only the listed skills into ~/.claude/skills.
+      # fork's commit by hash too), a skill that is missing and a symlink in a
+      # listed skill or above it, and links only the listed skills into ~/.claude/skills.
       # This step runs no script of the repo's, so nothing its file says can
       # change what the later steps trust (they still run the repo's package.json
       # scripts and .sandcastle/ code from main, which a PR to main reviews).
@@ -139,7 +139,8 @@ jobs:
           n=0
           while IFS= read -r line || [ -n "$line" ]; do
             n=$((n + 1))
-            case "$line" in '' | '#'*) continue ;; esac
+            [[ "$line" =~ ^[[:space:]]*$ ]] && continue
+            case "$line" in '#'*) continue ;; esac
             key="" value="" extra=""
             read -r key value extra <<< "$line"
             if [ -n "$extra" ] || [ -z "$value" ]; then
@@ -191,18 +192,24 @@ jobs:
           git -C "$dotfiles" fetch --quiet --depth 1 --filter=blob:none "$DOTFILES_URL" "$sha"
           git -C "$dotfiles" checkout --quiet FETCH_HEAD
           # GitHub serves a fork's commit by its hash, so the pin must be in dotfiles' own main.
-          git -C "$dotfiles" fetch --quiet --no-tags --filter=tree:0 "$DOTFILES_URL" main:refs/remotes/dotfiles/main
+          git -C "$dotfiles" fetch --quiet --no-tags --filter=tree:0 "$DOTFILES_URL" refs/heads/main:refs/remotes/dotfiles/main
           if ! git -C "$dotfiles" merge-base --is-ancestor "$sha" refs/remotes/dotfiles/main; then
             echo "::error file=$list::The dotfiles-sha commit isn't in the main branch of dotfiles."
             exit 1
           fi
-          # A symlink anywhere in the checkout, an ancestor folder of a skill included, would be followed by the
-          # sandbox mount (lib/skills.mts mounts each skill's real path).
-          if [ -n "$(find "$dotfiles" -path "$dotfiles/.git" -prune -o -type l -print -quit)" ]; then
-            echo "::error::The dotfiles commit holds a symlink, which the sandbox mount would follow."
-            exit 1
-          fi
+          # The sandbox mount follows symlinks (lib/skills.mts mounts each skill's real path), so refuse one in
+          # a listed skill, in the skill folder itself or in any folder above it. Others in the commit are not ours.
+          for folder in "$dotfiles/Support For New Projects" "$dotfiles/Support For New Projects/.claude" "$dotfiles/$base"; do
+            if [ -L "$folder" ]; then
+              echo "::error::The dotfiles commit holds a symlink above the skills, which the sandbox mount would follow."
+              exit 1
+            fi
+          done
           for skill in "${skills[@]}"; do
+            if [ -n "$(find "$dotfiles/$base/$skill" -type l -print -quit)" ]; then
+              echo "::error::The $skill skill holds a symlink, which the sandbox mount would follow."
+              exit 1
+            fi
             if [ ! -f "$dotfiles/$base/$skill/SKILL.md" ]; then
               echo "::error::dotfiles $sha has no $skill skill."
               exit 1

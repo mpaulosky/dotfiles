@@ -304,6 +304,7 @@ for name in alpha beta linked "$long_name" "${max_names[@]}"; do
   echo "$name" > "$fixture/$fixture_skills/$name/SKILL.md"
 done
 ln -s /etc "$fixture/$fixture_skills/linked/escape"
+ln -s alpha "$fixture/rootlink"  # a symlink the skills don't touch, which must not matter
 fixture_git "$fixture" add -A
 fixture_git "$fixture" commit -q -m skills
 good_sha="$(git -C "$fixture" rev-parse HEAD)"
@@ -313,7 +314,7 @@ echo forked > "$fixture/$fixture_skills/alpha/SKILL.md"
 fixture_git "$fixture" commit -q -am forked
 fork_sha="$(git -C "$fixture" rev-parse HEAD)"
 fixture_git "$fixture" checkout -q main
-# A skill folder that is itself a symlink.
+# A skill folder that is itself a symlink, beside the others.
 ln -s alpha "$fixture/$fixture_skills/dirlink"
 fixture_git "$fixture" add -A
 fixture_git "$fixture" commit -q -m "a symlinked skill folder"
@@ -351,6 +352,9 @@ run_skills $'# pinned\ndotfiles-sha '"$good_sha"$'\nskill alpha\nskill beta\n'
   || fail "sandcastle.yml: the listed skills, and only those, must be installed (exit $skills_rc): $skills_log"
 run_skills "dotfiles-sha $good_sha"$'\nskill alpha'
 { [[ $skills_rc -eq 0 ]] && skills_installed alpha; } || fail "sandcastle.yml: a list with no trailing newline must install its skills (exit $skills_rc)"
+run_skills "dotfiles-sha $dirlink_sha"$'\n \t \nskill alpha\n'
+{ [[ $skills_rc -eq 0 ]] && skills_installed alpha && [[ ! -e "$skills_home/.claude/skills/dirlink" ]]; } \
+  || fail "sandcastle.yml: a symlink beside the listed skills, and a whitespace-only line, must not matter (exit $skills_rc): $skills_log"
 # The caps' boundaries: 32 skills and a 64-character name pass.
 max_list="dotfiles-sha $good_sha"; for name in "${max_names[@]}"; do max_list+=$'\nskill '"$name"; done
 run_skills "$max_list"
@@ -369,7 +373,7 @@ bad_lists=(
   "dotfiles-sha $good_sha"$'\nskill alpha\n`touch pwned`\n'
   "dotfiles-sha ${good_sha//[0-9a-f]/0}"$'\nskill alpha\n' "dotfiles-sha $good_sha"$'\nskill missing\n' "dotfiles-sha $good_sha"$'\nskill linked\n'
   "dotfiles-sha $good_sha"$'\r\nskill alpha\r\n' "dotfiles-sha $good_sha"$'\n  # indented\nskill alpha\n'
-  "dotfiles-sha $fork_sha"$'\nskill alpha\n' "dotfiles-sha $dirlink_sha"$'\nskill alpha\n' "$over_list"
+  "dotfiles-sha $fork_sha"$'\nskill alpha\n' "dotfiles-sha $dirlink_sha"$'\nskill dirlink\n' "$over_list"
   "dotfiles-sha $good_sha"$'\nskill '"${long_name}a"
 )
 for list in "${bad_lists[@]}"; do
@@ -397,13 +401,14 @@ check_refused "dotfiles-sha $good_sha" "needs a dotfiles-sha line"
 check_refused "skill alpha" "needs a dotfiles-sha line"
 check_refused "dotfiles-sha $good_sha"$'\nskill missing' "has no missing skill"
 check_refused "dotfiles-sha $good_sha"$'\nskill linked' "holds a symlink"
-check_refused "dotfiles-sha $dirlink_sha"$'\nskill alpha' "holds a symlink"
+check_refused "dotfiles-sha $dirlink_sha"$'\nskill dirlink' "holds a symlink"
 check_refused "dotfiles-sha $fork_sha"$'\nskill alpha' "main branch"
 skills_url="file://$fixture2"
 check_refused "dotfiles-sha $ancestor_sha"$'\nskill alpha' "holds a symlink"
 skills_url="file://$fixture"
 skills_preexisting=alpha
 check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "alpha"
+[[ ! -e "$skills_home/.claude/skills/alpha/alpha" ]] || fail "sandcastle.yml: a skill linked itself inside an existing folder"
 skills_preexisting=
 # A line is never printed, whichever rule rejects it: one starting with :: would otherwise run as a workflow command from the log.
 for list in "::add-mask::secretvalue" "::add-mask::secretvalue x" "skill ::add-mask::secretvalue" "dotfiles-sha ::add-mask::secretvalue" \

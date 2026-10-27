@@ -3,7 +3,7 @@
 # SANDBOX_SKILLS in .sandcastle/lib/repo-config.mts). A hosted runner has none.
 #
 # The workflow (Owned by the repo-ci-baseline Template) reads this file as data
-# and runs no script of the repo's. Blank lines and comments (a # in column 0)
+# and runs no script of the repo's. Blank (or whitespace-only) lines and comments (a # in column 0)
 # are ignored, LF line endings only, and any other line is one of two kinds:
 #
 #   dotfiles-sha <40 lowercase hex digits>   the commit of mpaulosky/dotfiles' main to take them from, given once

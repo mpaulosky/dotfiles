@@ -12,11 +12,11 @@ skill lands PRs by (references/automerge.md):
 - a branch BEHIND main is updated, and Copilot asked to review the new head;
 - a head no reviewer has reviewed waits for Copilot while it's requested, and
   for Claude while the PR carries review:claude. With neither on its way,
-  Copilot is asked first. Claude backs Copilot up only where Copilot answered
-  that head with its quota note (copilot_declined): a Claude review of any
-  other head covers nothing, so a request that merely didn't register
-  (copilot_dropped, which the caller remembers per head) waits for the owner.
-  Only on a note is review:claude added, and only once the head has at least one check other than Claude
+  Copilot is asked first. Claude backs Copilot up only where Copilot can't
+  review that head: it answered with its quota note (copilot_declined), or
+  its request for the head didn't register (copilot_dropped, which the caller
+  remembers per head). A Claude review of any other head covers nothing.
+  Only then is review:claude added, and only once the head has at least one check other than Claude
   Review's own and every such check is green: a Claude review costs money,
   and one of a head that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS
   commits Claude reviewed on the PR: after those the owner decides;
@@ -191,8 +191,13 @@ class PrState:
 
     @property
     def claude_backed(self):
-        """The commit oids whose Claude review counts: Copilot's quota note is on the same commit."""
-        return self.claude_reviewed & self.copilot_declined
+        """The commit oids whose Claude review counts: Copilot couldn't review the same commit."""
+        return self.claude_reviewed & self.copilot_blocked
+
+    @property
+    def copilot_blocked(self):
+        """The commit oids Copilot can't review: it posted its quota note, or its request for the head was dropped."""
+        return self.copilot_declined | ({self.head} if self.copilot_dropped and self.head else frozenset())
 
     @property
     def reviewer_on_head(self):
@@ -327,10 +332,6 @@ def review_needed(pr, checks):
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
     if not pr.copilot_dropped and not declined:
         return Decision(REQUEST_COPILOT, waiting + "; Copilot not requested")
-    if not declined:
-        # Claude backs Copilot up only on its quota note, which a dropped request never brings.
-        return Decision(WAIT, waiting + "; Copilot's request didn't register and Claude only backs up its quota note, "
-                        "so the owner decides")
     if len(pr.claude_reviewed) >= MAX_CLAUDE_ROUNDS:
         return Decision(WAIT, waiting + f"; Claude's {MAX_CLAUDE_ROUNDS} review rounds are used, the owner decides")
     running = [name for name in checks.running if name not in CLAUDE_CHECKS]
@@ -341,4 +342,4 @@ def review_needed(pr, checks):
                 if name not in CLAUDE_CHECKS]
     if not reported:  # every listed repo has CI, dotfiles included
         return Decision(WAIT, waiting + "; no checks on the head yet, so Claude waits for CI")
-    return Decision(REQUEST_CLAUDE, waiting + "; Copilot couldn't review (its quota is used up), checks green")
+    return Decision(REQUEST_CLAUDE, waiting + "; Copilot couldn't review (its request was dropped or its quota is used up), checks green")

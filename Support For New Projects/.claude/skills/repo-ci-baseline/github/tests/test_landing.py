@@ -61,8 +61,8 @@ def test_a_claude_review_without_a_quota_note_doesnt_keep_the_label_waiting():
     labelled = replace(READY, copilot_reviewed=frozenset({OLD}), claude_requested=True,
                        claude_reviewed=frozenset({HEAD}))
     assert ld.decide(labelled).action == ld.REQUEST_COPILOT
-    decision = ld.decide(replace(labelled, copilot_dropped=True))
-    assert decision.action == ld.WAIT and decision.reason.endswith("so the owner decides")
+    # Unless the request was dropped (#318): then Copilot can't review this head, so Claude's review counts.
+    assert ld.decide(replace(labelled, copilot_dropped=True)).action == ld.ARM_AUTO_MERGE
 
 
 def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
@@ -82,13 +82,19 @@ def test_claude_is_called_in_once_copilot_answered_the_head_with_its_quota_note_
     assert ld.decide(replace(declined, checks=(failed("Test Suite"),))).action == ld.BLOCKER
 
 
-def test_a_dropped_request_without_a_quota_note_leaves_the_head_to_the_owner():
-    # Claude backs Copilot up only on its quota note; a review of any other head covers nothing (#270).
+def test_a_dropped_request_calls_in_claude_like_a_quota_note_does():
+    # Copilot can't review a head whose request GitHub dropped, so Claude backs it up (#318).
     dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True)
     decision = ld.decide(dropped)
-    assert decision.action == ld.WAIT and decision.reason.endswith("so the owner decides")
-    # A note on an earlier head doesn't count for this one.
-    assert ld.decide(replace(dropped, copilot_declined=frozenset({OLD}))).action == ld.WAIT
+    assert decision.action == ld.REQUEST_CLAUDE
+    assert decision.reason.endswith("Copilot couldn't review (its request was dropped or its quota is used up), checks green")
+    waiting = ld.decide(replace(dropped, checks=(passed("Build Solution"), running("Test Suite"))))
+    assert waiting.action == ld.WAIT and waiting.reason.endswith("waiting for checks before calling in Claude: Test Suite")
+    assert ld.decide(replace(dropped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+    # A drop remembered for another head isn't known here: the caller only sets it for the head it asked about.
+    # Claude's rounds are capped as for a quota note.
+    used = replace(dropped, claude_reviewed=frozenset({"c" * 40, "d" * 40, "e" * 40, OLD}))
+    assert ld.decide(used).action == ld.WAIT
 
 
 def test_a_registered_copilot_request_waits_even_after_an_earlier_drop():

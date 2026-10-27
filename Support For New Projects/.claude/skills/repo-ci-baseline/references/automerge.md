@@ -46,6 +46,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   `claude-review.yml`'s reviewed list and the landing scripts (`landing.COPILOT_NO_REVIEW`) skip it the same way: the start of the body, after any
   whitespace. Copilot's "wasn't able to review any files" note (every changed file is one it excludes) still counts, as before.
   `github/tests/test_copilot_no_review.py` runs the JS, jq and Python patterns on the same bodies.
+  `claude-review.yml`'s reviewed list holds a Claude review only where the gate counts it, on a commit with Copilot's note or on the PR's current head,
+  so a clean merge of main into an earlier commit Claude reviewed under a dropped request gets a review of its own instead of waiting for a person.
   `land.sh` treats a head Copilot answered with the note as it treats a dropped request: it adds `review:claude` rather than asking Copilot again.
   PR Auto-Merge does the same (#190), so a PR nobody lands with `land.sh` gets Claude's review too (#189 waited for one that never came).
   Counting it let

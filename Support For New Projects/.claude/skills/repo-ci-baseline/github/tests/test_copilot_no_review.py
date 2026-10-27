@@ -52,7 +52,7 @@ def js_pattern():
 def jq_program():
     """The reviewed-list jq filter from claude-review.yml, unquoted from the shell."""
     source = (WORKFLOWS / "claude-review.yml").read_text(encoding="utf-8")
-    match = re.search(r"/reviews\" \| jq -r '(.+?)' > \"\$\{RUNNER_TEMP\}/reviewed\.txt\"", source, re.DOTALL)
+    match = re.search(r"/reviews\" \| jq -r --arg head \"\$CURRENT_HEAD\" '(.+?)' > \"\$\{RUNNER_TEMP\}/reviewed\.txt\"", source, re.DOTALL)
     assert match, "claude-review.yml builds reviewed.txt with a jq filter"
     return match.group(1).replace("'\"'\"'", "'")
 
@@ -69,25 +69,27 @@ def test_claude_review_jq_agrees():
     assert reviewed_by_filter(reviews) == {name for name, (_, is_note) in BODIES.items() if not is_note}
 
 
-def reviewed_by_filter(reviews):
-    """The commits claude-review.yml's filter lists, over reviews split into two pages as gh api --slurp reads them."""
+def reviewed_by_filter(reviews, head="head"):
+    """The commits claude-review.yml's filter lists for a PR whose head is head, over reviews split into two pages as
+    gh api --slurp reads them."""
     engine = shutil.which("jq")
     if engine is None:
         pytest.fail("jq isn't installed, so claude-review.yml's filter can't be checked")
     pages = [reviews[: len(reviews) // 2], reviews[len(reviews) // 2:]]
-    run = subprocess.run([engine, "-r", jq_program()], input=json.dumps(pages), capture_output=True, text=True,
+    run = subprocess.run([engine, "-r", "--arg", "head", head, jq_program()], input=json.dumps(pages), capture_output=True, text=True,
                          check=True)
     return set(run.stdout.split("\n")) - {""}
 
 
-def test_claude_review_counts_in_the_jq_filter_with_or_without_the_note():
+def test_claude_review_counts_in_the_jq_filter_where_the_gate_counts_it():
     claude = "<!-- claude-review -->\nNo findings."
     reviews = [
         {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "noted"},
-        {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "bare"},
-        {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "other"},
+        {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "earlier"},
+        {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "head"},
         {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "noted"},
         {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "elsewhere"},
     ]
-    # Claude's review only keeps a commit from being reviewed twice, so a note isn't needed (#318).
-    assert reviewed_by_filter(reviews) == {"noted", "bare", "other"}
+    # PR Auto-Merge counts Claude's review of a commit with Copilot's note, and of the head (mpaulosky/dotfiles#318).
+    # An earlier commit without a note isn't counted, so a clean merge of main into it still gets its own review.
+    assert reviewed_by_filter(reviews) == {"noted", "head"}

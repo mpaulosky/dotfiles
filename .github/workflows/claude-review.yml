@@ -187,18 +187,23 @@ jobs:
             done < "${RUNNER_TEMP}/run-ids.txt"
           fi
           # Commits Copilot reviewed, or Claude Review (a marked github-actions[bot]
-          # review) did. Copilot's note that it couldn't review (its quota is used
-          # up) covers nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides; Claude's
-          # review of a commit counts here whether or not a note is on it, since this
-          # list only keeps a commit from being reviewed twice (mpaulosky/dotfiles#318).
+          # review) did where PR Auto-Merge counts it: on a commit with Copilot's
+          # note that it couldn't review (its quota is used up), or on the PR's
+          # current head (a dropped request, mpaulosky/dotfiles#318). The note
+          # itself covers nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
+          # Claude's review of an earlier commit with no note isn't listed: the
+          # gate doesn't count it, so a clean merge of main into that commit
+          # needs a review of its own, or the PR would wait for a person.
           # --slurp, so every page of reviews is read.
-          gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" | jq -r '
+          gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" | jq -r --arg head "$CURRENT_HEAD" '
             def declined: .user.login == "copilot-pull-request-reviewer[bot]"
               and ((.body // "") | test("\\A[ \\t\\r\\n]*Copilot was unable to review"));
             add as $reviews
+            | ([$reviews[] | select(declined) | .commit_id]) as $declined
             | $reviews[]
             | select((.user.login == "copilot-pull-request-reviewer[bot]" and (declined | not))
-              or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))))
+              or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))
+                and (.commit_id as $commit | $commit == $head or ($declined | index($commit) != null))))
             | .commit_id' > "${RUNNER_TEMP}/reviewed.txt"
           python3 -I - <<'PY'
           import os, subprocess

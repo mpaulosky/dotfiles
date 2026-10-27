@@ -119,16 +119,29 @@ def told(before, after, exported):
     return exported
 
 
-def untold(path):
-    """Each line of path with a gh command not told its repository, as file:line: text."""
+def read_lines(path):
+    """The lines of path as bash sees them, or None for a binary file."""
     data = Path(path).read_bytes()
     if b"\0" in data:
-        return []
+        return None
     # Not splitlines(), which also breaks at characters bash doesn't.
     text = data.decode("utf-8", errors="surrogateescape")
+    return [line.removesuffix("\r") for line in text.split("\n")]
+
+
+def shown(line):
+    # surrogateescape keeps a byte that isn't UTF-8; print it as the replacement character.
+    return line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
+def untold(path):
+    """Each line of path with a gh command not told its repository, as file:line: text."""
+    lines = read_lines(path)
+    if lines is None:
+        return []
     found = []
     exported = False
-    for number, line in enumerate((line.removesuffix("\r") for line in text.split("\n")), 1):
+    for number, line in enumerate(lines, 1):
         if re.match(r"[ \t]*#", line):
             continue
         if EXPORTS.match(line):
@@ -137,9 +150,7 @@ def untold(path):
                 not PREFIX_OF_GH.match(line, assignment.start()) for assignment in ASSIGNMENT.finditer(line)):
             exported = False
         if any(not told(line[:match.start()], line[match.end():], exported) for match in GH.finditer(line)):
-            # surrogateescape keeps a byte that isn't UTF-8; print it as the replacement character.
-            shown = line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
-            found.append(f"{path}:{number}: {shown}")
+            found.append(f"{path}:{number}: {shown(line)}")
     return found
 
 
@@ -161,6 +172,11 @@ OWNED = (
 SCOPE = ("scripts", ".github/ci", ".claude/skills")
 SKIPPED_PARTS = ("node_modules", ".git")
 
+
+def is_owned(relative):
+    """Whether the repo-relative path is an Owned Baseline file --repo skips, as itself or under a folder entry."""
+    return any(relative == entry or (entry.endswith("/") and relative.startswith(entry)) for entry in OWNED)
+
 # A Markdown fence: three or more backticks or tildes (a backtick fence's info
 # string has no backtick, or it's an inline span), then the rest of the line.
 FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)$")
@@ -171,21 +187,6 @@ FLAG = re.compile(r"(^|[ \t])(--repo[ \t]+|--repo=|-R[ \t]+)" + VALUE)
 # What ends the words that belong to one gh command on a line.
 COMMAND_END = re.compile(r";|&&|\|\|")
 HAS_NO_FLAG = re.compile(r"(api|repo)([^A-Za-z0-9_-]|$)")
-
-
-def read_lines(path):
-    """The lines of path as bash sees them, or None for a binary file."""
-    data = Path(path).read_bytes()
-    if b"\0" in data:
-        return None
-    # Not splitlines(), which also breaks at characters bash doesn't.
-    text = data.decode("utf-8", errors="surrogateescape")
-    return [line.removesuffix("\r") for line in text.split("\n")]
-
-
-def shown(line):
-    # surrogateescape keeps a byte that isn't UTF-8; print it as the replacement character.
-    return line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
 
 
 def code_spans(line):
@@ -282,8 +283,7 @@ def check_repo(root):
             for name in sorted(names):
                 path = Path(directory) / name
                 relative = path.relative_to(root).as_posix()
-                if path.is_symlink() or not path.is_file() or any(
-                        relative == entry or (entry.endswith("/") and relative.startswith(entry)) for entry in OWNED):
+                if path.is_symlink() or not path.is_file() or is_owned(relative):
                     continue
                 checked = kind(path)
                 if checked is None:

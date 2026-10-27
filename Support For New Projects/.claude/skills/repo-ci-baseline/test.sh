@@ -205,7 +205,7 @@ problems = []
 for folder in ("scripts", ".claude/skills"):
     for path in sorted(p for p in (owned / folder).rglob("*") if p.is_file()):
         name = path.relative_to(owned).as_posix()
-        if not any(name == entry or (entry.endswith("/") and name.startswith(entry)) for entry in check_gh_repo.OWNED):
+        if not check_gh_repo.is_owned(name):
             problems.append(f"{name} is not in OWNED")
 problems.extend(f"{entry} is in OWNED but not in the Template" for entry in check_gh_repo.OWNED
                 if not (owned / entry).exists())

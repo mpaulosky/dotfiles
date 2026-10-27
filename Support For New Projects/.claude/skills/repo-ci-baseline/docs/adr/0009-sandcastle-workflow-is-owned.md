@@ -34,8 +34,9 @@ feature had to be landed by hand in each. A Template file reaches every repo by 
 
 ## Consequences
 
-- A re-Apply brings the file to the repos that run Sandcastle. A repo with its own copy drops it from `NOT_OWNED_BASELINE_PATHS`;
-  Blazor-Server moves its skills step into `sandcastle-skills.txt` in the same PR. auth0-management-app keeps its file in that list until
-  the follow-up-only and hand-off triggers land in the Template, or its re-Apply would drop them.
+- A re-Apply brings the file to the repos that run Sandcastle, and overwrites a repo's own copy: `apply.sh` has no way to skip an Owned file for a repo, and
+  `NOT_OWNED_BASELINE_PATHS` only tells the local review which files are the repo's own. A repo with its own copy drops it from that list in its re-Apply, and
+  Blazor-Server moves its skills step into `sandcastle-skills.txt` in the same PR. auth0-management-app must not be re-Applied until the follow-up-only and
+  hand-off triggers land in the Template (mpaulosky/dotfiles#313 and #314), or its re-Apply drops them; `rollout.sh` has no way to leave a repo out of a round.
 - A repo that later adds the token starts running Sandcastle in Actions with no further workflow change.
 - A mistyped secret name no longer fails the run loudly: the run is green with a notice. The notice names the secret.

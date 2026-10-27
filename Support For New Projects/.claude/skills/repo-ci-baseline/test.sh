@@ -407,7 +407,7 @@ skills_url="file://$fixture2"
 check_refused "dotfiles-sha $ancestor_sha"$'\nskill alpha' "holds a symlink"
 skills_url="file://$fixture"
 skills_preexisting=alpha
-check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "alpha"
+check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "File exists"
 [[ ! -e "$skills_home/.claude/skills/alpha/alpha" ]] || fail "sandcastle.yml: a skill linked itself inside an existing folder"
 skills_preexisting=
 # A line is never printed, whichever rule rejects it: one starting with :: would otherwise run as a workflow command from the log.

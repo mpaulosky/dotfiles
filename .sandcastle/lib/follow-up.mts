@@ -205,12 +205,20 @@ export function sweepSubject(
   return { subject: { kind: "hand-off" } };
 }
 
-// Whether the repository owner's sandcastle:follow-up label stands on `pr`: its latest labeled event is the owner's,
-// and nobody but the owner has renamed it or edited its description since (lib/queue.mts#approval).
+// Whether the repository owner's sandcastle:follow-up label stands on `pr`: the owner or the host opened it, its latest
+// labeled event is the owner's, and nobody but the owner has renamed it or edited its description since
+// (lib/queue.mts#approval). The label isn't tied to the commits the owner looked at, so a PR someone else opened, whose
+// branch they can keep pushing to, never counts.
 export function handOffApproval(
-  pr: Pick<SweepPullRequest, "number">,
+  pr: Pick<SweepPullRequest, "number" | "author">,
   github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner">,
+  host: string,
 ): Approval {
+  if (pr.author !== host) {
+    const isOwner = github.isOwner(pr.author);
+    if (isOwner === undefined) return { approved: false, reason: `couldn't check whether ${pr.author ?? "its author"} is the repository owner` };
+    if (!isOwner) return { approved: false, reason: `${pr.author ?? "a deleted account"} opened it, and is neither the repository owner nor ${host}` };
+  }
   return approval(FOLLOW_UP_LABEL, github.pullRequestEvents(pr.number), github.pullRequestBodyEdits(pr.number), github.isOwner);
 }
 
@@ -524,7 +532,7 @@ export function sweepPullRequests(
           pullRequestEvents: eventsOfPr,
           pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
           isOwner: github.isOwner,
-        }),
+        }, host),
       );
       if ("skip" in swept) {
         log(`  · PR #${pr.number} isn't swept: ${swept.skip}.`);

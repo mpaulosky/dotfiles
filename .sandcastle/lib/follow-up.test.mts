@@ -1869,6 +1869,8 @@ describe("sweepSubject", () => {
 });
 
 describe("handOffApproval", () => {
+  const HOST = "the-host";
+  const PR = { number: 201, author: OWNER };
   function github(overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; isOwner?: (login: string | null) => boolean | undefined } = {}) {
     const eventReads: number[] = [];
     const editReads: number[] = [];
@@ -1888,31 +1890,49 @@ describe("handOffApproval", () => {
   const reasonOf = (result: Approval) => (result.approved ? "" : result.reason);
 
   it("approves a label the repository owner added last", () => {
-    assert.deepEqual(handOffApproval({ number: 201 }, github().stub), { approved: true });
+    assert.deepEqual(handOffApproval(PR, github().stub, HOST), { approved: true });
   });
 
   it("reads the PR's events and description edits for the PR's own number, once each", () => {
     const { stub, eventReads, editReads } = github();
 
-    handOffApproval({ number: 201 }, stub);
+    handOffApproval(PR, stub, HOST);
 
     assert.deepEqual(eventReads, [201]);
     assert.deepEqual(editReads, [201]);
   });
 
+  it("approves a PR the host opened, whoever the owner check says it is", () => {
+    const stub = github({ isOwner: () => false }).stub;
+
+    assert.deepEqual(handOffApproval({ number: 201, author: HOST }, { ...stub, isOwner: (login) => (login === OWNER ? true : false) }, HOST), { approved: true });
+  });
+
+  it("doesn't approve a PR someone else opened, even with the owner's label", () => {
+    const result = handOffApproval({ number: 201, author: "a-stranger" }, github().stub, HOST);
+
+    assert.equal(result.approved, false);
+    assert.match(reasonOf(result), /a-stranger opened it/);
+  });
+
+  it("doesn't approve a PR whose author is gone or can't be checked", () => {
+    assert.equal(handOffApproval({ number: 201, author: null }, github().stub, HOST).approved, false);
+    assert.equal(handOffApproval(PR, github({ isOwner: () => undefined }).stub, HOST).approved, false);
+  });
+
   it("doesn't approve a label added by someone who isn't the owner", () => {
-    const result = handOffApproval({ number: 201 }, github({ events: [labelledBy("a-stranger")] }).stub);
+    const result = handOffApproval(PR, github({ events: [labelledBy("a-stranger")] }).stub, HOST);
 
     assert.equal(result.approved, false);
     assert.match(reasonOf(result), /a-stranger.*not the repository owner/);
   });
 
   it("doesn't approve a label added by an actor GitHub no longer knows", () => {
-    assert.equal(handOffApproval({ number: 201 }, github({ events: [labelledBy(null)] }).stub).approved, false);
+    assert.equal(handOffApproval(PR, github({ events: [labelledBy(null)] }).stub, HOST).approved, false);
   });
 
   it("doesn't approve a label when the owner check couldn't be made", () => {
-    const result = handOffApproval({ number: 201 }, github({ isOwner: () => undefined }).stub);
+    const result = handOffApproval(PR, github({ isOwner: () => undefined }).stub, HOST);
 
     assert.equal(result.approved, false);
     assert.match(reasonOf(result), /couldn't check/);
@@ -1920,7 +1940,7 @@ describe("handOffApproval", () => {
 
   it("doesn't approve a PR with no labeled event for sandcastle:follow-up", () => {
     const other: IssueEvent = { event: "labeled", actor: OWNER, label: "sandcastle:ready", createdAt: LABELLED_AT };
-    const result = handOffApproval({ number: 201 }, github({ events: [other] }).stub);
+    const result = handOffApproval(PR, github({ events: [other] }).stub, HOST);
 
     assert.equal(result.approved, false);
     assert.match(reasonOf(result), /sandcastle:follow-up/);
@@ -1929,12 +1949,12 @@ describe("handOffApproval", () => {
   it("uses the latest labeled event: a stranger's label after the owner's doesn't count", () => {
     const events = [labelledBy(OWNER, "2026-10-09T10:00:00Z"), labelledBy("a-stranger", "2026-10-09T11:00:00Z")];
 
-    assert.equal(handOffApproval({ number: 201 }, github({ events }).stub).approved, false);
+    assert.equal(handOffApproval(PR, github({ events }).stub, HOST).approved, false);
   });
 
   it("doesn't approve once a stranger renamed the PR after the owner's label", () => {
     const events: IssueEvent[] = [...ownerLabelled, { event: "renamed", actor: "a-stranger", label: null, createdAt: "2026-10-09T11:00:00Z" }];
-    const result = handOffApproval({ number: 201 }, github({ events }).stub);
+    const result = handOffApproval(PR, github({ events }).stub, HOST);
 
     assert.equal(result.approved, false);
     assert.match(reasonOf(result), /title/);
@@ -1942,7 +1962,7 @@ describe("handOffApproval", () => {
 
   it("doesn't approve once a stranger edited the PR's description after the owner's label", () => {
     const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "2026-10-09T11:00:00Z" }];
-    const result = handOffApproval({ number: 201 }, github({ edits }).stub);
+    const result = handOffApproval(PR, github({ edits }).stub, HOST);
 
     assert.equal(result.approved, false);
     assert.match(reasonOf(result), /body/);
@@ -1952,20 +1972,20 @@ describe("handOffApproval", () => {
     const events = [labelledBy(OWNER, "2026-10-09T10:00:00Z"), labelledBy(OWNER, "2026-10-09T12:00:00Z")];
     const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "2026-10-09T11:00:00Z" }];
 
-    assert.deepEqual(handOffApproval({ number: 201 }, github({ events, edits }).stub), { approved: true });
+    assert.deepEqual(handOffApproval(PR, github({ events, edits }).stub, HOST), { approved: true });
   });
 
   it("ignores an edit by a stranger made before the label", () => {
     const edits: ContentEdit[] = [{ editor: "a-stranger", editedAt: "2026-10-08T11:00:00Z" }];
 
-    assert.deepEqual(handOffApproval({ number: 201 }, github({ edits }).stub), { approved: true });
+    assert.deepEqual(handOffApproval(PR, github({ edits }).stub, HOST), { approved: true });
   });
 
   it("doesn't approve when an edit's author can't be checked", () => {
     const edits: ContentEdit[] = [{ editor: "maybe-owner", editedAt: "2026-10-09T11:00:00Z" }];
     const isOwner = (login: string | null) => (login === OWNER ? true : undefined);
 
-    assert.equal(handOffApproval({ number: 201 }, github({ edits, isOwner }).stub).approved, false);
+    assert.equal(handOffApproval(PR, github({ edits, isOwner }).stub, HOST).approved, false);
   });
 });
 

@@ -213,7 +213,7 @@ check "merged: Apply commit is apply.sh output alone" \
   '[[ "$(git -C "$wt" show --name-only --format= HEAD)" == .github/workflows/ci.yml ]]'
 check "merged: new PR opened" 'grep -q "^pr create" "$stub/gh.log"'
 
-# ── Copilot's request dropped: no label, and land.sh leaves it to the owner unless Copilot posts its quota note
+# ── Copilot's request dropped: no label from reapply.sh; land.sh adds review:claude once checks are green
 reset_gh
 echo 7 > "$stub/open"
 touch "$stub/dropped"
@@ -221,8 +221,8 @@ printf 'name: CI v5\n' > "$skill/template/owned/.github/workflows/ci.yml"
 out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
 check "dropped: exits 0" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
 check "dropped: never adds review:claude" '! grep -q -- "--add-label" "$stub/gh.log"'
-check "dropped: warns that Copilot wasn't requested and the owner decides unless Copilot posts its quota note" \
-  'grep -q "warning: Copilot.s review request didn.t register on #7 (GitHub drops it once the Copilot code review budget is used up); land.sh leaves it to the owner unless Copilot posts its quota note: land.sh acme/Widget#7" <<< "$out"'
+check "dropped: warns that Copilot wasn't requested and land.sh adds review:claude once checks are green" \
+  'grep -q "warning: Copilot.s review request didn.t register on #7 (GitHub drops it once the Copilot code review budget is used up); land.sh adds review:claude once its checks are green: land.sh acme/Widget#7" <<< "$out"'
 check "dropped: does not claim Copilot was requested" '! grep -q "Copilot requested" <<< "$out"'
 check "dropped: names land.sh as the next step" 'grep -q "no reviewer yet; next: land.sh acme/Widget#7" <<< "$out"'
 check "dropped: the Apply commit is pushed and the PR updated" \

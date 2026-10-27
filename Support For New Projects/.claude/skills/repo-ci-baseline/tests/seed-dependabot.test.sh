@@ -88,7 +88,6 @@ check("the header says a repo without a root package.json drops the npm block", 
 check("the header says the npm block covers pnpm", "covers pnpm" in header_text, header)
 labels_path = sys.argv[1].replace("template/seed/.github/dependabot.yml", "github/labels.json")
 labels = [l["name"] for l in json.load(open(labels_path))]
-check("labels.json creates every label the npm block uses", set(npm.get("labels", [])) <= set(labels), repr(labels))
 
 # Dependabot doesn't create labels, so every label in every ecosystem block must be in labels.json.
 for eco, u in updates.items():

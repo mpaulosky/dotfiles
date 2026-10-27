@@ -14,7 +14,7 @@ NEW = "abcdef0" + "0" * 33
 COPILOT = [("copilot-pull-request-reviewer", HEAD)]
 NOTE = ("copilot-pull-request-reviewer", HEAD, "Copilot was unable to review this pull request because the user who "
         "requested the review has reached their quota limit.")
-# Claude backs Copilot up only on a head Copilot answered with its quota note.
+# Claude backs Copilot up on a head Copilot answered with its quota note, or whose request GitHub dropped.
 CLAUDE = [NOTE, ("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")]
 GREEN = [{"__typename": "CheckRun", "name": "Template tests", "status": "COMPLETED", "conclusion": "SUCCESS",
           "startedAt": "2026-10-07T10:00:00Z"}]
@@ -123,24 +123,24 @@ def test_a_behind_branch_is_updated_and_copilot_asked_again_once_per_head():
     assert "-> update branch" in printed(out) and len(fake.calls) == 2
 
 
-def test_a_copilot_request_github_dropped_is_warned_about_and_left_to_the_owner():
+def test_a_copilot_request_github_dropped_is_warned_about_and_backed_up_by_claude():
     fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
     text = printed(out)
     assert ("  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review "
-            "budget is used up); review:claude backs Copilot up only on its quota note, so the owner decides" in text)
+            "budget is used up); review:claude backs Copilot up for this head once its checks are green" in text)
     assert "  failed:" not in text
     # The update's new head: Copilot is asked for it, and the drop is remembered for it.
     fake.open["o/app"] = [node(head=NEW, contexts=RUNNING)]
     lander.poll()
     assert "-> request Copilot" in printed(out)
     assert fake.calls[2:] == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
-    # Claude covers a head only where Copilot posted its quota note, which a dropped request never brings: no label.
+    # Copilot can't review a head whose request was dropped (#318): once its checks are green, Claude is called in.
     fake.open["o/app"] = [node(head=NEW, contexts=GREEN)]
     lander.poll()
-    assert "so the owner decides" in printed(out) and len(fake.calls) == 3
+    assert "-> add review:claude" in printed(out) and fake.calls[3:] == ["gh pr edit 7 -R o/app --add-label review:claude"]
 
 
 def test_claude_is_called_in_once_copilot_posted_its_quota_note_and_checks_are_green():
@@ -181,7 +181,7 @@ def test_a_copilot_request_github_refused_outright_is_warned_about():
     assert fake.read_back == [("o/app", 7)]
     text = printed(out)
     assert f"  warning: {request} failed (boom)" in text
-    assert "review:claude backs Copilot up only on its quota note, so the owner decides" in text
+    assert "review:claude backs Copilot up for this head once its checks are green" in text
 
 
 def test_claude_isnt_called_in_while_copilot_is_requested_or_the_label_is_on():

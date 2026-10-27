@@ -2,12 +2,14 @@
 name: Claude Review
 
 # Claude reviews a PR as a backup to Copilot, whose review it stands in for
-# only where Copilot answered the head with its quota note (the account's
-# Copilot code review budget is used up). It runs only on request: while the PR
-# carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) when
-# that note answers a head, as the repo-ci-baseline skill's land.sh (in
+# only where Copilot can't review the head: it answered with its quota note
+# (the account's Copilot code review budget is used up), or its request was
+# dropped and no review or pending request shows after a grace period
+# (mpaulosky/dotfiles#318). It runs only on request: while the PR
+# carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) in
+# either case, as the repo-ci-baseline skill's land.sh (in
 # mpaulosky/dotfiles, not this repo) does, and a person can add at any time;
-# a review of a head without the note covers nothing. PR Auto-Merge also takes
+# a review of a head Copilot reviewed covers nothing. PR Auto-Merge also takes
 # it off at the review cap and at MAX_CLAUDE_ROUNDS. It reviews every new head
 # while the label is on.
 #
@@ -17,7 +19,8 @@ name: Claude Review
 # into one review on the head commit (post_claude_review.py), with inline
 # threads like Copilot's, and a body that starts with <!-- claude-review -->:
 # PR Auto-Merge accepts that review of the head in place of Copilot's when
-# Copilot's quota note is on the same commit. A
+# Copilot can't review that commit: its note is on it, or it is the head, Copilot
+# has no review or pending request for it and the grace is over. A
 # finding outside the diff can't be a thread, so it goes in the body under a
 # second marker, which PR Auto-Merge holds on until the next push gets a fresh
 # review (past the review cap too), and the post job warns. It doesn't
@@ -60,7 +63,9 @@ name: Claude Review
 # otherwise let the stale review join the concurrency group last and cancel
 # the newer one. Not when the newer head only merges main into this one: an
 # app or Copilot may have pushed it, and this job skips their runs, so this
-# head is reviewed instead, which covers the merge.
+# head is reviewed instead if it carries Copilot's note (the gate counts a
+# review of a commit that is no longer the head only then), which covers the
+# merge.
 #
 # Each review also gets the PR's resolved Copilot and Claude Review threads,
 # and doesn't raise a resolved thread's problem again unless the code has
@@ -141,7 +146,10 @@ jobs:
       # A stale head (the PR has moved on) is left to the newer push's run,
       # unless the newer head only merges main into this one: its push may be
       # an app's or Copilot's, whose runs this job skips, so this head is
-      # reviewed instead, and that review covers the newer head. Not when a
+      # reviewed instead, and that review covers the newer head, but only if
+      # this head carries Copilot's note: the gate counts a review of a commit
+      # that is no longer the head only then, so without it the review would
+      # cover nothing (mpaulosky/dotfiles#318). Not when a
       # run for the newer head is already past this job's condition (a
       # person's push): that run reviews. The stale review takes concurrency
       # groups of its own, so it can never cancel the newer head's review,
@@ -185,11 +193,17 @@ jobs:
             done < "${RUNNER_TEMP}/run-ids.txt"
           fi
           # Commits Copilot reviewed, or Claude Review (a marked github-actions[bot]
-          # review) did where Copilot answered the same commit with its note that
-          # it couldn't review (its quota is used up). The note itself covers
-          # nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
-          # --slurp, so the note is seen whichever page of reviews it is on.
-          gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" | jq -r '
+          # review) did: on a commit with Copilot's note that it couldn't review
+          # (its quota is used up), which PR Auto-Merge counts, or on the PR's
+          # current head, whatever the grace or a pending request (so the same
+          # head isn't reviewed twice; mpaulosky/dotfiles#318). The note
+          # itself covers nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
+          # Claude's review of an earlier commit with no note isn't listed: the
+          # gate doesn't count it, so a clean merge of main into that commit
+          # needs a review of its own, or the PR would wait for a person.
+          # --slurp, so every page of reviews is read.
+          gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" > "${RUNNER_TEMP}/reviews.json"
+          jq -r --arg head "$CURRENT_HEAD" '
             def declined: .user.login == "copilot-pull-request-reviewer[bot]"
               and ((.body // "") | test("\\A[ \\t\\r\\n]*Copilot was unable to review"));
             add as $reviews
@@ -197,8 +211,16 @@ jobs:
             | $reviews[]
             | select((.user.login == "copilot-pull-request-reviewer[bot]" and (declined | not))
               or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))
-                and (.commit_id as $commit | $declined | index($commit) != null)))
-            | .commit_id' > "${RUNNER_TEMP}/reviewed.txt"
+                and (.commit_id as $commit | $commit == $head or ($declined | index($commit) != null))))
+            | .commit_id' "${RUNNER_TEMP}/reviews.json" > "${RUNNER_TEMP}/reviewed.txt"
+          # The commits that carry Copilot's note: a stale head's review covers a
+          # newer clean merge only if the gate counts it, which for a commit that
+          # is no longer the head takes the note.
+          jq -r '
+            add[]
+            | select(.user.login == "copilot-pull-request-reviewer[bot]"
+              and ((.body // "") | test("\\A[ \\t\\r\\n]*Copilot was unable to review")))
+            | .commit_id' "${RUNNER_TEMP}/reviews.json" > "${RUNNER_TEMP}/noted.txt"
           python3 -I - <<'PY'
           import os, subprocess
 
@@ -259,6 +281,8 @@ jobs:
 
           with open(os.path.join(os.environ["RUNNER_TEMP"], "reviewed.txt"), encoding="utf-8") as file:
               reviewed = set(file.read().split())
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "noted.txt"), encoding="utf-8") as file:
+              noted = set(file.read().split())
           main = "refs/remotes/origin/" + os.environ["BASE_REF"]
           head = os.environ["HEAD_SHA"]
           current = os.environ.get("CURRENT_HEAD") or head
@@ -294,6 +318,12 @@ jobs:
               elif reviewed_under:
                   print(f"::notice::The PR's head is now {current}, which only merges main into {head}; "
                         f"the review of {reviewed_under} covers it.")
+                  skip = True
+              elif head not in noted:
+                  # PR Auto-Merge counts a review of a commit that is no longer the head only with Copilot's note
+                  # on it, so this review wouldn't cover the newer head, and its run may be skipped (a bot's push).
+                  print(f"::notice::The PR's head is now {current}, which only merges main into {head}, but {head} has "
+                        f"no Copilot note, so a review of it wouldn't count at the gate; Claude doesn't review it.")
                   skip = True
               else:
                   print(f"::notice::The PR's head is now {current}, which only merges main into {head}, so Claude "

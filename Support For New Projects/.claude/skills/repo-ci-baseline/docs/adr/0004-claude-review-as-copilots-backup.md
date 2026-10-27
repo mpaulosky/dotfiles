@@ -14,6 +14,25 @@ PR Auto-Merge accepts a review of the head by either reviewer, holds on either's
 0002](0002-copilot-review-cap-and-hand-back-hold.md)).
 The review body starts with `<!-- claude-review -->`: that marker, not the login alone, is how the gate tells Claude's review from anything else posted as `github-actions[bot]`.
 
+## Update (#318): a dropped request counts too
+
+The first version counted Claude's review only where Copilot's quota note was on the same commit, on the reasoning that silence can't be told from a Copilot review that is merely late.
+That left the commonest case stranded: once the budget is used up GitHub usually drops the request with no note, so a PR sat with no review until a person added `review:claude`
+and merged it by hand (dotfiles#325, #326).
+Now a head Copilot can't review is one with its note, or with no Copilot review and no pending Copilot request.
+PR Auto-Merge waits `COPILOT_GRACE_MS` (10 minutes) after the head's checks finished, and after the PR last became reviewable
+(marked ready or reopened, when GitHub requests Copilot's review), before it calls in Claude for the second kind,
+and `land.sh` does so as soon as its own request for the head read back as dropped.
+Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
+A request the run can't read in full counts as pending, so the rule fails closed.
+Claude's review of the head also waits for the grace to be over, so a label added by hand right after a push, before the ruleset's request registers, is not taken for Copilot's review.
+A head with no check besides Claude's and the workflow's own has no grace to wait for, so the workflow never counts Claude's review of it: it goes to the owner's notices.
+`land.sh` counts Claude's review of a head its own request was dropped for with no grace, so such a PR can wait up to the grace after Claude's review before the workflow merges it.
+That rests on GitHub keeping Copilot's request in `reviewRequests` until its review is submitted.
+Once Copilot really reviews the head, Copilot's review covers it and the label comes off (#271). The new path applies to any same-repo PR,
+so a repo whose ruleset never requests Copilot gets Claude's review too. The cost is a small window where a Copilot review that is merely very late arrives after Claude's;
+its threads still hold the merge, and the 10-minute grace keeps that window short.
+
 ## Considered Options
 
 - **Replace Copilot with Claude**: rejected because rounds the size of #82's come from working out the Baseline process; once work is back on one project, Copilot's budget covers it at no cost.

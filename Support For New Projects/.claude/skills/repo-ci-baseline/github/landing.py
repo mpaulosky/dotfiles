@@ -12,11 +12,11 @@ skill lands PRs by (references/automerge.md):
 - a branch BEHIND main is updated, and Copilot asked to review the new head;
 - a head no reviewer has reviewed waits for Copilot while it's requested, and
   for Claude while the PR carries review:claude. With neither on its way,
-  Copilot is asked first. Claude backs Copilot up only where Copilot answered
-  that head with its quota note (copilot_declined): a Claude review of any
-  other head covers nothing, so a request that merely didn't register
-  (copilot_dropped, which the caller remembers per head) waits for the owner.
-  Only on a note is review:claude added, and only once the head has at least one check other than Claude
+  Copilot is asked first. Claude backs Copilot up only where Copilot can't
+  review that head: it answered with its quota note (copilot_declined), or
+  its request for the head didn't register (copilot_dropped, which the caller
+  remembers per head). A Claude review of any other head covers nothing.
+  Only then is review:claude added, and only once the head has at least one check other than Claude
   Review's own and every such check is green: a Claude review costs money,
   and one of a head that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS
   commits Claude reviewed on the PR: after those the owner decides;
@@ -26,7 +26,8 @@ skill lands PRs by (references/automerge.md):
   head, so the PR goes on to its threads and checks like a reviewed one;
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
-  /copilot/i), or Claude as its backup on a head Copilot declined: Claude Review posts as
+  /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note,
+  or a dropped request): Claude Review posts as
   github-actions[bot] with CLAUDE_MARKER first in the body. When Claude's
   latest review of the head has findings outside the diff (OFF_DIFF_MARKER
   on its second line), they open no thread, so the PR waits for a new head;
@@ -78,7 +79,8 @@ CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", 
 # review cap's 3, so a fix for a second round's findings is reviewed too (#193):
 # Claude reviews every push while review:claude is on, until a review comes
 # back clean. PR Auto-Merge calls in Claude too, when Copilot's quota note is
-# the head's only review (#190), and takes review:claude off once Claude has
+# the head's only review (#190) or it has no review and no request pending after
+# a grace period (#318), and takes review:claude off once Claude has
 # reviewed this many commits: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must
 # match these.
 MAX_CLAUDE_ROUNDS = 3
@@ -149,7 +151,8 @@ class PrState:
     sets it, so it shows the Copilot step.
     copilot_declined: the commit oids Copilot answered with its quota note
     (see copilot_declined()); on the head it calls in Claude. Claude's review
-    of a commit counts only when the note is on that same commit.
+    of a commit counts when that commit is in copilot_declined, or is the head
+    and copilot_dropped is set (see copilot_blocked).
     merge_commits: the reviewed commit oids that are merge commits, which don't
     count toward the review cap.
     want_ready: the caller's say that a draft should be marked ready.
@@ -191,8 +194,13 @@ class PrState:
 
     @property
     def claude_backed(self):
-        """The commit oids whose Claude review counts: Copilot's quota note is on the same commit."""
-        return self.claude_reviewed & self.copilot_declined
+        """The commit oids whose Claude review counts: Copilot couldn't review the same commit."""
+        return self.claude_reviewed & self.copilot_blocked
+
+    @property
+    def copilot_blocked(self):
+        """The commit oids Copilot can't review: it posted its quota note, or its request for the head was dropped."""
+        return self.copilot_declined | ({self.head} if self.copilot_dropped and self.head else frozenset())
 
     @property
     def reviewer_on_head(self):
@@ -322,15 +330,11 @@ def review_needed(pr, checks):
     if pr.copilot_requested and not declined:
         return Decision(WAIT, waiting + "; Copilot is requested")
     # The label means Claude is on its way only until it has reviewed the head: a review
-    # without Copilot's note covers nothing, and none further is coming.
+    # of a head Copilot neither declined nor dropped covers nothing, and none further is coming.
     if pr.claude_requested and pr.head not in pr.claude_reviewed:
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
     if not pr.copilot_dropped and not declined:
         return Decision(REQUEST_COPILOT, waiting + "; Copilot not requested")
-    if not declined:
-        # Claude backs Copilot up only on its quota note, which a dropped request never brings.
-        return Decision(WAIT, waiting + "; Copilot's request didn't register and Claude only backs up its quota note, "
-                        "so the owner decides")
     if len(pr.claude_reviewed) >= MAX_CLAUDE_ROUNDS:
         return Decision(WAIT, waiting + f"; Claude's {MAX_CLAUDE_ROUNDS} review rounds are used, the owner decides")
     running = [name for name in checks.running if name not in CLAUDE_CHECKS]
@@ -341,4 +345,4 @@ def review_needed(pr, checks):
                 if name not in CLAUDE_CHECKS]
     if not reported:  # every listed repo has CI, dotfiles included
         return Decision(WAIT, waiting + "; no checks on the head yet, so Claude waits for CI")
-    return Decision(REQUEST_CLAUDE, waiting + "; Copilot couldn't review (its quota is used up), checks green")
+    return Decision(REQUEST_CLAUDE, waiting + "; Copilot couldn't review (its request was dropped or its quota is used up), checks green")

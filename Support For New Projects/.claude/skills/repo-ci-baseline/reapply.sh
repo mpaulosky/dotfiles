@@ -29,9 +29,9 @@
 #      or that GitHub refused outright, is warned about, and the run still
 #      passes. It never adds review:claude: the PR's checks have only just
 #      started, and a Claude review costs money. land.sh asks Copilot again
-#      and adds the label only once Copilot answers the head with its quota
-#      note, leaving the head to the owner otherwise; the warning prints its
-#      command.
+#      and adds the label once the head's checks are green and Copilot can't
+#      review it (its quota note, or a request that didn't register); the
+#      warning prints its command.
 #
 # The head it prints and writes into the description comes from the local
 # branch after the push, never from the API, which lags behind a push: name
@@ -258,10 +258,10 @@ if [[ "${copilot:-0}" -gt 0 ]]; then
   exit 0
 fi
 # Not review:claude: CI has only just started on this head, a Claude review
-# costs money, and it backs Copilot up only on its quota note. land.sh asks
-# Copilot again and leaves a head that stays without a review to the owner.
+# costs money. land.sh asks Copilot again and adds the label once the head's
+# checks are green if Copilot still can't review it.
 ref="${url#https://github.com/}"
 ref="${ref%/pull/*}#$pr"
 echo "reapply.sh: warning: Copilot's review request didn't register on #$pr (GitHub drops it once the Copilot code" \
-  "review budget is used up); land.sh leaves it to the owner unless Copilot posts its quota note: land.sh $ref" >&2
+  "review budget is used up); land.sh adds review:claude once its checks are green: land.sh $ref" >&2
 echo "reapply.sh: $repo_name PR #$pr, head $head, no reviewer yet; next: land.sh $ref"

@@ -56,7 +56,8 @@ So PR Auto-Merge now does the update itself, and a clean merge from `main` no lo
   whose decision wants a review of the exact head), and the re-Apply PR that brings this change still has the old one on `main`. The same job skips a run whose head is no longer the PR's,
   since the check job's varying length could otherwise let a stale review join the concurrency group last and cancel the newer one,
   unless the newer head only merges `main` into it and no run for it got past the job's condition: an app's or Copilot's push of that merge starts no review,
-  so the stale head is reviewed, which covers the merge. That review and its post take concurrency groups keyed by the stale head,
+  so the stale head is reviewed if it carries Copilot's note (the gate counts a review of a commit that is no longer the head only then), which covers the merge;
+  otherwise Claude Review skips it with a notice and the PR waits for a person or a push that starts its own run. That review and its post take concurrency groups keyed by the stale head,
   so they can't cancel the newer head's review (a CANCELLED check would hold the PR), and PR Auto-Merge evaluates every open PR holding the commit
   a Claude Review run completed on, not only the PR whose head it is.
 - **`land.sh`** keeps updating `BEHIND` PRs (it also covers repos without the PAT) and keeps requesting Copilot after an update:

@@ -32,10 +32,11 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const run = new AsyncFunction("github", "context", "core", "getOctokit", inlineScript());
 
 // A same-repo PR into main that is ready to merge unless a test changes it.
-// Claude's reviews only count as backup for Copilot's quota note on the same
-// commit, so each Claude review given here comes with that note, unless
-// { quotaNotes: false } says Copilot never posted one, or the test's own
-// copilotReviews already hold the notes it wants.
+// Claude's reviews count as backup for Copilot's quota note on the same
+// commit (or, for the head, where Copilot has no review and no request
+// pending, mpaulosky/dotfiles#318), so each Claude review given here comes with
+// that note, unless { quotaNotes: false } says Copilot never posted one, or
+// the test's own copilotReviews already hold the notes it wants.
 function readyPr({ quotaNotes = true, ...overrides } = {}) {
   if (quotaNotes && overrides.claudeReviews) {
     const reviewed = overrides.copilotReviews?.nodes ?? [{ commit: { oid: HEAD } }];
@@ -56,6 +57,7 @@ function readyPr({ quotaNotes = true, ...overrides } = {}) {
     autoMergeRequest: null,
     headRef: checksOn(HEAD, requiredCheck("Build Solution")),
     copilotReviews: { nodes: [{ commit: { oid: HEAD } }] },
+    reviewRequests: { totalCount: 0, nodes: [] },
     claudeReviews: { nodes: [] },
     reviewThreads: { totalCount: 0, nodes: [] },
     labels: { totalCount: 0, nodes: [] },
@@ -1253,6 +1255,7 @@ test("merges on Claude's review of the head when Copilot only posted its quota n
 
 // A dropped Copilot request (mpaulosky/dotfiles#318): no review, no note and nothing pending.
 const COPILOT_PENDING = {
+  totalCount: 1,
   nodes: [{ requestedReviewer: { __typename: "Bot", login: "copilot-pull-request-reviewer" } }]
 };
 const FINISHED_LONG_AGO = () => new Date(Date.now() - 11 * 60 * 1000).toISOString();
@@ -1283,16 +1286,65 @@ test("doesn't count Claude's review of the head while Copilot's request is pendi
   assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of")), logs.join("\n"));
 });
 
-test("stops counting Claude's review of a commit Copilot really reviewed (mpaulosky/dotfiles#318)", async () => {
+test("doesn't count Claude's review of an earlier commit Copilot left without a note, only of the head (mpaulosky/dotfiles#318)", async () => {
   const pr = readyPr({
-    copilotReviews: copilotReviewsOf("older"),
-    claudeReviews: claudeReviewsOf(HEAD, "older"),
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("older"),
     labels: labelled(CLAUDE_LABEL),
     quotaNotes: false
   });
   const { merges } = await evaluate(pr);
 
-  assert.equal(merges.length, 1);
+  assert.deepEqual(merges, []);
+});
+
+test("counts Claude's review of an earlier commit that carries Copilot's quota note even while a request is pending (mpaulosky/dotfiles#318)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf({ oid: "older", note: true }),
+    reviewRequests: COPILOT_PENDING,
+    claudeReviews: claudeReviewsOf("older"),
+    labels: labelled(CLAUDE_LABEL),
+    quotaNotes: false
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  // Counted for "older" only: the head itself still has no covering review, so it waits.
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of")), logs.join("\n"));
+});
+
+test("fails closed when Copilot's pending request can't be seen: too many requests, or one without a reviewer (mpaulosky/dotfiles#318)", async () => {
+  const manyRequests = { totalCount: 21, nodes: [] };
+  const nullReviewer = { totalCount: 1, nodes: [{ requestedReviewer: null }] };
+  for (const reviewRequests of [manyRequests, nullReviewer, undefined]) {
+    const counted = await evaluate(readyPr({
+      copilotReviews: copilotReviewsOf(),
+      reviewRequests,
+      claudeReviews: claudeReviewsOf(HEAD),
+      labels: labelled(CLAUDE_LABEL),
+      quotaNotes: false
+    }));
+    assert.deepEqual(counted.merges, [], "Claude's review of the head doesn't count");
+    const called = await evaluate(readyPr({
+      copilotReviews: copilotReviewsOf("one"),
+      reviewRequests,
+      headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }))
+    }));
+    assert.deepEqual(called.addedLabels, [], "Claude isn't called in");
+  }
+});
+
+test("asks for Copilot's pending requests with their total, and for the checks' finish times (mpaulosky/dotfiles#318)", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.every((query) => /reviewRequests\(first: \d+\)\s*\{\s*totalCount\s+nodes\s*\{\s*requestedReviewer\s*\{[^}]*\.\.\. on Bot \{ login \}/.test(query)), queries.join("\n"));
+  assert.ok(queries.every((query) => /\.\.\. on CheckRun \{[^}]*\bcompletedAt\b/.test(query)), queries.join("\n"));
+});
+
+test("calls in Claude past a still-pending Copilot request when its quota note is on the head (mpaulosky/dotfiles#318)", async () => {
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, reviewRequests: COPILOT_PENDING }));
+
+  assert.equal(addedLabels.length, 1);
 });
 
 test("calls in Claude for a head with no Copilot review, no request pending and checks finished 10 minutes ago (mpaulosky/dotfiles#318)", async () => {
@@ -1340,6 +1392,63 @@ test("doesn't call in Claude for a dropped request while a check is still runnin
   const { addedLabels } = await evaluate(pr);
 
   assert.deepEqual(addedLabels, []);
+});
+
+const FRESH = () => new Date().toISOString();
+
+test("measures the grace from the newest finish, and ignores Claude Review's and this job's own checks (mpaulosky/dotfiles#318)", async () => {
+  const dropped = { copilotReviews: copilotReviewsOf("one") };
+  const mixed = await evaluate(readyPr({
+    ...dropped,
+    headRef: checksOn(
+      HEAD,
+      requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }),
+      requiredCheck("Test Suite", { completedAt: FRESH() })
+    )
+  }));
+  assert.deepEqual(mixed.addedLabels, [], "a fresh finish restarts the grace");
+
+  const own = await evaluate(readyPr({
+    ...dropped,
+    headRef: checksOn(
+      HEAD,
+      requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }),
+      requiredCheck("Review with Claude", { isRequired: false, completedAt: FRESH() }),
+      requiredCheck("Merge same-repo PRs when ready", { isRequired: false, completedAt: FRESH() })
+    )
+  }));
+  assert.equal(own.addedLabels.length, 1, "Claude Review's and this job's checks don't extend it");
+});
+
+test("holds the grace for a commit status that is still pending, and releases it for a successful one (mpaulosky/dotfiles#318)", async () => {
+  const status = (state) => ({ __typename: "StatusContext", context: "ci/external", state, createdAt: FINISHED_LONG_AGO(), isRequired: false });
+  const dropped = { copilotReviews: copilotReviewsOf("one") };
+  for (const state of ["PENDING", "EXPECTED"]) {
+    const waiting = await evaluate(readyPr({ ...dropped, headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }), status(state)) }));
+    assert.deepEqual(waiting.addedLabels, [], state);
+  }
+  const done = await evaluate(readyPr({ ...dropped, headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }), status("SUCCESS")) }));
+  assert.equal(done.addedLabels.length, 1);
+});
+
+test("holds the grace for a check run without a finish time and for more checks than one page holds (mpaulosky/dotfiles#318)", async () => {
+  const dropped = { copilotReviews: copilotReviewsOf("one") };
+  const unfinished = await evaluate(readyPr({ ...dropped, headRef: checksOn(HEAD, requiredCheck("Build Solution")) }));
+  assert.deepEqual(unfinished.addedLabels, []);
+
+  const overflowing = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }));
+  overflowing.target.statusCheckRollup.contexts.totalCount = 101;
+  const paged = await evaluate(readyPr({ ...dropped, headRef: overflowing }));
+  assert.deepEqual(paged.addedLabels, []);
+});
+
+test("tells the owner about a head with no CI check even while the grace has nothing to measure (mpaulosky/dotfiles#318)", async () => {
+  const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
+  const headRef = checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false }));
+  const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }), [], { push: true, requiredChecks: [] });
+
+  assert.deepEqual(addedLabels, []);
+  assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check")), logs.join("\n"));
 });
 
 test("doesn't count Claude's review of the head when the quota note is on an earlier head and Copilot's request is pending", async () => {

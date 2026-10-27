@@ -26,7 +26,7 @@ skill lands PRs by (references/automerge.md):
   head, so the PR goes on to its threads and checks like a reviewed one;
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
-  /copilot/i), or Claude as its backup on a head Copilot declined: Claude Review posts as
+  /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note, or a dropped request): Claude Review posts as
   github-actions[bot] with CLAUDE_MARKER first in the body. When Claude's
   latest review of the head has findings outside the diff (OFF_DIFF_MARKER
   on its second line), they open no thread, so the PR waits for a new head;
@@ -78,7 +78,8 @@ CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", 
 # review cap's 3, so a fix for a second round's findings is reviewed too (#193):
 # Claude reviews every push while review:claude is on, until a review comes
 # back clean. PR Auto-Merge calls in Claude too, when Copilot's quota note is
-# the head's only review (#190), and takes review:claude off once Claude has
+# the head's only review (#190) or it has no review and no request pending after a
+# grace period (#318), and takes review:claude off once Claude has
 # reviewed this many commits: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must
 # match these.
 MAX_CLAUDE_ROUNDS = 3
@@ -149,7 +150,8 @@ class PrState:
     sets it, so it shows the Copilot step.
     copilot_declined: the commit oids Copilot answered with its quota note
     (see copilot_declined()); on the head it calls in Claude. Claude's review
-    of a commit counts only when the note is on that same commit.
+    of a commit counts when that commit is in copilot_declined, or is the head
+    and copilot_dropped is set (see copilot_blocked).
     merge_commits: the reviewed commit oids that are merge commits, which don't
     count toward the review cap.
     want_ready: the caller's say that a draft should be marked ready.
@@ -327,7 +329,7 @@ def review_needed(pr, checks):
     if pr.copilot_requested and not declined:
         return Decision(WAIT, waiting + "; Copilot is requested")
     # The label means Claude is on its way only until it has reviewed the head: a review
-    # without Copilot's note covers nothing, and none further is coming.
+    # of a head Copilot neither declined nor dropped covers nothing, and none further is coming.
     if pr.claude_requested and pr.head not in pr.claude_reviewed:
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
     if not pr.copilot_dropped and not declined:

@@ -213,7 +213,7 @@ check "merged: Apply commit is apply.sh output alone" \
   '[[ "$(git -C "$wt" show --name-only --format= HEAD)" == .github/workflows/ci.yml ]]'
 check "merged: new PR opened" 'grep -q "^pr create" "$stub/gh.log"'
 
-# ── Copilot's request dropped: no label, and land.sh leaves it to the owner unless Copilot posts its quota note
+# ── Copilot's request dropped: no label from reapply.sh; land.sh adds review:claude once checks are green
 reset_gh
 echo 7 > "$stub/open"
 touch "$stub/dropped"

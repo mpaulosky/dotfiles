@@ -33,8 +33,7 @@ name: PR Auto-Merge
 # drops the request, so the head has neither a review nor a pending request,
 # and COPILOT_GRACE_MS after its checks finished the run treats it the same
 # way (mpaulosky/dotfiles#318; a sweep notices it, so allow up to an hour more).
-# If Copilot does review the head, Claude's review of it stops counting and the
-# label comes off. The run then calls in Claude
+# The run then calls in Claude
 # Review by adding review:claude (mpaulosky/dotfiles#190), on the terms land.sh uses
 # (github/landing.py): every other check on the head passed, Claude has
 # reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
@@ -50,7 +49,8 @@ name: PR Auto-Merge
 # owner's cost rule.
 # The run takes review:claude off a PR once Copilot has really reviewed its head
 # (mpaulosky/dotfiles#270): Copilot has budget, and Claude's review would cover
-# nothing. At the cap it takes it off too (mpaulosky/dotfiles#170), once Claude has
+# nothing (a Claude review of the head counts only while Copilot has no review of
+# it and no request pending; a request it can't read counts as pending). At the cap it takes it off too (mpaulosky/dotfiles#170), once Claude has
 # reviewed it since the label was last added: Claude Review reviews every
 # push while it's on, and each review can open threads that hold the merge,
 # so the PR would go on chasing them past the cap.
@@ -338,6 +338,7 @@ jobs:
                        # Copilot's pending request: with none and no review of the
                        # head, GitHub dropped it (mpaulosky/dotfiles#318).
                        reviewRequests(first: 20) {
+                         totalCount
                          nodes {
                            requestedReviewer {
                              __typename
@@ -913,10 +914,10 @@ jobs:
               const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
               // Claude is Copilot's backup only: its review of a commit
               // qualifies when Copilot's quota note is on that same commit, or
-              // when Copilot never reviewed the commit and has no request
-              // pending for it (a dropped request, mpaulosky/dotfiles#318). Once Copilot really
-              // reviews a commit, Claude's review of it stops counting.
-              const copilotReviewedCommits = new Set(copilotReviews.map((review) => review.commit?.oid).filter(Boolean));
+              // when it is the head and Copilot has no request pending for
+              // it (a dropped request, mpaulosky/dotfiles#318). That is
+              // landing.py's rule too. A request that can't be read counts
+              // as pending.
               const copilotPendingOnHead = copilotPending(pr);
               const declinedCommits = new Set(
                 pr.copilotReviews.nodes
@@ -926,10 +927,7 @@ jobs:
               );
               const backupReviews = claudeReviews.filter((review) => {
                 const oid = review.commit?.oid;
-                if (copilotReviewedCommits.has(oid)) {
-                  return false;
-                }
-                return declinedCommits.has(oid) || !(oid === pr.headRefOid && copilotPendingOnHead);
+                return declinedCommits.has(oid) || (oid === pr.headRefOid && !copilotPendingOnHead);
               });
               const reviewed = [...copilotReviews, ...backupReviews]
                 .map((review) => review.commit)
@@ -1106,31 +1104,54 @@ jobs:
               }
             }
 
-            // Whether Copilot's review of the head is still on its way.
+            // Whether Copilot's review of the head may still be on its way.
+            // Fails closed: a request list that wasn't read, that holds more
+            // than the page, or has a request whose reviewer can't be read
+            // counts as pending, so Claude's review isn't taken for Copilot's.
             function copilotPending(pr) {
-              return (pr.reviewRequests?.nodes ?? []).some((request) => /copilot/i.test(request.requestedReviewer?.login ?? ""));
+              const requests = pr.reviewRequests;
+              if (!requests || requests.totalCount > requests.nodes.length) {
+                return true;
+              }
+              return requests.nodes.some((request) => {
+                const reviewer = request.requestedReviewer;
+                return !reviewer || /copilot/i.test(reviewer.login ?? reviewer.name ?? "");
+              });
             }
 
-            // Whether the head's checks all finished at least COPILOT_GRACE_MS
-            // ago (the newest finish counts; none finished or one still
-            // running is not yet).
-            function graceElapsed(pr) {
+            // How far the head's checks are from the grace period over: "elapsed"
+            // when they all finished at least COPILOT_GRACE_MS ago (the newest
+            // finish counts), "waiting" when one is still running, has no
+            // finish time or isn't all read, and "none" when the head has
+            // no check but Claude Review's and this job's own, which
+            // checksBeforeClaude then reports to the owner.
+            function graceState(pr) {
               const contexts = headCommit(pr)?.statusCheckRollup?.contexts;
               if (!contexts) {
-                return false;
+                return "none";
+              }
+              if (contexts.totalCount > contexts.nodes.length) {
+                return "waiting";
               }
               let newest = -Infinity;
+              let counted = 0;
               for (const [name, check] of newestChecks(contexts)) {
                 if (name === SELF_CHECK || CLAUDE_CHECKS.includes(name)) {
                   continue;
                 }
-                const finished = check.__typename === "StatusContext" ? check.createdAt : check.completedAt;
-                if ((check.__typename === "CheckRun" && check.status !== "COMPLETED") || !finished) {
-                  return false;
+                counted++;
+                const status = check.__typename === "StatusContext";
+                const finished = status ? check.createdAt : check.completedAt;
+                const running = status ? ["PENDING", "EXPECTED"].includes(check.state) : check.status !== "COMPLETED";
+                if (running || !finished) {
+                  return "waiting";
                 }
                 newest = Math.max(newest, Date.parse(finished));
               }
-              return Number.isFinite(newest) && Date.now() - newest >= COPILOT_GRACE_MS;
+              if (counted === 0) {
+                return "none";
+              }
+              return Date.now() - newest >= COPILOT_GRACE_MS ? "elapsed" : "waiting";
             }
 
             // Copilot can't review the head, so no review of it is coming:
@@ -1153,7 +1174,7 @@ jobs:
                 if (copilotReviewed || copilotPending(pr)) {
                   return;
                 }
-                if (!graceElapsed(pr)) {
+                if (graceState(pr) === "waiting") {
                   core.info(
                     `Not calling in Claude for PR #${pullNumber} yet: Copilot has not reviewed ${pr.headRefOid} and has no ` +
                     `request pending, but the head's checks have not been finished for ${COPILOT_GRACE_MS / 60000} minutes.`

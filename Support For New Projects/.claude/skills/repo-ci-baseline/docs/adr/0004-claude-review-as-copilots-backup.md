@@ -22,7 +22,10 @@ and merged it by hand (dotfiles#325, #326).
 Now a head Copilot can't review is one with its note, or with no Copilot review and no pending Copilot request.
 PR Auto-Merge waits `COPILOT_GRACE_MS` (10 minutes) after the head's checks finished before it calls in Claude for the second kind,
 and `land.sh` does so as soon as its own request for the head read back as dropped.
-A Claude review of a commit Copilot really reviews stops counting, and the label comes off (#271). The cost is a small window where a Copilot review that is merely very late arrives after Claude's;
+Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
+A request the run can't read in full counts as pending, so the rule fails closed.
+Once Copilot really reviews the head, Claude's review of it stops counting and the label comes off (#271). The new path applies to any same-repo PR,
+so a repo whose ruleset never requests Copilot gets Claude's review too. The cost is a small window where a Copilot review that is merely very late arrives after Claude's;
 its threads still hold the merge, and the 10-minute grace keeps that window short.
 
 ## Considered Options

@@ -91,7 +91,8 @@ def test_a_dropped_request_calls_in_claude_like_a_quota_note_does():
     waiting = ld.decide(replace(dropped, checks=(passed("Build Solution"), running("Test Suite"))))
     assert waiting.action == ld.WAIT and waiting.reason.endswith("waiting for checks before calling in Claude: Test Suite")
     assert ld.decide(replace(dropped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
-    # A drop remembered for another head isn't known here: the caller only sets it for the head it asked about.
+    # Without a drop remembered for this head, Claude's review of it covers nothing: Copilot is asked again.
+    assert ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), claude_reviewed=frozenset({HEAD}))).action == ld.REQUEST_COPILOT
     # Claude's rounds are capped as for a quota note.
     used = replace(dropped, claude_reviewed=frozenset({"c" * 40, "d" * 40, "e" * 40, OLD}))
     assert ld.decide(used).action == ld.WAIT

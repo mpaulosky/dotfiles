@@ -92,6 +92,13 @@ For .NET work, these skills are mounted into the sandbox from the host's `~/.cla
 Other roles may list the skills they need the same way. `lib/skills.test.mts` keeps the two in step: no prompt lists a skill that isn't mounted, and the `tester`, `backend`
 and (when opted in) `ui` prompts each list every mounted skill.
 
+**Run modes.** `SANDCASTLE_MODE` (commented out in `.env.example`) picks what a run does; `runModeFrom` in `lib/config.mts` reads it. Unset, blank or `full` is a full run: intake, builds and rounds.
+`follow-up` is a follow-up-only run (`followUpOnlyRun` in `lib/follow-up-run.mts`): it sweeps the open PRs once, runs one follow-up pass when the sweep flagged something, and exits,
+so a review or a red check on a PR is answered while a full run is still busy building. Any other value fails with `RunModeError` and exit code 2.
+The two runs stay off each other's PRs through `sandcastle:building`: the sweep skips a PR whose issue carries that label. A follow-up-only run also leaves closed PRs alone
+and keeps its own Sandcastle check out of the head checks it reads.
+The workflow side (the `mode` input, `SANDCASTLE_FOLLOW_UP_JOB` and the run's own concurrency group) is not in the Template's `sandcastle.yml` yet.
+
 ## When Apply adds it
 
 Only to a repo that has a `.sandcastle/` folder, or no commits yet.
@@ -129,7 +136,8 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   which files are the repo's own). It drops the file from that list in the same PR and moves the skills it installs into `sandcastle-skills.txt`.
   Anything else its workflow does that the Template's doesn't needs a Template change first.
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
-  A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones, mpaulosky/dotfiles#313 and #314) must not be
+  A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones;
+  the run mode is in the Template (mpaulosky/dotfiles#313), the workflow triggers and #314 are not) must not be
   re-Applied until those land, or its re-Apply drops them. `rollout.sh` re-Applies every repo in `github/repos.txt` and can't leave one out
   (once TicketManager's re-Apply PR has merged, a run re-Applies all the others, auth0-management-app included), so until then don't run it:
   re-Apply each repo except auth0-management-app one at a time with `reapply.sh`, TicketManager first.

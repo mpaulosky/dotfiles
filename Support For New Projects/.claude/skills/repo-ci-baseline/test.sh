@@ -425,6 +425,14 @@ if grep -vF 'mpaulosky/dotfiles.git' "$owned/.github/workflows/sandcastle.yml" |
   fail "the Owned sandcastle.yml names a repo; it carries no per-repo values"
 fi
 
+# The skills step's claims stay limited to what it does, and its ancestor test names the branch, not a ref git could resolve to a tag.
+grep -qF 'refs/heads/main:refs/remotes/dotfiles/main' "$owned/.github/workflows/sandcastle.yml" \
+  || fail "the Owned sandcastle.yml must fetch dotfiles' main as refs/heads/main, never a bare main"
+for file in "$owned/.github/workflows/sandcastle.yml" "$skill_dir/references/sandcastle.md"; do
+  grep -qF "still run the repo's" "$file" \
+    || fail "${file#"$skill_dir"/} must say the later steps still run the repo's own code from main, so the skills step's claim stays limited to that step"
+done
+
 step "Seed Sandcastle files"
 # Written from dotfiles' copies, so none of dotfiles' own text may stay behind.
 if grep -rnE 'dotfiles|repo-ci-baseline|Support For New Projects' "$seed/.sandcastle" "$seed/package.json"; then

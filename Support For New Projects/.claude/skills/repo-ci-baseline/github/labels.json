@@ -6,5 +6,7 @@
   {"name": "sandcastle:needs-human", "color": "D93F0B", "description": "Sandcastle tried and couldn't; a person takes over (removal by the owner re-queues)"},
   {"name": "dependencies", "color": "0366D6", "description": "Pull requests that update a dependency"},
   {"name": "github-actions", "color": "000000", "description": "Pull requests that update GitHub Actions"},
-  {"name": "npm", "color": "E99695", "description": "Pull requests that update npm or pnpm packages"}
+  {"name": "npm", "color": "E99695", "description": "Pull requests that update npm or pnpm packages"},
+  {"name": "nuget", "color": "004880", "description": "Pull requests that update NuGet packages"},
+  {"name": "dotnet-sdk", "color": "512BD4", "description": "Pull requests that update the .NET SDK"}
 ]

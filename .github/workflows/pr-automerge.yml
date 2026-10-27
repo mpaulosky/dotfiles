@@ -248,6 +248,7 @@ jobs:
             // A head Copilot has not reviewed and has no pending request for
             // (GitHub drops the request once the Copilot code review budget is
             // used up, with no note) is given this long after its checks finish
+            // and the PR last became reviewable (marked ready, or reopened)
             // before Claude is called in (mpaulosky/dotfiles#318).
             const COPILOT_GRACE_MS = 10 * 60 * 1000;
             // How many merges from main in a row a reviewed commit can sit
@@ -1179,7 +1180,7 @@ jobs:
                 return "waiting";
               }
               for (const event of events) {
-                const reviewableAt = Date.parse(event.createdAt);
+                const reviewableAt = Date.parse(event?.createdAt);
                 if (Number.isNaN(reviewableAt)) {
                   return "waiting";
                 }
@@ -1191,7 +1192,8 @@ jobs:
             // Copilot can't review the head, so no review of it is coming:
             // its quota note is on the head, or it has no review of the head
             // and no pending request and the grace period since the checks
-            // finished is over (a dropped request, mpaulosky/dotfiles#318). Add review:claude,
+            // finished and the PR last became reviewable is over (a dropped
+            // request, mpaulosky/dotfiles#318). Add review:claude,
             // on land.sh's terms (see the header). Called only for a head no
             // review covers, below the cap.
             // Never throws on a PR event, where a failure would be a failed
@@ -1211,7 +1213,8 @@ jobs:
                 if (graceState(pr) === "waiting") {
                   core.info(
                     `Not calling in Claude for PR #${pullNumber} yet: Copilot has not reviewed ${pr.headRefOid} and has no ` +
-                    `request pending, but the head's checks have not been finished, and the PR not made reviewable, for ${COPILOT_GRACE_MS / 60000} minutes.`
+                    `request pending, but the ${COPILOT_GRACE_MS / 60000}-minute grace since its checks finished and the PR last became ` +
+                    `reviewable has not passed (or those times could not be read).`
                   );
                   return;
                 }

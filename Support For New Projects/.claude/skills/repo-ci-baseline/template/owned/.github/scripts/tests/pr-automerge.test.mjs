@@ -1325,6 +1325,29 @@ test("treats a PR whose ready and reopened times can't be read as still in the g
   assert.deepEqual(merges, []);
 });
 
+test("treats a ready or reopened event without a readable time, or a null event, as still in the grace (mpaulosky/dotfiles#318)", async () => {
+  const unreadable = [
+    { nodes: [{ __typename: "ReadyForReviewEvent", createdAt: null }] },
+    { nodes: [{ __typename: "ReopenedEvent", createdAt: "not a date" }] },
+    { nodes: [{ __typename: "ReopenedEvent" }] },
+    { nodes: [null] }
+  ];
+  for (const reviewableEvents of unreadable) {
+    const counted = await evaluate(readyPr({
+      copilotReviews: copilotReviewsOf(),
+      claudeReviews: claudeReviewsOf(HEAD),
+      labels: labelled(CLAUDE_LABEL),
+      reviewableEvents,
+      ...finishedLongAgo,
+      quotaNotes: false
+    }));
+    assert.deepEqual(counted.merges, [], JSON.stringify(reviewableEvents));
+    const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents, ...finishedLongAgo }));
+    assert.deepEqual(called.addedLabels, [], JSON.stringify(reviewableEvents));
+    assert.ok(called.logs.some((line) => line.includes("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), called.logs.join("\n"));
+  }
+});
+
 test("asks for the PR's latest ready-for-review and reopened events (mpaulosky/dotfiles#318)", async () => {
   const { queries } = await evaluate(readyPr());
 

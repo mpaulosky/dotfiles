@@ -82,7 +82,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   a real Copilot finding on its third round), but with Claude reviewing each re-Apply commit across every repo, the exemption let a round
   chase reviews indefinitely. A finding on a re-Apply PR is fixed in the Template and arrives with the next round.
 - **Calling in Claude (#190, #318).** When Copilot's quota note is the only review of the head, or Copilot has no review of the head and no request
-  pending and the head's checks all finished at least `COPILOT_GRACE_MS` (10 minutes) ago, and no review covers it below the cap,
+  pending and the head's checks all finished, and the PR last became reviewable (marked ready, or reopened), at least `COPILOT_GRACE_MS`
+  (10 minutes) ago, and no review covers it below the cap,
   the run adds `review:claude` on much the terms `land.sh` uses (`landing.review_needed`), whose constants a test holds in step:
   no merge conflict, the required checks passed (one with no run yet is pending) and no check failed but Claude Review's own,
   Claude has reviewed fewer than `MAX_CLAUDE_ROUNDS` (3) of the PR's commits, after which the owner decides, and the label isn't on.

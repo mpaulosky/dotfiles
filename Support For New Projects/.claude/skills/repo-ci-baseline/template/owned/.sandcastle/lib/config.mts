@@ -90,6 +90,18 @@ export function budgetMinutesFrom(env: Record<string, string | undefined>): numb
   return Number(value);
 }
 
+// What one run does: every phase (`full`, the default), or only the follow-up sweep and passes, once
+// (`follow-up`, lib/follow-up-run.mts).
+export type RunMode = "full" | "follow-up";
+
+// Thrown by runModeFrom for a SANDCASTLE_MODE that names no run mode.
+export class RunModeError extends Error {}
+
+// SANDCASTLE_MODE from `env`: not implemented yet.
+export function runModeFrom(_env: Record<string, string | undefined>): RunMode {
+  throw new Error("Not implemented");
+}
+
 // How many issues one intake run judges. A malformed or truncated <intake>
 // block costs every verdict in it, so a large backlog is judged in several
 // runs of this many issues each.

@@ -112,7 +112,12 @@ export function isSandcastlePullRequest(pr: PullRequestIdentity, host: string): 
 // into main, not an issue branch, the issue isn't open and in scope, a draft,
 // labelled sandcastle:needs-human, not the host's, no PR_MARKER, or
 // truncated. Undefined when none applies, so the sweep decides from it.
-export function sweepSkipReason(pr: SweepPullRequest, inScope: ReadonlySet<number>, host: string): string | undefined {
+export function sweepSkipReason(
+  pr: SweepPullRequest,
+  inScope: ReadonlySet<number>,
+  host: string,
+  _building: ReadonlySet<number> = new Set(),
+): string | undefined {
   if (pr.isCrossRepository !== false) return "it's from a fork";
   if (pr.baseRefName !== "main") return `it's into ${pr.baseRefName}, not main`;
   const issueNumber = issueNumberOf(pr.headRefName);
@@ -125,6 +130,10 @@ export function sweepSkipReason(pr: SweepPullRequest, inScope: ReadonlySet<numbe
   if (pr.truncated) return "it has more reviews, threads or checks than one read holds";
   return undefined;
 }
+
+// What a caller can switch off in sweepPullRequests. handBackClosed (default true): hand back an issue
+// whose latest PR closed without merging. A follow-up-only run turns it off.
+export type SweepOptions = { handBackClosed?: boolean };
 
 // What the sweep does about one PR, decided by `decide`.
 export type SweepDecision =
@@ -395,6 +404,7 @@ export function sweepPullRequests(
   now: number = Date.now(),
   outcomes: OutcomeReport = outcomeReport,
   waiting: WaitingPrReport = waitingPrReport,
+  _options: SweepOptions = {},
 ): SweepResult {
   const host = github.hostLogin();
   const issues = github.inScopeIssues();

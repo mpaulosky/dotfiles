@@ -11,8 +11,10 @@ import {
   QUEUE_SCOPE_USAGE,
   QueueScopeError,
   ROLES,
+  RunModeError,
   budgetMinutesFrom,
   queueScopeFrom,
+  runModeFrom,
 } from "./config.mts";
 import { roleAgent, uiEnabled } from "./agents.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
@@ -162,5 +164,45 @@ describe("budgetMinutesFrom", () => {
   // GitHub Actions too.
   it("accepts the variable when GITHUB_ACTIONS is set", () => {
     assert.equal(budgetMinutesFrom({ GITHUB_ACTIONS: "true", SANDCASTLE_BUDGET_MINUTES: "90" }), 90);
+  });
+});
+
+// A run that only answers its PRs' reviews and red checks (follow-up) runs beside a full run, which is
+// busy building an issue and would answer them only after the build.
+describe("runModeFrom", () => {
+  it("is a full run when SANDCASTLE_MODE is unset", () => {
+    assert.equal(runModeFrom({}), "full");
+  });
+
+  it("is a full run when SANDCASTLE_MODE is blank", () => {
+    assert.equal(runModeFrom({ SANDCASTLE_MODE: "" }), "full");
+    assert.equal(runModeFrom({ SANDCASTLE_MODE: "  " }), "full");
+  });
+
+  it("reads full", () => {
+    assert.equal(runModeFrom({ SANDCASTLE_MODE: "full" }), "full");
+  });
+
+  it("reads follow-up", () => {
+    assert.equal(runModeFrom({ SANDCASTLE_MODE: "follow-up" }), "follow-up");
+  });
+
+  it("ignores whitespace around the value", () => {
+    assert.equal(runModeFrom({ SANDCASTLE_MODE: " follow-up\n" }), "follow-up");
+  });
+
+  // A typo must not silently start a full run, which builds issues, when the workflow asked for a follow-up-only one.
+  for (const bad of ["followup", "follow_up", "follow-up-only", "builds", "0"]) {
+    it(`throws RunModeError for "${bad}", naming the variable and the value`, () => {
+      assert.throws(
+        () => runModeFrom({ SANDCASTLE_MODE: bad }),
+        (error: unknown) => error instanceof RunModeError && /SANDCASTLE_MODE/.test(error.message) && error.message.includes(`"${bad}"`),
+      );
+    });
+  }
+
+  // Unlike SANDCASTLE_ISSUE and SANDCASTLE_LABEL, the mode is how the workflow asks for a follow-up-only run in GitHub Actions.
+  it("accepts the variable when GITHUB_ACTIONS is set", () => {
+    assert.equal(runModeFrom({ GITHUB_ACTIONS: "true", SANDCASTLE_MODE: "follow-up" }), "follow-up");
   });
 });

@@ -176,6 +176,19 @@ describe("sweepSkipReason", () => {
   it("skips a PR whose data was truncated, rather than deciding from part of it", () => {
     assert.ok(sweepSkipReason(pr({ truncated: true }), IN_SCOPE, HOST));
   });
+
+  // The overlap guard: a full run building the issue and a follow-up run must stay off each other's PR.
+  it("skips a PR whose issue is sandcastle:building, saying so", () => {
+    assert.match(sweepSkipReason(pr(), IN_SCOPE, HOST, new Set([42])) ?? "", /sandcastle:building/);
+  });
+
+  it("has no skip reason for a PR when only another issue is building", () => {
+    assert.equal(sweepSkipReason(pr(), IN_SCOPE, HOST, new Set([7])), undefined);
+  });
+
+  it("has no skip reason for a PR when nothing is building", () => {
+    assert.equal(sweepSkipReason(pr(), IN_SCOPE, HOST, new Set()), undefined);
+  });
 });
 
 describe("decide", () => {
@@ -1355,6 +1368,96 @@ describe("sweepPullRequests", () => {
     sweepPullRequests(second, () => {}, NOW, undefined, waiting);
 
     assert.deepEqual(waiting.items(), []);
+  });
+});
+
+// The overlap guard of the follow-up-only run: a full run building an issue answers that issue's PR itself, and the
+// follow-up run, which runs beside it, must not start a pass on the same branch.
+describe("sweepPullRequests and sandcastle:building", () => {
+  for (const label of ["sandcastle:building", "Sandcastle:Building"]) {
+    it(`leaves alone a PR whose issue is labelled ${label}, whatever it needs`, () => {
+      const { updatedBranches, requestedReviews, github } = stubGithub({
+        prs: [pr({ mergeStateStatus: "BEHIND" })],
+        issues: [{ number: 42, labels: [label] }],
+      });
+      const lines: string[] = [];
+
+      const result = sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+      assert.deepEqual(updatedBranches, []);
+      assert.deepEqual(requestedReviews, []);
+      assert.deepEqual(result, { needsPass: [], passes: [] });
+      assert.ok(lines.some((line) => line.includes("#101") && line.includes("sandcastle:building")), lines.join("\n"));
+    });
+  }
+
+  it("doesn't flag for a pass a conflicted PR whose issue is being built", () => {
+    const { github } = stubGithub({
+      prs: [pr({ mergeStateStatus: "DIRTY" })],
+      issues: [{ number: 42, labels: ["sandcastle:building"] }],
+    });
+
+    assert.deepEqual(sweepPullRequests(github, () => {}, NOW), { needsPass: [], passes: [] });
+  });
+
+  it("still sweeps a PR whose issue isn't building while another issue is", () => {
+    const { updatedBranches, github } = stubGithub({
+      prs: [pr({ mergeStateStatus: "BEHIND" })],
+      issues: [
+        { number: 42, labels: [] },
+        { number: 7, labels: ["sandcastle:building"] },
+      ],
+    });
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.equal(updatedBranches.length, 1);
+  });
+});
+
+// A follow-up-only run runs beside a full run, whose own sweep hands back a closed PR's issue; two runs doing it would
+// comment twice, and the follow-up run has no build to start from the issue afterwards.
+describe("sweepPullRequests without handing back closed PRs", () => {
+  it("doesn't hand back an issue whose latest PR closed without merging", () => {
+    const { handBacks, github } = stubGithub({ prs: [], closed: [closedPr()] });
+
+    sweepPullRequests(github, () => {}, NOW, undefined, undefined, { handBackClosed: false });
+
+    assert.deepEqual(handBacks, []);
+  });
+
+  it("doesn't even read the closed pull requests", () => {
+    const { closedCalls, github } = stubGithub({ prs: [], closed: [closedPr()] });
+
+    sweepPullRequests(github, () => {}, NOW, undefined, undefined, { handBackClosed: false });
+
+    assert.deepEqual(closedCalls, []);
+  });
+
+  it("still sweeps the open pull requests", () => {
+    const { updatedBranches, github } = stubGithub({ prs: [pr({ mergeStateStatus: "BEHIND" })] });
+
+    sweepPullRequests(github, () => {}, NOW, undefined, undefined, { handBackClosed: false });
+
+    assert.equal(updatedBranches.length, 1);
+  });
+
+  it("still returns the PRs that need a pass", () => {
+    const { github } = stubGithub({ prs: [pr({ mergeStateStatus: "DIRTY" })] });
+
+    const result = sweepPullRequests(github, () => {}, NOW, undefined, undefined, { handBackClosed: false });
+
+    assert.deepEqual(result.needsPass, [101]);
+  });
+
+  it("hands back by default, and when handBackClosed is true", () => {
+    for (const options of [undefined, {}, { handBackClosed: true }]) {
+      const { handBacks, github } = stubGithub({ prs: [], closed: [closedPr()] });
+
+      sweepPullRequests(github, () => {}, NOW, undefined, undefined, options);
+
+      assert.equal(handBacks.length, 1, JSON.stringify(options));
+    }
   });
 });
 

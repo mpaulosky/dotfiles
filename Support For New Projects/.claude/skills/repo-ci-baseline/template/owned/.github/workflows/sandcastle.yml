@@ -113,9 +113,11 @@ jobs:
       # nothing until the repo fills it. It runs before the credential helper
       # below is set up and has no secret in its environment, so nothing it
       # fetches is sent the PAT. It is still code on the runner, outside the
-      # sandbox: what it writes to GITHUB_ENV, GITHUB_PATH or the global git
-      # config is trusted by the steps after it, so a change to it needs a
-      # person's review. Run with bash, so the file's mode doesn't matter.
+      # sandbox, and the steps after it trust whatever it leaves behind: the
+      # workspace and .git/config (which pnpm and git read), the home directory
+      # (~/.npmrc, ~/.claude/skills, which the sandbox mounts), PATH, GITHUB_ENV,
+      # GITHUB_PATH and the global git config. A change to it needs a person's
+      # review. Run with bash, so the file's mode doesn't matter.
       - name: Prepare the run
         if: steps.secrets.outputs.enabled == 'true'
         run: bash .github/ci/sandcastle-prepare.sh

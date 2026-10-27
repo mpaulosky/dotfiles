@@ -7,7 +7,7 @@
 # (template/seed) are written only where the repo has none, with {{OWNER}},
 # {{REPO}} and {{SOLUTION}} filled in. Then core.hooksPath is pointed at
 # .github/hooks. Nothing is ever deleted. Sandcastle's files (.sandcastle/, its
-# workflow and the Seed hook that calls, and the package.json and
+# workflow and the Seed hook the workflow calls, and the package.json and
 # pnpm-workspace.yaml it runs with) go only into a repo with a .sandcastle/
 # folder or no commits yet (docs/adr/0006).
 #

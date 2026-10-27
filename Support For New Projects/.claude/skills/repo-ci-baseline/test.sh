@@ -253,7 +253,7 @@ else
   need uvx
   yaml_py=(uvx --with pyyaml python -I)
 fi
-secrets_script="$(mktemp)"
+secrets_script="$md_tmp/sandcastle-secrets.sh"
 "${yaml_py[@]}" - "$owned/.github/workflows/sandcastle.yml" "$owned/.github/workflows/ci.yml" "$owned/.github/workflows/claude-review.yml" \
   "$secrets_script" <<'PY' || fail "the Owned sandcastle.yml must skip every step but the secret check when SANDCASTLE_GH_TOKEN is unset"
 import sys, yaml
@@ -272,11 +272,11 @@ for name in (yaml.safe_load(open(ci))["name"], yaml.safe_load(open(review))["nam
     assert name in workflows, f"workflow_run doesn't follow {name}"
 open(secrets_out, "w").write(steps[0]["run"])
 PY
-# The secret check's own script, as GitHub runs it (bash -eo pipefail), with a temp GITHUB_OUTPUT.
+# The secret check's own script, run like a run: step with no shell: set (bash -e), with a temp GITHUB_OUTPUT.
 run_secrets() {
   local out; out="$(mktemp)"; secrets_rc=0
   env -i PATH="$PATH" SANDCASTLE_GH_TOKEN="$1" ANTHROPIC_API_KEY="$2" CLAUDE_CODE_OAUTH_TOKEN="$3" GITHUB_OUTPUT="$out" \
-    bash --noprofile --norc -eo pipefail "$secrets_script" &>/dev/null || secrets_rc=$?
+    bash --noprofile --norc -e "$secrets_script" &>/dev/null || secrets_rc=$?
   secrets_out="$(<"$out")"; rm -f "$out"
 }
 run_secrets "" "" ""
@@ -287,8 +287,13 @@ run_secrets token key ""
 [[ $secrets_rc -eq 0 && $secrets_out == "enabled=true" ]] || fail "sandcastle.yml: a token and ANTHROPIC_API_KEY must give enabled=true (exit $secrets_rc, output '$secrets_out')"
 run_secrets token "" oauth
 [[ $secrets_rc -eq 0 && $secrets_out == "enabled=true" ]] || fail "sandcastle.yml: a token and CLAUDE_CODE_OAUTH_TOKEN must give enabled=true (exit $secrets_rc, output '$secrets_out')"
-rm -f "$secrets_script"
 [[ -x "$seed/.github/ci/sandcastle-prepare.sh" ]] || fail "the Seed .github/ci/sandcastle-prepare.sh must be executable"
+# What the hook can leave behind is what a reviewer of a change to it must check: the warning names the workspace and .git/config, not only the env files.
+for file in "$owned/.github/workflows/sandcastle.yml" "$seed/.github/ci/sandcastle-prepare.sh"; do
+  for word in workspace ".git/config" GITHUB_ENV GITHUB_PATH; do
+    grep -qF -- "$word" "$file" || fail "${file#"$skill_dir"/} must warn that the prepare hook can leave behind: $word"
+  done
+done
 if grep -qE 'sandcastle:dotfiles|Blazor-Server|dotfiles' "$owned/.github/workflows/sandcastle.yml"; then
   grep -nE 'sandcastle:dotfiles|Blazor-Server|dotfiles' "$owned/.github/workflows/sandcastle.yml"
   fail "the Owned sandcastle.yml names a repo; it carries no per-repo values"

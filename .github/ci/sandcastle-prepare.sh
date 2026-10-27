@@ -5,10 +5,11 @@
 # never in the sandbox, with none of the workflow's secrets in its environment
 # and no credential in git, so what it fetches is sent nothing private.
 #
-# It is still code on the runner: the steps after it trust what it leaves in
-# GITHUB_ENV, GITHUB_PATH and the global git config, and run with the PAT and the
-# Claude credential. Never write to those, never run anything unpinned, and have
-# a person review every change to this file.
+# It is still code on the runner, and the steps after it run with the PAT and the
+# Claude credential and trust whatever it leaves behind: the workspace and
+# .git/config, the home directory (~/.npmrc, ~/.claude/skills), PATH, GITHUB_ENV,
+# GITHUB_PATH and the global git config. Change none of those, never run anything
+# unpinned, and have a person review every change to this file.
 #
 # The Seed does nothing. Put here what the run needs and the runner lacks, such
 # as the skills .sandcastle/lib/repo-config.mts's SANDBOX_SKILLS mounts from the

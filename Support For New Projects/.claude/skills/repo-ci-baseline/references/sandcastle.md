@@ -124,8 +124,9 @@ Apply writes it, and `.github/ci/sandcastle-prepare.sh`, only into a repo that r
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
   A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones, mpaulosky/dotfiles#313 and #314) keeps its file in
   `NOT_OWNED_BASELINE_PATHS` until those land, or its re-Apply drops them.
-- **The prepare script can change what later steps trust.** It runs outside the sandbox, so what it writes to `GITHUB_ENV`, `GITHUB_PATH` or the global git config reaches the steps
-  that hold the PAT and the Claude credential. Pin what it fetches, never write to those, and have a person review every change to it.
+- **The prepare script can change what later steps trust.** It runs outside the sandbox, so whatever it leaves on the runner reaches the steps that hold the PAT and the
+  Claude credential: the workspace and `.git/config`, the home directory (`~/.npmrc`, `~/.claude/skills`), `PATH`, `GITHUB_ENV`, `GITHUB_PATH` and the global git config.
+  Pin what it fetches, change none of those, and have a person review every change to it.
 
 ## Migrating a repo
 

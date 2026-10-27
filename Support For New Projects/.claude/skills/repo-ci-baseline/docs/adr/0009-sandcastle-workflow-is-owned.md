@@ -24,8 +24,8 @@ feature had to be landed by hand in each. A Template file reaches every repo by 
   notice. A variable would be an explicit switch, but it would stop the three repos that run Sandcastle today silently at the re-Apply if it were not set first.
 - **The repo's own setup is a Seed script,** `.github/ci/sandcastle-prepare.sh`, run with `bash` after the checkout and before git holds the PAT, with no secrets
   in its environment. It replaces Blazor-Server's inline step that fetches the `dotnet-*` skills. It is still code on the runner outside the sandbox:
-  what it writes to `GITHUB_ENV`, `GITHUB_PATH` or the global git config is trusted by the steps that follow, which hold the PAT and the Claude credential,
-  so a change to it needs a person's review (the script's header and [The workflow](../../references/sandcastle.md#the-workflow) say so).
+  whatever it leaves on the runner (the workspace and `.git/config`, the home directory, `PATH`, `GITHUB_ENV`, `GITHUB_PATH`, the global git config) is trusted by the steps
+  that follow, which hold the PAT and the Claude credential, so a change to it needs a person's review (the script's header and [The workflow](../../references/sandcastle.md#the-workflow) say so).
 - **`workflow_run` lists the CI workflows by name** (it can't read a variable): the Template's `ci.yml`, the workflow that tests the Template in dotfiles, and Claude Review.
   The follow-up-run and hand-opened-PR triggers of auth0-management-app are not included: they land with the host code that uses them
   (mpaulosky/dotfiles#313 and mpaulosky/dotfiles#314), now that a Template PR can change the workflow and `lib/` together.

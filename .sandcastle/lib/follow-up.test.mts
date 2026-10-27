@@ -2430,6 +2430,7 @@ describe("startFromMain", () => {
 
 describe("liveFollowUpGitHub.followsHandOffs", () => {
   // The gate that keeps a SANDCASTLE_ISSUE run or a Sandcastle:local run off hand-off PRs: wired to the active queue scope.
+  // queue.mts has no way to unset the scope, so one that was unset before stays at the last scope applied here.
   function withScope<T>(scope: QueueScope, read: () => T): T {
     let before: QueueScope | undefined;
     try {

@@ -238,9 +238,9 @@ export function describeQueueScope(scope: QueueScope): string {
   return scope.kind === "label" ? `issues labelled ${scope.label}` : `issue #${scope.number} and its PR`;
 }
 
-// Marks an issue while a sandbox is building it (see lib/build.mts#buildIssue
-// and lib/gate.mts), so a second Sandcastle run doesn't start building the
-// same issue too (a near-miss once).
+// Marks an issue, or a hand-off pull request (lib/building.mts), while a
+// sandbox is working on it (see lib/build.mts#buildIssue and lib/gate.mts), so
+// a second Sandcastle run doesn't start on the same one too (a near-miss once).
 export const BUILDING_LABEL = "sandcastle:building";
 
 // How old a sandcastle:building label must be before startup clears it as a

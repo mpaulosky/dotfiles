@@ -6,13 +6,22 @@ import {
   BUILDING_LABEL_MAX_AGE_MS,
   BudgetError,
   DEFAULT_BUDGET_MINUTES,
+  FOLLOW_UP_LABEL,
+  FOLLOW_UP_LABEL_DEFINITION,
   GATE_FIXER_ATTEMPTS,
+  HOST_LABELS,
+  LOCAL_QUEUE_LABEL,
+  LOCAL_QUEUE_LABEL_DEFINITION,
   OPTIONAL_ROLES,
+  QUEUE_LABEL,
   QUEUE_SCOPE_USAGE,
   QueueScopeError,
   ROLES,
   RunModeError,
+  SANDCASTLE_LABELS,
+  SESSION_REPLY_MARKER,
   budgetMinutesFrom,
+  isDefaultQueueScope,
   queueScopeFrom,
   runModeFrom,
 } from "./config.mts";
@@ -114,6 +123,18 @@ describe("queueScopeFrom", () => {
     });
   }
 
+  // The hand-off label is the owner's to add, and a run follows hand-off pull requests only on the default queue: a
+  // SANDCASTLE_LABEL naming it would queue the issues that carry it and run the local scope's follow-ups on them.
+  for (const handOff of ["sandcastle:follow-up", "Sandcastle:Follow-Up"]) {
+    it(`throws when SANDCASTLE_LABEL names the hand-off label "${handOff}", saying Sandcastle manages it`, () => {
+      assert.throws(() => queueScopeFrom({ SANDCASTLE_LABEL: handOff }), (error: unknown) => {
+        assert.ok(error instanceof QueueScopeError);
+        assert.match(error.message, /Sandcastle adds and removes that label itself/);
+        return true;
+      });
+    });
+  }
+
   it("resolves SANDCASTLE_ISSUE to an issue scope", () => {
     assert.deepEqual(queueScopeFrom({ SANDCASTLE_ISSUE: "146" }), { kind: "issue", number: 146 });
   });
@@ -204,5 +225,66 @@ describe("runModeFrom", () => {
   // Unlike SANDCASTLE_ISSUE and SANDCASTLE_LABEL, the mode is how the workflow asks for a follow-up-only run in GitHub Actions.
   it("accepts the variable when GITHUB_ACTIONS is set", () => {
     assert.equal(runModeFrom({ GITHUB_ACTIONS: "true", SANDCASTLE_MODE: "follow-up" }), "follow-up");
+  });
+});
+
+// The hand-off label (lib/follow-up.mts#sweepSubject): created at startup, never a queue or a managed label.
+describe("FOLLOW_UP_LABEL", () => {
+  it("is sandcastle:follow-up", () => {
+    assert.equal(FOLLOW_UP_LABEL, "sandcastle:follow-up");
+  });
+
+  it("is kept out of SANDCASTLE_LABELS, which the host adds and removes itself", () => {
+    assert.ok(!SANDCASTLE_LABELS.some((label) => label.name.toLowerCase() === FOLLOW_UP_LABEL));
+  });
+
+  it("is created at startup: HOST_LABELS holds it exactly once", () => {
+    assert.equal(HOST_LABELS.filter((label) => label.name === FOLLOW_UP_LABEL).length, 1);
+  });
+
+  it("is created beside the managed labels and the local queue's label, which HOST_LABELS still holds", () => {
+    const names = HOST_LABELS.map((label) => label.name);
+
+    for (const label of [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION]) assert.ok(names.includes(label.name), label.name);
+    assert.ok(names.includes(LOCAL_QUEUE_LABEL));
+  });
+
+  it("is defined with a description GitHub accepts (at most 100 characters) and a six-digit colour", () => {
+    assert.equal(FOLLOW_UP_LABEL_DEFINITION.name, FOLLOW_UP_LABEL);
+    assert.ok(FOLLOW_UP_LABEL_DEFINITION.description.length > 0);
+    assert.ok(FOLLOW_UP_LABEL_DEFINITION.description.length <= 100);
+    assert.match(FOLLOW_UP_LABEL_DEFINITION.color, /^[0-9A-Fa-f]{6}$/);
+  });
+});
+
+// Only the run GitHub Actions starts follows hand-off pull requests.
+describe("isDefaultQueueScope", () => {
+  for (const label of [QUEUE_LABEL, "sandcastle", "SANDCASTLE"]) {
+    it(`is true for the label scope "${label}", compared as GitHub compares labels`, () => {
+      assert.equal(isDefaultQueueScope({ kind: "label", label }), true);
+    });
+  }
+
+  for (const label of [LOCAL_QUEUE_LABEL, "Sandcastle:dev", "Sandcastle "]) {
+    it(`is false for the label scope "${label}"`, () => {
+      assert.equal(isDefaultQueueScope({ kind: "label", label }), false);
+    });
+  }
+
+  it("is false for an issue scope", () => {
+    assert.equal(isDefaultQueueScope({ kind: "issue", number: 146 }), false);
+  });
+
+  it("is true for the scope queueScopeFrom gives in GitHub Actions, and false for a local one", () => {
+    assert.equal(isDefaultQueueScope(queueScopeFrom({ GITHUB_ACTIONS: "true" })), true);
+    assert.equal(isDefaultQueueScope(queueScopeFrom({ SANDCASTLE_ISSUE: "5" })), false);
+    assert.equal(isDefaultQueueScope(queueScopeFrom({ SANDCASTLE_LABEL: "Sandcastle:dev" })), false);
+  });
+});
+
+// A Claude Code session posts under the owner's token, so this is how its replies are told from the owner's.
+describe("SESSION_REPLY_MARKER", () => {
+  it("is the marker docs/PROCESS.md tells a Claude Code session to end every reply with", () => {
+    assert.equal(SESSION_REPLY_MARKER, "<!-- claude-session -->");
   });
 });

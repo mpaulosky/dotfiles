@@ -272,6 +272,33 @@ export const SANDCASTLE_LABELS: readonly SandcastleLabel[] = [
   { name: "bug", color: "d73a4a", description: "Something isn't working" },
 ];
 
+// The label the repository owner puts on a pull request Sandcastle didn't open, to have Sandcastle follow it up like one
+// of its own (lib/follow-up.mts#sweepSubject). Not one of SANDCASTLE_LABELS: it is a person's to add, and a run never
+// adds or removes it.
+export const FOLLOW_UP_LABEL = "sandcastle:follow-up";
+
+// How the host creates FOLLOW_UP_LABEL at startup. GitHub refuses a label description over 100 characters.
+export const FOLLOW_UP_LABEL_DEFINITION: SandcastleLabel = {
+  name: FOLLOW_UP_LABEL,
+  color: "C5DEF5",
+  description: "Sandcastle follows this pull request up. Only the repository owner's label counts.",
+};
+
+// Every label the host creates at startup (lib/github.mts#ensureLabels): SANDCASTLE_LABELS, the local queue's label and
+// the hand-off label.
+export const HOST_LABELS: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION];
+
+// The marker a Claude Code session ends every reply and comment with (docs/PROCESS.md): it posts under the owner's token,
+// so nothing else tells its comments from the owner's.
+export const SESSION_REPLY_MARKER = "<!-- claude-session -->";
+
+// Whether `scope` is the queue GitHub Actions always runs, every issue labelled QUEUE_LABEL. Only that run follows
+// hand-off pull requests.
+export function isDefaultQueueScope(scope: QueueScope): boolean {
+  void scope;
+  throw new Error("Not implemented");
+}
+
 // The HTML comment marking an issue comment as a failed build attempt, so the
 // count survives a restart (see lib/github.mts#markerCommentsSince).
 export const BUILD_FAILED_MARKER = "<!-- sandcastle:build-failed -->";

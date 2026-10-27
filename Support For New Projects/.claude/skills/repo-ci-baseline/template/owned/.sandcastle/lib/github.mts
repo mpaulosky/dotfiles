@@ -426,6 +426,7 @@ function sweepPullRequest(node: SweepNode): SweepPullRequest {
   return {
     id: node.id,
     number: node.number,
+    title: "",
     author: authorLogin(node.author),
     body: node.body ?? "",
     baseRefName: node.baseRefName,
@@ -1186,6 +1187,50 @@ const BODY_EDITS_QUERY = `query($owner: String!, $name: String!, $number: Int!, 
     }
   }
 }`;
+
+// Every edit to the pull request `number`'s title-and-body, every page, as bodyEdits reads an issue's (GraphQL
+// issue(number:) answers null for a PR, so this asks pullRequest(number:)). Throws when the answer names no such pull
+// request, or any edit doesn't fit ContentEdit.
+export function pullRequestBodyEdits(
+  number: number,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): ContentEdit[] {
+  void number; void run; void repo;
+  throw new Error("Not implemented");
+}
+
+// The numbers of the open pull requests carrying `label` (gh issue list leaves pull requests out, so
+// issuesWithLabel can't see them).
+export function pullRequestsWithLabel(
+  label: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): number[] {
+  void label; void run; void repo;
+  throw new Error("Not implemented");
+}
+
+// The names of the labels the pull request `number` carries now, read fresh.
+export function pullRequestLabels(
+  number: number,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): string[] {
+  void number; void run; void repo;
+  throw new Error("Not implemented");
+}
+
+// Removes `label` from the pull request `number` (gh issue edit refuses a pull request's number).
+export function removePullRequestLabel(
+  number: number,
+  label: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): void {
+  void number; void label; void run; void repo;
+  throw new Error("Not implemented");
+}
 
 function isContentEdit(value: unknown): value is ContentEdit {
   const edit = value as Partial<Record<keyof ContentEdit, unknown>> | null;

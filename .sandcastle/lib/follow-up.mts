@@ -15,7 +15,14 @@
 // ---------------------------------------------------------------------------
 
 import { discardClosedWork, isIssueBranch, type BranchRefs } from "./branches.mts";
-import { BUILDING_LABEL, COPILOT_REREQUEST_AFTER_MS, FOLLOW_UP_REPLY_MARKER, PR_MARKER, withoutOwnCheck } from "./config.mts";
+import {
+  BUILDING_LABEL,
+  COPILOT_REREQUEST_AFTER_MS,
+  FOLLOW_UP_REPLY_MARKER,
+  PR_MARKER,
+  isDefaultQueueScope,
+  withoutOwnCheck,
+} from "./config.mts";
 import {
   addPullRequestLabel,
   closedPullRequests,
@@ -25,6 +32,7 @@ import {
   issueEvents,
   labelTimeline,
   openPullRequestsForSweep,
+  pullRequestBodyEdits,
   pushAccess,
   requestCopilotReview,
   reviewThreadsOf,
@@ -32,12 +40,13 @@ import {
   timestamp,
   updatePullRequestBranch,
   type ClosedPullRequest,
+  type ContentEdit,
   type IssueEvent,
   type PullRequestIdentity,
   type ReviewThread,
   type TimelineLabelEvent,
 } from "./github.mts";
-import { labelOriginFixes, loadQueue, ownerCheck, type IsOwner } from "./queue.mts";
+import { activeQueueScope, labelOriginFixes, loadQueue, ownerCheck, type Approval, type IsOwner } from "./queue.mts";
 import { outcomeReport, waitingPrReport, type OutcomeReport, type WaitingPrEntry, type WaitingPrReport } from "./report.mts";
 
 // One check run or status on a PR's head commit, normalised from either
@@ -53,6 +62,7 @@ export { withoutOwnCheck };
 // paginated GraphQL query (lib/github.mts#openPullRequestsForSweep).
 export type SweepPullRequest = PullRequestIdentity & {
   id: string;
+  title: string;
   headRefOid: string;
   isDraft: boolean;
   labels: string[];
@@ -138,6 +148,39 @@ export function sweepSkipReason(
 // What a caller can switch off in sweepPullRequests. handBackClosed (default true): hand back an issue
 // whose latest PR closed without merging. A follow-up-only run turns it off.
 export type SweepOptions = { handBackClosed?: boolean };
+
+// Why a pull request is swept: it is a Sandcastle issue's PR, or the repository owner handed it off with the
+// sandcastle:follow-up label.
+export type SweepSubject = { kind: "issue"; issueNumber: number } | { kind: "hand-off" };
+
+// What the sweep decides whether `pr` is swept from, besides the pull request itself: the issues in this run's scope,
+// the host's login, the issues labelled sandcastle:building, and whether this run follows hand-off pull requests (only
+// the default queue scope does).
+export type SweepContext = {
+  inScope: ReadonlySet<number>;
+  host: string;
+  building: ReadonlySet<number>;
+  followsHandOffs: boolean;
+};
+
+// Whether `pr` is swept, and why, or why it isn't (the reason for the log). Implements the checks of sweepSkipReason for
+// a Sandcastle issue's PR, then, for a PR that is not one and carries the owner's sandcastle:follow-up label, the
+// hand-off rules. `handOffApproval` is read only when everything else lets the PR through.
+export function sweepSubject(
+  pr: SweepPullRequest,
+  context: SweepContext,
+  handOffApproval: () => Approval,
+): { subject: SweepSubject } | { skip: string } {
+  void pr; void context; void handOffApproval;
+  throw new Error("Not implemented");
+}
+
+// Whether the repository owner's sandcastle:follow-up label stands on `pr`: its latest labeled event is the owner's,
+// and nobody but the owner has renamed it or edited its description since (lib/queue.mts#approval).
+export function handOffApproval(pr: Pick<SweepPullRequest, "number">, github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner">): Approval {
+  void pr; void github;
+  throw new Error("Not implemented");
+}
 
 // What the sweep does about one PR, decided by `decide`.
 export type SweepDecision =
@@ -281,6 +324,11 @@ export type FollowUpGitHub = {
   // A PR's review threads in full, comments included, so the sweep can tell a
   // thread the host has answered from one it hasn't.
   reviewThreads(number: number): ReviewThread[];
+  // Every edit to a PR's description, for the approval of a hand-off PR's label. live: pullRequestBodyEdits.
+  pullRequestBodyEdits(number: number): ContentEdit[];
+  // Whether this run follows hand-off PRs: only one with the default queue scope does. live:
+  // isDefaultQueueScope(activeQueueScope()).
+  followsHandOffs(): boolean;
 };
 
 export const liveFollowUpGitHub: FollowUpGitHub = {
@@ -298,6 +346,8 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   // The head that comes with the threads is ignored: they don't depend on
   // it, and the pass checks the head itself.
   reviewThreads: (number) => reviewThreadsOf(number).threads,
+  pullRequestBodyEdits: (number) => pullRequestBodyEdits(number),
+  followsHandOffs: () => isDefaultQueueScope(activeQueueScope()),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the
@@ -506,13 +556,15 @@ export type PassTarget = {
   id: string;
   headRefName: string;
   headRefOid: string;
-  issueNumber: number;
   reasons: string[];
   // GitHub said the PR conflicts with main (DIRTY), so a pass merges main
   // in. A PR that's only behind isn't merged by a pass: the sweep updates it
   // on GitHub once it's settled.
   conflicted: boolean;
-};
+} & ({ issueNumber: number; handOff?: undefined } | { handOff: HandOffTarget; issueNumber?: undefined });
+
+// A hand-off PR's own title and description, which stand in for an issue's in the pass's prompt.
+export type HandOffTarget = { title: string; body: string };
 
 // What lib/follow-up-pass.mts#runPass reads of a needs-pass PR. Only an
 // issue branch gets this far (sweepSkipReason), so the issue number is there.

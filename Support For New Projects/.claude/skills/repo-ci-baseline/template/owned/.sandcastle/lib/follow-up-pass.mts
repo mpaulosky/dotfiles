@@ -25,7 +25,7 @@ import {
   publicErrorText,
   retryOnServerError,
 } from "./build.mts";
-import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
+import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel, releasePullRequestBuildingLabel } from "./building.mts";
 import { runCheckpoint, runGate, tail, type GateRun } from "./checkpoint.mts";
 import {
   BUILDING_LABEL,
@@ -450,6 +450,13 @@ export function passOutcomeEntry(target: PassTarget, outcome: PassOutcome): Outc
   }
 }
 
+// The prompt's view of the hand-off PR `target`: an issue-shaped record whose number is the PR's, whose title is the PR's
+// and whose body is the PR's description under a note saying it isn't an issue.
+export function handOffIssue(target: PassTarget): SandcastleIssue {
+  void target;
+  throw new Error("Not implemented");
+}
+
 // What runPass needs from outside the pass itself; tests pass a stub. The
 // live wiring sits at the bottom of this module.
 export type PassHost = {
@@ -472,8 +479,12 @@ export type PassHost = {
   contains(commit: string, ancestor: string): boolean;
   // lib/building.mts#claimBuildingLabel.
   markBuilding(issue: number): boolean;
+  // lib/building.mts#claimPullRequestBuildingLabel: the claim on a hand-off PR, which has no issue to carry it.
+  markPullRequestBuilding(pr: number): boolean;
   // lib/building.mts#releaseBuildingLabel.
   unmarkBuilding(issue: number): void;
+  // lib/building.mts#releasePullRequestBuildingLabel.
+  unmarkPullRequestBuilding(pr: number): void;
   createSandbox(branch: string): Promise<sandcastle.Sandbox>;
   // lib/host-safety.mts's worktree-tamper check, as lib/build.mts#BuildHost
   // already exposes it.
@@ -546,6 +557,8 @@ export const livePassHost: PassHost = {
   contains: (commit, ancestor) => originRefs.contains(commit, ancestor),
   markBuilding: (issue) => claimBuildingLabel(issue),
   unmarkBuilding: (issue) => releaseBuildingLabel(issue),
+  markPullRequestBuilding: (pr) => claimPullRequestBuildingLabel(pr),
+  unmarkPullRequestBuilding: (pr) => releasePullRequestBuildingLabel(pr),
   createSandbox: (branch) => createCheckedSandbox(branch),
   worktreeProblems: (path) => worktreeLinkProblems(path, repoGitDir()),
   leaksSecret: (base, commit) => firstSecretMatch(base, commit, sandboxSecrets()),
@@ -1220,7 +1233,7 @@ export async function followUpPassPhase(
   const started: { index: number; issue: SandcastleIssue }[] = [];
   // Serially, because concurrent fetches contend on the same ref lock.
   for (const [index, target] of targets.entries()) {
-    const issue = byNumber.get(target.issueNumber);
+    const issue = target.issueNumber === undefined ? undefined : byNumber.get(target.issueNumber);
     if (issue === undefined) {
       outcomes[index] = { kind: "skipped", reason: `#${target.issueNumber} isn't in this round's queue` };
       continue;

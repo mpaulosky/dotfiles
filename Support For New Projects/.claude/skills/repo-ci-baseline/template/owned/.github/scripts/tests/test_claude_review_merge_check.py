@@ -70,13 +70,15 @@ class Repo:
             self.git("commit", "-q", "--amend", "--no-edit")
         return self.git("rev-parse", "HEAD")
 
-    def check(self, head, reviewed, tmp_path, current=None, runs=(), outputs=None):
+    def check(self, head, reviewed, tmp_path, current=None, runs=(), outputs=None, noted=None):
         """Run the step: (exit code, its skip output, what it printed). current: the PR's head by then; runs: how
-        the check job went in each run for current; outputs: a dict to fill with every output."""
+        the check job went in each run for current; outputs: a dict to fill with every output; noted: the commits
+        carrying Copilot's quota note (the head when not given)."""
         self.git("update-ref", "refs/remotes/origin/main", "main")
         runner_temp = tmp_path / "runner"
         runner_temp.mkdir(exist_ok=True)
         (runner_temp / "reviewed.txt").write_text("".join(f"{sha}\n" for sha in reviewed))
+        (runner_temp / "noted.txt").write_text("".join(f"{sha}\n" for sha in (noted if noted is not None else [head])))
         (runner_temp / "current-runs.txt").write_text("".join(f"{state}\n" for state in runs))
         output = runner_temp / "output"
         output.write_text("")
@@ -300,6 +302,22 @@ def test_stale_reviews_cant_cancel_the_newer_heads(repo):
         assert re.search(pattern, workflow), job
     assert "stale: ${{ steps.check.outputs.stale == 'true' }}" in workflow
     assert "stale: ${{ needs.merge-from-main.outputs.stale }}" in workflow
+
+
+def test_skips_a_stale_head_whose_review_the_gate_would_not_count(repo, tmp_path):
+    # PR Auto-Merge counts a Claude review of an earlier commit only with Copilot's note on it (mpaulosky/dotfiles#318),
+    # so a review of rev can't cover the newer clean merge, and posting it would spend a review for nothing.
+    newer = repo.merge("main")
+    code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], noted=[])
+    assert (code, skip) == (0, "true")
+    assert "has no Copilot note" in out and "wouldn't count" in out
+
+
+def test_reviews_a_stale_head_that_carries_copilots_note(repo, tmp_path):
+    newer = repo.merge("main")
+    code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], noted=[repo.rev])
+    assert (code, skip) == (0, "false")
+    assert f"Claude reviews {repo.rev}" in out
 
 
 def test_skips_a_stale_head_a_review_under_its_own_clean_merge_covers(repo, tmp_path):

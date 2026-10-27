@@ -25,6 +25,8 @@ and `land.sh` does so as soon as its own request for the head read back as dropp
 Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
 A request the run can't read in full counts as pending, so the rule fails closed.
 Claude's review of the head also waits for the grace to be over, so a label added by hand right after a push, before the ruleset's request registers, is not taken for Copilot's review.
+A head with no check besides Claude's and the workflow's own has no grace to wait for, so the workflow never counts Claude's review of it: it goes to the owner's notices.
+`land.sh` counts Claude's review of a head its own request was dropped for with no grace, so such a PR can wait up to the grace after Claude's review before the workflow merges it.
 That rests on GitHub keeping Copilot's request in `reviewRequests` until its review is submitted.
 Once Copilot really reviews the head, Copilot's review covers it and the label comes off (#271). The new path applies to any same-repo PR,
 so a repo whose ruleset never requests Copilot gets Claude's review too. The cost is a small window where a Copilot review that is merely very late arrives after Claude's;

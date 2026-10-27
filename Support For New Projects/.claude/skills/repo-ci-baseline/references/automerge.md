@@ -36,7 +36,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Even then it counts as a review of a commit only where Copilot can't review it: Claude is the backup. Copilot can't when its quota note is on that
   commit, or when it is the head and Copilot has no review of it, no pending review request and the grace is over (GitHub drops the request "without a word" once the
   budget is used up, #318; ADR 0004's update; a request list the run can't read in full counts as pending). A Claude review of an earlier commit with no note covers
-  nothing, label or not (so `land.sh` and the workflow agree),
+  nothing, label or not (so `land.sh` and the workflow agree on that),
+  and a head with no check besides Claude's and the workflow's own has no grace to count, so it goes to the owner's notices,
+  and `land.sh` counts Claude's review of a head its own request was dropped for without a grace, while the workflow waits for the grace,
   and neither does one of a head Copilot's request is still pending for (unless the note is on it), since that review may be merely late and counting Claude's would let the PR merge before Copilot's
   findings arrive (`pr-automerge.test.mjs` pins each case).
   A Copilot review counts only when it reviewed something. Once the account's Copilot code review quota is used up, Copilot still posts a review

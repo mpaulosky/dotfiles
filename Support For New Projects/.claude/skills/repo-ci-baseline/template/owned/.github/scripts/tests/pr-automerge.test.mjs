@@ -1352,6 +1352,7 @@ test("fails closed when Copilot's pending request can't be seen: too many reques
       reviewRequests,
       claudeReviews: claudeReviewsOf(HEAD),
       labels: labelled(CLAUDE_LABEL),
+      headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
       quotaNotes: false
     }));
     assert.deepEqual(counted.merges, [], "Claude's review of the head doesn't count");
@@ -1490,9 +1491,24 @@ test("doesn't count Claude's review of the head when the quota note is on an ear
     reviewRequests: COPILOT_PENDING,
     claudeReviews: claudeReviewsOf(HEAD),
     labels: labelled(CLAUDE_LABEL),
+    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
     quotaNotes: false
   });
   const { merges } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+});
+
+test("doesn't count Claude's review of a head with no check besides Claude's and the job's own (mpaulosky/dotfiles#318)", async () => {
+  const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false })),
+    quotaNotes: false
+  });
+  const { merges } = await evaluate(pr, [], { push: true, requiredChecks: [] });
 
   assert.deepEqual(merges, []);
 });

@@ -7,7 +7,7 @@ name: Sandcastle
 # Apply overwrites it, and a repo that runs Sandcastle in Actions needs only the
 # SANDCASTLE_GH_TOKEN secret and a Claude credential. A repo without the token
 # skips every step after the first, so a run there ends green with a notice; the
-# repo's own setup goes in .github/ci/sandcastle-prepare.sh.
+# skills it mounts are listed in .github/ci/sandcastle-skills.txt.
 #
 # Every trigger runs the host code checked out from main, never the event's
 # ref. Events can't filter by label name, branch or reviewer, so the job's if:
@@ -108,19 +108,100 @@ jobs:
           ref: main
           persist-credentials: false
 
-      # The repo's own setup for the run (extra tools, the skills its prompts
-      # name), in .github/ci/sandcastle-prepare.sh, a Seed file that does
-      # nothing until the repo fills it. It runs before the credential helper
-      # below is set up and has no secret in its environment, so nothing it
-      # fetches is sent the PAT. It is still code on the runner, outside the
-      # sandbox, and the steps after it trust whatever it leaves behind: the
-      # workspace and .git/config (which pnpm and git read), the home directory
-      # (~/.npmrc, ~/.claude/skills, which the sandbox mounts), PATH, GITHUB_ENV,
-      # GITHUB_PATH and the global git config. A change to it needs a person's
-      # review. Run with bash, so the file's mode doesn't matter.
-      - name: Prepare the run
+      # lib/skills.mts mounts the skills the roles name (SANDBOX_SKILLS) into
+      # the sandbox from ~/.claude/skills, which a hosted runner doesn't have.
+      # The repo lists them in .github/ci/sandcastle-skills.txt, a Seed data
+      # file: one dotfiles-sha line (the commit to take them from, 40 hex
+      # digits) and one skill line per skill name. This step is Owned and
+      # reads that file as data only: it rejects any line that isn't one of
+      # those two shapes, fetches the pinned commit of the Template owner's
+      # public dotfiles repository, refuses a skill that is missing or holds a
+      # symlink, and links only the listed skills into ~/.claude/skills. No
+      # script of the repo's runs here, so nothing a repo file says can change
+      # what the later steps, which hold the PAT and the Claude credential,
+      # trust. It runs before the credential helper is set up, so the fetch
+      # never sends the PAT. A change to the file needs a person's review, as
+      # the skills become the agents' instructions. It prints no line of the
+      # file, so a line can't forge a workflow command in the log.
+      - name: Install the skills
         if: steps.secrets.outputs.enabled == 'true'
-        run: bash .github/ci/sandcastle-prepare.sh
+        env:
+          DOTFILES_URL: https://github.com/mpaulosky/dotfiles.git
+        run: |
+          set -euo pipefail
+          list=.github/ci/sandcastle-skills.txt
+          [ -f "$list" ] || exit 0
+          sha=""
+          skills=()
+          n=0
+          while IFS= read -r line || [ -n "$line" ]; do
+            n=$((n + 1))
+            case "$line" in '' | '#'*) continue ;; esac
+            key="" value="" extra=""
+            read -r key value extra <<< "$line"
+            if [ -n "$extra" ] || [ -z "$value" ]; then
+              echo "::error file=$list,line=$n::A line is a key and one value."
+              exit 1
+            fi
+            case "$key" in
+              dotfiles-sha)
+                if [ -n "$sha" ] || ! [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
+                  echo "::error file=$list,line=$n::dotfiles-sha is given once, as a full 40-digit lowercase hex commit."
+                  exit 1
+                fi
+                sha="$value"
+                ;;
+              skill)
+                if ! [[ "$value" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || [ "${#value}" -gt 64 ] || [ "${#skills[@]}" -ge 32 ]; then
+                  echo "::error file=$list,line=$n::A skill is a lowercase name of letters, digits and single hyphens (up to 64), and at most 32 are listed."
+                  exit 1
+                fi
+                for known in "${skills[@]}"; do
+                  if [ "$known" = "$value" ]; then
+                    echo "::error file=$list,line=$n::A skill is listed once."
+                    exit 1
+                  fi
+                done
+                skills+=("$value")
+                ;;
+              *)
+                echo "::error file=$list,line=$n::A line starts with dotfiles-sha or skill."
+                exit 1
+                ;;
+            esac
+          done < "$list"
+          if [ -z "$sha" ] && [ "${#skills[@]}" -eq 0 ]; then
+            exit 0
+          fi
+          if [ -z "$sha" ] || [ "${#skills[@]}" -eq 0 ]; then
+            echo "::error file=$list::The file needs a dotfiles-sha line and at least one skill line, or neither."
+            exit 1
+          fi
+          base="Support For New Projects/.claude/skills"
+          dotfiles="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/dotfiles.XXXXXX")"
+          git init --quiet "$dotfiles"
+          paths=()
+          for skill in "${skills[@]}"; do
+            paths+=("$base/$skill")
+          done
+          git -C "$dotfiles" sparse-checkout set "${paths[@]}"
+          git -C "$dotfiles" fetch --quiet --depth 1 --filter=blob:none "$DOTFILES_URL" "$sha"
+          git -C "$dotfiles" checkout --quiet FETCH_HEAD
+          for skill in "${skills[@]}"; do
+            dir="$dotfiles/$base/$skill"
+            if [ -L "$dir" ] || [ ! -f "$dir/SKILL.md" ]; then
+              echo "::error::dotfiles $sha has no $skill skill."
+              exit 1
+            fi
+            if [ -n "$(find "$dir" -type l -print -quit)" ]; then
+              echo "::error::The $skill skill holds a symlink, which the sandbox mount would follow."
+              exit 1
+            fi
+          done
+          mkdir -p "$HOME/.claude/skills"
+          for skill in "${skills[@]}"; do
+            ln -s "$dotfiles/$base/$skill" "$HOME/.claude/skills/$skill"
+          done
 
       # The host's git fetches and pushes authenticate through gh's credential
       # helper in the runner's global config, which reads GH_TOKEN from the

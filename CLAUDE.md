@@ -12,7 +12,7 @@ other repo copies (see its `SKILL.md` and `CONTEXT.md`).
   `scripts/check-branch-name.sh`, `scripts/review.sh`, the pre-push review's skill and agent (`.claude/skills/pre-push-review/`,
   `.claude/agents/pre-push-reviewer.md`) and the Owned files under `.sandcastle/` (`main.mts`, every `lib/` module but `repo-config.mts`, and their tests):
   copies of the Template's Owned files. Edit the Template's file and copy it over; `test.sh` fails when a copy drifts.
-- `scripts/gate.sh` and `.github/workflows/repo-ci-baseline.yml` are dotfiles' own, and so is `.github/ci/sandcastle-prepare.sh`, the Seed hook `sandcastle.yml` calls (it does nothing here).
+- `scripts/gate.sh` and `.github/workflows/repo-ci-baseline.yml` are dotfiles' own, and so is `.github/ci/sandcastle-skills.txt`, the Seed list of skills `sandcastle.yml` installs (empty here).
 - `.sandcastle/`: the unattended agent pipeline (TypeScript, run with Claude Code), ported from Blazor-Server's. Its rules are in
   `.claude/rules/sandcastle.md`.
 

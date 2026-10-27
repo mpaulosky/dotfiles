@@ -46,10 +46,9 @@ printf 'agent\n' > "$skill/template/owned/.claude/agents/pre-push-reviewer.md"
 printf 'skill\n' > "$skill/template/owned/.claude/skills/pre-push-review/SKILL.md"
 printf 'lenses\n' > "$skill/template/owned/.claude/skills/pre-push-review/lenses.md"
 printf 'other\n' > "$skill/template/owned/.claude/skills/other/SKILL.md"
-# The Sandcastle workflow and the Seed hook it calls are part of the Sandcastle section too.
+# The Sandcastle workflow and the Seed skills list it reads are part of the Sandcastle section too.
 printf 'name: Sandcastle\n' > "$skill/template/owned/.github/workflows/sandcastle.yml"
-printf '#!/usr/bin/env bash\n' > "$skill/template/seed/.github/ci/sandcastle-prepare.sh"
-chmod +x "$skill/template/seed/.github/ci/sandcastle-prepare.sh"
+printf '# skills\n' > "$skill/template/seed/.github/ci/sandcastle-skills.txt"
 apply="$skill/apply.sh"
 
 # Hooks off: a global init.templateDir can install hooks (such as a
@@ -153,7 +152,7 @@ check "no remote: unfilled reported" \
 sandcastle_files=(.sandcastle/tsconfig.json .sandcastle/roles/architect.md package.json scripts/review.sh .claude/agents/pre-push-reviewer.md \
   .claude/skills/pre-push-review/SKILL.md .claude/skills/pre-push-review/lenses.md \
   .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts \
-  .github/workflows/sandcastle.yml .github/ci/sandcastle-prepare.sh)
+  .github/workflows/sandcastle.yml .github/ci/sandcastle-skills.txt)
 
 # An empty repo gets them. Sandcastle's own {{TASK_ID}} stays and isn't reported as unfilled.
 repo="$work/sandcastle empty"
@@ -167,7 +166,6 @@ check "sandcastle, empty repo: {{REPO}} filled and {{TASK_ID}} kept" \
   'grep -qx "# Widget architect for issue {{TASK_ID}}" "$repo/.sandcastle/roles/architect.md"'
 check "sandcastle, empty repo: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 check "sandcastle, empty repo: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
-check "sandcastle, empty repo: the Seed hook keeps its execute bit" '[[ -x "$repo/.github/ci/sandcastle-prepare.sh" ]]'
 check "sandcastle, empty repo: the Sandcastle workflow written" '[[ -f "$repo/.github/workflows/sandcastle.yml" ]]'
 
 # A repo with history and no .sandcastle/ gets none of them, and its other files as before.
@@ -211,7 +209,6 @@ for f in "${sandcastle_files[@]}"; do
   check "sandcastle, .sandcastle/ present: $f written" '[[ -f "$repo/$f" ]]'
 done
 check "sandcastle, .sandcastle/ present: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
-check "sandcastle, .sandcastle/ present: the Seed hook keeps its execute bit" '[[ -x "$repo/.github/ci/sandcastle-prepare.sh" ]]'
 check "sandcastle, .sandcastle/ present: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never

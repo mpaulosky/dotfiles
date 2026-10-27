@@ -34,9 +34,9 @@ import {
   FOLLOW_UP_MARKER,
   FOLLOW_UP_PASS_CAP,
   FOLLOW_UP_REPLY_MARKER,
-  SESSION_REPLY_MARKER,
   GATE_COMMENT_LINES,
   GATE_FIXER_ATTEMPTS,
+  SESSION_REPLY_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
@@ -763,24 +763,20 @@ export async function runPass(
   // Claimed as a build claims it, so two runs never pass on one PR or share
   // its worktree, and a build of the same issue stands aside meanwhile. A
   // hand-off PR has no issue to carry the claim, so the PR carries it.
-  const onPullRequest = target.handOff !== undefined;
-  if (onPullRequest) {
-    if (!host.markPullRequestBuilding(target.number)) return skip(`another run marked PR #${target.number} ${BUILDING_LABEL}`);
-  } else if (!host.markBuilding(issue.number)) {
-    return skip(`another run marked #${issue.number} ${BUILDING_LABEL}`);
-  }
+  const claim =
+    target.handOff !== undefined
+      ? { name: `PR #${target.number}`, mark: () => host.markPullRequestBuilding(target.number), unmark: () => host.unmarkPullRequestBuilding(target.number) }
+      : { name: `#${issue.number}`, mark: () => host.markBuilding(issue.number), unmark: () => host.unmarkBuilding(issue.number) };
+  if (!claim.mark()) return skip(`another run marked ${claim.name} ${BUILDING_LABEL}`);
   try {
     const plan = planPass(target, base, host, skip, true);
     if (!("forRole" in plan)) return plan;
     return await passOnMarkedIssue(target, issue, base, host, plan);
   } finally {
     try {
-      if (onPullRequest) host.unmarkPullRequestBuilding(target.number);
-      else host.unmarkBuilding(issue.number);
+      claim.unmark();
     } catch (error) {
-      console.error(
-        `  ⚠ ${onPullRequest ? `PR #${target.number}` : `#${issue.number}`}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`,
-      );
+      console.error(`  ⚠ ${claim.name}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`);
     }
   }
 }

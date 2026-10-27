@@ -184,13 +184,7 @@ export function sweepSubject(
   // A Sandcastle PR that is a draft, needs a human, is being built or is truncated stays skipped: the label doesn't turn it
   // into a hand-off.
   const issueNumber = issueNumberOf(pr.headRefName);
-  const isSandcastles =
-    pr.isCrossRepository === false &&
-    pr.baseRefName === "main" &&
-    issueNumber !== undefined &&
-    inScope.has(issueNumber) &&
-    pr.author === host &&
-    pr.body.includes(PR_MARKER);
+  const isSandcastles = issueNumber !== undefined && inScope.has(issueNumber) && isSandcastlePullRequest(pr, host);
   if (isSandcastles || !hasLabel(pr, FOLLOW_UP_LABEL)) return { skip: reason };
 
   if (pr.isCrossRepository !== false) return { skip: "it's from a fork" };
@@ -213,7 +207,10 @@ export function sweepSubject(
 
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: its latest labeled event is the owner's,
 // and nobody but the owner has renamed it or edited its description since (lib/queue.mts#approval).
-export function handOffApproval(pr: Pick<SweepPullRequest, "number">, github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner">): Approval {
+export function handOffApproval(
+  pr: Pick<SweepPullRequest, "number">,
+  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner">,
+): Approval {
   return approval(FOLLOW_UP_LABEL, github.pullRequestEvents(pr.number), github.pullRequestBodyEdits(pr.number), github.isOwner);
 }
 

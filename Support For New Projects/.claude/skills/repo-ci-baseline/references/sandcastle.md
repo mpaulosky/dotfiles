@@ -96,7 +96,8 @@ and (when opted in) `ui` prompts each list every mounted skill.
 **Run modes.** `SANDCASTLE_MODE` (commented out in `.env.example`) picks what a run does; `runModeFrom` in `lib/config.mts` reads it. Unset, blank or `full` is a full run: intake, builds and rounds.
 `follow-up` is a follow-up-only run (`followUpOnlyRun` in `lib/follow-up-run.mts`): it sweeps the open PRs once, runs one follow-up pass when the sweep flagged something, and exits,
 so a review or a red check on a PR is answered while a full run is still busy building. Any other value fails with `RunModeError` and exit code 2.
-The two runs stay off each other's PRs through `sandcastle:building`: the sweep skips a PR whose issue carries that label. A follow-up-only run also leaves closed PRs alone
+The two runs stay off each other's PRs through `sandcastle:building`: the sweep skips a PR whose issue carries that label,
+or, for a hand-off PR, a PR that carries it itself. A follow-up-only run also leaves closed PRs alone
 and keeps its own Sandcastle check out of the head checks it reads.
 The workflow side (the `mode` input, `SANDCASTLE_FOLLOW_UP_JOB` and the run's own concurrency group) is not in the Template's `sandcastle.yml` yet.
 
@@ -106,18 +107,22 @@ The sweep follows up a pull request Sandcastle didn't open when the repository o
 (`FOLLOW_UP_LABEL` in `lib/config.mts`). Without it, a pull request opened by a person or a Claude Code session gets no help with review threads,
 red checks or falling behind `main`, and PR Auto-Merge holds it on every unresolved thread.
 
-- **Which.** `sweepSubject` in `lib/follow-up.mts` accepts a labelled pull request that has no Sandcastle marker, issue branch or in-scope issue when it is
+- **Which.** `sweepSubject` in `lib/follow-up.mts` accepts a labelled pull request that isn't a Sandcastle issue's (host-authored, marked, on an in-scope issue's branch) when it is
   from the same repository, into `main`, not a draft, and its branch name passes `scripts/check-branch-name.sh` (`isHandOffBranch` in `lib/branches.mts`).
   A Sandcastle pull request carrying the label is still swept as its issue's. Only the default queue scope (`isDefaultQueueScope`: the `Sandcastle` label,
   what GitHub Actions always runs) follows hand-offs.
 - **Who.** Only the owner's label counts, checked from the pull request's events and its title and description edits (`handOffApproval`, built on `lib/queue.mts#approval`):
   the latest `labeled` event must be the owner's, and a rename or description edit by anyone else at or after it voids it until the owner adds the label again.
-  A push to the branch after the label is not checked, as for any collaborator with write access.
+  The pull request must also have been opened by the repository's owner or the host login (a session posts as the owner), so a collaborator's pull request is never followed, whoever labels it:
+  a push to the branch after the label is not checked, and a collaborator with write access could keep pushing. (`isOwner` counts every login with push access, so it can't tell them apart;
+  `handOffApproval` compares the author with the account the repository belongs to.) A repository an organisation owns follows only the host's pull requests.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
+  When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
 - **The label.** `FOLLOW_UP_LABEL` is created at startup with `SANDCASTLE_LABELS` and `Sandcastle:local` (`HOST_LABELS`), but it is not one of `SANDCASTLE_LABELS`:
   a person adds and removes it, and `SANDCASTLE_LABEL` can't name it as a queue.
 - **A session's reply.** A Claude Code session posts under the owner's token and ends every reply with `<!-- claude-session -->` (`SESSION_REPLY_MARKER`,
-  [PROCESS.md](../template/owned/docs/PROCESS.md)). A thread whose last bot, host or owner comment carries it counts as answered, and the follow-up role is not shown it.
+  [PROCESS.md](../template/owned/docs/PROCESS.md)). A thread whose last bot, host or owner comment carries it, posted under the host's login or another owner's, counts as answered,
+  and the follow-up role is not shown it.
 - **The prompt.** The follow-up role gets the pull request's number, title and description in the place of an issue's, under a note saying it is not an issue.
 - **The session guidance** is the Seed `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
   which Apply can't edit. It is the repo's once written, so Apply never overwrites it.

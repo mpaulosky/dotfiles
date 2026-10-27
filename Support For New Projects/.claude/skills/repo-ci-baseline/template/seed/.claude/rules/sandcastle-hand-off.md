@@ -1,7 +1,7 @@
 # Handing a pull request off to Sandcastle
 
 Sandcastle follows up the pull requests it opens: review threads, red checks and falling behind `main`. The `sandcastle:follow-up`
-label gives it a pull request someone else opened, so a pull request you finished can be left to Sandcastle for the review follow-up.
+label gives it a pull request you or a session opened rather than Sandcastle, so a pull request you finished can be left to Sandcastle for the review follow-up.
 
 ## What the label does
 
@@ -11,11 +11,13 @@ merge commits and fixes to the branch. After three passes it gives up and labels
 
 Only the repository owner's label counts. A session posts under the owner's token, so a session's label counts; anyone else's does
 not, and neither does a label followed by someone else editing the pull request's title or description (the owner adds the label
-again to approve it). The check reads the pull request's events and edits, not its commits, so a push after the label is not checked.
+again to approve it). The check reads the pull request's events and edits, not its commits, so a push after the label is not checked. For that
+reason the pull request must have been opened by the repository's owner or by a session (the owner's token): the label has no effect on one a
+collaborator opened, whoever adds it.
 
 ## Which pull requests
 
-- Same repository (not a fork), into `main`, not a draft.
+- Opened by the repository's owner (a session's pull request counts), in the same repository (not a fork), into `main`, not a draft.
 - A branch name `scripts/check-branch-name.sh` accepts.
 - Only the default `Sandcastle` queue run (GitHub Actions) follows hand-offs. A local run with `SANDCASTLE_ISSUE` or `SANDCASTLE_LABEL` does not.
 

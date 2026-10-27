@@ -469,12 +469,13 @@ hand_off="$seed/.claude/rules/sandcastle-hand-off.md"
 if grep -q '^paths:' "$hand_off"; then
   fail "the Seed .claude/rules/sandcastle-hand-off.md must load in every session: it takes no paths: frontmatter"
 fi
-for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' "$(sed -nE 's/^export const SESSION_REPLY_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"; do
+session_marker="$(sed -nE 's/^export const SESSION_REPLY_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
+[[ -n "$session_marker" ]] || fail "lib/config.mts must export SESSION_REPLY_MARKER as a one-line string"
+for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' 'opened by the repository' "$session_marker"; do
   if [[ -z "$needle" ]] || ! grep -qF -- "$needle" "$hand_off"; then
     fail "the Seed .claude/rules/sandcastle-hand-off.md must mention '$needle'"
   fi
 done
-session_marker="$(sed -nE 's/^export const SESSION_REPLY_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
 grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
   || fail "SESSION_REPLY_MARKER in lib/config.mts must be the marker docs/PROCESS.md tells a session to end its replies with"
 if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then

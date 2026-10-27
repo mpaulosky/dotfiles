@@ -736,7 +736,7 @@ export function planRedCi(gatePassed: boolean, redChecks: readonly CheckState[],
 }
 
 // Runs one follow-up pass on `target`, a PR the sweep (lib/follow-up.mts)
-// marked as needing one, for its issue. See this module's header for the
+// marked as needing one, for its issue or, for a hand-off PR, for the PR itself. See this module's header for the
 // step-by-step: reset the PR's worktree to its head, merge main in when the PR needs it, run the
 // follow-up role, gate and push, then reply to and resolve the role's
 // verdicts and post the pass summary. `base` is the commit fetchMain()
@@ -899,7 +899,7 @@ type PassPlan = {
   passCount: number;
 };
 
-// runPass's work once the issue is marked: everything from creating the
+// runPass's work once the issue (or a hand-off PR) is marked: everything from creating the
 // sandbox to closing it.
 async function passOnMarkedIssue(
   target: PassTarget,
@@ -1247,7 +1247,7 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
 // main.mts's pass phase: fetches every target's branch serially first (a
 // failed fetch skips that PR for the round, as prepareBranches'
 // lib/branches.mts#fetchMain-style fetches do), then runs runPass for each
-// PR whose issue is in `issues` with Promise.allSettled, logging each
+// PR whose issue is in `issues` (a hand-off PR needs none) with Promise.allSettled, logging each
 // outcome. A rejection is logged and the PR is swept again next round. Once
 // every pass has settled, the first UncountedStopError among them (a usage
 // or time-budget stop from the follow-up role or the gate-fixer) is

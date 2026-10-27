@@ -212,6 +212,9 @@ export function queueScopeFrom(env: Record<string, string | undefined>): QueueSc
   // quote would fail gh's parse.
   if (/[,"]/.test(label)) throw scopeError(`SANDCASTLE_LABEL can't contain a comma or a double quote, which gh reads as a list: "${label}".`);
   const managed = [...SANDCASTLE_LABELS.map((managedLabel) => managedLabel.name), FOLLOW_UP_LABEL, "bug"];
+  if (label.toLowerCase() === FOLLOW_UP_LABEL.toLowerCase()) {
+    throw scopeError(`SANDCASTLE_LABEL can't be "${label}": it is the owner's hand-off label for a pull request, not a queue.`);
+  }
   if (managed.some((name) => name.toLowerCase() === label.toLowerCase())) {
     throw scopeError(`SANDCASTLE_LABEL can't be "${label}": Sandcastle adds and removes that label itself.`);
   }

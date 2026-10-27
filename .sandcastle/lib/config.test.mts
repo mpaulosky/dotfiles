@@ -126,10 +126,10 @@ describe("queueScopeFrom", () => {
   // The hand-off label is the owner's to add, and a run follows hand-off pull requests only on the default queue: a
   // SANDCASTLE_LABEL naming it would queue the issues that carry it and run the local scope's follow-ups on them.
   for (const handOff of ["sandcastle:follow-up", "Sandcastle:Follow-Up"]) {
-    it(`throws when SANDCASTLE_LABEL names the hand-off label "${handOff}", saying Sandcastle manages it`, () => {
+    it(`throws when SANDCASTLE_LABEL names the hand-off label "${handOff}", saying it is the owner's, not a queue`, () => {
       assert.throws(() => queueScopeFrom({ SANDCASTLE_LABEL: handOff }), (error: unknown) => {
         assert.ok(error instanceof QueueScopeError);
-        assert.match(error.message, /Sandcastle adds and removes that label itself/);
+        assert.match(error.message, /the owner's hand-off label for a pull request, not a queue/);
         return true;
       });
     });

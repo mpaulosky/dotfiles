@@ -488,7 +488,7 @@ function withoutAnsweredThreads(
 export type SweepResult = { needsPass: number[]; passes: PassTarget[] };
 
 // Reads the host's login, the in-scope issues and the open PRs once, then
-// for each PR either skips it (sweepSkipReason) or applies `decide`, logging
+// for each PR either skips it (sweepSubject: sweepSkipReason for an issue's PR, the hand-off rules for another) or applies `decide`, logging
 // what happened. A PR with an unresolved bot or owner thread has its threads
 // read in full first, and the ones the host has answered are left out and
 // counted for `waiting` (withoutAnsweredThreads). A PR whose
@@ -506,7 +506,7 @@ export type SweepResult = { needsPass: number[]; passes: PassTarget[] };
 // (closedWithoutMerging), each in its own try/catch too, unless
 // `options.handBackClosed` is false (a follow-up-only run, which leaves that
 // to the full run beside it and doesn't even read the closed PRs). A PR whose
-// issue is labelled sandcastle:building is skipped (sweepSkipReason).
+// issue (or, for a hand-off PR, the PR itself) is labelled sandcastle:building is skipped (sweepSubject).
 export function sweepPullRequests(
   github: FollowUpGitHub = liveFollowUpGitHub,
   log: (line: string) => void = console.log,

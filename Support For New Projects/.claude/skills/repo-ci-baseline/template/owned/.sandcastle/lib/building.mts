@@ -210,7 +210,7 @@ export function installBuildingLabelRelease(
   }
   proc.on("exit", () => {
     for (const issueNumber of release()) {
-      log(`  🧹 #${issueNumber}: removed ${BUILDING_LABEL} as the run stopped.`);
+      log(`  🧹 #${issueNumber} (an issue or a hand-off pull request): removed ${BUILDING_LABEL} as the run stopped.`);
     }
   });
 }

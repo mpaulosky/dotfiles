@@ -215,9 +215,9 @@ export function sweepSubject(
 // Whether `login` is `other`: GitHub logins are case-insensitive.
 const sameLogin = (login: string | null, other: string) => login !== null && login.toLowerCase() === other.toLowerCase();
 
-// The comment that records `head` as a head of a hand-off PR the owner approved (see handOffApproval).
+// The comment that records `head` as a head of a hand-off PR the owner approved, or reached from one through merges of main (see handOffApproval).
 export function approvedHeadComment(head: string): string {
-  return `${APPROVED_HEAD_MARKER} ${head} -->\nSandcastle follows this pull request up from ${head.slice(0, 7)}, the head the owner approved.`;
+  return `${APPROVED_HEAD_MARKER} ${head} -->\nSandcastle follows this pull request up from ${head.slice(0, 7)}: the head the owner approved, or a merge of main made on top of it.`;
 }
 
 // The head a comment records as approved, or undefined when it doesn't open with the marker.

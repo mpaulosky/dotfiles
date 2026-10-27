@@ -8,6 +8,9 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
 - **Drift.** For each overwritten Owned file, read what the Apply commit removed (`git show HEAD -- <file>`).
   Drift goes.
   A real local fix stops the Standardize: move it into the Template first (a dotfiles PR, `test.sh` green), then re-Apply.
+- **Seed `.github/dependabot.yml`.** Its npm block (which covers pnpm) needs a root `package.json`: a repo without one, such as a plain .NET repo, deletes the block,
+  or Dependabot's npm updater reports `dependency_file_not_found` every week. The `npm` label comes from `labels.json`,
+  so run `github-settings.sh --fix`.
 - **Seed files skipped.** Diff each against `template/seed/` and bring over what the repo lacks.
   The repo's version wins on content.
 - **Seed files written.** Check each against what the repo had before: `.github/ci/coverage-threshold` defaults to 80, so set it to the gate the old `ci.yml` enforced (IssueTracker's was 60).

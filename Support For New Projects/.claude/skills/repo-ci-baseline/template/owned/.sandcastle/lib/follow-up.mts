@@ -8,18 +8,22 @@
 // itself published (see isSandcastlePullRequest), and acts on the ones that
 // need no agent: re-requesting a stale Copilot review, updating a branch
 // that's only behind main, and handing an issue back when its latest PR
-// closed without merging. A PR that needs more than that (DIRTY, a red
+// closed without merging. A PR the repository owner handed off with the
+// sandcastle:follow-up label is swept too, though Sandcastle didn't open it
+// (see sweepSubject). A PR that needs more than that (DIRTY, a red
 // check, an unresolved bot or owner thread the host hasn't answered) is
 // logged here and returned as a PassTarget: the agent pass that fixes it
 // lives in lib/follow-up-pass.mts.
 // ---------------------------------------------------------------------------
 
-import { discardClosedWork, isIssueBranch, type BranchRefs } from "./branches.mts";
+import { discardClosedWork, isHandOffBranch, isIssueBranch, type BranchRefs } from "./branches.mts";
 import {
   BUILDING_LABEL,
   COPILOT_REREQUEST_AFTER_MS,
+  FOLLOW_UP_LABEL,
   FOLLOW_UP_REPLY_MARKER,
   PR_MARKER,
+  SESSION_REPLY_MARKER,
   isDefaultQueueScope,
   withoutOwnCheck,
 } from "./config.mts";
@@ -46,7 +50,7 @@ import {
   type ReviewThread,
   type TimelineLabelEvent,
 } from "./github.mts";
-import { activeQueueScope, labelOriginFixes, loadQueue, ownerCheck, type Approval, type IsOwner } from "./queue.mts";
+import { activeQueueScope, approval, labelOriginFixes, loadQueue, ownerCheck, type Approval, type IsOwner } from "./queue.mts";
 import { outcomeReport, waitingPrReport, type OutcomeReport, type WaitingPrEntry, type WaitingPrReport } from "./report.mts";
 
 // One check run or status on a PR's head commit, normalised from either
@@ -171,15 +175,46 @@ export function sweepSubject(
   context: SweepContext,
   handOffApproval: () => Approval,
 ): { subject: SweepSubject } | { skip: string } {
-  void pr; void context; void handOffApproval;
-  throw new Error("Not implemented");
+  const { inScope, host, building, followsHandOffs } = context;
+  const reason = sweepSkipReason(pr, inScope, host, building);
+  if (reason === undefined) {
+    // sweepSkipReason let it through, so it is an issue branch.
+    return { subject: { kind: "issue", issueNumber: issueNumberOf(pr.headRefName) as number } };
+  }
+  // A Sandcastle PR that is a draft, needs a human, is being built or is truncated stays skipped: the label doesn't turn it
+  // into a hand-off.
+  const issueNumber = issueNumberOf(pr.headRefName);
+  const isSandcastles =
+    pr.isCrossRepository === false &&
+    pr.baseRefName === "main" &&
+    issueNumber !== undefined &&
+    inScope.has(issueNumber) &&
+    pr.author === host &&
+    pr.body.includes(PR_MARKER);
+  if (isSandcastles || !hasLabel(pr, FOLLOW_UP_LABEL)) return { skip: reason };
+
+  if (pr.isCrossRepository !== false) return { skip: "it's from a fork" };
+  if (pr.baseRefName !== "main") return { skip: `it's into ${pr.baseRefName}, not main` };
+  if (!followsHandOffs) {
+    return { skip: `it carries ${FOLLOW_UP_LABEL}, which only a run with the default queue scope follows` };
+  }
+  if (!isHandOffBranch(pr.headRefName)) return { skip: "its branch name isn't one scripts/check-branch-name.sh accepts" };
+  if (issueNumber !== undefined && building.has(issueNumber)) {
+    return { skip: `#${issueNumber} is labelled ${BUILDING_LABEL}, so a run is building it` };
+  }
+  if (hasLabel(pr, BUILDING_LABEL)) return { skip: `it's labelled ${BUILDING_LABEL}, so a run is passing on it` };
+  if (pr.isDraft) return { skip: "it's a draft" };
+  if (hasLabel(pr, NEEDS_HUMAN)) return { skip: `it's labelled ${NEEDS_HUMAN}` };
+  if (pr.truncated) return { skip: "it has more reviews, threads or checks than one read holds" };
+  const approved = handOffApproval();
+  if (!approved.approved) return { skip: `its ${FOLLOW_UP_LABEL} label doesn't count: ${approved.reason}` };
+  return { subject: { kind: "hand-off" } };
 }
 
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: its latest labeled event is the owner's,
 // and nobody but the owner has renamed it or edited its description since (lib/queue.mts#approval).
 export function handOffApproval(pr: Pick<SweepPullRequest, "number">, github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner">): Approval {
-  void pr; void github;
-  throw new Error("Not implemented");
+  return approval(FOLLOW_UP_LABEL, github.pullRequestEvents(pr.number), github.pullRequestBodyEdits(pr.number), github.isOwner);
 }
 
 // What the sweep does about one PR, decided by `decide`.
@@ -358,12 +393,15 @@ export type ThreadStanding = "resolved" | "answered" | "bot" | "owner" | "human"
 // How `thread` stands, checked in this order. A resolved thread is
 // "resolved". A thread whose first comment's author is a bot is "bot",
 // unless the last comment by a bot, the owner or `hostLogin` is the host's
-// own reply (by `hostLogin`, opening with FOLLOW_UP_REPLY_MARKER): then it's
+// own reply (by `hostLogin`, opening with FOLLOW_UP_REPLY_MARKER, or a Claude Code
+// session's, which carries SESSION_REPLY_MARKER anywhere in its body: a session
+// posts under the owner's token, so `hostLogin` is its login too): then it's
 // "answered", open again only because resolving it failed (the pass summary
 // says so) or the owner unresolved it, and either way a person's now, not the
 // role's to answer twice. A thread the repository owner opened is "owner",
 // or "answered" when the last comment by the owner or the host is the host's
-// reply, so the host waits on the owner rather than answering again. Comments
+// reply, so the host waits on the owner rather than answering again; so is a
+// thread a session opened itself. Comments
 // by anyone else don't count either way, so a stranger can neither hide an
 // owner thread by quoting the marker nor reopen one by replying after the
 // host. Any other thread, including one with no author at all, is "human",
@@ -376,7 +414,8 @@ export function threadStanding(
 ): ThreadStanding {
   if (thread.resolved) return "resolved";
   const hostReply = (comment: ReviewThread["comments"][number] | undefined) =>
-    comment?.author === hostLogin && comment.body.startsWith(FOLLOW_UP_REPLY_MARKER);
+    comment?.author === hostLogin &&
+    (comment.body.startsWith(FOLLOW_UP_REPLY_MARKER) || comment.body.includes(SESSION_REPLY_MARKER));
   const first = thread.comments[0];
   if (first?.byBot === true) {
     const last = thread.comments.findLast(
@@ -480,14 +519,27 @@ export function sweepPullRequests(
 
   for (const pr of openPrs) {
     try {
-      const skip = sweepSkipReason(pr, inScope, host, building);
-      if (skip !== undefined) {
-        log(`  · PR #${pr.number} isn't swept: ${skip}.`);
+      // One read of the PR's events serves both the hand-off approval and the needs-human check below.
+      let events: IssueEvent[] | undefined;
+      const eventsOfPr = () => (events ??= github.pullRequestEvents(pr.number));
+      const swept = sweepSubject(pr, { inScope, host, building, followsHandOffs: github.followsHandOffs() }, () =>
+        handOffApproval(pr, {
+          pullRequestEvents: eventsOfPr,
+          pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
+          isOwner: github.isOwner,
+        }),
+      );
+      if ("skip" in swept) {
+        log(`  · PR #${pr.number} isn't swept: ${swept.skip}.`);
         continue;
+      }
+      const { subject } = swept;
+      if (subject.kind === "hand-off") {
+        log(`  ⤷ PR #${pr.number} is followed up as a hand-off: the owner labelled it ${FOLLOW_UP_LABEL}.`);
       }
       // A stranger's removal of the PR's hand-back label isn't a re-queue:
       // put the label back and leave the PR alone this round.
-      const origin = labelOriginFixes(pr.labels, github.pullRequestEvents(pr.number), github.isOwner, PR_LABEL_RULES);
+      const origin = labelOriginFixes(pr.labels, eventsOfPr(), github.isOwner, PR_LABEL_RULES);
       if (origin.unknown.length > 0) {
         log(`  · PR #${pr.number} isn't swept: couldn't check whether the repository owner removed ${NEEDS_HUMAN}.`);
         continue;
@@ -509,14 +561,14 @@ export function sweepPullRequests(
         if (waitingThreads > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered: 0 });
         throw error;
       }
-      const { pr: swept, answered } = thinned;
-      const waitingThreads = countHumanThreads(swept.threads);
+      const { pr: thin, answered } = thinned;
+      const waitingThreads = countHumanThreads(thin.threads);
       if (waitingThreads > 0 || answered > 0) waitingPrs.push({ pr: pr.number, threads: waitingThreads, answered });
-      const decision = decide(swept, now, github.isOwner);
-      followUp(swept, decision, github, log, outcomes);
+      const decision = decide(thin, now, github.isOwner);
+      followUp(thin, decision, github, log, outcomes);
       if (decision.action === "needs-pass") {
         needsPass.push(pr.number);
-        passes.push(passTarget(swept, decision.reasons));
+        passes.push(passTarget(thin, subject, decision.reasons));
       }
     } catch (error) {
       log(`  ⚠ Couldn't follow up PR #${pr.number}, so it's swept again next round: ${error}`);
@@ -566,20 +618,19 @@ export type PassTarget = {
 // A hand-off PR's own title and description, which stand in for an issue's in the pass's prompt.
 export type HandOffTarget = { title: string; body: string };
 
-// What lib/follow-up-pass.mts#runPass reads of a needs-pass PR. Only an
-// issue branch gets this far (sweepSkipReason), so the issue number is there.
-function passTarget(pr: SweepPullRequest, reasons: string[]): PassTarget {
-  const issueNumber = issueNumberOf(pr.headRefName);
-  if (issueNumber === undefined) throw new Error(`PR #${pr.number}'s branch ${pr.headRefName} names no issue`);
-  return {
+// What lib/follow-up-pass.mts#runPass reads of a needs-pass PR: for an issue's PR the issue number, which its branch
+// names (sweepSubject), and for a hand-off PR its own title and description.
+function passTarget(pr: SweepPullRequest, subject: SweepSubject, reasons: string[]): PassTarget {
+  const common = {
     number: pr.number,
     id: pr.id,
     headRefName: pr.headRefName,
     headRefOid: pr.headRefOid,
-    issueNumber,
     reasons,
     conflicted: pr.mergeStateStatus === "DIRTY",
   };
+  if (subject.kind === "hand-off") return { ...common, handOff: { title: pr.title, body: pr.body } };
+  return { ...common, issueNumber: subject.issueNumber };
 }
 
 // Carries out one PR's decision and logs it, recording an updated branch in

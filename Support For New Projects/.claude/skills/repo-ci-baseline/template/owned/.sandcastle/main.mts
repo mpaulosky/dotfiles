@@ -4,7 +4,9 @@
 //   Phase 0 (Housekeeping):     Two steps that need no agent. First the
 //                               follow-up sweep (lib/follow-up.mts): for each
 //                               open PR the host published for an in-scope
-//                               issue, it re-requests a Copilot review that
+//                               issue, or that the owner handed off with the
+//                               sandcastle:follow-up label (default queue
+//                               scope only), it re-requests a Copilot review that
 //                               never came, updates a settled PR that's only
 //                               behind main on GitHub, and logs one that needs
 //                               a follow-up pass; and it hands back an issue

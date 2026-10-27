@@ -45,8 +45,7 @@ export function isIssueBranch(branch: string, issueNumber: number): boolean {
 // chore/{slug}. The branch of a pull request the owner handed to Sandcastle (lib/follow-up.mts#sweepSubject) has to pass
 // it, because its name reaches a shell the way an issue branch's does ({{BRANCH}} in review-prompt.md, git in the sandbox).
 export function isHandOffBranch(branch: string): boolean {
-  void branch;
-  throw new Error("Not implemented");
+  return /^(?:(?:feature|fix|hotfix)\/[0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*|chore\/[a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/.test(branch);
 }
 
 // The issue's branch: its existing feature/, fix/ or hotfix/{n}-{slug} branch on the

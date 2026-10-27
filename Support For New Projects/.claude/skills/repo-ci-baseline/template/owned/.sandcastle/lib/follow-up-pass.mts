@@ -9,7 +9,9 @@
 // doesn't cover, gates and pushes the result, re-runs a flaky check the gate
 // passes, then replies to and resolves the role's verdicts and posts a
 // pass-summary comment. See Blazor-Server's docs/plans/sandcastle-workflow.md,
-// "Phase 1: Follow-up sweep", for the step-by-step this module follows.
+// "Phase 1: Follow-up sweep", for the step-by-step this module follows. A PR the
+// owner handed off with the sandcastle:follow-up label has no issue: its pass
+// claims the PR itself and the prompt shows the PR's own title and description.
 // ---------------------------------------------------------------------------
 
 import { setTimeout as sleep } from "node:timers/promises";
@@ -32,6 +34,7 @@ import {
   FOLLOW_UP_MARKER,
   FOLLOW_UP_PASS_CAP,
   FOLLOW_UP_REPLY_MARKER,
+  SESSION_REPLY_MARKER,
   GATE_COMMENT_LINES,
   GATE_FIXER_ATTEMPTS,
 } from "./config.mts";
@@ -94,6 +97,12 @@ export type PromptThread = {
   comments: { author: string | null; body: string }[];
 };
 
+// Whether `comment` is a Claude Code session's: posted under the host login (the owner's token) and carrying
+// SESSION_REPLY_MARKER, which a session ends every reply with.
+function isSessionComment(comment: ReviewThread["comments"][number], hostLogin: string): boolean {
+  return comment.author === hostLogin && comment.body.includes(SESSION_REPLY_MARKER);
+}
+
 // Sorts a PR's open review threads for the follow-up role (runPass's step
 // 2) by their threadStanding (lib/follow-up.mts), the rule the sweep flags
 // a PR by too. A resolved thread, or one the host has already answered, is
@@ -135,7 +144,10 @@ export function threadsForRole(
           // A comment whose author's ownership can't be confirmed is dropped
           // too: only what's known to be a bot's or the owner's reaches the
           // role.
+          // A session's comment is the host login's, so it isn't the owner's
+          // words either (SESSION_REPLY_MARKER).
           comments: thread.comments
+            .filter((comment) => !isSessionComment(comment, hostLogin))
             .filter((comment) => comment.byBot || isOwner(comment.author) === true)
             .map((comment) => ({ author: comment.author, body: comment.body })),
         });
@@ -453,8 +465,11 @@ export function passOutcomeEntry(target: PassTarget, outcome: PassOutcome): Outc
 // The prompt's view of the hand-off PR `target`: an issue-shaped record whose number is the PR's, whose title is the PR's
 // and whose body is the PR's description under a note saying it isn't an issue.
 export function handOffIssue(target: PassTarget): SandcastleIssue {
-  void target;
-  throw new Error("Not implemented");
+  if (target.handOff === undefined) throw new Error(`PR #${target.number} was not handed off: it has an issue`);
+  const note =
+    "(This is not an issue. The pull request was handed off to Sandcastle by the repository owner; the text below is the " +
+    `pull request's description, and #${target.number} is the pull request's number.)`;
+  return { number: target.number, title: target.handOff.title, body: `${note}\n\n${target.handOff.body}`, labels: [], comments: [] };
 }
 
 // What runPass needs from outside the pass itself; tests pass a stub. The
@@ -746,17 +761,26 @@ export async function runPass(
   if (!("forRole" in before)) return before;
 
   // Claimed as a build claims it, so two runs never pass on one PR or share
-  // its worktree, and a build of the same issue stands aside meanwhile.
-  if (!host.markBuilding(issue.number)) return skip(`another run marked #${issue.number} ${BUILDING_LABEL}`);
+  // its worktree, and a build of the same issue stands aside meanwhile. A
+  // hand-off PR has no issue to carry the claim, so the PR carries it.
+  const onPullRequest = target.handOff !== undefined;
+  if (onPullRequest) {
+    if (!host.markPullRequestBuilding(target.number)) return skip(`another run marked PR #${target.number} ${BUILDING_LABEL}`);
+  } else if (!host.markBuilding(issue.number)) {
+    return skip(`another run marked #${issue.number} ${BUILDING_LABEL}`);
+  }
   try {
     const plan = planPass(target, base, host, skip, true);
     if (!("forRole" in plan)) return plan;
     return await passOnMarkedIssue(target, issue, base, host, plan);
   } finally {
     try {
-      host.unmarkBuilding(issue.number);
+      if (onPullRequest) host.unmarkPullRequestBuilding(target.number);
+      else host.unmarkBuilding(issue.number);
     } catch (error) {
-      console.error(`  ⚠ #${issue.number}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`);
+      console.error(
+        `  ⚠ ${onPullRequest ? `PR #${target.number}` : `#${issue.number}`}: removing ${BUILDING_LABEL} failed, so it's tried again when this run exits: ${error}`,
+      );
     }
   }
 }
@@ -1233,7 +1257,8 @@ export async function followUpPassPhase(
   const started: { index: number; issue: SandcastleIssue }[] = [];
   // Serially, because concurrent fetches contend on the same ref lock.
   for (const [index, target] of targets.entries()) {
-    const issue = target.issueNumber === undefined ? undefined : byNumber.get(target.issueNumber);
+    // A hand-off PR has no issue in the queue: the prompt sees the PR itself.
+    const issue = target.handOff !== undefined ? handOffIssue(target) : byNumber.get(target.issueNumber);
     if (issue === undefined) {
       outcomes[index] = { kind: "skipped", reason: `#${target.issueNumber} isn't in this round's queue` };
       continue;

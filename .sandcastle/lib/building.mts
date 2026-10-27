@@ -59,7 +59,7 @@ export const liveBuildingGitHub: BuildingGitHub = {
 // Clears `label` (sandcastle:building) from any issue whose most recent
 // labelling is older than `maxAgeMs` (see labelIsStale), so a crashed run
 // doesn't hold its issue back forever. A label a live run just added stays.
-// Returns the numbers of the issues it cleared, for the startup log. A
+// Open pull requests are cleared alike. Returns the numbers of the issues and pull requests it cleared, for the startup log. A
 // timeline that can't be read throws, failing the run before any work,
 // rather than guess whether another run is still building the issue.
 export function clearStaleBuildingLabels(
@@ -73,6 +73,12 @@ export function clearStaleBuildingLabels(
     if (!labelIsStale(github.labelTimeline(issueNumber), label, maxAgeMs, now)) continue;
     github.removeLabel(issueNumber, label);
     cleared.push(issueNumber);
+  }
+  // A hand-off pull request carries its own claim (claimPullRequestBuildingLabel), and gh issue list leaves pull requests out.
+  for (const pr of github.pullRequestsWithLabel(label)) {
+    if (!labelIsStale(github.labelTimeline(pr), label, maxAgeMs, now)) continue;
+    github.removePullRequestLabel(pr, label);
+    cleared.push(pr);
   }
   return cleared;
 }
@@ -150,7 +156,8 @@ export function releaseBuildingLabel(
 // more than `maxAgeMs` ago is forgotten without being removed: another run's
 // startup may have cleared it as stale and claimed the issue since, so the
 // label there now may be that run's. A removal that fails is reported and the
-// rest carry on. Returns the issues released.
+// rest carry on. Also releases the pull requests this run claimed for a hand-off pass
+// (claimPullRequestBuildingLabel). Returns the issues and pull requests released.
 export function releaseAllBuildingLabels(
   github: BuildingLabels = liveBuildingLabels,
   marked: Map<number, number> = markedByThisRun,
@@ -160,24 +167,27 @@ export function releaseAllBuildingLabels(
   pullRequests: PullRequestBuildingLabels = livePullRequestBuildingLabels,
   markedPullRequests: Map<number, number> = markedPullRequestsByThisRun,
 ): number[] {
-  void pullRequests; void markedPullRequests;
   const released: number[] = [];
-  for (const [issueNumber, claimedAt] of [...marked]) {
-    if (now - claimedAt > maxAgeMs) {
-      marked.delete(issueNumber);
-      warn(
-        `  ⚠ #${issueNumber}: left ${BUILDING_LABEL} in place: this run claimed it over ${maxAgeMs / 3_600_000} hours ago, ` +
-          "so another run may have cleared it as stale and claimed the issue since.",
-      );
-      continue;
+  const releaseHeld = (held: Map<number, number>, release: (number: number) => void): void => {
+    for (const [number, claimedAt] of [...held]) {
+      if (now - claimedAt > maxAgeMs) {
+        held.delete(number);
+        warn(
+          `  ⚠ #${number}: left ${BUILDING_LABEL} in place: this run claimed it over ${maxAgeMs / 3_600_000} hours ago, ` +
+            "so another run may have cleared it as stale and claimed it since.",
+        );
+        continue;
+      }
+      try {
+        release(number);
+        released.push(number);
+      } catch (error) {
+        warn(`  ⚠ #${number}: removing ${BUILDING_LABEL} failed, so it's tried again next round or when the run exits: ${error}`);
+      }
     }
-    try {
-      releaseBuildingLabel(issueNumber, github, marked);
-      released.push(issueNumber);
-    } catch (error) {
-      warn(`  ⚠ #${issueNumber}: removing ${BUILDING_LABEL} failed, so it's tried again next round or when the run exits: ${error}`);
-    }
-  }
+  };
+  releaseHeld(marked, (issueNumber) => releaseBuildingLabel(issueNumber, github, marked));
+  releaseHeld(markedPullRequests, (pr) => releasePullRequestBuildingLabel(pr, pullRequests, markedPullRequests));
   return released;
 }
 
@@ -231,8 +241,20 @@ export function claimPullRequestBuildingLabel(
   marked: Map<number, number> = markedPullRequestsByThisRun,
   now: number = Date.now(),
 ): boolean {
-  void pr; void github; void marked; void now;
-  throw new Error("Not implemented");
+  if (github.labels(pr).some((label) => label.toLowerCase() === BUILDING_LABEL)) return false;
+  // Remembered before the add, as claimBuildingLabel does: an add that failed may still have applied the label.
+  marked.set(pr, now);
+  try {
+    github.addLabel(pr, BUILDING_LABEL);
+  } catch (error) {
+    try {
+      releasePullRequestBuildingLabel(pr, github, marked);
+    } catch {
+      // Left in `marked`; releaseAllBuildingLabels reports it if it fails again.
+    }
+    throw error;
+  }
+  return true;
 }
 
 // Removes sandcastle:building from a pull request this run marked, as releaseBuildingLabel does for an issue.
@@ -241,6 +263,6 @@ export function releasePullRequestBuildingLabel(
   github: PullRequestBuildingLabels = livePullRequestBuildingLabels,
   marked: Map<number, number> = markedPullRequestsByThisRun,
 ): void {
-  void pr; void github; void marked;
-  throw new Error("Not implemented");
+  github.removeLabel(pr, BUILDING_LABEL);
+  marked.delete(pr);
 }

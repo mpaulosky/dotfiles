@@ -190,8 +190,8 @@ Set it on the command line, not in .sandcastle/.env. In GitHub Actions the queue
 // and its PR) or SANDCASTLE_LABEL (a local run working a label of the
 // owner's choosing, so it doesn't compete with Actions over the whole
 // queue) must be set. Throws QueueScopeError for anything else, including a
-// SANDCASTLE_LABEL naming a label the host manages (SANDCASTLE_LABELS or
-// bug), compared case-insensitively.
+// SANDCASTLE_LABEL naming a label the host manages (SANDCASTLE_LABELS,
+// FOLLOW_UP_LABEL or bug), compared case-insensitively.
 export function queueScopeFrom(env: Record<string, string | undefined>): QueueScope {
   const issue = env.SANDCASTLE_ISSUE?.trim() || undefined;
   const label = env.SANDCASTLE_LABEL?.trim() || undefined;
@@ -211,7 +211,7 @@ export function queueScopeFrom(env: Record<string, string | undefined>): QueueSc
   // gh's --label is a CSV list: a comma would split the label in two, and a
   // quote would fail gh's parse.
   if (/[,"]/.test(label)) throw scopeError(`SANDCASTLE_LABEL can't contain a comma or a double quote, which gh reads as a list: "${label}".`);
-  const managed = [...SANDCASTLE_LABELS.map((managedLabel) => managedLabel.name), "bug"];
+  const managed = [...SANDCASTLE_LABELS.map((managedLabel) => managedLabel.name), FOLLOW_UP_LABEL, "bug"];
   if (managed.some((name) => name.toLowerCase() === label.toLowerCase())) {
     throw scopeError(`SANDCASTLE_LABEL can't be "${label}": Sandcastle adds and removes that label itself.`);
   }
@@ -286,7 +286,7 @@ export const FOLLOW_UP_LABEL_DEFINITION: SandcastleLabel = {
 
 // Every label the host creates at startup (lib/github.mts#ensureLabels): SANDCASTLE_LABELS, the local queue's label and
 // the hand-off label.
-export const HOST_LABELS: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION];
+export const HOST_LABELS: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LOCAL_QUEUE_LABEL_DEFINITION, FOLLOW_UP_LABEL_DEFINITION];
 
 // The marker a Claude Code session ends every reply and comment with (docs/PROCESS.md): it posts under the owner's token,
 // so nothing else tells its comments from the owner's.
@@ -295,8 +295,7 @@ export const SESSION_REPLY_MARKER = "<!-- claude-session -->";
 // Whether `scope` is the queue GitHub Actions always runs, every issue labelled QUEUE_LABEL. Only that run follows
 // hand-off pull requests.
 export function isDefaultQueueScope(scope: QueueScope): boolean {
-  void scope;
-  throw new Error("Not implemented");
+  return scope.kind === "label" && scope.label.toLowerCase() === QUEUE_LABEL.toLowerCase();
 }
 
 // The HTML comment marking an issue comment as a failed build attempt, so the

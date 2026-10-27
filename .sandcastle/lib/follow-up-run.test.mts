@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { UncountedStopError } from "./errors.mts";
-import type { PassTarget, SweepResult } from "./follow-up.mts";
-import { followUpOnlyRun, liveFollowUpRunSteps, type FollowUpRunSteps } from "./follow-up-run.mts";
-import type { SandcastleIssue } from "./github.mts";
+import type { FollowUpGitHub, PassTarget, SweepResult } from "./follow-up.mts";
+import { followUpOnlyRun, liveFollowUpRunSteps, liveSweep, type FollowUpRunSteps } from "./follow-up-run.mts";
+import type { ClosedPullRequest, SandcastleIssue } from "./github.mts";
 
 const target = (number: number): PassTarget => ({
   number,
@@ -126,5 +126,52 @@ describe("liveFollowUpRunSteps", () => {
     for (const name of ["startRound", "sweep", "fetchMain", "queue", "runPasses"] as const) {
       assert.equal(typeof liveFollowUpRunSteps[name], "function", name);
     }
+  });
+});
+
+describe("liveSweep", () => {
+  const closedPr: ClosedPullRequest = {
+    number: 10,
+    author: "host",
+    body: "Closes #42",
+    baseRefName: "main",
+    headRefName: "feature/42-x",
+    isCrossRepository: false,
+    headRefOid: "a".repeat(40),
+    state: "CLOSED",
+    closedAt: "2026-10-01T00:00:00Z",
+  };
+
+  // A GitHub with no open PR and an in-scope issue whose latest PR closed without merging, recording what the sweep reads.
+  function stubGithub() {
+    const closedCalls: string[] = [];
+    const handBacks: number[] = [];
+    const github: FollowUpGitHub = {
+      hostLogin: () => "host",
+      openPullRequests: () => [],
+      closedPullRequests: (author) => {
+        closedCalls.push(author);
+        return [closedPr];
+      },
+      inScopeIssues: () => [{ number: 42, labels: [] }],
+      labelTimeline: () => [],
+      requestCopilotReview: () => {},
+      updateBranch: () => {},
+      handBack: (issueNumber) => void handBacks.push(issueNumber),
+      isOwner: () => true,
+      pullRequestEvents: () => [],
+      addPullRequestLabel: () => {},
+      reviewThreads: () => [],
+    };
+    return { github, closedCalls, handBacks };
+  }
+
+  it("never reads the closed pull requests, and hands nothing back", () => {
+    const { github, closedCalls, handBacks } = stubGithub();
+
+    liveSweep(github, () => {});
+
+    assert.deepEqual(closedCalls, []);
+    assert.deepEqual(handBacks, []);
   });
 });

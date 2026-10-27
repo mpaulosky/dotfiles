@@ -11,7 +11,14 @@
 
 import { fetchMain } from "./branches.mts";
 import { followUpPassPhase } from "./follow-up-pass.mts";
-import { followUpPhase, sweepPullRequests, type PassTarget, type SweepResult } from "./follow-up.mts";
+import {
+  followUpPhase,
+  liveFollowUpGitHub,
+  sweepPullRequests,
+  type FollowUpGitHub,
+  type PassTarget,
+  type SweepResult,
+} from "./follow-up.mts";
 import type { SandcastleIssue } from "./github.mts";
 import { loadQueue, startQueueRound } from "./queue.mts";
 
@@ -25,14 +32,20 @@ export type FollowUpRunSteps = {
   runPasses(targets: readonly PassTarget[], issues: readonly SandcastleIssue[], base: string): Promise<unknown>;
 };
 
-// The live steps. The sweep leaves the hand-back of a closed PR's issue to the full run beside this one:
-// two runs doing it would comment twice, and this run has no build to start from the issue afterwards.
+// The follow-up-only run's sweep. It leaves the hand-back of a closed PR's issue to the full run beside this one:
+// two runs doing it would comment twice, and this run has no build to start from the issue afterwards. Takes
+// GitHub and the log as parameters so a test can pin that it never reads the closed PRs.
+export function liveSweep(
+  github: FollowUpGitHub = liveFollowUpGitHub,
+  log: (line: string) => void = console.log,
+): SweepResult {
+  return followUpPhase(() => sweepPullRequests(github, log, undefined, undefined, undefined, { handBackClosed: false }));
+}
+
+// The live steps.
 export const liveFollowUpRunSteps: FollowUpRunSteps = {
   startRound: startQueueRound,
-  sweep: () =>
-    followUpPhase(() =>
-      sweepPullRequests(undefined, undefined, undefined, undefined, undefined, { handBackClosed: false }),
-    ),
+  sweep: () => liveSweep(),
   fetchMain: () => fetchMain(),
   queue: loadQueue,
   runPasses: followUpPassPhase,

@@ -286,8 +286,8 @@ export function handOffApproval(
     approved: false,
     reason:
       `its head ${pr.headRefOid.slice(0, 7)} isn't one ${host} recorded as approved since the owner added the label${problem === "" ? "" : ` (${problem})`}: ` +
-      `a commit was pushed after the label, the record was edited after it was posted, there are more than ${MAX_MAIN_MERGES} merges of main since the last record, ` +
-      `or the record isn't posted yet (the next sweep may find it). Once the owner has looked at the branch, remove and re-add ${FOLLOW_UP_LABEL}`,
+      `possible causes: a commit pushed after the label, the record edited after it was posted, more than ${MAX_MAIN_MERGES} merges of main since the last record, ` +
+      `or the record not posted yet (the next sweep may find it). Once the owner has looked at the branch, remove and re-add ${FOLLOW_UP_LABEL}`,
   };
 }
 

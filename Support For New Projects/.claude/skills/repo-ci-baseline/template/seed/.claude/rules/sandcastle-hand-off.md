@@ -10,11 +10,11 @@ behind `main`, and runs a follow-up pass for a merge conflict, a red check or an
 merge commits and fixes to the branch. After three passes it gives up and labels the pull request `sandcastle:needs-human`.
 
 The label counts when the repository's owner adds it, or a session adds it under the owner's token. A label from anyone else does not count,
-and neither does one followed by someone else editing the pull request's title or description (add the label again to approve it).
+and neither does one followed by someone else editing the pull request's title or description (remove the label and add it again to approve it).
 It covers the commits the pull request had when you added it: a workflow comment records that head, and Sandcastle records the heads it pushes
 itself. Updating the branch from `main` keeps it covered when the update is made as the account of `SANDCASTLE_GH_TOKEN` (PR Auto-Merge
 with a `RELEASE_PR_PAT` of that account, or the Update branch button when you are that account). A commit pushed by anyone
-else afterwards, or a force-push, stops the follow-up until you remove the label and add it again. To keep a
+else afterwards, a force-push, or more than five merges of `main` since the last record stops the follow-up until you remove the label and add it again. To keep a
 collaborator from handing off their own pull request, it must have been opened by the repository's owner or by a session (the owner's token).
 A repository an organisation owns has no owner login to match, so nothing can be handed off there.
 
@@ -30,7 +30,7 @@ A repository an organisation owns has no owner login to match, so nothing can be
 ## How to hand one off
 
 - Add the label when your own work on the pull request is finished and it only needs review follow-up. Stop pushing to it after that,
-  because Sandcastle pushes to the same branch, and a push of yours stops the follow-up until you add the label again.
+  because Sandcastle pushes to the same branch, and a push of yours stops the follow-up until you remove the label and add it again.
 - Remove the label to take the pull request back. `sandcastle:needs-human` means Sandcastle gave up; address the threads or checks
   yourself, then remove that label to put it back in the queue.
 - A session that replied to a review thread before handing off ends the reply with `<!-- claude-session -->`, so Sandcastle sees the

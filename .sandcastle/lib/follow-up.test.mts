@@ -2153,7 +2153,6 @@ describe("handOffApproval", () => {
       const reason = refused(handOffApproval({ ...PR, headRefOid: PUSHED_SHA }, github({ comments: [headRecord(HEAD_SHA, HOST)] }).stub, HOST));
 
       assert.match(reason, /isn't one the-host recorded as approved/);
-      assert.match(reason, /record was edited/);
       assert.match(reason, /remove and re-add sandcastle:follow-up/);
     });
 
@@ -2328,7 +2327,7 @@ describe("handOffApproval", () => {
         const reason = refused(handOffApproval({ ...PR, headRefOid: head }, stub, HOST));
 
         assert.equal(mergeReads.length, MAX_MAIN_MERGES);
-        assert.match(reason, new RegExp(`more than ${MAX_MAIN_MERGES} merges of main`));
+        assert.match(reason, new RegExp(`\\(more than ${MAX_MAIN_MERGES} merges of main on top of the last recorded head\\)`));
       });
 
       it("counts through a merge case-insensitively", () => {

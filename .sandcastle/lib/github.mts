@@ -1293,7 +1293,6 @@ function isContentEdit(value: unknown): value is ContentEdit {
 
 // One comment, with when it was posted, so markerCommentsSince can tell
 // which side of a label's removal it falls on, and who posted it.
-// `updatedAt` is when the comment was last edited (GitHub sets it to the creation time for a comment never edited); only issueComments reads it.
 // `updatedAt` is when the comment was last edited (GitHub sets it to the creation time for one never edited). Only issueComments fills it in,
 // and lib/follow-up.mts#handOffApproval counts a head record only when it equals createdAt, so a comment without it counts for no record.
 export type TimestampedComment = { body: string; createdAt: string; updatedAt?: string; author: string };

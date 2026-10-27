@@ -1,5 +1,6 @@
-"""Checks that every gh command in the Template's Owned scripts is told its
-repository (mpaulosky/dotfiles#267).
+"""Checks that every gh command in the Template's Owned scripts, and in a repo's
+own scripts and skills, is told its repository (mpaulosky/dotfiles#267
+and mpaulosky/dotfiles#321).
 
 A gh command reaches gh's default repository unless it's told which one, and in
 a clone whose only remote is a fork that's the fork. A Baseline repo's gate
@@ -37,10 +38,32 @@ bash never sees.
 
     python3 check_gh_repo.py <dir>...
 
-Prints each untold command as file:line: text and exits 1 when there's one, or
-2 when a root isn't a directory, so a moved scripts/ can't pass unchecked.
+Reads every file under each dir as a shell script. Prints each untold command
+as file:line: text and exits 1 when there's one, or 2 when a root isn't a
+directory, so a moved scripts/ can't pass unchecked.
+
+    python3 check_gh_repo.py --repo <root>
+
+The repo-wide check, which every repo's scripts/gate.sh runs
+(mpaulosky/dotfiles#321). It walks scripts/, .github/ci/ and .claude/skills/
+under root, skipping node_modules, .git, symlinks and the Owned Baseline files
+(OWNED: the Template's Owned scripts and pre-push-review skill, which a repo
+can't edit, and which test.sh checks in dotfiles). A .sh or .bash file, or one
+with no extension and a sh or bash shebang, is checked as a script, with the
+rules above; a .md file is checked as a skill; anything else is skipped. It
+prints paths relative to root, and a hint on stderr when it finds any.
+
+A skill's snippet stands alone, so there's no export. Only gh in code counts:
+a fenced block's lines (an unclosed fence runs to the end of the file), and
+inline code spans, but not a span that is only gh. Each gh command is told by
+the GH_REPO=<value> prefix right before it, or by --repo <value>, --repo=<value>
+or -R <value> after it on its line (not for gh api, which has no such flag).
+gh repo's subcommands take the repository first, as in a script. A backslash
+continuation or an expansion after gh, or a gh with no subcommand on its line,
+is refused: a gh command stays on one line.
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -121,29 +144,173 @@ def untold(path):
 
 
 # Repo-relative paths --repo skips (the Owned Baseline files); a trailing / is a folder.
-OWNED = ()
+OWNED = (
+    "scripts/gate.sh",
+    "scripts/check-branch-name.sh",
+    "scripts/check-pr-title.sh",
+    "scripts/check-git-hooks.sh",
+    "scripts/review.sh",
+    "scripts/sync-copilot-review.sh",
+    "scripts/tests/check-branch-name.test.sh",
+    "scripts/tests/check-pr-title.test.sh",
+    "scripts/tests/check-git-hooks.test.sh",
+    "scripts/tests/sync-copilot-review.test.sh",
+    ".claude/skills/pre-push-review/",
+)
 # The folders --repo walks.
-SCOPE = ()
+SCOPE = ("scripts", ".github/ci", ".claude/skills")
+SKIPPED_PARTS = ("node_modules", ".git")
+
+# A Markdown fence: three or more backticks or tildes (a backtick fence's info
+# string has no backtick, or it's an inline span), then the rest of the line.
+FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)$")
+# What a fence's first line says when it's the shell: #!/bin/sh, #!/usr/bin/env bash.
+SHEBANG = re.compile(rb"#![ \t]*(\S*/)?(env[ \t]+(-\S+[ \t]+)*)?(ba)?sh([ \t]|$)")
+# A skill's gh command is told by a flag on its own line, unless it's gh api or gh repo.
+FLAG = re.compile(r"(^|[ \t])(--repo[ \t]+|--repo=|-R[ \t]+)" + VALUE)
+# What ends the words that belong to one gh command on a line.
+COMMAND_END = re.compile(r";|&&|\|\|")
+HAS_NO_FLAG = re.compile(r"(api|repo)([^A-Za-z0-9_-]|$)")
+
+
+def read_lines(path):
+    """The lines of path as bash sees them, or None for a binary file."""
+    data = Path(path).read_bytes()
+    if b"\0" in data:
+        return None
+    # Not splitlines(), which also breaks at characters bash doesn't.
+    text = data.decode("utf-8", errors="surrogateescape")
+    return [line.removesuffix("\r") for line in text.split("\n")]
+
+
+def shown(line):
+    # surrogateescape keeps a byte that isn't UTF-8; print it as the replacement character.
+    return line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
+def code_spans(line):
+    """The inline code spans of line: text between backtick runs of the same length."""
+    position = 0
+    while position < len(line):
+        if line[position] != "`":
+            position += 1
+            continue
+        opening = position
+        while position < len(line) and line[position] == "`":
+            position += 1
+        length = position - opening
+        search = position
+        while search < len(line):
+            if line[search] != "`":
+                search += 1
+                continue
+            closing = search
+            while search < len(line) and line[search] == "`":
+                search += 1
+            if search - closing == length:
+                yield line[position:closing]
+                position = search
+                break
+
+
+def untold_in_code(code):
+    """Whether a piece of code has a gh command not told its repository."""
+    for match in GH.finditer(code):
+        after = code[match.end():]
+        # Only this command's own words: up to the next gh or the end of its command.
+        own = after[:min((end.start() for end in (GH.search(after), COMMAND_END.search(after)) if end),
+                         default=len(after))]
+        if told(code[:match.start()], own, False):
+            continue
+        subcommand = SUBCOMMAND.match(own)
+        if subcommand and not HAS_NO_FLAG.match(own[subcommand.end():]) and FLAG.search(own):
+            continue
+        return True
+    return False
 
 
 def untold_markdown(path):
     """Each line of the Markdown file path with a gh command in code not told its repository."""
-    raise NotImplementedError("Not implemented")
+    lines = read_lines(path)
+    if lines is None:
+        return []
+    found = []
+    fence = None
+    for number, line in enumerate(lines, 1):
+        opening = FENCE.match(line)
+        if fence:
+            if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence) \
+                    and not opening.group(2).strip():
+                fence = None
+                continue
+            code = [line]
+        elif opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            fence = opening.group(1)
+            continue
+        else:
+            # A span that is only gh names the tool in prose.
+            code = [span for span in code_spans(line) if span.strip() != "gh"]
+        if any(untold_in_code(piece) for piece in code):
+            found.append(f"{path}:{number}: {shown(line)}")
+    return found
 
 
 def kind(path):
     """'markdown', 'shell' or None for a file --repo doesn't check."""
-    raise NotImplementedError("Not implemented")
+    path = Path(path)
+    if path.suffix == ".md":
+        return "markdown"
+    if path.suffix in (".sh", ".bash"):
+        return "shell"
+    if path.suffix:
+        return None
+    with path.open("rb") as file:
+        return "shell" if SHEBANG.match(file.readline(256)) else None
 
 
 def check_repo(root):
     """Each untold gh command in the repo at root, as relative-path:line: text."""
-    raise NotImplementedError("Not implemented")
+    root = Path(root)
+    found = []
+    for folder in SCOPE:
+        top = root / folder
+        if top.is_symlink() or not top.is_dir():
+            continue
+        for directory, subdirectories, names in os.walk(top):
+            subdirectories[:] = sorted(d for d in subdirectories
+                                       if d not in SKIPPED_PARTS and not (Path(directory) / d).is_symlink())
+            for name in sorted(names):
+                path = Path(directory) / name
+                relative = path.relative_to(root).as_posix()
+                if path.is_symlink() or not path.is_file() or any(
+                        relative == entry or (entry.endswith("/") and relative.startswith(entry)) for entry in OWNED):
+                    continue
+                checked = kind(path)
+                if checked is None:
+                    continue
+                lines = untold_markdown(path) if checked == "markdown" else untold(path)
+                found.extend(relative + line[len(str(path)):] for line in lines)
+    return found
+
+
+HINT = ("check_gh_repo.py: export GH_REPO before the first gh command in a script; in a skill write "
+        "GH_REPO=owner/repo (or \"${repo:?}\") before each gh command, or give --repo; gh repo's subcommands "
+        "take the repository first. See references/gotchas.md in mpaulosky/dotfiles' repo-ci-baseline skill.")
 
 
 def main(argv):
     if argv[:1] == ["--repo"]:
-        raise NotImplementedError("Not implemented")
+        if len(argv) != 2 or argv[1] == "--repo":
+            print("usage: check_gh_repo.py --repo <root> | <dir>...", file=sys.stderr)
+            return 2
+        if not Path(argv[1]).is_dir():
+            print(f"check_gh_repo.py: {argv[1]} isn't a directory", file=sys.stderr)
+            return 2
+        found = check_repo(argv[1])
+        if found:
+            print("\n".join(found))
+            print(HINT, file=sys.stderr)
+        return 1 if found else 0
     found = []
     for root in argv:
         if not Path(root).is_dir():

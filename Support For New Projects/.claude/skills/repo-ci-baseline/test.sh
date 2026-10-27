@@ -8,8 +8,8 @@
 # (settings, the landing decision, status, land and rollout), the Claude Review
 # benchmark's tests, lints its workflows, YAML, shell
 # and Markdown with the Template's configs, checks that
-# Owned files carry no {{PLACEHOLDER}} and that the Owned scripts tell every gh
-# command its repository, checks dotfiles' copies of Owned files (its
+# Owned files carry no {{PLACEHOLDER}} and that the Owned scripts, and dotfiles' own
+# scripts and skills, tell every gh command its repository, checks dotfiles' copies of Owned files (its
 # .sandcastle/ included) and the Seed Sandcastle files, and smoke-tests apply.sh and
 # reapply.sh against throwaway repos. dotfiles CI runs this on every change
 # under the skill, and it's the check to run before committing a Template
@@ -187,6 +187,32 @@ step "gh commands in Owned scripts are told their repository"
 (cd "$skill_dir/tests/gh_repo" && "${pytest_cmd[@]}" -q -p no:cacheprovider .) || fail "gh_repo pytest"
 python3 -I "$owned/.github/scripts/check_gh_repo.py" "$owned/scripts" \
   || fail "export GH_REPO before an Owned script's first gh command, and give gh repo's subcommands their repository"
+# Every repo's gate runs the same check on the repo's own scripts and skills
+# (mpaulosky/dotfiles#321). dotfiles' gate runs this script, so this is where it
+# covers dotfiles' own, without a change to its scripts/gate.sh.
+python3 -I "$owned/.github/scripts/check_gh_repo.py" --repo "$(cd "$skill_dir/../../../.." && pwd)" \
+  || fail "tell every gh command in dotfiles' own scripts and skills its repository"
+# The check skips the Owned Baseline files by name (OWNED), so a new Owned
+# script or skill has to be listed, or it would be checked in every repo.
+python3 -I - "$owned" "$owned/.github/scripts" <<'PY' || fail "list new Owned scripts and skills in check_gh_repo.py's OWNED"
+import pathlib, sys
+
+sys.path.insert(0, sys.argv[2])
+import check_gh_repo
+
+owned = pathlib.Path(sys.argv[1])
+problems = []
+for folder in ("scripts", ".claude/skills"):
+    for path in sorted(p for p in (owned / folder).rglob("*") if p.is_file()):
+        name = path.relative_to(owned).as_posix()
+        if not any(name == entry or (entry.endswith("/") and name.startswith(entry)) for entry in check_gh_repo.OWNED):
+            problems.append(f"{name} is not in OWNED")
+problems.extend(f"{entry} is in OWNED but not in the Template" for entry in check_gh_repo.OWNED
+                if not (owned / entry).exists())
+if problems:
+    print("\n".join(problems))
+sys.exit(1 if problems else 0)
+PY
 
 step ".gitignore keeps secrets out"
 # Repos keep Auth0 and other secrets in .env, and the Template's .gitignore

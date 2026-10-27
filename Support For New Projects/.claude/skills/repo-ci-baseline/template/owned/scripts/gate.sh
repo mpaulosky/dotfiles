@@ -2,7 +2,8 @@
 # Local quality gate, run by .github/hooks/pre-push and safe to run by hand.
 # Lints the Markdown, YAML, workflow and shell files changed since origin/main
 # (every unpushed commit, with the same configs as CI), checks that the
-# branch's diff passed the local review (/pre-push-review), that
+# branch's diff passed the local review (/pre-push-review), that its own
+# scripts and skills tell every gh command its repository, that
 # .github/copilot-instructions.md matches the repo's code-review skill (when
 # it has one), runs the repo's own checks in .github/ci/gate-checks.sh, builds
 # the solution, then runs each test project CI's discover_tests.py finds under
@@ -125,6 +126,12 @@ if [[ ${#SHELL_FILES[@]} -gt 0 ]]; then
     docker run --rm -v "$ROOT:/mnt" -w /mnt "koalaman/shellcheck:${SHELLCHECK_VERSION}" \
     -- "${SHELL_FILES[@]}"
 fi
+
+# A gh command not told its repository reaches gh's default one, a fork in a
+# fork's clone. The check reads this repo's scripts/, .github/ci/ and skills,
+# not the Owned Baseline files, and needs no base (mpaulosky/dotfiles#321).
+step "GitHub commands told their repository (.github/scripts/check_gh_repo.py)"
+python3 -I .github/scripts/check_gh_repo.py --repo "$ROOT"
 
 # The local review (/pre-push-review) must have passed this branch's diff, with
 # no open Critical or Warning finding: scripts/review.sh keeps the record under

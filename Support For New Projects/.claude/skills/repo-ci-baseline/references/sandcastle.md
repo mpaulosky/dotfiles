@@ -109,7 +109,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
 
 - **Which.** `sweepSubject` in `lib/follow-up.mts` accepts a labelled pull request that isn't a Sandcastle issue's (host-authored, marked, on an issue's branch, in this run's scope or not) when it is
   from the same repository, into `main`, not a draft, and its branch name passes `scripts/check-branch-name.sh` (`isHandOffBranch` in `lib/branches.mts`).
-  A Sandcastle pull request carrying the label is still swept as its issue's. Only the default queue scope (`isDefaultQueueScope`: the `Sandcastle` label,
+  A Sandcastle pull request carrying the label is never a hand-off:
+  it is swept as its issue's when `sweepSkipReason` lets it through, and skipped otherwise. Only the default queue scope (`isDefaultQueueScope`: the `Sandcastle` label,
   what GitHub Actions always runs) follows hand-offs.
 - **Who.** Only the owner's label counts, checked from the pull request's events and its title and description edits (`handOffApproval`, built on `lib/queue.mts#approval`):
   the latest `labeled` event must be the owner's, and a rename or description edit by anyone else at or after it voids it until the owner adds the label again.

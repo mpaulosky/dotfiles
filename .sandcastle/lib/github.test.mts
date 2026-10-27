@@ -35,11 +35,11 @@ import {
   openPullRequestsForSweep,
   ownerApproved,
   pullRequestBodyEdits,
-  repositoryOwnerLogin,
   pullRequestFiles,
   pullRequestLabels,
   pullRequestsWithLabel,
   pushAccess,
+  repositoryOwnerLogin,
   removeIssueLabel,
   removePullRequestLabel,
   replaceIssueLabel,
@@ -954,9 +954,6 @@ describe("hasLabel", () => {
   });
 });
 
-// The follow-up sweep's own login, read and cached the same way
-// hostLogin's other callers already do (see cacheHostLogin and
-// markerComments above).
 describe("repositoryOwnerLogin", () => {
   it("is the first part of the repository's owner/name", () => {
     assert.equal(repositoryOwnerLogin("o/r"), "o");
@@ -964,6 +961,9 @@ describe("repositoryOwnerLogin", () => {
   });
 });
 
+// The follow-up sweep's own login, read and cached the same way
+// hostLogin's other callers already do (see cacheHostLogin and
+// markerComments above).
 describe("signedInHostLogin", () => {
   it("returns the login gh is signed in as", () => {
     const { calls, run } = recordingGh(["sandcastle-bot\n"]);

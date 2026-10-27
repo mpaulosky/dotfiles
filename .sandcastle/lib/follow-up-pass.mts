@@ -99,6 +99,7 @@ export type PromptThread = {
 
 // Whether `comment` is a Claude Code session's: posted under the owner's login (the owner's token, which is the host
 // login or another owner's) and carrying SESSION_REPLY_MARKER, which a session ends every reply with.
+// The marker is checked first, so a comment without it (a bot's, say) costs no owner lookup.
 function isSessionComment(comment: ReviewThread["comments"][number], hostLogin: string, isOwner: IsOwner): boolean {
   return comment.body.includes(SESSION_REPLY_MARKER) && (comment.author === hostLogin || isOwner(comment.author) === true);
 }
@@ -767,6 +768,8 @@ export async function runPass(
   // branch (branchFor reuses it), and the gate holds an issue back only for its own label. That claim is best effort:
   // a branch number need not name an issue (a deleted one, a typo, the PR's own number), and a label read or add that
   // fails must not keep the PR from being followed up. A build already holding the issue still makes the pass skip.
+  // An add that fails after the labels were read stays remembered for releaseAllBuildingLabels, which retries it (and
+  // warns) each round until it ages out.
   type Claim = { name: string; mark: () => boolean; unmark: () => void; bestEffort?: true };
   const claims: Claim[] =
     target.handOff !== undefined

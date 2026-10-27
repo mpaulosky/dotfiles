@@ -792,8 +792,9 @@ function passHostFake(
     markBuildingResult?: boolean;
     // What claiming a hand-off PR's building label answers.
     markPullRequestBuildingResult?: boolean;
-    // Claiming the issue a hand-off branch names, or releasing the PR's claim, fails.
+    // Claiming the issue a hand-off branch names, or releasing the issue's or the PR's claim, fails.
     markBuildingThrows?: boolean;
+    unmarkBuildingThrows?: boolean;
     unmarkPullRequestBuildingThrows?: boolean;
     sandbox?: ReturnType<typeof sandboxFake>;
     pushError?: Error;
@@ -864,6 +865,7 @@ function passHostFake(
     unmarkBuilding: (issueNumber) => {
       calls.unmarkBuilding.push(issueNumber);
       calls.releases.push(`#${issueNumber}`);
+      if (options.unmarkBuildingThrows) throw new Error("gh issue edit failed");
     },
     markPullRequestBuilding: (pr) => {
       calls.markPullRequestBuilding.push(pr);
@@ -2299,9 +2301,19 @@ describe("runPass on a hand-off PR", () => {
     assert.deepEqual(calls.releases, ["#60", `PR #${PR_NUMBER}`]);
   });
 
-  it("releases the issue's claim although releasing the PR's fails, and reports the failure without throwing", async () => {
+  it("doesn't reject when releasing the PR's claim fails", async () => {
     const sandbox = sandboxFake({ followUpJson: "[]" });
     const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox, unmarkPullRequestBuildingThrows: true });
+
+    const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.deepEqual(calls.releases, ["#60", `PR #${PR_NUMBER}`]);
+  });
+
+  it("still releases the PR's claim when releasing the issue's, which comes first, fails", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox, unmarkBuildingThrows: true });
 
     const outcome = await runPass(handOffTarget({ headRefName: "feature/60-owner-pr" }), view(), BASE, passHost);
 
@@ -2480,6 +2492,18 @@ describe("threadsForRole and a session's replies", () => {
       forRole[0]!.comments.map((comment) => comment.body),
       ["Why not use pattern matching here?", "Still not convinced."],
     );
+  });
+
+  it("doesn't look a bot's comment up as an owner when it can tell by the missing marker", () => {
+    const looked: (string | null)[] = [];
+    const spy: IsOwner = (login) => {
+      looked.push(login);
+      return isOwner(login);
+    };
+
+    threadsForRole([botThread()], spy, "the-app[bot]");
+
+    assert.deepEqual(looked, []);
   });
 
   it("keeps a session's reply under an owner login that isn't the host's out of what the role is shown", () => {

@@ -130,8 +130,9 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   Anything else its workflow does that the Template's doesn't needs a Template change first.
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
   A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones, mpaulosky/dotfiles#313 and #314) must not be
-  re-Applied until those land, or its re-Apply drops them. `rollout.sh` re-Applies every repo in `github/repos.txt` and can't leave one out, so until then
-  re-Apply the other repos one at a time with `reapply.sh`, and don't run `rollout.sh` past TicketManager.
+  re-Applied until those land, or its re-Apply drops them. `rollout.sh` re-Applies every repo in `github/repos.txt` and can't leave one out
+  (once TicketManager's re-Apply PR has merged, a run re-Applies all the others, auth0-management-app included), so until then don't run it:
+  re-Apply each repo except auth0-management-app one at a time with `reapply.sh`, TicketManager first.
 - **A change to the skills list needs a person's review.** The skills become the agents' instructions. The step refuses a commit outside dotfiles' `main`
   (GitHub serves a fork's commit by hash), but any older commit of `main` passes, so check the pin is the one meant.
 

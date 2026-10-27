@@ -1589,7 +1589,7 @@ describe("sweepPullRequests' needsPass and passes result", () => {
 });
 
 // A session's reply (lib/config.mts#SESSION_REPLY_MARKER) is posted under the owner's token, so it is the host login's
-// comment carrying the marker anywhere in its body. Like the host's own reply, it answers the thread it ends.
+// or another owner's comment carrying the marker anywhere in its body. Like the host's own reply, it answers the thread it ends.
 describe("threadStanding and a session's replies", () => {
   const sessionReply = (body = "Fixed in abc1234.") => ({ author: HOST, body: `${body}\n\n${SESSION_REPLY_MARKER}` });
   const hostIsOwner = ownerIs(HOST);
@@ -1631,14 +1631,21 @@ describe("threadStanding and a session's replies", () => {
     assert.equal(threadStanding(owner, ownerIs("owner"), HOST), "owner");
   });
 
-  it("ignores a marker quoted by a collaborator or a stranger, since only the host's login counts", () => {
+  it("is \"answered\" when the session replied under an owner's login that isn't the host's", () => {
+    const reply = { author: "owner", body: `Fixed.\n\n${SESSION_REPLY_MARKER}` };
+
+    assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [reply]), ownerIs("owner"), "the-app[bot]"), "answered");
+    assert.equal(threadStanding(thread("owner", false, [reply]), ownerIs("owner"), "the-app[bot]"), "answered");
+  });
+
+  it("ignores a marker quoted by a collaborator or a stranger, since only the host's and the owner's logins count", () => {
     const quoted = { author: "stranger", body: `Fixed.\n${SESSION_REPLY_MARKER}` };
 
     assert.equal(threadStanding(thread("owner", false, [quoted]), ownerIs("owner"), HOST), "owner");
     assert.equal(threadStanding(thread(COPILOT_REVIEWER, true, [quoted]), ownerIs("owner"), HOST), "bot");
   });
 
-  it("ignores the marker in a comment by a login other than the one asked about", () => {
+  it("ignores the marker in a comment by a login that is neither the host's nor a confirmed owner's", () => {
     assert.equal(threadStanding(thread("owner", false, [sessionReply()]), ownerIs("owner"), "someone-else"), "owner");
   });
 

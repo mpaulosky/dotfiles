@@ -182,8 +182,8 @@ export function sweepSubject(
     // sweepSkipReason let it through, so it is an issue branch.
     return { subject: { kind: "issue", issueNumber: issueNumberOf(pr.headRefName) as number } };
   }
-  // A Sandcastle PR that is a draft, needs a human, is being built or is truncated stays skipped: the label doesn't turn it
-  // into a hand-off.
+  // A Sandcastle PR that is a draft, needs a human, is being built, is truncated or is on an issue outside this run's scope
+  // stays skipped: the label doesn't turn it into a hand-off.
   const issueNumber = issueNumberOf(pr.headRefName);
   const isSandcastles = issueNumber !== undefined && isSandcastlePullRequest(pr, host);
   if (isSandcastles || !hasLabel(pr, FOLLOW_UP_LABEL)) return { skip: reason };
@@ -405,8 +405,9 @@ export type ThreadStanding = "resolved" | "answered" | "bot" | "owner" | "human"
 // "resolved". A thread whose first comment's author is a bot is "bot",
 // unless the last comment by a bot, the owner or `hostLogin` is the host's
 // own reply (by `hostLogin`, opening with FOLLOW_UP_REPLY_MARKER, or a Claude Code
-// session's, which carries SESSION_REPLY_MARKER anywhere in its body: a session
-// posts under the owner's token, so `hostLogin` is its login too): then it's
+// session's, which carries SESSION_REPLY_MARKER anywhere in its body, posted by
+// `hostLogin` or by a login `isOwner` confirms: a session posts under the owner's
+// token, which need not be the host's): then it's
 // "answered", open again only because resolving it failed (the pass summary
 // says so) or the owner unresolved it, and either way a person's now, not the
 // role's to answer twice. A thread the repository owner opened is "owner",

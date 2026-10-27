@@ -100,7 +100,7 @@ export type PromptThread = {
 // Whether `comment` is a Claude Code session's: posted under the owner's login (the owner's token, which is the host
 // login or another owner's) and carrying SESSION_REPLY_MARKER, which a session ends every reply with.
 function isSessionComment(comment: ReviewThread["comments"][number], hostLogin: string, isOwner: IsOwner): boolean {
-  return (comment.author === hostLogin || isOwner(comment.author) === true) && comment.body.includes(SESSION_REPLY_MARKER);
+  return comment.body.includes(SESSION_REPLY_MARKER) && (comment.author === hostLogin || isOwner(comment.author) === true);
 }
 
 // Sorts a PR's open review threads for the follow-up role (runPass's step
@@ -764,14 +764,17 @@ export async function runPass(
   // its worktree, and a build of the same issue stands aside meanwhile. A
   // hand-off PR has no issue to carry the claim, so the PR carries it.
   // A hand-off PR on an issue's branch (feature/{n}-…) claims that issue too: a build of the issue pushes to the same
-  // branch (branchFor reuses it), and the gate holds an issue back only for its own label.
-  const claims: { name: string; mark: () => boolean; unmark: () => void }[] =
+  // branch (branchFor reuses it), and the gate holds an issue back only for its own label. That claim is best effort:
+  // a branch number need not name an issue (a deleted one, a typo, the PR's own number), and a label read or add that
+  // fails must not keep the PR from being followed up. A build already holding the issue still makes the pass skip.
+  type Claim = { name: string; mark: () => boolean; unmark: () => void; bestEffort?: true };
+  const claims: Claim[] =
     target.handOff !== undefined
       ? [{ name: `PR #${target.number}`, mark: () => host.markPullRequestBuilding(target.number), unmark: () => host.unmarkPullRequestBuilding(target.number) }]
       : [{ name: `#${issue.number}`, mark: () => host.markBuilding(issue.number), unmark: () => host.unmarkBuilding(issue.number) }];
   const branchIssue = target.handOff !== undefined ? issueNumberOf(target.headRefName) : undefined;
-  if (branchIssue !== undefined) {
-    claims.push({ name: `#${branchIssue}`, mark: () => host.markBuilding(branchIssue), unmark: () => host.unmarkBuilding(branchIssue) });
+  if (branchIssue !== undefined && branchIssue !== target.number) {
+    claims.push({ name: `#${branchIssue}`, mark: () => host.markBuilding(branchIssue), unmark: () => host.unmarkBuilding(branchIssue), bestEffort: true });
   }
   const held: typeof claims = [];
   const releaseHeld = () => {
@@ -785,7 +788,15 @@ export async function runPass(
   };
   try {
     for (const claim of claims) {
-      if (!claim.mark()) return skip(`another run marked ${claim.name} ${BUILDING_LABEL}`);
+      let marked: boolean;
+      try {
+        marked = claim.mark();
+      } catch (error) {
+        if (claim.bestEffort === undefined) throw error;
+        console.error(`  ⚠ ${claim.name}: claiming ${BUILDING_LABEL} failed, so PR #${target.number} is passed on without it: ${error}`);
+        continue;
+      }
+      if (!marked) return skip(`another run marked ${claim.name} ${BUILDING_LABEL}`);
       held.push(claim);
     }
     const plan = planPass(target, base, host, skip, true);

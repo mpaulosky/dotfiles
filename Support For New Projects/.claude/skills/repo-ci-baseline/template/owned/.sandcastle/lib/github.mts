@@ -23,8 +23,8 @@ export function repoName(): string {
 
 // The login in `repoName()`'s "owner/name": the account the repository belongs to. For an organisation's repository it
 // is the organisation's, which never opens a pull request.
-export function repositoryOwnerLogin(): string {
-  return repoName().split("/")[0] as string;
+export function repositoryOwnerLogin(repo: string = repoName()): string {
+  return repo.split("/")[0] as string;
 }
 
 export type GhIssue = {

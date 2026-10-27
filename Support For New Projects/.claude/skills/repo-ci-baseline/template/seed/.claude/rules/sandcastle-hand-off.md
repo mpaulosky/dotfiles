@@ -13,7 +13,7 @@ Only the repository owner's label counts. A session posts under the owner's toke
 not, and neither does a label followed by someone else editing the pull request's title or description (the owner adds the label
 again to approve it). The check reads the pull request's events and edits, not its commits, so a push after the label is not checked. For that
 reason the pull request must have been opened by the repository's owner or by a session (the owner's token): the label has no effect on one a
-collaborator opened, whoever adds it.
+collaborator opened, whoever adds it. In a repository an organisation owns, only a pull request opened under the Sandcastle token can be handed off.
 
 ## Which pull requests
 

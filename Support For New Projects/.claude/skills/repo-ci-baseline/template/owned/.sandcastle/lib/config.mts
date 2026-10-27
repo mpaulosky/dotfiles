@@ -190,8 +190,8 @@ Set it on the command line, not in .sandcastle/.env. In GitHub Actions the queue
 // and its PR) or SANDCASTLE_LABEL (a local run working a label of the
 // owner's choosing, so it doesn't compete with Actions over the whole
 // queue) must be set. Throws QueueScopeError for anything else, including a
-// SANDCASTLE_LABEL naming a label the host manages (SANDCASTLE_LABELS,
-// FOLLOW_UP_LABEL or bug), compared case-insensitively.
+// SANDCASTLE_LABEL naming a label the host manages (SANDCASTLE_LABELS or bug)
+// or the owner's hand-off label (FOLLOW_UP_LABEL), compared case-insensitively.
 export function queueScopeFrom(env: Record<string, string | undefined>): QueueScope {
   const issue = env.SANDCASTLE_ISSUE?.trim() || undefined;
   const label = env.SANDCASTLE_LABEL?.trim() || undefined;
@@ -211,7 +211,7 @@ export function queueScopeFrom(env: Record<string, string | undefined>): QueueSc
   // gh's --label is a CSV list: a comma would split the label in two, and a
   // quote would fail gh's parse.
   if (/[,"]/.test(label)) throw scopeError(`SANDCASTLE_LABEL can't contain a comma or a double quote, which gh reads as a list: "${label}".`);
-  const managed = [...SANDCASTLE_LABELS.map((managedLabel) => managedLabel.name), FOLLOW_UP_LABEL, "bug"];
+  const managed = [...SANDCASTLE_LABELS.map((managedLabel) => managedLabel.name), "bug"];
   if (label.toLowerCase() === FOLLOW_UP_LABEL.toLowerCase()) {
     throw scopeError(`SANDCASTLE_LABEL can't be "${label}": it is the owner's hand-off label for a pull request, not a queue.`);
   }

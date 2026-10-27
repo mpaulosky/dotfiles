@@ -2,9 +2,11 @@
 # Local quality gate, run by .github/hooks/pre-push and safe to run by hand.
 # Lints the Markdown, YAML, workflow and shell files changed since origin/main
 # (every unpushed commit, with the same configs as CI), checks that the
-# branch's diff passed the local review (/pre-push-review), runs the repo's own
-# checks in .github/ci/gate-checks.sh, builds the solution, then runs each test
-# project CI's discover_tests.py finds under tests/. Exits non-zero on the first
+# branch's diff passed the local review (/pre-push-review), that
+# .github/copilot-instructions.md matches the repo's code-review skill (when
+# it has one), runs the repo's own checks in .github/ci/gate-checks.sh, builds
+# the solution, then runs each test project CI's discover_tests.py finds under
+# tests/. Exits non-zero on the first
 # failing gate. GATE_SKIP_REVIEW=1 skips the review check, for gate runs before
 # the push (the review's own, and while iterating), never for a push.
 set -euo pipefail
@@ -147,6 +149,14 @@ elif [[ -z "$BASE" ]]; then
   echo -e "${YELLOW}⚠️  The remote has no main yet, so there is no diff to review: skipping the local review.${RESET}"
 else
   scripts/review.sh check "$BASE"
+fi
+
+# The Copilot review instructions are generated from the repo's code-review
+# skill (scripts/sync-copilot-review.sh), so they can't drift from what Claude's
+# reviewers use. A repo without the skill has nothing to check and passes.
+if [[ -f scripts/sync-copilot-review.sh ]]; then
+  step "Copilot review instructions (scripts/sync-copilot-review.sh --check)"
+  bash scripts/sync-copilot-review.sh --check
 fi
 
 # Checks only this repo needs (Seed, so Apply never overwrites them). It gets

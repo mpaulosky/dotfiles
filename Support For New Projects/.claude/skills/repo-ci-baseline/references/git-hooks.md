@@ -100,8 +100,10 @@ Hooks live in `.github/hooks/` and are switched on once per clone with `git conf
   After the lints it checks that the branch's diff passed the local review (`scripts/review.sh check`, [pre-push-review.md](pre-push-review.md)) in a repo that
   has `.sandcastle/lib/review-ledger.mts`; `GATE_SKIP_REVIEW=1` skips that for gate runs you start yourself (the hook drops the variable, so a push never
   skips it), and it is the one check CI doesn't repeat.
+  Then it runs `bash scripts/sync-copilot-review.sh --check` when the repo has the script: the Copilot review instructions must match the
+  code-review skill, and a repo without the skill passes ([copilot-review-sync.md](copilot-review-sync.md)).
   Between the lints and the build it runs the Seed `.github/ci/gate-checks.sh <merge-base>` when the repo has one:
-  checks only that repo needs, such as Blazor-Server's Sandcastle TypeScript check and Copilot review sync. The merge
+  checks only that repo needs, such as Blazor-Server's Sandcastle TypeScript check. The merge
   base is empty without an `origin/main`.
 
 ## Tests
@@ -130,7 +132,7 @@ and `git commit` end to end, which runs the hook with `GIT_DIR` set.
 `scripts/tests/check-branch-name.test.sh` covers the script's `--pr` form, which the CI job uses: the Actions and
 Dependabot branches allowed only there, a `claude/...` branch refused, and other `docs/` names refused.
 
-CI's hook-tests job runs this suite, `pre-commit.test.sh` and `check-branch-name.test.sh`.
+CI's hook-tests job runs this suite, `pre-commit.test.sh`, `check-branch-name.test.sh`, `check-pr-title.test.sh` and `sync-copilot-review.test.sh`.
 
 ## Session-start check
 

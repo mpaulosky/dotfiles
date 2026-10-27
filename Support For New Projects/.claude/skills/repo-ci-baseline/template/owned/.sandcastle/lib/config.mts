@@ -296,7 +296,7 @@ export const HOST_LABELS: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LO
 export const SESSION_REPLY_MARKER = "<!-- claude-session -->";
 
 // What opens the comment that records a head of a hand-off PR as approved (lib/follow-up.mts#approvedHeadComment): the Sandcastle
-// workflow posts it when the owner adds the hand-off label, and the host posts it after each push it makes to the branch. The
+// workflow posts it when the owner adds the hand-off label, the host posts it after each push it makes to the branch, and the sweep posts it for a head it reached through merges of main. The
 // workflow's own copy of the text is pinned to this one by the Template's test.sh.
 export const APPROVED_HEAD_MARKER = "<!-- sandcastle:approved-head";
 

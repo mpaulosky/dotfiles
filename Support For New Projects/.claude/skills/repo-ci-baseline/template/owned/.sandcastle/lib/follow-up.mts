@@ -231,7 +231,8 @@ export function recordApprovedHead(number: number, head: string, post: (number: 
 }
 
 // How many merges of main handOffApproval looks through from a head to reach a recorded one. More than this is not followed up. It only
-// binds when the sweep didn't see the PR for that many updates, since a head reached through merges is recorded as it is found.
+// binds when that many merges come between two records, since a head reached through merges is recorded as it is found (a sweep that
+// skips the PR, or a record that fails to post, leaves the count growing).
 export const MAX_MAIN_MERGES = 5;
 
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
@@ -242,7 +243,8 @@ export const MAX_MAIN_MERGES = 5;
 // records each head it pushes. A head also counts when it is a merge of main that GitHub made for the host (lib/github.mts#mainMergeOf)
 // on top of one that counts, up to MAX_MAIN_MERGES deep, so an update of the branch made under the host's login (PR Auto-Merge with a
 // RELEASE_PR_PAT of the same account, the owner's Update branch button when the owner is the host) doesn't end the follow-up; an update
-// under another login, or by GITHUB_TOKEN, does.
+// under another login, or by GITHUB_TOKEN, does. The sweep records the head it reached through such merges (recordApprovedHead), so the
+// next walk starts there.
 // A commit anyone else pushes later leaves the head unapproved, so the PR isn't followed up until the owner removes and
 // re-adds the label. Only the host's own comments count, posted at or after the label and never edited since (a login with
 // push access can edit a comment), so a stranger can't record a head and an earlier label's record doesn't carry over.
@@ -273,14 +275,9 @@ export function handOffApproval(
   for (let merges = 0; merges <= MAX_MAIN_MERGES; merges++) {
     if (recorded.has(head)) {
       // The head was reached through merges of main: record the one the PR has now, so the next walk starts there and the cap
-      // counts merges since the last sweep rather than since the label. Best effort: the approval stands either way.
-      if (merges > 0) {
-        try {
-          github.recordApprovedHead(pr.number, pr.headRefOid.toLowerCase());
-        } catch {
-          // The next sweep walks the same merges and tries again.
-        }
-      }
+      // counts merges since the last posted record rather than since the label. The sweep's recordApprovedHead logs a failed post
+      // and doesn't throw: the approval stands either way, and the next sweep walks the same merges and tries again.
+      if (merges > 0) github.recordApprovedHead(pr.number, pr.headRefOid.toLowerCase());
       return labelled;
     }
     if (merges === MAX_MAIN_MERGES) {
@@ -637,7 +634,13 @@ export function sweepPullRequests(
           pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
           pullRequestComments: (number) => github.pullRequestComments(number),
           mergeOfMain: (commit) => github.mergeOfMain(commit),
-          recordApprovedHead: (number, head) => github.recordApprovedHead(number, head),
+          recordApprovedHead: (number, head) => {
+            try {
+              github.recordApprovedHead(number, head);
+            } catch (error) {
+              log(`  ⚠ Couldn't record PR #${number}'s head ${head.slice(0, 7)}, so the next sweep walks the same merges again: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          },
           isOwner: github.isOwner,
           repositoryOwner: () => github.repositoryOwner(),
         }, host),

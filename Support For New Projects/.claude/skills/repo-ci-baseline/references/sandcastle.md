@@ -128,7 +128,7 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   That covers an update made under the host's login (PR Auto-Merge when its `RELEASE_PR_PAT` is the account of `SANDCASTLE_GH_TOKEN`,
   the Update branch button when the owner is that account), but not a merge a collaborator makes, nor one made by `GITHUB_TOKEN` or
   another account. The sweep records a head it reached through such merges, so the walk starts from there next time;
-  more than `MAX_MAIN_MERGES` merges between two sweeps end the follow-up, with the reason in the run log.
+  more than `MAX_MAIN_MERGES` merges since the last posted record end the follow-up, with the reason in the run log.
   A commit anyone else pushes after the label, a force-push, or a record that failed to post leaves the head unapproved,
   and the pull request is not followed up until the owner removes and re-adds the label.
   The record needs the Sandcastle workflow in Actions with `SANDCASTLE_GH_TOKEN` set, and that token must belong to the account the sweep runs as (`signedInHostLogin`):

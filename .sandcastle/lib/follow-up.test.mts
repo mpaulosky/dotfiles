@@ -1981,7 +1981,7 @@ describe("handOffApproval", () => {
   const HOST = "the-host";
   const PR = { number: 201, author: OWNER, headRefOid: HEAD_SHA };
   function github(
-    overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; comments?: TimestampedComment[]; mergeOfMain?: (commit: string) => MainMerge; recordFails?: boolean; isOwner?: (login: string | null) => boolean | undefined } = {},
+    overrides: { events?: IssueEvent[]; edits?: ContentEdit[]; comments?: TimestampedComment[]; mergeOfMain?: (commit: string) => MainMerge; isOwner?: (login: string | null) => boolean | undefined } = {},
   ) {
     const eventReads: number[] = [];
     const editReads: number[] = [];
@@ -2006,7 +2006,6 @@ describe("handOffApproval", () => {
         return overrides.mergeOfMain?.(commit) ?? { problem: `${commit.slice(0, 7)} isn't a merge` };
       },
       recordApprovedHead: (number: number, head: string) => {
-        if (overrides.recordFails) throw new Error("post failed");
         recordings.push({ number, head });
       },
       isOwner: overrides.isOwner ?? ownerIs(OWNER),
@@ -2365,12 +2364,6 @@ describe("handOffApproval", () => {
         assert.deepEqual(recordings, []);
       });
 
-      it("still approves when the record can't be posted", () => {
-        const { stub } = github({ mergeOfMain, recordFails: true });
-
-        assert.deepEqual(handOffApproval({ ...PR, headRefOid: MERGE_SHA }, stub, HOST), { approved: true });
-      });
-
       it("counts through a merge case-insensitively", () => {
         assert.deepEqual(handOffApproval({ ...PR, headRefOid: MERGE_SHA.toUpperCase() }, github({ mergeOfMain }).stub, HOST), { approved: true });
       });
@@ -2426,6 +2419,71 @@ describe("sweepPullRequests and hand-off PRs", () => {
       sweepPullRequests(github, () => {}, NOW);
 
       assert.deepEqual(updatedBranches, [{ number: 201, expectedHeadSha: "b".repeat(40) }]);
+    });
+
+    it("records the head it reached through the merge, as the host", () => {
+      const recorded: { number: number; head: string }[] = [];
+      const { github } = stubGithub(
+        owned({
+          prs: [behind({ headRefOid: "b".repeat(40), reviews: [{ author: COPILOT_REVIEWER, commitOid: "b".repeat(40) }] })],
+          pullRequestComments: () => [headRecord("a".repeat(40), HOST)],
+          mergeOfMain: merged,
+          recordApprovedHead: (number, head) => void recorded.push({ number, head }),
+        }),
+      );
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(recorded, [{ number: 201, head: "b".repeat(40) }]);
+    });
+
+    it("records nothing for a hand-off PR whose head is recorded itself", () => {
+      const recorded: string[] = [];
+      const { github } = stubGithub(owned({ prs: [behind()], recordApprovedHead: (_number, head) => void recorded.push(head) }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(recorded, []);
+    });
+
+    it("logs a record that can't be posted, and still sweeps the PR", () => {
+      const lines: string[] = [];
+      const { updatedBranches, github } = stubGithub(
+        owned({
+          prs: [behind({ headRefOid: "b".repeat(40), reviews: [{ author: COPILOT_REVIEWER, commitOid: "b".repeat(40) }] })],
+          pullRequestComments: () => [headRecord("a".repeat(40), HOST)],
+          mergeOfMain: merged,
+          recordApprovedHead: () => {
+            throw new Error("post failed");
+          },
+        }),
+      );
+
+      sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+      assert.ok(lines.some((line) => line.includes("Couldn't record PR #201's head bbbbbbb") && line.includes("post failed")), lines.join("\n"));
+      assert.deepEqual(updatedBranches, [{ number: 201, expectedHeadSha: "b".repeat(40) }]);
+    });
+
+    it("restarts the merge count at a recorded head, so later merges are followed again", () => {
+      // The first sweep walks MAX_MAIN_MERGES merges and records the head; MAX_MAIN_MERGES more merges then sit on top of that record.
+      const shas = Array.from({ length: MAX_MAIN_MERGES * 2 }, (_, i) => (i + 16).toString(16).repeat(20));
+      const chain = (commit: string): MainMerge => {
+        const i = shas.indexOf(commit);
+        return i === -1 ? { problem: "not a merge" } : { firstParent: i === shas.length - 1 ? "a".repeat(40) : shas[i + 1]! };
+      };
+      // shas[0] is the newest: five merges above shas[5], which the first sweep records; shas[5] sits five merges above the label's head.
+      const comments = [headRecord("a".repeat(40), HOST)];
+      const recordInto = (_number: number, head: string) => void comments.push(headRecord(head, HOST));
+      const first = stubGithub(owned({ prs: [behind({ headRefOid: shas[5]! })], pullRequestComments: () => comments, mergeOfMain: chain, recordApprovedHead: recordInto }));
+      const second = stubGithub(owned({ prs: [behind({ headRefOid: shas[0]! })], pullRequestComments: () => comments, mergeOfMain: chain, recordApprovedHead: recordInto }));
+      const lines: string[] = [];
+
+      sweepPullRequests(first.github, () => {}, NOW);
+      sweepPullRequests(second.github, (line) => lines.push(line), NOW);
+
+      assert.deepEqual(comments.map((comment) => approvedHeadOf(comment.body)), ["a".repeat(40), shas[5], shas[0]]);
+      assert.ok(!lines.some((line) => line.includes("isn't swept")), lines.join("\n"));
     });
 
     it("sweeps nothing, and updates nothing, for a hand-off PR whose head isn't recorded and isn't such a merge", () => {

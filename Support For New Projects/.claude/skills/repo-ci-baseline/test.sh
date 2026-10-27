@@ -487,8 +487,9 @@ record_job="$(sed -n '/^  record-head:$/,$p' "$sandcastle_yml")"
 [[ -n "$record_job" ]] || fail "sandcastle.yml must have a record-head job"
 for needle in "body=\"$head_marker \$HEAD_SHA -->" "github.event_name == 'pull_request_target'" 'github.run_attempt == 1' \
   "github.event.label.name == 'sandcastle:follow-up'" 'github.event.sender.login == github.repository_owner' \
-  'github.event.pull_request.head.repo.full_name == github.repository' 'permissions: {}' '^[0-9a-f]{40}$'; do
-  grep -qF -- "$needle" <<<"$record_job" || fail "sandcastle.yml's record-head job must carry '$needle' (the comment's marker, the owner-only, same-repository and first-run guards, no token permissions, the SHA check)"
+  'github.event.pull_request.head.repo.full_name == github.repository' 'permissions: {}' '^[0-9a-f]{40}$' \
+  "repos/\$REPO/pulls/\$PR_NUMBER\" --jq .head.sha" "if [ \"\$current\" != \"\$HEAD_SHA\" ]" 'for attempt in 1 2 3'; do
+  grep -qF -- "$needle" <<<"$record_job" || fail "sandcastle.yml's record-head job must carry '$needle' (the comment's marker, the owner-only, same-repository and first-run guards, no token permissions, the SHA check, the current-head check, the retry)"
 done
 if grep -qE 'uses:|actions/checkout' <<<"$record_job"; then
   fail "sandcastle.yml's record-head job holds the host token on pull_request_target: it must use no action and check nothing out"

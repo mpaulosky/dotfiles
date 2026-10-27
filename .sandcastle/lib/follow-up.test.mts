@@ -23,6 +23,7 @@ import {
   handOffApproval,
   isCopilot,
   liveFollowUpGitHub,
+  liveMergeOfMain,
   MAX_MAIN_MERGES,
   recordApprovedHead,
   isSandcastlePullRequest,
@@ -2152,6 +2153,7 @@ describe("handOffApproval", () => {
       const reason = refused(handOffApproval({ ...PR, headRefOid: PUSHED_SHA }, github({ comments: [headRecord(HEAD_SHA, HOST)] }).stub, HOST));
 
       assert.match(reason, /isn't one the-host recorded as approved/);
+      assert.match(reason, /record was edited/);
       assert.match(reason, /remove and re-add sandcastle:follow-up/);
     });
 
@@ -2301,6 +2303,32 @@ describe("handOffApproval", () => {
 
         refused(handOffApproval({ ...PR, headRefOid: "f".repeat(40) }, stub, HOST));
         assert.equal(mergeReads.length, MAX_MAIN_MERGES);
+      });
+
+      // A chain of `depth` merges whose last first parent is the recorded head.
+      const chainOf = (depth: number) => {
+        const shas = Array.from({ length: depth }, (_, i) => String(i + 1).repeat(40).slice(0, 40));
+        const next: Record<string, string> = {};
+        shas.forEach((sha, i) => (next[sha] = i === depth - 1 ? HEAD_SHA : shas[i + 1]!));
+        return { head: shas[0]!, mergeOfMain: (commit: string): MainMerge => ({ firstParent: next[commit]! }) };
+      };
+
+      it("counts a recorded head exactly MAX_MAIN_MERGES merges down", () => {
+        const { head, mergeOfMain: chain } = chainOf(MAX_MAIN_MERGES);
+        const { stub, mergeReads } = github({ mergeOfMain: chain });
+
+        assert.deepEqual(handOffApproval({ ...PR, headRefOid: head }, stub, HOST), { approved: true });
+        assert.equal(mergeReads.length, MAX_MAIN_MERGES);
+      });
+
+      it("refuses a recorded head one merge further down, and says why", () => {
+        const { head, mergeOfMain: chain } = chainOf(MAX_MAIN_MERGES + 1);
+        const { stub, mergeReads } = github({ mergeOfMain: chain });
+
+        const reason = refused(handOffApproval({ ...PR, headRefOid: head }, stub, HOST));
+
+        assert.equal(mergeReads.length, MAX_MAIN_MERGES);
+        assert.match(reason, new RegExp(`more than ${MAX_MAIN_MERGES} merges of main`));
       });
 
       it("counts through a merge case-insensitively", () => {
@@ -2728,6 +2756,19 @@ describe("startFromMain", () => {
 
     assert.throws(() => startFromMain(issueNumber, BRANCH, base, github, refs), /HTTP 502/);
     assert.ok(!calls.some((call) => call.startsWith("delete")), calls.join("\n"));
+  });
+});
+
+describe("liveMergeOfMain", () => {
+  it("asks mainMergeOf about the commit for the signed-in host's login", () => {
+    const asked: string[][] = [];
+    const merge = (commit: string, host: string): MainMerge => {
+      asked.push([commit, host]);
+      return { firstParent: "a".repeat(40) };
+    };
+
+    assert.deepEqual(liveMergeOfMain("b".repeat(40), () => "the-host", merge), { firstParent: "a".repeat(40) });
+    assert.deepEqual(asked, [["b".repeat(40), "the-host"]]);
   });
 });
 

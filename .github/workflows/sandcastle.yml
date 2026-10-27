@@ -324,8 +324,9 @@ jobs:
           fi
 
   # Records the head a pull request had when the owner handed it off with the sandcastle:follow-up label. The follow-up sweep
-  # (lib/follow-up.mts#handOffApproval) follows the pull request up only at a head recorded this way or by the host itself
-  # after a push of its own, so a commit pushed after the label stops the follow-up until the owner adds the label again.
+  # (lib/follow-up.mts#handOffApproval) follows the pull request up only at a head recorded this way, one the host recorded
+  # after a push of its own, or a GitHub merge of main made for the host on top of such a head (lib/github.mts#mainMergeOf, at most
+  # MAX_MAIN_MERGES deep), so a commit anyone else pushes after the label stops the follow-up until the owner removes and re-adds the label.
   # The head comes from the event, never from a later read of the pull request, which a push could have moved. The comment
   # is posted with SANDCASTLE_GH_TOKEN, the host's login, so the sweep can trust it; the job checks nothing out and runs
   # nothing from the pull request. Its text opens with the marker that config.mts calls APPROVED_HEAD_MARKER, which the
@@ -361,7 +362,8 @@ jobs:
           fi
           current="$(GH_TOKEN="$SANDCASTLE_GH_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)"
           if [ "$current" != "$HEAD_SHA" ]; then
-            echo "::error::The pull request's head is ${current:0:7}, not ${HEAD_SHA:0:7} from the labeled event, so no head is recorded. Add the label again once the branch is as you want it."
+            echo "::error::The pull request's head is ${current:0:7}, not ${HEAD_SHA:0:7} from the labeled event, so no head is recorded."
+            echo "::error::Remove and add the label again once the branch is as you want it."
             exit 1
           fi
           body="<!-- sandcastle:approved-head $HEAD_SHA -->

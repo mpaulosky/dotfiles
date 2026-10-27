@@ -125,7 +125,9 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   from the host login, posted at or after the latest `labeled` event and never edited (a login with push access can edit a comment).
   A head the host pushed counts too: a pass records the commit it pushed. So does a merge of `main` that GitHub made for the host on top of a head that counts,
   up to `MAX_MAIN_MERGES` deep (`mainMergeOf` in `lib/github.mts`: committed by web-flow with a verified signature, authored by the host login, two parents, the second a commit `main` contains).
-  That covers PR Auto-Merge's update and the owner's Update branch button, but not a merge a collaborator makes.
+  That covers an update made under the host's login (PR Auto-Merge when its `RELEASE_PR_PAT` is the account of `SANDCASTLE_GH_TOKEN`,
+  the Update branch button when the owner is that account), but not a merge a collaborator makes, nor one made by `GITHUB_TOKEN` or
+  another account. More than `MAX_MAIN_MERGES` such merges since the last recorded head end the follow-up too, with the reason in the run log.
   A commit anyone else pushes after the label, a force-push, or a record that failed to post leaves the head unapproved,
   and the pull request is not followed up until the owner removes and re-adds the label.
   The record needs the Sandcastle workflow in Actions with `SANDCASTLE_GH_TOKEN` set, and that token must belong to the account the sweep runs as (`signedInHostLogin`):

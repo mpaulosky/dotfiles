@@ -530,7 +530,8 @@ export type MainMerge = { firstParent: string } | { problem: string };
 // verified, authored by `host` (a merge someone else makes, through the web conflict editor or the merges API, carries their
 // login, and so does one built by hand, which can't be signed as web-flow), with two parents, the second a commit main
 // contains. Main's tip is read as a commit first, since a bare `main` in the compare API can resolve to a tag. Used by
-// lib/follow-up.mts#handOffApproval to accept the heads that update-branch makes, PR Auto-Merge's and the owner's included.
+// lib/follow-up.mts#handOffApproval to accept the heads that update-branch makes under the host's login: PR Auto-Merge's when its RELEASE_PR_PAT is the host's account, and the
+// owner's Update branch click when the owner is the host. A merge under any other login, or by GITHUB_TOKEN, is refused.
 export function mainMergeOf(
   commit: string,
   host: string,
@@ -1293,6 +1294,8 @@ function isContentEdit(value: unknown): value is ContentEdit {
 // One comment, with when it was posted, so markerCommentsSince can tell
 // which side of a label's removal it falls on, and who posted it.
 // `updatedAt` is when the comment was last edited (GitHub sets it to the creation time for a comment never edited); only issueComments reads it.
+// `updatedAt` is when the comment was last edited (GitHub sets it to the creation time for one never edited). Only issueComments fills it in,
+// and lib/follow-up.mts#handOffApproval counts a head record only when it equals createdAt, so a comment without it counts for no record.
 export type TimestampedComment = { body: string; createdAt: string; updatedAt?: string; author: string };
 
 // The comments in `comments` that `poster` posted and that carry `marker`,

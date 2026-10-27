@@ -239,7 +239,9 @@ export const MAX_MAIN_MERGES = 5;
 // the owner approved. The Sandcastle workflow records the head the label was added to, from the event itself (and only for
 // the repository owner's own label, so another login's label passes the event check and is never followed up), and the host
 // records each head it pushes. A head also counts when it is a merge of main that GitHub made for the host (lib/github.mts#mainMergeOf)
-// on top of one that counts, up to MAX_MAIN_MERGES deep, so PR Auto-Merge's and the owner's own update of the branch don't end the follow-up.
+// on top of one that counts, up to MAX_MAIN_MERGES deep, so an update of the branch made under the host's login (PR Auto-Merge with a
+// RELEASE_PR_PAT of the same account, the owner's Update branch button when the owner is the host) doesn't end the follow-up; an update
+// under another login, or by GITHUB_TOKEN, does.
 // A commit anyone else pushes later leaves the head unapproved, so the PR isn't followed up until the owner removes and
 // re-adds the label. Only the host's own comments count, posted at or after the label and never edited since (a login with
 // push access can edit a comment), so a stranger can't record a head and an earlier label's record doesn't carry over.
@@ -269,7 +271,10 @@ export function handOffApproval(
   let problem = "";
   for (let merges = 0; merges <= MAX_MAIN_MERGES; merges++) {
     if (recorded.has(head)) return labelled;
-    if (merges === MAX_MAIN_MERGES) break;
+    if (merges === MAX_MAIN_MERGES) {
+      problem = `more than ${MAX_MAIN_MERGES} merges of main on top of the last recorded head`;
+      break;
+    }
     const merge: MainMerge = github.mergeOfMain(head);
     if ("problem" in merge) {
       problem = merge.problem;
@@ -281,7 +286,8 @@ export function handOffApproval(
     approved: false,
     reason:
       `its head ${pr.headRefOid.slice(0, 7)} isn't one ${host} recorded as approved since the owner added the label${problem === "" ? "" : ` (${problem})`}: ` +
-      `a commit was pushed after the label, or the record isn't posted yet. Once the owner has looked at the branch, remove and re-add ${FOLLOW_UP_LABEL}`,
+      `a commit was pushed after the label, the record was edited after it was posted, there are more than ${MAX_MAIN_MERGES} merges of main since the last record, ` +
+      `or the record isn't posted yet (the next sweep may find it). Once the owner has looked at the branch, remove and re-add ${FOLLOW_UP_LABEL}`,
   };
 }
 
@@ -441,6 +447,11 @@ export type FollowUpGitHub = {
   mergeOfMain(commit: string): MainMerge;
 };
 
+// mainMergeOf for the signed-in host: the merge must be authored by that login. `host` and `merge` are injectable for the test.
+export function liveMergeOfMain(commit: string, host: () => string = signedInHostLogin, merge: typeof mainMergeOf = mainMergeOf): MainMerge {
+  return merge(commit, host());
+}
+
 export const liveFollowUpGitHub: FollowUpGitHub = {
   hostLogin: () => signedInHostLogin(),
   openPullRequests: () => openPullRequestsForSweep(),
@@ -460,7 +471,7 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   followsHandOffs: () => isDefaultQueueScope(activeQueueScope()),
   repositoryOwner: () => repositoryOwnerLogin(),
   pullRequestComments: (number) => issueComments(number),
-  mergeOfMain: (commit) => mainMergeOf(commit, signedInHostLogin()),
+  mergeOfMain: (commit) => liveMergeOfMain(commit),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the

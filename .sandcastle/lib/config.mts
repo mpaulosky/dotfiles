@@ -341,14 +341,15 @@ export const COPILOT_REVIEWER = "copilot-pull-request-reviewer[bot]";
 export const COPILOT_REREQUEST_AFTER_MS = 60 * 60 * 1000;
 
 // The check run the Sandcastle workflow's sandcastle job reports
-// (.github/workflows/sandcastle.yml's `name:` for that job; its record-head job reports "Record the approved head" on a
-// hand-off PR's head and is not left out: running, it holds the sweep for a round, and red, it shows the owner the record failed), together with
+// (.github/workflows/sandcastle.yml's `name:` for that job), together with
 // SANDCASTLE_WORKFLOW below. A run started
 // by a pull_request_review or unlabeled event reports it on the head of the
 // PR it sweeps, so the sweep and the follow-up pass leave it out
 // (withoutOwnCheck below): running, it would hold the PR that
 // started the run, and red after a hand-back, it would send the follow-up
-// role Sandcastle's own job log.
+// role Sandcastle's own job log. The workflow's record-head job, "Record the approved head", is a different check and is not
+// left out; it runs on pull_request_target, so GitHub may show it on the base commit rather than the PR, and a failed record
+// can be seen in the Actions tab.
 export const SANDCASTLE_CHECK = "Sandcastle";
 
 // The Sandcastle workflow's name (the top-level `name:` of

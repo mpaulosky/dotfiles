@@ -73,7 +73,8 @@ if [[ -d "$target/.sandcastle" ]] || ! git -C "$target" rev-parse --verify --qui
 sandcastle_path() {
   [[ "$1" == .sandcastle/* || "$1" == package.json || "$1" == pnpm-workspace.yaml || "$1" == scripts/review.sh \
     || "$1" == .github/workflows/sandcastle.yml || "$1" == .github/ci/sandcastle-skills.txt \
-    || "$1" == .claude/agents/pre-push-reviewer.md || "$1" == .claude/skills/pre-push-review/* ]]
+    || "$1" == .claude/agents/pre-push-reviewer.md || "$1" == .claude/skills/pre-push-review/* \
+    || "$1" == .claude/rules/sandcastle-hand-off.md ]]
 }
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's

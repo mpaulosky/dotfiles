@@ -43,6 +43,6 @@ _Avoid_: Orphan, stale file
 
 **Sandcastle section**:
 The Template's files under `.sandcastle/`, with the Seed `package.json` and `pnpm-workspace.yaml`, the Sandcastle workflow and its Seed skills list
-`.github/ci/sandcastle-skills.txt`, and the local review's skill, agent and `scripts/review.sh`, that a repo running Sandcastle shares.
+`.github/ci/sandcastle-skills.txt`, the Seed session guidance `.claude/rules/sandcastle-hand-off.md`, and the local review's skill, agent and `scripts/review.sh`, that a repo running Sandcastle shares.
 Apply adds them only to a repo that has a `.sandcastle/` folder or no commits yet.
 _Avoid_: Sandcastle template, agent kit

@@ -149,6 +149,14 @@ else
   scripts/review.sh check "$BASE"
 fi
 
+# The Copilot review instructions are generated from the repo's code-review
+# skill (scripts/sync-copilot-review.sh), so they can't drift from what Claude's
+# reviewers use. A repo without the skill has nothing to check and passes.
+if [[ -x scripts/sync-copilot-review.sh ]]; then
+  step "Copilot review instructions (scripts/sync-copilot-review.sh --check)"
+  scripts/sync-copilot-review.sh --check
+fi
+
 # Checks only this repo needs (Seed, so Apply never overwrites them). It gets
 # the merge base, empty without an origin/main, to find its own changed files.
 if [[ -f .github/ci/gate-checks.sh ]]; then

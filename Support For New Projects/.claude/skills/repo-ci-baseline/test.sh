@@ -42,6 +42,11 @@ bash "$owned/.github/hooks/tests/pre-push.test.sh" || fail "pre-push.test.sh"
 bash "$owned/.github/hooks/tests/pre-commit.test.sh" || fail "pre-commit.test.sh"
 bash "$owned/scripts/tests/check-branch-name.test.sh" || fail "check-branch-name.test.sh"
 bash "$owned/scripts/tests/check-pr-title.test.sh" || fail "check-pr-title.test.sh"
+bash "$owned/scripts/tests/sync-copilot-review.test.sh" || fail "sync-copilot-review.test.sh"
+# Both places that enforce the sync run the script's --check, which skips a repo without the code-review skill.
+grep -qF 'scripts/sync-copilot-review.sh --check' "$owned/scripts/gate.sh" || fail "the Owned gate.sh must run scripts/sync-copilot-review.sh --check"
+grep -qF 'scripts/sync-copilot-review.sh --check' "$owned/.github/workflows/copilot-review-sync.yml" \
+  || fail "the Owned copilot-review-sync.yml must run scripts/sync-copilot-review.sh --check"
 bash "$owned/scripts/tests/check-git-hooks.test.sh" || fail "check-git-hooks.test.sh"
 
 step "Auto-merge script tests"
@@ -100,6 +105,7 @@ shell_files=(
   "$skill_dir/tests/seed-check.test.sh"
   "$owned/scripts/gate.sh" "$owned/scripts/check-branch-name.sh" "$owned/scripts/tests/check-branch-name.test.sh"
   "$owned/scripts/check-pr-title.sh" "$owned/scripts/tests/check-pr-title.test.sh"
+  "$owned/scripts/sync-copilot-review.sh" "$owned/scripts/tests/sync-copilot-review.test.sh"
   "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh" "$owned/scripts/review.sh"
   "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.sandcastle/check.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"

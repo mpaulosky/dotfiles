@@ -86,8 +86,21 @@ check("the header no longer suggests adding npm by hand", "such as npm" not in "
 header_text = " ".join(header.split())
 check("the header says a repo without a root package.json drops the npm block", "package.json" in header_text and "drops the block" in header_text, header)
 check("the header says the npm block covers pnpm", "covers pnpm" in header_text, header)
-labels = [l["name"] for l in json.load(open(sys.argv[1].replace("template/seed/.github/dependabot.yml", "github/labels.json")))]
+labels_path = sys.argv[1].replace("template/seed/.github/dependabot.yml", "github/labels.json")
+labels = [l["name"] for l in json.load(open(labels_path))]
 check("labels.json creates every label the npm block uses", set(npm.get("labels", [])) <= set(labels), repr(labels))
+
+# Dependabot doesn't create labels, so every label in every ecosystem block must be in labels.json.
+for eco, u in updates.items():
+    missing = sorted(set(u.get("labels", [])) - set(labels))
+    check(f"{eco}: labels.json creates every label the {eco} block uses", not missing, f"missing from labels.json: {missing}")
+check("labels.json creates nuget and dotnet-sdk", {"nuget", "dotnet-sdk"} <= set(labels), repr(labels))
+
+# The Labels row of references/github-settings.md lists every label in labels.json.
+doc_path = sys.argv[1].replace("template/seed/.github/dependabot.yml", "references/github-settings.md")
+row = next((l for l in open(doc_path).read().splitlines() if l.startswith("| Labels |")), "")
+undocumented = sorted(n for n in labels if f"`{n}`" not in row)
+check("github-settings.md's Labels row lists every label in labels.json", bool(row) and not undocumented, f"not in the row: {undocumented}")
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

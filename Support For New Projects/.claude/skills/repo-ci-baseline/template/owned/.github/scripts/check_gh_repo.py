@@ -91,16 +91,20 @@ def env_drops_gh_repo(words):
                 return True
             index += 1
         elif word.startswith("--"):
-            index += 0 if "=" in word or word != "--chdir" else 1
+            # A long option; --chdir takes the next word as its argument.
+            if word == "--chdir":
+                index += 1
         elif word.startswith("-"):
             for position, flag in enumerate(word[1:], 1):
                 if flag in "iS":
                     return True
                 if flag in "uC":
-                    argument = word[position + 1:] or (words[index] if index < len(words) else "")
+                    attached = word[position + 1:]
+                    argument = attached or (words[index] if index < len(words) else "")
                     if flag == "u" and argument.strip("'\"") == "GH_REPO":
                         return True
-                    index += 0 if word[position + 1:] else 1
+                    if not attached:
+                        index += 1
                     break
         elif not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", word):
             return False

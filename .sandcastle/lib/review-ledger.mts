@@ -77,6 +77,7 @@ export const OWNED_PATHS = [
   "scripts/check-pr-title.sh",
   "scripts/sync-copilot-review.sh",
   "scripts/review.sh",
+  "scripts/watch-pr.sh",
   "scripts/tests/**",
   "docs/PROCESS.md",
   ".editorconfig",

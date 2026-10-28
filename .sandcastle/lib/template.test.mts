@@ -46,6 +46,10 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const review = join(scratch, "scripts/review.sh");
     cpSync(join(owned, "scripts/review.sh"), review);
     chmodSync(review, statSync(join(owned, "scripts/review.sh")).mode);
+    // lib/config.test.mts runs scripts/watch-pr.sh --would-skip on every Sandcastle marker.
+    const watcher = join(scratch, "scripts/watch-pr.sh");
+    cpSync(join(owned, "scripts/watch-pr.sh"), watcher);
+    chmodSync(watcher, statSync(join(owned, "scripts/watch-pr.sh")).mode);
     symlinkSync(join(root, "node_modules"), join(scratch, "node_modules"));
   });
 
@@ -120,7 +124,7 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       writeFileSync(uiPrompt, originals.get(uiPrompt)!);
       const complete = run();
       assert.equal(complete.status, 0, `${complete.stdout}${complete.stderr}`);
-      assert.match(complete.stdout, /skipped 0/, "the check should run, not be skipped");
+      assert.match(complete.stdout, /✔[^\n]*has the prompts the ui role needs/, "the check should run and pass, not be skipped");
 
       writeFileSync(backend, originals.get(backend)!.replace("{{UI_DEVELOPER}}", ""));
       const withoutPlaceholder = run();

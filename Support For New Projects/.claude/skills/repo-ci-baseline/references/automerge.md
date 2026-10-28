@@ -299,6 +299,8 @@ CI's concurrency cancels runs, and the newest counts. Commands that act on PRs c
 
 ### Landing a round
 
+A session watching its own PR uses `scripts/watch-pr.sh` ([watch-pr.md](watch-pr.md)); `land.sh` is the owner's round across repos.
+
 ```bash
 land.sh --once --dry-run      # one pass over every open PR in github/repos.txt, printing the calls it would make
 land.sh mpaulosky/<repo>#<n>  # watch these PRs (or owner/repo for all its open PRs) until they land

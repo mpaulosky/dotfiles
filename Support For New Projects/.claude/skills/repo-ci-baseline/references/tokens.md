@@ -11,7 +11,7 @@ A personal access token acts as its owner's account, and every token of one acco
 5,000 REST requests an hour, and separately 5,000 GraphQL points an hour.
 For the owner, that one allowance is shared by:
 
-- local `gh`: `land.sh`, `status.sh`, `rollout.sh`, `reapply.sh` and local Sandcastle runs;
+- local `gh`: `land.sh`, `status.sh`, `rollout.sh`, `reapply.sh`, `scripts/watch-pr.sh` (about 1–3 GraphQL points a poll, so 60–180 an hour at its default 60 s interval) and local Sandcastle runs;
 - `RELEASE_PR_PAT` in every repo's PR Auto-Merge, release, backfill and code-metrics workflows;
 - `SANDCASTLE_GH_TOKEN`, Sandcastle's token in GitHub Actions.
 

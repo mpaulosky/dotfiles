@@ -2292,7 +2292,7 @@ describe("runPass on a hand-off PR", () => {
       const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
 
       assert.equal(outcome.kind, "passed");
-      assert.match(calls.commentOnPullRequest[0]!.body, /These GitHub writes failed:[^\n]*recording the pushed head as approved/);
+      assert.match(calls.commentOnPullRequest[0]!.body, /These GitHub writes failed:[^\n]*recording the pushed head as approved, so the owner has to remove and add sandcastle:follow-up again before the PR is followed up/);
       assert.ok(calls.log.some((line) => line.includes("couldn't record")));
     });
 

@@ -1155,14 +1155,14 @@ async function passOnMarkedIssue(
     }
 
     // The owner approved the head the pass started from, so the head it pushed is recorded as approved or the next sweep
-    // would find a commit nobody vouched for. A failed record leaves the PR unapproved until the owner re-adds the label.
+    // would find a commit nobody vouched for. A failed record leaves the PR unapproved until the owner removes and re-adds the label.
     const unrecorded: string[] = [];
     if (pushed !== undefined && target.handOff !== undefined) {
       try {
         host.recordApprovedHead(target.number, pushed);
       } catch (error) {
         log(`couldn't record ${pushed} as approved: ${error}`);
-        unrecorded.push(`recording the pushed head as approved, so the owner has to add ${FOLLOW_UP_LABEL} again before the PR is followed up`);
+        unrecorded.push(`recording the pushed head as approved, so the owner has to remove and add ${FOLLOW_UP_LABEL} again before the PR is followed up`);
       }
     }
 

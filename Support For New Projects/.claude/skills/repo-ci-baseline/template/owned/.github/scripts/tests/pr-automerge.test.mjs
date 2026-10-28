@@ -1478,7 +1478,7 @@ test("calls in Claude past a still-pending Copilot request when its quota note i
   assert.equal(addedLabels.length, 1);
 });
 
-test("calls in Claude for a head with no Copilot review, no request pending and checks finished 10 minutes ago (mpaulosky/dotfiles#318)", async () => {
+test("calls in Claude for a head with no Copilot review, no request pending and checks finished long past the grace (mpaulosky/dotfiles#318)", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one"),
     headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }))

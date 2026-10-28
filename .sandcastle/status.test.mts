@@ -14,12 +14,20 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const entry = join(here, "status.mts");
 const tsx = join(root, "node_modules/.bin/tsx");
 const source = readFileSync(entry, "utf8");
+// Whether a call the stub gh recorded writes: a write verb or flag, a GraphQL mutation, or a field (-f, -F) on an `api` call that isn't GraphQL,
+// where a field makes the request a POST. A GraphQL query sends its variables with -f, so those are reads.
+const writes = (call: string): boolean =>
+  /\b(edit|comment|create|close|merge|delete|ready|review|mutation)\b|--method|-X\b|--input|--add-label|--remove-label/i.test(call) ||
+  (call.startsWith("api ") && !call.startsWith("api graphql") && /(^| )(-f|-F|--field|--raw-field)\b/.test(call));
 
 describe("status.mts as a program", () => {
   let scratch = "";
   let repo = "";
   let bin = "";
   let calls = "";
+
+  let answeringBin = "";
+  let hostileBin = "";
 
   before(() => {
     scratch = mkdtempSync(join(tmpdir(), "status-entry-"));
@@ -31,14 +39,34 @@ describe("status.mts as a program", () => {
     // A gh that records how it was called and always fails, as a gh with no token does.
     writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "$*" >> "${calls}"\necho "boom: gh is not signed in" >&2\nexit 1\n`);
     chmodSync(join(bin, "gh"), 0o755);
+    // A gh that answers every read the status makes with an empty repository, so the program runs to the end.
+    answeringBin = join(scratch, "bin-answering");
+    const answers = [
+      'case "$*" in',
+      '  "api user"*) echo "sandcastle-bot" ;;',
+      '  "repo view"*) echo "o/r" ;;',
+      '  "api graphql"*) echo \'{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}\' ;;',
+      '  *) echo "[]" ;;',
+      "esac",
+    ].join("\n");
+    writeFileSync(join(scratch, "answers.sh"), `${answers}\n`);
+    spawnSync("mkdir", ["-p", answeringBin]);
+    writeFileSync(join(answeringBin, "gh"), `#!/bin/sh\necho "$*" >> "${calls}"\n. "${join(scratch, "answers.sh")}"\n`);
+    chmodSync(join(answeringBin, "gh"), 0o755);
+    // A gh that fails with a hostile message, as GitHub's own error text could be.
+    hostileBin = join(scratch, "bin-hostile");
+    spawnSync("mkdir", ["-p", hostileBin]);
+    writeFileSync(join(hostileBin, "gh"), `#!/bin/sh\necho "$*" >> "${calls}"\nprintf 'boom\\033[2K\\342\\200\\256 hidden\\n' >&2\nexit 1\n`);
+    chmodSync(join(hostileBin, "gh"), 0o755);
   });
 
   after(() => {
     if (scratch) rmSync(scratch, { recursive: true, force: true });
   });
 
-  function status(env: Record<string, string> = {}) {
-    const childEnv: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, ...env };
+  function status(env: Record<string, string> = {}, which: "failing" | "answering" | "hostile" = "failing") {
+    const stub = which === "answering" ? answeringBin : which === "hostile" ? hostileBin : bin;
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, PATH: `${stub}:${process.env.PATH}`, ...env };
     // A nested test runner reports into the parent's when it finds this variable; the scope variables are the test's to set.
     for (const name of ["NODE_TEST_CONTEXT", "GITHUB_ACTIONS", "SANDCASTLE_ISSUE", "SANDCASTLE_LABEL"]) {
       if (!(name in env)) delete childEnv[name];
@@ -71,9 +99,29 @@ describe("status.mts as a program", () => {
     assert.equal(result.stdout, "");
     const made = ghCalls();
     assert.ok(made.length > 0, "the status should have asked gh something");
-    for (const call of made) {
-      assert.doesNotMatch(call, /\b(edit|comment|create|close|merge|delete|ready|review)\b|--method|-X |--add-label|--remove-label/, call);
-    }
+    for (const call of made) assert.equal(writes(call), false, call);
+  });
+
+  it("exits 0 and prints the report on stdout once the reads succeed, having asked gh for reads only", { timeout: 90_000 }, () => {
+    rmSync(calls, { force: true });
+
+    const result = status({}, "answering");
+
+    assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+    assert.match(result.stdout, /^Sandcastle status for o\/r \(queue: /);
+    assert.match(result.stdout, /No open Sandcastle pull requests into main/);
+    const made = ghCalls();
+    assert.ok(made.some((call) => call.startsWith("api graphql")), "the status should have read the open PRs");
+    for (const call of made) assert.equal(writes(call), false, call);
+  });
+
+  it("prints gh's error on stderr as plain text, with no control or hidden character from it", { timeout: 90_000 }, () => {
+    const result = status({}, "hostile");
+
+    assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /boom/);
+    assert.doesNotMatch(result.stderr, /\u001b|\u202e/);
+    assert.equal(result.stdout, "");
   });
 });
 

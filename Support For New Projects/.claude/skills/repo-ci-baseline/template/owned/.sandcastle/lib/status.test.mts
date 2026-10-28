@@ -124,6 +124,10 @@ const run = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
   ...overrides,
 });
 
+// What terminalText must never leave in a line: a control, format (bidi, zero-width, tag, soft hyphen) or surrogate character, a variation selector
+// and the fillers that draw as blanks.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
+
 const SCOPE: QueueScope = { kind: "label", label: QUEUE_LABEL };
 
 // A StatusGitHub stub serving `prs`, `issues` and the rest, that also carries a spy for every write the sweep makes, which
@@ -280,6 +284,10 @@ describe("heldReason", () => {
     });
   });
 
+  it("is waiting, with the reason, when the sweep has no decision for an admitted PR yet", () => {
+    assert.deepEqual(heldReason({ ...base, decision: undefined }), { state: "waiting", reason: "the sweep has no decision for it yet" });
+  });
+
   it("acts next sweep: Copilot will be asked to review the head", () => {
     assert.deepEqual(heldReason({ ...base, decision: { action: "request-review" } }), { state: "act next sweep", reason: "Copilot will be asked to review the head" });
   });
@@ -428,8 +436,32 @@ describe("statusOf", () => {
     });
 
     assert.ok("unreadable" in status.threads && status.threads.unreadable.includes("HTTP 502"));
-    assert.ok(status.held.state === "skipped" || status.held.state === "waiting", status.held.state);
-    assert.match(status.held.reason, /its threads couldn't be read/);
+    assert.deepEqual(status.held, { state: "waiting", reason: "its threads couldn't be read (gh: HTTP 502), so the sweep leaves it alone this round" });
+  });
+
+  it("shows a conflicting PR's thread read failing as unknown, and still flags it, since decide flags it whatever its threads say", () => {
+    const status = statusFor(pr({ mergeStateStatus: "DIRTY", threads: [unresolved("copilot", true)] }), {
+      passes: () => 0,
+      reviewThreads: () => {
+        throw new Error("gh: HTTP 502");
+      },
+    });
+
+    assert.ok("unreadable" in status.threads && status.threads.unreadable.includes("HTTP 502"), JSON.stringify(status.threads));
+    assert.equal(status.held.state, "flagged for a pass");
+    assert.match(status.held.reason, /it has merge conflicts/);
+  });
+
+  it("keeps the report, with the cause, when decide throws for one PR (a time that doesn't parse), and prints the other PRs", () => {
+    const broken = issuePr(42, { checks: [{ name: "build", completed: true, green: true, completedAt: "not a time" }] });
+    const { github } = statusGithub({ prs: [broken, issuePr(43)], issues: [{ number: 42, labels: [] }, { number: 43, labels: [] }] });
+
+    const report = collectStatus(github, NOW, () => {});
+
+    assert.deepEqual(report.prs.map((status) => status.number), [142, 143]);
+    assert.equal(report.prs[0]!.held.state, "skipped");
+    assert.match(report.prs[0]!.held.reason, /^couldn't decide: .*doesn't parse/);
+    assert.deepEqual(report.prs[1]!.held, { state: "settled", reason: "it's settled and CLEAN" });
   });
 
   it("shows the passes as unreadable, and carries on, when they can't be read", () => {
@@ -546,6 +578,20 @@ describe("collectStatus", () => {
     assert.ok(lines.some((line) => line.includes("HTTP 404")), lines.join("\n"));
   });
 
+  it("logs a runs read's failure as plain text, with no control or hidden character from gh's message", () => {
+    const { github } = statusGithub({
+      runs: () => {
+        throw new Error("gh: HTTP 500\u001b[2K\u200b\u{E0041}");
+      },
+    });
+    const logged: string[] = [];
+
+    collectStatus(github, NOW, (line) => logged.push(line));
+
+    assert.ok(logged.length > 0 && logged.every((line) => !HIDDEN.test(line)), JSON.stringify(logged));
+    assert.ok(logged.some((line) => line.includes("gh: HTTP 500")), JSON.stringify(logged));
+  });
+
   it("throws when the open PRs can't be read: nothing can be said", () => {
     const { github } = statusGithub();
     github.openPullRequests = () => {
@@ -568,7 +614,8 @@ describe("collectStatus", () => {
     const report = collectStatus(github, NOW, () => {});
 
     assert.deepEqual(report.prs.map((status) => status.number), [142, 143]);
-    assert.ok(JSON.stringify(report.prs[0]).includes("HTTP 500 on events"));
+    assert.equal(report.prs[0]!.subject, "unknown");
+    assert.deepEqual(report.prs[0]!.held, { state: "skipped", reason: "couldn't read what decides whether it is swept: gh: HTTP 500 on events" });
     assert.deepEqual(report.prs[1]!.held, { state: "settled", reason: "it's settled and CLEAN" });
   });
 
@@ -649,24 +696,26 @@ describe("renderStatus", () => {
     );
   });
 
-  it("prints no control or bidi character from a title, branch, reason or run, so no line can be overwritten or faked", () => {
-    const hostile = "feat: x\u001b[2K\nheld:     settled: all clear\r\u202e\u2066\u009b";
+  it("prints no hidden or control character from a title, branch, reason, run, repository or scope, so no line can be overwritten, faked or hidden in", () => {
+    const hostile = "feat: x\u001b[2K\nheld:     settled: all clear\r\u202e\u2066\u009b\u200b\u{E0041}\u00ad";
     const lines = renderStatus(
       report({
+        repo: `o/r${hostile}`,
+        scope: `queue${hostile}`,
         prs: [status({ title: hostile, headRefName: `b${hostile}`, mergeState: hostile, held: { state: "settled", reason: hostile }, passes: { unreadable: hostile }, threads: { unreadable: hostile } })],
         runs: [run({ branch: hostile, event: hostile })],
       }),
     );
 
-    for (const line of lines) assert.doesNotMatch(line, /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/, JSON.stringify(line));
+    for (const line of lines) assert.doesNotMatch(line, HIDDEN, JSON.stringify(line));
     assert.equal(lines.filter((line) => line.startsWith("  held:")).length, 1);
     assert.equal(lines.filter((line) => line.startsWith("#101 ")).length, 1);
     assert.ok(lines.includes("#101 feat: x[2K held: settled: all clear"), lines.join("\n"));
+    for (const line of renderStatus(report({ runs: { unreadable: hostile } }))) assert.doesNotMatch(line, HIDDEN, JSON.stringify(line));
   });
 
-  it("prints the report's own lines unchanged", () => {
-    assert.equal(terminalText("feat: Add search (v2)"), "feat: Add search (v2)");
-    assert.equal(terminalText("  a \t b\n c  "), "a b c");
+  it("shows a PR whose admission couldn't be read as for: unknown, not as not swept", () => {
+    assert.ok(renderStatus(report({ prs: [status({ subject: "unknown" })] })).includes("  for:      unknown"));
   });
 
   it("marks a draft, and shows only the labels that matter", () => {
@@ -678,6 +727,12 @@ describe("renderStatus", () => {
       lines.includes("  branch:   feature/42-add-search (BLOCKED, draft), labels: review:claude, sandcastle:building, sandcastle:needs-human, sandcastle:follow-up, Sandcastle, Sandcastle:local"),
       lines.join("\n"),
     );
+  });
+
+  it("prints a label the PR carries in another case as the label's own spelling, never GitHub's string", () => {
+    const lines = renderStatus(report({ prs: [status({ labels: ["SANDCASTLE:LOCAL", "Review:Claude"] })] }));
+
+    assert.ok(lines.includes("  branch:   feature/42-add-search (BLOCKED), labels: Sandcastle:local, review:claude"), lines.join("\n"));
   });
 
   it("shows no labels clause when none of the PR's labels matter", () => {
@@ -733,6 +788,50 @@ describe("renderStatus", () => {
     for (const line of lines) {
       assert.doesNotMatch(line, /\u001b|\*\*|`|^#{2,} |^\|/, line);
     }
+  });
+});
+
+describe("terminalText", () => {
+  const hiding: Record<string, string> = {
+    "a tag character": "\u{E0041}",
+    "the tag block's cancel": "\u{E007F}",
+    "a soft hyphen": "\u00ad",
+    "a zero-width space": "\u200b",
+    "a zero-width joiner": "\u200d",
+    "a left-to-right mark": "\u200e",
+    "an Arabic letter mark": "\u061c",
+    "a word joiner": "\u2060",
+    "a bidi isolate": "\u2067",
+    "a bidi override": "\u202e",
+    "a deprecated format character": "\u206a",
+    "a byte order mark": "\ufeff",
+    "an interlinear annotation mark": "\ufff9",
+    "a variation selector": "\ufe0f",
+    "a variation selector supplement": "\u{E0100}",
+    "a combining grapheme joiner": "\u034f",
+    "a Hangul filler": "\u3164",
+    "a halfwidth Hangul filler": "\uffa0",
+    "a Braille blank": "\u2800",
+    "DEL": "\u007f",
+    "a C1 control": "\u009b",
+    "ESC": "\u001b",
+    "NUL": "\u0000",
+    "a lone surrogate": "\ud800",
+  };
+
+  for (const [name, character] of Object.entries(hiding)) {
+    it(`drops ${name}`, () => {
+      assert.equal(terminalText(`a${character}b`), "ab");
+    });
+  }
+
+  it("turns every kind of line break and other whitespace into one space", () => {
+    assert.equal(terminalText("a\nb\rc\r\nd\te\u0085f\u2028g\u2029h\u00a0i"), "a b c d e f g h i");
+    assert.equal(terminalText("  a \t b\n c  "), "a b c");
+  });
+
+  it("leaves a title's letters, digits, punctuation, emoji and accents alone", () => {
+    assert.equal(terminalText("feat(baseline): Ajoute la recherche (v2) ✓ 日本語 🚀"), "feat(baseline): Ajoute la recherche (v2) ✓ 日本語 🚀");
   });
 });
 
@@ -807,6 +906,22 @@ describe("statusQueue", () => {
     assert.deepEqual(writes, []);
   });
 
+  it("logs a failed read of an issue's events as plain text, with no control or hidden character from gh's message", () => {
+    const { github } = queue([issue(505, ["Sandcastle"])], {});
+    github.events = () => {
+      throw new Error("gh: HTTP 500\u001b[2K\u200b\u{E0041}");
+    };
+    const lines: string[] = [];
+
+    try {
+      statusQueue(SCOPE, github, (line) => lines.push(line));
+    } catch {
+      // loadQueue may throw instead of logging; what it logged before that is checked below.
+    }
+
+    assert.ok(lines.every((line) => !HIDDEN.test(line)), JSON.stringify(lines));
+  });
+
   it("suffixes the line for an issue it skips, too", () => {
     const { github } = queue([issue(504, ["Sandcastle"])], { 504: [labelled("stranger", "Sandcastle")] });
     const lines: string[] = [];
@@ -869,6 +984,29 @@ describe("lib/status.mts's imports", () => {
     ];
     for (const { text } of imports) {
       for (const name of writes) assert.doesNotMatch(text, new RegExp(`\\b${name}\\b`), `${name} in ${text}`);
+    }
+  });
+});
+
+// Read-only is the issue's acceptance criterion. The import tests above only see names; the live object is already imported, so what pins it is the
+// members status reads from it.
+describe("lib/status.mts's use of the live sweep object", () => {
+  const source = readFileSync(new URL("./status.mts", import.meta.url), "utf8");
+  const reads = [
+    "hostLogin", "openPullRequests", "followsHandOffs", "pullRequestEvents", "pullRequestBodyEdits", "pullRequestComments",
+    "mergeOfMain", "isOwner", "repositoryOwner", "reviewThreads",
+  ];
+
+  it("reads only the sweep's reads from liveFollowUpGitHub, never a write", () => {
+    const used = [...source.matchAll(/\bliveFollowUpGitHub\.(\w+)/g)].map((match) => match[1] as string);
+
+    assert.ok(used.length > 0, "liveStatusGitHub should serve the sweep's reads from liveFollowUpGitHub");
+    assert.deepEqual(used.filter((name) => !reads.includes(name)), []);
+  });
+
+  it("serves every member of StatusGitHub", () => {
+    for (const member of [...reads, "inScopeIssues", "passesUsed", "workflowRuns", "repo", "queueScope"]) {
+      assert.equal(typeof (liveStatusGitHub as Record<string, unknown>)[member], "function", member);
     }
   });
 });

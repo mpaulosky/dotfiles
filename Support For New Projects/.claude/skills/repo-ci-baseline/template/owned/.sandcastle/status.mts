@@ -7,13 +7,14 @@
 //
 // Read-only: no comment, label or push, no sandbox, no model call. The report is lib/status.mts's.
 //
-// Exit codes: 0 once the report is printed, whatever is held; 1 when it can't be read (the open PRs, or host git is
-// unsafe); 2 for a bad scope variable, before git or gh is touched.
+// Exit codes: 0 once the report is printed, whatever is held; 1 when it can't be read (the host's login, the in-scope issues, the
+// open PRs or the repository name, or host git is unsafe), with the cause on stderr; 2 for a bad scope variable, before git or gh is
+// touched.
 
 import { QueueScopeError, describeQueueScope, type QueueScope } from "./lib/config.mts";
 import { protectHostGit } from "./lib/host-safety.mts";
 import { useQueueScope } from "./lib/queue.mts";
-import { statusCommand, statusScopeFrom } from "./lib/status.mts";
+import { statusCommand, statusScopeFrom, terminalText } from "./lib/status.mts";
 
 // The queue scope comes first, so a bad variable exits with the usage message before git or gh is touched.
 let scope: QueueScope;
@@ -33,6 +34,7 @@ try {
   protectHostGit();
   statusCommand();
 } catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
+  // gh's own text (its stderr is in the message) goes to the terminal as plain text, as the report's does.
+  console.error(terminalText(error instanceof Error ? error.message : String(error)));
   process.exit(1);
 }

@@ -84,7 +84,7 @@ export type PrStatus = {
   number: number;
   title: string;
   headRefName: string;
-  subject: "issue" | "hand-off" | "not swept";
+  subject: "issue" | "hand-off" | "not swept" | "unknown";
   issueNumber?: number;
   passes: { used: number; cap: number } | { unreadable: string };
   held: Held;
@@ -223,14 +223,33 @@ export function statusOf(
     unreadable = `couldn't read what decides whether it is swept: ${causeOf(error)}`;
   }
 
+  // The full threads are read once, and a failed read matters even where the sweep carries on without them (a conflicting PR is
+  // flagged whatever its threads say): the report shows those counts as unknown, never the unfiltered ones as if they were read.
   let thin = pr;
   let answered = 0;
   let threads: PrStatus["threads"];
+  let threadsFailed: string | undefined;
+  let threadsThrew = false;
   try {
-    ({ pr: thin, answered } = withoutAnsweredThreads(pr, github, context.host));
-    threads = splitThreads(thin.threads, github.isOwner, answered);
+    ({ pr: thin, answered } = withoutAnsweredThreads(
+      pr,
+      {
+        isOwner: github.isOwner,
+        reviewThreads: (number) => {
+          try {
+            return github.reviewThreads(number);
+          } catch (error) {
+            threadsFailed = causeOf(error);
+            throw error;
+          }
+        },
+      },
+      context.host,
+    ));
+    threads = threadsFailed === undefined ? splitThreads(thin.threads, github.isOwner, answered) : { unreadable: threadsFailed };
   } catch (error) {
     threads = { unreadable: causeOf(error) };
+    threadsThrew = true;
   }
 
   const subject = "subject" in admitted ? admitted.subject : undefined;
@@ -239,25 +258,31 @@ export function statusOf(
   let held: Held;
   if (unreadable !== undefined) {
     held = { state: "skipped", reason: unreadable };
-  } else if (decidable && "unreadable" in threads) {
-    held = { state: "waiting", reason: `its threads couldn't be read (${threads.unreadable}), so the sweep leaves it alone this round` };
+  } else if (decidable && threadsThrew) {
+    held = { state: "waiting", reason: `its threads couldn't be read (${threadsFailed ?? causeOf(threads)}), so the sweep leaves it alone this round` };
   } else {
-    held = heldReason({
-      pr,
-      admitted,
-      origin,
-      decision: decidable && split !== undefined ? decide(thin, now, github.isOwner) : undefined,
-      passesUsed,
-      answered,
-      human: split?.other ?? 0,
-    });
+    // decide reads times GitHub returned and throws on one that doesn't parse, as it does in the sweep, which skips that PR for the
+    // round: one PR's bad data shows as its own line and the others still print.
+    try {
+      held = heldReason({
+        pr,
+        admitted,
+        origin,
+        decision: decidable ? decide(thin, now, github.isOwner) : undefined,
+        passesUsed,
+        answered,
+        human: split?.other ?? 0,
+      });
+    } catch (error) {
+      held = { state: "skipped", reason: `couldn't decide: ${causeOf(error)}` };
+    }
   }
 
   return {
     number: pr.number,
     title: pr.title,
     headRefName: pr.headRefName,
-    subject: subject === undefined ? "not swept" : subject.kind,
+    subject: unreadable !== undefined ? "unknown" : subject === undefined ? "not swept" : subject.kind,
     ...(subject?.kind === "issue" ? { issueNumber: subject.issueNumber } : {}),
     passes,
     held,
@@ -268,7 +293,7 @@ export function statusOf(
   };
 }
 
-// Reads everything the report shows. The open PRs failing to read throws: nothing can be said. Anything else that fails
+// Reads everything the report shows. The host's login, the in-scope issues, the open PRs or the repository name failing to read throws: nothing can be said. Anything else that fails
 // shows as unreadable in its place.
 export function collectStatus(github: StatusGitHub, now: number = Date.now(), log: (line: string) => void = console.error): StatusReport {
   const { context } = sweepContext(github);
@@ -280,29 +305,39 @@ export function collectStatus(github: StatusGitHub, now: number = Date.now(), lo
     runs = github.workflowRuns(RUNS_SHOWN);
   } catch (error) {
     runs = { unreadable: causeOf(error) };
-    log(`  ⚠ Couldn't read the Sandcastle workflow's runs: ${runs.unreadable}`);
+    log(terminalLine(`  ⚠ Couldn't read the Sandcastle workflow's runs: ${runs.unreadable}`));
   }
   return { repo: github.repo(), scope: describeQueueScope(github.queueScope()), prs, unlisted: open.length - listed.length, runs };
 }
 
 // The labels the report shows on a PR: the ones that say who is working on it, why it is held or who reviews it.
-const SHOWN_LABELS = [BUILDING_LABEL, "sandcastle:needs-human", FOLLOW_UP_LABEL, "review:claude", QUEUE_LABEL, LOCAL_QUEUE_LABEL].map((label) =>
-  label.toLowerCase(),
-);
+const SHOWN_LABEL_NAMES = [BUILDING_LABEL, "sandcastle:needs-human", FOLLOW_UP_LABEL, "review:claude", QUEUE_LABEL, LOCAL_QUEUE_LABEL];
+const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 
-// GitHub's and gh's text (a title, a branch, a reason) made safe for a terminal: whitespace, including a line break, is one space,
-// and what is left of the control characters (ESC and the C1 set, so no CSI sequence) and the bidi and zero-width marks that
-// reorder or hide text is dropped. Nothing in it can overwrite a line of the report or fake one.
+// GitHub's and gh's text (a title, a branch, a reason, an error) made safe for a terminal: whitespace, including a line break, is one
+// space, and every control character (ESC and the C1 set, so no CSI sequence), format character (bidi marks, zero-width characters,
+// the soft hyphen, the Unicode tag block a model reads as hidden text), surrogate, variation selector and filler that draws as a blank
+// is dropped. Nothing in it can overwrite a line of the report, fake one or carry text a reader can't see.
 export function terminalText(text: string): string {
   return text
-    .replace(/[\s\u0085\u2028\u2029]+/g, " ")
-    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, "")
+    // Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
+    .replace(/[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu, " ")
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/gu, "")
     .trim();
+}
+
+// A line a log writes, as plain text: terminalText, with the indent the line starts with kept.
+export function terminalLine(line: string): string {
+  return (/^ */.exec(line)?.[0] ?? "") + terminalText(line);
 }
 
 // One PR's lines.
 function renderPr(status: PrStatus): string[] {
-  const shown = status.labels.filter((label) => SHOWN_LABELS.includes(label.toLowerCase()));
+  // A label is printed as the report's own spelling of it, never GitHub's string, so what a label is named can't reach the terminal.
+  const shown = status.labels.flatMap((label) => {
+    const known = SHOWN_LABELS.indexOf(label.toLowerCase());
+    return known < 0 ? [] : [SHOWN_LABEL_NAMES[known] as string];
+  });
   const state = terminalText(status.draft ? `${status.mergeState}, draft` : status.mergeState);
   const subject = status.subject === "issue" && status.issueNumber !== undefined ? `issue #${status.issueNumber}` : status.subject;
   const passes = "unreadable" in status.passes ? `unknown (${terminalText(status.passes.unreadable)})` : `${status.passes.used} of ${status.passes.cap}`;
@@ -367,13 +402,13 @@ export function statusQueue(
   log: (line: string) => void,
 ): { number: number; labels: string[] }[] {
   const readOnly: QueueGitHub = { ...queue, removeLabel: () => {}, addLabel: () => {} };
-  return loadQueue(scope, readOnly, (line) => log(`${line}${QUEUE_LOG_SUFFIX}`), new Set(), new Map()).map((issue) => ({
+  return loadQueue(scope, readOnly, (line) => log(terminalLine(`${line}${QUEUE_LOG_SUFFIX}`)), new Set(), new Map()).map((issue) => ({
     number: issue.number,
     labels: issue.labels,
   }));
 }
 
-// Collects and prints the report; returns it. Prints nothing when the open PRs can't be read.
+// Collects and prints the report; returns it. Prints nothing when the host's login, the in-scope issues, the open PRs or the repository name can't be read.
 export function statusCommand(
   github: StatusGitHub = liveStatusGitHub,
   print: (line: string) => void = console.log,
@@ -389,7 +424,7 @@ export function statusCommand(
 export const liveStatusGitHub: StatusGitHub = {
   hostLogin: () => liveFollowUpGitHub.hostLogin(),
   openPullRequests: () => liveFollowUpGitHub.openPullRequests(),
-  inScopeIssues: () => statusQueue(activeQueueScope(), liveQueueGitHub(), (line) => console.error(line)),
+  inScopeIssues: () => statusQueue(activeQueueScope(), liveQueueGitHub(), (line) => console.error(terminalLine(line))),
   followsHandOffs: () => liveFollowUpGitHub.followsHandOffs(),
   pullRequestEvents: (number) => liveFollowUpGitHub.pullRequestEvents(number),
   pullRequestBodyEdits: (number) => liveFollowUpGitHub.pullRequestBodyEdits(number),

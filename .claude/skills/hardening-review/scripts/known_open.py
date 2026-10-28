@@ -104,11 +104,14 @@ def add(args):
     entries.append({"id": args.id, "lens": args.lens, "path": file.relative_to(base).as_posix(), "start": args.start,
                     "end": args.end, "hash": value, "reason": args.reason})
     listing = Path(args.listing)
-    private_folder(listing.parent)
-    handle, temporary = tempfile.mkstemp(dir=listing.parent, suffix=".tmp")
-    with os.fdopen(handle, "w", encoding="utf-8") as stream:
-        json.dump(entries, stream, indent=2)
-    os.replace(temporary, listing)
+    try:
+        private_folder(listing.parent)
+        handle, temporary = tempfile.mkstemp(dir=listing.parent, suffix=".tmp")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(entries, stream, indent=2)
+        os.replace(temporary, listing)
+    except OSError as error:
+        raise Refused(f"cannot write the list: {error}")
 
 
 def private_folder(folder):
@@ -118,7 +121,7 @@ def private_folder(folder):
         missing.append(folder)
         folder = folder.parent
     for made in reversed(missing):
-        made.mkdir(mode=0o700)
+        made.mkdir(mode=0o700, exist_ok=True)
 
 
 def changed(root, entry):

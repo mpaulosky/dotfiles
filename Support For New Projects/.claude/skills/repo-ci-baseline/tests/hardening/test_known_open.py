@@ -1,5 +1,7 @@
 """Tests for the hardening-review skill's known-open list."""
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -275,3 +277,35 @@ def test_add_makes_every_folder_it_creates_private(tmp_path):
     assert add(root, listing).returncode == 0
     assert (listing.parent.stat().st_mode & 0o777, listing.parent.parent.stat().st_mode & 0o777) == (0o700, 0o700)
     assert listing.stat().st_mode & 0o077 == 0
+
+
+def load_module():
+    module_spec = importlib.util.spec_from_file_location("known_open_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    kept, sys.dont_write_bytecode = sys.dont_write_bytecode, True  # no __pycache__ beside the shipped script
+    try:
+        module_spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = kept
+    return module
+
+
+def test_add_survives_the_folder_appearing_between_the_check_and_the_mkdir(tmp_path, monkeypatch):
+    # Two adds in parallel Bash calls: the loser must not die on FileExistsError.
+    module = load_module()
+    folder = tmp_path / "made"
+    folder.mkdir()
+    real = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: False if self == folder else real(self))
+    module.private_folder(folder)
+    assert folder.is_dir()
+
+
+def test_a_folder_path_that_is_a_dangling_symlink_or_a_file_is_refused_not_a_traceback(tmp_path):
+    root, _ = setup(tmp_path)
+    os.symlink(tmp_path / "nowhere", tmp_path / "link")
+    (tmp_path / "file").write_text("x", encoding="utf-8")
+    for blocker in ("link", "file"):
+        result = add(root, tmp_path / blocker / "known-open.json")
+        assert result.returncode == 2 and "Traceback" not in result.stderr, result.stderr
+        assert "cannot write the list" in result.stderr

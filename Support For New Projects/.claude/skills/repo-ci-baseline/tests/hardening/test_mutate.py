@@ -34,9 +34,9 @@ CHECK = (
 )
 
 
-def make_repo(tmp_path, source="def f(x):\n    return x > 0\n", check=CHECK):
+def make_repo(tmp_path, source="def f(x):\n    return x > 0\n", check=CHECK, name="r"):
     """A repo whose test passes while f(x) returns x > 0, and fails when it doesn't."""
-    root = tmp_path / "r"
+    root = tmp_path / name
     root.mkdir()
     git(root, "init", "-q")
     (root / "target.py").write_bytes(source.encode("utf-8"))
@@ -620,3 +620,78 @@ def test_a_journal_naming_nothing_inside_the_repository_says_unknown(tmp_path):
     journal.write_text(json.dumps({"files": {"../outside.txt": ""}}), encoding="utf-8")
     result = run(root, spec([mutation("x > 0", "x >= 0")]))
     assert result.returncode == 2 and "unknown files" in result.stderr and "outside" not in result.stderr
+
+
+SLOW_BASELINE = (
+    "import sys, time, pathlib\nsys.path.insert(0, '.')\nimport target as c\n"
+    "if not c.f(0):\n    pathlib.Path('base-started').write_text('1'); time.sleep(5)\n"
+    "sys.exit(0 if c.f(1) and not c.f(0) else 1)\n")
+
+
+def start_slow(root, where):
+    """A run whose baseline sits in a sleep for a few seconds; returns once the baseline has started."""
+    proc = subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(write_spec(root, spec([mutation("x > 0", "x >= 0")]))), "--root", str(where)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env())
+    for _ in range(300):
+        if (where / "base-started").exists():
+            return proc
+        time.sleep(0.1)
+    proc.kill()
+    raise AssertionError("the baseline never started")
+
+
+def test_a_run_from_a_subfolder_and_one_from_the_top_share_the_checkouts_journal(tmp_path):
+    # The guard is per checkout, not per --root string: both runs would mutate the same tracked files under each other's tests.
+    root = make_repo(tmp_path, check=SLOW_BASELINE)
+    sub = root / "sub"
+    sub.mkdir()
+    (sub / "target.py").write_text("def f(x):\n    return x > 0\n", encoding="utf-8")
+    (sub / "check.py").write_text(SLOW_BASELINE, encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "sub")
+    first = start_slow(root, sub)
+    try:
+        second = run(root, spec([mutation("x > 0", "x > 5")]))
+        assert second.returncode == 2, second.stdout + second.stderr
+        assert "in progress" in second.stderr
+    finally:
+        out, err = first.communicate(timeout=60)
+    assert first.returncode == 0, out + err
+
+
+def test_two_worktrees_of_one_repo_do_not_block_each_other(tmp_path):
+    root = make_repo(tmp_path, check=SLOW_BASELINE)
+    other = tmp_path / "w2"
+    git(root, "worktree", "add", "-q", "--detach", str(other))
+    first = start_slow(root, root)
+    try:
+        second = run(other, spec([mutation("x > 0", "x >= 0")]))
+        assert second.returncode == 0, second.stdout + second.stderr
+    finally:
+        out, err = first.communicate(timeout=60)
+    assert first.returncode == 0, out + err
+    assert not journals(root)
+
+
+def test_a_checkout_whose_path_is_not_utf8_still_runs(tmp_path):
+    try:
+        root = make_repo(tmp_path, name=os.fsdecode(b"r\xff"))
+    except OSError:
+        pytest.skip("this file system refuses a non-UTF-8 name")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_a_journal_write_that_fails_does_not_leave_the_empty_journal_behind(tmp_path, monkeypatch, capsys, keep_signal_handlers):
+    # Created exclusively, then the write fails (a full disk): the next run must not be told a run was killed.
+    root = make_repo(tmp_path)
+    runner = load_runner()
+
+    def full(*args, **kwargs):
+        raise OSError("disk full")
+
+    spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
+    monkeypatch.setattr(runner.json, "dumps", full)
+    assert runner.main([str(spec_file), "--root", str(root)]) == 2
+    assert "unexpected OSError" in capsys.readouterr().err
+    assert not journals(root)

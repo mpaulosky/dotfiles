@@ -97,7 +97,7 @@ def load_spec(path):
 
 def git(root, *args):
     # Literal pathspecs: a file named a*.py must not match a tracked ab.py.
-    return subprocess.run(["git", "--literal-pathspecs", "-C", str(root), *args], capture_output=True, text=True, env=clean_env())
+    return subprocess.run(["git", "--literal-pathspecs", "-C", str(root), *args], capture_output=True, text=True, errors="surrogateescape", env=clean_env())
 
 
 def target_files(root, mutations):
@@ -124,12 +124,14 @@ def target_files(root, mutations):
 
 def journal_path(root):
     """Under review/ in the common git dir: Sandcastle hides it from its sandboxes (which can write the rest of .git), and the ledger
-    reads only *.json there. One per checkout, so two worktrees don't block each other."""
-    result = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    if result.returncode != 0:
+    reads only *.json there. One per worktree (keyed on its top level, not on --root, so a run from a subfolder shares it), so
+    two worktrees don't block each other."""
+    result = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel")
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 2:
         raise Refused(f"{root} is not in a git repository")
-    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
-    return Path(result.stdout.strip()) / "review" / f"mutate-journal-{digest}.txt"
+    digest = hashlib.sha256(os.fsencode(str(Path(lines[1]).resolve()))).hexdigest()[:16]
+    return Path(lines[0]) / "review" / f"mutate-journal-{digest}.txt"
 
 
 def inside(root, name):
@@ -159,10 +161,16 @@ def claim_journal(journal, root):
     """Create the journal before anything slow, so a second run sees it; exclusive, so two can't both pass."""
     journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        with journal.open("x", encoding="utf-8") as handle:
-            handle.write(json.dumps({"files": {}}))
+        handle = journal.open("x", encoding="utf-8")
     except FileExistsError:
         raise Refused(describe_journal(journal, root))
+    try:
+        with handle:
+            handle.write(json.dumps({"files": {}}))
+    except BaseException:
+        # Created but not written (a full disk): nothing was mutated, so the next run must not be told a run was killed.
+        journal.unlink(missing_ok=True)
+        raise
 
 
 def write_journal(journal, root, originals):

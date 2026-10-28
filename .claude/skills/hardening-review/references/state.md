@@ -13,6 +13,7 @@ Rewritten, not appended, whenever a step changes it. After a compaction this fil
 - Worktree: <absolute path>
 - Run folder: <absolute path>
 - Private folder: <absolute path>
+- Verify checkout: <absolute path of the throwaway checkout, or none>
 
 ## Reviewers (this pass)
 

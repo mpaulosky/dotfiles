@@ -383,6 +383,8 @@ describe("the pre-push-review skill's repository", () => {
 // hardening-review reuses pre-push-review by step number and keeps its reviewers' sandbox: nothing else would notice a
 // renumbering or a run folder that moved out of the folder the sandbox hides.
 describe("the hardening-review skill's reuse of pre-push-review", () => {
+  // The prose wraps at 120 columns: phrases are matched with their line breaks collapsed.
+  const flat = hardening.replace(/\s+/g, " ");
   it("points at steps that still exist under those numbers", () => {
     for (const heading of ["### 1. Get ready", "### 2. Gate first", "### 3. Gather earlier decisions", "### 4. Review the diff", "### 5. Verify and triage", "### 6. Fix behind a regression test", "### 7. Review the fixes until a round fixes nothing", "### 8. Record", "### 9. Report"]) {
       assert.ok(skill.includes(`${heading}\n`), `pre-push-review lost "${heading}"`);
@@ -415,7 +417,12 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
   it("says what the run folder discloses, because a sandbox can read it, and makes the private folder private", () => {
     assert.match(hardening, /`run` is not hidden from a sandbox/);
     assert.match(hardening, /lists each known-open entry's lens, file and line range/);
+    // The skill itself puts a refuted finding's output line and each outcome's reason in `run`: it can't say it holds none.
+    assert.doesNotMatch(flat, /never holds a reason, an input or an output/);
+    assert.match(flat, /never holds a known-open reason or anything about a finding still in the code beyond its id, lens and path/);
+    // A umask is shell state, which doesn't carry between Bash calls.
     assert.match(hardening, /umask 077; mkdir -p/);
+    assert.match(flat, /begin every later command that writes under it with `umask 077;`/);
   });
 
   it("says where the deny rule comes from instead of claiming pre-push-review has one", () => {
@@ -424,7 +431,7 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
   });
 
   it("describes a security finding as held back while it is in the code, as pre-push-review step 4 does", () => {
-    assert.match(hardening, /marked `security: true`\) that is still in the code is never quoted outside\s+this session/);
+    assert.match(hardening, /\(as `pre-push-review` step 4 defines it: a Warning, one whose lens names security, or any not marked\s+`security: false`\) that is still in the code is never quoted outside this session/);
     assert.match(hardening, /a fixed one keeps its summary/);
   });
 
@@ -445,14 +452,33 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
     assert.match(hardening, /Delete a folder only when it is exactly `\$run` or\s+`\$private` and `\$name` is not empty/);
   });
 
-  it("never builds a shell string from a reviewer's path or lens", () => {
-    assert.match(hardening, /letters, digits, space and `\._\/-`/);
+  it("never builds a shell string from a reviewer's path, lens or line, for match or for add", () => {
+    assert.match(flat, /letters, digits, space and `\._\/-`/);
     assert.match(hardening, /--lens='<lens>' --path='<path>'/);
     assert.doesNotMatch(hardening, / --lens '<lens>'| --path '<path>'/);
+    assert.match(flat, /`line` must be digits only/);
+    assert.match(flat, /again before `add`/);
+    // Every known_open.py flag built from a finding's text takes the `=` and single-quote form.
+    assert.doesNotMatch(hardening, /--lens [A-Za-z<"']|--path [A-Za-z<"']/);
+    assert.match(flat, /--reason '<the person's decision, in your own words, with no single quote>'/);
+  });
+
+  it("deletes a verification checkout only after checking a path a sandbox could have written", () => {
+    assert.match(flat, /`git worktree list --porcelain` lists it as a detached worktree/);
+    assert.match(flat, /neither the worktree under review nor the main checkout/);
+    assert.match(readFileSync(new URL("../../.claude/skills/hardening-review/references/state.md", import.meta.url), "utf8"), /^- Verify checkout: /m);
+  });
+
+  it("keeps the triage and mutation notes in step with the scripts", () => {
+    const triage = readFileSync(new URL("../../.claude/skills/hardening-review/references/triage.md", import.meta.url), "utf8");
+    const mutations = readFileSync(new URL("../../.claude/skills/hardening-review/references/mutations.md", import.meta.url), "utf8");
+    assert.match(triage, /is listed in one line/);
+    assert.match(mutations, /mutate-journal-<hash>\.txt/);
+    assert.match(mutations, /POSIX only/);
   });
 
   it("verifies a repro with its path printed, and does not call a scrubbed environment a sandbox", () => {
-    assert.match(hardening, /d="\$\(mktemp -d\)"; git worktree add --detach "\$d\/tree" HEAD && printf '%s\\n' "\$d\/tree"/);
+    assert.match(hardening, /d="\$\(mktemp -d\)" && git worktree add --detach "\$d\/tree" HEAD && printf '%s\\n' "\$d\/tree"/);
     assert.match(hardening, /removes environment variables only; it is not a sandbox/);
     assert.match(hardening, /absolute path, `\.\.`, `~` or a\s+URL/);
   });

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests for .github/hooks/pre-push.
 # Each case runs the hook in a throwaway repo, holding copies of
-# scripts/gate.sh, scripts/check-branch-name.sh and
-# .github/scripts/discover_tests.py, with the refs git would
+# scripts/gate.sh, scripts/check-branch-name.sh,
+# .github/scripts/discover_tests.py and .github/scripts/check_gh_repo.py, with the refs git would
 # pass on stdin. Stub `dotnet`, `pnpm`, `markdownlint-cli2`, `yamllint`,
 # `actionlint`, `zizmor` and `shellcheck` binaries log each call, and fail when the call matches the FAIL glob, so no
 # real build or network access is needed.
@@ -12,6 +12,7 @@ set -uo pipefail
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pre-push"
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts"
 DISCOVER="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/discover_tests.py"
+CHECK_GH_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/check_gh_repo.py"
 ZERO="0000000000000000000000000000000000000000"
 SHA="1111111111111111111111111111111111111111"
 
@@ -54,7 +55,7 @@ echo '<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup
 mkdir -p "$REPO/tests/Fake.Support"
 echo '<Project />' > "$REPO/tests/Fake.Support/Fake.Support.csproj"
 cp "$SCRIPTS/gate.sh" "$SCRIPTS/check-branch-name.sh" "$REPO/scripts/"
-cp "$DISCOVER" "$REPO/.github/scripts/"
+cp "$DISCOVER" "$CHECK_GH_REPO" "$REPO/.github/scripts/"
 git -C "$REPO" add .
 git -C "$REPO" commit -q -m init
 git -C "$REPO" update-ref refs/remotes/origin/main main
@@ -439,6 +440,30 @@ git -C "$REPO" commit -q -m "make review.sh executable"
 run_hook feature/13-no-ledger "$(push_stdin feature/13-no-ledger)"
 expect "a repo with review.sh but no ledger code needs no review to push" allowed tests-ran
 expect_log "a repo without the ledger code never calls review.sh" not-ran 'review.sh*'
+git -C "$REPO" switch -q feature/1-x
+
+# The repo's own scripts and skills must tell every gh command its repository
+# (.github/scripts/check_gh_repo.py --repo, mpaulosky/dotfiles#321): the gate refuses an
+# untold one with its file and line, before the build, and it runs on every gate run.
+commit_on feature/14-gh-untold scripts/foo.sh 'gh pr view 1'
+run_hook feature/14-gh-untold "$(push_stdin feature/14-gh-untold)"
+expect "a script with a gh command not told its repository refuses the push" refused any "scripts/foo.sh:1: gh pr view 1"
+expect_log "an untold gh command stops the gate before the build" not-ran 'dotnet build*'
+GATE_SKIP_REVIEW=1 run_gate feature/14-gh-untold
+expect "a gate run with GATE_SKIP_REVIEW=1 still checks the gh commands" refused any "scripts/foo.sh:1: gh pr view 1"
+git -C "$REPO" switch -q feature/1-x
+commit_on feature/15-gh-told scripts/foo.sh $'#!/usr/bin/env bash\nexport GH_REPO=o/r\ngh pr view 1'
+run_hook feature/15-gh-told "$(push_stdin feature/15-gh-told)"
+expect "a script that exports GH_REPO before its gh command lets the push through" allowed tests-ran
+git -C "$REPO" switch -q feature/1-x
+commit_on feature/16-gh-skill .claude/skills/mine/SKILL.md $'Look at it with `gh pr list`.'
+run_hook feature/16-gh-skill "$(push_stdin feature/16-gh-skill)"
+expect "a skill with a gh command not told its repository refuses the push" refused any ".claude/skills/mine/SKILL.md:1:"
+expect_log "an untold gh command in a skill stops the gate before the build" not-ran 'dotnet build*'
+git -C "$REPO" switch -q feature/1-x
+commit_on feature/17-gh-skill-told .claude/skills/mine/SKILL.md $'Look at it with `gh pr list --repo o/r`.'
+run_hook feature/17-gh-skill-told "$(push_stdin feature/17-gh-skill-told)"
+expect "a skill whose gh command gives --repo lets the push through" allowed tests-ran
 git -C "$REPO" switch -q feature/1-x
 
 # The old sandcastle.gatedHead marker no longer skips the gate: a Sandcastle

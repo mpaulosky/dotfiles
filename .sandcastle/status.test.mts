@@ -60,7 +60,7 @@ describe("status.mts as a program", () => {
     writeFileSync(join(hostileBin, "gh"), `#!/bin/sh\necho "$*" >> "${calls}"\nprintf 'boom\\033[2K\\342\\200\\256 hidden\\n' >&2\nexit 1\n`);
     chmodSync(join(hostileBin, "gh"), 0o755);
     // A gh that answers every read as the answering one does, except that `repo view` fails with a hostile message: the one read whose
-    // stderr gh would write to the terminal itself, if the status didn't capture it first.
+    // stderr gh would write to the terminal itself, if repoName() didn't capture it.
     hostileRepoBin = join(scratch, "bin-hostile-repo");
     spawnSync("mkdir", ["-p", hostileRepoBin]);
     writeFileSync(

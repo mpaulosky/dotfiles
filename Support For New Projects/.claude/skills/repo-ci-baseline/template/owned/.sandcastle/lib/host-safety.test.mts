@@ -33,30 +33,33 @@ describe("worktreeConfigProblem", () => {
   });
 });
 
-// git run as a stand-in that fails with a message of its own on stderr: the host's two config reads must capture it, so it reaches the
-// terminal only through the thrown message.
+// git run as a stand-in that fails with a message of its own on stderr. The host's two config reads must capture it, so it reaches the
+// terminal only through the thrown message. Run in a child process, so the child's own stderr shows whether git's text was let through.
 describe("the host's git config reads", () => {
-  const withFailingGit = (run: () => void) => {
+  const inChild = (call: string) => {
     const bin = mkdtempSync(join(tmpdir(), "sandcastle-failing-git-"));
-    const path = process.env.PATH;
     try {
       writeFileSync(join(bin, "git"), "#!/bin/sh\necho 'fatal: from the stand-in git' >&2\nexit 128\n");
       chmodSync(join(bin, "git"), 0o755);
-      process.env.PATH = `${bin}:${path}`;
-      run();
+      const module = pathToFileURL(join(import.meta.dirname, "host-safety.mts")).href;
+      const script = `import(${JSON.stringify(module)}).then((m) => { try { m.${call}; } catch (error) { process.stdout.write(error.message); } })`;
+      return spawnSync(process.execPath, [...process.execArgv, "--input-type=module", "-e", script], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
     } finally {
-      process.env.PATH = path;
       rmSync(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   };
 
-  it("worktreeConfigProblem throws with git's stderr in the message", () => {
-    withFailingGit(() => assert.throws(() => worktreeConfigProblem("/nonexistent/.git"), /fatal: from the stand-in git/));
-  });
+  for (const call of ['worktreeConfigProblem("/nonexistent/.git")', 'configIncludeProblem("/nonexistent/.git")']) {
+    it(`${call.split("(")[0]} throws with git's stderr in the message and writes none itself`, () => {
+      const result = inChild(call);
 
-  it("configIncludeProblem throws with git's stderr in the message, other than for git's exit 1", () => {
-    withFailingGit(() => assert.throws(() => configIncludeProblem("/nonexistent/.git"), /fatal: from the stand-in git/));
-  });
+      assert.match(result.stdout, /fatal: from the stand-in git/);
+      assert.equal(result.stderr, "");
+    });
+  }
 });
 
 describe("configIncludeProblem", () => {

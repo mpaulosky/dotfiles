@@ -8,7 +8,7 @@
 // report's data and rendering, and writes nothing to GitHub or git.
 // ---------------------------------------------------------------------------
 
-import { format } from "node:util";
+import { inspect } from "node:util";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_LABEL,
@@ -319,34 +319,49 @@ const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 
 // GitHub's and gh's text (a title, a branch, a reason, an error) made safe for a terminal: whitespace, including a line break, is one
 // space, and every control character (ESC and the C1 set, so no CSI sequence), format character (bidi marks, zero-width characters,
-// the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, noncharacter, variation
-// selector and filler that draws as a blank is dropped. Nothing in it can overwrite a line of the report, fake one or carry text a reader
-// can't see. Three joiners keep their place where they do the work they are for: a zero-width joiner between two pictographs (an emoji
-// sequence) and an emoji's variation selector right after a pictograph, and a zero-width non-joiner between two letters (a Persian or
-// Indic word). Anywhere else, a run of them included, they are dropped, so none can carry hidden text. A private-use or unassigned code
-// point draws a glyph (or a box), so it stays.
+// the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, noncharacter, filler that
+// draws as a blank, and code point of the supplementary private-use planes is dropped. Nothing in it can overwrite a line of the report
+// or fake one. Three joiners keep their place where they do the work they are for: a zero-width joiner between two pictographs (an emoji
+// sequence, with a skin tone or an emoji's variation selector in it), that variation selector right after a pictograph, and a zero-width
+// non-joiner between two letters of a script that uses it (Arabic, for Persian, and the Indic scripts). Anywhere else they are dropped,
+// and at most MAX_KEPT_JOINERS survive in one text, so a few invisible bits are all that can ride on them. Keycap and flag-tag emoji
+// sequences fall apart. A private-use code point of the Basic Multilingual Plane (an icon-font glyph) or an unassigned one draws a glyph
+// or a box, so it stays.
 export function terminalText(text: string): string {
+  let kept = 0;
   return text
     // Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
     .replace(/[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu, " ")
-    .replace(HIDDEN_CHARACTERS, (character, offset: number, whole: string) =>
-      keptJoiner(character, whole.slice(Math.max(0, offset - JOINER_LOOKBEHIND), offset), whole.slice(offset + character.length, offset + 3)) ? character : "",
-    )
+    .replace(HIDDEN_CHARACTERS, (character, offset: number, whole: string) => {
+      const keep = kept < MAX_KEPT_JOINERS && keptJoiner(character, whole.slice(Math.max(0, offset - JOINER_LOOKBEHIND), offset), whole.slice(offset + character.length, offset + 3));
+      if (keep) kept += 1;
+      return keep ? character : "";
+    })
     // Dropping a character can leave the spaces on either side of it side by side.
     .replace(/ {2,}/g, " ")
     .trim();
 }
 
-const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/gu;
+const HIDDEN_CHARACTERS =
+  /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0\u{F0000}-\u{10FFFF}]/gu;
 
 // How much text before a joiner is read to decide whether it stays (a letter and its combining marks).
 const JOINER_LOOKBEHIND = 16;
 
+// The most joiners one text keeps.
+const MAX_KEPT_JOINERS = 8;
+
+// The scripts whose words need a zero-width non-joiner: Arabic (Persian too), Syriac, Thaana and the Indic scripts.
+const ZWNJ_SCRIPTS = ["Arabic", "Syriac", "Thaana", "Devanagari", "Bengali", "Gurmukhi", "Gujarati", "Oriya", "Tamil", "Telugu", "Kannada", "Malayalam", "Sinhala"];
+const ZWNJ_LETTER = `(?=\\p{L})[${ZWNJ_SCRIPTS.map((script) => `\\p{scx=${script}}`).join("")}]`;
+const ZWNJ_AFTER_LETTER = new RegExp(`^${ZWNJ_LETTER}`, "u");
+const ZWNJ_BEFORE_LETTER = new RegExp(`${ZWNJ_LETTER}\\p{M}*$`, "u");
+
 // Whether a joiner stays: `before` and `after` are the text on either side of it.
 function keptJoiner(character: string, before: string, after: string): boolean {
-  if (character === "\u200d") return /\p{Extended_Pictographic}\ufe0f?$/u.test(before) && /^\p{Extended_Pictographic}/u.test(after);
+  if (character === "\u200d") return /\p{Extended_Pictographic}\p{Emoji_Modifier}?\ufe0f?$/u.test(before) && /^\p{Extended_Pictographic}/u.test(after);
   if (character === "\ufe0f") return /\p{Extended_Pictographic}$/u.test(before);
-  if (character === "\u200c") return /\p{L}\p{M}*$/u.test(before) && /^\p{L}/u.test(after);
+  if (character === "\u200c") return ZWNJ_BEFORE_LETTER.test(before) && ZWNJ_AFTER_LETTER.test(after);
   return false;
 }
 
@@ -447,14 +462,13 @@ export function statusCommand(
 }
 
 // Makes console.error print plain text, so a warning a read prints (a login, gh's own message) can't carry a control or hidden
-// character to the terminal. Takes the console to change, for a test.
+// character to the terminal. Takes the console to change, for a test. The arguments are joined as data, never as a format string: a %
+// in GitHub's text takes nothing from the arguments after it.
 export function plainStderr(target: { error: (...data: unknown[]) => void } = console): void {
   const print = target.error.bind(target);
-  // One line, formatted as console formats it (%s, objects), so the line's own indent is the only one kept.
   target.error = (...data: unknown[]) => {
-    // An Error's message is data, never the format string: its % is escaped when other arguments follow it (a lone argument isn't formatted).
-    const items = data.map((item, at) => (item instanceof Error ? (at === 0 && data.length > 1 ? item.message.replace(/%/g, "%%") : item.message) : item));
-    print(terminalLine(format(...items)));
+    const items = data.map((item) => (typeof item === "string" ? item : item instanceof Error ? item.message : inspect(item)));
+    print(terminalLine(items.join(" ")));
   };
 }
 

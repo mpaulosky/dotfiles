@@ -131,13 +131,16 @@ whether or not that label counts, and says how many other open PRs it left out.
   A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
   an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
   Text from GitHub (a title, a branch, a reason, gh's error text on stderr, a warning a read prints and the log lines) is printed through `terminalText`: whitespace
-  becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, noncharacter and filler characters are
-  dropped, so it can't overwrite, fake or hide text in a line of the report. A zero-width joiner between two pictographs, an emoji's
-  variation selector right after a pictograph and a zero-width non-joiner between two letters stay, so an emoji sequence and a Persian
-  word are printed whole; anywhere else, a run of them included, they go. A private-use or unassigned code point stays, since it draws a
-  glyph or a box. `plainStderr` cleans what a read warns on stderr. gh's and git's own stderr never reach the terminal themselves: the
-  reads that run them (`repoName()`, `protectHostGit`'s `git config`) capture it and put it in the thrown message, which the entry file
-  prints through `terminalText`.
+  becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, noncharacter, filler and
+  supplementary-plane private-use characters are dropped, so it can't overwrite or fake a line of the report. Three joiners stay where
+  they do their work: a zero-width joiner between two pictographs (an emoji sequence, with a skin tone or variation selector in it),
+  that variation selector right after a pictograph, and a zero-width non-joiner between two letters of Arabic (Persian too), Syriac,
+  Thaana or an Indic script. At most eight survive in one text, so a few invisible bits can ride on them and no more. Keycap and
+  flag-tag emoji fall apart. A private-use code point of the Basic Multilingual Plane (an icon glyph) or an unassigned one stays: it
+  draws a glyph or a box. `plainStderr` cleans what a read warns on stderr, joining the arguments as data, never as a format string.
+  On the status's path, gh's and git's own stderr never reach the terminal themselves: the reads that run them (every gh read through
+  `ghWithStderr`, `repoName()`, `protectHostGit`'s `git config`) capture it and put it in the thrown message, which the entry file
+  prints through `terminalText`. Elsewhere in the pipeline `sh()` and `commentOnIssue` still let it through.
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),
   and `answered` for those the host replied to, which now wait on the owner. A thread read that failed shows `unknown (why)`, for a

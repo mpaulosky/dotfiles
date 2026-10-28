@@ -335,6 +335,15 @@ describe("readRepoName", () => {
     assert.throws(() => readRepoName(run), /gh repo view failed:\ngh: not signed in/);
   });
 
+  it("names why gh couldn't run when it printed no stderr, and keeps the original error as the cause", () => {
+    const original = new Error("spawnSync gh ENOENT");
+    const run = (() => {
+      throw original;
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => readRepoName(run), (error: Error) => error.message === "gh repo view failed:\nspawnSync gh ENOENT" && error.cause === original);
+  });
+
   it("throws when gh prints no name", () => {
     const run = (() => "\n") as unknown as typeof execFileSync;
 

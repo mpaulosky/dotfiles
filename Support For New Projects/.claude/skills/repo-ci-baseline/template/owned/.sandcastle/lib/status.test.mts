@@ -126,9 +126,10 @@ const run = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
   ...overrides,
 });
 
-// What terminalText must never leave in a line: a control, format (bidi, zero-width, tag, soft hyphen) or surrogate character, a variation selector,
-// noncharacters, default-ignorable code points and the fillers that draw as blanks.
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
+// What terminalText must never leave in the hostile text these tests feed it (none has a joiner between two pictographs or two letters,
+// which terminalText keeps): a control, format (bidi, zero-width, tag, soft hyphen) or surrogate character, a variation selector,
+// a noncharacter, a default-ignorable code point, a supplementary private-use one and the fillers that draw as blanks.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0\u{F0000}-\u{10FFFF}]/u;
 
 const SCOPE: QueueScope = { kind: "label", label: QUEUE_LABEL };
 
@@ -831,6 +832,8 @@ describe("terminalText", () => {
     "a second Khmer inherent vowel": "\u17b5",
     "an unassigned default-ignorable code point": "\u2065",
     "a noncharacter": "\uffff",
+    "a supplementary private-use code point": "\u{F0000}",
+    "the last code point": "\u{10FFFF}",
     "a Hangul filler": "\u3164",
     "a halfwidth Hangul filler": "\uffa0",
     "a Braille blank": "\u2800",
@@ -871,18 +874,53 @@ describe("terminalText", () => {
     const family = "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}";
     const heart = "\u2764\ufe0f\u200d\u{1F525}";
     const persian = "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645";
+    const technologist = "\u{1F469}\u{1F3FD}\u200d\u{1F4BB}";
+    const runner = "\u{1F3C3}\u{1F3FD}\u200d\u2640\ufe0f";
+    const sanskrit = "\u0915\u094d\u200c\u0937";
+    const marked = "\u0645\u064e\u200c\u0646";
 
     assert.equal(terminalText(family), family);
     assert.equal(terminalText(heart), heart);
     assert.equal(terminalText("\u26a0\ufe0f Fix"), "\u26a0\ufe0f Fix");
     assert.equal(terminalText(persian), persian);
+    for (const text of [technologist, runner, sanskrit, marked]) assert.equal(terminalText(text), text, JSON.stringify(text));
+  });
+
+  it("keeps a non-joiner only between two letters of a script that uses one, not between Latin letters", () => {
+    assert.equal(terminalText("a\u200cb"), "ab");
+    assert.equal(terminalText("\u0645\u200cb"), "\u0645b");
+    assert.equal(terminalText("\u0645\u200c\u0646"), "\u0645\u200c\u0646");
+  });
+
+  it("reads only the letter and its marks right before a joiner: a longer run of marks drops it", () => {
+    const marks = "\u064e".repeat(20);
+    assert.equal(terminalText(`\u0645${marks}\u200c\u0646`), `\u0645${marks}\u0646`);
+  });
+
+  it("keeps at most a few joiners in one text, however many there are", () => {
+    const text = Array(20).fill("\u{1F600}").join("\u200d");
+    const kept = [...terminalText(text)].filter((character) => character === "\u200d").length;
+
+    assert.equal(kept, 8);
+  });
+
+  it("doesn't count a filler, which is dropped, as the letter beside a joiner", () => {
+    assert.equal(terminalText("\u0645\u200c\u3164\u200c\u0646"), "\u0645\u0646");
+    assert.equal(terminalText("\u3164\u200c\u0646"), "\u0646");
+    const text = "\u0645\u200c\u3164\u200c\u0646";
+    assert.equal(terminalText(terminalText(text)), terminalText(text));
+  });
+
+  it("lets a keycap sequence and a flag's tag sequence fall apart, as the comment says", () => {
+    assert.equal(terminalText("1\ufe0f\u20e3"), "1\u20e3");
+    assert.equal(terminalText("\u{1F3F4}\u{E0067}\u{E007F}"), "\u{1F3F4}");
   });
 
   it("drops a joiner that has no pictograph or letter on both sides, and every one of a run", () => {
     assert.equal(terminalText("\u{1F468}\u200d\u200d\u{1F469}"), "\u{1F468}\u{1F469}");
+    assert.equal(terminalText("\u0645\u200c\u200c\u0646"), "\u0645\u0646");
     assert.equal(terminalText("\u{1F468}\u200dx"), "\u{1F468}x");
     assert.equal(terminalText("x\u200d\u{1F468}"), "x\u{1F468}");
-    assert.equal(terminalText("a\u200cb\u200c\u200cc"), "a\u200cbc");
     assert.equal(terminalText("a\u200c 1"), "a 1");
     assert.equal(terminalText("x\ufe0f"), "x");
     assert.equal(terminalText("\u{1F468}\ufe00"), "\u{1F468}");
@@ -890,11 +928,12 @@ describe("terminalText", () => {
 
   it("keeps a private-use or unassigned code point, which draws a glyph or a box, and drops a noncharacter", () => {
     assert.equal(terminalText("a\ue000b\u0378c"), "a\ue000b\u0378c");
+    assert.equal(terminalText("a\u{F0000}b\u{10FFFD}c"), "abc");
     assert.equal(terminalText("a\uffffb"), "ab");
   });
 
   it("gives the same text when a joiner it kept is cleaned again", () => {
-    const text = "\u{1F468}\u200d\u{1F469} \u200b \u0645\u06cc\u200c\u062e";
+    const text = "\u{1F468}\u200d\u{1F469} \u200b \u0645\u06cc\u200c\u062e a\u200cb \u3164\u200c\u0646";
     assert.equal(terminalText(terminalText(text)), terminalText(text));
   });
 
@@ -1062,45 +1101,45 @@ describe("terminalLine", () => {
 });
 
 describe("plainStderr", () => {
-  it("makes what the console prints plain text, an Error's message too", () => {
+  const sinkOf = () => {
     const printed: string[] = [];
     const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
-
     plainStderr(sink);
+    return { printed, sink };
+  };
+
+  it("makes what the console prints plain text, an Error's message too", () => {
+    const { printed, sink } = sinkOf();
+
     sink.error("  \u26a0 gh said\u001b[2K\u202e hidden", new Error("boom\u200b\nline two"));
 
     assert.deepEqual(printed, ["  \u26a0 gh said[2K hidden boom line two"]);
   });
 
-  it("never lets an Error's message act as the format string, whatever follows it", () => {
-    const printed: string[] = [];
-    const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
+  it("joins the arguments as data, never as a format string, whichever one holds a %", () => {
+    const { printed, sink } = sinkOf();
 
-    plainStderr(sink);
     sink.error(new Error("100%s done"), "x");
     sink.error(new Error("a %% b"), 1);
-    sink.error(new Error("only 100%s"));
+    sink.error("gh said %s (%d)", "hi\u202e", 3);
+    sink.error("gh said %s", new Error("100%s"));
+    sink.error("only 100%s");
 
-    assert.deepEqual(printed, ["100%s done x", "a %% b 1", "only 100%s"]);
+    assert.deepEqual(printed, ["100%s done x", "a %% b 1", "gh said %s (%d) hi 3", "gh said %s 100%s", "only 100%s"]);
   });
 
-  it("prints an object, a format string's arguments and a null-prototype object as console would, cleaned", () => {
-    const printed: string[] = [];
-    const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
+  it("prints an object and a null-prototype object as console would, cleaned", () => {
+    const { printed, sink } = sinkOf();
 
-    plainStderr(sink);
     sink.error({ a: 1 });
-    sink.error("gh said %s (%d)", "hi\u202e", 3);
     sink.error(Object.create(null));
 
-    assert.deepEqual(printed, ["{ a: 1 }", "gh said hi (3)", "[Object: null prototype] {}"]);
+    assert.deepEqual(printed, ["{ a: 1 }", "[Object: null prototype] {}"]);
   });
 
   it("keeps at most a short indent, so text from GitHub can't pad a line", () => {
-    const printed: string[] = [];
-    const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
+    const { printed, sink } = sinkOf();
 
-    plainStderr(sink);
     sink.error(`${" ".repeat(200)}x`);
 
     assert.equal(printed[0], `${" ".repeat(8)}x`);

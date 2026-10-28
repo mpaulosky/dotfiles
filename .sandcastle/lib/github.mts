@@ -253,8 +253,9 @@ function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, 
     });
   } catch (error) {
     const stderr = (error as { stderr?: unknown }).stderr;
-    const detail = typeof stderr === "string" ? stderr.trim() : "";
-    throw new Error(`gh ${args.slice(0, 2).join(" ")} failed${detail ? `:\n${detail}` : ""}`, { cause: error });
+    // gh's own text when it printed some; else why it couldn't run (not installed, killed).
+    const detail = (typeof stderr === "string" ? stderr.trim() : "") || (error instanceof Error ? error.message : String(error));
+    throw new Error(`gh ${args.slice(0, 2).join(" ")} failed:\n${detail}`, { cause: error });
   }
 }
 

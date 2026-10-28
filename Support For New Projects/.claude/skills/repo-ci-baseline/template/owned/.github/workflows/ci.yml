@@ -219,15 +219,19 @@ jobs:
           spec.loader.exec_module(module)
           print("\n".join(module.OWNED))
           ' "$tmp/check_gh_repo.py" > "$tmp/owned.txt"
+          # Walk the base's tree, so a file the PR deleted or renamed is found too. An entry is
+          # "<mode> <type> <sha>", a tab, the path: a missing path, a changed mode (chmod -x, a
+          # symlink swap) or a changed blob all differ.
           status=0
           while IFS= read -r entry; do
-            while IFS= read -r -d '' path; do
-              base_blob=$(git rev-parse --verify --quiet "origin/${BASE_REF}:${path}") || continue
-              if [ "$base_blob" != "$(git rev-parse "HEAD:${path}")" ]; then
+            while IFS= read -r -d '' base_entry; do
+              path=${base_entry#*$'\t'}
+              head_entry=$(git ls-tree -z HEAD -- "$path" | tr '\0' '\n')
+              if [ "${base_entry}" != "$head_entry" ]; then
                 echo "Owned file ${path} differs from ${BASE_REF}"
                 status=1
               fi
-            done < <(git ls-files -z -- "$entry")
+            done < <(git ls-tree -r -z "origin/${BASE_REF}" -- "$entry")
           done < "$tmp/owned.txt"
           exit "$status"
 

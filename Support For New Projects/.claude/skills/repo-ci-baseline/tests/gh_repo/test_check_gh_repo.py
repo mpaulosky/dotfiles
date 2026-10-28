@@ -1900,3 +1900,41 @@ def test_main_repo_mode_fails_for_a_symlink_out_of_the_repo_and_names_it(tmp_pat
     # Assert
     assert code == 1
     assert "scripts/link.sh" in capsys.readouterr().out
+
+
+# A wrapper split from its gh by a backslash continuation still drops the export.
+@pytest.mark.parametrize("command", [
+    "sudo -u bob \\\n  gh pr view 1",
+    "env -i \\\n  gh pr view 1",
+    "ssh host \\\n  gh pr view 1",
+    "su -c \\\n  'gh pr view 1' bob",
+    "sudo \\\n  -u bob \\\n  gh pr view 1",
+])
+def test_untold_refuses_a_gh_on_the_continuation_of_a_wrapper_line_even_after_an_export(tmp_path, command):
+    # Arrange
+    text = f"export GH_REPO=o/r\n{command}\n"
+    line = text.count("\n")
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("command", [
+    "bash -c \\\n  'gh pr view 1'",
+    "xargs \\\n  gh pr view 1",
+    "sudo GH_REPO=o/r \\\n  gh pr view 1",
+    "echo sudo \\\n  ; gh pr view 1",
+    "sudo true\ngh pr view 1",
+])
+def test_untold_accepts_a_continued_gh_that_inherits_the_export_or_follows_no_wrapper(tmp_path, command):
+    # Arrange
+    text = f"export GH_REPO=o/r\n{command}\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []

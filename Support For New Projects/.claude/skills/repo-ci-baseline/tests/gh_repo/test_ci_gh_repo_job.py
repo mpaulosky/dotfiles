@@ -413,3 +413,69 @@ def test_the_job_compares_owned_files_byte_for_byte(tmp_path):
     # Assert
     assert code != 0
     assert "Owned file scripts/gate.sh differs from main" in output
+
+
+def test_the_job_fails_a_pr_that_deletes_an_owned_file(tmp_path):
+    # Arrange, Act
+    code, output = run_job(tmp_path, {"scripts/gate.sh": None})
+
+    # Assert
+    assert code != 0
+    assert "Owned file scripts/gate.sh differs from main" in output
+
+
+def test_the_job_fails_a_pr_that_deletes_a_file_in_an_owned_folder(tmp_path):
+    # Arrange
+    skill = ".claude/skills/pre-push-review/SKILL.md"
+    base = {**BASE, skill: "# Review\n"}
+
+    # Act
+    code, output = run_job(tmp_path, {skill: None}, base_files=base)
+
+    # Assert
+    assert code != 0
+    assert f"Owned file {skill} differs from main" in output
+
+
+def test_the_job_fails_a_pr_that_renames_an_owned_file(tmp_path):
+    # Arrange
+    job = Job(tmp_path, BASE, {})
+    job.git(job.work, "mv", "scripts/gate.sh", "scripts/gate2.sh")
+    job.commit("rename")
+
+    # Act
+    code, output = job.run()
+
+    # Assert
+    assert code != 0
+    assert "Owned file scripts/gate.sh differs from main" in output
+
+
+def test_the_job_fails_a_pr_that_chmods_an_owned_file(tmp_path):
+    # Arrange: the content is the base's, only the mode changes.
+    job = Job(tmp_path, BASE, {})
+    (job.work / "scripts" / "gate.sh").chmod(0o755)
+    job.commit("chmod +x")
+
+    # Act
+    code, output = job.run()
+
+    # Assert
+    assert code != 0
+    assert "Owned file scripts/gate.sh differs from main" in output
+
+
+def test_the_job_fails_a_pr_that_swaps_an_owned_file_for_a_symlink_with_the_same_content(tmp_path):
+    # Arrange
+    job = Job(tmp_path, BASE, {})
+    (job.work / "scripts" / "gate.sh").unlink()
+    (job.work / "scripts" / "gate.sh").symlink_to("../scripts/gate.sh.real")
+    (job.work / "scripts" / "gate.sh.real").write_text(GATE)
+    job.commit("symlink")
+
+    # Act
+    code, output = job.run()
+
+    # Assert
+    assert code != 0
+    assert "Owned file scripts/gate.sh differs from main" in output

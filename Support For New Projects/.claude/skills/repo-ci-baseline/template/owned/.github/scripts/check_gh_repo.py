@@ -118,8 +118,13 @@ def wrapped(before):
         env_drops_gh_repo(words[env.end():]) for env in ENV.finditer(words))
 
 
-def told(before, after, exported):
-    """Whether the gh between before and after is told its repository."""
+def told(before, after, exported, earlier=""):
+    """Whether the gh between before and after is told its repository.
+
+    earlier is the text of the backslash-continued lines before this one: a wrapper or an assignment may have
+    started on them, and bash reads them as one line.
+    """
+    before = earlier + before
     exported = exported and not wrapped(before)
     # gh closing a quoted word: judge what follows the quote.
     if after[:1] in ("\"", "'"):
@@ -320,6 +325,16 @@ def logical_line(lines, number):
     return text, count
 
 
+def continued_text(lines, number):
+    """The text of the physical lines right before lines[number - 1] that a trailing backslash joins to it, backslashes removed."""
+    text = ""
+    index = number - 2
+    while index >= 0 and (len(lines[index]) - len(lines[index].rstrip("\\"))) % 2:
+        text = lines[index][:-1] + text
+        index -= 1
+    return text
+
+
 def close_parenthesis(line, start, depth):
     """The index in line at or after start where the substitution of the given depth ends, or len(line), and the depth left."""
     end = start
@@ -432,7 +447,8 @@ def untold(path):
             exported = False
         if OPT_OUT.search(line):
             continue
-        if any(not told(line[:match.start()], line[match.end():], exported) for match in GH.finditer(line)):
+        earlier = continued_text(lines, number)
+        if any(not told(line[:match.start()], line[match.end():], exported, earlier) for match in GH.finditer(line)):
             found.append(f"{path}:{number}: {shown(line)}")
     return found
 

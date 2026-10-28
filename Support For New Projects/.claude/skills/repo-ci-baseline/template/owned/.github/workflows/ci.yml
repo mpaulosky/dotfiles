@@ -159,6 +159,106 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: bash scripts/check-branch-name.sh --pr "$HEAD_REF"
 
+  # The "gh commands are told their repository" check, and Owned files left
+  # alone, judged by the base branch's copy of the checker, so a PR can't
+  # weaken its own check: scripts/gate.sh runs the checker too, but a push can
+  # skip the hook and an edited checker passes itself. The base's checker is
+  # written outside the checkout and run isolated (python3 -I) over the PR's
+  # tree, with no secrets and a read-only token. A PR that changes the checker
+  # is judged by the old one. The second step fails when a PR's Owned file
+  # differs from the base's, except in an Apply PR (chore/standardize-baseline,
+  # chore/reapply-baseline), whose job is to change them. Anyone who can push a
+  # branch can name theirs so: this stops a careless edit, not a deliberate one.
+  # Both steps read the base at github.event.pull_request.base.sha, the commit the
+  # merge ref was built from, not the base branch's moving tip: a re-run, or a job
+  # queued while an Apply PR lands, would otherwise fail on files the PR never touched.
+  # Neither step has anything to compare with in the first Apply, whose base has
+  # no checker. Not a required status check.
+  gh-repo:
+    name: GitHub commands told their repository
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check the base branch's rules against this tree
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          if ! git show "${BASE_SHA}:.github/scripts/check_gh_repo.py" > "$tmp/check_gh_repo.py"; then
+            echo "${BASE_REF} has no .github/scripts/check_gh_repo.py: nothing to check against (the first Apply)."
+            exit 0
+          fi
+          python3 -I "$tmp/check_gh_repo.py" --repo "$GITHUB_WORKSPACE"
+
+      - name: Check the Owned files against the base branch's
+        if: >-
+          always()
+          && github.head_ref != 'chore/standardize-baseline'
+          && github.head_ref != 'chore/reapply-baseline'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          if ! git show "${BASE_SHA}:.github/scripts/check_gh_repo.py" > "$tmp/check_gh_repo.py"; then
+            echo "${BASE_REF} has no .github/scripts/check_gh_repo.py: no Owned files to compare (the first Apply)."
+            exit 0
+          fi
+          # The base's OWNED list: files, and folders (a trailing /).
+          python3 -I -c '
+          import importlib.util, sys
+          spec = importlib.util.spec_from_file_location("check_gh_repo", sys.argv[1])
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          print("\n".join(module.OWNED))
+          ' "$tmp/check_gh_repo.py" > "$tmp/owned.txt"
+          # Walk the base's tree, so a file the PR deleted or renamed is found too. An entry is
+          # "<mode> <type> <sha>", a tab, the path: a missing path, a changed mode (chmod -x, a
+          # symlink swap) or a changed blob all differ. A path is PR-controlled: escape \r and \n
+          # before it reaches the log, or the rest of a file name could start a workflow command.
+          status=0
+          report() {
+            local name=$1
+            name=${name//$'\r'/\\r}
+            name=${name//$'\n'/\\n}
+            echo "Owned file ${name} differs from ${BASE_REF}"
+            status=1
+          }
+          while IFS= read -r entry; do
+            while IFS= read -r -d '' base_entry; do
+              path=${base_entry#*$'\t'}
+              head_entry=$(git ls-tree -z HEAD -- "$path" | tr '\0' '\n')
+              if [ "${base_entry}" != "$head_entry" ]; then
+                report "$path"
+              fi
+            done < <(git ls-tree -r -z "$BASE_SHA" -- "$entry")
+            # A file the PR adds inside an Owned folder isn't in the base's tree, and the checker
+            # skips the folder: report it, or nothing reads it.
+            case $entry in
+              */)
+                while IFS= read -r -d '' head_entry; do
+                  path=${head_entry#*$'\t'}
+                  if ! git cat-file -e "${BASE_SHA}:${path}" 2>/dev/null; then
+                    report "$path"
+                  fi
+                done < <(git ls-tree -r -z HEAD -- "$entry")
+                ;;
+            esac
+          done < "$tmp/owned.txt"
+          exit "$status"
+
   build:
     name: Build Solution
     needs: changes

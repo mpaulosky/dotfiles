@@ -105,7 +105,23 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
 
   - A `NAME=value` word before `gh` is walked back over, and the last `GH_REPO=` among them is judged:
     `GH_REPO=o/r GH_TOKEN=x gh pr view 1` is told. A wrapper (`env gh`, `sudo gh`) between them and `gh` is not walked
-    over and is refused. A later `unset GH_REPO`, or an assignment that is no prefix of a `gh` command, ends an export.
+    over and is refused. A `gh` behind `sudo`, `doas`, `su`, `runuser`, `pkexec`, `ssh`, `env -i` /
+    `--ignore-environment`, `env -u GH_REPO` / `--unset=GH_REPO` or `env -S` is refused even after an export, since
+    those drop `GH_REPO` before `gh` runs; only a `GH_REPO=<value>` right before `gh` on the same line tells it
+    (`sudo GH_REPO=o/r gh pr view 1`). `bash -c`, `eval`, `| sh` and `xargs gh` inherit the export and are accepted
+    (mpaulosky/dotfiles#344). A later `unset GH_REPO`, or an assignment that is no prefix of a `gh` command, ends an export.
+  - A file with a NUL byte is checked with the NULs removed, as bash reads it, not skipped. `--repo` reads a suffix in
+    lower case (`up.SH`) and `.zsh`, treats every extensionless file under `scripts/` and `.github/ci/` as shell
+    (under `.claude/skills/` it needs a shell shebang), and refuses a symlink whose target is outside the repo or
+    missing; a symlink to a file or folder inside the repo is read as what it points at.
+  - In a skill, code is also an indented block (four spaces or a tab after a blank line, outside a list item), a
+    `<pre>` block (from the line with `<pre` to the one with `</pre>`) and a `<code>...</code>` element on one line.
+    HTML comments, `<script>` and `<style>` are not read, and `<!-- gh-repo: ok -->` skips a line in each kind.
+  - CI's `gh-repo` job (Owned `ci.yml`, on pull requests) runs the base branch's `check_gh_repo.py` against the PR's
+    tree, so `--no-verify` or an edited checker can't skip it, and fails with `Owned file <path> differs from <base>`
+    when a PR changes, deletes or (in an Owned folder) adds an Owned file (the checker's `OWNED` paths), unless its
+    head branch is `chore/standardize-baseline` or `chore/reapply-baseline`. Anyone who can push a branch can use those names: it
+    stops a careless edit, not a deliberate one.
   - A bare `gh` that ends its line in `||` or `&&` (`command -v gh >/dev/null 2>&1 ||`) is a lookup that goes on to
     its own next command, and is accepted before the export. A pipe or a backslash continuation after it is refused.
   - `gh.exe` is `gh`: it is judged by the same rules, and a longer word (`gh.executable`, `neigh.exe`) or a folder

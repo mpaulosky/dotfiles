@@ -52,8 +52,80 @@ def prefix_repository(before):
     return repositories[-1] if repositories else None
 
 
-def told(before, after, exported):
-    """Whether the gh between before and after is told its repository."""
+# A program that runs a command without the caller's GH_REPO (sudo resets the environment, ssh and su start a new one).
+WRAPPER = re.compile(r"(?<![A-Za-z0-9_.-])(sudo|doas|su|runuser|pkexec|ssh)(?![A-Za-z0-9_.-])")
+ENV = re.compile(r"(?<![A-Za-z0-9_.-])env(?![A-Za-z0-9_.-])")
+
+
+def command_words(before):
+    """The part of before that belongs to gh's own command: what follows the last ; & or | outside quotes."""
+    start = quote = 0
+    index = 0
+    while index < len(before):
+        char = before[index]
+        if char == "\\" and quote != "'":
+            index += 1
+        elif quote:
+            quote = 0 if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in ";&|\n":
+            start = index + 1
+        index += 1
+    return before[start:]
+
+
+def env_drops_gh_repo(words):
+    """Whether the options of the env command whose words follow (env -i, -u GH_REPO, -S) lose GH_REPO."""
+    words = words.split()
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if word == "--":
+            return False
+        if word in ("-", "--ignore-environment") or word.startswith(("--split-string", "--unset=GH_REPO")):
+            return True
+        if word == "--unset":
+            if words[index:index + 1] == ["GH_REPO"]:
+                return True
+            index += 1
+        elif word.startswith("--"):
+            # A long option; --chdir takes the next word as its argument.
+            if word == "--chdir":
+                index += 1
+        elif word.startswith("-"):
+            for position, flag in enumerate(word[1:], 1):
+                if flag in "iS":
+                    return True
+                if flag in "uC":
+                    attached = word[position + 1:]
+                    argument = attached or (words[index] if index < len(words) else "")
+                    if flag == "u" and argument.strip("'\"") == "GH_REPO":
+                        return True
+                    if not attached:
+                        index += 1
+                    break
+        elif not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", word):
+            return False
+    return False
+
+
+def wrapped(before):
+    """Whether gh, after before on its line, runs behind a wrapper that drops the GH_REPO an earlier export set."""
+    words = command_words(before)
+    return WRAPPER.search(words) is not None or any(
+        env_drops_gh_repo(words[env.end():]) for env in ENV.finditer(words))
+
+
+def told(before, after, exported, earlier=""):
+    """Whether the gh between before and after is told its repository.
+
+    earlier is the text of the backslash-continued lines before this one: a wrapper or an assignment may have
+    started on them, and bash reads them as one line.
+    """
+    before = earlier + before
+    exported = exported and not wrapped(before)
     # gh closing a quoted word: judge what follows the quote.
     if after[:1] in ("\"", "'"):
         after = after[1:]
@@ -253,6 +325,16 @@ def logical_line(lines, number):
     return text, count
 
 
+def continued_text(lines, number):
+    """The text of the physical lines right before lines[number - 1] that a trailing backslash joins to it, backslashes removed."""
+    text = ""
+    index = number - 2
+    while index >= 0 and (len(lines[index]) - len(lines[index].rstrip("\\"))) % 2:
+        text = lines[index][:-1] + text
+        index -= 1
+    return text
+
+
 def close_parenthesis(line, start, depth):
     """The index in line at or after start where the substitution of the given depth ends, or len(line), and the depth left."""
     end = start
@@ -304,26 +386,44 @@ def substitutions(line, pending=None):
     return found, pending
 
 
+class Line(str):
+    """A line of a file as bash reads it, NULs removed; .original is the line as written."""
+
+    original = ""
+
+
 def read_lines(path):
-    """The lines of path as bash sees them, or None for a binary file."""
+    """The lines of path as bash sees them: bash drops a NUL byte, so the file is read with its NULs removed."""
     data = Path(path).read_bytes()
-    if b"\0" in data:
-        return None
     # Not splitlines(), which also breaks at characters bash doesn't.
-    text = data.decode("utf-8", errors="surrogateescape")
-    return [line.removesuffix("\r") for line in text.split("\n")]
+    lines = []
+    for written in data.decode("utf-8", errors="surrogateescape").split("\n"):
+        line = Line(written.replace("\0", "").removesuffix("\r"))
+        line.original = written.removesuffix("\r")
+        lines.append(line)
+    return lines
+
+
+def for_log(text):
+    """The text with its control characters escaped (\\r, \\n, \\x1b...), tab kept.
+
+    A line or a file name comes from the PR. A raw \\r or \\n in it printed to the Actions log would let the rest of it
+    start a workflow command (::error::, ::stop-commands::).
+    """
+    return "".join(char if char == "\t" or char.isprintable() else char.encode("unicode_escape").decode("ascii")
+                   for char in text)
 
 
 def shown(line):
-    # surrogateescape keeps a byte that isn't UTF-8; print it as the replacement character.
-    return line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    # The line as written (a NUL at its ends is no use to the reader); surrogateescape keeps a byte that isn't UTF-8,
+    # printed as the replacement character. Control characters are escaped, so the line can't start a log command.
+    line = getattr(line, "original", line).strip("\0")
+    return for_log(line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace"))
 
 
 def untold(path):
     """Each line of path with a gh command not told its repository, as file:line: text."""
     lines = read_lines(path)
-    if lines is None:
-        return []
     found = []
     exported = False
     bodies = []
@@ -341,7 +441,7 @@ def untold(path):
                 if not OPT_OUT.search(line) and any(
                         not told(code[:match.start()], code[match.end():], exported)
                         for code in codes for match in GH.finditer(code)):
-                    found.append(f"{path}:{number}: {shown(line)}")
+                    found.append(f"{for_log(str(path))}:{number}: {shown(line)}")
             continue
         if re.match(r"[ \t]*#", line):
             continue
@@ -357,8 +457,9 @@ def untold(path):
             exported = False
         if OPT_OUT.search(line):
             continue
-        if any(not told(line[:match.start()], line[match.end():], exported) for match in GH.finditer(line)):
-            found.append(f"{path}:{number}: {shown(line)}")
+        earlier = continued_text(lines, number)
+        if any(not told(line[:match.start()], line[match.end():], exported, earlier) for match in GH.finditer(line)):
+            found.append(f"{for_log(str(path))}:{number}: {shown(line)}")
     return found
 
 
@@ -443,69 +544,159 @@ def untold_in_code(code):
     return False
 
 
+# An indented code block's line: four spaces or a tab. A list item's marker line, which its indented lines belong to.
+INDENTED = re.compile(r" {4}|\t")
+LIST_ITEM = re.compile(r"[ \t]{0,3}(?:[-*+]|[0-9]{1,9}[.)])(?:[ \t]|$)")
+# A <pre> block opens at the start of a line (not <prefix>) and ends at the line with </pre>; <code> is one line's span.
+PRE_OPEN = re.compile(r"[ \t]*<pre(?=[ \t>/]|$)", re.IGNORECASE)
+PRE_CLOSE = re.compile(r"</pre\s*>", re.IGNORECASE)
+CODE_ELEMENT = re.compile(r"<code(?:[ \t][^>]*)?>(.*?)</code\s*>", re.IGNORECASE)
+HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
+
+
+def code_in(line):
+    """The code of a line that holds some inside prose: its inline code spans and <code> elements, bare gh named out."""
+    spans = list(code_spans(line)) + [match.group(1) for match in CODE_ELEMENT.finditer(line)]
+    # A span that is only gh names the tool in prose.
+    return [span for span in spans if span.strip() not in ("gh", "gh.exe")]
+
+
 def untold_markdown(path):
-    """Each line of the Markdown file path with a gh command in code not told its repository."""
+    """Each line of the Markdown file path with a gh command in code not told its repository.
+
+    Code is a fenced block, an indented block (after a blank line, outside a list item), a <pre> block, an inline
+    span and a <code> element on one line.
+    """
     lines = read_lines(path)
-    if lines is None:
-        return []
     found = []
     fence = None
+    pre = indented = in_list = False
+    previous_blank = True
     for number, line in enumerate(lines, 1):
         # A fence in a blockquote or a list item: judge it, and its lines, without the markers.
         container = CONTAINER.match(line)
         inside = line[container.end():] if container else line
         opening = FENCE.match(inside)
+        blank = not line.strip()
+        after_blank, previous_blank = previous_blank, blank
         if fence:
             if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence) \
                     and not opening.group(2).strip():
                 fence = None
                 continue
             code = [inside]
-        elif opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
-            fence = opening.group(1)
-            continue
+        elif pre:
+            end = PRE_CLOSE.search(line)
+            pre = end is None
+            code = [HTML_TAG.sub("", line[:end.start()] if end else line)]
+        elif indented and (blank or INDENTED.match(line)):
+            code = [line]
+        elif not blank and INDENTED.match(line) and after_blank and not in_list:
+            indented = True
+            code = [line]
         else:
-            # A span that is only gh names the tool in prose.
-            code = [span for span in code_spans(line) if span.strip() not in ("gh", "gh.exe")]
+            indented = False
+            if not blank and LIST_ITEM.match(line):
+                in_list = True
+            elif not blank and not line[:1].isspace():
+                in_list = False
+            if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+                fence = opening.group(1)
+                continue
+            if PRE_OPEN.match(inside):
+                end = PRE_CLOSE.search(inside)
+                pre = end is None
+                code = [HTML_TAG.sub("", inside[:end.start()] if end else inside)]
+            else:
+                code = code_in(line)
         if not OPT_OUT.search(line) and any(untold_in_code(piece) for piece in code):
-            found.append(f"{path}:{number}: {shown(line)}")
+            found.append(f"{for_log(str(path))}:{number}: {shown(line)}")
     return found
 
 
-def kind(path):
-    """'markdown', 'shell' or None for a file --repo doesn't check."""
+def kind(path, extensionless_is_shell=False):
+    """'markdown', 'shell' or None for a file --repo doesn't check.
+
+    An extensionless file is shell when it has a shell shebang, or always when extensionless_is_shell (under scripts/
+    and .github/ci/, where `bash name` runs it whatever its first line says).
+    """
     path = Path(path)
-    if path.suffix == ".md":
+    suffix = path.suffix.lower()
+    if suffix == ".md":
         return "markdown"
-    if path.suffix in (".sh", ".bash"):
+    if suffix in (".sh", ".bash", ".zsh"):
         return "shell"
-    if path.suffix:
+    if suffix:
         return None
+    if extensionless_is_shell:
+        return "shell"
     with path.open("rb") as file:
         return "shell" if SHEBANG.match(file.readline(256)) else None
 
 
+def walk(directory, root, seen):
+    """The files under directory as (path, refusal): a symlink out of root or dangling is refused, not read.
+
+    A symlink whose target is inside root is walked as what it points at. seen holds the folders already walked.
+    """
+    resolved = directory.resolve()
+    if resolved in seen:
+        return
+    seen.add(resolved)
+    for entry in sorted(directory.iterdir()):
+        if entry.name in SKIPPED_PARTS:
+            continue
+        if entry.is_symlink():
+            try:
+                target = entry.resolve()
+            except (OSError, RuntimeError):
+                # Python 3.12 raises RuntimeError for a link that points at itself or at a cycle of links.
+                yield entry, "a symlink to nothing"
+                continue
+            if not target.exists():
+                yield entry, "a symlink to nothing"
+                continue
+            if not target.is_relative_to(root):
+                yield entry, "a symlink to a target outside the repo"
+                continue
+        if entry.is_dir():
+            yield from walk(entry, root, seen)
+        elif entry.is_file():
+            yield entry, None
+
+
 def check_repo(root):
-    """Each untold gh command in the repo at root, as relative-path:line: text."""
+    """Each untold gh command in the repo at root, as relative-path:line: text, and each symlink it can't read."""
     root = Path(root)
+    base = root.resolve()
     found = []
+    done = set()
     for folder in SCOPE:
         top = root / folder
-        if top.is_symlink() or not top.is_dir():
+        if top.is_symlink() and not top.exists():
+            found.append(f"{folder}: a symlink to nothing")
             continue
-        for directory, subdirectories, names in os.walk(top):
-            subdirectories[:] = sorted(d for d in subdirectories
-                                       if d not in SKIPPED_PARTS and not (Path(directory) / d).is_symlink())
-            for name in sorted(names):
-                path = Path(directory) / name
-                relative = path.relative_to(root).as_posix()
-                if path.is_symlink() or not path.is_file() or is_owned(relative):
-                    continue
-                checked = kind(path)
-                if checked is None:
-                    continue
-                lines = untold_markdown(path) if checked == "markdown" else untold(path)
-                found.extend(relative + line[len(str(path)):] for line in lines)
+        if top.is_symlink() and not top.resolve().is_relative_to(base):
+            found.append(f"{folder}: a symlink to a target outside the repo")
+            continue
+        if not top.is_dir():
+            continue
+        for path, refusal in walk(top, base, set()):
+            if refusal:
+                found.append(f"{for_log(path.relative_to(root).as_posix())}: {refusal}")
+                continue
+            # A file is judged by where it really is: a symlink reaching it first (or a folder walked once, through
+            # a link) doesn't hide it, and a link's own path doesn't make it Owned.
+            real = path.resolve().relative_to(base).as_posix()
+            if is_owned(path.relative_to(root).as_posix()) and is_owned(real):
+                continue
+            checked = kind(path, folder != ".claude/skills")
+            if checked is None or (real, checked) in done:
+                continue
+            done.add((real, checked))
+            lines = untold_markdown(path) if checked == "markdown" else untold(path)
+            shown_path = for_log(str(path))
+            found.extend(for_log(real) + line[len(shown_path):] for line in lines)
     return found
 
 

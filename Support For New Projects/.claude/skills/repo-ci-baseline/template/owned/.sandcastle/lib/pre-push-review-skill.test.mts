@@ -404,13 +404,56 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
     // known-open.json holds reasons, so only the private folder may hold it.
     assert.match(hardening, /\| `private` \(reviewers are not pointed at it\) \| `known-open\.json` \|/);
     assert.doesNotMatch(hardening, /<run>\/known-open\.json/);
-    for (const use of hardening.match(/known_open\.py \w+ '([^']+)'/g) ?? []) {
+    // add, check and match: a regex that stopped matching would otherwise leave the loop empty and the test green.
+    const uses = hardening.match(/known_open\.py \w+ '([^']+)'/g) ?? [];
+    assert.ok(uses.length >= 3, `expected the add, check and match commands, found ${uses.length}`);
+    for (const use of uses) {
       assert.match(use, /'<private>\/known-open\.json'/, use);
     }
+  });
+
+  it("says what the run folder discloses, because a sandbox can read it, and makes the private folder private", () => {
+    assert.match(hardening, /`run` is not hidden from a sandbox/);
+    assert.match(hardening, /lists each known-open entry's lens, file and line range/);
+    assert.match(hardening, /umask 077; mkdir -p/);
+  });
+
+  it("says where the deny rule comes from instead of claiming pre-push-review has one", () => {
+    assert.doesNotMatch(hardening, /`pre-push-review`'s deny rules/);
+    assert.match(hardening, /`Read\(\/\/\*\*\/\.git\/review\/\*\*\)` keeps Claude Code's own Read tool out of in a repo that has added it/);
+  });
+
+  it("describes a security finding as held back while it is in the code, as pre-push-review step 4 does", () => {
+    assert.match(hardening, /marked `security: true`\) that is still in the code is never quoted outside\s+this session/);
+    assert.match(hardening, /a fixed one keeps its summary/);
+  });
+
+  it("fetches a pinned action's source for the Actions lens, which the brief lets reviewers read", () => {
+    assert.match(hardening, /`<run>\/actions\/<owner>\/<repo>\/<path>`/);
+    assert.match(readFileSync(new URL("../../.claude/skills/hardening-review/references/brief.md", import.meta.url), "utf8"), /<run>\/actions\//);
   });
 
   it("refuses a detached HEAD and a branch name with shell characters before building a path from it", () => {
     assert.match(hardening, /case "\$branch" in ''\|\*\[!A-Za-z0-9\._\/-\]\*\)/);
     assert.match(hardening, /tr '\/' '~'/);
+  });
+
+  it("stops the guard instead of printing and carrying on, and never deletes a folder named by an empty branch", () => {
+    // Each Bash call runs without `set -e`: `false` would let the next lines build the shared parent folders.
+    assert.match(hardening, /unusual characters" >&2; exit 1;; esac/);
+    assert.doesNotMatch(hardening, /unusual characters" >&2; false/);
+    assert.match(hardening, /Delete a folder only when it is exactly `\$run` or\s+`\$private` and `\$name` is not empty/);
+  });
+
+  it("never builds a shell string from a reviewer's path or lens", () => {
+    assert.match(hardening, /letters, digits, space and `\._\/-`/);
+    assert.match(hardening, /--lens='<lens>' --path='<path>'/);
+    assert.doesNotMatch(hardening, / --lens '<lens>'| --path '<path>'/);
+  });
+
+  it("verifies a repro with its path printed, and does not call a scrubbed environment a sandbox", () => {
+    assert.match(hardening, /d="\$\(mktemp -d\)"; git worktree add --detach "\$d\/tree" HEAD && printf '%s\\n' "\$d\/tree"/);
+    assert.match(hardening, /removes environment variables only; it is not a sandbox/);
+    assert.match(hardening, /absolute path, `\.\.`, `~` or a\s+URL/);
   });
 });

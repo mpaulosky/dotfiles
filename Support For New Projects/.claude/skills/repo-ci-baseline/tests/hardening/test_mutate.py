@@ -70,7 +70,12 @@ def load_runner():
     import importlib.util
     module_spec = importlib.util.spec_from_file_location("mutate_under_test", SCRIPT)
     module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    # No __pycache__ beside the shipped script: test.sh compares the skill's folders with dotfiles' copies.
+    kept, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        module_spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = kept
     return module
 
 

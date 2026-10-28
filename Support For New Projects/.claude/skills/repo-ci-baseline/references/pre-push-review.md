@@ -54,7 +54,8 @@ and puts the rest to the person in numbered batches with a recommendation and an
 
 Its files live in two folders found again from the branch name after a compaction: `.git/hardening-review/<branch, / as ~>/` for what reviewers read
 (`brief.md`, `state.md`, `decisions.md`, the patches) and `.git/review/hardening/<branch, / as ~>/` for what can describe a weakness (the known-open list
-with its reasons, harness output, mutation specs). The second is under `.git/review/`, so the deny rules and the sandbox mount below cover it.
+with its reasons, harness output, mutation specs). The second is under `.git/review/`, so the sandbox mount below covers it, and so does the deny rule
+`Read(//**/.git/review/**)` in a repo that has added it (Adapting, step 2).
 The tests of the two scripts are in repo-ci-baseline's own `tests/hardening/` (not shipped to other repos), and `test.sh` runs them.
 
 ## What a sandbox can't see

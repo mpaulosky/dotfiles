@@ -20,7 +20,8 @@ Edge cases:
 ```
 
 - Refuted findings are not asked: they are dismissed with their evidence and listed in one line after the batch.
-- A finding suppressed by the known-open list is not asked either.
+- A finding suppressed by the known-open list is not asked as a question, but is listed in one line (`R3 again: unchanged,
+  settled`); a matching Warning is confirmed there by the person, not decided for them.
 - A Warning (security) is never accepted for the person and is never quoted in a public place. Ask by id, path and a
   neutral description, and say the details are in the private report. A `Verified:` line, its input and its output, is
   never quoted outside the session.

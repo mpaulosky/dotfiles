@@ -20,8 +20,9 @@ You review one branch's diff through the lens your prompt names. You can only re
   <the output of `known_open.py check --for-reviewers`>. Skip a finding only when its line is inside the range of an
   entry whose `changed` is false and whose lens you share. A weakness elsewhere in the same file is still yours to
   raise, and so is any finding in a range whose `changed` is true.
-- Read only the files this brief names, and the repository files you review. The other files in this folder, and
-  anything else under `.git`, are not yours to read.
+- Read only the files this brief names, the repository files you review, and the pinned actions' source in
+  `<run>/actions/` when the Actions lens needs it. The other files in this folder, and anything else under `.git`, are
+  not yours to read.
 
 ## Scope
 

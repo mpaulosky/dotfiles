@@ -58,7 +58,8 @@ rules above; a .md file is checked as a skill; anything else is skipped. It
 prints paths relative to root, and a hint on stderr when it finds any.
 
 A skill's snippet stands alone, so there's no export. Only gh in code counts:
-a fenced block's lines (an unclosed fence runs to the end of the file), and
+a fenced block's lines (a fence may sit in a blockquote or a list item; an
+unclosed fence runs to the end of the file), and
 inline code spans, but not a span that is only gh. Each gh command is told by
 the GH_REPO=<value> prefix right before it, or by --repo <value>, --repo=<value>
 or -R <value> after it on its line (not for gh api, which has no such flag).
@@ -190,6 +191,8 @@ def is_owned(relative):
 # A Markdown fence: three or more backticks or tildes (a backtick fence's info
 # string has no backtick, or it's an inline span), then the rest of the line.
 FENCE = re.compile(r"[ \t]*(`{3,}|~{3,})(.*)$")
+# What can come before a fence on its line: blockquote markers and list markers, in any order.
+CONTAINER = re.compile(r"(?:[ \t]*(?:>|(?:[-*+]|[0-9]{1,9}[.)])(?=[ \t])))+")
 # What a fence's first line says when it's the shell: #!/bin/sh, #!/usr/bin/env bash.
 SHEBANG = re.compile(rb"#![ \t]*(\S*/)?(env[ \t]+(-\S+[ \t]+)*)?(ba)?sh([ \t]|$)")
 # A skill's gh command is told by a flag on its own line, unless it's gh api or gh repo.
@@ -248,13 +251,16 @@ def untold_markdown(path):
     found = []
     fence = None
     for number, line in enumerate(lines, 1):
-        opening = FENCE.match(line)
+        # A fence in a blockquote or a list item: judge it, and its lines, without the markers.
+        container = CONTAINER.match(line)
+        inside = line[container.end():] if container else line
+        opening = FENCE.match(inside)
         if fence:
             if opening and opening.group(1)[0] == fence[0] and len(opening.group(1)) >= len(fence) \
                     and not opening.group(2).strip():
                 fence = None
                 continue
-            code = [line]
+            code = [inside]
         elif opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
             fence = opening.group(1)
             continue

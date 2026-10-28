@@ -527,6 +527,15 @@ def test_kind_reads_the_shebang_of_an_extensionless_file(tmp_path):
     "~~~\n```\ngh pr view 1\n```\n~~~\n",
     "```bash\necho\n```\n```bash\ngh pr view 1\n```\n",
     "Text\n\n```bash\necho\n```\n\nMore `gh issue list`\n",
+    # A fence in a blockquote or a list item is still a fence.
+    "> ```bash\n> gh pr view 1\n> ```\n",
+    "> [!NOTE]\n> ```bash\n> gh pr view 1\n> ```\n",
+    ">> ```bash\n>> gh pr view 1\n>> ```\n",
+    "- ```bash\n  gh pr view 1\n  ```\n",
+    "1. ```bash\n   gh pr view 1\n   ```\n",
+    "* Step:\n  > ```bash\n  > gh pr view 1\n  > ```\n",
+    "> ~~~\n> gh pr view 1\n> ~~~\n",
+    "- ```bash\n  gh pr view 1\n",
 ])
 def test_untold_markdown_refuses_a_gh_command_in_code_not_told_its_repository(tmp_path, text):
     # Arrange, Act
@@ -556,6 +565,11 @@ def test_untold_markdown_refuses_a_gh_command_in_code_not_told_its_repository(tm
     "Run `gh pr view 1 --repo o/r`.\n",
     "Run `gh pr view 1 -R o/r` or `GH_REPO=o/r gh pr list`.\n",
     "~~~\nGH_REPO=o/r gh pr view 1\n~~~\n",
+    "> ```bash\n> gh pr view 1 --repo o/r\n> ```\n",
+    "- ```bash\n  GH_REPO=o/r gh pr view 1\n  ```\n",
+    # A quoted fence that closed: what follows is prose again.
+    "> ```bash\n> echo hi\n> ```\n> gh pr view 1\n",
+    "- ```bash\n  echo hi\n  ```\n  gh pr view 1\n",
     "- Run `gh repo view o/r`\n",
     # gh named in prose, not run.
     "Needs the gh CLI.\n",

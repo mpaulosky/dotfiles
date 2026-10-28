@@ -325,7 +325,8 @@ and `gh pr merge --auto --squash --match-head-commit <head>`. It has no rules of
 It also watches each release-blog PR that opens in a watched repo, and after a watched Baseline PR merges it waits `--blog-wait` (15) minutes for one.
 It prints status.sh's line only for a PR whose state or action changed (one line when no PR is open, then it exits),
 and exits once every watched PR is merged or closed, or with 1 at `--timeout` (180 minutes).
-A quiet round costs one GraphQL query per repo (about 3 points), and each action a call or three, all on the owner's `gh` login,
+A quiet round costs one GraphQL query per repo (about 3 points, plus 1 for each PR whose threads are all resolved and that a bot reviewed),
+and each action a call or three, all on the owner's `gh` login,
 which spends almost only GraphQL points (of the account's 5,000 an hour) and leaves the REST allowance to the PAT and Sandcastle:
 [tokens.md](tokens.md#landsh-and-the-shared-allowance) gives the numbers.
 

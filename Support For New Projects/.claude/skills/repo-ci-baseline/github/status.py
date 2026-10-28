@@ -9,7 +9,8 @@ reviewed the head (review:copilot, review:claude or review:no), open threads,
 auto-merge, running/failed/cancelled checks,
 and the landing decision's next action (github/landing.py), then a
 `notice:` naming the resolved Copilot or Claude Review threads nobody replied to. One GraphQL query
-per repo, read-only. Prints nothing else, apart from one line when no PR is
+per repo, plus one for each PR whose threads are all resolved and that Copilot or Claude Review reviewed (it reads the
+thread comments the notice needs; they would cost far more in the repo query), read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
 
 Every listed repo requires checks and runs PR Auto-Merge, which merges a
@@ -23,7 +24,8 @@ import subprocess
 import sys
 
 from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, Thread, claude_off_diff, claude_reviews,
-                     copilot_declined, copilot_reviews, decide, summarize_checks, unreplied_notice, unreplied_threads)
+                     copilot_declined, copilot_reviews, decide, is_claude_review, summarize_checks, unreplied_notice,
+                     unreplied_threads)
 from settings import read_repo_list
 
 QUERY = """
@@ -31,7 +33,7 @@ query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 50, orderBy: {field: CREATED_AT, direction: ASC}) {
       nodes {
-        number title state isDraft headRefName headRefOid mergeStateStatus
+        id number title state isDraft headRefName headRefOid mergeStateStatus
         autoMergeRequest { enabledAt }
         labels(first: 20) { nodes { name } }
         reviewRequests(first: 20) { nodes { requestedReviewer {
@@ -40,10 +42,7 @@ query($owner: String!, $name: String!) {
           ... on Team { name }
         } } }
         reviews(last: 100) { nodes { author { login } commit { oid parents { totalCount } } body } }
-        reviewThreads(first: 100) { nodes {
-          isResolved path line originalLine
-          comments(first: 10) { totalCount nodes { url author { login __typename } pullRequestReview { body } } }
-        } }
+        reviewThreads(first: 100) { nodes { isResolved } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
           ... on CheckRun { databaseId name status conclusion startedAt }
@@ -55,16 +54,57 @@ query($owner: String!, $name: String!) {
 }
 """
 
+# The comments of one PR's review threads, for the notice: 1 + 100 requests, 1 point.
+THREADS_QUERY = """
+query($id: ID!) {
+  node(id: $id) {
+    ... on PullRequest {
+      reviewThreads(first: 100) { nodes {
+        isResolved path line originalLine
+        comments(first: 10) { totalCount nodes { url author { login __typename } pullRequestReview { body } } }
+      } }
+    }
+  }
+}
+"""
+
 TITLE_WIDTH = 40
 
 
-def gh_graphql(owner, name):
-    """The query's data for one repo, through `gh api graphql`."""
-    run = subprocess.run(["gh", "api", "graphql", "-f", f"query={QUERY}", "-F", f"owner={owner}", "-F", f"name={name}"],
-                         capture_output=True, text=True)
+def graphql(query, *fields, **raw):
+    """The data of one `gh api graphql` call: fields are "key=value" for -F, raw are -f (strings as they are)."""
+    argv = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for field in fields:
+        argv += ["-F", field]
+    for key, value in raw.items():
+        argv += ["-f", f"{key}={value}"]
+    run = subprocess.run(argv, capture_output=True, text=True)
     if run.returncode != 0:
         raise RuntimeError(run.stderr.strip() or run.stdout.strip())
     return json.loads(run.stdout)["data"]
+
+
+def bot_reviewed(node):
+    """Whether Copilot or Claude Review ever reviewed this PR, from QUERY's reviews."""
+    return any(COPILOT.search((review.get("author") or {}).get("login") or "")
+               or is_claude_review((review.get("author") or {}).get("login"), "-", review.get("body"))
+               for review in node["reviews"]["nodes"])
+
+
+def gh_graphql(owner, name):
+    """The query's data for one repo, through `gh api graphql`.
+
+    QUERY reads no thread comments: on 50 PRs of 100 threads they would cost
+    about 53 points a read instead of 3. A PR whose threads are all resolved
+    and that a bot reviewed gets THREADS_QUERY (1 point), and its thread nodes
+    are replaced by that query's, which carry the comments the notice reads.
+    """
+    data = graphql(QUERY, f"owner={owner}", f"name={name}")
+    for node in data["repository"]["pullRequests"]["nodes"]:
+        threads = node["reviewThreads"]["nodes"]
+        if threads and all(thread["isResolved"] for thread in threads) and bot_reviewed(node):
+            node["reviewThreads"]["nodes"] = graphql(THREADS_QUERY, id=node["id"])["node"]["reviewThreads"]["nodes"]
+    return data
 
 
 def to_check(node):

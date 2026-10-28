@@ -240,9 +240,47 @@ def test_to_state_lists_the_unreplied_threads():
     assert st.to_state(node, **st.repo_flags("full")).unreplied_threads == ("src/a.py:12",)
 
 
-def test_the_query_fetches_the_threads_comments_their_authors_and_reviews():
-    threads = st.QUERY[st.QUERY.index("reviewThreads"):]
-    threads = threads[:threads.index("commits(")]
+def test_the_threads_query_fetches_the_threads_comments_their_authors_and_reviews():
     for field in ("isResolved", "path", "line", "originalLine", "comments(", "totalCount", "url", "author { login __typename }",
                   "pullRequestReview { body }"):
-        assert field in threads, field
+        assert field in st.THREADS_QUERY, field
+
+
+def test_the_repo_query_reads_no_thread_comments_so_it_stays_at_about_three_points():
+    threads = st.QUERY[st.QUERY.index("reviewThreads"):]
+    threads = threads[:threads.index("commits(")]
+    assert "comments" not in threads and "isResolved" in threads
+    assert "id number" in st.QUERY
+
+
+def fake_graphql(monkeypatch, repo_data, threads_by_id):
+    """Replace st.graphql: the repo query answers repo_data, the threads query a PR's nodes by id; returns the calls."""
+    calls = []
+
+    def graphql(query, *fields, **raw):
+        calls.append(raw.get("id"))
+        if query == st.THREADS_QUERY:
+            return {"node": {"reviewThreads": {"nodes": threads_by_id[raw["id"]]}}}
+        return repo_data
+    monkeypatch.setattr(st, "graphql", graphql)
+    return calls
+
+
+def test_only_a_pr_with_every_thread_resolved_and_a_bot_review_gets_the_comments_query(monkeypatch):
+    reviewed = [("copilot-pull-request-reviewer", HEAD)]
+    done = dict(pr_node(number=1, reviews=reviewed, threads=[True, True]), id="PR_done")
+    open_thread = dict(pr_node(number=2, reviews=reviewed, threads=[True, False]), id="PR_open")
+    unreviewed = dict(pr_node(number=3, threads=[True]), id="PR_unreviewed")
+    no_threads = dict(pr_node(number=4, reviews=reviewed), id="PR_none")
+    claude = dict(pr_node(number=5, reviews=[("github-actions", HEAD, "<!-- claude-review -->\nOK")], threads=[True]), id="PR_claude")
+    someone = dict(pr_node(number=6, reviews=[("github-actions", HEAD, "another workflow")], threads=[True]), id="PR_other")
+    calls = fake_graphql(monkeypatch, repo(done, open_thread, unreviewed, no_threads, claude, someone),
+                         {"PR_done": [thread_node()], "PR_claude": [thread_node(replies=["octo"])]})
+    data = st.gh_graphql("owner", "app")
+    assert calls == [None, "PR_done", "PR_claude"]
+    by_number = {node["number"]: node for node in data["repository"]["pullRequests"]["nodes"]}
+    assert by_number[1]["reviewThreads"]["nodes"][0]["comments"]["totalCount"] == 1
+    assert by_number[2]["reviewThreads"]["nodes"] == [{"isResolved": True}, {"isResolved": False}]
+    state = st.to_state(by_number[1], **st.repo_flags("full"))
+    assert state.unreplied_threads == ("src/a.py:12",)
+    assert st.to_state(by_number[5], **st.repo_flags("full")).unreplied_threads == ()

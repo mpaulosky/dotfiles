@@ -6,7 +6,8 @@
     land.sh [options] <owner/repo#n>...   just these PRs
 
 It polls every 60 s by default (--interval). Each poll costs one GraphQL query
-per repo (status.py's QUERY, about 3 points), plus the action calls below and
+per repo (status.py's QUERY, about 3 points) and one more (1 point) for each PR whose threads are all resolved and
+that a bot reviewed, to read the comments for the notice, plus the action calls below and
 a gh pr view for each watched PR that left the open list. They all run as the
 owner's gh login, so they are almost all GraphQL points, out of the account's
 5,000 an hour (the 5,000 REST requests an hour RELEASE_PR_PAT and Sandcastle

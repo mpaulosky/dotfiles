@@ -29,6 +29,7 @@ scripts/review.sh report                        # the local review (/pre-push-re
 pnpm run check:sandcastle                      # type-check and test .sandcastle/
 SANDCASTLE_ISSUE=<n> pnpm run sandcastle       # build one issue (and its PR) locally
 SANDCASTLE_LABEL=<label> pnpm run sandcastle   # work the issues labelled <label>
+pnpm run sandcastle:status                     # why each open Sandcastle PR is held (read-only)
 ```
 
 ## Which Sandcastle label

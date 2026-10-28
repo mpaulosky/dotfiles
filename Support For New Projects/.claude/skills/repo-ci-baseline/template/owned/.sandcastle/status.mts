@@ -6,5 +6,33 @@
 //   SANDCASTLE_LABEL=<label> pnpm run sandcastle:status
 //
 // Read-only: no comment, label or push, no sandbox, no model call. The report is lib/status.mts's.
+//
+// Exit codes: 0 once the report is printed, whatever is held; 1 when it can't be read (the open PRs, or host git is
+// unsafe); 2 for a bad scope variable, before git or gh is touched.
 
-throw new Error("Not implemented");
+import { QueueScopeError, describeQueueScope, type QueueScope } from "./lib/config.mts";
+import { protectHostGit } from "./lib/host-safety.mts";
+import { useQueueScope } from "./lib/queue.mts";
+import { statusCommand, statusScopeFrom } from "./lib/status.mts";
+
+// The queue scope comes first, so a bad variable exits with the usage message before git or gh is touched.
+let scope: QueueScope;
+try {
+  scope = statusScopeFrom(process.env);
+} catch (error) {
+  if (!(error instanceof QueueScopeError)) throw error;
+  console.error(error.message);
+  process.exit(2);
+}
+useQueueScope(scope);
+console.error(`Queue: ${describeQueueScope(scope)}`);
+
+try {
+  // gh reads git's config, and an agent may have written one: pin every git command to this repository's own, as the run
+  // does, before the first gh call. This is the only startup step the status takes; the others write to GitHub.
+  protectHostGit();
+  statusCommand();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}

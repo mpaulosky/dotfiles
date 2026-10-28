@@ -1420,9 +1420,10 @@ export function handBack(
   report.record({ kind: target.kind, number: target.number, label, reason, url: targetUrl(repo, target) });
 }
 
-// Passes a PR has had since sandcastle:needs-human was last removed: the host's FOLLOW_UP_MARKER comments.
-export function followUpPassCount(_number: number, _run: typeof execFileSync = execFileSync, _repo: string = repoName()): number {
-  throw new Error("Not implemented");
+// Passes a PR has had since sandcastle:needs-human was last removed: the host's FOLLOW_UP_MARKER comments. The follow-up
+// pass and `pnpm run sandcastle:status` both count them here, so the status shows the number the cap is checked against.
+export function followUpPassCount(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): number {
+  return markerComments(number, "sandcastle:needs-human", FOLLOW_UP_MARKER, repo, run).length;
 }
 
 // One run of the Sandcastle workflow, as `gh run list` reports it.
@@ -1436,11 +1437,43 @@ export type WorkflowRun = {
   url: string;
 };
 
-// The Sandcastle workflow's latest `limit` runs, newest first.
+// The Sandcastle workflow's latest `limit` runs, newest first. Throws on a shape it doesn't expect, so the status
+// reports the runs as unreadable rather than guessing, and on a limit that isn't a positive whole number.
 export function sandcastleWorkflowRuns(
-  _limit: number = 10,
-  _run: typeof execFileSync = execFileSync,
-  _repo: string = repoName(),
+  limit: number = 10,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
 ): WorkflowRun[] {
-  throw new Error("Not implemented");
+  if (!Number.isInteger(limit) || limit < 1) throw new Error(`The number of workflow runs to list must be a positive whole number, not ${limit}.`);
+  const listed: unknown = JSON.parse(
+    ghWithStderr(run, [
+      "run", "list", "--workflow", "sandcastle.yml", "--limit", String(limit),
+      "--json", "databaseId,status,conclusion,event,headBranch,createdAt,url", "--repo", repo,
+    ]),
+  );
+  if (!Array.isArray(listed)) throw new Error("gh run list didn't return a list of runs.");
+  return listed.map((entry: Record<string, unknown> | null) => {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      typeof entry.databaseId !== "number" ||
+      typeof entry.status !== "string" ||
+      !(entry.conclusion === null || typeof entry.conclusion === "string") ||
+      typeof entry.event !== "string" ||
+      typeof entry.headBranch !== "string" ||
+      typeof entry.createdAt !== "string" ||
+      typeof entry.url !== "string"
+    ) {
+      throw new Error("gh run list returned a run in a shape the status doesn't expect.");
+    }
+    return {
+      id: entry.databaseId,
+      status: entry.status,
+      conclusion: entry.conclusion,
+      event: entry.event,
+      branch: entry.headBranch,
+      createdAt: entry.createdAt,
+      url: entry.url,
+    };
+  });
 }

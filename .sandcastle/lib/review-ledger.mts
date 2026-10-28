@@ -62,6 +62,8 @@ export const OWNED_PATHS = [
   ".claude/skills/pre-push-review/**",
   ".claude/skills/hardening-review/**",
   ".sandcastle/main.mts",
+  ".sandcastle/status.mts",
+  ".sandcastle/status.test.mts",
   ".sandcastle/lib/*.mts",
   ".sandcastle/critique-prompt.md",
   ".sandcastle/intake-prompt.md",

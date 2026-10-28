@@ -205,6 +205,8 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/shell.test.mts",
   ".sandcastle/lib/skills.mts",
   ".sandcastle/lib/skills.test.mts",
+  ".sandcastle/lib/status.mts",
+  ".sandcastle/lib/status.test.mts",
   ".sandcastle/lib/ui-role-fixture.mts",
   ".sandcastle/lib/ui-role-fixture.test.mts",
   ".sandcastle/lib/umbrella.mts",
@@ -212,5 +214,7 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/work.mts",
   ".sandcastle/lib/work.test.mts",
   ".sandcastle/main.mts",
+  ".sandcastle/status.mts",
+  ".sandcastle/status.test.mts",
   ".sandcastle/tsconfig.json",
 ];

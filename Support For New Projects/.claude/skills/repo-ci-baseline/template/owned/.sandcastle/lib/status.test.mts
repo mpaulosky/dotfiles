@@ -128,7 +128,7 @@ const run = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
   ...overrides,
 });
 
-// What terminalText must never leave in a line: a control, format (bidi, zero-width, tag, soft hyphen) or surrogate character, a variation selector
+// What terminalText must never leave in a line: a control, format (bidi, zero-width, tag, soft hyphen) or surrogate character, a variation selector,
 // private-use and unassigned code points, default-ignorable ones and the fillers that draw as blanks.
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
 
@@ -831,7 +831,8 @@ describe("terminalText", () => {
     "a Hangul Jungseong filler": "\u1160",
     "a Khmer inherent vowel": "\u17b4",
     "a second Khmer inherent vowel": "\u17b5",
-    "an unassigned code point": "\u2065",
+    "an unassigned code point": "\u0378",
+    "an unassigned default-ignorable code point": "\u2065",
     "a private-use code point": "\ue000",
     "a Hangul filler": "\u3164",
     "a halfwidth Hangul filler": "\uffa0",
@@ -1040,15 +1041,59 @@ describe("plainStderr", () => {
     plainStderr(sink);
     sink.error("  \u26a0 gh said\u001b[2K\u202e hidden", new Error("boom\u200b\nline two"));
 
-    assert.deepEqual(printed, ["  \u26a0 gh said[2K hidden|boom line two"]);
+    assert.deepEqual(printed, ["  \u26a0 gh said[2K hidden boom line two"]);
+  });
+
+  it("prints an object, a format string's arguments and a null-prototype object as console would, cleaned", () => {
+    const printed: string[] = [];
+    const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
+
+    plainStderr(sink);
+    sink.error({ a: 1 });
+    sink.error("gh said %s (%d)", "hi\u202e", 3);
+    sink.error(Object.create(null));
+
+    assert.deepEqual(printed, ["{ a: 1 }", "gh said hi (3)", "[Object: null prototype] {}"]);
+  });
+
+  it("keeps at most a short indent, so text from GitHub can't pad a line", () => {
+    const printed: string[] = [];
+    const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
+
+    plainStderr(sink);
+    sink.error(`${" ".repeat(200)}x`);
+
+    assert.equal(printed[0], `${" ".repeat(8)}x`);
   });
 });
 
 describe("readableRepo", () => {
-  it("returns the repository name gh printed", () => {
-    const run = (() => "o/r\n") as unknown as typeof execFileSync;
+  it("returns the repository name gh printed, asking gh with its stderr captured", () => {
+    const asked: { file: string; args: readonly string[]; options: { encoding?: string; stdio?: unknown[] } }[] = [];
+    const run = ((file: string, args: readonly string[], options: { encoding?: string; stdio?: unknown[] }) => {
+      asked.push({ file, args, options });
+      return "o/r\n";
+    }) as unknown as typeof execFileSync;
 
     assert.equal(readableRepo(run), "o/r");
+    assert.deepEqual(asked.map((call) => [call.file, ...call.args]), [["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]]);
+    assert.equal(asked[0]?.options.stdio?.[2], "pipe");
+    assert.equal(asked[0]?.options.encoding, "utf8");
+  });
+
+  it("throws when gh prints no name", () => {
+    const run = (() => "\n") as unknown as typeof execFileSync;
+
+    assert.throws(() => readableRepo(run), /printed no repository name/);
+  });
+
+  it("names why gh couldn't run when it printed no stderr, and keeps the original error as the cause", () => {
+    const original = new Error("spawnSync gh ENOENT");
+    const run = (() => {
+      throw original;
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => readableRepo(run), (error: Error) => error.message === "gh repo view failed: spawnSync gh ENOENT" && error.cause === original);
   });
 
   it("throws with gh's stderr in the message, so the caller prints it as plain text, instead of letting gh write it", () => {
@@ -1077,6 +1122,7 @@ describe("lib/status.mts's use of the live sweep object", () => {
   });
 
   it("reaches liveFollowUpGitHub only as liveFollowUpGitHub.<read>: no alias, destructure, spread or index", () => {
+    assert.doesNotMatch(source, /liveFollowUpGitHub\s+as\b/, "liveFollowUpGitHub is imported under its own name");
     const code = source
       .replace(/^import\s[^;]*?;/gms, "")
       .split("\n")

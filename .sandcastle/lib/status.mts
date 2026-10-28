@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { execFileSync } from "node:child_process";
+import { format } from "node:util";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_LABEL,
@@ -333,9 +334,12 @@ export function terminalText(text: string): string {
     .trim();
 }
 
-// A line a log writes, as plain text: terminalText, with the indent the line starts with kept.
+// The most indent a log line keeps: more would let text GitHub supplied pad a line to look like a different one.
+const MAX_INDENT = 8;
+
+// A line a log writes, as plain text: terminalText, with the indent the line starts with kept (up to MAX_INDENT).
 export function terminalLine(line: string): string {
-  return (/^ */.exec(line)?.[0] ?? "") + terminalText(line);
+  return (/^ */.exec(line)?.[0] ?? "").slice(0, MAX_INDENT) + terminalText(line);
 }
 
 // One PR's lines.
@@ -430,19 +434,25 @@ export function statusCommand(
 // character to the terminal. Takes the console to change, for a test.
 export function plainStderr(target: { error: (...data: unknown[]) => void } = console): void {
   const print = target.error.bind(target);
-  target.error = (...data: unknown[]) => print(...data.map((item) => terminalLine(item instanceof Error ? item.message : String(item))));
+  // One line, formatted as console formats it (%s, objects), so the line's own indent is the only one kept.
+  target.error = (...data: unknown[]) => print(terminalLine(format(...data.map((item) => (item instanceof Error ? item.message : item)))));
 }
 
 // Reads the repository name with gh's stderr captured, so a failure reaches the terminal only through the entry file's catch, as
-// plain text. repoName() runs gh with its stderr inherited: the status asks it here first, so a failing read ends the run before that.
+// plain text. repoName() runs gh with its stderr inherited and caches only a success: the status asks here first, so a read that fails
+// ends the run before that. A second read that fails after this one succeeded still lets gh write its own text (an open finding).
 export function readableRepo(run: typeof execFileSync = execFileSync): string {
+  let name: string;
   try {
-    return run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    name = run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   } catch (error) {
     const stderr = (error as { stderr?: unknown }).stderr;
-    const detail = typeof stderr === "string" ? stderr.trim() : "";
-    throw new Error(`gh repo view failed${detail ? `: ${detail}` : ""}`, { cause: error });
+    // gh's own text when it printed some; else why it couldn't run (not installed, killed).
+    const detail = (typeof stderr === "string" ? stderr.trim() : "") || (error instanceof Error ? error.message : String(error));
+    throw new Error(`gh repo view failed: ${detail}`, { cause: error });
   }
+  if (name === "") throw new Error("gh repo view failed: it printed no repository name");
+  return name;
 }
 
 // The live reads. Only the sweep's reads are taken from liveFollowUpGitHub, none of its writes, and the queue is read with

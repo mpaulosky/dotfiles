@@ -134,7 +134,8 @@ whether or not that label counts, and says how many other open PRs it left out.
   becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, unassigned, private-use and filler
   characters are dropped, so it can't overwrite, fake or hide text in a line of the report. The cost: a joiner and an emoji's variation
   selector go too, so an emoji sequence falls apart into its emoji. `readableRepo` reads the repository name first with gh's stderr
-  captured, and `plainStderr` cleans what a read warns on stderr.
+  captured, and `plainStderr` cleans what a read warns on stderr. Not covered: `repoName()`'s own second read (gh's stderr inherited)
+  and `protectHostGit`'s `git config` calls, which let gh and git write their stderr themselves.
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),
   and `answered` for those the host replied to, which now wait on the owner. A thread read that failed shows `unknown (why)`, for a

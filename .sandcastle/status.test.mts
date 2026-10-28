@@ -28,6 +28,7 @@ describe("status.mts as a program", () => {
 
   let answeringBin = "";
   let hostileBin = "";
+  let hostileRepoBin = "";
 
   before(() => {
     scratch = mkdtempSync(join(tmpdir(), "status-entry-"));
@@ -58,14 +59,23 @@ describe("status.mts as a program", () => {
     spawnSync("mkdir", ["-p", hostileBin]);
     writeFileSync(join(hostileBin, "gh"), `#!/bin/sh\necho "$*" >> "${calls}"\nprintf 'boom\\033[2K\\342\\200\\256 hidden\\n' >&2\nexit 1\n`);
     chmodSync(join(hostileBin, "gh"), 0o755);
+    // A gh that answers every read as the answering one does, except that `repo view` fails with a hostile message: the one read whose
+    // stderr gh would write to the terminal itself, if the status didn't capture it first.
+    hostileRepoBin = join(scratch, "bin-hostile-repo");
+    spawnSync("mkdir", ["-p", hostileRepoBin]);
+    writeFileSync(
+      join(hostileRepoBin, "gh"),
+      `#!/bin/sh\necho "$*" >> "${calls}"\ncase "$*" in\n  "repo view"*) printf 'boom\\033[2K\\342\\200\\256 hidden\\n' >&2; exit 1 ;;\nesac\n. "${join(scratch, "answers.sh")}"\n`,
+    );
+    chmodSync(join(hostileRepoBin, "gh"), 0o755);
   });
 
   after(() => {
     if (scratch) rmSync(scratch, { recursive: true, force: true });
   });
 
-  function status(env: Record<string, string> = {}, which: "failing" | "answering" | "hostile" = "failing") {
-    const stub = which === "answering" ? answeringBin : which === "hostile" ? hostileBin : bin;
+  function status(env: Record<string, string> = {}, which: "failing" | "answering" | "hostile" | "hostile-repo" = "failing") {
+    const stub = which === "answering" ? answeringBin : which === "hostile" ? hostileBin : which === "hostile-repo" ? hostileRepoBin : bin;
     const childEnv: NodeJS.ProcessEnv = { ...process.env, PATH: `${stub}:${process.env.PATH}`, ...env };
     // A nested test runner reports into the parent's when it finds this variable; the scope variables are the test's to set.
     for (const name of ["NODE_TEST_CONTEXT", "GITHUB_ACTIONS", "SANDCASTLE_ISSUE", "SANDCASTLE_LABEL"]) {
@@ -123,6 +133,15 @@ describe("status.mts as a program", () => {
     assert.doesNotMatch(result.stderr, /\u001b|\u202e/);
     assert.equal(result.stdout, "");
   });
+
+  it("prints a failing repository read's stderr as plain text too: gh doesn't write it to the terminal itself", { timeout: 90_000 }, () => {
+    const result = status({}, "hostile-repo");
+
+    assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /gh repo view failed: boom/);
+    assert.doesNotMatch(result.stderr, /\u001b|\u202e/);
+    assert.equal(result.stdout, "");
+  });
 });
 
 describe("the writes predicate", () => {
@@ -162,13 +181,17 @@ describe("status.mts's source", () => {
     }
   });
 
-  it("asks for the repository name with gh's stderr captured, calls plainStderr, and does both before the command", () => {
+  it("calls plainStderr before the command, and readableRepo after protectHostGit, inside the try whose catch exits 1", () => {
+    const protect = source.search(/\bprotectHostGit\(\)/);
     const repo = source.search(/\breadableRepo\(\)/);
     const plain = source.search(/\bplainStderr\(\)/);
     const command = source.search(/\bstatusCommand\(/);
+    const tryAt = source.search(/\btry \{\n\s*\/\/ gh reads git's config/);
+    const catchAt = source.search(/\} catch \(error\) \{\n\s*\/\/ gh's own text/);
 
-    assert.ok(repo >= 0 && plain >= 0 && command >= 0, "status.mts should call readableRepo, plainStderr and statusCommand");
-    assert.ok(plain < command && repo < command, `order: plainStderr ${plain}, readableRepo ${repo}, command ${command}`);
+    assert.ok(repo >= 0 && plain >= 0 && command >= 0 && protect >= 0, "status.mts should call protectHostGit, readableRepo, plainStderr and statusCommand");
+    assert.ok(plain < command && protect < repo && repo < command, `order: plainStderr ${plain}, protectHostGit ${protect}, readableRepo ${repo}, command ${command}`);
+    assert.ok(tryAt >= 0 && tryAt < protect && repo < catchAt, "readableRepo() should sit inside the try whose catch prints the cause and exits 1");
   });
 
   it("reads the scope first, then protects host git before the first gh call, then runs the command", () => {

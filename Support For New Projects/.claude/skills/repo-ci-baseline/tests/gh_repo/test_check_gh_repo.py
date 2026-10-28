@@ -204,7 +204,7 @@ def test_untold_reads_a_file_with_a_nul_byte_as_bash_does_with_the_nul_removed(t
     found = check_gh_repo.untold(path)
 
     # Assert
-    assert found == [f"{path}:1: \x01gh pr view"]
+    assert found == [f"{path}:1: \\x01gh pr view"]
 
 
 def test_main_fails_when_a_script_under_the_root_isnt_told(tmp_path, capsys):
@@ -343,7 +343,7 @@ def test_check_repo_checks_a_file_with_a_nul_byte_as_bash_reads_it(tmp_path):
     found = repo_check(tmp_path, {"scripts/blob.sh": b"\x00\x01gh pr view\n"})
 
     # Assert
-    assert found == ["scripts/blob.sh:1: \x01gh pr view"]
+    assert found == ["scripts/blob.sh:1: \\x01gh pr view"]
 
 
 @pytest.mark.parametrize("name", ["src/x.sh", "docs/x.md", ".github/other/x.sh", ".github/workflows/x.sh", "x.sh",
@@ -1561,7 +1561,7 @@ def test_untold_finds_a_gh_whose_letters_a_nul_splits(tmp_path):
     found = check_gh_repo.untold(path)
 
     # Assert
-    assert found == [f"{path}:2: g\0h pr view 1"]
+    assert found == [f"{path}:2: g\\x00h pr view 1"]
 
 
 def test_check_repo_refuses_an_untold_gh_in_a_script_with_a_nul_after_100_bytes(tmp_path):
@@ -1938,3 +1938,106 @@ def test_untold_accepts_a_continued_gh_that_inherits_the_export_or_follows_no_wr
 
     # Assert
     assert found == []
+
+
+# A symlink must not hide the folder it points at, nor make a file Owned that isn't.
+
+def test_check_repo_checks_the_real_folder_a_symlink_sorting_before_it_points_at(tmp_path):
+    # Arrange: hardening-review sorts before zzz, and its link path is Owned.
+    repo = make_repo(tmp_path / "repo", {".claude/skills/zzz/run.sh": UNTOLD})
+    (repo / ".claude" / "skills" / "hardening-review").symlink_to("zzz", target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert: reported once, by its real path.
+    assert found == [".claude/skills/zzz/run.sh:1: gh pr view 1"]
+
+
+def test_check_repo_checks_a_folder_outside_the_scope_that_an_owned_symlink_points_at(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"docs/x/run.sh": UNTOLD, "scripts/ok.sh": TOLD})
+    (repo / ".claude" / "skills").mkdir(parents=True)
+    (repo / ".claude" / "skills" / "pre-push-review").symlink_to("../../docs/x", target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert: the link's path is Owned, but the folder it points at is not, and it is checked as itself.
+    assert found == ["docs/x/run.sh:1: gh pr view 1"]
+
+
+def test_check_repo_reports_a_file_reached_by_two_paths_once(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/real/run.sh": UNTOLD})
+    (repo / "scripts" / "alias").symlink_to("real", target_is_directory=True)
+    (repo / "scripts" / "run2.sh").symlink_to("real/run.sh")
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert found == ["scripts/real/run.sh:1: gh pr view 1"]
+
+
+# Text that comes from the PR is escaped before it reaches the log.
+
+def test_untold_escapes_a_carriage_return_inside_a_line(tmp_path):
+    # Arrange, Act
+    found = untold(tmp_path, "gh pr view 1\r::error::x\n")
+
+    # Assert
+    assert len(found) == 1
+    assert "\r" not in found[0]
+    assert found[0].endswith(": gh pr view 1\\r::error::x")
+
+
+@pytest.mark.parametrize("char, escaped", [("\x0b", "\\x0b"), ("\x0c", "\\x0c"), ("\x1b", "\\x1b"),
+                                           (" ", "\\u2028"), ("\x85", "\\x85")])
+def test_untold_escapes_other_control_characters(tmp_path, char, escaped):
+    # Arrange, Act
+    found = untold(tmp_path, f"gh pr view 1{char}x\n")
+
+    # Assert
+    assert found[0].endswith(f"gh pr view 1{escaped}x")
+
+
+def test_untold_keeps_a_tab_and_non_ascii_text(tmp_path):
+    # Arrange, Act
+    found = untold(tmp_path, "gh pr view 1\té\n")
+
+    # Assert
+    assert found[0].endswith("gh pr view 1\té")
+
+
+def test_untold_markdown_escapes_a_carriage_return_inside_a_line(tmp_path):
+    # Arrange, Act
+    found = untold_md(tmp_path, "`gh pr view 1`\r::error::x\n")
+
+    # Assert
+    assert len(found) == 1
+    assert "\r" not in found[0]
+    assert found[0].endswith("\\r::error::x")
+
+
+def test_check_repo_escapes_line_breaks_in_a_file_name(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/a\n::error::b.sh": UNTOLD})
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert found == ["scripts/a\\n::error::b.sh:1: gh pr view 1"]
+
+
+def test_check_repo_escapes_line_breaks_in_the_name_of_a_symlink_it_refuses(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "a\r::error::b").symlink_to(tmp_path / "nowhere")
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert found == ["scripts/a\\r::error::b: a symlink to nothing"]

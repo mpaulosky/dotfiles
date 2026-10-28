@@ -221,17 +221,36 @@ jobs:
           ' "$tmp/check_gh_repo.py" > "$tmp/owned.txt"
           # Walk the base's tree, so a file the PR deleted or renamed is found too. An entry is
           # "<mode> <type> <sha>", a tab, the path: a missing path, a changed mode (chmod -x, a
-          # symlink swap) or a changed blob all differ.
+          # symlink swap) or a changed blob all differ. A path is PR-controlled: escape \r and \n
+          # before it reaches the log, or the rest of a file name could start a workflow command.
           status=0
+          report() {
+            local name=$1
+            name=${name//$'\r'/\\r}
+            name=${name//$'\n'/\\n}
+            echo "Owned file ${name} differs from ${BASE_REF}"
+            status=1
+          }
           while IFS= read -r entry; do
             while IFS= read -r -d '' base_entry; do
               path=${base_entry#*$'\t'}
               head_entry=$(git ls-tree -z HEAD -- "$path" | tr '\0' '\n')
               if [ "${base_entry}" != "$head_entry" ]; then
-                echo "Owned file ${path} differs from ${BASE_REF}"
-                status=1
+                report "$path"
               fi
             done < <(git ls-tree -r -z "origin/${BASE_REF}" -- "$entry")
+            # A file the PR adds inside an Owned folder isn't in the base's tree, and the checker
+            # skips the folder: report it, or nothing reads it.
+            case $entry in
+              */)
+                while IFS= read -r -d '' head_entry; do
+                  path=${head_entry#*$'\t'}
+                  if ! git cat-file -e "origin/${BASE_REF}:${path}" 2>/dev/null; then
+                    report "$path"
+                  fi
+                done < <(git ls-tree -r -z HEAD -- "$entry")
+                ;;
+            esac
           done < "$tmp/owned.txt"
           exit "$status"
 

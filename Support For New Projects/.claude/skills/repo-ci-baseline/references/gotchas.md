@@ -119,8 +119,8 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
     HTML comments, `<script>` and `<style>` are not read, and `<!-- gh-repo: ok -->` skips a line in each kind.
   - CI's `gh-repo` job (Owned `ci.yml`, on pull requests) runs the base branch's `check_gh_repo.py` against the PR's
     tree, so `--no-verify` or an edited checker can't skip it, and fails with `Owned file <path> differs from <base>`
-    when a PR changes an Owned file (the checker's `OWNED` paths), unless its head branch is
-    `chore/standardize-baseline` or `chore/reapply-baseline`. Anyone who can push a branch can use those names: it
+    when a PR changes, deletes or (in an Owned folder) adds an Owned file (the checker's `OWNED` paths), unless its
+    head branch is `chore/standardize-baseline` or `chore/reapply-baseline`. Anyone who can push a branch can use those names: it
     stops a careless edit, not a deliberate one.
   - A bare `gh` that ends its line in `||` or `&&` (`command -v gh >/dev/null 2>&1 ||`) is a lookup that goes on to
     its own next command, and is accepted before the export. A pipe or a backslash continuation after it is refused.

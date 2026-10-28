@@ -404,11 +404,21 @@ def read_lines(path):
     return lines
 
 
+def for_log(text):
+    """The text with its control characters escaped (\\r, \\n, \\x1b...), tab kept.
+
+    A line or a file name comes from the PR. A raw \\r or \\n in it printed to the Actions log would let the rest of it
+    start a workflow command (::error::, ::stop-commands::).
+    """
+    return "".join(char if char == "\t" or char.isprintable() else char.encode("unicode_escape").decode("ascii")
+                   for char in text)
+
+
 def shown(line):
     # The line as written (a NUL at its ends is no use to the reader); surrogateescape keeps a byte that isn't UTF-8,
-    # printed as the replacement character.
+    # printed as the replacement character. Control characters are escaped, so the line can't start a log command.
     line = getattr(line, "original", line).strip("\0")
-    return line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+    return for_log(line.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace"))
 
 
 def untold(path):
@@ -431,7 +441,7 @@ def untold(path):
                 if not OPT_OUT.search(line) and any(
                         not told(code[:match.start()], code[match.end():], exported)
                         for code in codes for match in GH.finditer(code)):
-                    found.append(f"{path}:{number}: {shown(line)}")
+                    found.append(f"{for_log(str(path))}:{number}: {shown(line)}")
             continue
         if re.match(r"[ \t]*#", line):
             continue
@@ -449,7 +459,7 @@ def untold(path):
             continue
         earlier = continued_text(lines, number)
         if any(not told(line[:match.start()], line[match.end():], exported, earlier) for match in GH.finditer(line)):
-            found.append(f"{path}:{number}: {shown(line)}")
+            found.append(f"{for_log(str(path))}:{number}: {shown(line)}")
     return found
 
 
@@ -600,7 +610,7 @@ def untold_markdown(path):
             else:
                 code = code_in(line)
         if not OPT_OUT.search(line) and any(untold_in_code(piece) for piece in code):
-            found.append(f"{path}:{number}: {shown(line)}")
+            found.append(f"{for_log(str(path))}:{number}: {shown(line)}")
     return found
 
 
@@ -655,6 +665,7 @@ def check_repo(root):
     root = Path(root)
     base = root.resolve()
     found = []
+    done = set()
     for folder in SCOPE:
         top = root / folder
         if top.is_symlink() and not top.exists():
@@ -666,17 +677,21 @@ def check_repo(root):
         if not top.is_dir():
             continue
         for path, refusal in walk(top, base, set()):
-            relative = path.relative_to(root).as_posix()
-            if is_owned(relative):
-                continue
             if refusal:
-                found.append(f"{relative}: {refusal}")
+                found.append(f"{for_log(path.relative_to(root).as_posix())}: {refusal}")
+                continue
+            # A file is judged by where it really is: a symlink reaching it first (or a folder walked once, through
+            # a link) doesn't hide it, and a link's own path doesn't make it Owned.
+            real = path.resolve().relative_to(base).as_posix()
+            if is_owned(path.relative_to(root).as_posix()) and is_owned(real):
                 continue
             checked = kind(path, folder != ".claude/skills")
-            if checked is None:
+            if checked is None or (real, checked) in done:
                 continue
+            done.add((real, checked))
             lines = untold_markdown(path) if checked == "markdown" else untold(path)
-            found.extend(relative + line[len(str(path)):] for line in lines)
+            shown_path = for_log(str(path))
+            found.extend(for_log(real) + line[len(shown_path):] for line in lines)
     return found
 
 

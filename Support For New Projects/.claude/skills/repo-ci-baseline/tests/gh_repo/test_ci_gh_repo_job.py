@@ -479,3 +479,80 @@ def test_the_job_fails_a_pr_that_swaps_an_owned_file_for_a_symlink_with_the_same
     # Assert
     assert code != 0
     assert "Owned file scripts/gate.sh differs from main" in output
+
+
+def test_the_job_fails_a_pr_that_adds_a_file_to_an_owned_folder(tmp_path):
+    # Arrange: the checker skips the folder and the base's tree has no such file to differ from.
+    added = ".claude/skills/pre-push-review/helper.sh"
+    base = {**BASE, ".claude/skills/pre-push-review/SKILL.md": "# Review\n"}
+
+    # Act
+    code, output = run_job(tmp_path, {added: UNTOLD}, base_files=base)
+
+    # Assert
+    assert code != 0
+    assert f"Owned file {added} differs from main" in output
+
+
+def test_the_job_fails_a_pr_that_adds_a_file_to_the_other_owned_folder(tmp_path):
+    # Arrange
+    added = ".claude/skills/hardening-review/references/new.md"
+
+    # Act
+    code, output = run_job(tmp_path, {added: "`gh pr view 1`\n"})
+
+    # Assert
+    assert code != 0
+    assert f"Owned file {added} differs from main" in output
+
+
+def test_the_job_passes_an_apply_branch_that_adds_a_file_to_an_owned_folder(tmp_path):
+    # Arrange, Act
+    code, output = run_job(tmp_path, {".claude/skills/pre-push-review/new.md": "# New\n"},
+                           head_ref="chore/reapply-baseline")
+
+    # Assert
+    assert code == 0, output
+
+
+def test_the_job_names_an_added_owned_folder_file_once_among_the_edited(tmp_path):
+    # Arrange
+    skill = ".claude/skills/pre-push-review/SKILL.md"
+    added = ".claude/skills/pre-push-review/new.md"
+    base = {**BASE, skill: "# Review\n"}
+
+    # Act
+    code, output = run_job(tmp_path, {skill: "# Changed\n", added: "# New\n"}, base_files=base)
+
+    # Assert
+    assert code != 0
+    assert sorted(differs_lines(output)) == sorted([f"Owned file {skill} differs from main",
+                                                    f"Owned file {added} differs from main"])
+
+
+def test_the_job_escapes_line_breaks_in_an_owned_file_name_it_reports(tmp_path):
+    # Arrange: a name that would start a workflow command on its own log line.
+    name = ".claude/skills/pre-push-review/x\n::error::spoofed.sh"
+
+    # Act
+    code, output = run_job(tmp_path, {name: "# x\n"})
+
+    # Assert
+    assert code != 0
+    assert "Owned file .claude/skills/pre-push-review/x\\n::error::spoofed.sh differs from main" in output
+    assert not any(line.startswith("::") for line in output.splitlines())
+
+
+def test_the_job_escapes_a_carriage_return_in_a_reported_line_and_file_name(tmp_path):
+    # Arrange
+    files = {"scripts/new.sh": "gh pr view 1\r::error::spoofed\n", "scripts/a\r::error::b.sh": UNTOLD}
+
+    # Act
+    code, output = run_job(tmp_path, files)
+
+    # Assert
+    assert code != 0
+    assert "\r" not in output
+    assert not any(line.startswith("::") for line in output.splitlines())
+    assert "scripts/new.sh:1: gh pr view 1\\r::error::spoofed" in output
+    assert "scripts/a\\r::error::b.sh:1: gh pr view 1" in output

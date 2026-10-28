@@ -65,9 +65,14 @@ export type StatusGitHub = Pick<
   queueScope(): QueueScope;
 };
 
+// What `decide` can't see: planPass (lib/follow-up-pass.mts) skips a flagged PR when there's no needed merge, no red check with an
+// Actions run behind it and no thread for the role, or its head moved, or a thread author can't be checked. Status reads none of
+// that, so a flag is the sweep's decision, not a promise that a pass runs.
+export const PASS_MAY_SKIP = "a pass may still skip it: nothing it can re-run or fix, a thread author it can't identify, or a moved head";
+
 // Where a PR stands with the sweep.
 export type Held = {
-  state: "skipped" | "waiting" | "pass due" | "hand-back due" | "act next sweep" | "settled";
+  state: "skipped" | "waiting" | "flagged for a pass" | "flagged for a hand-back" | "act next sweep" | "settled";
   reason: string;
 };
 
@@ -117,7 +122,7 @@ export function isListed(pr: SweepPullRequest, host: string): boolean {
 }
 
 // The sweep's own answer for one PR, in the sweep's order: not admitted, then the label-origin hold, then `decide`'s
-// decision (made on the PR without the threads the host answered). `passesUsed` tells a pass due from a hand-back due, as
+// decision (made on the PR without the threads the host answered). `passesUsed` tells a flag for a pass from a flag for a hand-back, as
 // the pass's cap check does. Notes on the threads that wait on a person are appended to the reason. No writes.
 export function heldReason(args: {
   pr: SweepPullRequest;
@@ -146,11 +151,11 @@ export function heldReason(args: {
         const reasons = decision.reasons.join("; ");
         if (passesUsed !== undefined && passesUsed >= FOLLOW_UP_PASS_CAP) {
           return {
-            state: "hand-back due",
-            reason: `has had ${FOLLOW_UP_PASS_CAP} of ${FOLLOW_UP_PASS_CAP} passes and still needs another (${reasons}); the next pass hands it back with sandcastle:needs-human`,
+            state: "flagged for a hand-back",
+            reason: `has had ${FOLLOW_UP_PASS_CAP} of ${FOLLOW_UP_PASS_CAP} passes and is flagged for another (${reasons}); a pass that has something to act on hands it back with sandcastle:needs-human (${PASS_MAY_SKIP})`,
           };
         }
-        return { state: "pass due", reason: reasons };
+        return { state: "flagged for a pass", reason: `${reasons} (${PASS_MAY_SKIP})` };
       }
       case "request-review":
         return { state: "act next sweep", reason: "Copilot will be asked to review the head" };
@@ -285,23 +290,33 @@ const SHOWN_LABELS = [BUILDING_LABEL, "sandcastle:needs-human", FOLLOW_UP_LABEL,
   label.toLowerCase(),
 );
 
+// GitHub's and gh's text (a title, a branch, a reason) made safe for a terminal: whitespace, including a line break, is one space,
+// and what is left of the control characters (ESC and the C1 set, so no CSI sequence) and the bidi and zero-width marks that
+// reorder or hide text is dropped. Nothing in it can overwrite a line of the report or fake one.
+export function terminalText(text: string): string {
+  return text
+    .replace(/[\s\u0085\u2028\u2029]+/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, "")
+    .trim();
+}
+
 // One PR's lines.
 function renderPr(status: PrStatus): string[] {
   const shown = status.labels.filter((label) => SHOWN_LABELS.includes(label.toLowerCase()));
-  const state = status.draft ? `${status.mergeState}, draft` : status.mergeState;
+  const state = terminalText(status.draft ? `${status.mergeState}, draft` : status.mergeState);
   const subject = status.subject === "issue" && status.issueNumber !== undefined ? `issue #${status.issueNumber}` : status.subject;
-  const passes = "unreadable" in status.passes ? `unknown (${status.passes.unreadable})` : `${status.passes.used} of ${status.passes.cap}`;
+  const passes = "unreadable" in status.passes ? `unknown (${terminalText(status.passes.unreadable)})` : `${status.passes.used} of ${status.passes.cap}`;
   const threads =
     "unreadable" in status.threads
-      ? `unknown (${status.threads.unreadable})`
+      ? `unknown (${terminalText(status.threads.unreadable)})`
       : `bot ${status.threads.bot}, owner ${status.threads.owner}, other ${status.threads.other}` +
         (status.threads.answered > 0 ? `, answered ${status.threads.answered}` : "");
   return [
-    `#${status.number} ${status.title}`,
-    `  branch:   ${status.headRefName} (${state})${shown.length > 0 ? `, labels: ${shown.join(", ")}` : ""}`,
+    `#${status.number} ${terminalText(status.title)}`,
+    `  branch:   ${terminalText(status.headRefName)} (${state})${shown.length > 0 ? `, labels: ${shown.join(", ")}` : ""}`,
     `  for:      ${subject}`,
     `  passes:   ${passes}`,
-    `  held:     ${status.held.state}: ${status.held.reason}`,
+    `  held:     ${status.held.state}: ${terminalText(status.held.reason)}`,
     `  threads:  ${threads}`,
   ];
 }
@@ -310,13 +325,13 @@ function renderPr(status: PrStatus): string[] {
 function renderRun(run: WorkflowRun): string {
   const icon = run.status !== "completed" ? "…" : run.conclusion === "success" ? "✓" : "✗";
   const result = run.status === "completed" ? (run.conclusion ?? run.status) : run.status;
-  return `  ${icon} ${result} ${run.event} ${run.branch} ${run.createdAt} ${run.url}`;
+  return `  ${icon} ${terminalText(`${result} ${run.event} ${run.branch} ${run.createdAt} ${run.url}`)}`;
 }
 
 // The report as plain text lines: no markdown and no colour, so it reads the same in a terminal, a log and a pipe.
 export function renderStatus(report: StatusReport): string[] {
   const others = report.unlisted > 0 ? `${report.unlisted} other open PR(s) not listed` : "";
-  const lines = [`Sandcastle status for ${report.repo} (queue: ${report.scope})`];
+  const lines = [`Sandcastle status for ${terminalText(report.repo)} (queue: ${terminalText(report.scope)})`];
   if (report.prs.length === 0) {
     lines.push(`No open Sandcastle pull requests into main.${others === "" ? "" : ` ${others}.`}`);
   } else {
@@ -325,7 +340,7 @@ export function renderStatus(report: StatusReport): string[] {
   }
   lines.push("");
   if ("unreadable" in report.runs) {
-    lines.push("Sandcastle workflow runs:", `  unknown (${report.runs.unreadable})`);
+    lines.push("Sandcastle workflow runs:", `  unknown (${terminalText(report.runs.unreadable)})`);
   } else if (report.runs.length === 0) {
     lines.push("No Sandcastle workflow runs.");
   } else {

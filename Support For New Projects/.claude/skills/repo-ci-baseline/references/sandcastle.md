@@ -115,7 +115,7 @@ whether or not that label counts, and says how many other open PRs it left out.
   branch:   feature/42-add-search (BLOCKED, draft), labels: review:claude
   for:      issue #42 | hand-off | not swept
   passes:   1 of 3
-  held:     pass due: check build is red
+  held:     flagged for a pass: check build is red (a pass may still skip it: nothing it can re-run or fix, a thread author it can't identify, or a moved head)
   threads:  bot 2, owner 1, other 3, answered 1
 ```
 
@@ -123,9 +123,13 @@ whether or not that label counts, and says how many other open PRs it left out.
   counted by `followUpPassCount` in `lib/github.mts`, the count the pass checks.
 - **`held`.** The sweep's own answer: `sweepContext`, `admitToSweep` (`sweepSubject` and the hand-off approval), `labelOriginHold` and `decide`
   in `lib/follow-up.mts`, which the sweep calls too, on the PR without the threads the host answered.
-  The state is `skipped` (not swept, with the sweep's reason), `waiting`, `pass due`,
-  `hand-back due` (the passes are used up, so the next pass hands it back),
+  The state is `skipped` (not swept, with the sweep's reason), `waiting`, `flagged for a pass`,
+  `flagged for a hand-back` (the passes are used up, so a pass that has something to act on hands it back),
   `act next sweep` (Copilot will be asked, or the branch updated) or `settled`.
+  A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
+  an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
+  Text from GitHub (a title, a branch, a reason) is printed with its control and bidi characters removed (`terminalText`), so it
+  can't overwrite or fake a line of the report.
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),
   and `answered` for those the host replied to, which now wait on the owner.

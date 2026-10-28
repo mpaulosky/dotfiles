@@ -18,9 +18,11 @@ import type { QueueGitHub } from "./queue.mts";
 import {
   collectStatus,
   heldReason,
+  PASS_MAY_SKIP,
   isListed,
   liveStatusGitHub,
   renderStatus,
+  terminalText,
   statusCommand,
   statusOf,
   statusQueue,
@@ -263,18 +265,18 @@ describe("heldReason", () => {
     assert.deepEqual(heldReason({ ...base, decision: { action: "wait", reason: "checks are still running" } }), { state: "waiting", reason: "checks are still running" });
   });
 
-  it("is a pass due, with the reasons joined, for a PR that needs a pass and has passes left", () => {
+  it("is flagged for a pass, with the reasons joined and a note that the pass may skip it, for a PR that needs a pass and has passes left", () => {
     const held = heldReason({ ...base, decision: { action: "needs-pass", reasons: ["check build is red", "1 unresolved bot thread(s)"] }, passesUsed: FOLLOW_UP_PASS_CAP - 1 });
 
-    assert.deepEqual(held, { state: "pass due", reason: "check build is red; 1 unresolved bot thread(s)" });
+    assert.deepEqual(held, { state: "flagged for a pass", reason: `check build is red; 1 unresolved bot thread(s) (${PASS_MAY_SKIP})` });
   });
 
-  it("is a hand-back due, as planPass's cap check, once the passes are used up", () => {
+  it("is flagged for a hand-back, as planPass's cap check, once the passes are used up", () => {
     const held = heldReason({ ...base, decision: { action: "needs-pass", reasons: ["check build is red", "it has merge conflicts"] }, passesUsed: FOLLOW_UP_PASS_CAP });
 
     assert.deepEqual(held, {
-      state: "hand-back due",
-      reason: `has had ${FOLLOW_UP_PASS_CAP} of ${FOLLOW_UP_PASS_CAP} passes and still needs another (check build is red; it has merge conflicts); the next pass hands it back with sandcastle:needs-human`,
+      state: "flagged for a hand-back",
+      reason: `has had ${FOLLOW_UP_PASS_CAP} of ${FOLLOW_UP_PASS_CAP} passes and is flagged for another (check build is red; it has merge conflicts); a pass that has something to act on hands it back with sandcastle:needs-human (${PASS_MAY_SKIP})`,
     });
   });
 
@@ -392,8 +394,8 @@ describe("statusOf", () => {
 
     assert.deepEqual(status.threads, { bot: 2, owner: 1, other: 1, answered: 0 });
     assert.deepEqual(status.held, {
-      state: "pass due",
-      reason: "2 unresolved bot thread(s); 1 unresolved owner thread(s); 1 thread(s) from others wait on a person",
+      state: "flagged for a pass",
+      reason: `2 unresolved bot thread(s); 1 unresolved owner thread(s) (${PASS_MAY_SKIP}); 1 thread(s) from others wait on a person`,
     });
   });
 
@@ -442,17 +444,17 @@ describe("statusOf", () => {
     assert.deepEqual(status.threads, { bot: 0, owner: 0, other: 0, answered: 0 });
   });
 
-  it("is a pass due for a conflicting PR with passes left", () => {
+  it("is flagged for a pass for a conflicting PR with passes left", () => {
     const status = statusFor(pr({ mergeStateStatus: "DIRTY" }), { passes: () => FOLLOW_UP_PASS_CAP - 1 });
 
-    assert.deepEqual(status.held, { state: "pass due", reason: "it has merge conflicts" });
+    assert.deepEqual(status.held, { state: "flagged for a pass", reason: `it has merge conflicts (${PASS_MAY_SKIP})` });
   });
 
-  it("is a hand-back due for a conflicting PR that used its passes", () => {
+  it("is flagged for a hand-back for a conflicting PR that used its passes", () => {
     const status = statusFor(pr({ mergeStateStatus: "DIRTY" }), { passes: () => FOLLOW_UP_PASS_CAP });
 
-    assert.equal(status.held.state, "hand-back due");
-    assert.match(status.held.reason, /the next pass hands it back with sandcastle:needs-human/);
+    assert.equal(status.held.state, "flagged for a hand-back");
+    assert.match(status.held.reason, /a pass that has something to act on hands it back with sandcastle:needs-human/);
   });
 
   it("is waiting while checks haven't reported", () => {
@@ -602,7 +604,7 @@ describe("renderStatus", () => {
     subject: "issue",
     issueNumber: 42,
     passes: { used: 1, cap: 3 },
-    held: { state: "pass due", reason: "check build is red" },
+    held: { state: "flagged for a pass", reason: "check build is red" },
     threads: { bot: 2, owner: 1, other: 3, answered: 0 },
     mergeState: "BLOCKED",
     draft: false,
@@ -640,11 +642,31 @@ describe("renderStatus", () => {
         "  branch:   feature/42-add-search (BLOCKED)",
         "  for:      issue #42",
         "  passes:   1 of 3",
-        "  held:     pass due: check build is red",
+        "  held:     flagged for a pass: check build is red",
         "  threads:  bot 2, owner 1, other 3",
       ]),
       renderStatus(report()).join("\n"),
     );
+  });
+
+  it("prints no control or bidi character from a title, branch, reason or run, so no line can be overwritten or faked", () => {
+    const hostile = "feat: x\u001b[2K\nheld:     settled: all clear\r\u202e\u2066\u009b";
+    const lines = renderStatus(
+      report({
+        prs: [status({ title: hostile, headRefName: `b${hostile}`, mergeState: hostile, held: { state: "settled", reason: hostile }, passes: { unreadable: hostile }, threads: { unreadable: hostile } })],
+        runs: [run({ branch: hostile, event: hostile })],
+      }),
+    );
+
+    for (const line of lines) assert.doesNotMatch(line, /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/, JSON.stringify(line));
+    assert.equal(lines.filter((line) => line.startsWith("  held:")).length, 1);
+    assert.equal(lines.filter((line) => line.startsWith("#101 ")).length, 1);
+    assert.ok(lines.includes("#101 feat: x[2K held: settled: all clear"), lines.join("\n"));
+  });
+
+  it("prints the report's own lines unchanged", () => {
+    assert.equal(terminalText("feat: Add search (v2)"), "feat: Add search (v2)");
+    assert.equal(terminalText("  a \t b\n c  "), "a b c");
   });
 
   it("marks a draft, and shows only the labels that matter", () => {

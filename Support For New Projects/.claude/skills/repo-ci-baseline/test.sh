@@ -530,6 +530,14 @@ grep -qF -- 'short SHA' "$owned/docs/PROCESS.md" \
   || fail "docs/PROCESS.md must tell a session that the reply to a fixed review thread names the fixing commit by its short SHA"
 grep -qF -- 'resolved without a reply' "$owned/docs/PROCESS.md" \
   || fail "docs/PROCESS.md must say a bot thread resolved without a reply is flagged ('resolved without a reply')"
+# PR Auto-Merge's Copilot grace is 5 minutes (mpaulosky/dotfiles#353): the docs that name it say so, and none says 10.
+for grace_doc in "$skill_dir/references/automerge.md" "$skill_dir/docs/adr/0004-claude-review-as-copilots-backup.md" "$owned/docs/PROCESS.md"; do
+  grep -qE '(^|[^0-9])5[ -]minute' "$grace_doc" \
+    || fail "${grace_doc#"$skill_dir"/} must name PR Auto-Merge's Copilot grace as 5 minutes"
+  if grep -qE '(^|[^0-9])10[ -]minute' "$grace_doc"; then
+    fail "${grace_doc#"$skill_dir"/} still says 10 minutes: PR Auto-Merge's Copilot grace is 5 minutes"
+  fi
+done
 # The record-head job of the Owned sandcastle.yml posts the comment lib/follow-up.mts#approvedHeadOf reads, from the label event's head.
 sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
 head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"

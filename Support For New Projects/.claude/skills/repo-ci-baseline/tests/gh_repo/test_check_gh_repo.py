@@ -1117,6 +1117,140 @@ def test_untold_takes_no_unset_from_the_body_of_a_data_heredoc(tmp_path):
     assert found == []
 
 
+# Only a command known to treat its input as data makes a body data; any other program may run it.
+@pytest.mark.parametrize("text, line", [
+    ("python3 - <<'EOF'\nsubprocess.run([\"gh\", \"pr\", \"list\"])\nEOF\n", 2),
+    ("node - <<'EOF'\nexecSync(\"gh pr list\")\nEOF\n", 2),
+    ("ssh host <<EOF\ngh pr view 1\nEOF\n", 2),
+    ("cat > \"$work/run.sh\" <<'EOF'\ngh pr view 1\nEOF\nbash \"$work/run.sh\"\n", 2),
+    ("cat > run.sh <<'EOF'\ngh pr view 1\nEOF\n", 2),
+    ("tee run.sh <<'EOF'\ngh pr view 1\nEOF\n", 2),
+    ("cat <<'EOF' > \"$out\"\ngh pr view 1\nEOF\n", 2),
+    ("some-tool <<EOF\ngh pr view 1\nEOF\n", 2),
+    ("echo ok; python3 <<'PY'\nimport subprocess\nsubprocess.run(['gh', 'pr', 'view', '1'])\nPY\n", 3),
+])
+def test_untold_reads_the_body_of_a_heredoc_fed_to_anything_but_a_data_command(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+# A shell run with assignments before it, a pipe or a continued pipe to a shell, and a pipe whose consumer follows.
+@pytest.mark.parametrize("text, line", [
+    ("GH_TOKEN=x . /dev/stdin <<'EOF'\ngh pr view 1\nEOF\n", 2),
+    ("GH_TOKEN=x source /dev/stdin <<'EOF'\ngh pr view 1\nEOF\n", 2),
+    ("A=1 B=2 bash <<'EOF'\ngh pr view 1\nEOF\n", 2),
+    ("cat <<'EOF' | \\\nbash\ngh pr list\nEOF\n", 3),
+    ("cat <<'EOF' \\\n  | sh\ngh pr list\nEOF\n", 3),
+    ("cat <<'EOF' |\ngh pr list\nEOF\nbash\n", 2),
+    ("cat <<'EOF' | tee log.txt | bash\ngh pr list\nEOF\n", 2),
+])
+def test_untold_reads_the_body_of_a_heredoc_that_reaches_a_shell_by_a_pipe_or_an_assignment(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "cat <<EOF # usage for bash\nRun gh pr list to inspect PRs.\nEOF\nexport GH_REPO=o/r\ngh pr list\n",
+    "cat <<EOF # sh\nneeds gh\nEOF\n",
+    "tee usage.txt <<EOF\nneeds gh\nEOF\n",
+    "tee -a /dev/stderr <<EOF\nneeds gh\nEOF\n",
+    ": <<'EOF'\nneeds gh\nEOF\n",
+    "printf '%s\\n' <<EOF\nneeds gh\nEOF\n",
+    "read -r -d '' usage <<'EOF'\nneeds gh\nEOF\n",
+    "USAGE=1 cat <<'EOF'\nneeds gh\nEOF\n",
+    "cat \\\n  <<'EOF'\nneeds gh\nEOF\n",
+    "cat <<'EOF' > usage.md\nneeds gh\nEOF\n",
+    "cat <<'EOF' 2>/dev/null\nneeds gh\nEOF\n",
+    "echo \"$(cat <<'EOF'\nneeds gh\nEOF\n)\"\n",
+])
+def test_untold_skips_the_body_of_a_heredoc_fed_to_a_data_command(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text, line", [
+    ("printf '%s\\n' 'Example: cat <<true'\ngh pr list\ntrue\n", 2),
+    ("echo \"cat <<true\"\ngh pr list\ntrue\n", 2),
+    ("echo cat \\<<true\ngh pr list\ntrue\n", 2),
+    ("# cat <<true\ngh pr list\ntrue\n", 2),
+    ("echo ok # cat <<true\ngh pr list\ntrue\n", 2),
+    ("echo $((1 << 2))\ngh pr list\n2\n", 2),
+    ("(( x <<true ))\ngh pr list\ntrue\n", 2),
+])
+def test_untold_takes_no_heredoc_from_a_quoted_or_commented_or_arithmetic_double_angle(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+# A $( or backtick that a heredoc body leaves open goes on in the next lines.
+@pytest.mark.parametrize("text, line", [
+    ("cat <<EOF\n$(\n  gh pr list --state open\n)\nEOF\n", 3),
+    ("cat <<EOF\n`\n  gh pr list\n`\nEOF\n", 3),
+    ("cat <<EOF\nOpen: $(echo hi;\ngh pr list)\nEOF\n", 3),
+    ("cat <<EOF\n$(\n  echo $(\n    gh pr list\n  )\n)\nEOF\n", 4),
+    ("cat <<EOF\n$(\n  date\n)\n  gh pr list\nEOF\n", None),
+])
+def test_untold_judges_the_lines_of_a_substitution_a_heredoc_body_spans(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    if line is None:
+        assert found == []
+    else:
+        assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "cat <<EOF\n$(\n  GH_REPO=o/r gh pr list\n)\nEOF\n",
+    "export GH_REPO=o/r\ncat <<EOF\n$(\n  gh pr list\n)\nEOF\n",
+    "cat <<'EOF'\n$(\n  gh pr list\n)\nEOF\n",
+    "cat <<EOF\n$(\n  gh pr list # gh-repo: ok\n)\nEOF\n",
+])
+def test_untold_accepts_a_multi_line_substitution_that_is_told_or_never_run(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+def test_untold_closes_a_multi_line_substitution_at_the_terminator(tmp_path):
+    # Arrange: the first heredoc's open $( ends with it; the second body is plain text.
+    text = "cat <<A\n$(\nA\ncat <<B\nneeds gh pr list\nB\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text", [
+    "GH_REPO=${repo:?set repo} gh pr view 1\n",
+    "GH_REPO=${repo:?set repo} GH_TOKEN=x gh pr view 1\n",
+    "GH_TOKEN=x GH_REPO=${repo:?set repo} gh pr view 1\n",
+])
+def test_untold_accepts_a_guarded_expansion_with_spaces_before_gh(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
 def test_untold_reads_the_heredoc_of_a_shell_after_a_data_one(tmp_path):
     # Arrange
     text = "cat <<EOF\ngh pr view 1\nEOF\nbash <<EOF\ngh pr view 2\nEOF\n"

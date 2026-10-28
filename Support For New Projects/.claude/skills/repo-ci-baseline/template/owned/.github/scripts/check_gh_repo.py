@@ -27,7 +27,8 @@ ENDS = re.compile(r"[ \t]*([;&|)`]|$)")
 # A bare gh whose line ends in || or &&: a lookup (command -v gh ||) that goes on to its own next command.
 LOOKUP_LIST = re.compile(r"[ \t]*(\|\||&&)[ \t]*")
 # A NAME=value word before a command, with the whitespace after it.
-ASSIGNMENT_WORD = r"""[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^ \t"';&|()]*)[ \t]+"""
+ASSIGNMENT_WORD = (r"""[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}"'`]*\}"""
+                   r"""|[^ \t"';&|()]*)[ \t]+""")
 # The run of such words right before gh.
 PREFIX = re.compile(r"(?<![A-Za-z0-9_])(?:" + ASSIGNMENT_WORD + r")+$")
 ASSIGNMENT = re.compile(r"(?<![A-Za-z0-9_])GH_REPO=")
@@ -72,57 +73,235 @@ def told(before, after, exported):
     return exported if prefixed is None else re.fullmatch(VALUE, prefixed) is not None
 
 
-# A heredoc operator and its delimiter: <<EOF, <<-'EOF', <<"EOF", <<\\EOF (not the here-string <<<).
-HEREDOC = re.compile(r"""(?<!<)<<(-?)[ \t]*(?:"([^"]*)"|'([^']*)'|\\?([^ \t;&|()<>"'\\]+))""")
-# A word that may run the heredoc's body as code: sh, bash, /bin/bash, dash, zsh, ksh, eval, source, or . (as in . /dev/stdin).
-SHELL_WORD = re.compile(
-    r"(?<![A-Za-z0-9_.-])((ba|da|z|k)?sh|eval|source)(?![A-Za-z0-9_.-])|(?:^|[;&|({])[ \t]*\.[ \t]")
+# A shell operator, longest first: a redirection (with <<, <<-, <<< and &> before their shorter forms) or a separator.
+OPERATOR = re.compile(r"<<<|<<-?|<&|<>|<|>>|>&|>\||>|&>>|&>|&&|\|\||;;|;|&|\|")
+REDIRECTIONS = ("<<<", "<<", "<<-", "<&", "<>", "<", ">>", ">&", ">|", ">", "&>>", "&>")
+# The redirections that write to their target.
+WRITES = ("<>", ">>", ">&", ">|", ">", "&>>", "&>")
+# The commands whose heredoc is data, never code: they print it, store it, or ignore it.
+DATA_COMMANDS = ("cat", "tee", "echo", "printf", "read", "mail", "mailx", ":", "true")
+# The files a data command may write to: text, not something a later command runs.
+DATA_SUFFIXES = ("txt", "md", "json", "yml", "yaml", "log", "out", "csv", "tsv", "toml", "ini", "conf", "cfg", "html",
+                 "xml", "env", "patch", "diff")
+# Words before a command that aren't it.
+BEFORE_COMMAND = ("{", "!", "if", "then", "else", "elif", "while", "until", "do", "time")
+ASSIGNMENT_START = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 
 
-def data_heredocs(line, later):
-    """The (delimiter, tabs, quoted) of each heredoc on line whose body is data, not code, in the order the bodies follow.
+def tokens(text):
+    """The words and operators of one logical line of shell as (kind, text, quoted) tuples, quotes and comments understood.
 
-    A line that names a shell anywhere (bash <<EOF, cat <<EOF | sh, eval, source) feeds its body to it, so its body is
-    read as code. An unquoted delimiter still lets bash run the $(...) and backticks in a data body.
-    A heredoc whose delimiter never comes again, or one inside (( )), is no heredoc.
+    kind is 'word' (text is the word without its quotes, quoted whether it had any), 'op' (a redirection or separator,
+    or a parenthesis or backtick), 'open' for a $( and 'close' for the ) that ends it. A << inside a quote, a comment
+    or (( )) is no operator. The word right before a redirection that is all digits (2>&1) is its file descriptor, dropped.
     """
-    if SHELL_WORD.search(line):
-        return []
     found = []
-    for match in HEREDOC.finditer(line):
-        if line[:match.start()].count("((") > line[:match.start()].count("))"):
-            continue
-        delimiter = next(group for group in match.groups()[1:] if group is not None)
-        quoted = match.group(4) is None or match.group(0).count("\\") > 0
-        if not any((text.lstrip("\t") if match.group(1) else text) == delimiter for text in later):
-            continue
-        found.append((delimiter, bool(match.group(1)), quoted))
+    word = None
+    quoted = False
+    double = False
+    frames = []
+    index = 0
+
+    def flush():
+        nonlocal word, quoted
+        if word is not None:
+            found.append(("word", "".join(word), quoted))
+        word, quoted = None, False
+
+    while index < len(text):
+        char = text[index]
+        if double:
+            if char == "\\":
+                word.append(text[index + 1:index + 2])
+                index += 2
+            elif char == '"':
+                double = False
+                index += 1
+            elif text.startswith("$(", index) and not text.startswith("$((", index):
+                flush()
+                found.append(("open", "$(", False))
+                frames.append(["double", 1])
+                double = False
+                index += 2
+            else:
+                word.append(char)
+                index += 1
+        elif char in " \t":
+            flush()
+            index += 1
+        elif char == "\\":
+            word = (word or []) + [text[index + 1:index + 2]]
+            quoted = True
+            index += 2
+        elif char == "'":
+            end = text.find("'", index + 1)
+            end = len(text) if end < 0 else end
+            word = (word or []) + [text[index + 1:end]]
+            quoted = True
+            index = end + 1
+        elif char == '"':
+            word = word or []
+            quoted = double = True
+            index += 1
+        elif char == "#" and word is None:
+            break
+        elif text.startswith("((", index) or text.startswith("$((", index):
+            # Arithmetic: its << is a shift, not a heredoc.
+            depth, index = 0, text.index("(", index)
+            while index < len(text):
+                depth += (text[index] == "(") - (text[index] == ")")
+                index += 1
+                if depth == 0:
+                    break
+            word = (word or []) + ["0"]
+        elif text.startswith("$(", index):
+            flush()
+            found.append(("open", "$(", False))
+            frames.append(["normal", 1])
+            index += 2
+        elif char in "()":
+            flush()
+            if char == ")" and frames and frames[-1][1] == 1:
+                double = frames.pop()[0] == "double"
+                found.append(("close", ")", False))
+                word, quoted = ([], True) if double else (None, False)
+            else:
+                if frames:
+                    frames[-1][1] += 1 if char == "(" else -1
+                found.append(("op", char, False))
+            index += 1
+        elif char == "`":
+            flush()
+            found.append(("op", char, False))
+            index += 1
+        elif operator := OPERATOR.match(text, index):
+            descriptor = word is not None and not quoted and "".join(word).isdigit() and operator.group()[0] in "<>"
+            if descriptor:
+                word = None
+            flush()
+            found.append(("op", operator.group(), False))
+            index = operator.end()
+        else:
+            word = (word or []) + [char]
+            index += 1
+    flush()
     return found
 
 
-def substitutions(line):
-    """The commands bash runs in line's $(...) and backticks: the text inside each, to the line's end when unclosed."""
+def heredoc_header(text):
+    """The heredocs of one logical line as (delimiter, tabs, quoted), and whether the line feeds its data to a program.
+
+    A body is data only when every command on the line is one that treats its input as data (cat, tee, echo,
+    printf, read, mail, :, true), each file they write is text, and the line doesn't end in a pipe, whose
+    consumer comes after the body. Any other command, a shell or an interpreter or an assignment-prefixed . among
+    them, may run the body, so its body is read as code.
+    """
+    heredocs = []
+    data = True
+    redirect = None
+    segment = []
+    segments = []
+    found = tokens(text)
+    for kind, value, quoted in found + [("op", ";", False)]:
+        if kind == "word" and redirect:
+            if redirect in ("<<", "<<-"):
+                heredocs.append((value, redirect == "<<-", quoted))
+            elif redirect in WRITES:
+                data = data and (value.isdigit() or value == "-" or value.startswith("/dev/")
+                                 or value.rsplit("/", 1)[-1].rpartition(".")[2].lower() in DATA_SUFFIXES)
+            redirect = None
+        elif kind == "word":
+            segment.append(value)
+        elif kind == "op" and value in REDIRECTIONS:
+            redirect = value
+        else:
+            segments.append(segment)
+            segment = []
+    for words in segments:
+        while words and (words[0] in BEFORE_COMMAND or ASSIGNMENT_START.match(words[0])):
+            words = words[1:]
+        if words:
+            command = words[0].rsplit("/", 1)[-1]
+            data = data and command in DATA_COMMANDS
+            if command == "tee":
+                data = data and all(word.startswith("-") or word.rsplit("/", 1)[-1].rpartition(".")[2].lower()
+                                    in DATA_SUFFIXES or word.startswith("/dev/") for word in words[1:])
+    return heredocs, data and found[-1:] != [("op", "|", False)]
+
+
+def data_heredocs(header, later):
+    """The (delimiter, tabs, quoted) of each heredoc on the logical line header whose body is data, not code, in the order the bodies follow.
+
+    An unquoted delimiter still lets bash run the $(...) and backticks in a data body. A heredoc whose delimiter never
+    comes again is no heredoc.
+    """
+    heredocs, data = heredoc_header(header)
+    if not data:
+        return []
+    return [(delimiter, tabs, quoted) for delimiter, tabs, quoted in heredocs
+            if any((text.lstrip("\t") if tabs else text) == delimiter for text in later)]
+
+
+def logical_line(lines, number):
+    """The logical line that starts at lines[number - 1], with its backslash continuations joined, and how many physical lines it takes."""
+    text = lines[number - 1]
+    count = 1
+    # An odd number of trailing backslashes continues the line; an even number is escaped backslashes.
+    while (len(text) - len(text.rstrip("\\"))) % 2 and number - 1 + count < len(lines):
+        text = text[:-1] + lines[number - 1 + count]
+        count += 1
+    return text, count
+
+
+def close_parenthesis(line, start, depth):
+    """The index in line at or after start where the substitution of the given depth ends, or len(line), and the depth left."""
+    end = start
+    while end < len(line) and depth:
+        depth += (line[end] == "(") - (line[end] == ")")
+        end += 1
+    return (end - 1 if depth == 0 else end), depth
+
+
+def substitutions(line, pending=None):
+    """The commands bash runs in line's $(...) and backticks, as (texts, pending).
+
+    A substitution still open at the line's end (pending: ('(', depth) or ('`',)) goes on in the next line: pass
+    pending back in, and the start of that line up to the close is its text.
+    """
     found = []
     position = 0
+    if pending:
+        if pending[0] == "(":
+            end, depth = close_parenthesis(line, 0, pending[1])
+            pending = ("(", depth) if depth else None
+        else:
+            end = 0
+            while end < len(line) and line[end] != "`":
+                end += 2 if line[end] == "\\" else 1
+            pending = None if end < len(line) else pending
+        found.append(line[:end])
+        if pending:
+            return found, pending
+        position = end + 1
     while position < len(line):
         if line[position] == "\\":
             position += 2
         elif line.startswith("$(", position):
-            depth, end = 1, position + 2
-            while end < len(line) and depth:
-                depth += (line[end] == "(") - (line[end] == ")")
-                end += 1
-            found.append(line[position + 2:end - 1 if depth == 0 else end])
+            end, depth = close_parenthesis(line, position + 2, 1)
+            found.append(line[position + 2:end])
+            pending = pending or (("(", depth) if depth else None)
             position += 2
         elif line[position] == "`":
             end = position + 1
             while end < len(line) and line[end] != "`":
                 end += 2 if line[end] == "\\" else 1
             found.append(line[position + 1:end])
+            if end >= len(line):
+                pending = pending or ("`",)
             position = end + 1
         else:
             position += 1
-    return found
+    return found, pending
 
 
 def read_lines(path):
@@ -148,19 +327,29 @@ def untold(path):
     found = []
     exported = False
     bodies = []
+    # The first line of the bodies, the last line of the command that opens them, and a substitution a body leaves open.
+    body_start = header_end = 0
+    pending = None
     for number, line in enumerate(lines, 1):
-        if bodies:
+        if bodies and number >= body_start:
             delimiter, tabs, quoted = bodies[0]
             if (line.lstrip("\t") if tabs else line) == delimiter:
                 bodies.pop(0)
-            elif not quoted and not OPT_OUT.search(line) and any(
-                    not told(code[:match.start()], code[match.end():], exported)
-                    for code in substitutions(line) for match in GH.finditer(code)):
-                found.append(f"{path}:{number}: {shown(line)}")
+                pending = None
+            else:
+                codes, pending = substitutions(line, pending) if not quoted else ([], None)
+                if not OPT_OUT.search(line) and any(
+                        not told(code[:match.start()], code[match.end():], exported)
+                        for code in codes for match in GH.finditer(code)):
+                    found.append(f"{path}:{number}: {shown(line)}")
             continue
         if re.match(r"[ \t]*#", line):
             continue
-        bodies = data_heredocs(line, lines[number:])
+        if not bodies and number > header_end:
+            header, count = logical_line(lines, number)
+            header_end = number + count - 1
+            body_start = header_end + 1
+            bodies = data_heredocs(header, lines[header_end:])
         if EXPORTS.match(line):
             exported = True
         elif UNSET.search(line) or any(

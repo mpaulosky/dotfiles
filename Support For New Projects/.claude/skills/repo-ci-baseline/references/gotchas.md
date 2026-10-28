@@ -110,10 +110,16 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
     its own next command, and is accepted before the export. A pipe or a backslash continuation after it is refused.
   - `gh.exe` is `gh`: it is judged by the same rules, and a longer word (`gh.executable`, `neigh.exe`) or a folder
     (`~/.config/gh.exe/`) is not.
-  - The body of a heredoc that feeds data to a program (`cat <<EOF` usage text) is no code, as an `echo` message is not,
-    so prose naming `gh` in it is skipped. A heredoc fed to a shell or to a program that runs its input (`bash <<EOF`,
-    `sh <<EOF`, `cat <<EOF | sh`, `eval`, `source`, `. /dev/stdin <<EOF`) is code and stays read. An unquoted delimiter
-    (`<<EOF`, not `<<'EOF'`) still lets bash run the `$(...)` and backticks in a data body, so a `gh` inside one is judged.
+  - The body of a heredoc is skipped only when every command on its logical line (backslash continuations joined)
+    treats its input as data: `cat`, `tee`, `echo`, `printf`, `read`, `mail`, `:` and `true`, with a plain redirect and
+    any `NAME=value` words before them, and every file they write is text (`.txt`, `.md`, `.json`, `/dev/stderr`, `>&2`,
+    ...). Prose naming `gh` in `cat <<EOF` usage text is then no code, as an `echo` message is not. Any other command
+    may run its input, so its body is read as code: a shell (`bash <<EOF`, `cat <<EOF | sh`, `eval`, `source`,
+    `GH_TOKEN=x . /dev/stdin <<EOF`), an interpreter (`python3 - <<EOF`, `node - <<EOF`, `ssh host <<EOF`), a script
+    written to a file that isn't text (`cat > run.sh <<EOF`, `cat > "$file" <<EOF`), and a line ending in a pipe, whose
+    consumer follows the body. A `<<` inside a quote, a comment or `(( ))` is no heredoc. An unquoted delimiter
+    (`<<EOF`, not `<<'EOF'`) still lets bash run the `$(...)` and backticks in a data body, so a `gh` inside one is
+    judged, on whichever line of a multi-line substitution it is.
   - Lines end only at a newline, as bash's do (an optional `\r` before it is dropped). A binary file (with a NUL byte)
     is skipped; any other file is read whatever bytes it holds.
 

@@ -61,6 +61,28 @@ def write_spec(root, value):
     return spec_file
 
 
+def journals(root):
+    """Where the runner keeps its journal: under review/, which Sandcastle hides from its sandboxes and the ledger skips (not *.json)."""
+    return sorted((root / ".git" / "review").glob("mutate-journal-*.txt"))
+
+
+def load_runner():
+    import importlib.util
+    module_spec = importlib.util.spec_from_file_location("mutate_under_test", SCRIPT)
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def keep_signal_handlers():
+    """main() installs handlers; an in-process test must put the test process's own back."""
+    saved = {name: signal.getsignal(getattr(signal, name)) for name in ("SIGINT", "SIGTERM", "SIGHUP")}
+    yield
+    for name, handler in saved.items():
+        signal.signal(getattr(signal, name), handler)
+
+
 def run(root, value, *extra, env=None):
     return subprocess.run([sys.executable, "-I", str(SCRIPT), str(write_spec(root, value)), "--root", str(root), *extra],
                           capture_output=True, text=True, env=env or clean_env())
@@ -383,10 +405,12 @@ def slow_check(root):
     git(root, "commit", "-q", "-am", "slow")
 
 
-def start_and_wait(root, tmp_path):
+def start_and_wait(root, tmp_path, ignore_sigint=False):
     spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
+    # A runner started from a background job (`cmd &` in a script, some CI and agent harnesses) inherits SIGINT ignored.
+    inherit = (lambda: signal.signal(signal.SIGINT, signal.SIG_IGN)) if ignore_sigint else None
     proc = subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(spec_file), "--root", str(root)],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env())
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env(), preexec_fn=inherit)
     for _ in range(300):
         if (root / "started").exists():
             return proc
@@ -422,8 +446,9 @@ def test_a_killed_runner_leaves_a_journal_that_the_next_run_names(tmp_path):
     assert "killed" in again.stderr and "target.py" in again.stderr and "git checkout" in again.stderr
     # Restoring as the message says, and removing the journal it names, lets the next run start.
     git(root, "checkout", "--", "target.py")
-    journal = [word for word in again.stderr.split() if word.endswith("mutate-journal.json")]
+    journal = [word for word in again.stderr.split() if "mutate-journal-" in word]
     assert journal, again.stderr
+    assert Path(journal[0].strip("`'\".,")) == journals(root)[0]
     Path(journal[0].strip("`'\".,")).unlink()
     # A mutation this check catches at once, since the slow one would sit out its sleep.
     assert run(root, spec([mutation("x > 0", "x > 5")])).returncode == 0
@@ -432,4 +457,161 @@ def test_a_killed_runner_leaves_a_journal_that_the_next_run_names(tmp_path):
 def test_a_clean_run_leaves_no_journal(tmp_path):
     root = make_repo(tmp_path)
     assert run(root, spec([mutation("x > 0", "x >= 0")])).returncode == 0
+    assert not list((root / ".git").rglob("mutate-journal*"))
+
+
+def test_the_journal_is_not_a_json_file_in_a_private_folder(tmp_path):
+    # The ledger reads *.json directly in .git/review; the folder is hidden from Sandcastle's sandboxes, which can write the rest of .git.
+    root = make_repo(tmp_path)
+    slow_check(root)
+    proc = start_and_wait(root, tmp_path)
+    proc.kill()
+    proc.communicate(timeout=20)
+    [journal] = journals(root)
+    assert journal.parent == root / ".git" / "review" and journal.suffix == ".txt"
+    assert (root / ".git" / "review").stat().st_mode & 0o777 == 0o700
     assert not list((root / ".git").glob("mutate-journal*"))
+
+
+def test_a_run_leaves_no_pycache_folders_in_the_temp_dir(tmp_path):
+    # One prefix per run, removed at the end: a skill run over many passes would otherwise fill /tmp.
+    root = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    result = run(root, spec([mutation("x > 0", "x >= 0"), mutation("x > 0", "x > 5")]), env=clean_env(TMPDIR=str(scratch)))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not list(scratch.glob("mutate-pycache-*"))
+
+
+def test_a_refused_run_leaves_no_pycache_folders_either(tmp_path):
+    root = make_repo(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    assert run(root, spec([mutation("x > 0", "x >= 0")], test=[sys.executable, "-c", "raise SystemExit(1)"]),
+               env=clean_env(TMPDIR=str(scratch))).returncode == 2
+    assert not list(scratch.glob("mutate-pycache-*"))
+
+
+def test_a_second_run_during_a_slow_baseline_is_refused(tmp_path):
+    # The journal is claimed before the baseline: two runs would otherwise mutate the same file under each other's tests.
+    root = make_repo(tmp_path, check=(
+        "import sys, time, pathlib\nsys.path.insert(0, '.')\nimport target as c\n"
+        "if not c.f(0):\n    pathlib.Path('base-started').write_text('1'); time.sleep(5)\n"
+        "sys.exit(0 if c.f(1) and not c.f(0) else 1)\n"))
+    before = (root / "target.py").read_bytes()
+    first = subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(write_spec(root, spec([mutation("x > 0", "x >= 0")]))), "--root", str(root)],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env())
+    try:
+        for _ in range(300):
+            if (root / "base-started").exists():
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("the baseline never started")
+        second = run(root, spec([mutation("x > 0", "x > 5")]))
+        assert second.returncode == 2, second.stdout + second.stderr
+        assert "in progress" in second.stderr and "mutate-journal-" in second.stderr
+        assert (root / "target.py").read_bytes() == before
+    finally:
+        out, err = first.communicate(timeout=60)
+    assert first.returncode == 0, out + err
+    assert not journals(root), "the first run must still remove its own journal"
+
+
+def test_a_run_that_is_refused_early_removes_the_journal_it_claimed(tmp_path):
+    root = make_repo(tmp_path)
+    (root / "target.py").write_text("changed\n", encoding="utf-8")
+    assert run(root, spec([mutation("x > 0", "x >= 0")])).returncode == 2
+    assert not journals(root)
+
+
+def test_sigint_restores_even_when_the_parent_left_it_ignored(tmp_path):
+    root = make_repo(tmp_path)
+    slow_check(root)
+    before = (root / "target.py").read_bytes()
+    proc = start_and_wait(root, tmp_path, ignore_sigint=True)
+    proc.send_signal(signal.SIGINT)
+    _, err = proc.communicate(timeout=20)
+    assert proc.returncode == 130, err
+    assert (root / "target.py").read_bytes() == before
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_an_interrupt_kills_the_tests_process_group_too(tmp_path, sig):
+    root = make_repo(tmp_path, check=(
+        "import subprocess, sys, time, pathlib\nsys.path.insert(0, '.')\nimport target as c\n"
+        "if c.f(0):\n"
+        "    subprocess.Popen([sys.executable, '-c', 'import time, pathlib; time.sleep(4); pathlib.Path(\"marker\").write_text(\"x\")'])\n"
+        "    pathlib.Path('started').write_text('1'); time.sleep(20)\n"
+        "sys.exit(0 if c.f(1) else 1)\n"))
+    proc = start_and_wait(root, tmp_path)
+    proc.send_signal(sig)
+    proc.communicate(timeout=20)
+    time.sleep(6)
+    assert not (root / "marker").exists(), "a grandchild of the tests outlived the interrupted run"
+
+
+def test_refuses_cleanly_where_there_are_no_process_groups(tmp_path, monkeypatch, capsys):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    monkeypatch.setattr(runner, "POSIX", False)
+    assert runner.main([str(write_spec(root, spec([mutation("x > 0", "x >= 0")]))), "--root", str(root)]) == 2
+    assert "POSIX" in capsys.readouterr().err
+    assert not journals(root)
+
+
+def test_an_unexpected_error_exits_two_without_a_traceback_and_leaves_nothing(tmp_path, monkeypatch, capsys, keep_signal_handlers):
+    root = make_repo(tmp_path)
+    before = (root / "target.py").read_bytes()
+    runner = load_runner()
+
+    def broken(*args):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(runner, "write_journal", broken)
+    assert runner.main([str(write_spec(root, spec([mutation("x > 0", "x >= 0")]))), "--root", str(root)]) == 2
+    err = capsys.readouterr().err
+    assert "unexpected RuntimeError: disk full" in err and "Traceback" not in err
+    assert (root / "target.py").read_bytes() == before
+    assert not journals(root), "a journal the run created must not outlive it"
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]", '"x"', "{}", '{"files": []}', '{"files": "x"}', ""])
+def test_a_journal_that_cannot_be_read_is_still_refused_not_a_traceback(tmp_path, content):
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, exist_ok=True)
+    journal.write_text(content, encoding="utf-8")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2 and "Traceback" not in result.stderr
+    assert "unknown files" in result.stderr and "killed" in result.stderr
+
+
+def test_a_journal_that_is_a_directory_is_refused(tmp_path):
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.mkdir(parents=True)
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2 and "Traceback" not in result.stderr
+    assert "unknown files" in result.stderr
+
+
+def test_a_journal_names_only_files_inside_the_repository(tmp_path):
+    # The journal is a plain file: its names become `git checkout` advice, so a planted one must not point outside.
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, exist_ok=True)
+    journal.write_text(json.dumps({"files": {"target.py": "", "../outside.txt": "", "/etc/passwd": "", "a\u0000b": ""}}), encoding="utf-8")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2
+    assert "target.py" in result.stderr and "outside" not in result.stderr and "passwd" not in result.stderr
+    assert "git diff" in result.stderr
+
+
+def test_a_journal_naming_nothing_inside_the_repository_says_unknown(tmp_path):
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, exist_ok=True)
+    journal.write_text(json.dumps({"files": {"../outside.txt": ""}}), encoding="utf-8")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2 and "unknown files" in result.stderr and "outside" not in result.stderr

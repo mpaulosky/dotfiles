@@ -15,14 +15,18 @@ interrupted. Exit 0: every mutation was CAUGHT (or EQUIVALENT with a reason). Ex
 was NOT FOUND, AMBIGUOUS or INVALID. Exit 2: the spec or the tree was refused. Exit 130: interrupted
 (SIGINT, SIGTERM or SIGHUP); the files are restored.
 
-A runner killed with SIGKILL can't restore anything. It writes a journal of the originals into the
-git directory first, and the next run refuses to start until the files are restored (git checkout)
-and the journal is deleted.
+A runner killed with SIGKILL can't restore anything. It claims a journal first (a text file under
+review/ in the git directory, which Sandcastle hides from its sandboxes), writes the originals into
+it before the first mutation, and the next run, or a second run at the same time, refuses to start
+until the files are restored (git checkout) and the journal is deleted. POSIX only: the tests run
+in a process group.
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -30,18 +34,20 @@ import tempfile
 from pathlib import Path
 
 MAX_TIMEOUT = 86400
+POSIX = hasattr(os, "killpg") and hasattr(signal, "SIGHUP")
 
 
 class Refused(Exception):
     pass
 
 
-def clean_env():
+def clean_env(pycache=None):
     """The environment for git and the tests: a hook's GIT_* variables would point them at another repository."""
     env = {key: value for key, value in os.environ.items() if key not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX")}
-    # Same-size mutations inside one second can load a stale .pyc (CPython checks the source's whole-second mtime and size).
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONPYCACHEPREFIX"] = tempfile.mkdtemp(prefix="mutate-pycache-")
+    if pycache:
+        # Same-size mutations inside one second can load a stale .pyc (CPython checks the source's whole-second mtime and size).
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONPYCACHEPREFIX"] = pycache
     return env
 
 
@@ -117,20 +123,46 @@ def target_files(root, mutations):
 
 
 def journal_path(root):
-    result = git(root, "rev-parse", "--absolute-git-dir")
+    """Under review/ in the common git dir: Sandcastle hides it from its sandboxes (which can write the rest of .git), and the ledger
+    reads only *.json there. One per checkout, so two worktrees don't block each other."""
+    result = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if result.returncode != 0:
         raise Refused(f"{root} is not in a git repository")
-    return Path(result.stdout.strip()) / "mutate-journal.json"
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return Path(result.stdout.strip()) / "review" / f"mutate-journal-{digest}.txt"
 
 
-def check_journal(journal, root):
-    if journal.exists():
-        try:
-            files = ", ".join(sorted(json.loads(journal.read_text(encoding="utf-8")).get("files", {})))
-        except (OSError, ValueError, AttributeError):
-            files = "unknown files"
-        raise Refused(f"a previous run was killed and may have left a mutation in {files}: restore them with `git checkout -- <file>` "
-                      f"in {root}, then delete {journal}")
+def inside(root, name):
+    try:
+        (root / name).resolve().relative_to(root)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def describe_journal(journal, root):
+    """Why a journal blocks the run. It is a plain file, so only names inside the checkout are repeated."""
+    try:
+        recorded = json.loads(journal.read_text(encoding="utf-8"))["files"]
+        if not isinstance(recorded, dict):
+            raise TypeError
+    except (OSError, ValueError, KeyError, TypeError):
+        recorded = None
+    if recorded == {}:
+        return f"another run is in progress, or one was killed before it changed a file: delete {journal} if none is running"
+    files = ", ".join(sorted(name for name in recorded or () if inside(root, name))) or "unknown files"
+    return (f"a previous run was killed and may have left a mutation in {files}: check `git diff`, restore them with "
+            f"`git checkout -- <file>` in {root}, then delete {journal}")
+
+
+def claim_journal(journal, root):
+    """Create the journal before anything slow, so a second run sees it; exclusive, so two can't both pass."""
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        with journal.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps({"files": {}}))
+    except FileExistsError:
+        raise Refused(describe_journal(journal, root))
 
 
 def write_journal(journal, root, originals):
@@ -138,11 +170,11 @@ def write_journal(journal, root, originals):
     journal.write_text(json.dumps({"files": data}), encoding="utf-8")
 
 
-def run_tests(argv, root, timeout):
+def run_tests(argv, root, timeout, pycache):
     """(passed, timed_out). The whole process group dies with the run, whatever ended it."""
     try:
         process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   env=clean_env(), start_new_session=True)
+                                   env=clean_env(pycache), start_new_session=True)
     except (OSError, ValueError) as error:
         raise Refused(f"cannot run the test command: {error}")
     try:
@@ -181,17 +213,25 @@ def main(argv):
     parser.add_argument("spec")
     parser.add_argument("--root", default=".")
     args = parser.parse_args(argv)
+    if not POSIX:
+        print("refused: mutate.py needs a POSIX system (the tests run in a process group)", file=sys.stderr)
+        return 2
     root = Path(args.root).resolve()
     originals = {}
     journal = None
-    for name in ("SIGTERM", "SIGHUP"):
+    claimed = False
+    pycache = None
+    # SIGINT too: Python leaves it ignored when the runner was started from a background job.
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
         signal.signal(getattr(signal, name), interrupted)
     try:
         test, timeout, mutations = load_spec(args.spec)
         journal = journal_path(root)
-        check_journal(journal, root)
+        claim_journal(journal, root)
+        claimed = True
+        pycache = tempfile.mkdtemp(prefix="mutate-pycache-")
         originals = target_files(root, mutations)
-        passed, timed_out = run_tests(test, root, timeout)
+        passed, timed_out = run_tests(test, root, timeout, pycache)
         if timed_out:
             raise Refused(f"the tests did not finish within {timeout:g} seconds before any mutation: raise \"timeout\", or fix them")
         if not passed:
@@ -219,7 +259,7 @@ def main(argv):
                 continue
             try:
                 path.write_bytes(text.replace(item["old"], item["new"], 1).encode("utf-8"))
-                passed, timed_out = run_tests(test, root, timeout)
+                passed, timed_out = run_tests(test, root, timeout, pycache)
             finally:
                 restore(originals)
             if not passed:
@@ -243,8 +283,10 @@ def main(argv):
         return 2
     finally:
         restore(originals)
-        if journal is not None and originals and journal.exists() and all(path.read_bytes() == data for path, data in originals.items()):
-            journal.unlink()
+        if pycache:
+            shutil.rmtree(pycache, ignore_errors=True)
+        if claimed and all(path.read_bytes() == data for path, data in originals.items()):
+            journal.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

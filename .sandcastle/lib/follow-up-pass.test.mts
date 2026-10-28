@@ -795,6 +795,8 @@ function passHostFake(
     // Claiming the issue a hand-off branch names, or releasing the issue's or the PR's claim, fails.
     markBuildingThrows?: boolean;
     markPullRequestBuildingThrows?: boolean;
+    // Recording the head the pass pushed as approved fails.
+    recordApprovedHeadThrows?: boolean;
     unmarkBuildingThrows?: boolean;
     unmarkPullRequestBuildingThrows?: boolean;
     sandbox?: ReturnType<typeof sandboxFake>;
@@ -838,6 +840,7 @@ function passHostFake(
     replyToThread: [] as { threadId: string; body: string }[],
     resolveThread: [] as string[],
     commentOnPullRequest: [] as { pr: number; body: string }[],
+    recordApprovedHead: [] as { pr: number; head: string }[],
     handBack: [] as { pr: number; reason: string; body: string }[],
     recordHumanThread: [] as HumanThreadEntry[],
     checks: [] as number[],
@@ -909,6 +912,10 @@ function passHostFake(
     replyToThread: (threadId, body) => void calls.replyToThread.push({ threadId, body }),
     resolveThread: (threadId) => void calls.resolveThread.push(threadId),
     commentOnPullRequest: (pr, body) => void calls.commentOnPullRequest.push({ pr, body }),
+    recordApprovedHead: (pr, head) => {
+      calls.recordApprovedHead.push({ pr, head });
+      if (options.recordApprovedHeadThrows) throw new Error("gh pr comment failed");
+    },
     handBack: (pr, reason, body) => void calls.handBack.push({ pr, reason, body }),
     recordHumanThread: (entry) => void calls.recordHumanThread.push(entry),
     publicError: (text) => String(text),
@@ -2245,6 +2252,69 @@ describe("runPass on a hand-off PR", () => {
     assert.deepEqual(calls.createSandbox, []);
     assert.deepEqual(calls.markBuilding, []);
     assert.deepEqual(calls.releases, []);
+  });
+
+  describe("recording the head it pushes", () => {
+    const fixes = () => sandboxFake({ followUpJson: "[]" });
+
+    it("records the commit a hand-off pass pushed as approved, once it is on the branch", async () => {
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox: fixes() });
+
+      const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
+
+      assert.equal(outcome.kind, "passed");
+      assert.equal(calls.push.length, 1);
+      assert.deepEqual(calls.recordApprovedHead, [{ pr: PR_NUMBER, head: calls.push[0]!.commit }]);
+    });
+
+    it("records nothing when the pass pushed nothing", async () => {
+      const sandbox = sandboxFake({ followUpJson: "[]", roleNoCommit: ["follow-up"] });
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+      await runPass(handOffTarget(), view(), BASE, passHost);
+
+      assert.deepEqual(calls.push, []);
+      assert.deepEqual(calls.recordApprovedHead, []);
+    });
+
+    it("records nothing for a Sandcastle issue's PR, which no label approved", async () => {
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox: fixes() });
+
+      await runPass(passTarget(), issue, BASE, passHost);
+
+      assert.equal(calls.push.length, 1);
+      assert.deepEqual(calls.recordApprovedHead, []);
+    });
+
+    it("still completes the pass, and says the record failed in the summary, when recording the head fails", async () => {
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox: fixes(), recordApprovedHeadThrows: true });
+
+      const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
+
+      assert.equal(outcome.kind, "passed");
+      assert.match(calls.commentOnPullRequest[0]!.body, /These GitHub writes failed:[^\n]*recording the pushed head as approved, so the owner has to remove and add sandcastle:follow-up again before the PR is followed up/);
+      assert.ok(calls.log.some((line) => line.includes("couldn't record")));
+    });
+
+    it("records a push that landed although it reported an error", async () => {
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox: fixes(), pushError: new Error("500") });
+      // The branch now shows the pushed commit: remoteHead answers whatever was pushed.
+      passHost.remoteHead = () => calls.push[0]?.commit;
+
+      const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
+
+      assert.equal(outcome.kind, "passed");
+      assert.deepEqual(calls.recordApprovedHead, [{ pr: PR_NUMBER, head: calls.push[0]!.commit }]);
+    });
+
+    it("records nothing when the push failed and the head moved", async () => {
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox: fixes(), pushError: new Error("rejected") });
+
+      const outcome = await runPass(handOffTarget(), view(), BASE, passHost);
+
+      assert.equal(outcome.kind, "push-failed");
+      assert.deepEqual(calls.recordApprovedHead, []);
+    });
   });
 
   it("claims the PR and releases it even when the pass throws", async () => {

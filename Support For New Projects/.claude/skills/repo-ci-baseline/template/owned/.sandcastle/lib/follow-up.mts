@@ -18,6 +18,7 @@
 
 import { discardClosedWork, isHandOffBranch, isIssueBranch, type BranchRefs } from "./branches.mts";
 import {
+  APPROVED_HEAD_MARKER,
   BUILDING_LABEL,
   COPILOT_REREQUEST_AFTER_MS,
   FOLLOW_UP_LABEL,
@@ -30,11 +31,14 @@ import {
 import {
   addPullRequestLabel,
   closedPullRequests,
+  commentOnPullRequest,
   handBack,
   hasLabel,
   isCopilot,
+  issueComments,
   issueEvents,
   labelTimeline,
+  mainMergeOf,
   openPullRequestsForSweep,
   pullRequestBodyEdits,
   pushAccess,
@@ -50,6 +54,8 @@ import {
   type PullRequestIdentity,
   type ReviewThread,
   type TimelineLabelEvent,
+  type TimestampedComment,
+  type MainMerge,
 } from "./github.mts";
 import { activeQueueScope, approval, labelOriginFixes, loadQueue, ownerCheck, type Approval, type IsOwner } from "./queue.mts";
 import { outcomeReport, waitingPrReport, type OutcomeReport, type WaitingPrEntry, type WaitingPrReport } from "./report.mts";
@@ -209,21 +215,89 @@ export function sweepSubject(
 // Whether `login` is `other`: GitHub logins are case-insensitive.
 const sameLogin = (login: string | null, other: string) => login !== null && login.toLowerCase() === other.toLowerCase();
 
+// The comment that records `head` as a head of a hand-off PR the owner approved, or reached from one through merges of main (see handOffApproval).
+export function approvedHeadComment(head: string): string {
+  return `${APPROVED_HEAD_MARKER} ${head} -->\nSandcastle follows this pull request up from ${head.slice(0, 7)}: the head the owner approved, or a merge of main made on top of it.`;
+}
+
+// The head a comment records as approved, or undefined when it doesn't open with the marker.
+export function approvedHeadOf(body: string): string | undefined {
+  return new RegExp(`^${APPROVED_HEAD_MARKER} ([0-9a-f]{40}) -->`).exec(body)?.[1];
+}
+
+// Records `head` as a head of PR `number` the owner approved, as the host: handOffApproval trusts the comment because of who posted it.
+export function recordApprovedHead(number: number, head: string, post: (number: number, body: string) => void = commentOnPullRequest): void {
+  post(number, approvedHeadComment(head));
+}
+
+// How many merges of main handOffApproval looks through from a head to reach a recorded one. More than this is not followed up. It only
+// binds when that many merges come between two records, since a head reached through merges is recorded as it is found (a sweep that
+// skips the PR, or a record that fails to post, leaves the count growing).
+export const MAX_MAIN_MERGES = 5;
+
 // Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
-// its latest labeled event is the owner's, and nobody but the owner has renamed it or edited its description since
-// (lib/queue.mts#approval), where "the owner" is `isOwner`: the host or any login with push access. The label isn't tied
-// to the commits the owner looked at, so a later push to the branch by a login with push access is accepted, as for the
-// issue queue (binding the label to its head is a separate change). What the author check does is keep a collaborator
-// from handing off a PR of their own: one whose author is anyone else never counts.
+// its latest labeled event is the owner's, nobody but the owner has renamed it or edited its description since
+// (lib/queue.mts#approval), where "the owner" is `isOwner`: the host or any login with push access, and its head is one
+// the owner approved. The Sandcastle workflow records the head the label was added to, from the event itself (and only for
+// the repository owner's own label, so another login's label passes the event check and is never followed up), and the host
+// records each head it pushes. A head also counts when it is a merge of main that GitHub made for the host (lib/github.mts#mainMergeOf)
+// on top of one that counts, up to MAX_MAIN_MERGES deep, so an update of the branch made under the host's login (PR Auto-Merge with a
+// RELEASE_PR_PAT of the same account, the owner's Update branch button when the owner is the host) doesn't end the follow-up; an update
+// under another login, or by GITHUB_TOKEN, does. The sweep records the head it reached through such merges (recordApprovedHead), so the
+// next walk starts there.
+// A commit anyone else pushes later leaves the head unapproved, so the PR isn't followed up until the owner removes and
+// re-adds the label. Only the host's own comments count, posted at or after the label and never edited since (a login with
+// push access can edit a comment), so a stranger can't record a head and an earlier label's record doesn't carry over.
+// The author check keeps a collaborator from handing off a PR of their own.
 export function handOffApproval(
-  pr: Pick<SweepPullRequest, "number" | "author">,
-  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "isOwner" | "repositoryOwner">,
+  pr: Pick<SweepPullRequest, "number" | "author" | "headRefOid">,
+  github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "recordApprovedHead" | "isOwner" | "repositoryOwner">,
   host: string,
 ): Approval {
   if (!sameLogin(pr.author, host) && !sameLogin(pr.author, github.repositoryOwner())) {
     return { approved: false, reason: `${pr.author ?? "a deleted account"} opened it, and is neither the repository's owner nor ${host}` };
   }
-  return approval(FOLLOW_UP_LABEL, github.pullRequestEvents(pr.number), github.pullRequestBodyEdits(pr.number), github.isOwner);
+  const events = github.pullRequestEvents(pr.number);
+  const labelled = approval(FOLLOW_UP_LABEL, events, github.pullRequestBodyEdits(pr.number), github.isOwner);
+  if (!labelled.approved) return labelled;
+  // The latest by time, as approval() picks it. A time that doesn't parse makes this NaN, which no comment is at or after.
+  const since = Math.max(
+    ...events.filter((event) => event.event === "labeled" && event.label?.toLowerCase() === FOLLOW_UP_LABEL.toLowerCase()).map((event) => Date.parse(event.createdAt)),
+  );
+  const recorded = new Set(
+    github
+      .pullRequestComments(pr.number)
+      .filter((comment) => sameLogin(comment.author, host) && Date.parse(comment.createdAt) >= since && comment.updatedAt === comment.createdAt)
+      .map((comment) => approvedHeadOf(comment.body)),
+  );
+  let head = pr.headRefOid.toLowerCase();
+  let problem = "";
+  for (let merges = 0; merges <= MAX_MAIN_MERGES; merges++) {
+    if (recorded.has(head)) {
+      // The head was reached through merges of main: record the one the PR has now, so the next walk starts there and the cap
+      // counts merges since the last posted record rather than since the label. The sweep's recordApprovedHead logs a failed post
+      // and doesn't throw: the approval stands either way, and the next sweep walks the same merges and tries again.
+      if (merges > 0) github.recordApprovedHead(pr.number, pr.headRefOid.toLowerCase());
+      return labelled;
+    }
+    if (merges === MAX_MAIN_MERGES) {
+      problem = `more than ${MAX_MAIN_MERGES} merges of main on top of the last recorded head`;
+      break;
+    }
+    const merge: MainMerge = github.mergeOfMain(head);
+    if ("problem" in merge) {
+      problem = merge.problem;
+      break;
+    }
+    head = merge.firstParent.toLowerCase();
+  }
+  return {
+    approved: false,
+    reason:
+      `its head ${pr.headRefOid.slice(0, 7)} isn't one ${host} recorded as approved since the owner added the label${problem === "" ? "" : ` (${problem})`}: ` +
+      `possible causes: a commit pushed after the label, the record edited after it was posted, more than ${MAX_MAIN_MERGES} merges of main since the last record, ` +
+      `or the record not posted yet (the next sweep may find it). Once the owner has looked at the branch, remove and re-add ${FOLLOW_UP_LABEL}`,
+  };
 }
 
 // What the sweep does about one PR, decided by `decide`.
@@ -376,7 +450,18 @@ export type FollowUpGitHub = {
   // The login of the account the repository belongs to, whom a hand-off PR's author must be (or the host). live:
   // repositoryOwnerLogin().
   repositoryOwner(): string;
+  // Every comment on a PR, with when it was posted and last edited, for the heads the host recorded as approved. live: issueComments.
+  pullRequestComments(number: number): TimestampedComment[];
+  // Whether `commit` is a merge of main GitHub made for the host, and its first parent if so. live: mainMergeOf.
+  mergeOfMain(commit: string): MainMerge;
+  // Records a head that handOffApproval verified through merges of main, as the host. live: recordApprovedHead.
+  recordApprovedHead(number: number, head: string): void;
 };
+
+// mainMergeOf for the signed-in host: the merge must be authored by that login. `host` and `merge` are injectable for the test.
+export function liveMergeOfMain(commit: string, host: () => string = signedInHostLogin, merge: typeof mainMergeOf = mainMergeOf): MainMerge {
+  return merge(commit, host());
+}
 
 export const liveFollowUpGitHub: FollowUpGitHub = {
   hostLogin: () => signedInHostLogin(),
@@ -396,6 +481,9 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   pullRequestBodyEdits: (number) => pullRequestBodyEdits(number),
   followsHandOffs: () => isDefaultQueueScope(activeQueueScope()),
   repositoryOwner: () => repositoryOwnerLogin(),
+  pullRequestComments: (number) => issueComments(number),
+  mergeOfMain: (commit) => liveMergeOfMain(commit),
+  recordApprovedHead: (number, head) => recordApprovedHead(number, head),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the
@@ -544,6 +632,15 @@ export function sweepPullRequests(
         handOffApproval(pr, {
           pullRequestEvents: eventsOfPr,
           pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
+          pullRequestComments: (number) => github.pullRequestComments(number),
+          mergeOfMain: (commit) => github.mergeOfMain(commit),
+          recordApprovedHead: (number, head) => {
+            try {
+              github.recordApprovedHead(number, head);
+            } catch (error) {
+              log(`  ⚠ Couldn't record PR #${number}'s head ${head.slice(0, 7)}, so the next sweep walks the same merges again: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          },
           isOwner: github.isOwner,
           repositoryOwner: () => github.repositoryOwner(),
         }, host),

@@ -114,12 +114,33 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   what GitHub Actions always runs) follows hand-offs.
 - **Who.** The label must come from the owner, checked from the pull request's events and its title and description edits (`handOffApproval`, built on `lib/queue.mts#approval`):
   the latest `labeled` event must be an owner's (`isOwner`: the host login or any login with push access, as for `sandcastle:ready`), and a rename or description edit by anyone else at or after it
-  voids it until the owner adds the label again.
+  voids it until the owner adds the label again. In practice only the repository owner's own label counts, because only that label records a head (next bullet):
+  a label from another login with push access passes this check and is never followed up.
   The pull request must also have been opened by the repository's owner (a session posts under the owner's token) or by the host login,
   so a collaborator can't hand off a pull request of their own (`isOwner` counts every login with push access, so it can't tell them apart;
-  `handOffApproval` compares the author with the account the repository belongs to). This does not bind the label to the commits:
-  a push to the branch after the label is not checked, and a login with push access can still push to an owner's pull request, the same trust as the issue queue.
-  Binding the label to the head the owner labelled is tracked in mpaulosky/dotfiles#334. A repository an organisation owns follows only the host's pull requests.
+  `handOffApproval` compares the author with the account the repository belongs to).
+- **The head.** The label is bound to the commits the owner labelled. When the repository owner adds it, the `record-head` job of `sandcastle.yml` (a `pull_request_target` run on `labeled`,
+  for a same-repository pull request, first attempt only) comments `<!-- sandcastle:approved-head {sha} -->` with the head from the event itself (`APPROVED_HEAD_MARKER`),
+  and records nothing when the pull request's head has already moved on. `handOffApproval` follows the pull request up only when its head is in such a comment
+  from the host login, posted at or after the latest `labeled` event and never edited (a login with push access can edit a comment).
+  A head the host pushed counts too: a pass records the commit it pushed. So does a merge of `main` that GitHub made for the host on top of a head that counts,
+  up to `MAX_MAIN_MERGES` deep (`mainMergeOf` in `lib/github.mts`: committed by web-flow with a verified signature, authored by the host login, two parents, the second a commit `main` contains).
+  That covers an update made under the host's login (PR Auto-Merge when its `RELEASE_PR_PAT` is the account of `SANDCASTLE_GH_TOKEN`,
+  the Update branch button when the owner is that account), but not a merge a collaborator makes, nor one made by `GITHUB_TOKEN` or
+  another account. The sweep records a head it reached through such merges, so the walk starts from there next time;
+  more than `MAX_MAIN_MERGES` merges since the last posted record end the follow-up, with the reason in the run log.
+  A commit anyone else pushes after the label, a force-push, or a record that couldn't be made (the job couldn't read the pull request's head, or its post failed three times) leaves the head unapproved,
+  and the pull request is not followed up until the owner removes and re-adds the label.
+  The record needs the Sandcastle workflow in Actions with `SANDCASTLE_GH_TOKEN` set, and that token must belong to the account the sweep runs as (`signedInHostLogin`):
+  a repo that runs Sandcastle only locally, or whose token is another account's, can't hand a pull request off.
+  A pull request labelled before a repo got this job has no record and stops being followed up (the log says why): remove the label and add it again.
+  An update-branch made under any other account than `SANDCASTLE_GH_TOKEN`'s ends the follow-up the same way, so a repo whose `RELEASE_PR_PAT` is another account's should expect to re-add the label
+  after PR Auto-Merge updates a branch.
+  Two behaviours of GitHub are assumed and not checked here. One: `update-branch` makes a two-parent commit that web-flow signs and the calling account authors,
+  and no API lets another account produce one with the host as author. Two: a fresh comment's `updated_at` equals its `created_at`
+  (`handOffApproval` counts a record only then, so a change in GitHub would stop every hand-off, and the log would say the head isn't recorded).
+  The Seed `.claude/rules/sandcastle-hand-off.md` is never overwritten, so a repo that has it keeps the older text (which says a push after the label isn't checked) until it deletes the file and re-Applies.
+  A repository an organisation owns, which has no owner login to match, follows no hand-off.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
   When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
   That claim is best effort: a number that names no issue, or the pull request's own number, is passed on without it, and only a build already holding the issue makes the pass skip.
@@ -132,8 +153,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
 - **The session guidance** is the Seed `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
   which Apply can't edit. It is the repo's once written, so Apply never overwrites it.
 
-The workflow's triggers for the label (a `pull_request` `labeled` trigger from the owner, and `chore/` branches in the `workflow_run` and review lists) are not in the Template's
-`sandcastle.yml` yet: until they are, the schedule and the existing triggers pick a labelled pull request up.
+The workflow's `pull_request_target` `labeled` trigger starts only the `record-head` job, never a Sandcastle run: the schedule and the existing triggers pick a labelled pull request up,
+and `chore/` branches are not in the `workflow_run` and review lists.
 
 ## When Apply adds it
 
@@ -155,9 +176,12 @@ In any other repo, Apply leaves out every file under `.sandcastle/`, plus `packa
 start a follow-up, and Sandcastle can't change it (its token has no Workflows permission), so a change comes from a Template PR and reaches the repos by re-Apply.
 Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that runs Sandcastle (it has a `.sandcastle/` folder, or is new).
 
+- **A second job, `record-head`, runs on `pull_request_target` `labeled`.** It posts the approved-head comment for the owner's `sandcastle:follow-up` label
+  (permissions `{}`, no checkout, no action, a no-op with a warning when the secret is unset), so a hand-off is followed up only in a repo that runs Sandcastle in Actions.
+  `pull_request_target`, not `pull_request`, so the job is the one on `main`, not the pull request branch's. `test.sh` pins its guards.
 - **A repo opts in with the `SANDCASTLE_GH_TOKEN` secret** (a fine-grained PAT with Contents, Issues, Pull requests and Actions read and write, and no Workflows permission),
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
-  locally gets a green run with a notice on every trigger the job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
+  locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
 - **`.github/ci/sandcastle-skills.txt` lists the skills the run mounts (Seed).** A hosted runner has no `~/.claude/skills`, which `lib/skills.mts` mounts
   the `SANDBOX_SKILLS` from. The file is data: a `dotfiles-sha` line (the commit of mpaulosky/dotfiles' `main` to take them from, 40 lowercase hex digits, pinned like an action)
   and a `skill` line per skill name; the Seed has neither, and installs nothing.
@@ -172,8 +196,9 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   which files are the repo's own). It drops the file from that list in the same PR and moves the skills it installs into `sandcastle-skills.txt`.
   Anything else its workflow does that the Template's doesn't needs a Template change first.
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
-  A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones;
-  the run mode (mpaulosky/dotfiles#313) and the hand-off code (mpaulosky/dotfiles#314) are in the Template, the workflow triggers are not) must not be
+  A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-run and hand-opened-PR ones;
+  the run mode (mpaulosky/dotfiles#313) and the hand-off code (mpaulosky/dotfiles#314) are in the Template, and so is the hand-off label's own
+  trigger, the `record-head` job on `pull_request_target`; the follow-up-run and hand-opened-PR workflow triggers are not) must not be
   re-Applied until those land, or its re-Apply drops them. `rollout.sh` re-Applies every repo in `github/repos.txt` and can't leave one out
   (once TicketManager's re-Apply PR has merged, a run re-Applies all the others, auth0-management-app included), so until then don't run it:
   re-Apply each repo except auth0-management-app one at a time with `reapply.sh`, TicketManager first.

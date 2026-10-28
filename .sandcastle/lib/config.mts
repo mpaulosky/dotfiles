@@ -284,7 +284,7 @@ export const FOLLOW_UP_LABEL = "sandcastle:follow-up";
 export const FOLLOW_UP_LABEL_DEFINITION: SandcastleLabel = {
   name: FOLLOW_UP_LABEL,
   color: "C5DEF5",
-  description: "Sandcastle follows this pull request up. Counts only from the owner or a login with push access.",
+  description: "Sandcastle follows this pull request up. Counts only from the owner, at the head they labelled.",
 };
 
 // Every label the host creates at startup (lib/github.mts#ensureLabels): SANDCASTLE_LABELS, the local queue's label and
@@ -294,6 +294,11 @@ export const HOST_LABELS: readonly SandcastleLabel[] = [...SANDCASTLE_LABELS, LO
 // The marker a Claude Code session ends every reply and comment with (docs/PROCESS.md): it posts under the owner's token,
 // so nothing else tells its comments from the owner's.
 export const SESSION_REPLY_MARKER = "<!-- claude-session -->";
+
+// What opens the comment that records a head of a hand-off PR as approved (lib/follow-up.mts#approvedHeadComment): the Sandcastle
+// workflow posts it when the owner adds the hand-off label, the host posts it after each push it makes to the branch, and the sweep posts it for a head it reached through merges of main. The
+// workflow's own copy of the text is pinned to this one by the Template's test.sh.
+export const APPROVED_HEAD_MARKER = "<!-- sandcastle:approved-head";
 
 // Whether `scope` is the queue GitHub Actions always runs, every issue labelled QUEUE_LABEL. Only that run follows
 // hand-off pull requests.
@@ -335,14 +340,18 @@ export const COPILOT_REVIEWER = "copilot-pull-request-reviewer[bot]";
 // (lib/follow-up.mts#decide).
 export const COPILOT_REREQUEST_AFTER_MS = 60 * 60 * 1000;
 
-// The check run the Sandcastle workflow's own job reports
-// (.github/workflows/sandcastle.yml's `name:` for its one job), together with
+// The check run the Sandcastle workflow's sandcastle job reports
+// (.github/workflows/sandcastle.yml's `name:` for that job), together with
 // SANDCASTLE_WORKFLOW below. A run started
 // by a pull_request_review or unlabeled event reports it on the head of the
 // PR it sweeps, so the sweep and the follow-up pass leave it out
 // (withoutOwnCheck below): running, it would hold the PR that
 // started the run, and red after a hand-back, it would send the follow-up
-// role Sandcastle's own job log.
+// role Sandcastle's own job log. The workflow's record-head job, "Record the approved head", is a different check and is not
+// left out. It runs on pull_request_target, whose checks report on the PR's head (PR Auto-Merge's own does: its pull_request_target
+// run on mpaulosky/dotfiles#342 had the PR's head as its head_sha), so a record the job can't make (a head that isn't a SHA or has
+// moved, a read of the head that fails, or three failed posts) leaves a red "Record the approved head" check on the PR until the
+// owner removes and adds the label and the job passes.
 export const SANDCASTLE_CHECK = "Sandcastle";
 
 // The Sandcastle workflow's name (the top-level `name:` of

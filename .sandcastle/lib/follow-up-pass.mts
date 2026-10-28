@@ -31,6 +31,7 @@ import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel
 import { runCheckpoint, runGate, tail, type GateRun } from "./checkpoint.mts";
 import {
   BUILDING_LABEL,
+  FOLLOW_UP_LABEL,
   FOLLOW_UP_MARKER,
   FOLLOW_UP_PASS_CAP,
   FOLLOW_UP_REPLY_MARKER,
@@ -39,7 +40,7 @@ import {
   SESSION_REPLY_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import { issueNumberOf, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
+import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
   failedCheckLogs,
@@ -547,6 +548,8 @@ export type PassHost = {
   resolveThread(threadId: string): void;
   // lib/github.mts#commentOnPullRequest.
   commentOnPullRequest(pr: number, body: string): void;
+  // Records `head`, which the pass pushed, as a head of the hand-off PR the owner approved (lib/follow-up.mts#approvedHeadComment).
+  recordApprovedHead(pr: number, head: string): void;
   // lib/github.mts#handBack({ kind: "pr", number: pr }, "sandcastle:needs-human", reason, body).
   handBack(pr: number, reason: string, body: string): void;
   // lib/report.mts#humanThreadReport.record.
@@ -590,6 +593,7 @@ export const livePassHost: PassHost = {
   replyToThread: (threadId, body) => replyToReviewThread(threadId, body),
   resolveThread: (threadId) => resolveReviewThread(threadId),
   commentOnPullRequest: (pr, body) => commentOnPullRequest(pr, body),
+  recordApprovedHead: (pr, head) => recordApprovedHead(pr, head),
   handBack: (pr, reason, body) => handBack({ kind: "pr", number: pr }, "sandcastle:needs-human", reason, body),
   // A thread left for a person is found again every round a pass looks at
   // its PR, so the run's report lists it once.
@@ -1150,6 +1154,18 @@ async function passOnMarkedIssue(
       }
     }
 
+    // The owner approved the head the pass started from, so the head it pushed is recorded as approved or the next sweep
+    // would find a commit nobody vouched for. A failed record leaves the PR unapproved until the owner removes and re-adds the label.
+    const unrecorded: string[] = [];
+    if (pushed !== undefined && target.handOff !== undefined) {
+      try {
+        host.recordApprovedHead(target.number, pushed);
+      } catch (error) {
+        log(`couldn't record ${pushed} as approved: ${error}`);
+        unrecorded.push(`recording the pushed head as approved, so the owner has to remove and add ${FOLLOW_UP_LABEL} again before the PR is followed up`);
+      }
+    }
+
     // Replied to and resolved before the red-CI re-run is decided, so a
     // give-up below for a check still red after its re-run never throws the
     // role's verdicts away unanswered: the push, if any, has already
@@ -1158,7 +1174,7 @@ async function passOnMarkedIssue(
     const { kept: actions, unverified } = await fixesInPush(sandbox, matched.actions, { gated, head: target.headRefOid, base, hostMerge });
     if (unverified.length > 0) log(`left ${unverified.length} "fixed" verdict(s) unanswered: their commit isn't one this pass added`);
     const { ignored } = matched;
-    const failedWrites = answerThreads(actions, host, log);
+    const failedWrites = [...unrecorded, ...answerThreads(actions, host, log)];
 
     // A push starts CI afresh on the new head, which is as good as a re-run,
     // so only a head the pass left as it was gets its flaky checks re-run.

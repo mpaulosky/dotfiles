@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { describe, it } from "node:test";
 import { SANDCASTLE_CHECK, SANDCASTLE_WORKFLOW } from "./config.mts";
+import { approvedHeadOf } from "./follow-up.mts";
 import type { OpenPullRequest } from "./github.mts";
 import { findOverlaps, holdOverlappingPicks, pathKey, type FilePick, type OverlapGitHub } from "./overlap.mts";
 import { OutcomeReport } from "./report.mts";
@@ -67,6 +68,19 @@ describe("GATE_COVERED_CHECKS", () => {
     for (const name of GATE_COVERED_CHECKS) {
       assert.match(workflow, new RegExp(`^    name: ${name}$`, "m"), `no job named ${name}`);
     }
+  });
+});
+
+// The record-head job builds its comment in shell, so only a read of the workflow's text with the real approvedHeadOf shows the sweep reads it back.
+// This file is dotfiles' own: the Template's Owned tests run in a scratch copy of .sandcastle/ alone, where there is no workflow to read.
+describe("the Sandcastle workflow's record-head comment", () => {
+  it("is read back by approvedHeadOf once the head is put in", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/sandcastle.yml", import.meta.url), "utf8");
+    const firstLine = /^ +body="(.*)$/m.exec(workflow)?.[1];
+    assert.ok(firstLine !== undefined, 'sandcastle.yml\'s record-head script must build its comment as body="..."');
+    const head = "0123456789abcdef0123456789abcdef01234567";
+
+    assert.equal(approvedHeadOf(`${firstLine.replace("$HEAD_SHA", head)}\nSandcastle follows this pull request up.`), head);
   });
 });
 

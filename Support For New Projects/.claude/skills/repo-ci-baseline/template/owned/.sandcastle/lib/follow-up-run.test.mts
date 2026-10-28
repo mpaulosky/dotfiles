@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { UncountedStopError } from "./errors.mts";
 import { FOLLOW_UP_LABEL } from "./config.mts";
-import type { FollowUpGitHub, PassTarget, SweepPullRequest, SweepResult } from "./follow-up.mts";
+import { approvedHeadComment, type FollowUpGitHub, type PassTarget, type SweepPullRequest, type SweepResult } from "./follow-up.mts";
 import { followUpOnlyRun, liveFollowUpRunSteps, liveSweep, type FollowUpRunSteps } from "./follow-up-run.mts";
 import type { ClosedPullRequest, SandcastleIssue } from "./github.mts";
 
@@ -166,6 +166,9 @@ describe("liveSweep", () => {
       pullRequestBodyEdits: () => [],
       followsHandOffs: () => true,
       repositoryOwner: () => "owner",
+      pullRequestComments: () => [],
+      mergeOfMain: () => ({ problem: "not stubbed" }),
+      recordApprovedHead: () => {},
     };
     return { github, closedCalls, handBacks };
   }
@@ -205,6 +208,7 @@ describe("liveSweep", () => {
     github.openPullRequests = () => [handOffPr];
     github.pullRequestEvents = () => [{ event: "labeled", actor: "owner", label: FOLLOW_UP_LABEL, createdAt: "2026-10-09T10:00:00Z" }];
     github.isOwner = (login) => login === "owner";
+    github.pullRequestComments = () => [{ author: "host", body: approvedHeadComment("b".repeat(40)), createdAt: "2026-10-09T10:05:00Z", updatedAt: "2026-10-09T10:05:00Z" }];
 
     const result = liveSweep(github, () => {});
 

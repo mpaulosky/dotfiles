@@ -104,11 +104,22 @@ def add(args):
     entries.append({"id": args.id, "lens": args.lens, "path": file.relative_to(base).as_posix(), "start": args.start,
                     "end": args.end, "hash": value, "reason": args.reason})
     listing = Path(args.listing)
-    listing.parent.mkdir(parents=True, exist_ok=True)
+    private_folder(listing.parent)
     handle, temporary = tempfile.mkstemp(dir=listing.parent, suffix=".tmp")
     with os.fdopen(handle, "w", encoding="utf-8") as stream:
         json.dump(entries, stream, indent=2)
     os.replace(temporary, listing)
+
+
+def private_folder(folder):
+    """Make the folder, and each missing one above it, readable by this user only: the reasons can describe a weakness."""
+    missing = []
+    while not folder.exists():
+        missing.append(folder)
+        folder = folder.parent
+    for made in reversed(missing):
+        made.mkdir(mode=0o700)
+        made.chmod(0o700)
 
 
 def changed(root, entry):

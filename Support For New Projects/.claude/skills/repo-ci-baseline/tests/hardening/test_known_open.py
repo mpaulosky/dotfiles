@@ -245,3 +245,33 @@ def test_match_refuses_a_bad_line_and_a_path_outside_the_root(tmp_path):
         assert cli("match", str(listing), "--root", str(root), "--lens", "L", "--path", "src/f.sh", "--line", line).returncode == 2
     result = cli("match", str(listing), "--root", str(root), "--lens", "L", "--path", "../x", "--line", "1")
     assert result.returncode == 2 and "is outside" in result.stderr
+
+
+def test_match_suppresses_when_any_covering_entry_is_unchanged(tmp_path):
+    # Two entries cover line 3; a fix changed only one's range. The settled one still holds, and both are listed.
+    root, listing = setup(tmp_path, "a\nb\nc\nd\n")
+    add(root, listing, ident="R3", start="2", end="3")
+    add(root, listing, ident="R4", start="3", end="4")
+    (root / "src/f.sh").write_text("a\nB\nc\nd\n", encoding="utf-8")
+    found = match(root, listing, line="3")
+    assert found["suppressed"] is True
+    assert sorted((e["id"], e["changed"]) for e in found["entries"]) == [("R3", True), ("R4", False)]
+
+
+def test_match_skips_a_hand_edited_entry_outside_the_root_instead_of_failing(tmp_path):
+    root, listing = setup(tmp_path)
+    add(root, listing)
+    entries = json.loads(listing.read_text(encoding="utf-8"))
+    listing.write_text(json.dumps([{**entries[0], "id": "R9", "path": "../outside.txt"}, *entries]), encoding="utf-8")
+    result = cli("match", str(listing), "--root", str(root), "--lens", "Security", "--path", "src/f.sh", "--line", "2")
+    assert result.returncode == 0, result.stderr
+    assert [e["id"] for e in json.loads(result.stdout)["entries"]] == ["R3"]
+
+
+def test_add_makes_every_folder_it_creates_private(tmp_path):
+    # The reasons can describe a weakness: no other local user reads them while the review runs.
+    root, _ = setup(tmp_path)
+    listing = tmp_path / "gone" / "hardening" / "known-open.json"
+    assert add(root, listing).returncode == 0
+    assert (listing.parent.stat().st_mode & 0o777, listing.parent.parent.stat().st_mode & 0o777) == (0o700, 0o700)
+    assert listing.stat().st_mode & 0o077 == 0

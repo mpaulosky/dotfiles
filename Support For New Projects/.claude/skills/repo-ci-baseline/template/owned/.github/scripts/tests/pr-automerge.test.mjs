@@ -123,19 +123,38 @@ function claudeReviewsOf(...commits) {
 }
 
 // Review threads, each opened by the given login, all unresolved unless marked.
-// { login, review } opens the thread in the review with that id.
+// { login, review } opens the thread in the review with that id; { reviewBody }
+// gives that review's body (Claude Review's starts with its marker). { path, line,
+// url } place the opening comment, { replies: [login, ...] } add later comments,
+// { kind } is the opener's GraphQL type (default: a Bot for Copilot and
+// github-actions, else a User) and { total } is comments.totalCount.
 function threadsBy(...authors) {
-  const nodes = authors.map((author) => ({
-    isResolved: author.resolved ?? false,
-    comments: {
-      nodes: [
-        {
-          author: author.login === null ? null : { login: author.login ?? author },
-          pullRequestReview: author.review ? { id: author.review } : null
-        }
-      ]
-    }
-  }));
+  const nodes = authors.map((author) => {
+    const login = author.login === null ? null : (author.login ?? author);
+    const kind = author.kind ?? (login === COPILOT || login === ACTIONS ? "Bot" : "User");
+    const review = author.review || author.reviewBody !== undefined
+      ? { id: author.review, body: author.reviewBody ?? "" }
+      : null;
+    const comments = [
+      {
+        url: author.url ?? "https://github.com/octo/repo/pull/7#discussion_r1",
+        author: login === null ? null : { login, __typename: kind },
+        pullRequestReview: review
+      },
+      ...(author.replies ?? []).map((reply) => ({
+        url: "https://github.com/octo/repo/pull/7#discussion_r2",
+        author: { login: reply, __typename: "User" },
+        pullRequestReview: null
+      }))
+    ];
+    return {
+      isResolved: author.resolved ?? false,
+      path: author.path ?? "src/a.py",
+      line: author.line ?? 12,
+      originalLine: author.line ?? 12,
+      comments: { totalCount: author.total ?? comments.length, nodes: comments }
+    };
+  });
   return { totalCount: nodes.length, nodes };
 }
 
@@ -3004,4 +3023,129 @@ test("says in the patClient comment that the PAT adds review:claude and needs Pu
   assert.match(comment, /RELEASE_PR_PAT|\bthe PAT\b/);
   assert.match(comment, /pull[ -]requests/i);
   assert.match(comment, /\bwrite\b/i);
+});
+
+// ── Resolved bot threads nobody replied to: a notice, never a hold ──────────
+
+const UNREPLIED = "resolved without a reply";
+const CLAUDE_REVIEW_BODY = CLAUDE_MARKER + "\nNo findings.";
+
+const unrepliedNotices = (logs) => logs.filter((line) => line.startsWith("notice: PR #7") && line.includes(UNREPLIED));
+
+test("merges a PR with a resolved Copilot thread nobody replied to, and logs a notice naming path:line and the url", async () => {
+  const pr = readyPr({
+    reviewThreads: threadsBy({ login: COPILOT, resolved: true, path: "src/a.py", line: 12, url: "https://github.com/octo/repo/pull/7#discussion_r99" })
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  const notices = unrepliedNotices(logs);
+  assert.equal(notices.length, 1, logs.join("\n"));
+  assert.ok(notices[0].includes("src/a.py:12") && notices[0].includes("https://github.com/octo/repo/pull/7#discussion_r99"), notices[0]);
+  assert.ok(notices[0].includes("PROCESS.md"), notices[0]);
+});
+
+test("logs the notice for a resolved Claude Review thread nobody replied to", async () => {
+  const pr = readyPr({
+    reviewThreads: threadsBy({ login: ACTIONS, review: "claude-1", reviewBody: CLAUDE_REVIEW_BODY, resolved: true, path: "b.py", line: 3 })
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  assert.ok(unrepliedNotices(logs).some((line) => line.includes("b.py:3")), logs.join("\n"));
+});
+
+test("logs no notice for a resolved bot thread that has a reply", async () => {
+  const pr = readyPr({
+    reviewThreads: threadsBy(
+      { login: COPILOT, resolved: true, replies: [OWNER] },
+      { login: ACTIONS, review: "claude-1", reviewBody: CLAUDE_REVIEW_BODY, resolved: true, replies: [OWNER] }
+    )
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  assert.deepEqual(unrepliedNotices(logs), [], logs.join("\n"));
+});
+
+test("counts a reply by the opener itself as no reply", async () => {
+  const pr = readyPr({ reviewThreads: threadsBy({ login: COPILOT, resolved: true, replies: [COPILOT] }) });
+  const { logs } = await evaluate(pr);
+
+  assert.equal(unrepliedNotices(logs).length, 1, logs.join("\n"));
+});
+
+test("logs no notice for a person's resolved thread, one with no author or another bot's", async () => {
+  const pr = readyPr({
+    reviewThreads: threadsBy(
+      { login: OWNER, resolved: true },
+      { login: null, resolved: true },
+      { login: "dependabot", kind: "Bot", resolved: true },
+      { login: COPILOT, kind: "User", resolved: true }
+    )
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  assert.deepEqual(unrepliedNotices(logs), [], logs.join("\n"));
+});
+
+test("logs no notice for a github-actions thread whose review is not Claude Review's", async () => {
+  const pr = readyPr({
+    reviewThreads: threadsBy({ login: ACTIONS, review: "other-1", reviewBody: "Some other workflow's review.", resolved: true })
+  });
+  const { logs } = await evaluate(pr);
+
+  assert.deepEqual(unrepliedNotices(logs), [], logs.join("\n"));
+});
+
+test("logs no notice for a resolved thread with more comments than were read", async () => {
+  const pr = readyPr({ reviewThreads: threadsBy({ login: COPILOT, resolved: true, total: 11 }) });
+  const { logs } = await evaluate(pr);
+
+  assert.deepEqual(unrepliedNotices(logs), [], logs.join("\n"));
+});
+
+test("an unresolved bot thread still waits and logs no notice", async () => {
+  const pr = readyPr({ reviewThreads: threadsBy(COPILOT, { login: COPILOT, resolved: true }) });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("1 unresolved review thread(s)")), logs.join("\n"));
+  assert.deepEqual(unrepliedNotices(logs), [], logs.join("\n"));
+});
+
+test("names at most three unreplied threads in the notice and counts the rest", async () => {
+  const pr = readyPr({
+    reviewThreads: threadsBy(...[1, 2, 3, 4, 5].map((line) => ({ login: COPILOT, resolved: true, path: `f${line}.py`, line })))
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  const notices = unrepliedNotices(logs);
+  assert.equal(notices.length, 1, logs.join("\n"));
+  for (const named of ["f1.py:1", "f2.py:2", "f3.py:3", "and 2 more"]) {
+    assert.ok(notices[0].includes(named), notices[0]);
+  }
+  assert.ok(!notices[0].includes("f4.py") && !notices[0].includes("f5.py"), notices[0]);
+});
+
+test("old thread nodes without comments or a path log no notice and don't throw", async () => {
+  const pr = readyPr({ reviewThreads: { totalCount: 2, nodes: [{ isResolved: true }, { isResolved: true, comments: null }] } });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  assert.deepEqual(unrepliedNotices(logs), [], logs.join("\n"));
+});
+
+test("asks GraphQL for each thread's path, comments, their authors and their review's body", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.length > 0);
+  for (const query of queries) {
+    const threads = query.slice(query.indexOf("reviewThreads(first: 100)"));
+    for (const field of ["path", "originalLine", "comments(first:", "totalCount", "url", "__typename", "pullRequestReview", "body"]) {
+      assert.ok(threads.includes(field), `reviewThreads lacks ${field}\n${query}`);
+    }
+  }
 });

@@ -18,10 +18,24 @@ def pr_node(number=7, title="feat: Something", draft=False, merge_state="CLEAN",
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
         "reviews": {"nodes": [{"author": {"login": review[0]}, "commit": {"oid": review[1]},
                                "body": review[2] if len(review) > 2 else ""} for review in reviews]},
-        "reviewThreads": {"nodes": [{"isResolved": resolved} for resolved in threads]},
+        # A thread is True/False (resolved or not) or a full node from thread_node().
+        "reviewThreads": {"nodes": [{"isResolved": thread} if isinstance(thread, bool) else thread
+                                    for thread in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
                                           if contexts else None}}]},
     }
+
+
+def thread_node(login="copilot-pull-request-reviewer", kind="Bot", review="", replies=(), resolved=True,
+                path="src/a.py", line=12, total=None):
+    """A reviewThreads node with comments: the opener, then one reply per login in replies."""
+    comments = [{"url": "https://github.com/o/r/pull/7#discussion_r1",
+                 "author": {"login": login, "__typename": kind} if login else None,
+                 "pullRequestReview": {"body": review}}]
+    comments += [{"url": "https://github.com/o/r/pull/7#discussion_r2", "author": {"login": reply, "__typename": "User"},
+                  "pullRequestReview": None} for reply in replies]
+    return {"isResolved": resolved, "path": path, "line": line, "originalLine": line,
+            "comments": {"totalCount": len(comments) if total is None else total, "nodes": comments}}
 
 
 def run(argv, data):
@@ -146,3 +160,89 @@ def test_check_runs_carry_their_database_id_as_rank():
     check = st.to_check({"__typename": "CheckRun", "databaseId": 113578170924, "name": "Test Suite",
                          "status": "COMPLETED", "conclusion": "CANCELLED", "startedAt": None})
     assert check.rank == 113578170924 and check.started_at == ""
+
+
+# ── Resolved bot threads nobody replied to ──────────────────────────────────
+
+NOTICE = "notice: resolved without a reply: "
+CLAUDE_REVIEW = "<!-- claude-review -->\n**Claude Review**"
+
+
+def line_of(*threads):
+    _, out, _ = run(["owner/app"], {"owner/app": repo(pr_node(threads=threads))})
+    return out
+
+
+def test_a_resolved_bot_thread_with_no_reply_ends_the_line_with_a_notice():
+    out = line_of(thread_node())
+    assert out.count("\n") == 1 and out.rstrip("\n").endswith(NOTICE + "src/a.py:12")
+    assert "threads:0" in out
+
+
+def test_a_resolved_claude_review_thread_with_no_reply_is_noticed_too():
+    assert line_of(thread_node(login="github-actions", review=CLAUDE_REVIEW)).rstrip("\n").endswith(NOTICE + "src/a.py:12")
+
+
+def test_a_thread_with_a_reply_has_no_notice():
+    assert "notice" not in line_of(thread_node(replies=["octo"]))
+
+
+def test_a_persons_thread_and_a_sandcastle_replied_thread_have_no_notice():
+    assert "notice" not in line_of(thread_node(login="octo", kind="User"))
+    # Sandcastle's reply is posted under the owner's login, so it is just a reply.
+    assert "notice" not in line_of(thread_node(replies=["octo"]), thread_node(login="octo", kind="User"))
+
+
+def test_another_workflows_github_actions_thread_and_an_unresolved_bot_thread_have_no_notice():
+    assert "notice" not in line_of(thread_node(login="github-actions", review="Some other workflow's review."))
+    out = line_of(thread_node(resolved=False))
+    assert "notice" not in out and "threads:1" in out
+
+
+def test_a_thread_with_more_comments_than_were_read_has_no_notice():
+    assert "notice" not in line_of(thread_node(total=11))
+
+
+def test_a_thread_without_a_path_or_a_line_is_named_by_what_it_has():
+    assert line_of(thread_node(path="src/a.py", line=None)).rstrip("\n").endswith(NOTICE + "src/a.py")
+    assert line_of(thread_node(path=None, line=None)).rstrip("\n").endswith(NOTICE + "thread")
+    original = dict(thread_node(line=None), originalLine=4)
+    assert line_of(original).rstrip("\n").endswith(NOTICE + "src/a.py:4")
+
+
+def test_the_notice_names_at_most_three_threads():
+    out = line_of(*[thread_node(path=f"f{n}.py", line=n) for n in range(1, 6)])
+    assert out.rstrip("\n").endswith(NOTICE + "f1.py:1, f2.py:2, f3.py:3 and 2 more")
+
+
+def test_a_path_with_a_newline_or_an_escape_is_printed_escaped():
+    out = line_of(thread_node(path="a\nb\x1b[31m.py"))
+    assert out.count("\n") == 1
+    assert "\x1b" not in out and "\\n" in out and "\\x1b" in out
+
+
+def test_the_notice_leaves_the_landing_decision_alone():
+    reviewed = [("copilot-pull-request-reviewer", HEAD)]
+    plain = run(["owner/app"], {"owner/app": repo(pr_node(reviews=reviewed, threads=[True]))})[1]
+    noticed = run(["owner/app"], {"owner/app": repo(pr_node(reviews=reviewed, threads=[thread_node()]))})[1]
+    assert noticed.startswith(plain.rstrip("\n")) and noticed.rstrip("\n").endswith(NOTICE + "src/a.py:12")
+    assert noticed.split(" -> ")[1].split(" notice:")[0] == plain.split(" -> ")[1].rstrip("\n")
+
+
+def test_threads_with_no_comments_key_print_as_before():
+    out = line_of(True, False)
+    assert "notice" not in out and "threads:1" in out
+    assert "notice" not in line_of({"isResolved": True, "comments": None})
+
+
+def test_to_state_lists_the_unreplied_threads():
+    node = pr_node(threads=[thread_node(), thread_node(replies=["octo"], path="b.py"), thread_node(login="octo", kind="User")])
+    assert st.to_state(node, **st.repo_flags("full")).unreplied_threads == ("src/a.py:12",)
+
+
+def test_the_query_fetches_the_threads_comments_their_authors_and_reviews():
+    threads = st.QUERY[st.QUERY.index("reviewThreads"):]
+    threads = threads[:threads.index("commits(")]
+    for field in ("isResolved", "path", "line", "originalLine", "comments(", "totalCount", "url", "author { login __typename }",
+                  "pullRequestReview { body }"):
+        assert field in threads, field

@@ -133,6 +133,40 @@ class Checks:
         return not (self.running or self.failed or self.cancelled)
 
 
+COPILOT_REVIEWER = "copilot-pull-request-reviewer"
+
+
+@dataclass(frozen=True)
+class Thread:
+    """One review thread, as much of it as the unreplied-thread notice reads.
+
+    opener, opener_kind ("Bot", "User" or "") and opener_review (the review body)
+    are the thread's opening comment's author and review; repliers are the
+    logins of the later comments; partial: more comments than were read;
+    name: the printable-safe path:line.
+    """
+
+    resolved: bool
+    opener: str
+    opener_kind: str
+    opener_review: str
+    repliers: tuple[str, ...]
+    partial: bool
+    name: str
+
+
+def bot_thread(thread):
+    raise NotImplementedError("Not implemented")
+
+
+def unreplied_threads(threads):
+    raise NotImplementedError("Not implemented")
+
+
+def unreplied_notice(pr):
+    raise NotImplementedError("Not implemented")
+
+
 @dataclass(frozen=True)
 class PrState:
     """What decide() reads about one PR.
@@ -173,6 +207,7 @@ class PrState:
     copilot_declined: frozenset[str] = field(default_factory=frozenset)
     merge_commits: frozenset[str] = field(default_factory=frozenset)
     open_threads: int = 0
+    unreplied_threads: tuple[str, ...] = ()
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
     checks_required: bool = True

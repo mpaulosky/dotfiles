@@ -125,14 +125,16 @@ whether or not that label counts, and says how many other open PRs it left out.
   counted by `followUpPassCount` in `lib/github.mts`, the count the pass checks.
 - **`held`.** The sweep's own answer: `sweepContext`, `admitToSweep` (`sweepSubject` and the hand-off approval), `labelOriginHold` and `decide`
   in `lib/follow-up.mts`, which the sweep calls too, on the PR without the threads the host answered.
-  The state is `skipped` (not swept, with the sweep's reason), `waiting`, `flagged for a pass`,
+  The state is `skipped` (not swept, with the sweep's reason, or a read or the decision failed, with the cause), `waiting`, `flagged for a pass`,
   `flagged for a hand-back` (the passes are used up, so a pass that has something to act on hands it back),
   `act next sweep` (Copilot will be asked, or the branch updated) or `settled`.
   A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
   an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
-  Text from GitHub (a title, a branch, a reason, gh's error text on stderr and in the log lines) is printed through `terminalText`: whitespace
-  becomes one space, and control, format (bidi, zero-width, tag), surrogate and filler characters are dropped, so it can't overwrite, fake
-  or hide text in a line of the report.
+  Text from GitHub (a title, a branch, a reason, gh's error text on stderr, a warning a read prints and the log lines) is printed through `terminalText`: whitespace
+  becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, unassigned, private-use and filler
+  characters are dropped, so it can't overwrite, fake or hide text in a line of the report. The cost: a joiner and an emoji's variation
+  selector go too, so an emoji sequence falls apart into its emoji. `readableRepo` reads the repository name first with gh's stderr
+  captured, and `plainStderr` cleans what a read warns on stderr.
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),
   and `answered` for those the host replied to, which now wait on the owner. A thread read that failed shows `unknown (why)`, for a
@@ -141,7 +143,8 @@ whether or not that label counts, and says how many other open PRs it left out.
   how each ended, what started it, the branch, the time and the link.
 - **Unreadable parts.** A read that fails for one PR prints `unknown (why)` for that line and the other PRs still print;
   so does the list of runs. A PR whose decision can't be made (`decide` throws on a time GitHub returned that doesn't parse, as it
-  does in the sweep) shows `skipped: couldn't decide: …`.
+  does in the sweep) shows `skipped: couldn't decide: …`, and one whose admission read failed shows `for: unknown` and
+  `skipped: couldn't read what decides whether it is swept: …`.
 
 It is read-only: no comment, label or push, no sandbox, no model call. `StatusGitHub` has only reads, `loadQueue`'s label fixes and the hand-off head record the sweep posts are switched off,
 and `lib/status.test.mts` and `status.test.mts` pin the imports. It can differ from the next sweep by what changes between the two reads (a check that finishes, a head the sweep would record).

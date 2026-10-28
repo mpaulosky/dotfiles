@@ -8,6 +8,7 @@
 // report's data and rendering, and writes nothing to GitHub or git.
 // ---------------------------------------------------------------------------
 
+import { execFileSync } from "node:child_process";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_LABEL,
@@ -248,7 +249,9 @@ export function statusOf(
     ));
     threads = threadsFailed === undefined ? splitThreads(thin.threads, github.isOwner, answered) : { unreadable: threadsFailed };
   } catch (error) {
-    threads = { unreadable: causeOf(error) };
+    // A throw from outside the reviewThreads read (the owner check, a thread's standing) has its cause here.
+    threadsFailed ??= causeOf(error);
+    threads = { unreadable: threadsFailed };
     threadsThrew = true;
   }
 
@@ -259,7 +262,7 @@ export function statusOf(
   if (unreadable !== undefined) {
     held = { state: "skipped", reason: unreadable };
   } else if (decidable && threadsThrew) {
-    held = { state: "waiting", reason: `its threads couldn't be read (${threadsFailed ?? causeOf(threads)}), so the sweep leaves it alone this round` };
+    held = { state: "waiting", reason: `its threads couldn't be read (${threadsFailed}), so the sweep leaves it alone this round` };
   } else {
     // decide reads times GitHub returned and throws on one that doesn't parse, as it does in the sweep, which skips that PR for the
     // round: one PR's bad data shows as its own line and the others still print.
@@ -316,13 +319,17 @@ const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 
 // GitHub's and gh's text (a title, a branch, a reason, an error) made safe for a terminal: whitespace, including a line break, is one
 // space, and every control character (ESC and the C1 set, so no CSI sequence), format character (bidi marks, zero-width characters,
-// the soft hyphen, the Unicode tag block a model reads as hidden text), surrogate, variation selector and filler that draws as a blank
-// is dropped. Nothing in it can overwrite a line of the report, fake one or carry text a reader can't see.
+// the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, unassigned and
+// private-use code point, variation selector and filler that draws as a blank is dropped. Nothing in it can overwrite a line of the
+// report, fake one or carry text a reader can't see. The cost: a zero-width joiner or non-joiner and an emoji's variation selector go
+// too, so an emoji sequence falls apart into its emoji and a word that needs a joiner is respelled.
 export function terminalText(text: string): string {
   return text
     // Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
     .replace(/[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu, " ")
-    .replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/gu, "")
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/gu, "")
+    // Dropping a character can leave the spaces on either side of it side by side.
+    .replace(/ {2,}/g, " ")
     .trim();
 }
 
@@ -417,6 +424,25 @@ export function statusCommand(
   const report = collectStatus(github, now);
   for (const line of renderStatus(report)) print(line);
   return report;
+}
+
+// Makes console.error print plain text, so a warning a read prints (a login, gh's own message) can't carry a control or hidden
+// character to the terminal. Takes the console to change, for a test.
+export function plainStderr(target: { error: (...data: unknown[]) => void } = console): void {
+  const print = target.error.bind(target);
+  target.error = (...data: unknown[]) => print(...data.map((item) => terminalLine(item instanceof Error ? item.message : String(item))));
+}
+
+// Reads the repository name with gh's stderr captured, so a failure reaches the terminal only through the entry file's catch, as
+// plain text. repoName() runs gh with its stderr inherited: the status asks it here first, so a failing read ends the run before that.
+export function readableRepo(run: typeof execFileSync = execFileSync): string {
+  try {
+    return run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  } catch (error) {
+    const stderr = (error as { stderr?: unknown }).stderr;
+    const detail = typeof stderr === "string" ? stderr.trim() : "";
+    throw new Error(`gh repo view failed${detail ? `: ${detail}` : ""}`, { cause: error });
+  }
 }
 
 // The live reads. Only the sweep's reads are taken from liveFollowUpGitHub, none of its writes, and the queue is read with

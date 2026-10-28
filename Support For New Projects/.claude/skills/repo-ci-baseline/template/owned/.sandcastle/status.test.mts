@@ -125,6 +125,28 @@ describe("status.mts as a program", () => {
   });
 });
 
+describe("the writes predicate", () => {
+  it("flags the calls lib/github.mts makes to write", () => {
+    for (const call of [
+      "api --method PUT repos/o/r/pulls/1/update-branch -f expected_head_sha=abc",
+      "api graphql --input -",
+      "issue edit 5 --repo o/r --add-label x",
+      "api graphql -f query=mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id}) { clientMutationId } }",
+      "api repos/o/r/issues/1/comments -f body=hi",
+    ]) assert.equal(writes(call), true, call);
+  });
+
+  it("lets the reads the status makes through", () => {
+    for (const call of [
+      "api user",
+      "repo view --json nameWithOwner --jq .nameWithOwner",
+      "api graphql -f query=query($owner: String!) { repository(owner: $owner) { id } } -f owner=o",
+      "api --paginate repos/o/r/issues/1/events",
+      "issue list --repo o/r --label Sandcastle --json number",
+    ]) assert.equal(writes(call), false, call);
+  });
+});
+
 describe("status.mts's source", () => {
   const imports = [...source.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gms)].map((match) => match[1] as string);
 
@@ -138,6 +160,15 @@ describe("status.mts's source", () => {
     for (const step of ["ensureLabels", "cacheHostLogin", "clearStaleBuildingLabels", "installBuildingLabelRelease", "releaseAllBuildingLabels"]) {
       assert.doesNotMatch(source, new RegExp(`\\b${step}\\b`), step);
     }
+  });
+
+  it("asks for the repository name with gh's stderr captured, calls plainStderr, and does both before the command", () => {
+    const repo = source.search(/\breadableRepo\(\)/);
+    const plain = source.search(/\bplainStderr\(\)/);
+    const command = source.search(/\bstatusCommand\(/);
+
+    assert.ok(repo >= 0 && plain >= 0 && command >= 0, "status.mts should call readableRepo, plainStderr and statusCommand");
+    assert.ok(plain < command && repo < command, `order: plainStderr ${plain}, readableRepo ${repo}, command ${command}`);
   });
 
   it("reads the scope first, then protects host git before the first gh call, then runs the command", () => {

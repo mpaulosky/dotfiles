@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
@@ -20,8 +21,11 @@ import {
   heldReason,
   PASS_MAY_SKIP,
   isListed,
+  plainStderr,
+  readableRepo,
   liveStatusGitHub,
   renderStatus,
+  terminalLine,
   terminalText,
   statusCommand,
   statusOf,
@@ -125,8 +129,8 @@ const run = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
 });
 
 // What terminalText must never leave in a line: a control, format (bidi, zero-width, tag, soft hyphen) or surrogate character, a variation selector
-// and the fillers that draw as blanks.
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
+// private-use and unassigned code points, default-ignorable ones and the fillers that draw as blanks.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
 
 const SCOPE: QueueScope = { kind: "label", label: QUEUE_LABEL };
 
@@ -437,6 +441,20 @@ describe("statusOf", () => {
 
     assert.ok("unreadable" in status.threads && status.threads.unreadable.includes("HTTP 502"));
     assert.deepEqual(status.held, { state: "waiting", reason: "its threads couldn't be read (gh: HTTP 502), so the sweep leaves it alone this round" });
+  });
+
+  it("names the cause of a thread step that fails outside the thread read (the owner check throws), never [object Object]", () => {
+    const status = statusFor(pr({ threads: [unresolved("alice")] }), {
+      isOwner: () => {
+        throw new Error("gh: HTTP 401 on the owner check");
+      },
+    });
+
+    assert.deepEqual(status.threads, { unreadable: "gh: HTTP 401 on the owner check" });
+    assert.deepEqual(status.held, {
+      state: "waiting",
+      reason: "its threads couldn't be read (gh: HTTP 401 on the owner check), so the sweep leaves it alone this round",
+    });
   });
 
   it("shows a conflicting PR's thread read failing as unknown, and still flags it, since decide flags it whatever its threads say", () => {
@@ -809,6 +827,12 @@ describe("terminalText", () => {
     "a variation selector": "\ufe0f",
     "a variation selector supplement": "\u{E0100}",
     "a combining grapheme joiner": "\u034f",
+    "a Hangul Choseong filler": "\u115f",
+    "a Hangul Jungseong filler": "\u1160",
+    "a Khmer inherent vowel": "\u17b4",
+    "a second Khmer inherent vowel": "\u17b5",
+    "an unassigned code point": "\u2065",
+    "a private-use code point": "\ue000",
     "a Hangul filler": "\u3164",
     "a halfwidth Hangul filler": "\uffa0",
     "a Braille blank": "\u2800",
@@ -828,6 +852,21 @@ describe("terminalText", () => {
   it("turns every kind of line break and other whitespace into one space", () => {
     assert.equal(terminalText("a\nb\rc\r\nd\te\u0085f\u2028g\u2029h\u00a0i"), "a b c d e f g h i");
     assert.equal(terminalText("  a \t b\n c  "), "a b c");
+  });
+
+  for (const [name, character] of Object.entries({
+    "a vertical tab": "\v", "a form feed": "\f", "an Ogham space mark": "\u1680", "an en quad": "\u2000", "a hair space": "\u200a",
+    "a narrow no-break space": "\u202f", "a medium mathematical space": "\u205f", "an ideographic space": "\u3000",
+  })) {
+    it(`turns ${name} into one space`, () => {
+      assert.equal(terminalText(`a${character}b`), "a b");
+    });
+  }
+
+  it("leaves one space where a dropped character sat between two, and gives the same text when applied twice", () => {
+    assert.equal(terminalText("a \u200b b"), "a b");
+    const once = terminalText("x \u2060\u200b  y\u{E0041} z");
+    assert.equal(terminalText(once), once);
   });
 
   it("leaves a title's letters, digits, punctuation, emoji and accents alone", () => {
@@ -913,12 +952,9 @@ describe("statusQueue", () => {
     };
     const lines: string[] = [];
 
-    try {
-      statusQueue(SCOPE, github, (line) => lines.push(line));
-    } catch {
-      // loadQueue may throw instead of logging; what it logged before that is checked below.
-    }
+    statusQueue(SCOPE, github, (line) => lines.push(line));
 
+    assert.ok(lines.some((line) => line.includes("gh: HTTP 500") && line.endsWith(" (status only: nothing changed)")), JSON.stringify(lines));
     assert.ok(lines.every((line) => !HIDDEN.test(line)), JSON.stringify(lines));
   });
 
@@ -988,6 +1024,42 @@ describe("lib/status.mts's imports", () => {
   });
 });
 
+describe("terminalLine", () => {
+  it("keeps the indent the line starts with and cleans the rest", () => {
+    assert.equal(terminalLine("  \u26a0 x\u001b[2K\u200b"), "  \u26a0 x[2K");
+    assert.equal(terminalLine("no indent"), "no indent");
+    assert.equal(terminalLine("\u200b  after a hidden one"), "after a hidden one");
+  });
+});
+
+describe("plainStderr", () => {
+  it("makes what the console prints plain text, an Error's message too", () => {
+    const printed: string[] = [];
+    const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
+
+    plainStderr(sink);
+    sink.error("  \u26a0 gh said\u001b[2K\u202e hidden", new Error("boom\u200b\nline two"));
+
+    assert.deepEqual(printed, ["  \u26a0 gh said[2K hidden|boom line two"]);
+  });
+});
+
+describe("readableRepo", () => {
+  it("returns the repository name gh printed", () => {
+    const run = (() => "o/r\n") as unknown as typeof execFileSync;
+
+    assert.equal(readableRepo(run), "o/r");
+  });
+
+  it("throws with gh's stderr in the message, so the caller prints it as plain text, instead of letting gh write it", () => {
+    const run = (() => {
+      throw Object.assign(new Error("exit 1"), { stderr: "gh: not signed in\n" });
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => readableRepo(run), /gh repo view failed: gh: not signed in/);
+  });
+});
+
 // Read-only is the issue's acceptance criterion. The import tests above only see names; the live object is already imported, so what pins it is the
 // members status reads from it.
 describe("lib/status.mts's use of the live sweep object", () => {
@@ -1002,6 +1074,18 @@ describe("lib/status.mts's use of the live sweep object", () => {
 
     assert.ok(used.length > 0, "liveStatusGitHub should serve the sweep's reads from liveFollowUpGitHub");
     assert.deepEqual(used.filter((name) => !reads.includes(name)), []);
+  });
+
+  it("reaches liveFollowUpGitHub only as liveFollowUpGitHub.<read>: no alias, destructure, spread or index", () => {
+    const code = source
+      .replace(/^import\s[^;]*?;/gms, "")
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("//"))
+      .join("\n");
+    const mentions = code.match(/\bliveFollowUpGitHub\b/g) ?? [];
+    const dotted = code.match(/\bliveFollowUpGitHub\.\w+/g) ?? [];
+
+    assert.equal(mentions.length, dotted.length, "every use of liveFollowUpGitHub should be a plain member read");
   });
 
   it("serves every member of StatusGitHub", () => {

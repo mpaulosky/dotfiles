@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   BUILD_ROLES,
   BUILDING_LABEL_MAX_AGE_MS,
@@ -25,6 +27,7 @@ import {
   queueScopeFrom,
   runModeFrom,
 } from "./config.mts";
+import * as config from "./config.mts";
 import { roleAgent, uiEnabled } from "./agents.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 
@@ -286,5 +289,72 @@ describe("isDefaultQueueScope", () => {
 describe("SESSION_REPLY_MARKER", () => {
   it("is the marker docs/PROCESS.md tells a Claude Code session to end every reply with", () => {
     assert.equal(SESSION_REPLY_MARKER, "<!-- claude-session -->");
+  });
+});
+
+describe("the PR watcher", () => {
+  // scripts/watch-pr.sh skips a PR comment that starts with a Sandcastle marker, because Sandcastle posts under the owner's token.
+  // Every marker config.mts exports must be one it skips, so a new marker is covered with no edit here.
+  const watcher = fileURLToPath(new URL("../../scripts/watch-pr.sh", import.meta.url));
+  const hasJq = spawnSync("jq", ["--version"]).status === 0;
+  const skip = hasJq ? false : "jq is not installed";
+
+  // Whether the watcher skips a comment with this body: exit 0 when it does, 1 when it wouldn't.
+  const wouldSkip = (body: string): number | null =>
+    spawnSync("bash", [watcher, "--would-skip"], { input: body, encoding: "utf8" }).status;
+
+  const sandcastleMarkers = Object.entries(config as Record<string, unknown>).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].startsWith("<!-- sandcastle:"),
+  );
+
+  // A comment as Sandcastle posts it: the marker whole when it closes itself, else (the prefix markers) with the data it carries.
+  const samples = (marker: string): string[] =>
+    marker.endsWith("-->")
+      ? [marker, `${marker}\nThe rest of the comment.`]
+      : [`${marker} ${"a".repeat(40)} -->`, `${marker} issue#12 -->`, `${marker} ${"a".repeat(40)} -->\nThe rest of the comment.`];
+
+  it("finds the markers it is meant to check, so an emptied scan can't pass", () => {
+    const names = sandcastleMarkers.map(([name]) => name);
+
+    for (const name of [
+      "PR_MARKER",
+      "DESIGN_MARKER",
+      "FOLLOW_UP_MARKER",
+      "FOLLOW_UP_REPLY_MARKER",
+      "APPROVED_HEAD_MARKER",
+      "OVERLAP_MARKER",
+      "BUILD_FAILED_MARKER",
+      "UMBRELLA_MARKER",
+      "GIVE_UP_MARKER",
+      "WORKTREE_TAMPERED_MARKER",
+    ]) {
+      assert.ok(names.includes(name), `${name} is exported by config.mts and starts <!-- sandcastle:`);
+    }
+  });
+
+  it("defines the give-up and worktree-tampered markers in the form the watcher matches", () => {
+    assert.equal(config.GIVE_UP_MARKER, "<!-- sandcastle:give-up -->");
+    assert.equal(config.WORKTREE_TAMPERED_MARKER, "<!-- sandcastle:worktree-tampered -->");
+  });
+
+  for (const [name, marker] of sandcastleMarkers) {
+    it(`skips a comment that starts with ${name}`, { skip }, () => {
+      for (const body of samples(marker)) {
+        assert.equal(wouldSkip(body), 0, `a comment starting ${JSON.stringify(body.slice(0, 80))} is skipped`);
+      }
+    });
+  }
+
+  it("skips a comment with the session's marker in the middle of its body", { skip }, () => {
+    assert.equal(wouldSkip(`Fixed in abc123.\n\n${SESSION_REPLY_MARKER}`), 0);
+  });
+
+  it("doesn't skip a person's comment", { skip }, () => {
+    assert.equal(wouldSkip("Please fix this"), 1);
+  });
+
+  it("doesn't skip a comment that quotes a Sandcastle marker without starting with it", { skip }, () => {
+    assert.equal(wouldSkip("> <!-- sandcastle:pr -->\n\nWhy is this here?"), 1);
+    assert.equal(wouldSkip("Look at <!-- sandcastle:give-up --> in the log."), 1);
   });
 });

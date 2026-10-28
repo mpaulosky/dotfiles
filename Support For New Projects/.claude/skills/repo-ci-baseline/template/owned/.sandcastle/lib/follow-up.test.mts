@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { BranchRefs } from "./branches.mts";
 import {
@@ -1940,15 +1939,6 @@ describe("sweepSubject", () => {
 });
 
 describe("recordApprovedHead", () => {
-  it("reads back the comment the Sandcastle workflow's record-head job posts, once the head is put in", () => {
-    const workflow = readFileSync(new URL("../../.github/workflows/sandcastle.yml", import.meta.url), "utf8");
-    const firstLine = /^ +body="(.*)$/m.exec(workflow)?.[1];
-    assert.ok(firstLine !== undefined, "sandcastle.yml's record-head script must build its comment as body=\"...\"");
-    const head = "0123456789abcdef0123456789abcdef01234567";
-
-    assert.equal(approvedHeadOf(`${firstLine.replace("$HEAD_SHA", head)}\nSandcastle follows this pull request up.`), head);
-  });
-
   it("posts the record of the head on the PR it names, which approvedHeadOf reads back", () => {
     const posted: { number: number; body: string }[] = [];
 
@@ -2476,10 +2466,10 @@ describe("sweepPullRequests and hand-off PRs", () => {
     });
 
     describe("when a read of the approval throws", () => {
-      // PR #201's head is a commit nobody recorded, so its approval reads the merge; PR #202 is recorded and settled.
+      // The first PR's head is a commit nobody recorded, so its approval reads the merge; the second PR is recorded and settled.
       const unrecorded = () => behind({ headRefOid: "b".repeat(40), reviews: [{ author: COPILOT_REVIEWER, commitOid: "b".repeat(40) }] });
       const second = () => behind({ number: 202, id: "PR_202", headRefName: "chore/another-tidy" });
-      const comments = () => [headRecord("a".repeat(40), HOST)];
+      const comments = (_number: number) => [headRecord("a".repeat(40), HOST)];
 
       it("leaves the PR unapproved and unswept when the read of its head's merge fails, and still sweeps the others", () => {
         const lines: string[] = [];

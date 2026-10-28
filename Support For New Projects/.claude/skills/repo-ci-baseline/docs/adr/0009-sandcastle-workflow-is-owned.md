@@ -31,14 +31,18 @@ feature had to be landed by hand in each. A Template file reaches every repo by 
 - **`workflow_run` lists the CI workflows by name** (it can't read a variable): the Template's `ci.yml`, the workflow that tests the Template in dotfiles, and Claude Review.
   The follow-up-run and hand-opened-PR triggers of auth0-management-app are not included: they land with the host code that uses them
   (mpaulosky/dotfiles#313 and mpaulosky/dotfiles#314), now that a Template PR can change the workflow and `lib/` together.
-  The `pull_request_target` `labeled` trigger and its `record-head` job landed with mpaulosky/dotfiles#334: it records the head a hand-off label approves.
+- **A second job, `record-head`, records the head a hand-off label approves** (mpaulosky/dotfiles#334). It runs on `pull_request_target` `labeled`, so the
+  job that holds the host's token runs the file as it is on `main`, not the PR branch's copy. It uses no action, checks nothing out, takes event data through
+  `env`, and records only the repository owner's own label, on its first run, for the event's head ([sandcastle.md](../../references/sandcastle.md#the-workflow) lists the guards).
 
 ## Consequences
 
+- A hand-off PR is followed up only in a repo that runs Sandcastle in Actions with the `SANDCASTLE_GH_TOKEN` secret set: without them `record-head` records no head,
+  and the sweep follows up no hand-off PR whose head isn't recorded.
 - A re-Apply brings the file to the repos that run Sandcastle, and overwrites a repo's own copy: `apply.sh` has no way to skip an Owned file for a repo, and
   `NOT_OWNED_BASELINE_PATHS` only tells the local review which files are the repo's own. A repo with its own copy drops it from that list in its re-Apply, and
-  Blazor-Server moves its skills step into `sandcastle-skills.txt` in the same PR. auth0-management-app must not be re-Applied until the follow-up-only and
-  hand-off triggers land in the Template (mpaulosky/dotfiles#313 and #314), or its re-Apply drops them; `rollout.sh` has no way to leave a repo out of a round,
+  Blazor-Server moves its skills step into `sandcastle-skills.txt` in the same PR. auth0-management-app must not be re-Applied until its follow-up-run and
+  hand-opened-PR triggers land in the Template (mpaulosky/dotfiles#313 and #314), or its re-Apply drops them; `rollout.sh` has no way to leave a repo out of a round,
   so until then each repo except auth0-management-app is re-Applied one at a time with `reapply.sh`, TicketManager first, and `rollout.sh` is not run
   ([sandcastle.md](../../references/sandcastle.md#the-workflow) has the reason).
 - A repo that later adds the token starts running Sandcastle in Actions with no further workflow change.

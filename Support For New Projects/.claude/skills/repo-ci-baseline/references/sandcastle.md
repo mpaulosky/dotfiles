@@ -196,8 +196,9 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   which files are the repo's own). It drops the file from that list in the same PR and moves the skills it installs into `sandcastle-skills.txt`.
   Anything else its workflow does that the Template's doesn't needs a Template change first.
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
-  A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-only and hand-off ones;
-  the run mode (mpaulosky/dotfiles#313) and the hand-off code (mpaulosky/dotfiles#314) are in the Template, the workflow triggers are not) must not be
+  A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-run and hand-opened-PR ones;
+  the run mode (mpaulosky/dotfiles#313) and the hand-off code (mpaulosky/dotfiles#314) are in the Template, and so is the hand-off label's own
+  trigger, the `record-head` job on `pull_request_target`; the follow-up-run and hand-opened-PR workflow triggers are not) must not be
   re-Applied until those land, or its re-Apply drops them. `rollout.sh` re-Applies every repo in `github/repos.txt` and can't leave one out
   (once TicketManager's re-Apply PR has merged, a run re-Applies all the others, auth0-management-app included), so until then don't run it:
   re-Apply each repo except auth0-management-app one at a time with `reapply.sh`, TicketManager first.

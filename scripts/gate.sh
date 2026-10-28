@@ -43,12 +43,12 @@ fi
 # repo-config.test.mts reads the Template's .sandcastle/ and test.sh's copy list,
 # and template.test.mts type-checks and tests the Template's .sandcastle/.
 # review-ledger.test.mts runs scripts/review.sh and pre-push-review-skill.test.mts
-# reads the review's skill and agent, and Claude Review's workflow (whose notes step
+# reads the review's skills and agent, and Claude Review's workflow (whose notes step
 # it checks against the ledger's markers), here and in the Template's copies.
 skill="Support For New Projects/.claude/skills/repo-ci-baseline"
 if [[ -z "$base" ]] || ! git diff --quiet --no-renames "$base" HEAD -- .sandcastle package.json ':(glob)pnpm-*.yaml' \
   .github/workflows/repo-ci-baseline.yml "$skill/template/owned/scripts/gate.sh" "$skill/template/owned/.sandcastle" "$skill/template/seed/.sandcastle" "$skill/test.sh" \
-  scripts/review.sh .claude/skills/pre-push-review .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml \
+  scripts/review.sh .claude/skills/pre-push-review .claude/skills/hardening-review .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml \
   "$skill/template/owned/scripts/review.sh" "$skill/template/owned/.claude" "$skill/template/owned/.github/workflows/claude-review.yml"; then
   echo
   echo "── Sandcastle check"

@@ -11,6 +11,7 @@ Why: [ADR 0008](../docs/adr/0008-review-before-the-push.md). The process a devel
 | --- | --- | --- |
 | The skill: severities, steps, the ledger commands | `.claude/skills/pre-push-review/SKILL.md` | Owned |
 | The reviewers' bar (Claude Review's own prompt, adapted and widened) and the generic lenses | `.claude/skills/pre-push-review/review-bar.md`, `lenses.md` | Owned |
+| The repeat-until-quiet loop for a large or risky branch, with its mutation runner and known-open list | `.claude/skills/hardening-review/` (`SKILL.md`, `references/`, `scripts/mutate.py`, `scripts/known_open.py`) | Owned |
 | The read-only reviewer agent (Read, Grep and Glob only) | `.claude/agents/pre-push-reviewer.md` | Owned |
 | The ledger: what the review found and what became of it, keyed by the branch's own hunks | `.sandcastle/lib/review-ledger.mts` (run as `scripts/review.sh`) | Owned |
 | The gate's check | `scripts/gate.sh`, step "Local review" | Owned |
@@ -40,9 +41,27 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
 - Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
   token, only Read, Grep and Glob. Those still reach any file the person can read, so a reviewer's answer is data to check before anything of it is published.
 
+## Hardening review
+
+`/hardening-review` is `pre-push-review` with a different middle, for a branch that one review and a round of fixes won't settle. It keeps
+the first three steps (get ready, gate, earlier decisions; its run folder replaces the `mktemp -d` one) and the last two (record, report), the severities, the read-only reviewer
+and the rules, and replaces the rounds with full passes: every applicable lens over the whole diff each time, `fixes.patch` as a hint to read first. Between a
+pass and the person it grades the findings, runs each runnable Critical finding's example input (reviewers send data, never a command, and the harness runs in a
+throwaway checkout with a scrubbed environment), holds back findings the known-open list settles (only inside an unchanged range, and listed to the person, never silently),
+and puts the rest to the person in numbered batches with a recommendation and an edge-case matrix. Each batch of fixes is committed, then
+`.claude/skills/hardening-review/scripts/mutate.py` applies hand-written mutations to it and the tests must catch each. It stops when a pass commits no fix
+(after five that did, one more pass only reviews), and records once, at the end. Fixes are made in the session, never by subagents.
+
+Its files live in two folders found again from the branch name after a compaction: `.git/hardening-review/<branch, / as ~>/` for what reviewers read
+(`brief.md`, `state.md`, `decisions.md`, the patches) and `.git/review/hardening/<branch, / as ~>/` for what can describe a weakness (the known-open list
+with its reasons, harness output, mutation specs). The second is under `.git/review/`, so the sandbox mount below covers it, and so does the deny rule
+`Read(//**/.git/review/**)` in a repo that has added it (Adapting, step 2).
+The tests of the two scripts are in repo-ci-baseline's own `tests/hardening/` (not shipped to other repos), and `test.sh` runs them.
+
 ## What a sandbox can't see
 
-Ledgers hold accepted security findings, which are never published. Every Sandcastle sandbox gets an empty read-only folder over `.git/review`, at every
+Ledgers hold accepted security findings, which are never published, and so does the hardening review's `.git/review/hardening/`.
+Every Sandcastle sandbox gets an empty read-only folder over `.git/review`, at every
 path a mount puts `.git` (`protectedGitMounts` in `lib/host-safety.mts`, `withCreateMounts` in `lib/skills.mts`).
 
 ## Adapting

@@ -45,6 +45,10 @@ printf '// skill tests, which import the ledger\n' > "$skill/template/owned/.san
 printf 'agent\n' > "$skill/template/owned/.claude/agents/pre-push-reviewer.md"
 printf 'skill\n' > "$skill/template/owned/.claude/skills/pre-push-review/SKILL.md"
 printf 'lenses\n' > "$skill/template/owned/.claude/skills/pre-push-review/lenses.md"
+# The hardening review's skill is part of the Sandcastle section too, with a nested file to show the pattern crosses a folder.
+mkdir -p "$skill/template/owned/.claude/skills/hardening-review/scripts"
+printf 'hardening\n' > "$skill/template/owned/.claude/skills/hardening-review/SKILL.md"
+printf '#!/usr/bin/env python3\n' > "$skill/template/owned/.claude/skills/hardening-review/scripts/mutate.py"
 printf 'other\n' > "$skill/template/owned/.claude/skills/other/SKILL.md"
 # The Sandcastle workflow and the Seed skills list it reads are part of the Sandcastle section too.
 printf 'name: Sandcastle\n' > "$skill/template/owned/.github/workflows/sandcastle.yml"
@@ -153,6 +157,7 @@ check "no remote: unfilled reported" \
 # ── Sandcastle's files go only into a repo that runs Sandcastle (ADR 0006) ──
 sandcastle_files=(.sandcastle/tsconfig.json .sandcastle/roles/architect.md package.json scripts/review.sh .claude/agents/pre-push-reviewer.md \
   .claude/skills/pre-push-review/SKILL.md .claude/skills/pre-push-review/lenses.md \
+  .claude/skills/hardening-review/SKILL.md .claude/skills/hardening-review/scripts/mutate.py \
   .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts \
   .github/workflows/sandcastle.yml .github/ci/sandcastle-skills.txt .claude/rules/sandcastle-hand-off.md)
 
@@ -184,17 +189,17 @@ check "sandcastle, no .sandcastle/: other Owned file written" '[[ -f "$repo/.git
 check "sandcastle, no .sandcastle/: other Seed file written" '[[ -f "$repo/docs/SECURITY.md" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring script is written" '[[ -f "$repo/scripts/other.sh" ]]'
 check "sandcastle, no .sandcastle/: a neighbouring skill is written" '[[ -f "$repo/.claude/skills/other/SKILL.md" ]]'
-check "sandcastle, no .sandcastle/: the thirteen are reported as left out" 'grep -q "Sandcastle files left out.*: 13" <<< "$out"'
+check "sandcastle, no .sandcastle/: the fifteen are reported as left out" 'grep -q "Sandcastle files left out.*: 15" <<< "$out"'
 check "sandcastle, no .sandcastle/: the report says how to add them" 'grep -q "create it and Apply again" <<< "$out"'
 check "sandcastle, no .sandcastle/: no .sandcastle/ folder made" '[[ ! -e "$repo/.sandcastle" ]]'
 
-# A dry run of the same repo reports the same thirteen and writes nothing.
+# A dry run of the same repo reports the same fifteen and writes nothing.
 repo="$work/sandcastle dry"
 new_repo "$repo"
 printf '# readme\n' > "$repo/README.md"
 commit_all "$repo" "init"
 dry="$("$apply" --dry-run "$repo")"
-check "sandcastle, dry run: the thirteen are reported as left out" 'grep -q "Sandcastle files left out.*: 13" <<< "$dry"'
+check "sandcastle, dry run: the fifteen are reported as left out" 'grep -q "Sandcastle files left out.*: 15" <<< "$dry"'
 check "sandcastle, dry run: the left-out files aren't listed as added" '! grep -q "^  .sandcastle/tsconfig.json" <<< "$dry"'
 check "sandcastle, dry run: nothing written" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
 

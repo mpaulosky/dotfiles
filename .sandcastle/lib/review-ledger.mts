@@ -60,6 +60,7 @@ export const OWNED_PATHS = [
   ".github/pull_request_template.md",
   ".claude/agents/pre-push-reviewer.md",
   ".claude/skills/pre-push-review/**",
+  ".claude/skills/hardening-review/**",
   ".sandcastle/main.mts",
   ".sandcastle/lib/*.mts",
   ".sandcastle/critique-prompt.md",

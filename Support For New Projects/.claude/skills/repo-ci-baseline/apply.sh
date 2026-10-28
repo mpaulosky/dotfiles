@@ -70,11 +70,12 @@ fi
 # pnpm-workspace.yaml it runs with; sandcastle_path() is the list of record) go only into a repo that runs Sandcastle, or a new one (ADR 0006): a repo starts using it by creating .sandcastle/ and Applying again.
 with_sandcastle=false
 if [[ -d "$target/.sandcastle" ]] || ! git -C "$target" rev-parse --verify --quiet HEAD >/dev/null; then with_sandcastle=true; fi
-# The local review's skill, agent and script too: its ledger is .sandcastle/lib/review-ledger.mts.
+# The local review's skills (pre-push-review and its hardening-review loop), agent and script too: its ledger is .sandcastle/lib/review-ledger.mts.
 sandcastle_path() {
   [[ "$1" == .sandcastle/* || "$1" == package.json || "$1" == pnpm-workspace.yaml || "$1" == scripts/review.sh \
     || "$1" == .github/workflows/sandcastle.yml || "$1" == .github/ci/sandcastle-skills.txt \
     || "$1" == .claude/agents/pre-push-reviewer.md || "$1" == .claude/skills/pre-push-review/* \
+    || "$1" == .claude/skills/hardening-review/* \
     || "$1" == .claude/rules/sandcastle-hand-off.md ]]
 }
 

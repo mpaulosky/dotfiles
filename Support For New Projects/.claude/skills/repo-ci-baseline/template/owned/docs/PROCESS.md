@@ -61,7 +61,9 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   Advisory one in the review, reviews the fixes again until a round fixes nothing, and records the result under `.git/review/`. GitHub's
   reviewers are then a backstop that finds little. A Critical or Warning finding left open blocks the push until it is
   fixed or the person accepts it with `scripts/review.sh accept R3 "<reason>"`, never on their behalf. Advisory findings
-  (docs, comments, conventions) never block: one that needs a person goes to one follow-up issue per branch.
+  (docs, comments, conventions) never block: one that needs a person goes to one follow-up issue per branch. For a large or
+  risky branch that one review and a round of fixes won't settle, `/hardening-review` (`.claude/skills/hardening-review/`) repeats full
+  passes until one fixes nothing, then records once: the gate asks for that one record all the same.
 - **Before a push**, the pre-push hook refuses a branch that is behind `origin/main` (it fetches main first), because
   the PR couldn't merge until it's up to date: bring main in with `git merge origin/main`. Then it runs
   `scripts/gate.sh`: the lints, the local review's check (a clean record for the diff; a clean merge of `main` keeps

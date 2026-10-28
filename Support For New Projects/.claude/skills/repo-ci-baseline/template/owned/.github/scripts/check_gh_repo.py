@@ -647,7 +647,12 @@ def walk(directory, root, seen):
         if entry.name in SKIPPED_PARTS:
             continue
         if entry.is_symlink():
-            target = entry.resolve()
+            try:
+                target = entry.resolve()
+            except (OSError, RuntimeError):
+                # Python 3.12 raises RuntimeError for a link that points at itself or at a cycle of links.
+                yield entry, "a symlink to nothing"
+                continue
             if not target.exists():
                 yield entry, "a symlink to nothing"
                 continue

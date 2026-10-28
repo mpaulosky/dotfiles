@@ -169,6 +169,9 @@ jobs:
   # differs from the base's, except in an Apply PR (chore/standardize-baseline,
   # chore/reapply-baseline), whose job is to change them. Anyone who can push a
   # branch can name theirs so: this stops a careless edit, not a deliberate one.
+  # Both steps read the base at github.event.pull_request.base.sha, the commit the
+  # merge ref was built from, not the base branch's moving tip: a re-run, or a job
+  # queued while an Apply PR lands, would otherwise fail on files the PR never touched.
   # Neither step has anything to compare with in the first Apply, whose base has
   # no checker. Not a required status check.
   gh-repo:
@@ -188,10 +191,11 @@ jobs:
       - name: Check the base branch's rules against this tree
         env:
           BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           tmp=$(mktemp -d)
           trap 'rm -rf "$tmp"' EXIT
-          if ! git show "origin/${BASE_REF}:.github/scripts/check_gh_repo.py" > "$tmp/check_gh_repo.py"; then
+          if ! git show "${BASE_SHA}:.github/scripts/check_gh_repo.py" > "$tmp/check_gh_repo.py"; then
             echo "${BASE_REF} has no .github/scripts/check_gh_repo.py: nothing to check against (the first Apply)."
             exit 0
           fi
@@ -204,10 +208,11 @@ jobs:
           && github.head_ref != 'chore/reapply-baseline'
         env:
           BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           tmp=$(mktemp -d)
           trap 'rm -rf "$tmp"' EXIT
-          if ! git show "origin/${BASE_REF}:.github/scripts/check_gh_repo.py" > "$tmp/check_gh_repo.py"; then
+          if ! git show "${BASE_SHA}:.github/scripts/check_gh_repo.py" > "$tmp/check_gh_repo.py"; then
             echo "${BASE_REF} has no .github/scripts/check_gh_repo.py: no Owned files to compare (the first Apply)."
             exit 0
           fi
@@ -238,14 +243,14 @@ jobs:
               if [ "${base_entry}" != "$head_entry" ]; then
                 report "$path"
               fi
-            done < <(git ls-tree -r -z "origin/${BASE_REF}" -- "$entry")
+            done < <(git ls-tree -r -z "$BASE_SHA" -- "$entry")
             # A file the PR adds inside an Owned folder isn't in the base's tree, and the checker
             # skips the folder: report it, or nothing reads it.
             case $entry in
               */)
                 while IFS= read -r -d '' head_entry; do
                   path=${head_entry#*$'\t'}
-                  if ! git cat-file -e "origin/${BASE_REF}:${path}" 2>/dev/null; then
+                  if ! git cat-file -e "${BASE_SHA}:${path}" 2>/dev/null; then
                     report "$path"
                   fi
                 done < <(git ls-tree -r -z HEAD -- "$entry")

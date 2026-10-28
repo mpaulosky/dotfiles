@@ -1837,6 +1837,53 @@ def test_check_repo_refuses_a_dangling_symlink(tmp_path):
     assert refused_names(found) == ["scripts/dangling.sh"]
 
 
+def test_check_repo_refuses_a_symlink_that_points_at_itself(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "a").symlink_to("a")
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts/a"]
+
+
+def test_check_repo_refuses_two_symlinks_that_point_at_each_other_as_files_and_as_folders(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "a").symlink_to("b")
+    (repo / "scripts" / "b").symlink_to("a")
+    (repo / "scripts" / "c").symlink_to("d", target_is_directory=True)
+    (repo / "scripts" / "d").symlink_to("c", target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts/a", "scripts/b", "scripts/c", "scripts/d"]
+
+
+def test_check_repo_refuses_a_symlink_whose_resolve_raises_a_loop_error(tmp_path, monkeypatch):
+    # Arrange: Python 3.12's Path.resolve() raises RuntimeError for a loop; 3.13 doesn't, so make it raise here.
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "a").symlink_to("a")
+    real_resolve = Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        if self.name == "a":
+            raise RuntimeError(f"Symlink loop from {self}")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts/a"]
+
+
 def test_check_repo_refuses_a_dangling_symlinked_folder(tmp_path):
     # Arrange
     repo = tmp_path / "repo"

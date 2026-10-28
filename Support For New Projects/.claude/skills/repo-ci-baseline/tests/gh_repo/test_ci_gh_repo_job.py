@@ -89,9 +89,10 @@ def test_the_job_takes_its_checker_from_the_base_branch_not_the_pr():
     text = "\n".join(str(step.get("run", "")) for step in job["steps"])
 
     # Act, Assert
-    assert re.search(r"git show[^\n]*origin/[^\n]*:\.github/scripts/check_gh_repo\.py", text), \
-        "the checker must come from `git show origin/<base ref>:.github/scripts/check_gh_repo.py`"
-    assert "github.base_ref" in job_text(job) or "GITHUB_BASE_REF" in text
+    assert re.search(r"git show[^\n]*BASE_SHA[^\n]*:\.github/scripts/check_gh_repo\.py", text), \
+        "the checker must come from `git show $BASE_SHA:.github/scripts/check_gh_repo.py`"
+    assert "github.event.pull_request.base.sha" in job_text(job), "BASE_SHA is the base the merge commit was built from"
+    assert "origin/" not in text, "the base branch's moving tip must not be read"
     assert "mktemp -d" in text, "the base checker goes to a temp directory outside the checkout"
 
 
@@ -140,8 +141,21 @@ class Job:
         self.git(self.work, "remote", "add", "origin", str(self.origin))
         self.git(self.work, "push", "-q", "origin", base_ref)
         self.git(self.work, "checkout", "-q", "-b", head_ref)
+        self.base_sha = self.rev("HEAD")
         self.write(head_files)
         self.commit("head")
+
+    def rev(self, name):
+        return subprocess.run(["git", "rev-parse", name], cwd=self.work, check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    def advance_base(self, files):
+        """Lands a commit on the base branch after the head branch was cut: the PR's base.sha stays where it was."""
+        self.git(self.work, "checkout", "-q", self.base_ref)
+        self.write(files)
+        self.commit("base moves on")
+        self.git(self.work, "push", "-q", "origin", self.base_ref)
+        self.git(self.work, "checkout", "-q", self.head_ref)
 
     @staticmethod
     def git(cwd, *args):
@@ -165,6 +179,7 @@ class Job:
         values = {"github.base_ref": self.base_ref, "github.head_ref": self.head_ref,
                   "github.workspace": str(self.work), "github.event_name": "pull_request",
                   "github.event.pull_request.base.ref": self.base_ref,
+                  "github.event.pull_request.base.sha": self.base_sha,
                   "github.event.pull_request.head.ref": self.head_ref}
 
         def value(match):
@@ -556,3 +571,42 @@ def test_the_job_escapes_a_carriage_return_in_a_reported_line_and_file_name(tmp_
     assert not any(line.startswith("::") for line in output.splitlines())
     assert "scripts/new.sh:1: gh pr view 1\\r::error::spoofed" in output
     assert "scripts/a\\r::error::b.sh:1: gh pr view 1" in output
+
+
+# A re-run is judged against the base the merge commit was built from, not the base branch's moving tip.
+
+def test_the_job_ignores_an_owned_file_the_base_changed_after_the_head_was_cut(tmp_path):
+    # Arrange: an Apply PR lands on main after this PR's merge commit was made.
+    job = Job(tmp_path, BASE, {"README.md": "# hi\n"})
+    job.advance_base({"scripts/gate.sh": EDITED_GATE})
+
+    # Act
+    code, output = job.run()
+
+    # Assert
+    assert code == 0, output
+    assert differs_lines(output) == []
+
+
+def test_the_job_ignores_a_checker_the_base_changed_after_the_head_was_cut(tmp_path):
+    # Arrange: the base's newer checker would refuse everything.
+    job = Job(tmp_path, BASE, {"scripts/new.sh": TOLD})
+    job.advance_base({CHECKER_PATH: "import sys\nsys.exit(1)\n"})
+
+    # Act
+    code, output = job.run()
+
+    # Assert
+    assert code == 0, output
+
+
+def test_the_job_ignores_a_file_the_base_added_to_an_owned_folder_after_the_head_was_cut(tmp_path):
+    # Arrange
+    job = Job(tmp_path, BASE, {})
+    job.advance_base({".claude/skills/pre-push-review/new.md": "# New\n"})
+
+    # Act
+    code, output = job.run()
+
+    # Assert
+    assert code == 0, output

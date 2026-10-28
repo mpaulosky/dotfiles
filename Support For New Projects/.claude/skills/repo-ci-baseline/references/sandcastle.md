@@ -130,6 +130,7 @@ whether or not that label counts, and says how many other open PRs it left out.
   `act next sweep` (Copilot will be asked, or the branch updated) or `settled`.
   A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
   an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
+  ([ADR 0010](../docs/adr/0010-status-text-is-sanitised-and-stderr-is-captured.md) has the reasons.)
   Text from GitHub (a title, a branch, a reason, gh's error text on stderr, a warning a read prints and the log lines) is printed through `terminalText`: whitespace
   becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, noncharacter, filler and
   supplementary-plane private-use characters are dropped, so it can't overwrite or fake a line of the report. Three joiners stay where

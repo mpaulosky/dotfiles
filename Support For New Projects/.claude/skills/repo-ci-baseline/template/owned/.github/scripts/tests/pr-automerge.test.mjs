@@ -1478,7 +1478,7 @@ test("calls in Claude past a still-pending Copilot request when its quota note i
   assert.equal(addedLabels.length, 1);
 });
 
-test("calls in Claude for a head with no Copilot review, no request pending and checks finished 10 minutes ago (mpaulosky/dotfiles#318)", async () => {
+test("calls in Claude for a head with no Copilot review, no request pending and checks finished long past the grace (mpaulosky/dotfiles#318)", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one"),
     headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }))
@@ -1523,6 +1523,57 @@ test("doesn't call in Claude for a dropped request while a check is still runnin
   const { addedLabels } = await evaluate(pr);
 
   assert.deepEqual(addedLabels, []);
+});
+
+// The grace is 5 minutes (mpaulosky/dotfiles#353): the boundary is pinned from both sides.
+test("a head whose checks finished 4 minutes ago still waits out the grace (mpaulosky/dotfiles#353)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: MINUTES_AGO(4) }));
+  const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }));
+  assert.deepEqual(called.addedLabels, [], "Claude isn't called in");
+  assert.ok(called.logs.some((line) => line.includes("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), called.logs.join("\n"));
+  const counted = await evaluate(readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef,
+    quotaNotes: false
+  }));
+  assert.deepEqual(counted.merges, [], "Claude's review doesn't count");
+});
+
+test("a head whose checks finished 5 minutes ago counts the grace as elapsed (mpaulosky/dotfiles#353)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: MINUTES_AGO(5) }));
+  const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }));
+  assert.deepEqual(called.addedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, labels: [CLAUDE_LABEL] }]);
+  const counted = await evaluate(readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef,
+    quotaNotes: false
+  }));
+  assert.equal(counted.merges.length, 1, "Claude's review counts");
+});
+
+test("a PR that became reviewable 4 minutes ago still waits, and one reviewable 5 minutes ago doesn't (mpaulosky/dotfiles#353)", async () => {
+  const reviewable = (minutes) => ({ nodes: [{ __typename: "ReadyForReviewEvent", createdAt: MINUTES_AGO(minutes) }] });
+  const waiting = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents: reviewable(4), ...finishedLongAgo }));
+  assert.deepEqual(waiting.addedLabels, []);
+  const elapsed = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents: reviewable(5), ...finishedLongAgo }));
+  assert.equal(elapsed.addedLabels.length, 1);
+});
+
+test("the notice for a head still in the grace says the 5-minute grace (mpaulosky/dotfiles#353)", async () => {
+  const headRef = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: MINUTES_AGO(1) }));
+  const { logs } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }));
+  const line = logs.find((entry) => entry.includes("Not calling in Claude for PR #7 yet"));
+  assert.ok(line, logs.join("\n"));
+  assert.ok(line.includes("the 5-minute grace"), line);
+  assert.ok(!line.includes("10-minute"), line);
+});
+
+test("COPILOT_GRACE_MS is 5 * 60 * 1000 (mpaulosky/dotfiles#353)", () => {
+  assert.match(readFileSync(WORKFLOW, "utf8"), /const COPILOT_GRACE_MS = 5 \* 60 \* 1000;/);
 });
 
 const FRESH = () => new Date().toISOString();

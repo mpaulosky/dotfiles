@@ -155,6 +155,8 @@ describe("the Template owns Sandcastle's code", () => {
     const here = new URL("../", import.meta.url);
     const expected = [
       "main.mts",
+      "status.mts",
+      "status.test.mts",
       ...readdirSync(new URL("lib/", here))
         .filter((name) => name.endsWith(".mts"))
         .map((name) => `lib/${name}`),

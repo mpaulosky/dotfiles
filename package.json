@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "check:sandcastle": "tsc --noEmit -p .sandcastle && tsx --test \".sandcastle/**/*.test.mts\"",
-    "sandcastle": "tsx .sandcastle/main.mts"
+    "sandcastle": "tsx .sandcastle/main.mts",
+    "sandcastle:status": "tsx .sandcastle/status.mts"
   },
   "devDependencies": {
     "@ai-hero/sandcastle": "^0.12.0",

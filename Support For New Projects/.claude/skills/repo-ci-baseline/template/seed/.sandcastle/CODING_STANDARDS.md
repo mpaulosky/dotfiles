@@ -23,5 +23,5 @@ Where tests go, how they're named, and what each kind of test (unit, integration
 
 - Match the module you're in: two-space indents, double quotes, semicolons, and `.mts` imports with the extension.
 - Tests sit beside the module as `<module>.test.mts`, written with `node:test` and `node:assert/strict`.
-- `main.mts` and every `lib/` module but `lib/repo-config.mts`, with their tests, are owned by the Baseline Template: don't change them here.
+- `main.mts`, `status.mts` and every `lib/` module but `lib/repo-config.mts`, with their tests, are owned by the Baseline Template: don't change them here.
   The repo's own values (role models, hooks, the CI jobs the gate reproduces) go in `lib/repo-config.mts`.

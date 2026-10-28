@@ -10,9 +10,9 @@ The pipeline's per-repo values sit in one Seed file, `lib/repo-config.mts`, so t
 ## What it guarantees
 
 - Every Sandcastle repo type-checks with the same `tsconfig.json`, lints its prompts with the same rules, ignores the same run output, and documents the same `.env` settings.
-- The pipeline's code (`main.mts` and every `lib/` module but `repo-config.mts`), the intake and critique prompts, and the host-safety
+- The pipeline's code (`main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`), the intake and critique prompts, and the host-safety
   guardrails (`lib/host-safety.mts`, `lib/shell.mts`) are identical everywhere.
-- A new repo starts from the same role prompts, Dockerfile, check and `package.json` scripts (`sandcastle` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`).
+- A new repo starts from the same role prompts, Dockerfile, check and `package.json` scripts (`sandcastle`, `sandcastle:status` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`).
 
 ## Owned files
 
@@ -27,6 +27,7 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 | `intake-prompt.md`, `critique-prompt.md` | Judge an issue or a plan against the issue alone, with no repo-specific text |
 | `lib/host-safety.mts`, `lib/shell.mts` and their tests | The guardrails that keep agent-written code off the host; they import only each other, so a repo's own code can't break them |
 | `main.mts` | The run's phases and round loop; it reads its round cap from `lib/repo-config.mts` |
+| `status.mts`, `lib/status.mts` and their tests | The read-only `sandcastle:status` command ([Status](#status)); it shares the sweep's decision code (`sweepContext`, `admitToSweep`, `decide`) so it can't disagree with it |
 | `lib/config.mts` and its test | What every Sandcastle repo shares: the role names (`ROLES`, plus the opt-in `ui` as `OptInRole`), limits, labels (`SANDCASTLE_LABELS`, and `FOLLOW_UP_LABEL` kept apart from them, with `HOST_LABELS` the host creates), markers (`SESSION_REPLY_MARKER` too), the Copilot reviewer settings, and the queue-scope (`isDefaultQueueScope`) and budget parsing |
 | The other `lib/` modules and their tests, `lib/errors.mts`, `lib/git-sandbox-fake.mts` and `lib/ui-role-fixture.mts` (the test helper for the opt-in `ui` role) | They import each other as one cluster, so they're Owned together; their tests pin no per-repo value |
 
@@ -100,6 +101,66 @@ The two runs stay off each other's PRs through `sandcastle:building`: the sweep 
 or, for a hand-off PR, a PR that carries it itself. A follow-up-only run also leaves closed PRs alone
 and keeps its own Sandcastle check out of the head checks it reads.
 The workflow side (the `mode` input, `SANDCASTLE_FOLLOW_UP_JOB` and the run's own concurrency group) is not in the Template's `sandcastle.yml` yet.
+
+## Status
+
+`pnpm run sandcastle:status` (`tsx .sandcastle/status.mts`) shows why Sandcastle is holding each open PR, so the answer isn't spread over the PR's checks, its threads, its labels and its comments.
+With no variable set it reads the default queue (the issues labelled `Sandcastle`, hand-offs included), which is what GitHub Actions' scope would do;
+`SANDCASTLE_ISSUE=<n>` or `SANDCASTLE_LABEL=<label>` narrow it as they do for a run (`statusScopeFrom` in `lib/status.mts`).
+It lists every open PR into `main` that Sandcastle opened and every same-repo one the owner labelled `sandcastle:follow-up`,
+whether or not that label counts, and says how many other open PRs it left out.
+
+```text
+#101 feat: Add search
+  branch:   feature/42-add-search (BLOCKED), labels: review:claude
+  for:      issue #42
+  passes:   1 of 3
+  held:     flagged for a pass: check build is red (a pass may still skip it: nothing it can re-run or fix, a thread author it can't identify, or a moved head)
+  threads:  bot 0, owner 0, other 0
+```
+
+`for:` is `issue #n`, `hand-off`, `not swept`, or `unknown` when the read that decides it failed. A draft PR is listed too, as `skipped: isn't swept: it's a draft`.
+
+- **`passes`.** The follow-up passes used since `sandcastle:needs-human` was last removed, against `FOLLOW_UP_PASS_CAP`:
+  counted by `followUpPassCount` in `lib/github.mts`, the count the pass checks.
+- **`held`.** The sweep's own answer: `sweepContext`, `admitToSweep` (`sweepSubject` and the hand-off approval), `labelOriginHold` and `decide`
+  in `lib/follow-up.mts`, which the sweep calls too, on the PR without the threads the host answered.
+  The state is `skipped` (not swept, with the sweep's reason, or a read or the decision failed, with the cause), `waiting`, `flagged for a pass`,
+  `flagged for a hand-back` (the passes are used up, so a pass that has something to act on hands it back),
+  `act next sweep` (Copilot will be asked, or the branch updated) or `settled`.
+  A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
+  an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
+  Text from GitHub (a title, a branch, a reason, gh's error text on stderr, a warning a read prints and the log lines) is printed through `terminalText`: whitespace
+  becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, noncharacter, filler and
+  supplementary-plane private-use characters are dropped, so it can't overwrite or fake a line of the report. Three joiners stay where
+  they do their work: a zero-width joiner between two assigned pictographs (an emoji sequence, with a skin tone or variation selector in it),
+  that variation selector right after an assigned pictograph, and a zero-width non-joiner between two letters of Arabic (Persian too), Syriac,
+  Thaana or an Indic script. At most eight survive in one text, so a few invisible bits can ride on them and no more. Keycap and
+  flag-tag emoji fall apart, and in the Indic scripts only the non-joiner survives: a zero-width joiner between two letters (Sinhala's
+  "Sri", a Devanagari half-form) is dropped. A private-use code point of the Basic Multilingual Plane (an icon glyph) or an unassigned
+  one stays, since it draws a glyph or a box, but only eight of them per text, and no more than three combining marks in a row
+  (text that stacks more, as Tibetan and Hebrew with cantillation can, loses the extras).
+  `plainStderr` cleans what a read warns on stderr, joining the arguments as data, never as a format string.
+  On the status's path, gh's and git's own stderr never reach the terminal themselves: the reads that run them (every gh read through
+  `ghWithStderr`, `repoName()`, `protectHostGit`'s `git config`) capture it and put it in the thrown message (when gh printed nothing, a reason built from the error's code, signal or exit
+  status, never its command line, which quotes titles), which the entry file
+  prints through `terminalText`. Elsewhere in the pipeline `sh()` and `commentOnIssue` still let it through.
+  Why: [ADR 0010](../docs/adr/0010-status-text-is-sanitised-and-stderr-is-captured.md).
+- **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
+  and `other` (anyone else, or an owner check that couldn't answer),
+  and `answered` for those the host replied to, which now wait on the owner. A thread read that failed shows `unknown (why)`, for a
+  conflicting PR too, which the sweep flags whatever its threads say.
+- **The workflow's runs.** The latest ten runs of `sandcastle.yml` (`sandcastleWorkflowRuns`):
+  how each ended, what started it, the branch, the time and the link.
+- **Unreadable parts.** A read that fails for one PR prints `unknown (why)` for that line and the other PRs still print;
+  so does the list of runs. A PR whose decision can't be made (`decide` throws on a time GitHub returned that doesn't parse, as it
+  does in the sweep) shows `skipped: couldn't decide: …`, and one whose admission read failed shows `for: unknown` and
+  `skipped: couldn't read what decides whether it is swept: …`.
+
+It is read-only: no comment, label or push, no sandbox, no model call. `StatusGitHub` has only reads, `loadQueue`'s label fixes and the hand-off head record the sweep posts are switched off,
+and `lib/status.test.mts` and `status.test.mts` pin the imports. It can differ from the next sweep by what changes between the two reads (a check that finishes, a head the sweep would record).
+Exit codes: `0` once the report is printed, whatever is held; `1` when the host's login, the in-scope issues, the open PRs or the repository
+name can't be read, or host git is unsafe (`protectHostGit`), with the cause on stderr; `2` for a bad scope variable, before any `gh` call.
 
 ## Hand-off PRs
 
@@ -213,7 +274,8 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
    Diff it before dropping it: another repo's `host-safety.mts` may be newer than the Template's, and a real fix moves into the Template before the re-Apply (Template first).
    Before dropping the old `lib/config.mts`, move its role models (`ROLE_AGENTS`), `MAX_ITERATIONS`, `hooks` and `copyToWorktree`,
    the `SANDBOX_SKILLS` from `lib/skills.mts` and the `GATE_COVERED_CHECKS` from `lib/follow-up-pass.mts` into `lib/repo-config.mts`.
-2. Rename the `test:sandcastle` script to `check:sandcastle`, run it with `tsx`, and add `tsc --noEmit`.
+2. Rename the `test:sandcastle` script to `check:sandcastle`, run it with `tsx`, and add `tsc --noEmit`, and add `sandcastle:status` (`tsx .sandcastle/status.mts`).
+   A Seed `package.json` is written once, so a repo that already has one adds the script by hand.
 3. Diff the repo's role prompts, `Dockerfile` and `package.json` against the Template's Seed files, and bring over what the repo lacks.
 4. Run `pnpm install`, then commit `pnpm-lock.yaml` with the change.
 5. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.

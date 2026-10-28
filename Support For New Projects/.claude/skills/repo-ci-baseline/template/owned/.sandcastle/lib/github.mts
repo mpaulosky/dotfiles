@@ -6,7 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { endOf } from "./checkpoint.mts";
-import { BASE_BRANCH, COPILOT_REVIEWER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 import { sh } from "./shell.mts";
@@ -17,8 +17,16 @@ let repo: string | undefined;
 // Read on first use rather than at import, so importing a module never shells
 // out to gh.
 export function repoName(): string {
-  repo ??= sh(process.cwd(), "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
+  repo ??= readRepoName();
   return repo;
+}
+
+// One read of the name, with gh's stderr captured: a failure reaches the terminal only through the thrown message, where a caller
+// can print it as plain text, never written by gh itself. Takes the runner, for a test.
+export function readRepoName(run: typeof execFileSync = execFileSync): string {
+  const name = ghWithStderr(run, ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
+  if (name === "") throw new Error("gh repo view failed: it printed no repository name");
+  return name;
 }
 
 // The login in `repoName()`'s "owner/name": the account the repository belongs to. For an organisation's repository it
@@ -229,9 +237,21 @@ function openSameRepositoryPullRequests(...filters: string[]): OpenPullRequest[]
   return sameRepository(listed).map(({ number, headRefName }) => ({ number, headRefName }));
 }
 
-// The open pull request from this repository's `branch`, or a new one for it
-// with the title and body, as its URL. A fork's PR from a branch of the same
-// name doesn't count.
+// Why gh stopped when it printed nothing, built from the error's own fields: Node's message holds the whole command line, which quotes
+// titles and branch names. A spawn failure (gh missing or not executable) is "couldn't run"; ENOBUFS (its output outgrew maxBuffer, which
+// Node also ends with SIGTERM) says so; a signal, with the code Node set beside it (ETIMEDOUT) if any, is "killed"; any other string code
+// only says gh stopped.
+function whyGhStopped(error: unknown): string {
+  const { code, signal, status } = (error ?? {}) as { code?: unknown; signal?: unknown; status?: unknown };
+  const named = typeof code === "string" ? ` (${code})` : "";
+  if (typeof code === "string" && ["ENOENT", "EACCES", "EPERM"].includes(code)) return `gh couldn't run${named}`;
+  if (code === "ENOBUFS") return `gh's output outgrew its buffer${named}`;
+  if (typeof signal === "string") return `gh was killed by ${signal}${named}`;
+  if (typeof code === "string") return `gh stopped${named}`;
+  if (typeof status === "number") return `gh exited with status ${status} and printed nothing`;
+  return "gh failed and printed nothing";
+}
+
 // Run gh with its stderr captured, and throw with that stderr in the message,
 // so a caller can say why it failed.
 function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, maxBuffer?: number): string {
@@ -244,12 +264,17 @@ function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, 
       ...(maxBuffer === undefined ? {} : { maxBuffer }),
     });
   } catch (error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    const detail = typeof stderr === "string" ? stderr.trim() : "";
-    throw new Error(`gh ${args.slice(0, 2).join(" ")} failed${detail ? `:\n${detail}` : ""}`, { cause: error });
+    const { stderr } = (error ?? {}) as { stderr?: unknown };
+    // gh's own text when it printed some; else why it stopped, so the text after "failed:" (all build.mts's commandOutput reads) never holds
+    // Node's command line, which quotes titles and branch names.
+    const detail = (typeof stderr === "string" ? stderr.trim() : "") || whyGhStopped(error);
+    throw new Error(`gh ${args.slice(0, 2).join(" ")} failed:\n${detail}`, { cause: error });
   }
 }
 
+// The open pull request from this repository's `branch`, or a new one for it
+// with the title and body, as its URL. A fork's PR from a branch of the same
+// name doesn't count.
 export function openPullRequest(
   branch: string,
   title: string,
@@ -1418,4 +1443,62 @@ export function handBack(
   ghWithStderr(run, [target.kind, "comment", number, "--repo", repo, "--body-file", "-"], body);
   ghWithStderr(run, [target.kind, "edit", number, "--repo", repo, "--add-label", label, ...removeReady]);
   report.record({ kind: target.kind, number: target.number, label, reason, url: targetUrl(repo, target) });
+}
+
+// Passes a PR has had since sandcastle:needs-human was last removed: the host's FOLLOW_UP_MARKER comments. The follow-up
+// pass and `pnpm run sandcastle:status` both count them here, so the status shows the number the cap is checked against.
+export function followUpPassCount(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): number {
+  return markerComments(number, "sandcastle:needs-human", FOLLOW_UP_MARKER, repo, run).length;
+}
+
+// One run of the Sandcastle workflow, as `gh run list` reports it.
+export type WorkflowRun = {
+  id: number;
+  status: string;
+  conclusion: string | null;
+  event: string;
+  branch: string;
+  createdAt: string;
+  url: string;
+};
+
+// The Sandcastle workflow's latest `limit` runs, newest first. Throws on a shape it doesn't expect, so the status
+// reports the runs as unreadable rather than guessing, and on a limit that isn't a positive whole number.
+export function sandcastleWorkflowRuns(
+  limit: number = 10,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): WorkflowRun[] {
+  if (!Number.isInteger(limit) || limit < 1) throw new Error(`The number of workflow runs to list must be a positive whole number, not ${limit}.`);
+  const listed: unknown = JSON.parse(
+    ghWithStderr(run, [
+      "run", "list", "--workflow", "sandcastle.yml", "--limit", String(limit),
+      "--json", "databaseId,status,conclusion,event,headBranch,createdAt,url", "--repo", repo,
+    ]),
+  );
+  if (!Array.isArray(listed)) throw new Error("gh run list didn't return a list of runs.");
+  return listed.map((entry: Record<string, unknown> | null) => {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      typeof entry.databaseId !== "number" ||
+      typeof entry.status !== "string" ||
+      !(entry.conclusion === null || typeof entry.conclusion === "string") ||
+      typeof entry.event !== "string" ||
+      typeof entry.headBranch !== "string" ||
+      typeof entry.createdAt !== "string" ||
+      typeof entry.url !== "string"
+    ) {
+      throw new Error("gh run list returned a run in a shape the status doesn't expect.");
+    }
+    return {
+      id: entry.databaseId,
+      status: entry.status,
+      conclusion: entry.conclusion,
+      event: entry.event,
+      branch: entry.headBranch,
+      createdAt: entry.createdAt,
+      url: entry.url,
+    };
+  });
 }

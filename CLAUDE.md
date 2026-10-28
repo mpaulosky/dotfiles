@@ -10,7 +10,7 @@ other repo copies (see its `SKILL.md` and `CONTEXT.md`).
   `references/` and `docs/adr/` describe them, and `test.sh` tests all of it.
 - `.github/workflows/claude-review.yml`, `pr-automerge.yml`, `pr-review-submitted.yml`, `sandcastle.yml`, `.github/scripts/post_claude_review.py`, `.github/hooks/*`,
   `scripts/check-branch-name.sh`, `scripts/review.sh`, the pre-push review's skills and agent (`.claude/skills/pre-push-review/`, `.claude/skills/hardening-review/`,
-  `.claude/agents/pre-push-reviewer.md`) and the Owned files under `.sandcastle/` (`main.mts`, every `lib/` module but `repo-config.mts`, and their tests):
+  `.claude/agents/pre-push-reviewer.md`) and the Owned files under `.sandcastle/` (`main.mts`, `status.mts`, every `lib/` module but `repo-config.mts`, and their tests):
   copies of the Template's Owned files. Edit the Template's file and copy it over; `test.sh` fails when a copy drifts.
 - `scripts/gate.sh` and `.github/workflows/repo-ci-baseline.yml` are dotfiles' own, and so is `.github/ci/sandcastle-skills.txt`, the Seed list of skills `sandcastle.yml` installs (empty here).
 - `.sandcastle/`: the unattended agent pipeline (TypeScript, run with Claude Code), ported from Blazor-Server's. Its rules are in
@@ -29,6 +29,7 @@ scripts/review.sh report                        # the local review (/pre-push-re
 pnpm run check:sandcastle                      # type-check and test .sandcastle/
 SANDCASTLE_ISSUE=<n> pnpm run sandcastle       # build one issue (and its PR) locally
 SANDCASTLE_LABEL=<label> pnpm run sandcastle   # work the issues labelled <label>
+pnpm run sandcastle:status                     # why each open Sandcastle PR is held (read-only)
 ```
 
 ## Which Sandcastle label

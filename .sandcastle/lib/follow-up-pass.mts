@@ -44,9 +44,9 @@ import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, typ
 import {
   commentOnPullRequest,
   failedCheckLogs,
+  followUpPassCount,
   handBack,
   headChecksOf,
-  markerComments,
   pushAccess,
   replyToReviewThread,
   rerunFailedChecksOnce,
@@ -489,7 +489,7 @@ export type PassHost = {
   // lib/github.mts#signedInHostLogin: who the host's replies are posted as.
   hostLogin(): string;
   // FOLLOW_UP_MARKER comments posted since sandcastle:needs-human was last
-  // removed (lib/github.mts#markerComments), counted against
+  // removed (lib/github.mts#followUpPassCount), counted against
   // FOLLOW_UP_PASS_CAP.
   passCount(pr: number): number;
   // git merge-base --is-ancestor, in the main checkout.
@@ -572,7 +572,7 @@ export const livePassHost: PassHost = {
     (login) => pushAccess(login),
   ),
   hostLogin: () => signedInHostLogin(),
-  passCount: (pr) => markerComments(pr, "sandcastle:needs-human", FOLLOW_UP_MARKER).length,
+  passCount: (pr) => followUpPassCount(pr),
   contains: (commit, ancestor) => originRefs.contains(commit, ancestor),
   markBuilding: (issue) => claimBuildingLabel(issue),
   unmarkBuilding: (issue) => releaseBuildingLabel(issue),

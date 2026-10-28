@@ -548,9 +548,9 @@ export function threadStanding(
 // threads are, so a failed read there leaves it flagged with nothing counted.
 // For any other PR a failed read throws, and the sweep leaves it alone this
 // round, still listing it as waiting on its people's threads.
-function withoutAnsweredThreads(
+export function withoutAnsweredThreads(
   pr: SweepPullRequest,
-  github: FollowUpGitHub,
+  github: Pick<FollowUpGitHub, "isOwner" | "reviewThreads">,
   host: string,
 ): { pr: SweepPullRequest; answered: number } {
   const mayFlag = pr.threads.some((thread) => !thread.resolved && (thread.byBot || github.isOwner(thread.author) === true));
@@ -571,6 +571,68 @@ function withoutAnsweredThreads(
     author: thread.comments[0]?.author ?? null,
   }));
   return { pr: { ...pr, threads }, answered: full.length - open.length };
+}
+
+// What the sweep decides each PR from, read once per sweep: the SweepContext, and the in-scope issues it came from.
+export function sweepContext(
+  github: Pick<FollowUpGitHub, "hostLogin" | "inScopeIssues" | "followsHandOffs">,
+): { context: SweepContext; issues: { number: number; labels: string[] }[] } {
+  const host = github.hostLogin();
+  const issues = github.inScopeIssues();
+  const inScope = new Set(issues.map((issue) => issue.number));
+  const building = new Set(issues.filter((issue) => hasLabel(issue, BUILDING_LABEL)).map((issue) => issue.number));
+  return { context: { inScope, host, building, followsHandOffs: github.followsHandOffs() }, issues };
+}
+
+// What admitToSweep reads of GitHub besides the PR's events.
+export type AdmissionGitHub = Pick<
+  FollowUpGitHub,
+  "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "recordApprovedHead" | "isOwner" | "repositoryOwner"
+>;
+
+// Whether the sweep admits `pr`, and why not: sweepSubject with the hand-off approval wired to `github`. `events` is the
+// caller's memoised read of the PR's events, so the approval and the label-origin check share one read. A failed
+// recordApprovedHead is logged and swallowed: the approval stands, and the next sweep walks the same merges again.
+export function admitToSweep(
+  pr: SweepPullRequest,
+  context: SweepContext,
+  github: AdmissionGitHub,
+  events: () => IssueEvent[],
+  log: (line: string) => void,
+): { subject: SweepSubject } | { skip: string } {
+  return sweepSubject(pr, context, () =>
+    handOffApproval(pr, {
+      pullRequestEvents: events,
+      pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
+      pullRequestComments: (number) => github.pullRequestComments(number),
+      mergeOfMain: (commit) => github.mergeOfMain(commit),
+      recordApprovedHead: (number, head) => {
+        try {
+          github.recordApprovedHead(number, head);
+        } catch (error) {
+          log(`  ⚠ Couldn't record PR #${number}'s head ${head.slice(0, 7)}, so the next sweep walks the same merges again: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+      isOwner: github.isOwner,
+      repositoryOwner: () => github.repositoryOwner(),
+    }, context.host),
+  );
+}
+
+// What to do about a stranger's change of the PR's hand-back label.
+export type LabelOriginHold = { kind: "unknown" } | { kind: "restore"; label: string; reason: string };
+
+// The label-origin step of the sweep, without the write: a stranger's removal of the PR's hand-back label isn't a
+// re-queue. Undefined when nothing holds the PR; an unknown check comes before a restore.
+export function labelOriginHold(
+  pr: Pick<SweepPullRequest, "labels">,
+  events: readonly IssueEvent[],
+  isOwner: IsOwner,
+): LabelOriginHold | undefined {
+  const origin = labelOriginFixes(pr.labels, events, isOwner, PR_LABEL_RULES);
+  if (origin.unknown.length > 0) return { kind: "unknown" };
+  const restore = origin.fixes.find((fix) => fix.action === "restore");
+  return restore === undefined ? undefined : { kind: "restore", label: restore.label, reason: restore.reason };
 }
 
 // What the sweep found that needs an agent: the numbers of the PRs it logged
@@ -608,10 +670,8 @@ export function sweepPullRequests(
   waiting: WaitingPrReport = waitingPrReport,
   options: SweepOptions = {},
 ): SweepResult {
-  const host = github.hostLogin();
-  const issues = github.inScopeIssues();
-  const inScope = new Set(issues.map((issue) => issue.number));
-  const building = new Set(issues.filter((issue) => hasLabel(issue, BUILDING_LABEL)).map((issue) => issue.number));
+  const { context, issues } = sweepContext(github);
+  const { host } = context;
   const openPrs = github.openPullRequests();
   const needsPass: number[] = [];
   const passes: PassTarget[] = [];
@@ -628,23 +688,7 @@ export function sweepPullRequests(
       // One read of the PR's events serves both the hand-off approval and the needs-human check below.
       let events: IssueEvent[] | undefined;
       const eventsOfPr = () => (events ??= github.pullRequestEvents(pr.number));
-      const swept = sweepSubject(pr, { inScope, host, building, followsHandOffs: github.followsHandOffs() }, () =>
-        handOffApproval(pr, {
-          pullRequestEvents: eventsOfPr,
-          pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
-          pullRequestComments: (number) => github.pullRequestComments(number),
-          mergeOfMain: (commit) => github.mergeOfMain(commit),
-          recordApprovedHead: (number, head) => {
-            try {
-              github.recordApprovedHead(number, head);
-            } catch (error) {
-              log(`  ⚠ Couldn't record PR #${number}'s head ${head.slice(0, 7)}, so the next sweep walks the same merges again: ${error instanceof Error ? error.message : String(error)}`);
-            }
-          },
-          isOwner: github.isOwner,
-          repositoryOwner: () => github.repositoryOwner(),
-        }, host),
-      );
+      const swept = admitToSweep(pr, context, github, eventsOfPr, log);
       if ("skip" in swept) {
         log(`  · PR #${pr.number} isn't swept: ${swept.skip}.`);
         continue;
@@ -655,15 +699,14 @@ export function sweepPullRequests(
       }
       // A stranger's removal of the PR's hand-back label isn't a re-queue:
       // put the label back and leave the PR alone this round.
-      const origin = labelOriginFixes(pr.labels, eventsOfPr(), github.isOwner, PR_LABEL_RULES);
-      if (origin.unknown.length > 0) {
+      const hold = labelOriginHold(pr, eventsOfPr(), github.isOwner);
+      if (hold?.kind === "unknown") {
         log(`  · PR #${pr.number} isn't swept: couldn't check whether the repository owner removed ${NEEDS_HUMAN}.`);
         continue;
       }
-      const restore = origin.fixes.find((fix) => fix.action === "restore");
-      if (restore !== undefined) {
-        github.addPullRequestLabel(pr.number, restore.label);
-        log(`  ✋ PR #${pr.number}: ${restore.reason}, so it isn't swept.`);
+      if (hold?.kind === "restore") {
+        github.addPullRequestLabel(pr.number, hold.label);
+        log(`  ✋ PR #${pr.number}: ${hold.reason}, so it isn't swept.`);
         continue;
       }
       let thinned: ReturnType<typeof withoutAnsweredThreads>;

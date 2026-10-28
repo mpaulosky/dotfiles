@@ -216,3 +216,38 @@ describe("the Template's tests remove scratch directories with retries", () => {
     assert.deepEqual(bare, []);
   });
 });
+
+// `pnpm run sandcastle:status` (lib/status.mts, status.mts): the script is in the Seed package.json, which Apply writes only once, so
+// a repo that already has one adds it by hand, and the reference says so.
+describe("pnpm run sandcastle:status in the Template", () => {
+  const packageScripts = (file: string): Record<string, string> => JSON.parse(readFileSync(file, "utf8")).scripts;
+
+  it("is a script of the Seed package.json, right after sandcastle", () => {
+    const scripts = packageScripts(join(seed, "package.json"));
+    const names = Object.keys(scripts);
+
+    assert.equal(scripts["sandcastle:status"], "tsx .sandcastle/status.mts");
+    assert.equal(names.indexOf("sandcastle:status"), names.indexOf("sandcastle") + 1);
+  });
+
+  it("leaves dotfiles' package.json scripts the Seed's", () => {
+    assert.deepEqual(packageScripts(join(root, "package.json")), packageScripts(join(seed, "package.json")));
+  });
+
+  describe("in references/sandcastle.md", () => {
+    const reference = readFileSync(join(skill, "references/sandcastle.md"), "utf8");
+
+    it("is described: what it shows and that it is read-only", () => {
+      assert.match(reference, /pnpm run sandcastle:status/);
+      assert.match(reference, /read-only/i);
+      for (const part of [/passes/i, /bot/, /owner/]) assert.match(reference, part);
+    });
+
+    it("is in the migration notes, since a Seed package.json already written isn't changed", () => {
+      const migrating = reference.slice(reference.indexOf("## Migrating a repo"));
+
+      assert.notEqual(migrating, reference, "the reference has no migration section");
+      assert.match(migrating, /sandcastle:status/);
+    });
+  });
+});

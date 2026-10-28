@@ -7,6 +7,9 @@ set -euo pipefail
 term="${1:-squad}"
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+url="$(git remote get-url upstream 2>/dev/null || git remote get-url origin 2>/dev/null || true)"
+repo="${GITHUB_REPOSITORY:-${url%.git}}"
+repo="${repo#*github.com[:/]}"
 
 section() { printf '\n== %s ==\n' "$1"; }
 
@@ -47,13 +50,15 @@ section "Branches carrying the framework's prefix"
 git branch -a --format='%(refname:short)' | grep -iE "(^|/)(${term}|sprint)/" || echo "(none)"
 
 section "Issue-tracker labels"
-if command -v gh >/dev/null 2>&1; then
-  gh label list --limit 500 --json name --jq '.[].name' 2>/dev/null | grep -i "$term" || echo "(none)"
+if [ -z "$repo" ]; then
+  echo "(no git remote; check labels by hand)"
+elif command -v gh >/dev/null 2>&1; then # gh-repo: ok
+  GH_REPO="${repo:?}" gh label list --limit 500 --json name --jq '.[].name' 2>/dev/null | grep -i "$term" || echo "(none)"
   echo "-- open issues/PRs carrying those labels --"
-  gh label list --limit 500 --json name --jq '.[].name' 2>/dev/null | grep -i "$term" | while read -r l; do
-    n="$(gh issue list --state open --label "$l" --json number --jq 'length' 2>/dev/null || echo '?')"
+  GH_REPO="${repo:?}" gh label list --limit 500 --json name --jq '.[].name' 2>/dev/null | grep -i "$term" | while read -r l; do
+    n="$(GH_REPO="${repo:?}" gh issue list --state open --label "$l" --json number --jq 'length' 2>/dev/null || echo '?')"
     echo "$l: $n open"
   done
 else
-  echo "(gh not installed; check labels by hand)"
+  echo "(gh not installed; check labels by hand)" # gh-repo: ok
 fi

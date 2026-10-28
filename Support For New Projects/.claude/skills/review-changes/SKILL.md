@@ -142,8 +142,8 @@ any gate you did not actually run as not run.
    unknown, so skip that worktree:
    - `git ls-remote --exit-code --heads origin refs/heads/<branch>` exits 2
      (gone from the remote);
-   - `gh pr list --head <branch> --state merged --json headRefOid` has a PR
-     whose `headRefOid` equals `git rev-parse refs/heads/<branch>` (the tip
+   - `gh pr list --repo "${repo:?}" --head <branch> --state merged --json headRefOid` has a PR
+     (`repo` is the `owner/name` of the `upstream` remote, else `origin`) whose `headRefOid` equals `git rev-parse refs/heads/<branch>` (the tip
      itself merged, whatever PRs once shared the name);
    - `git -C <path> status --porcelain --untracked-files=all` succeeds and
      prints nothing;

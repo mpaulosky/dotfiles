@@ -73,8 +73,8 @@ Per workflow:
 - **Rename** it when its job is generic (CI, release, label enforcement, README sync, dependency auto-merge): strip the
   prefix from the filename, display name, concurrency group and placeholder text; keep the logic.
 
-Before renaming anything, check how the ruleset keys required checks (`gh api repos/{owner}/{repo}/rulesets` and branch
-protection). Keyed on job name, a rename is safe. Keyed on workflow name, update the ruleset in step with the rename and
+Before renaming anything, check how the ruleset keys required checks (`GH_REPO="${repo:?}" gh api repos/{owner}/{repo}/rulesets` and branch
+protection; `repo` is the `owner/name` of the `upstream` remote, else `origin`). Keyed on job name, a rename is safe. Keyed on workflow name, update the ruleset in step with the rename and
 tell the user, since that is an outward-facing change.
 
 ### 6. Delete the coordinator agent and squad skill catalogs
@@ -87,8 +87,8 @@ decision log).
 ### 7. Delete the squad labels
 
 After steps 3 and 5 (so no running workflow re-applies them), confirm the scan shows zero open issues on every
-`squad:*` label, then confirm with the user and delete the roster with `gh label delete <name> --yes`. Done when
-`gh label list` shows none.
+`squad:*` label, then confirm with the user and delete the roster with `gh label delete <name> --yes --repo "${repo:?}"`. Done when
+`gh label list --repo "${repo:?}"` shows none.
 
 ### 8. Sweep stale references
 

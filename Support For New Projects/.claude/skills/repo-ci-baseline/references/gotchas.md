@@ -101,11 +101,28 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   `rename`, `deploy-key` and `autolink` read `GH_REPO`). `test.sh` checks the Owned scripts with the same
   `check_gh_repo.py`, whose tests are in `tests/gh_repo/`.
 
+  More rules of a script, which this page holds in full (the checker's docstring only points here):
+
+  - A `NAME=value` word before `gh` is walked back over, and the last `GH_REPO=` among them is judged:
+    `GH_REPO=o/r GH_TOKEN=x gh pr view 1` is told. A wrapper (`env gh`, `sudo gh`) between them and `gh` is not walked
+    over and is refused. A later `unset GH_REPO`, or an assignment that is no prefix of a `gh` command, ends an export.
+  - A bare `gh` that ends its line in `||` or `&&` (`command -v gh >/dev/null 2>&1 ||`) is a lookup that goes on to
+    its own next command, and is accepted before the export. A pipe or a backslash continuation after it is refused.
+  - `gh.exe` is `gh`: it is judged by the same rules, and a longer word (`gh.executable`, `neigh.exe`) or a folder
+    (`~/.config/gh.exe/`) is not.
+  - The body of a heredoc that feeds data to a program (`cat <<EOF` usage text) is no code, as an `echo` message is not,
+    so prose naming `gh` in it is skipped. A heredoc fed to a shell (`bash <<EOF`, `sh <<EOF`, `cat <<EOF | sh`) is code
+    and stays read.
+  - Lines end only at a newline, as bash's do (an optional `\r` before it is dropped). A binary file (with a NUL byte)
+    is skipped; any other file is read whatever bytes it holds.
+
   A skill's snippets stand alone, so there is no export: in a fenced block or an inline code span, write
   `GH_REPO=owner/repo gh ...` (or `GH_REPO="${repo:?}"`) right before each `gh` command, or give `--repo owner/repo`
   (`--repo=` and `-R` work too) on its line, except for `gh api`, which has no such flag. `gh repo`'s subcommands take
   the repository first in a skill too. Keep a command on one line; a backslash continuation or `"$@"` is refused.
   Prose such as "the gh CLI" and a span that is only `` `gh` `` are not commands.
+  A skill's `gh` line must be copy-pasteable, so a placeholder repository after `--repo`, `-R` or `GH_REPO=`
+  (`gh pr list --repo <owner>/<repo>`) is refused: write a real `owner/repo` or `"${repo:?}"`.
 
   A line that names `gh` without running it (`command -v gh >/dev/null`, `echo "needs gh"`) ends in a comment
   `# gh-repo: ok` in a script or a fenced block, or carries `<!-- gh-repo: ok -->` in a skill, and the check skips it.

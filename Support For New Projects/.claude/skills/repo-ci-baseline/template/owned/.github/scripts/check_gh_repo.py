@@ -1,73 +1,4 @@
-"""Checks that every gh command in the Template's Owned scripts, and in a repo's
-own scripts and skills, is told its repository (mpaulosky/dotfiles#267
-and mpaulosky/dotfiles#321).
-
-A gh command reaches gh's default repository unless it's told which one, and in
-a clone whose only remote is a fork that's the fork. A Baseline repo's gate
-(auth0-management-app's .github/ci/gate-checks.sh) refuses such commands, and it
-can't edit the Owned files that hold one, so the Template keeps its own to the
-same rule:
-
-- a script exports GH_REPO at the top level (in column 0, so not inside an if
-  or a function), alone on its line but for a comment, before its first gh
-  command, or writes GH_REPO=<value> as the prefix of the gh command itself. A
-  later unset GH_REPO, or an assignment that isn't such an export or prefix,
-  ends the export, and a prefix is judged even after one;
-- the value is literal, or a variable written ${NAME:?}, which stops the script
-  when it's empty, since gh ignores an empty GH_REPO. GITHUB_REPOSITORY is set
-  only in Actions, so a script that also runs locally falls back to a remote
-  first (references/gotchas.md has the lines) and guards the result;
-- gh repo's subcommands don't read GH_REPO, so each takes the repository as its
-  first argument, the same literal or ${NAME:?}. view and edit have no -R. list,
-  create, clone, gitignore and license name their own or need none, and rename,
-  deploy-key and autolink read GH_REPO like any other gh command;
-- gh is called by name, with its subcommand written out on the same line;
-  redirections before it (gh 2>/dev/null repo view) are looked past. A gh
-  followed by an expansion ("$@", $sub, a wrapper's body) or a backslash
-  continuation hides a subcommand that may be repo view, which ignores
-  GH_REPO, so it's refused even after an export. A gh that ends its command,
-  or a quoted word ("$work/bin/gh"), counts once the script has exported
-  GH_REPO; anything else after it ({repo,} view, a list's ", ") is refused.
-
-A line that is no gh command to run but names gh (command -v gh, echo "needs gh")
-carries a comment saying so, # gh-repo: ok, and is skipped. A path such as
-~/.config/gh/hosts.yml names no command either.
-
-Whole-line comments are skipped, and so are binary files (with a NUL byte).
-Bash doesn't care about encoding, so any other file is read whatever bytes it
-holds.
-Lines end only at a newline, as bash's do (an optional \r before it is
-dropped), so a form feed or U+2028 can't put an export at the start of a line
-bash never sees.
-
-    python3 check_gh_repo.py <dir>...
-
-Reads every file under each dir as a shell script. Prints each untold command
-as file:line: text and exits 1 when there's one, or 2 when a root isn't a
-directory, so a moved scripts/ can't pass unchecked.
-
-    python3 check_gh_repo.py --repo <root>
-
-The repo-wide check, which every repo's scripts/gate.sh runs
-(mpaulosky/dotfiles#321). It walks scripts/, .github/ci/ and .claude/skills/
-under root, skipping node_modules, .git, symlinks and the Owned Baseline files
-(OWNED: the Template's Owned scripts and its pre-push-review and hardening-review skills, which a repo
-can't edit, and which test.sh checks in dotfiles). A .sh or .bash file, or one
-with no extension and a sh or bash shebang, is checked as a script, with the
-rules above; a .md file is checked as a skill; anything else is skipped. It
-prints paths relative to root, and a hint on stderr when it finds any.
-
-A skill's snippet stands alone, so there's no export. Only gh in code counts:
-a fenced block's lines (a fence may sit in a blockquote or a list item; an
-unclosed fence runs to the end of the file), and
-inline code spans, but not a span that is only gh. Each gh command is told by
-the GH_REPO=<value> prefix right before it, or by --repo <value>, --repo=<value>
-or -R <value> after it on its line (not for gh api, which has no such flag).
-gh repo's subcommands take the repository first, as in a script. A backslash
-continuation or an expansion after gh, or a gh with no subcommand on its line,
-is refused: a gh command stays on one line. <!-- gh-repo: ok --> on a line, or
-# gh-repo: ok in a fenced block, skips it.
-"""
+"""Checks that every gh command in the Template's Owned scripts and a repo's own scripts and skills is told its repository; the rules are in references/gotchas.md."""
 
 import os
 import re
@@ -79,9 +10,9 @@ from pathlib import Path
 VALUE = (r"""("[^"$` \t]+"|'[^' \t]+'|[^ \t`"'$;&|,()<>]+"""
          r"""|"?\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}"'`]*\}"?)""")
 EXPORTS = re.compile(r"^export GH_REPO=" + VALUE + r"[ \t]*(;[ \t]*)?(#.*)?$")
-TOLD = re.compile(r"(^|[^A-Za-z0-9_])GH_REPO=" + VALUE + r"[ \t]+$")
-# gh as a word: not part of gh_, neigh or gh.exe, nor a folder in a path (~/.config/gh/hosts.yml).
-GH = re.compile(r"(?<![A-Za-z0-9_.-])gh(?![A-Za-z0-9_.-]|/)")
+# gh or gh.exe as a word: not part of gh_, neigh or gh.executable, nor a folder in a path (~/.config/gh/hosts.yml).
+GH_WORD = r"gh(?:\.exe)?(?![A-Za-z0-9_.-]|/)"
+GH = re.compile(r"(?<![A-Za-z0-9_.-])" + GH_WORD)
 # A line that says its gh isn't a command to run (command -v gh, echo "needs gh"):
 # # gh-repo: ok in a script, <!-- gh-repo: ok --> in a skill.
 OPT_OUT = re.compile(r"(#|<!--)[ \t]*gh-repo:[ \t]*ok(?![A-Za-z0-9_-])")
@@ -93,10 +24,14 @@ HIDDEN = re.compile(r"""[ \t]*(\\$|["'`$])""")
 REDIRECTION = re.compile(r"[ \t]*[0-9]*(&>>?|>>|>&|>\||<<<|<<-?|<&|<>|>|<)[ \t]*[^ \t;&|()]*")
 # What ends a command after a bare gh.
 ENDS = re.compile(r"[ \t]*([;&|)`]|$)")
-# A GH_REPO= prefix right before gh, whatever its value.
-PREFIX = re.compile(r"(^|[^A-Za-z0-9_])GH_REPO=[^ \t]*[ \t]+$")
+# A bare gh whose line ends in || or &&: a lookup (command -v gh ||) that goes on to its own next command.
+LOOKUP_LIST = re.compile(r"[ \t]*(\|\||&&)[ \t]*")
+# A NAME=value word before a command, with the whitespace after it.
+ASSIGNMENT_WORD = r"""[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^ \t"';&|()]*)[ \t]+"""
+# The run of such words right before gh.
+PREFIX = re.compile(r"(?<![A-Za-z0-9_])(?:" + ASSIGNMENT_WORD + r")+$")
 ASSIGNMENT = re.compile(r"(?<![A-Za-z0-9_])GH_REPO=")
-PREFIX_OF_GH = re.compile(r"GH_REPO=" + VALUE + r"[ \t]+gh(?![A-Za-z0-9_.-])")
+PREFIX_OF_GH = re.compile(r"GH_REPO=" + VALUE + r"[ \t]+(?:" + ASSIGNMENT_WORD + r")*" + GH_WORD)
 UNSET = re.compile(r"(?<![A-Za-z0-9_])unset[ \t][^;&|]*(?<![A-Za-z0-9_])GH_REPO(?![A-Za-z0-9_])")
 REPO = re.compile(r"repo([^A-Za-z0-9_-]|$)")
 NAMES_ITS_OWN = re.compile(r"repo[ \t]+(list|create|clone|gitignore|license)\b")
@@ -117,15 +52,44 @@ def told(before, after, exported):
         after = after[redirection.end():]
     subcommand = SUBCOMMAND.match(after)
     if subcommand is None:
-        return exported and ENDS.match(after) is not None
+        return LOOKUP_LIST.fullmatch(after) is not None or (exported and ENDS.match(after) is not None)
     rest = after[subcommand.end():]
     if REPO.match(rest) and not READS_GH_REPO.match(rest):
         named = NAMED.match(rest)
         repository = named.group(1) if named else ""
         return bool(NAMES_ITS_OWN.match(rest)) or "/" in repository or "${" in repository
-    if PREFIX.search(before):
-        return TOLD.search(before) is not None
+    prefix = PREFIX.search(before)
+    if prefix:
+        repositories = [word.partition("=")[2].rstrip(" \t") for word in re.findall(ASSIGNMENT_WORD, prefix.group())
+                        if word.startswith("GH_REPO=")]
+        if repositories:
+            return re.fullmatch(VALUE, repositories[-1]) is not None
     return exported
+
+
+# A heredoc operator and its delimiter: <<EOF, <<-'EOF', <<"EOF", <<\\EOF (not the here-string <<<).
+HEREDOC = re.compile(r"""(?<!<)<<(-?)[ \t]*(?:"([^"]*)"|'([^']*)'|\\?([^ \t;&|()<>"'\\]+))""")
+# A word that may run the heredoc's body as code: sh, bash, /bin/bash, dash, zsh, ksh.
+SHELL_WORD = re.compile(r"(?<![A-Za-z0-9_.-])(ba|da|z|k)?sh(?![A-Za-z0-9_.-])")
+
+
+def data_heredocs(line, later):
+    """The (delimiter, tabs) of each heredoc on line whose body is data, not code, in the order the bodies follow.
+
+    A line that names a shell anywhere (bash <<EOF, cat <<EOF | sh) feeds its body to it, so its body is read
+    as code. A heredoc whose delimiter never comes again, or one inside (( )), is no heredoc.
+    """
+    if SHELL_WORD.search(line):
+        return []
+    found = []
+    for match in HEREDOC.finditer(line):
+        if line[:match.start()].count("((") > line[:match.start()].count("))"):
+            continue
+        delimiter = next(group for group in match.groups()[1:] if group is not None)
+        if not any((text.lstrip("\t") if match.group(1) else text) == delimiter for text in later):
+            continue
+        found.append((delimiter, bool(match.group(1))))
+    return found
 
 
 def read_lines(path):
@@ -150,9 +114,16 @@ def untold(path):
         return []
     found = []
     exported = False
+    bodies = []
     for number, line in enumerate(lines, 1):
+        if bodies:
+            delimiter, tabs = bodies[0]
+            if (line.lstrip("\t") if tabs else line) == delimiter:
+                bodies.pop(0)
+            continue
         if re.match(r"[ \t]*#", line):
             continue
+        bodies = data_heredocs(line, lines[number:])
         if EXPORTS.match(line):
             exported = True
         elif UNSET.search(line) or any(
@@ -267,7 +238,7 @@ def untold_markdown(path):
             continue
         else:
             # A span that is only gh names the tool in prose.
-            code = [span for span in code_spans(line) if span.strip() != "gh"]
+            code = [span for span in code_spans(line) if span.strip() not in ("gh", "gh.exe")]
         if not OPT_OUT.search(line) and any(untold_in_code(piece) for piece in code):
             found.append(f"{path}:{number}: {shown(line)}")
     return found

@@ -112,12 +112,14 @@ whether or not that label counts, and says how many other open PRs it left out.
 
 ```text
 #101 feat: Add search
-  branch:   feature/42-add-search (BLOCKED, draft), labels: review:claude
-  for:      issue #42 | hand-off | not swept
+  branch:   feature/42-add-search (BLOCKED), labels: review:claude
+  for:      issue #42
   passes:   1 of 3
   held:     flagged for a pass: check build is red (a pass may still skip it: nothing it can re-run or fix, a thread author it can't identify, or a moved head)
-  threads:  bot 2, owner 1, other 3, answered 1
+  threads:  bot 0, owner 0, other 0
 ```
+
+`for:` is `issue #n`, `hand-off`, `not swept`, or `unknown` when the read that decides it failed. A draft PR is listed too, as `skipped: isn't swept: it's a draft`.
 
 - **`passes`.** The follow-up passes used since `sandcastle:needs-human` was last removed, against `FOLLOW_UP_PASS_CAP`:
   counted by `followUpPassCount` in `lib/github.mts`, the count the pass checks.
@@ -128,19 +130,23 @@ whether or not that label counts, and says how many other open PRs it left out.
   `act next sweep` (Copilot will be asked, or the branch updated) or `settled`.
   A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
   an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
-  Text from GitHub (a title, a branch, a reason) is printed with its control and bidi characters removed (`terminalText`), so it
-  can't overwrite or fake a line of the report.
+  Text from GitHub (a title, a branch, a reason, gh's error text on stderr and in the log lines) is printed through `terminalText`: whitespace
+  becomes one space, and control, format (bidi, zero-width, tag), surrogate and filler characters are dropped, so it can't overwrite, fake
+  or hide text in a line of the report.
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),
-  and `answered` for those the host replied to, which now wait on the owner.
+  and `answered` for those the host replied to, which now wait on the owner. A thread read that failed shows `unknown (why)`, for a
+  conflicting PR too, which the sweep flags whatever its threads say.
 - **The workflow's runs.** The latest ten runs of `sandcastle.yml` (`sandcastleWorkflowRuns`):
   how each ended, what started it, the branch, the time and the link.
 - **Unreadable parts.** A read that fails for one PR prints `unknown (why)` for that line and the other PRs still print;
-  so does the list of runs.
+  so does the list of runs. A PR whose decision can't be made (`decide` throws on a time GitHub returned that doesn't parse, as it
+  does in the sweep) shows `skipped: couldn't decide: …`.
 
 It is read-only: no comment, label or push, no sandbox, no model call. `StatusGitHub` has only reads, `loadQueue`'s label fixes and the hand-off head record the sweep posts are switched off,
 and `lib/status.test.mts` and `status.test.mts` pin the imports. It can differ from the next sweep by what changes between the two reads (a check that finishes, a head the sweep would record).
-Exit codes: `0` once the report is printed, whatever is held; `1` when the open PRs can't be read or host git is unsafe (`protectHostGit`); `2` for a bad scope variable, before any `gh` call.
+Exit codes: `0` once the report is printed, whatever is held; `1` when the host's login, the in-scope issues, the open PRs or the repository
+name can't be read, or host git is unsafe (`protectHostGit`), with the cause on stderr; `2` for a bad scope variable, before any `gh` call.
 
 ## Hand-off PRs
 

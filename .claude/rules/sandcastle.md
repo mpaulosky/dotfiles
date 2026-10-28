@@ -14,7 +14,7 @@ files change.
 
 ## Writing the code
 
-- **Change the Template's copy too.** `main.mts` and every `lib/` module but `repo-config.mts`, with their tests, are copies of
+- **Change the Template's copy too.** `main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`, with their tests, are copies of
   the Template's Owned files under `template/owned/.sandcastle/`. Change both, or change one and copy it over; `test.sh` fails
   when they differ. dotfiles' own tests (`repo-config`, `template`, `dockerfile`, `role-prompts` and `owned-paths`, and `main.test.mts`) aren't.
 - **Per-repo values go in `lib/repo-config.mts`,** the Seed file each repo fills. `lib/config.mts` holds only what every

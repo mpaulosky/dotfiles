@@ -28,13 +28,15 @@ gh and git also write to the process's stderr themselves when they are run with 
 - **`terminalText` is idempotent**, and `terminalLine` keeps at most eight spaces of indent. `plainStderr` makes `console.error` plain text: its arguments are data (a
   string as it is, an Error as its message, anything else through `inspect`), never a format string.
 - **gh and git stderr is captured into the thrown message, never inherited,** on the status's path (`ghWithStderr`, `readRepoName`, `protectHostGit`'s `git config`).
-  The entry file prints the message through `terminalText`.
+  The entry file prints the message through `terminalText`. The field-built reason applies to every `ghWithStderr` caller in the pipeline, not only the status's.
 - **The message is built from fields, never from the command line.** When gh printed nothing, the text after `failed:` says why it stopped from the error's `code`,
   `signal` or `status`. Node's own message holds the whole command line, which quotes titles and branches, and `build.mts` reads what follows `failed:` to tell a
   GitHub server error or a refused workflow push from other failures, so a title like "Internal Server Error" would steer it.
 
 ## Consequences
 
-- Text in a script that needs a joiner outside the kept cases loses it. That is a known cost, noted in the code and in the reference.
+- Text in a script that needs a joiner outside the kept cases loses it, and text that stacks more than three combining marks (Tibetan, Hebrew with niqqud and
+  cantillation, some Indic clusters) loses the extras. Both are known costs, noted in the code and in the reference. Whether three is the right number is the owner's call.
+- A joiner stays only between assigned pictographs, since the cap on unassigned code points could otherwise drop the pictograph it sat beside and leave it dangling.
 - Elsewhere in the pipeline `sh()` and `commentOnIssue` still let stderr through. A follow-up moves them to the same convention.
 - A new read on the status's path goes through `ghWithStderr`, and a new line it prints goes through `terminalText` or `terminalLine`.

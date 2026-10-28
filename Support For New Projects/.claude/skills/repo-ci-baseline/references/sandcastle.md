@@ -130,7 +130,6 @@ whether or not that label counts, and says how many other open PRs it left out.
   `act next sweep` (Copilot will be asked, or the branch updated) or `settled`.
   A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
   an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
-  ([ADR 0010](../docs/adr/0010-status-text-is-sanitised-and-stderr-is-captured.md) has the reasons.)
   Text from GitHub (a title, a branch, a reason, gh's error text on stderr, a warning a read prints and the log lines) is printed through `terminalText`: whitespace
   becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, noncharacter, filler and
   supplementary-plane private-use characters are dropped, so it can't overwrite or fake a line of the report. Three joiners stay where
@@ -139,12 +138,14 @@ whether or not that label counts, and says how many other open PRs it left out.
   Thaana or an Indic script. At most eight survive in one text, so a few invisible bits can ride on them and no more. Keycap and
   flag-tag emoji fall apart, and in the Indic scripts only the non-joiner survives: a zero-width joiner between two letters (Sinhala's
   "Sri", a Devanagari half-form) is dropped. A private-use code point of the Basic Multilingual Plane (an icon glyph) or an unassigned
-  one stays, since it draws a glyph or a box, but only eight of them per text, and no more than three combining marks in a row.
+  one stays, since it draws a glyph or a box, but only eight of them per text, and no more than three combining marks in a row
+  (text that stacks more, as Tibetan and Hebrew with cantillation can, loses the extras).
   `plainStderr` cleans what a read warns on stderr, joining the arguments as data, never as a format string.
   On the status's path, gh's and git's own stderr never reach the terminal themselves: the reads that run them (every gh read through
   `ghWithStderr`, `repoName()`, `protectHostGit`'s `git config`) capture it and put it in the thrown message (when gh printed nothing, a reason built from the error's code, signal or exit
   status, never its command line, which quotes titles), which the entry file
   prints through `terminalText`. Elsewhere in the pipeline `sh()` and `commentOnIssue` still let it through.
+  Why: [ADR 0010](../docs/adr/0010-status-text-is-sanitised-and-stderr-is-captured.md).
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),
   and `answered` for those the host replied to, which now wait on the owner. A thread read that failed shows `unknown (why)`, for a

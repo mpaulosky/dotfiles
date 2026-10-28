@@ -701,9 +701,9 @@ export async function intakeRound(
 }
 
 // The message of the innermost error in `error`'s cause chain. The host's gh
-// wrapper (lib/github.mts#ghWithStderr) ends its message with gh's stderr, or
-// with a short reason (its exit status, its signal, why it couldn't run) when
-// gh wrote nothing, so the cause is the most specific text for why it failed.
+// wrapper (lib/github.mts#ghWithStderr) wraps Node's error, whose message is
+// the command line followed by gh's stderr, so for a gh failure this is that
+// text, command line included (it can quote a title or a branch name).
 function rootMessage(error: unknown): string {
   let root = error;
   while (root instanceof Error && root.cause !== undefined) root = root.cause;

@@ -326,7 +326,8 @@ const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 // non-joiner between two letters of a script that uses it (Arabic, for Persian, and the Indic scripts; a zero-width joiner between two
 // letters is dropped, so a conjunct such as Sinhala's "Sri" loses it). Anywhere else they are dropped, and at most MAX_KEPT_JOINERS
 // survive in one text. What may still draw as nothing is capped too: at most MAX_KEPT_ODD private-use (an icon-font glyph) or unassigned
-// code points, and no more than MAX_MARKS combining marks in a row. So a few invisible bits are all that can ride on one text. Keycap and
+// code points, and no more than MAX_MARKS combining marks in a row, so a few invisible bits are all that can ride on one text. The cost: text
+// that stacks more marks than that (Tibetan, Hebrew with niqqud and cantillation, some Indic clusters) loses the extras. Keycap and
 // flag-tag emoji sequences fall apart.
 export function terminalText(text: string): string {
   let kept = 0;
@@ -367,10 +368,17 @@ const ZWNJ_LETTER = `(?=\\p{L})[${ZWNJ_SCRIPTS.map((script) => `\\p{scx=${script
 const ZWNJ_AFTER_LETTER = new RegExp(`^${ZWNJ_LETTER}`, "u");
 const ZWNJ_BEFORE_LETTER = new RegExp(`${ZWNJ_LETTER}\\p{M}*$`, "u");
 
+// A pictograph that has been assigned: the reserved code points of the emoji blocks are Extended_Pictographic too, and the cap on unassigned
+// code points could drop one after a joiner was kept for it.
+const ASSIGNED_PICTOGRAPH = "(?!\\p{Cn})\\p{Extended_Pictographic}";
+const ZWJ_AFTER_PICTOGRAPH = new RegExp(`${ASSIGNED_PICTOGRAPH}\\p{Emoji_Modifier}?\\ufe0f?$`, "u");
+const PICTOGRAPH_AT_START = new RegExp(`^${ASSIGNED_PICTOGRAPH}`, "u");
+const PICTOGRAPH_AT_END = new RegExp(`${ASSIGNED_PICTOGRAPH}$`, "u");
+
 // Whether a joiner stays: `before` and `after` are the text on either side of it.
 function keptJoiner(character: string, before: string, after: string): boolean {
-  if (character === "\u200d") return /\p{Extended_Pictographic}\p{Emoji_Modifier}?\ufe0f?$/u.test(before) && /^\p{Extended_Pictographic}/u.test(after);
-  if (character === "\ufe0f") return /\p{Extended_Pictographic}$/u.test(before);
+  if (character === "\u200d") return ZWJ_AFTER_PICTOGRAPH.test(before) && PICTOGRAPH_AT_START.test(after);
+  if (character === "\ufe0f") return PICTOGRAPH_AT_END.test(before);
   if (character === "\u200c") return ZWNJ_BEFORE_LETTER.test(before) && ZWNJ_AFTER_LETTER.test(after);
   return false;
 }

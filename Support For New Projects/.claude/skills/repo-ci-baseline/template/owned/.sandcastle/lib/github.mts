@@ -237,19 +237,21 @@ function openSameRepositoryPullRequests(...filters: string[]): OpenPullRequest[]
   return sameRepository(listed).map(({ number, headRefName }) => ({ number, headRefName }));
 }
 
-// The open pull request from this repository's `branch`, or a new one for it
-// with the title and body, as its URL. A fork's PR from a branch of the same
-// name doesn't count.
-// Run gh with its stderr captured, and throw with that stderr in the message,
-// so a caller can say why it failed.
+// Why gh stopped when it printed nothing, built from the error's own fields: Node's message holds the whole command line, which quotes
+// titles and branch names. A spawn failure (gh missing or not executable) is "couldn't run"; a signal, with the code Node set beside it
+// (ETIMEDOUT) if any, is "killed"; any other string code (ENOBUFS: its output outgrew maxBuffer) only says gh stopped.
 function whyGhStopped(error: unknown): string {
   const { code, signal, status } = (error ?? {}) as { code?: unknown; signal?: unknown; status?: unknown };
-  if (typeof code === "string") return `gh couldn't run (${code})`;
-  if (typeof signal === "string") return `gh was killed by ${signal}`;
+  const named = typeof code === "string" ? ` (${code})` : "";
+  if (typeof code === "string" && ["ENOENT", "EACCES", "EPERM"].includes(code)) return `gh couldn't run${named}`;
+  if (typeof signal === "string") return `gh was killed by ${signal}${named}`;
+  if (typeof code === "string") return `gh stopped${named}`;
   if (typeof status === "number") return `gh exited with status ${status} and printed nothing`;
   return "gh failed and printed nothing";
 }
 
+// Run gh with its stderr captured, and throw with that stderr in the message,
+// so a caller can say why it failed.
 function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, maxBuffer?: number): string {
   try {
     return run("gh", args, {
@@ -260,14 +262,17 @@ function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, 
       ...(maxBuffer === undefined ? {} : { maxBuffer }),
     });
   } catch (error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    // gh's own text when it printed some; else why it stopped, from the error's own fields: its message holds the whole command line,
-    // which quotes titles and branch names (build.mts's commandOutput reads what follows "failed:" for that reason).
+    const { stderr } = (error ?? {}) as { stderr?: unknown };
+    // gh's own text when it printed some; else why it stopped (build.mts's commandOutput reads what follows "failed:", so it never holds
+    // the command line).
     const detail = (typeof stderr === "string" ? stderr.trim() : "") || whyGhStopped(error);
     throw new Error(`gh ${args.slice(0, 2).join(" ")} failed:\n${detail}`, { cause: error });
   }
 }
 
+// The open pull request from this repository's `branch`, or a new one for it
+// with the title and body, as its URL. A fork's PR from a branch of the same
+// name doesn't count.
 export function openPullRequest(
   branch: string,
   title: string,

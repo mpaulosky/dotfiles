@@ -936,6 +936,39 @@ describe("terminalText", () => {
     assert.equal(terminalText(marks), marks);
   });
 
+  it("counts private-use and unassigned code points together, at the boundary, wherever they sit", () => {
+    assert.equal(terminalText("\u0378".repeat(20)), "\u0378".repeat(8));
+    assert.equal(terminalText("\ue000".repeat(5) + "\u0378".repeat(5)), "\ue000".repeat(5) + "\u0378".repeat(3));
+    assert.equal(terminalText("\ue000".repeat(8)), "\ue000".repeat(8));
+    assert.equal(terminalText("\ue000".repeat(9)), "\ue000".repeat(8));
+    assert.equal(terminalText("a\ue000b".repeat(10)), "a\ue000b".repeat(8) + "ab".repeat(2));
+  });
+
+  it("keeps three combining marks in a row, trims a fourth, and counts each run on its own, astral marks too", () => {
+    const three = "\u0301".repeat(3);
+
+    assert.equal(terminalText(`e${three}`), `e${three}`);
+    assert.equal(terminalText(`e${three}\u0301`), `e${three}`);
+    assert.equal(terminalText(`a${three}b${three}c`), `a${three}b${three}c`);
+    assert.equal(terminalText(`e${"\u{1D165}".repeat(6)}`), `e${"\u{1D165}".repeat(3)}`);
+  });
+
+  it("is idempotent when the cap drops what a joiner sat beside: a joiner is kept only between assigned pictographs", () => {
+    const text = "\u{1FC00}".repeat(8) + "\u200d\u{1FC01}";
+    const once = terminalText(text);
+
+    assert.ok(!once.includes("\u200d"));
+    assert.equal(terminalText(once), once);
+    assert.equal(terminalText("\u{1F468}\u200d\u{1F469}"), "\u{1F468}\u200d\u{1F469}");
+  });
+
+  it("is idempotent for a kept non-joiner beside marks and odd code points", () => {
+    const text = `\u0645${"\u064e".repeat(10)}\u200c\u0646\ue000\u0378${"\u0301".repeat(6)}`;
+    const once = terminalText(text);
+
+    assert.equal(terminalText(once), once);
+  });
+
   it("keeps a private-use or unassigned code point, which draws a glyph or a box, and drops a noncharacter", () => {
     assert.equal(terminalText("a\ue000b\u0378c"), "a\ue000b\u0378c");
     assert.equal(terminalText("a\u{F0000}b\u{10FFFD}c"), "abc");

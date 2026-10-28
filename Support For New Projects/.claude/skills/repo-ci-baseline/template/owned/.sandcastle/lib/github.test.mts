@@ -350,17 +350,25 @@ describe("readRepoName", () => {
     const exited = Object.assign(new Error(commandLine), { status: 1, stderr: "  \n" });
     const killed = Object.assign(new Error(commandLine), { signal: "SIGKILL", stderr: "" });
     const odd = "not an error";
+    const timedOut = Object.assign(new Error(commandLine), { code: "ETIMEDOUT", signal: "SIGTERM", status: null, stderr: "" });
+    const overflowed = Object.assign(new Error(commandLine), { code: "ENOBUFS", status: null, stderr: "" });
+    const numericCode = Object.assign(new Error(commandLine), { code: 5, status: null });
 
     for (const [thrown, expected] of [
       [exited, "gh exited with status 1 and printed nothing"],
       [killed, "gh was killed by SIGKILL"],
+      [timedOut, "gh was killed by SIGTERM (ETIMEDOUT)"],
+      [overflowed, "gh stopped (ENOBUFS)"],
+      [numericCode, "gh failed and printed nothing"],
       [odd, "gh failed and printed nothing"],
+      [null, "gh failed and printed nothing"],
+      [undefined, "gh failed and printed nothing"],
     ] as const) {
       const run = (() => {
         throw thrown;
       }) as unknown as typeof execFileSync;
 
-      assert.throws(() => readRepoName(run), (error: Error) => error.message === `gh repo view failed:\n${expected}` && !isGitHubServerError(error));
+      assert.throws(() => readRepoName(run), (error: Error) => error.message === `gh repo view failed:\n${expected}` && error.cause === thrown && !isGitHubServerError(error));
     }
   });
 

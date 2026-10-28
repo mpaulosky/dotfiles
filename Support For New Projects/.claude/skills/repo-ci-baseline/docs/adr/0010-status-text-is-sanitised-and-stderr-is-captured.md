@@ -38,5 +38,5 @@ gh and git also write to the process's stderr themselves when they are run with 
 - Text in a script that needs a joiner outside the kept cases loses it, and text that stacks more than three combining marks (Tibetan, Hebrew with niqqud and
   cantillation, some Indic clusters) loses the extras. Both are known costs, noted in the code and in the reference. Whether three is the right number is the owner's call.
 - A joiner stays only between assigned pictographs, since the cap on unassigned code points could otherwise drop the pictograph it sat beside and leave it dangling.
-- Elsewhere in the pipeline `sh()` and `commentOnIssue` still let stderr through. A follow-up moves them to the same convention.
+- Elsewhere in the pipeline `sh()` and `commentOnIssue` still let stderr through. mpaulosky/dotfiles#347 moves them to the same convention.
 - A new read on the status's path goes through `ghWithStderr`, and a new line it prints goes through `terminalText` or `terminalLine`.

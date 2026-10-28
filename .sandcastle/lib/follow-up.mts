@@ -548,7 +548,7 @@ export function threadStanding(
 // threads are, so a failed read there leaves it flagged with nothing counted.
 // For any other PR a failed read throws, and the sweep leaves it alone this
 // round, still listing it as waiting on its people's threads.
-function withoutAnsweredThreads(
+export function withoutAnsweredThreads(
   pr: SweepPullRequest,
   github: FollowUpGitHub,
   host: string,
@@ -571,6 +571,42 @@ function withoutAnsweredThreads(
     author: thread.comments[0]?.author ?? null,
   }));
   return { pr: { ...pr, threads }, answered: full.length - open.length };
+}
+
+// What the sweep decides each PR from, read once per sweep: the SweepContext, and the in-scope issues it came from.
+export function sweepContext(
+  _github: Pick<FollowUpGitHub, "hostLogin" | "inScopeIssues" | "followsHandOffs">,
+): { context: SweepContext; issues: { number: number; labels: string[] }[] } {
+  throw new Error("Not implemented");
+}
+
+// What admitToSweep reads of GitHub besides the PR's events.
+export type AdmissionGitHub = Pick<
+  FollowUpGitHub,
+  "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "recordApprovedHead" | "isOwner" | "repositoryOwner"
+>;
+
+// Whether the sweep admits `pr`, and why not: sweepSubject with the hand-off approval wired to `github`.
+export function admitToSweep(
+  _pr: SweepPullRequest,
+  _context: SweepContext,
+  _github: AdmissionGitHub,
+  _events: () => IssueEvent[],
+  _log: (line: string) => void,
+): { subject: SweepSubject } | { skip: string } {
+  throw new Error("Not implemented");
+}
+
+// What to do about a stranger's change of the PR's hand-back label.
+export type LabelOriginHold = { kind: "unknown" } | { kind: "restore"; label: string; reason: string };
+
+// The label-origin step of the sweep, without the write: undefined when nothing holds the PR.
+export function labelOriginHold(
+  _pr: Pick<SweepPullRequest, "labels">,
+  _events: readonly IssueEvent[],
+  _isOwner: IsOwner,
+): LabelOriginHold | undefined {
+  throw new Error("Not implemented");
 }
 
 // What the sweep found that needs an agent: the numbers of the PRs it logged

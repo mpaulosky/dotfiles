@@ -36,6 +36,15 @@ describe("package.json scripts", () => {
 
     assert.equal(packageJson.scripts?.sandcastle, "tsx .sandcastle/main.mts");
   });
+
+  // `pnpm run sandcastle:status` shows why Sandcastle is holding each open PR (lib/status.mts), read-only.
+  it("adds a sandcastle:status script, right after sandcastle, that runs the read-only status command", () => {
+    const packageJson: { scripts?: Record<string, string> } = JSON.parse(read("package.json"));
+    const names = Object.keys(packageJson.scripts ?? {});
+
+    assert.equal(packageJson.scripts?.["sandcastle:status"], "tsx .sandcastle/status.mts");
+    assert.equal(names.indexOf("sandcastle:status"), names.indexOf("sandcastle") + 1);
+  });
 });
 
 // #146: a local run needs SANDCASTLE_ISSUE or SANDCASTLE_LABEL, so the
@@ -44,6 +53,10 @@ describe("CLAUDE.md Commands block", () => {
   it("shows both local queue-scope forms of pnpm run sandcastle", () => {
     assert.match(commandsBlock(), /^SANDCASTLE_ISSUE=<n> pnpm run sandcastle(?=\s|$)/m);
     assert.match(commandsBlock(), /^SANDCASTLE_LABEL=<label> pnpm run sandcastle(?=\s|$)/m);
+  });
+
+  it("lists pnpm run sandcastle:status, with what it does", () => {
+    assert.match(commandsBlock(), /^pnpm run sandcastle:status\s+# .*\bread-only\b/m);
   });
 });
 

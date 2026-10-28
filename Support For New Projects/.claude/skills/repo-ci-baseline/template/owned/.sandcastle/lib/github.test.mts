@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
-import { COPILOT_REVIEWER, FOLLOW_UP_LABEL, FOLLOW_UP_LABEL_DEFINITION, HOST_LABELS, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
+import { COPILOT_REVIEWER, FOLLOW_UP_LABEL, FOLLOW_UP_MARKER, FOLLOW_UP_LABEL_DEFINITION, HOST_LABELS, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
 import {
   addIssueLabel,
   addPullRequestLabel,
@@ -11,6 +11,7 @@ import {
   type ClosedPullRequest,
   closedPullRequests,
   closeIssueAsCompleted,
+  followUpPassCount,
   commentOnIssue,
   commentOnPullRequest,
   type ContentEdit,
@@ -50,10 +51,12 @@ import {
   reviewThreadsOf,
   sameRepoBlockers,
   sameRepository,
+  sandcastleWorkflowRuns,
   signedInHostLogin,
   subIssuesOf,
   type TimelineLabelEvent,
   type TimestampedComment,
+  type WorkflowRun,
   updatePullRequestBranch,
   issueComments,
   mainMergeOf,
@@ -1865,5 +1868,109 @@ describe("pullRequestFiles", () => {
     }) as unknown as typeof execFileSync;
 
     assert.throws(() => pullRequestFiles(7, run, "o/r"), /HTTP 502|failed/);
+  });
+});
+
+// `pnpm run sandcastle:status` shows the passes a PR has used the way the follow-up pass counts them, and the Sandcastle
+// workflow's runs.
+describe("followUpPassCount", () => {
+  it("counts the host's follow-up marker comments since sandcastle:needs-human was last removed", () => {
+    cacheHostLogin(recordingGh(["host\n"]).run);
+    const comment = (body: string, createdAt: string, author: string) => JSON.stringify({ body, createdAt, author });
+    const { calls, run } = recordingGh([
+      [
+        comment(`${FOLLOW_UP_MARKER} pass 1`, "2026-01-01T00:00:00Z", "host"),
+        comment(`${FOLLOW_UP_MARKER} pass 2`, "2026-01-05T00:00:00Z", "host"),
+        comment(`${FOLLOW_UP_MARKER} pass 3`, "2026-01-06T00:00:00Z", "host"),
+        comment(`${FOLLOW_UP_MARKER} pasted by a stranger`, "2026-01-07T00:00:00Z", "stranger"),
+        comment("a plain comment", "2026-01-08T00:00:00Z", "host"),
+      ].join("\n"),
+      [
+        JSON.stringify({ event: "labeled", label: "sandcastle:needs-human", createdAt: "2026-01-02T00:00:00Z" }),
+        JSON.stringify({ event: "unlabeled", label: "sandcastle:needs-human", createdAt: "2026-01-03T00:00:00Z" }),
+      ].join("\n"),
+      "2025-12-01T00:00:00Z\n",
+    ]);
+
+    assert.equal(followUpPassCount(69, run, "o/r"), 2);
+    assert.deepEqual(calls.map((call) => call.args.find((arg) => arg.startsWith("repos/"))), ["repos/o/r/issues/69/comments", "repos/o/r/issues/69/timeline", "repos/o/r/issues/69"]);
+  });
+
+  it("is 0 for a PR with no pass comment", () => {
+    cacheHostLogin(recordingGh(["host\n"]).run);
+    const { run } = recordingGh(["", "", "2025-12-01T00:00:00Z\n"]);
+
+    assert.equal(followUpPassCount(69, run, "o/r"), 0);
+  });
+});
+
+describe("sandcastleWorkflowRuns", () => {
+  const raw = (overrides: Record<string, unknown> = {}) => ({
+    databaseId: 9001,
+    status: "completed",
+    conclusion: "success",
+    event: "schedule",
+    headBranch: "main",
+    createdAt: "2026-10-28T08:00:00Z",
+    url: "https://github.com/o/r/actions/runs/9001",
+    ...overrides,
+  });
+
+  it("lists the Sandcastle workflow's latest runs, newest first as gh prints them, in the shape status shows", () => {
+    const { calls, run } = recordingGh([
+      JSON.stringify([
+        raw(),
+        raw({ databaseId: 9000, status: "in_progress", conclusion: null, event: "workflow_dispatch", headBranch: "feature/315-x", createdAt: "2026-10-28T06:00:00Z", url: "https://github.com/o/r/actions/runs/9000" }),
+      ]),
+    ]);
+
+    const runs: WorkflowRun[] = sandcastleWorkflowRuns(5, run, "o/r");
+
+    assert.deepEqual(runs, [
+      { id: 9001, status: "completed", conclusion: "success", event: "schedule", branch: "main", createdAt: "2026-10-28T08:00:00Z", url: "https://github.com/o/r/actions/runs/9001" },
+      { id: 9000, status: "in_progress", conclusion: null, event: "workflow_dispatch", branch: "feature/315-x", createdAt: "2026-10-28T06:00:00Z", url: "https://github.com/o/r/actions/runs/9000" },
+    ]);
+    assert.deepEqual(calls.map((call) => call.args), [
+      ["run", "list", "--workflow", "sandcastle.yml", "--limit", "5", "--json", "databaseId,status,conclusion,event,headBranch,createdAt,url", "--repo", "o/r"],
+    ]);
+  });
+
+  it("asks for ten runs by default", () => {
+    const { calls, run } = recordingGh(["[]"]);
+
+    assert.deepEqual(sandcastleWorkflowRuns(undefined, run, "o/r"), []);
+    assert.equal(calls[0]!.args[calls[0]!.args.indexOf("--limit") + 1], "10");
+  });
+
+  for (const limit of [0, -1, 1.5, Number.NaN]) {
+    it(`refuses the limit ${limit} without calling gh`, () => {
+      const { calls, run } = recordingGh(["[]"]);
+
+      assert.throws(() => sandcastleWorkflowRuns(limit, run, "o/r"));
+      assert.deepEqual(calls, []);
+    });
+  }
+
+  // Fail closed: a shape the status doesn't expect is an error, not a guess.
+  for (const [name, output] of [
+    ["not JSON", "oops"],
+    ["not an array", JSON.stringify({ runs: [] })],
+    ["a run with no id", JSON.stringify([raw({ databaseId: undefined })])],
+    ["a run with a non-string url", JSON.stringify([raw({ url: 7 })])],
+    ["a run with a non-string status", JSON.stringify([raw({ status: null })])],
+  ] as const) {
+    it(`throws on ${name}`, () => {
+      const { run } = recordingGh([output]);
+
+      assert.throws(() => sandcastleWorkflowRuns(10, run, "o/r"));
+    });
+  }
+
+  it("throws, with gh's stderr, when gh fails", () => {
+    const run = (() => {
+      throw Object.assign(new Error("exit 1"), { stderr: "HTTP 404: workflow sandcastle.yml not found" });
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => sandcastleWorkflowRuns(10, run, "o/r"), /workflow sandcastle\.yml not found/);
   });
 });

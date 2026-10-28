@@ -6,7 +6,7 @@
 
 import { execFileSync } from "node:child_process";
 import { endOf } from "./checkpoint.mts";
-import { BASE_BRANCH, COPILOT_REVIEWER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 import { sh } from "./shell.mts";
@@ -1418,4 +1418,29 @@ export function handBack(
   ghWithStderr(run, [target.kind, "comment", number, "--repo", repo, "--body-file", "-"], body);
   ghWithStderr(run, [target.kind, "edit", number, "--repo", repo, "--add-label", label, ...removeReady]);
   report.record({ kind: target.kind, number: target.number, label, reason, url: targetUrl(repo, target) });
+}
+
+// Passes a PR has had since sandcastle:needs-human was last removed: the host's FOLLOW_UP_MARKER comments.
+export function followUpPassCount(_number: number, _run: typeof execFileSync = execFileSync, _repo: string = repoName()): number {
+  throw new Error("Not implemented");
+}
+
+// One run of the Sandcastle workflow, as `gh run list` reports it.
+export type WorkflowRun = {
+  id: number;
+  status: string;
+  conclusion: string | null;
+  event: string;
+  branch: string;
+  createdAt: string;
+  url: string;
+};
+
+// The Sandcastle workflow's latest `limit` runs, newest first.
+export function sandcastleWorkflowRuns(
+  _limit: number = 10,
+  _run: typeof execFileSync = execFileSync,
+  _repo: string = repoName(),
+): WorkflowRun[] {
+  throw new Error("Not implemented");
 }

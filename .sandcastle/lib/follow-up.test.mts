@@ -14,6 +14,7 @@ import {
 } from "./config.mts";
 import type { ClosedPullRequest, ContentEdit, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent, MainMerge, TimestampedComment } from "./github.mts";
 import {
+  admitToSweep,
   closedPrHandBackComment,
   closedWithoutMerging,
   decide,
@@ -22,6 +23,7 @@ import {
   approvedHeadOf,
   handOffApproval,
   isCopilot,
+  labelOriginHold,
   liveFollowUpGitHub,
   liveMergeOfMain,
   MAX_MAIN_MERGES,
@@ -29,10 +31,13 @@ import {
   isSandcastlePullRequest,
   issueNumberOf,
   startFromMain,
+  sweepContext as readSweepContext,
   sweepPullRequests,
   sweepSkipReason,
   sweepSubject,
   threadStanding,
+  withoutAnsweredThreads,
+  type AdmissionGitHub,
   type FollowUpGitHub,
   type SweepContext,
   type SweepPullRequest,
@@ -2943,5 +2948,209 @@ describe("liveFollowUpGitHub.followsHandOffs", () => {
   it("doesn't on the local queue's label or an issue scope", () => {
     assert.equal(withScope({ kind: "label", label: LOCAL_QUEUE_LABEL }, () => liveFollowUpGitHub.followsHandOffs()), false);
     assert.equal(withScope({ kind: "issue", number: 7 }, () => liveFollowUpGitHub.followsHandOffs()), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sweep's per-PR steps, shared with `pnpm run sandcastle:status` (lib/status.mts), which must give the sweep's own answer
+// ---------------------------------------------------------------------------
+
+describe("sweepContext", () => {
+  it("is what the sweep decides each PR from: the in-scope issues, the host, the issues being built and whether hand-offs are followed", () => {
+    const { github } = stubGithub({
+      host: "the-host",
+      issues: [
+        { number: 42, labels: [] },
+        { number: 43, labels: ["Sandcastle:Building"] },
+        { number: 44, labels: ["sandcastle:needs-human"] },
+      ],
+      followsHandOffs: false,
+    });
+
+    const { context, issues } = readSweepContext(github);
+
+    assert.deepEqual([...context.inScope].sort(), [42, 43, 44]);
+    assert.deepEqual([...context.building], [43]);
+    assert.equal(context.host, "the-host");
+    assert.equal(context.followsHandOffs, false);
+    assert.deepEqual(issues, [
+      { number: 42, labels: [] },
+      { number: 43, labels: ["Sandcastle:Building"] },
+      { number: 44, labels: ["sandcastle:needs-human"] },
+    ]);
+  });
+
+  it("reads only the host's login, the in-scope issues and whether hand-offs are followed", () => {
+    const calls: string[] = [];
+
+    readSweepContext({
+      hostLogin: () => (calls.push("hostLogin"), HOST),
+      inScopeIssues: () => (calls.push("inScopeIssues"), []),
+      followsHandOffs: () => (calls.push("followsHandOffs"), true),
+    });
+
+    assert.deepEqual([...calls].sort(), ["followsHandOffs", "hostLogin", "inScopeIssues"]);
+  });
+
+  it("gives sweepPullRequests' own reading: a PR its issue is being built for is skipped by sweepSkipReason with the context's sets", () => {
+    const { github } = stubGithub({ issues: [{ number: 42, labels: ["sandcastle:building"] }] });
+    const { context } = readSweepContext(github);
+
+    assert.match(sweepSkipReason(pr(), context.inScope, context.host, context.building) ?? "", /sandcastle:building/);
+  });
+});
+
+describe("admitToSweep", () => {
+  const owned = (extra: Parameters<typeof stubGithub>[0] = {}) => stubGithub({ isOwner: ownerIs(OWNER), ...extra });
+  const context = (overrides: Partial<SweepContext> = {}) => ({ inScope: IN_SCOPE, host: HOST, building: new Set<number>(), followsHandOffs: true, ...overrides });
+  // An events thunk that counts its reads.
+  const eventsRead = (events: IssueEvent[] = []) => {
+    let reads = 0;
+    return { events: () => (reads++, events), reads: () => reads };
+  };
+
+  it("admits a Sandcastle issue's PR as the issue's, without reading its events", () => {
+    const { github } = owned();
+    const { events, reads } = eventsRead();
+
+    assert.deepEqual(admitToSweep(pr(), context(), github, events, () => {}), { subject: { kind: "issue", issueNumber: 42 } });
+    assert.equal(reads(), 0);
+  });
+
+  it("answers with the sweep's own reason for a PR it skips", () => {
+    const { github } = owned();
+    const { events } = eventsRead();
+
+    assert.deepEqual(admitToSweep(pr({ isDraft: true }), context(), github, events, () => {}), { skip: sweepSkipReason(pr({ isDraft: true }), IN_SCOPE, HOST) });
+  });
+
+  it("admits an owner-labelled hand-off PR, reading its events through the caller's thunk", () => {
+    const { github } = owned({ prs: [handOffPr()], pullRequestComments: () => [headRecord(HEAD_SHA, HOST)] });
+    const { events, reads } = eventsRead(ownerLabelled);
+
+    assert.deepEqual(admitToSweep(handOffPr(), context(), github, events, () => {}), { subject: { kind: "hand-off" } });
+    assert.ok(reads() >= 1);
+  });
+
+  it("skips a hand-off PR whose label doesn't count, saying why", () => {
+    const { github } = owned({ prs: [handOffPr()], pullRequestComments: () => [headRecord(PUSHED_SHA, HOST)] });
+    const { events } = eventsRead(ownerLabelled);
+
+    const result = admitToSweep(handOffPr(), context(), github, events, () => {});
+
+    assert.match("skip" in result ? result.skip : "", new RegExp(`its ${FOLLOW_UP_LABEL} label doesn't count`));
+  });
+
+  it("records the head it reached through a merge of main, as the sweep does", () => {
+    const recorded: { number: number; head: string }[] = [];
+    const head = "b".repeat(40);
+    const { github } = owned({
+      pullRequestComments: () => [headRecord(HEAD_SHA, HOST)],
+      mergeOfMain: (commit) => (commit === head ? { firstParent: HEAD_SHA } : { problem: "not a merge" }),
+      recordApprovedHead: (number, recordedHead) => void recorded.push({ number, head: recordedHead }),
+    });
+    const { events } = eventsRead(ownerLabelled);
+
+    const result = admitToSweep(handOffPr({ headRefOid: head }), context(), github, events, () => {});
+
+    assert.deepEqual(result, { subject: { kind: "hand-off" } });
+    assert.deepEqual(recorded, [{ number: 201, head }]);
+  });
+
+  it("logs a record that can't be posted, and still admits the PR", () => {
+    const head = "b".repeat(40);
+    const lines: string[] = [];
+    const { github } = owned({
+      pullRequestComments: () => [headRecord(HEAD_SHA, HOST)],
+      mergeOfMain: (commit) => (commit === head ? { firstParent: HEAD_SHA } : { problem: "not a merge" }),
+      recordApprovedHead: () => {
+        throw new Error("post failed");
+      },
+    });
+    const { events } = eventsRead(ownerLabelled);
+
+    const result = admitToSweep(handOffPr({ headRefOid: head }), context(), github, events, (line) => lines.push(line));
+
+    assert.deepEqual(result, { subject: { kind: "hand-off" } });
+    assert.ok(lines.some((line) => line.includes("Couldn't record PR #201's head bbbbbbb") && line.includes("post failed")), lines.join("\n"));
+  });
+
+  it("takes only the reads the approval needs from GitHub", () => {
+    const github: AdmissionGitHub = {
+      pullRequestBodyEdits: () => [],
+      pullRequestComments: () => [headRecord(HEAD_SHA, HOST)],
+      mergeOfMain: () => ({ problem: "not a merge" }),
+      recordApprovedHead: () => {},
+      isOwner: ownerIs(OWNER),
+      repositoryOwner: () => OWNER,
+    };
+
+    assert.deepEqual(admitToSweep(handOffPr(), context(), github, () => ownerLabelled, () => {}), { subject: { kind: "hand-off" } });
+  });
+});
+
+describe("labelOriginHold", () => {
+  const removed = (actor: string | null): IssueEvent => ({ event: "unlabeled", actor, label: "sandcastle:needs-human", createdAt: "2026-10-10T09:00:00Z" });
+
+  it("is undefined for a PR whose hand-back label nobody removed", () => {
+    assert.equal(labelOriginHold({ labels: [] }, [], ownerIs(OWNER)), undefined);
+  });
+
+  it("is undefined when the repository owner removed the label", () => {
+    assert.equal(labelOriginHold({ labels: [] }, [removed(OWNER)], ownerIs(OWNER)), undefined);
+  });
+
+  it("restores a label a stranger removed, with the sweep's reason", () => {
+    assert.deepEqual(labelOriginHold({ labels: [] }, [removed("stranger")], ownerIs(OWNER)), {
+      kind: "restore",
+      label: "sandcastle:needs-human",
+      reason: "put back sandcastle:needs-human, which @stranger removed, not the repository owner",
+    });
+  });
+
+  it("is unknown when the remover can't be checked", () => {
+    assert.deepEqual(labelOriginHold({ labels: [] }, [removed("ghost")], () => undefined), { kind: "unknown" });
+  });
+
+  it("is undefined while the PR still carries the label", () => {
+    assert.equal(labelOriginHold({ labels: ["sandcastle:needs-human"] }, [removed("stranger")], ownerIs(OWNER)), undefined);
+  });
+
+  it("puts an unknown check before a restore, as the sweep does", () => {
+    const events = [removed("stranger")];
+    const isOwner = (login: string | null) => (login === "stranger" ? undefined : login === OWNER);
+
+    assert.deepEqual(labelOriginHold({ labels: [] }, events, isOwner), { kind: "unknown" });
+  });
+});
+
+describe("withoutAnsweredThreads", () => {
+  it("is exported for status: takes out the threads the host answered and counts them", () => {
+    const answered = thread("copilot-pull-request-reviewer[bot]", true, [hostReply]);
+    const open = { ...thread("copilot-pull-request-reviewer[bot]", true), id: "RT_2" };
+    const { github } = stubGithub({ reviewThreads: () => [answered, open] });
+    const candidate = pr({ threads: [{ resolved: false, byBot: true, author: "copilot-pull-request-reviewer[bot]" }, { resolved: false, byBot: true, author: "copilot-pull-request-reviewer[bot]" }] });
+
+    const result = withoutAnsweredThreads(candidate, github, HOST);
+
+    assert.equal(result.answered, 1);
+    assert.equal(result.pr.threads.length, 1);
+  });
+
+  it("reads no threads for a PR with no unresolved bot or owner thread", () => {
+    const { github, reviewThreadCalls } = stubGithub();
+
+    assert.equal(withoutAnsweredThreads(pr(), github, HOST).answered, 0);
+    assert.deepEqual(reviewThreadCalls, []);
+  });
+
+  it("throws when the threads can't be read, for a PR that isn't DIRTY", () => {
+    const { github } = stubGithub({
+      reviewThreads: () => {
+        throw new Error("gh: HTTP 502");
+      },
+    });
+
+    assert.throws(() => withoutAnsweredThreads(pr({ threads: [{ resolved: false, byBot: true, author: "bot" }] }), github, HOST), /HTTP 502/);
   });
 });

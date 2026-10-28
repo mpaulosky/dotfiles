@@ -1,0 +1,860 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { describe, it } from "node:test";
+import {
+  COPILOT_REVIEWER,
+  FOLLOW_UP_LABEL,
+  FOLLOW_UP_PASS_CAP,
+  FOLLOW_UP_REPLY_MARKER,
+  PR_MARKER,
+  QUEUE_LABEL,
+  QueueScopeError,
+  describeQueueScope,
+  type QueueScope,
+} from "./config.mts";
+import type { ContentEdit, IssueEvent, ReviewThread, SandcastleIssue, TimestampedComment, WorkflowRun, MainMerge } from "./github.mts";
+import { approvedHeadComment, decide, type SweepContext, type SweepPullRequest } from "./follow-up.mts";
+import type { QueueGitHub } from "./queue.mts";
+import {
+  collectStatus,
+  heldReason,
+  isListed,
+  liveStatusGitHub,
+  renderStatus,
+  statusCommand,
+  statusOf,
+  statusQueue,
+  statusScopeFrom,
+  type PrStatus,
+  type StatusGitHub,
+  type StatusReport,
+} from "./status.mts";
+
+// `pnpm run sandcastle:status`: why is each open Sandcastle pull request held? The status gives the sweep's own answer
+// (lib/follow-up.mts), and is read-only.
+
+const HOST = "sandcastle-bot";
+const OWNER = "owner";
+const BRANCH = "feature/42-add-search";
+const NOW = Date.parse("2026-10-10T12:00:00Z");
+const HEAD = "a".repeat(40);
+const LABELLED_AT = "2026-10-09T10:00:00Z";
+const RECORDED_AT = "2026-10-09T10:05:00Z";
+
+// A settled, CLEAN Sandcastle PR on issue 42's branch, reviewed by Copilot with every check green.
+function pr(overrides: Partial<SweepPullRequest> = {}): SweepPullRequest {
+  return {
+    number: 101,
+    title: "feat: Add search",
+    author: HOST,
+    body: `${PR_MARKER}\nCloses #42`,
+    baseRefName: "main",
+    headRefName: BRANCH,
+    isCrossRepository: false,
+    id: "PR_101",
+    headRefOid: HEAD,
+    isDraft: false,
+    labels: [],
+    mergeStateStatus: "CLEAN",
+    reviewRequests: [],
+    reviews: [{ author: COPILOT_REVIEWER, commitOid: HEAD }],
+    threads: [],
+    checks: [{ name: "build", completed: true, green: true, completedAt: "2026-10-10T09:00:00Z" }],
+    copilotRequestedAt: [],
+    truncated: false,
+    ...overrides,
+  };
+}
+
+// A Sandcastle PR for issue `issue`.
+const issuePr = (issue: number, overrides: Partial<SweepPullRequest> = {}) =>
+  pr({
+    number: 100 + issue,
+    id: `PR_${100 + issue}`,
+    title: `feat: Issue ${issue}`,
+    body: `${PR_MARKER}\nCloses #${issue}`,
+    headRefName: `feature/${issue}-thing`,
+    ...overrides,
+  });
+
+// A PR the owner opened on a chore/ branch with no Sandcastle marker, labelled sandcastle:follow-up.
+const handOffPr = (overrides: Partial<SweepPullRequest> = {}) =>
+  pr({
+    number: 201,
+    id: "PR_201",
+    title: "chore: Tidy the build",
+    author: OWNER,
+    body: "Tidies the build scripts.",
+    headRefName: "chore/tidy-the-build",
+    labels: [FOLLOW_UP_LABEL],
+    ...overrides,
+  });
+
+const labelledBy = (actor: string): IssueEvent => ({ event: "labeled", actor, label: FOLLOW_UP_LABEL, createdAt: LABELLED_AT });
+const ownerLabelled = [labelledBy(OWNER)];
+const unlabelled = (actor: string): IssueEvent => ({ event: "unlabeled", actor, label: "sandcastle:needs-human", createdAt: "2026-10-10T09:00:00Z" });
+const headRecord = (head: string, author = HOST): TimestampedComment => ({ author, createdAt: RECORDED_AT, updatedAt: RECORDED_AT, body: approvedHeadComment(head) });
+
+const ownerIs = (owner: string) => (login: string | null) => (login === null ? false : login === owner);
+
+// A thread of review comments, the first by `author`.
+function thread(author: string, byBot: boolean, more: { author: string; body: string }[] = []): ReviewThread {
+  return {
+    id: "RT_1",
+    resolved: false,
+    outdated: false,
+    path: null,
+    line: null,
+    comments: [{ author, byBot, body: "Please change this.", url: "" }, ...more.map((comment) => ({ ...comment, byBot: false, url: "" }))],
+  };
+}
+const hostReply = { author: HOST, body: `${FOLLOW_UP_REPLY_MARKER}\nDeclined: it reads better as it is.` };
+const unresolved = (author: string, byBot = false) => ({ resolved: false, byBot, author });
+
+const run = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
+  id: 9001,
+  status: "completed",
+  conclusion: "success",
+  event: "schedule",
+  branch: "main",
+  createdAt: "2026-10-10T08:00:00Z",
+  url: "https://github.com/o/r/actions/runs/9001",
+  ...overrides,
+});
+
+const SCOPE: QueueScope = { kind: "label", label: QUEUE_LABEL };
+
+// A StatusGitHub stub serving `prs`, `issues` and the rest, that also carries a spy for every write the sweep makes, which
+// the type doesn't have: a status that reached for one would record it in `writes`.
+function statusGithub({
+  prs = [pr()],
+  issues = [{ number: 42, labels: [] }],
+  host = HOST,
+  isOwner = ownerIs(OWNER),
+  events = () => [],
+  reviewThreads,
+  comments,
+  mergeOfMain = () => ({ problem: "not stubbed" }),
+  followsHandOffs = true,
+  passes = () => 1,
+  runs = () => [],
+  scope = SCOPE,
+}: {
+  prs?: SweepPullRequest[];
+  issues?: { number: number; labels: string[] }[];
+  host?: string;
+  isOwner?: (login: string | null) => boolean | undefined;
+  events?: (number: number) => IssueEvent[];
+  reviewThreads?: (number: number) => ReviewThread[];
+  comments?: (number: number) => TimestampedComment[];
+  mergeOfMain?: (commit: string) => MainMerge;
+  followsHandOffs?: boolean;
+  passes?: (number: number) => number;
+  runs?: (limit: number) => WorkflowRun[];
+  scope?: QueueScope;
+} = {}) {
+  const writes: string[] = [];
+  const reads: { runs: number[] } = { runs: [] };
+  const spy = (name: string) => () => void writes.push(name);
+  const base: StatusGitHub = {
+    hostLogin: () => host,
+    openPullRequests: () => prs,
+    inScopeIssues: () => issues,
+    followsHandOffs: () => followsHandOffs,
+    pullRequestEvents: events,
+    pullRequestBodyEdits: (): ContentEdit[] => [],
+    pullRequestComments: (number) => comments?.(number) ?? prs.filter((candidate) => candidate.number === number).map((candidate) => headRecord(candidate.headRefOid, host)),
+    mergeOfMain,
+    isOwner,
+    repositoryOwner: () => OWNER,
+    reviewThreads: (number) =>
+      reviewThreads?.(number) ??
+      (prs.find((candidate) => candidate.number === number)?.threads ?? []).map((summary, index) => ({
+        id: `RT_${number}_${index}`,
+        resolved: summary.resolved,
+        outdated: false,
+        path: null,
+        line: null,
+        comments: [{ author: summary.author ?? "", byBot: summary.byBot, body: "", url: "" }],
+      })),
+    passesUsed: passes,
+    workflowRuns: (limit) => {
+      reads.runs.push(limit);
+      return runs(limit);
+    },
+    repo: () => "o/r",
+    queueScope: () => scope,
+  };
+  const github = Object.assign(base, {
+    requestCopilotReview: spy("requestCopilotReview"),
+    updateBranch: spy("updateBranch"),
+    handBack: spy("handBack"),
+    addPullRequestLabel: spy("addPullRequestLabel"),
+    recordApprovedHead: spy("recordApprovedHead"),
+    commentOnPullRequest: spy("commentOnPullRequest"),
+    closedPullRequests: spy("closedPullRequests"),
+  });
+  return { github: github as StatusGitHub, writes, reads };
+}
+
+const context = (overrides: Partial<SweepContext> = {}): { context: SweepContext; now: number } => ({
+  context: { inScope: new Set([42]), host: HOST, building: new Set<number>(), followsHandOffs: true, ...overrides },
+  now: NOW,
+});
+
+const statusFor = (candidate: SweepPullRequest, options: Parameters<typeof statusGithub>[0] = {}, ctx = context()) =>
+  statusOf(candidate, ctx, statusGithub({ prs: [candidate], ...options }).github, () => {});
+
+describe("isListed", () => {
+  it("lists a Sandcastle PR, drafts included", () => {
+    assert.equal(isListed(pr(), HOST), true);
+    assert.equal(isListed(pr({ isDraft: true }), HOST), true);
+  });
+
+  it("lists a same-repo PR into main carrying the owner's hand-off label, so the owner sees why a label doesn't count", () => {
+    assert.equal(isListed(handOffPr(), HOST), true);
+  });
+
+  it("doesn't list a PR from a fork, even with the hand-off label", () => {
+    assert.equal(isListed(handOffPr({ isCrossRepository: true }), HOST), false);
+  });
+
+  it("doesn't list a PR into another branch, even with the hand-off label", () => {
+    assert.equal(isListed(handOffPr({ baseRefName: "develop" }), HOST), false);
+  });
+
+  it("doesn't list a collaborator's PR with no hand-off label", () => {
+    assert.equal(isListed(pr({ author: "a-collaborator", body: "Closes #42" }), HOST), false);
+    assert.equal(isListed(handOffPr({ labels: [] }), HOST), false);
+  });
+});
+
+describe("heldReason", () => {
+  const admitted = { subject: { kind: "issue", issueNumber: 42 } } as const;
+  const base = { pr: pr(), admitted, origin: undefined, answered: 0, human: 0 };
+
+  it("says a PR the sweep skips isn't swept, with the sweep's own reason", () => {
+    assert.deepEqual(heldReason({ ...base, admitted: { skip: "it's a draft" } }), { state: "skipped", reason: "isn't swept: it's a draft" });
+  });
+
+  it("puts a skip before everything else", () => {
+    const held = heldReason({ ...base, admitted: { skip: "it's a draft" }, origin: { kind: "unknown" }, decision: { action: "leave", reason: "x" } });
+
+    assert.equal(held.reason, "isn't swept: it's a draft");
+  });
+
+  it("says when it couldn't check whether the owner removed sandcastle:needs-human", () => {
+    assert.deepEqual(heldReason({ ...base, origin: { kind: "unknown" } }), {
+      state: "skipped",
+      reason: "couldn't check whether the repository owner removed sandcastle:needs-human",
+    });
+  });
+
+  it("says the sweep puts back a label a stranger removed", () => {
+    const origin = { kind: "restore", label: "sandcastle:needs-human", reason: "put back sandcastle:needs-human, which @stranger removed, not the repository owner" } as const;
+
+    assert.deepEqual(heldReason({ ...base, origin, decision: { action: "leave", reason: "x" } }), {
+      state: "skipped",
+      reason: "put back sandcastle:needs-human, which @stranger removed, not the repository owner; the sweep puts the label back",
+    });
+  });
+
+  it("is waiting, with the sweep's reason, for a wait", () => {
+    assert.deepEqual(heldReason({ ...base, decision: { action: "wait", reason: "checks are still running" } }), { state: "waiting", reason: "checks are still running" });
+  });
+
+  it("is a pass due, with the reasons joined, for a PR that needs a pass and has passes left", () => {
+    const held = heldReason({ ...base, decision: { action: "needs-pass", reasons: ["check build is red", "1 unresolved bot thread(s)"] }, passesUsed: FOLLOW_UP_PASS_CAP - 1 });
+
+    assert.deepEqual(held, { state: "pass due", reason: "check build is red; 1 unresolved bot thread(s)" });
+  });
+
+  it("is a hand-back due, as planPass's cap check, once the passes are used up", () => {
+    const held = heldReason({ ...base, decision: { action: "needs-pass", reasons: ["check build is red", "it has merge conflicts"] }, passesUsed: FOLLOW_UP_PASS_CAP });
+
+    assert.deepEqual(held, {
+      state: "hand-back due",
+      reason: `has had ${FOLLOW_UP_PASS_CAP} of ${FOLLOW_UP_PASS_CAP} passes and still needs another (check build is red; it has merge conflicts); the next pass hands it back with sandcastle:needs-human`,
+    });
+  });
+
+  it("acts next sweep: Copilot will be asked to review the head", () => {
+    assert.deepEqual(heldReason({ ...base, decision: { action: "request-review" } }), { state: "act next sweep", reason: "Copilot will be asked to review the head" });
+  });
+
+  it("acts next sweep: the branch will be updated from main", () => {
+    assert.deepEqual(heldReason({ ...base, decision: { action: "update-branch" } }), { state: "act next sweep", reason: "it will be updated from main" });
+  });
+
+  it("is settled, with the sweep's reason, for a PR it leaves alone", () => {
+    assert.deepEqual(heldReason({ ...base, decision: { action: "leave", reason: "it's settled and CLEAN" } }), { state: "settled", reason: "it's settled and CLEAN" });
+  });
+
+  it("adds the answered threads that wait on the owner, then the threads from others that wait on a person", () => {
+    const decision = { action: "wait", reason: "checks are still running" } as const;
+
+    assert.equal(heldReason({ ...base, decision, answered: 2 }).reason, "checks are still running; 2 answered thread(s) wait on the owner");
+    assert.equal(heldReason({ ...base, decision, human: 1 }).reason, "checks are still running; 1 thread(s) from others wait on a person");
+    assert.equal(heldReason({ ...base, decision, answered: 2, human: 1 }).reason, "checks are still running; 2 answered thread(s) wait on the owner; 1 thread(s) from others wait on a person");
+  });
+
+  it("adds neither note for no such threads", () => {
+    assert.equal(heldReason({ ...base, decision: { action: "leave", reason: "settled" } }).reason, "settled");
+  });
+});
+
+describe("statusOf", () => {
+  it("describes a settled Sandcastle issue PR: passes used, held, threads, branch state", () => {
+    const status = statusFor(pr({ labels: ["review:claude"] }));
+
+    assert.equal(status.number, 101);
+    assert.equal(status.title, "feat: Add search");
+    assert.equal(status.headRefName, BRANCH);
+    assert.equal(status.subject, "issue");
+    assert.equal(status.issueNumber, 42);
+    assert.deepEqual(status.passes, { used: 1, cap: FOLLOW_UP_PASS_CAP });
+    assert.deepEqual(status.held, { state: "settled", reason: "it's settled and CLEAN" });
+    assert.deepEqual(status.threads, { bot: 0, owner: 0, other: 0, answered: 0 });
+    assert.equal(status.mergeState, "CLEAN");
+    assert.equal(status.draft, false);
+    assert.ok(status.labels.includes("review:claude"));
+  });
+
+  it("reads the passes used of the PR itself", () => {
+    const asked: number[] = [];
+
+    const status = statusFor(pr(), { passes: (number) => (asked.push(number), 2) });
+
+    assert.deepEqual(status.passes, { used: 2, cap: FOLLOW_UP_PASS_CAP });
+    assert.deepEqual(asked, [101]);
+  });
+
+  it("says a draft PR isn't swept, and why", () => {
+    const status = statusFor(pr({ isDraft: true }));
+
+    assert.equal(status.subject, "not swept");
+    assert.equal(status.draft, true);
+    assert.deepEqual(status.held, { state: "skipped", reason: "isn't swept: it's a draft" });
+  });
+
+  it("says a PR labelled sandcastle:needs-human isn't swept", () => {
+    const status = statusFor(pr({ labels: ["sandcastle:needs-human"] }));
+
+    assert.equal(status.subject, "not swept");
+    assert.equal(status.held.state, "skipped");
+    assert.match(status.held.reason, /sandcastle:needs-human/);
+  });
+
+  it("says a PR whose issue a run is building isn't swept", () => {
+    const status = statusFor(pr(), {}, context({ building: new Set([42]) }));
+
+    assert.equal(status.held.state, "skipped");
+    assert.match(status.held.reason, /sandcastle:building/);
+  });
+
+  it("describes an owner-labelled hand-off PR as a hand-off, with no issue", () => {
+    const status = statusFor(handOffPr(), { events: () => ownerLabelled });
+
+    assert.equal(status.subject, "hand-off");
+    assert.equal(status.issueNumber, undefined);
+    assert.equal(status.held.state, "settled");
+  });
+
+  it("says why a hand-off PR's label doesn't count", () => {
+    const status = statusFor(handOffPr(), { events: () => ownerLabelled, comments: () => [headRecord("d".repeat(40))] });
+
+    assert.equal(status.subject, "not swept");
+    assert.equal(status.held.state, "skipped");
+    assert.match(status.held.reason, new RegExp(`its ${FOLLOW_UP_LABEL} label doesn't count`));
+  });
+
+  it("follows a hand-off PR through a merge of main without recording the head", () => {
+    const head = "b".repeat(40);
+    const { github, writes } = statusGithub({
+      prs: [handOffPr({ headRefOid: head, reviews: [{ author: COPILOT_REVIEWER, commitOid: head }] })],
+      events: () => ownerLabelled,
+      comments: () => [headRecord(HEAD)],
+      mergeOfMain: (commit) => (commit === head ? { firstParent: HEAD } : { problem: "not a merge" }),
+    });
+    const lines: string[] = [];
+
+    const status = statusOf(handOffPr({ headRefOid: head, reviews: [{ author: COPILOT_REVIEWER, commitOid: head }] }), context(), github, (line) => lines.push(line));
+
+    assert.equal(status.subject, "hand-off");
+    assert.deepEqual(writes, []);
+    assert.deepEqual(lines, []);
+  });
+
+  it("splits the unresolved threads into bot, owner and other", () => {
+    const status = statusFor(
+      pr({ threads: [unresolved("copilot", true), unresolved("copilot", true), unresolved(OWNER), unresolved("someone"), { resolved: true, byBot: true, author: "copilot" }] }),
+    );
+
+    assert.deepEqual(status.threads, { bot: 2, owner: 1, other: 1, answered: 0 });
+    assert.deepEqual(status.held, {
+      state: "pass due",
+      reason: "2 unresolved bot thread(s); 1 unresolved owner thread(s); 1 thread(s) from others wait on a person",
+    });
+  });
+
+  it("counts a thread whose opener can't be checked as other", () => {
+    const status = statusFor(pr({ threads: [unresolved("ghost")] }), { isOwner: (login) => (login === "ghost" ? undefined : login === OWNER) });
+
+    assert.deepEqual(status.threads, { bot: 0, owner: 0, other: 1, answered: 0 });
+  });
+
+  it("counts a thread the host answered as answered, not as bot, and says it waits on the owner", () => {
+    const status = statusFor(pr({ threads: [unresolved("copilot", true)] }), { reviewThreads: () => [thread("copilot", true, [hostReply])] });
+
+    assert.deepEqual(status.threads, { bot: 0, owner: 0, other: 0, answered: 1 });
+    assert.deepEqual(status.held, { state: "settled", reason: "it's settled and CLEAN; 1 answered thread(s) wait on the owner" });
+  });
+
+  it("decides as the sweep does: its decision for the PR with the answered threads taken out", () => {
+    const candidate = pr({ threads: [unresolved("copilot", true)] });
+    const answered = [thread("copilot", true, [hostReply])];
+
+    assert.equal(decide(candidate, NOW, ownerIs(OWNER)).action, "needs-pass");
+    assert.equal(statusFor(candidate, { reviewThreads: () => answered }).held.state, "settled");
+  });
+
+  it("says a PR whose threads can't be read is held, with the cause, as the sweep leaves it alone", () => {
+    const status = statusFor(pr({ threads: [unresolved("copilot", true)] }), {
+      reviewThreads: () => {
+        throw new Error("gh: HTTP 502");
+      },
+    });
+
+    assert.ok("unreadable" in status.threads && status.threads.unreadable.includes("HTTP 502"));
+    assert.ok(status.held.state === "skipped" || status.held.state === "waiting", status.held.state);
+    assert.match(status.held.reason, /its threads couldn't be read/);
+  });
+
+  it("shows the passes as unreadable, and carries on, when they can't be read", () => {
+    const status = statusFor(pr(), {
+      passes: () => {
+        throw new Error("gh: HTTP 500");
+      },
+    });
+
+    assert.ok("unreadable" in status.passes && status.passes.unreadable.includes("HTTP 500"));
+    assert.equal(status.held.state, "settled");
+    assert.deepEqual(status.threads, { bot: 0, owner: 0, other: 0, answered: 0 });
+  });
+
+  it("is a pass due for a conflicting PR with passes left", () => {
+    const status = statusFor(pr({ mergeStateStatus: "DIRTY" }), { passes: () => FOLLOW_UP_PASS_CAP - 1 });
+
+    assert.deepEqual(status.held, { state: "pass due", reason: "it has merge conflicts" });
+  });
+
+  it("is a hand-back due for a conflicting PR that used its passes", () => {
+    const status = statusFor(pr({ mergeStateStatus: "DIRTY" }), { passes: () => FOLLOW_UP_PASS_CAP });
+
+    assert.equal(status.held.state, "hand-back due");
+    assert.match(status.held.reason, /the next pass hands it back with sandcastle:needs-human/);
+  });
+
+  it("is waiting while checks haven't reported", () => {
+    assert.deepEqual(statusFor(pr({ checks: [] })).held, { state: "waiting", reason: "no checks have reported" });
+  });
+
+  it("says Copilot will be asked to review a head it hasn't reviewed once CI has been done a while", () => {
+    assert.deepEqual(statusFor(pr({ reviews: [] })).held, { state: "act next sweep", reason: "Copilot will be asked to review the head" });
+  });
+
+  it("says a PR that's only behind main will be updated", () => {
+    assert.deepEqual(statusFor(pr({ mergeStateStatus: "BEHIND" })).held, { state: "act next sweep", reason: "it will be updated from main" });
+  });
+
+  it("says the sweep puts back a hand-back label a stranger removed", () => {
+    const status = statusFor(pr(), { events: () => [unlabelled("stranger")] });
+
+    assert.equal(status.held.state, "skipped");
+    assert.equal(status.held.reason, "put back sandcastle:needs-human, which @stranger removed, not the repository owner; the sweep puts the label back");
+  });
+
+  it("says it couldn't check who removed the hand-back label", () => {
+    const status = statusFor(pr(), { events: () => [unlabelled("ghost")], isOwner: (login) => (login === "ghost" ? undefined : login === OWNER) });
+
+    assert.deepEqual(status.held, { state: "skipped", reason: "couldn't check whether the repository owner removed sandcastle:needs-human" });
+  });
+
+  it("makes no write of any kind", () => {
+    const candidates = [pr({ reviews: [] }), pr({ mergeStateStatus: "BEHIND" }), pr({ mergeStateStatus: "DIRTY" })];
+    for (const candidate of candidates) {
+      const { github, writes } = statusGithub({ prs: [candidate], events: () => [unlabelled("stranger")] });
+
+      statusOf(candidate, context(), github, () => {});
+      statusOf({ ...candidate, labels: [] }, context(), statusGithub({ prs: [candidate] }).github, () => {});
+
+      assert.deepEqual(writes, []);
+    }
+  });
+});
+
+describe("collectStatus", () => {
+  it("lists the Sandcastle and hand-off PRs by number and counts the others", () => {
+    const collaborators = pr({ number: 300, id: "PR_300", author: "a-collaborator", body: "Closes #42", headRefName: "chore/x" });
+    const { github } = statusGithub({ prs: [handOffPr(), collaborators, pr()], events: (number) => (number === 201 ? ownerLabelled : []) });
+
+    const report = collectStatus(github, NOW, () => {});
+
+    assert.deepEqual(report.prs.map((status) => status.number), [101, 201]);
+    assert.equal(report.unlisted, 1);
+  });
+
+  it("names the repository and the queue scope", () => {
+    const scope: QueueScope = { kind: "issue", number: 42 };
+
+    const report = collectStatus(statusGithub({ scope }).github, NOW, () => {});
+
+    assert.equal(report.repo, "o/r");
+    assert.equal(report.scope, describeQueueScope(scope));
+  });
+
+  it("lists a draft Sandcastle PR, as skipped", () => {
+    const report = collectStatus(statusGithub({ prs: [pr({ isDraft: true })] }).github, NOW, () => {});
+
+    assert.deepEqual(report.prs.map((status) => status.held.state), ["skipped"]);
+  });
+
+  it("reads the Sandcastle workflow's latest ten runs", () => {
+    const runs = [run(), run({ id: 9000 })];
+    const { github, reads } = statusGithub({ runs: () => runs });
+
+    const report = collectStatus(github, NOW, () => {});
+
+    assert.deepEqual(reads.runs, [10]);
+    assert.deepEqual(report.runs, runs);
+  });
+
+  it("reports the runs as unreadable, and still lists the PRs, when they can't be read", () => {
+    const lines: string[] = [];
+    const { github } = statusGithub({
+      runs: () => {
+        throw new Error("gh: HTTP 404");
+      },
+    });
+
+    const report = collectStatus(github, NOW, (line) => lines.push(line));
+
+    assert.ok("unreadable" in report.runs && report.runs.unreadable.includes("HTTP 404"));
+    assert.equal(report.prs.length, 1);
+    assert.ok(lines.some((line) => line.includes("HTTP 404")), lines.join("\n"));
+  });
+
+  it("throws when the open PRs can't be read: nothing can be said", () => {
+    const { github } = statusGithub();
+    github.openPullRequests = () => {
+      throw new Error("gh: HTTP 401");
+    };
+
+    assert.throws(() => collectStatus(github, NOW, () => {}), /HTTP 401/);
+  });
+
+  it("lists the other PRs when one PR's read fails, showing the cause for the one that failed", () => {
+    const { github } = statusGithub({
+      prs: [issuePr(42), issuePr(43)],
+      issues: [{ number: 42, labels: [] }, { number: 43, labels: [] }],
+      events: (number) => {
+        if (number === 142) throw new Error("gh: HTTP 500 on events");
+        return [];
+      },
+    });
+
+    const report = collectStatus(github, NOW, () => {});
+
+    assert.deepEqual(report.prs.map((status) => status.number), [142, 143]);
+    assert.ok(JSON.stringify(report.prs[0]).includes("HTTP 500 on events"));
+    assert.deepEqual(report.prs[1]!.held, { state: "settled", reason: "it's settled and CLEAN" });
+  });
+
+  it("makes no write of any kind, whatever the sweep would do with each PR", () => {
+    const head = "b".repeat(40);
+    const { github, writes } = statusGithub({
+      prs: [
+        issuePr(42, { reviews: [] }),
+        issuePr(43, { mergeStateStatus: "BEHIND" }),
+        issuePr(44),
+        issuePr(45, { mergeStateStatus: "DIRTY" }),
+        handOffPr({ headRefOid: head, reviews: [{ author: COPILOT_REVIEWER, commitOid: head }] }),
+      ],
+      issues: [42, 43, 44, 45].map((number) => ({ number, labels: [] })),
+      events: (number) => (number === 144 ? [unlabelled("stranger")] : number === 201 ? ownerLabelled : []),
+      comments: (number) => (number === 201 ? [headRecord(HEAD)] : []),
+      mergeOfMain: (commit) => (commit === head ? { firstParent: HEAD } : { problem: "not a merge" }),
+      isOwner: (login) => login === OWNER || login === HOST,
+    });
+
+    const report = collectStatus(github, NOW, () => {});
+
+    assert.equal(report.prs.length, 5);
+    assert.deepEqual(writes, []);
+  });
+});
+
+describe("renderStatus", () => {
+  const status = (overrides: Partial<PrStatus> = {}): PrStatus => ({
+    number: 101,
+    title: "feat: Add search",
+    headRefName: BRANCH,
+    subject: "issue",
+    issueNumber: 42,
+    passes: { used: 1, cap: 3 },
+    held: { state: "pass due", reason: "check build is red" },
+    threads: { bot: 2, owner: 1, other: 3, answered: 0 },
+    mergeState: "BLOCKED",
+    draft: false,
+    labels: [],
+    ...overrides,
+  });
+  const report = (overrides: Partial<StatusReport> = {}): StatusReport => ({
+    repo: "o/r",
+    scope: "issues labelled Sandcastle",
+    prs: [status()],
+    unlisted: 0,
+    runs: [],
+    ...overrides,
+  });
+  // Whether `block` appears in `lines` as consecutive lines.
+  const contains = (lines: string[], block: string[]) => lines.some((_, start) => block.every((line, offset) => lines[start + offset] === line));
+
+  it("heads the report with the repository, the queue and the number of PRs", () => {
+    const lines = renderStatus(report());
+
+    assert.equal(lines[0], "Sandcastle status for o/r (queue: issues labelled Sandcastle)");
+    assert.equal(lines[1], "1 open Sandcastle pull request(s) into main");
+  });
+
+  it("counts the PRs it doesn't list", () => {
+    const lines = renderStatus(report({ prs: [status(), status({ number: 102 })], unlisted: 3 }));
+
+    assert.equal(lines[1], "2 open Sandcastle pull request(s) into main, 3 other open PR(s) not listed");
+  });
+
+  it("prints a PR's branch, issue, passes, why it's held and its threads", () => {
+    assert.ok(
+      contains(renderStatus(report()), [
+        "#101 feat: Add search",
+        "  branch:   feature/42-add-search (BLOCKED)",
+        "  for:      issue #42",
+        "  passes:   1 of 3",
+        "  held:     pass due: check build is red",
+        "  threads:  bot 2, owner 1, other 3",
+      ]),
+      renderStatus(report()).join("\n"),
+    );
+  });
+
+  it("marks a draft, and shows only the labels that matter", () => {
+    const labels = ["dependencies", "review:claude", "sandcastle:building", "sandcastle:needs-human", "sandcastle:follow-up", "Sandcastle", "Sandcastle:local", "bug"];
+
+    const lines = renderStatus(report({ prs: [status({ draft: true, labels })] }));
+
+    assert.ok(
+      lines.includes("  branch:   feature/42-add-search (BLOCKED, draft), labels: review:claude, sandcastle:building, sandcastle:needs-human, sandcastle:follow-up, Sandcastle, Sandcastle:local"),
+      lines.join("\n"),
+    );
+  });
+
+  it("shows no labels clause when none of the PR's labels matter", () => {
+    assert.ok(renderStatus(report({ prs: [status({ labels: ["dependencies"] })] })).includes("  branch:   feature/42-add-search (BLOCKED)"));
+  });
+
+  it("says a hand-off PR is one, and a PR that isn't swept isn't", () => {
+    const lines = renderStatus(report({ prs: [status({ subject: "hand-off", issueNumber: undefined }), status({ number: 102, subject: "not swept", issueNumber: undefined })] }));
+
+    assert.ok(lines.includes("  for:      hand-off"));
+    assert.ok(lines.includes("  for:      not swept"));
+  });
+
+  it("shows the answered threads only when there are some", () => {
+    assert.ok(renderStatus(report({ prs: [status({ threads: { bot: 0, owner: 0, other: 0, answered: 2 } })] })).includes("  threads:  bot 0, owner 0, other 0, answered 2"));
+    assert.ok(renderStatus(report()).includes("  threads:  bot 2, owner 1, other 3"));
+  });
+
+  it("says unknown, with the cause, for passes and threads that couldn't be read", () => {
+    const lines = renderStatus(report({ prs: [status({ passes: { unreadable: "HTTP 500" }, threads: { unreadable: "HTTP 502" } })] }));
+
+    assert.ok(lines.includes("  passes:   unknown (HTTP 500)"), lines.join("\n"));
+    assert.ok(lines.includes("  threads:  unknown (HTTP 502)"), lines.join("\n"));
+  });
+
+  it("says there are no open Sandcastle PRs, still headed and with the runs", () => {
+    const lines = renderStatus(report({ prs: [], runs: [run()] }));
+
+    assert.equal(lines[0], "Sandcastle status for o/r (queue: issues labelled Sandcastle)");
+    assert.ok(lines.includes("No open Sandcastle pull requests into main."), lines.join("\n"));
+    assert.ok(lines.includes("Sandcastle workflow runs (latest 1):"), lines.join("\n"));
+  });
+
+  it("lists the workflow's runs: result, event, branch, time and link", () => {
+    const lines = renderStatus(report({ runs: [run(), run({ id: 9000, status: "in_progress", conclusion: null, event: "workflow_dispatch", branch: "feature/315-x", createdAt: "2026-10-10T06:00:00Z", url: "https://github.com/o/r/actions/runs/9000" })] }));
+
+    assert.ok(lines.includes("Sandcastle workflow runs (latest 2):"), lines.join("\n"));
+    const done = lines.find((line) => line.includes("https://github.com/o/r/actions/runs/9001"));
+    assert.ok(done !== undefined && done.startsWith("  "));
+    for (const part of ["success", "schedule", "main", "2026-10-10T08:00:00Z"]) assert.ok(done.includes(part), `${part} in ${done}`);
+    const running = lines.find((line) => line.includes("https://github.com/o/r/actions/runs/9000"));
+    assert.ok(running !== undefined);
+    for (const part of ["in_progress", "workflow_dispatch", "feature/315-x", "2026-10-10T06:00:00Z"]) assert.ok(running.includes(part), `${part} in ${running}`);
+  });
+
+  it("says unknown, with the cause, for runs that couldn't be read", () => {
+    assert.ok(renderStatus(report({ runs: { unreadable: "HTTP 404" } })).includes("  unknown (HTTP 404)"));
+  });
+
+  it("is plain text: no markdown and no ANSI", () => {
+    const lines = renderStatus(report({ prs: [status({ labels: ["review:claude"], draft: true })], unlisted: 1, runs: [run()] }));
+
+    for (const line of lines) {
+      assert.doesNotMatch(line, /\u001b|\*\*|`|^#{2,} |^\|/, line);
+    }
+  });
+});
+
+describe("statusScopeFrom", () => {
+  it("is the default queue when neither variable is set, so a bare run shows what GitHub Actions' scope would do", () => {
+    assert.deepEqual(statusScopeFrom({}), { kind: "label", label: QUEUE_LABEL });
+  });
+
+  it("counts a blank variable as unset", () => {
+    assert.deepEqual(statusScopeFrom({ SANDCASTLE_ISSUE: "  ", SANDCASTLE_LABEL: "" }), { kind: "label", label: QUEUE_LABEL });
+  });
+
+  it("reads SANDCASTLE_ISSUE as queueScopeFrom does", () => {
+    assert.deepEqual(statusScopeFrom({ SANDCASTLE_ISSUE: "7" }), { kind: "issue", number: 7 });
+  });
+
+  it("reads SANDCASTLE_LABEL as queueScopeFrom does", () => {
+    assert.deepEqual(statusScopeFrom({ SANDCASTLE_LABEL: "Sandcastle:local" }), { kind: "label", label: "Sandcastle:local" });
+  });
+
+  it("throws queueScopeFrom's QueueScopeError for a bad value or both variables", () => {
+    assert.throws(() => statusScopeFrom({ SANDCASTLE_ISSUE: "abc" }), QueueScopeError);
+    assert.throws(() => statusScopeFrom({ SANDCASTLE_ISSUE: "7", SANDCASTLE_LABEL: "Sandcastle:local" }), QueueScopeError);
+    assert.throws(() => statusScopeFrom({ SANDCASTLE_LABEL: "bug" }), QueueScopeError);
+  });
+});
+
+// loadQueue fixes the labels of an issue whose label origin was untrusted; reading the queue for the status mustn't.
+describe("statusQueue", () => {
+  const issue = (number: number, labels: string[]): SandcastleIssue => ({ number, title: `Issue ${number}`, body: `Body of ${number}`, labels, comments: [] });
+  const isOwner = (login: string | null) => (login === null ? undefined : login === "owner" || login === "host");
+  function queue(issues: SandcastleIssue[], events: Record<number, IssueEvent[]>) {
+    const writes: string[] = [];
+    const github: QueueGitHub = {
+      issuesInScope: () => issues,
+      events: (number) => events[number] ?? [],
+      bodyEdits: () => [],
+      isOwner,
+      removeLabel: (number, label) => void writes.push(`remove ${label} from #${number}`),
+      addLabel: (number, label) => void writes.push(`add ${label} to #${number}`),
+    };
+    return { github, writes };
+  }
+  const labelled = (actor: string, label: string): IssueEvent => ({ event: "labeled", actor, label, createdAt: "2026-10-01T00:00:00Z" });
+
+  it("returns the issues the owner queued", () => {
+    const { github } = queue([issue(501, ["Sandcastle"])], { 501: [labelled("owner", "Sandcastle")] });
+
+    assert.deepEqual(statusQueue(SCOPE, github, () => {}).map((found) => found.number), [501]);
+  });
+
+  it("leaves a label a stranger added alone, where loadQueue would remove it, and says nothing changed", () => {
+    const { github, writes } = queue([issue(502, ["Sandcastle", "sandcastle:ready"])], {
+      502: [labelled("owner", "Sandcastle"), labelled("stranger", "sandcastle:ready")],
+    });
+    const lines: string[] = [];
+
+    const found = statusQueue(SCOPE, github, (line) => lines.push(line));
+
+    assert.deepEqual(found.map((issue) => issue.number), [502]);
+    assert.deepEqual(writes, []);
+    assert.ok(lines.some((line) => line.includes("#502") && line.endsWith(" (status only: nothing changed)")), lines.join("\n"));
+  });
+
+  it("leaves a label a stranger removed alone, too", () => {
+    const { github, writes } = queue([issue(503, ["Sandcastle"])], {
+      503: [labelled("owner", "Sandcastle"), { event: "unlabeled", actor: "stranger", label: "sandcastle:needs-human", createdAt: "2026-10-02T00:00:00Z" }],
+    });
+
+    statusQueue(SCOPE, github, () => {});
+
+    assert.deepEqual(writes, []);
+  });
+
+  it("suffixes the line for an issue it skips, too", () => {
+    const { github } = queue([issue(504, ["Sandcastle"])], { 504: [labelled("stranger", "Sandcastle")] });
+    const lines: string[] = [];
+
+    const found = statusQueue(SCOPE, github, (line) => lines.push(line));
+
+    assert.deepEqual(found, []);
+    assert.ok(lines.length > 0 && lines.every((line) => line.endsWith(" (status only: nothing changed)")), lines.join("\n"));
+  });
+});
+
+describe("statusCommand", () => {
+  it("prints the rendered report, line by line, and returns it", () => {
+    const { github } = statusGithub({ runs: () => [run()] });
+    const printed: string[] = [];
+
+    const report = statusCommand(github, (line) => printed.push(line), NOW);
+
+    assert.deepEqual(printed, renderStatus(report));
+    assert.deepEqual(report.prs.map((status) => status.number), [101]);
+    assert.ok(printed.includes("Sandcastle workflow runs (latest 1):"));
+  });
+
+  it("returns normally when every PR is held: the command reports, it doesn't judge", () => {
+    const { github } = statusGithub({ prs: [pr({ isDraft: true }), issuePr(43, { labels: ["sandcastle:needs-human"] })], issues: [{ number: 43, labels: [] }] });
+
+    const report = statusCommand(github, () => {}, NOW);
+
+    assert.deepEqual(report.prs.map((status) => status.held.state), ["skipped", "skipped"]);
+  });
+
+  it("throws when the open PRs can't be read, printing nothing", () => {
+    const { github } = statusGithub();
+    github.openPullRequests = () => {
+      throw new Error("gh: HTTP 401");
+    };
+    const printed: string[] = [];
+
+    assert.throws(() => statusCommand(github, (line) => printed.push(line), NOW), /HTTP 401/);
+    assert.deepEqual(printed, []);
+  });
+});
+
+// The imports tell what the status can reach: reads only, and nothing that starts a sandbox or a model.
+describe("lib/status.mts's imports", () => {
+  const source = readFileSync(new URL("./status.mts", import.meta.url), "utf8");
+  const imports = [...source.matchAll(/^import\s[^;]*?from\s+"([^"]+)";/gms)].map((match) => ({ text: match[0], from: match[1] as string }));
+
+  it("imports nothing that starts a sandbox or a model", () => {
+    for (const { from } of imports) {
+      assert.doesNotMatch(from, /@ai-hero|build|follow-up-pass|skills|agents|round|plan|intake|critique|building|handback/, from);
+    }
+  });
+
+  it("imports none of the GitHub writes", () => {
+    const writes = [
+      "addPullRequestLabel", "addIssueLabel", "removeIssueLabel", "replaceIssueLabel", "removePullRequestLabel", "commentOnPullRequest", "commentOnIssue",
+      "handBack", "requestCopilotReview", "updatePullRequestBranch", "ensureLabels", "createIssue", "openPullRequest", "closeIssueAsCompleted",
+      "replyToReviewThread", "resolveReviewThread", "addSubIssue", "recordApprovedHead",
+    ];
+    for (const { text } of imports) {
+      for (const name of writes) assert.doesNotMatch(text, new RegExp(`\\b${name}\\b`), `${name} in ${text}`);
+    }
+  });
+});
+
+describe("liveStatusGitHub", () => {
+  it("serves the passes used and the workflow's runs besides the sweep's reads", () => {
+    assert.equal(typeof liveStatusGitHub.passesUsed, "function");
+    assert.equal(typeof liveStatusGitHub.workflowRuns, "function");
+    assert.equal(typeof liveStatusGitHub.openPullRequests, "function");
+  });
+});

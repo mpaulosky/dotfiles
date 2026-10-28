@@ -361,7 +361,10 @@ jobs:
             echo "::error::The labeled event's head isn't a full commit SHA."
             exit 1
           fi
-          current="$(GH_TOKEN="$SANDCASTLE_GH_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)"
+          if ! current="$(GH_TOKEN="$SANDCASTLE_GH_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)"; then
+            echo "::error::Couldn't read the pull request's head, so no head is recorded. Remove and add the label again."
+            exit 1
+          fi
           if [ "$current" != "$HEAD_SHA" ]; then
             echo "::error::The pull request's head is ${current:0:7}, not ${HEAD_SHA:0:7} from the labeled event, so no head is recorded."
             echo "::error::Remove and add the label again once the branch is as you want it."

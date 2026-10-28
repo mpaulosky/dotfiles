@@ -526,36 +526,60 @@ exit 0
 STUB
 cat > "$record_bin/gh" <<'STUB'
 #!/usr/bin/env bash
-# GET returns RECORD_CURRENT; a POST appends its body to RECORD_POSTS and fails while RECORD_FAILS has attempts left.
-if [[ " $* " == *" --method POST "* ]]; then
+# Logs "<GET|POST> <endpoint> <GH_TOKEN>" to RECORD_CALLS. A GET prints RECORD_CURRENT, or fails when that is FAIL. A POST appends its body to
+# RECORD_POSTS and fails while RECORD_FAILS has attempts left.
+method=GET; endpoint=
+for arg in "$@"; do [[ $arg == repos/* ]] && endpoint=$arg; done
+[[ " $* " == *" --method POST "* ]] && method=POST
+printf '%s %s %s\n' "$method" "$endpoint" "${GH_TOKEN-}" >> "$RECORD_CALLS"
+if [[ $method == POST ]]; then
   for arg in "$@"; do [[ $arg == body=* ]] && printf '%s\n--\n' "${arg#body=}" >> "$RECORD_POSTS"; done
   left="$(<"$RECORD_FAILS")"
   if (( left > 0 )); then echo $((left - 1)) > "$RECORD_FAILS"; exit 1; fi
   exit 0
 fi
+[[ $RECORD_CURRENT == FAIL ]] && exit 1
 echo "$RECORD_CURRENT"
 STUB
 chmod +x "$record_bin/gh" "$record_bin/sleep"
 run_record() { # token head current post-failures
-  record_posts="$md_tmp/record-posts"; : > "$record_posts"; echo "$4" > "$md_tmp/record-fails"; record_rc=0
+  record_posts="$md_tmp/record-posts"; record_calls="$md_tmp/record-calls"; record_out="$md_tmp/record-out"
+  : > "$record_posts"; : > "$record_calls"; echo "$4" > "$md_tmp/record-fails"; record_rc=0
   env -i PATH="$record_bin:$PATH" SANDCASTLE_GH_TOKEN="$1" HEAD_SHA="$2" RECORD_CURRENT="$3" PR_NUMBER=7 REPO=o/r \
-    RECORD_POSTS="$record_posts" RECORD_FAILS="$md_tmp/record-fails" bash --noprofile --norc -e "$record_script" &>/dev/null || record_rc=$?
+    RECORD_POSTS="$record_posts" RECORD_CALLS="$record_calls" RECORD_FAILS="$md_tmp/record-fails" \
+    bash --noprofile --norc -e "$record_script" &>"$record_out" || record_rc=$?
   record_count="$(grep -c '^--$' "$record_posts" || true)"
 }
 sha_a="$(printf 'a%.0s' {1..40})"; sha_b="$(printf 'b%.0s' {1..40})"
+host_token="host-token-1"
+read_call="GET repos/o/r/pulls/7 $host_token"; post_call="POST repos/o/r/issues/7/comments $host_token"
 run_record "" "$sha_a" "$sha_a" 0
-[[ $record_rc -eq 0 && $record_count -eq 0 ]] || fail "record-head: no token must warn, post nothing and exit 0 (exit $record_rc, posts $record_count)"
-run_record token "not-a-sha" "$sha_a" 0
-[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a head that isn't 40 hex must fail and post nothing (exit $record_rc, posts $record_count)"
-run_record token "$sha_a" "$sha_b" 0
+[[ $record_rc -eq 0 && $record_count -eq 0 && ! -s $record_calls ]] || fail "record-head: no token must warn, call gh not at all and exit 0 (exit $record_rc, posts $record_count)"
+# Each bad head is also the pull request's current head, so only the format check can stop it: it must fail before any call to gh.
+for bad_head in "not-a-sha" "${sha_a^^}" "${sha_a:1}" "${sha_a}a" ""; do
+  run_record "$host_token" "$bad_head" "$bad_head" 0
+  [[ $record_rc -ne 0 && $record_count -eq 0 && ! -s $record_calls ]] \
+    || fail "record-head: a head that isn't 40 lower-case hex ('$bad_head') must fail before any call to gh and post nothing (exit $record_rc, posts $record_count)"
+done
+run_record "$host_token" "$sha_a" "$sha_b" 0
 [[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a head that moved since the event must fail and post nothing (exit $record_rc, posts $record_count)"
-run_record token "$sha_a" "$sha_a" 0
+run_record "$host_token" "$sha_a" "" 0
+[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: an empty read of the pull request's head must fail and post nothing (exit $record_rc, posts $record_count)"
+run_record "$host_token" "$sha_a" FAIL 0
+[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a failed read of the pull request's head must fail and post nothing (exit $record_rc, posts $record_count)"
+grep -qF "Couldn't read the pull request's head" "$record_out" \
+  || fail "record-head: a failed read of the pull request's head must say so in an ::error:: line, as the other failures do"
+run_record "$host_token" "$sha_a" "$sha_a" 0
 [[ $record_rc -eq 0 && $record_count -eq 1 ]] || fail "record-head: the event's head must be posted once (exit $record_rc, posts $record_count)"
+[[ "$(<"$record_calls")" == "$read_call"$'\n'"$post_call" ]] \
+  || fail "record-head: it must read repos/o/r/pulls/7 and post to repos/o/r/issues/7/comments, both with SANDCASTLE_GH_TOKEN as GH_TOKEN (calls: $(tr '\n' '|' < "$record_calls"))"
 grep -qE "^$head_marker $sha_a -->\$" <(head -n1 "$record_posts") \
   || fail "record-head: the comment's first line must be '$head_marker <sha> -->', which lib/follow-up.mts#approvedHeadOf reads"
-run_record token "$sha_a" "$sha_a" 2
+run_record "$host_token" "$sha_a" "$sha_a" 2
 [[ $record_rc -eq 0 && $record_count -eq 3 ]] || fail "record-head: two failed posts then a good one must exit 0 after three tries (exit $record_rc, posts $record_count)"
-run_record token "$sha_a" "$sha_a" 3
+[[ "$(grep -c '^GET ' "$record_calls")" -eq 1 && "$(grep -c "^$post_call\$" "$record_calls")" -eq 3 ]] \
+  || fail "record-head: it must read the pull request's head once and retry only the post, every try as the host (calls: $(tr '\n' '|' < "$record_calls"))"
+run_record "$host_token" "$sha_a" "$sha_a" 3
 [[ $record_rc -ne 0 && $record_count -eq 3 ]] || fail "record-head: three failed posts must exit non-zero after three tries (exit $record_rc, posts $record_count)"
 grep -A1 '^  pull_request_target:$' "$sandcastle_yml" | grep -qF 'types: [labeled]' \
   || fail "sandcastle.yml's pull_request_target trigger must be types: [labeled] only"

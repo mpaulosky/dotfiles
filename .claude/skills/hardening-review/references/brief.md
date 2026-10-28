@@ -15,9 +15,13 @@ You review one branch's diff through the lens your prompt names. You can only re
 - The whole diff: <run>/diff.patch
 - Pass <N>. <In pass 2 and later: "Read <run>/fixes.patch first, since regressions cluster there, then review the whole
   diff: a problem anywhere counts.">
-- Already decided: <run>/decisions.md. Do not raise again what it records as fixed or dismissed. An entry marked
-  "raise again only if changed" comes from the known-open list: raise it only if its `changed` is true.
-  Known-open, as id, lens, path and changed: <the output of `known_open.py check --for-reviewers`>
+- Already decided: <run>/decisions.md. Do not raise again what it records as fixed or dismissed.
+- Known open (accepted or deferred by the person), as id, lens, path, range and changed:
+  <the output of `known_open.py check --for-reviewers`>. Skip a finding only when its line is inside the range of an
+  entry whose `changed` is false and whose lens you share. A weakness elsewhere in the same file is still yours to
+  raise, and so is any finding in a range whose `changed` is true.
+- Read only the files this brief names, and the repository files you review. The other files in this folder, and
+  anything else under `.git`, are not yours to read.
 
 ## Scope
 
@@ -28,6 +32,9 @@ You review one branch's diff through the lens your prompt names. You can only re
 <The table from pre-push-review/SKILL.md.>
 
 ## Read these first
+
+Where `review-bar.md` says to raise an accepted problem again, or to review only the lines a round's fixes changed,
+this brief overrides it: every pass reviews the whole diff, and a known-open finding is skipped as described above.
 
 <pre-push-review/review-bar.md, your lens's row of lenses.md, and the repository's own guidance that applies to the files
 you review: .claude/skills/code-review/SKILL.md, CLAUDE.md, CONTEXT.md, docs/CODING_STANDARDS.md, the ADRs the change

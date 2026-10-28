@@ -22,7 +22,6 @@ and the journal is deleted.
 import argparse
 import base64
 import json
-import math
 import os
 import signal
 import subprocess
@@ -70,7 +69,7 @@ def load_spec(path):
     for part in test:
         plain(part, '"test"')
     timeout = spec.get("timeout", 600)
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= MAX_TIMEOUT:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= MAX_TIMEOUT:
         raise Refused(f'"timeout" must be a number of seconds above 0 and at most {MAX_TIMEOUT}')
     mutations = spec.get("mutations")
     if not isinstance(mutations, list) or not mutations:

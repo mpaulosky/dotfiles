@@ -4,13 +4,13 @@
 #   test.sh
 #
 # Runs the Template's own tests (hook suites, auto-merge script tests,
-# release-script pytest), the renderer oracle and the GitHub scripts' tests
+# release-script pytest), the hardening-review scripts' tests, the renderer oracle and the GitHub scripts' tests
 # (settings, the landing decision, status, land and rollout), the Claude Review
 # benchmark's tests, lints its workflows, YAML, shell
 # and Markdown with the Template's configs, checks that
 # Owned files carry no {{PLACEHOLDER}} and that the Owned scripts tell every gh
 # command its repository, checks dotfiles' copies of Owned files (its
-# .sandcastle/ included) and the Seed Sandcastle files, and smoke-tests apply.sh and
+# .sandcastle/ and the hardening-review skill included) and the Seed Sandcastle files, and smoke-tests apply.sh and
 # reapply.sh against throwaway repos. dotfiles CI runs this on every change
 # under the skill, and it's the check to run before committing a Template
 # change.

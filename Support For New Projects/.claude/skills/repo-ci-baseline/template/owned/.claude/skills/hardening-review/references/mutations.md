@@ -1,6 +1,6 @@
 # Mutation specs
 
-`<run>/mutations/<batch>.json`, run with `scripts/mutate.py`. The file is data, and the tests run as an argv list with no
+`<private>/mutations/<batch>.json` (the private folder of [SKILL.md](../SKILL.md)), run with `scripts/mutate.py`. The file is data, and the tests run as an argv list with no
 shell.
 
 ```json
@@ -22,6 +22,17 @@ shell.
 - The tests must pass before any mutation, or the run is refused: otherwise every mutation looks caught.
 - A mutation that makes the tests hang counts as caught once `timeout` passes.
 - Exit 0: every mutation was `CAUGHT`, or `EQUIVALENT` with your reason. Exit 1: one `SURVIVED`, was `NOT FOUND`,
-  `AMBIGUOUS` or `INVALID`. Exit 2: refused.
+  `AMBIGUOUS` or `INVALID`. Exit 2: refused (a bad spec, an untracked, dirty or outside target, tests that fail before
+  any mutation or do not finish within `timeout`). Exit 130: interrupted by SIGINT, SIGTERM or SIGHUP; the files are
+  restored.
+- The tests run in their own process group, which is killed when they end, time out or are interrupted, so a
+  `pnpm run test` leaves no `node` behind. `git` and the tests get no `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE`, and
+  Python tests get `PYTHONDONTWRITEBYTECODE` and a fresh `PYTHONPYCACHEPREFIX`, so a same-size mutation can't load a
+  stale `.pyc`. A Python test command must not run with `-I`, which ignores those variables.
+- A runner killed with SIGKILL can't restore its file. It writes the originals to `mutate-journal.json` in the git
+  directory first, and the next run refuses to start until you `git checkout -- <file>` and delete the journal it names.
+- **CAUGHT only means the tests failed.** A mutation that leaves the file unparsable or uncompilable fails every test, so
+  write mutations that keep the file valid, and run the first one by hand to see that the test failing is one that
+  covers the fix.
 - Write about one mutation per branch and guard in the fix. Don't pad the list to a number: a mutation that no test
   could distinguish from the original is `equivalent`, with the reason.

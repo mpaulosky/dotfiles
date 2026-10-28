@@ -5,13 +5,14 @@ Rewritten, not appended, whenever a step changes it. After a compaction this fil
 ```markdown
 # Hardening review state: <branch>
 
-- Step: <the step to do next, e.g. "5 Triage, batch 2 of 3">
+- Step: <the step to do next, e.g. "5 Triage, batch 2 of 3", or `recorded` once step 8's record has been made>
 - Pass: <N> of at most <5, or the raised limit>
 - Next finding id: R<n>      (from `scripts/review.sh next`, then counted on)
 - Key: <the key prepare printed this pass>
 - HEAD: <the HEAD prepare printed this pass>
 - Worktree: <absolute path>
 - Run folder: <absolute path>
+- Private folder: <absolute path>
 
 ## Reviewers (this pass)
 
@@ -26,5 +27,5 @@ Rewritten, not appended, whenever a step changes it. After a compaction this fil
 
 ## Open items
 
-<Ids that wait for the person, each as id, lens, path. Their reasons are in known-open.json and decisions.md.>
+<Ids that wait for the person, each as id, lens, path. Their reasons are in the private folder's known-open.json.>
 ```

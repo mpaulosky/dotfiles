@@ -16,7 +16,8 @@ SCRIPT = Path(__file__).resolve().parents[2] / "template/owned/.claude/skills/ha
 
 def clean_env(**extra):
     """The developer's own git config and hook variables must not reach the throwaway repos."""
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    # PYTHON* too: the runner sets the bytecode variables itself, and a test that inherited them could not tell.
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("GIT_", "PYTHON"))}
     env.update(GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
     env.update(extra)

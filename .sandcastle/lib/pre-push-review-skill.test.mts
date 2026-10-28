@@ -10,6 +10,7 @@ const agent = readFileSync(new URL("../../.claude/agents/pre-push-reviewer.md", 
 const skill = readFileSync(new URL("../../.claude/skills/pre-push-review/SKILL.md", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../../.github/workflows/claude-review.yml", import.meta.url), "utf8");
 const bar = readFileSync(new URL("../../.claude/skills/pre-push-review/review-bar.md", import.meta.url), "utf8");
+const hardening = readFileSync(new URL("../../.claude/skills/hardening-review/SKILL.md", import.meta.url), "utf8");
 
 describe("the pre-push-review skill's reviewers", () => {
   it("get only Read, Grep and Glob", () => {
@@ -376,5 +377,40 @@ describe("the pre-push-review skill's repository", () => {
     assert.notDeepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && gh pr edit 1\``), []);
     assert.deepEqual(ghChainProblems(`1. \`${prefix}issue create --title x\``), []);
     assert.deepEqual(ghChainProblems(`1. \`${prefix}pr view 1 && GH_REPO="$repo" gh pr edit 1\``), []);
+  });
+});
+
+// hardening-review reuses pre-push-review by step number and keeps its reviewers' sandbox: nothing else would notice a
+// renumbering or a run folder that moved out of the folder the sandbox hides.
+describe("the hardening-review skill's reuse of pre-push-review", () => {
+  it("points at steps that still exist under those numbers", () => {
+    for (const heading of ["### 1. Get ready", "### 2. Gate first", "### 3. Gather earlier decisions", "### 4. Review the diff", "### 5. Verify and triage", "### 6. Fix behind a regression test", "### 7. Review the fixes until a round fixes nothing", "### 8. Record", "### 9. Report"]) {
+      assert.ok(skill.includes(`${heading}\n`), `pre-push-review lost "${heading}"`);
+    }
+    assert.match(hardening, /steps 1 to 3/);
+    assert.match(hardening, /\b8 to 9\b/);
+    assert.match(hardening, /steps 4 to 7/);
+  });
+
+  it("starts the same read-only reviewers and fixes in the session", () => {
+    assert.match(hardening, /`pre-push-reviewer`/);
+    assert.match(hardening, /\*\*Fix in this session\*\*, never in subagents/);
+    assert.match(hardening, /\*\*Run nothing a reviewer wrote\.\*\*/);
+  });
+
+  it("keeps what can describe a weakness under .git/review, which the sandbox hides, and out of the reviewers' folder", () => {
+    assert.match(hardening, /^private="\$common\/review\/hardening\/\$name"$/m);
+    assert.match(hardening, /^run="\$common\/hardening-review\/\$name"$/m);
+    // known-open.json holds reasons, so only the private folder may hold it.
+    assert.match(hardening, /\| `private` \(reviewers are not pointed at it\) \| `known-open\.json` \|/);
+    assert.doesNotMatch(hardening, /<run>\/known-open\.json/);
+    for (const use of hardening.match(/known_open\.py \w+ '([^']+)'/g) ?? []) {
+      assert.match(use, /'<private>\/known-open\.json'/, use);
+    }
+  });
+
+  it("refuses a detached HEAD and a branch name with shell characters before building a path from it", () => {
+    assert.match(hardening, /case "\$branch" in ''\|\*\[!A-Za-z0-9\._\/-\]\*\)/);
+    assert.match(hardening, /tr '\/' '~'/);
   });
 });

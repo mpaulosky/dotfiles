@@ -44,17 +44,23 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
 ## Hardening review
 
 `/hardening-review` is `pre-push-review` with a different middle, for a branch that one review and a round of fixes won't settle. It keeps
-the first three steps (get ready, gate, earlier decisions) and the last two (record, report), the severities, the read-only reviewer
+the first three steps (get ready, gate, earlier decisions; its run folder replaces the `mktemp -d` one) and the last two (record, report), the severities, the read-only reviewer
 and the rules, and replaces the rounds with full passes: every applicable lens over the whole diff each time, `fixes.patch` as a hint to read first. Between a
-pass and the person it runs each Critical finding's example input (reviewers send data, never a command), drops findings the known-open list
-already settles, and puts the rest to the person in numbered batches with a recommendation and an edge-case matrix. Each batch of fixes is committed, then
-`scripts/mutate.py` applies hand-written mutations to it and the tests must catch each. It stops when a pass has no new Critical or Warning
-finding beyond the known-open list, or after 5 passes, and records once, at the end. Its files live in `.git/hardening-review/<branch>/`, so the run
-survives a compaction. Fixes are made in the session, never by subagents. The tests of the two scripts are in this skill's `tests/hardening/`.
+pass and the person it grades the findings, runs each runnable Critical finding's example input (reviewers send data, never a command, and the harness runs in a
+throwaway checkout with a scrubbed environment), holds back findings the known-open list settles (only inside an unchanged range, and listed to the person, never silently),
+and puts the rest to the person in numbered batches with a recommendation and an edge-case matrix. Each batch of fixes is committed, then
+`.claude/skills/hardening-review/scripts/mutate.py` applies hand-written mutations to it and the tests must catch each. It stops when a pass commits no fix
+(after five that did, one more pass only reviews), and records once, at the end. Fixes are made in the session, never by subagents.
+
+Its files live in two folders found again from the branch name after a compaction: `.git/hardening-review/<branch, / as ~>/` for what reviewers read
+(`brief.md`, `state.md`, `decisions.md`, the patches) and `.git/review/hardening/<branch, / as ~>/` for what can describe a weakness (the known-open list
+with its reasons, harness output, mutation specs). The second is under `.git/review/`, so the deny rules and the sandbox mount below cover it.
+The tests of the two scripts are in repo-ci-baseline's own `tests/hardening/` (not shipped to other repos), and `test.sh` runs them.
 
 ## What a sandbox can't see
 
-Ledgers hold accepted security findings, which are never published. Every Sandcastle sandbox gets an empty read-only folder over `.git/review`, at every
+Ledgers hold accepted security findings, which are never published, and so does the hardening review's `.git/review/hardening/`.
+Every Sandcastle sandbox gets an empty read-only folder over `.git/review`, at every
 path a mount puts `.git` (`protectedGitMounts` in `lib/host-safety.mts`, `withCreateMounts` in `lib/skills.mts`).
 
 ## Adapting

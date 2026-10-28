@@ -147,7 +147,7 @@ def match(args):
         whole = entry["start"] == 0
         if entry_file != file or not lenses(entry["lens"]) & lenses(args.lens):
             continue
-        if whole or (args.line > 0 and entry["start"] <= args.line <= entry["end"]):
+        if whole or entry["start"] <= args.line <= entry["end"]:
             covering.append({"id": entry["id"], "changed": changed(args.root, entry)})
     print(json.dumps({"suppressed": any(not entry["changed"] for entry in covering), "entries": covering}, indent=2))
 

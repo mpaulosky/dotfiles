@@ -521,6 +521,100 @@ for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' 'opene
 done
 grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
   || fail "SESSION_REPLY_MARKER in lib/config.mts must be the marker docs/PROCESS.md tells a session to end its replies with"
+# The record-head job of the Owned sandcastle.yml posts the comment lib/follow-up.mts#approvedHeadOf reads, from the label event's head.
+sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
+head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
+[[ -n "$head_marker" ]] || fail "lib/config.mts must export APPROVED_HEAD_MARKER as a one-line string"
+# Only the record-head job's own text is searched, up to the next job (a line at two spaces' indent): the sandcastle job's if: has some of the same clauses.
+record_job="$(sed -n '/^  record-head:$/,$p' "$sandcastle_yml" | sed -n '1p;2,${/^  [A-Za-z_-]*:/q;p}')"
+[[ -n "$record_job" ]] || fail "sandcastle.yml must have a record-head job"
+for needle in "body=\"$head_marker \$HEAD_SHA -->" "github.event_name == 'pull_request_target'" 'github.run_attempt == 1' \
+  "github.event.label.name == 'sandcastle:follow-up'" 'github.event.sender.login == github.repository_owner' \
+  'github.event.pull_request.head.repo.full_name == github.repository' 'permissions: {}' '^[0-9a-f]{40}$' \
+  "repos/\$REPO/pulls/\$PR_NUMBER\" --jq .head.sha" "if [ \"\$current\" != \"\$HEAD_SHA\" ]" 'for attempt in 1 2 3'; do
+  grep -qF -- "$needle" <<<"$record_job" || fail "sandcastle.yml's record-head job must carry '$needle' (the comment's marker, the owner-only, same-repository and first-run guards, no token permissions, the SHA check, the current-head check, the retry)"
+done
+if grep -qE 'uses:|actions/checkout' <<<"$record_job"; then
+  fail "sandcastle.yml's record-head job holds the host token on pull_request_target: it must use no action and check nothing out"
+fi
+if sed -n '/^        run: |$/,$p' <<<"$record_job" | grep -qF "\${{"; then
+  fail "sandcastle.yml's record-head job must pass event data to its script through env, never inline in run:"
+fi
+# The job's script, run for real under env -i with stubs for gh and sleep on PATH: the greps above only see fragments, so an inverted
+# comparison, a dropped exit or a body that approvedHeadOf's regex no longer reads would pass them.
+record_script="$md_tmp/record-head.sh"
+"${yaml_py[@]}" - "$sandcastle_yml" "$record_script" <<'PY' || fail "sandcastle.yml's record-head job must have one step with a run: script"
+import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["jobs"]["record-head"]["steps"]
+assert len(steps) == 1, "record-head must be a single step"
+open(sys.argv[2], "w").write(steps[0]["run"])
+PY
+record_bin="$md_tmp/record-bin"; mkdir -p "$record_bin"
+cat > "$record_bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+cat > "$record_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# Logs "<GET|POST> <endpoint> <GH_TOKEN>" to RECORD_CALLS. A GET prints RECORD_CURRENT, or fails when that is FAIL. A POST appends its body to
+# RECORD_POSTS and fails while RECORD_FAILS has attempts left.
+method=GET; endpoint=
+for arg in "$@"; do [[ $arg == repos/* ]] && endpoint=$arg; done
+[[ " $* " == *" --method POST "* ]] && method=POST
+printf '%s %s %s\n' "$method" "$endpoint" "${GH_TOKEN-}" >> "$RECORD_CALLS"
+if [[ $method == POST ]]; then
+  for arg in "$@"; do [[ $arg == body=* ]] && printf '%s\n--\n' "${arg#body=}" >> "$RECORD_POSTS"; done
+  left="$(<"$RECORD_FAILS")"
+  if (( left > 0 )); then echo $((left - 1)) > "$RECORD_FAILS"; exit 1; fi
+  exit 0
+fi
+[[ $RECORD_CURRENT == FAIL ]] && exit 1
+echo "$RECORD_CURRENT"
+STUB
+chmod +x "$record_bin/gh" "$record_bin/sleep"
+run_record() { # token head current post-failures
+  record_posts="$md_tmp/record-posts"; record_calls="$md_tmp/record-calls"; record_out="$md_tmp/record-out"
+  : > "$record_posts"; : > "$record_calls"; echo "$4" > "$md_tmp/record-fails"; record_rc=0
+  env -i PATH="$record_bin:$PATH" SANDCASTLE_GH_TOKEN="$1" HEAD_SHA="$2" RECORD_CURRENT="$3" PR_NUMBER=7 REPO=o/r \
+    RECORD_POSTS="$record_posts" RECORD_CALLS="$record_calls" RECORD_FAILS="$md_tmp/record-fails" \
+    bash --noprofile --norc -e "$record_script" &>"$record_out" || record_rc=$?
+  record_count="$(grep -c '^--$' "$record_posts" || true)"
+}
+sha_a="$(printf 'a%.0s' {1..40})"; sha_b="$(printf 'b%.0s' {1..40})"
+host_token="host-token-1"
+read_call="GET repos/o/r/pulls/7 $host_token"; post_call="POST repos/o/r/issues/7/comments $host_token"
+run_record "" "$sha_a" "$sha_a" 0
+[[ $record_rc -eq 0 && $record_count -eq 0 && ! -s $record_calls ]] || fail "record-head: no token must warn, call gh not at all and exit 0 (exit $record_rc, posts $record_count)"
+# Each bad head is also the pull request's current head, so only the format check can stop it: it must fail before any call to gh.
+for bad_head in "not-a-sha" "${sha_a^^}" "${sha_a:1}" "${sha_a}a" ""; do
+  run_record "$host_token" "$bad_head" "$bad_head" 0
+  [[ $record_rc -ne 0 && $record_count -eq 0 && ! -s $record_calls ]] \
+    || fail "record-head: a head that isn't 40 lower-case hex ('$bad_head') must fail before any call to gh and post nothing (exit $record_rc, posts $record_count)"
+done
+run_record "$host_token" "$sha_a" "$sha_b" 0
+[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a head that moved since the event must fail and post nothing (exit $record_rc, posts $record_count)"
+run_record "$host_token" "$sha_a" "" 0
+[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: an empty read of the pull request's head must fail and post nothing (exit $record_rc, posts $record_count)"
+run_record "$host_token" "$sha_a" FAIL 0
+[[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a failed read of the pull request's head must fail and post nothing (exit $record_rc, posts $record_count)"
+grep -qF "::error::Couldn't read the pull request's head" "$record_out" \
+  || fail "record-head: a failed read of the pull request's head must say so in an ::error:: line, as the other failures do"
+run_record "$host_token" "$sha_a" "$sha_a" 0
+[[ $record_rc -eq 0 && $record_count -eq 1 ]] || fail "record-head: the event's head must be posted once (exit $record_rc, posts $record_count)"
+[[ "$(<"$record_calls")" == "$read_call"$'\n'"$post_call" ]] \
+  || fail "record-head: it must read repos/o/r/pulls/7 and post to repos/o/r/issues/7/comments, both with SANDCASTLE_GH_TOKEN as GH_TOKEN (calls: $(tr '\n' '|' < "$record_calls"))"
+grep -qE "^$head_marker $sha_a -->\$" <(head -n1 "$record_posts") \
+  || fail "record-head: the comment's first line must be '$head_marker <sha> -->', which lib/follow-up.mts#approvedHeadOf reads"
+run_record "$host_token" "$sha_a" "$sha_a" 2
+[[ $record_rc -eq 0 && $record_count -eq 3 ]] || fail "record-head: two failed posts then a good one must exit 0 after three tries (exit $record_rc, posts $record_count)"
+[[ "$(grep -c '^GET ' "$record_calls")" -eq 1 && "$(grep -c "^$post_call\$" "$record_calls")" -eq 3 ]] \
+  || fail "record-head: it must read the pull request's head once and retry only the post, every try as the host (calls: $(tr '\n' '|' < "$record_calls"))"
+run_record "$host_token" "$sha_a" "$sha_a" 3
+[[ $record_rc -ne 0 && $record_count -eq 3 ]] || fail "record-head: three failed posts must exit non-zero after three tries (exit $record_rc, posts $record_count)"
+grep -A1 '^  pull_request_target:$' "$sandcastle_yml" | grep -qF 'types: [labeled]' \
+  || fail "sandcastle.yml's pull_request_target trigger must be types: [labeled] only"
+grep -A1 '^  pull_request:$' "$sandcastle_yml" | grep -qF 'types: [unlabeled]' \
+  || fail "sandcastle.yml's pull_request trigger must stay unlabeled only: the owner's label is recorded on pull_request_target"
 if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then
   fail "the Seed .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
 fi

@@ -55,6 +55,9 @@ import {
   type TimelineLabelEvent,
   type TimestampedComment,
   updatePullRequestBranch,
+  issueComments,
+  mainMergeOf,
+  type MainMerge,
 } from "./github.mts";
 import { HandBackReport, targetUrl } from "./report.mts";
 
@@ -1020,6 +1023,105 @@ describe("updatePullRequestBranch", () => {
     assert.deepEqual(calls[0]!.args, [
       "api", "--method", "PUT", "repos/o/r/pulls/42/update-branch", "-f", `expected_head_sha=${"a".repeat(40)}`,
     ]);
+  });
+});
+
+describe("issueComments", () => {
+  it("pages through the comments of the issue or PR with their author and time", () => {
+    const { calls, run } = recordingGh([[JSON.stringify({ body: "a", createdAt: "2026-01-01T00:00:00Z", author: "o" }), "", JSON.stringify({ body: "b", createdAt: "2026-01-02T00:00:00Z", author: "p" })].join("\n")]);
+
+    const comments = issueComments(7, run, "o/r");
+
+    assert.deepEqual(comments.map((comment) => comment.body), ["a", "b"]);
+    assert.deepEqual(calls[0]!.args.slice(0, 3), ["api", "--paginate", "repos/o/r/issues/7/comments"]);
+    assert.match(calls[0]!.args.join(" "), /updatedAt: \.updated_at/);
+  });
+});
+
+describe("mainMergeOf", () => {
+  const COMMIT = "b".repeat(40);
+  const FIRST = "a".repeat(40);
+  const SECOND = "c".repeat(40);
+  const TIP = "d".repeat(40);
+  const merge = (overrides: Partial<{ parents: string[]; committer: string | null; author: string | null; verified: boolean }> = {}) =>
+    JSON.stringify({ parents: [FIRST, SECOND], committer: "web-flow", author: "the-host", verified: true, ...overrides });
+
+  // A gh stub: `commit` answers the commit lookup, `tip` main's ref, `status` the compare of the second parent with main's tip.
+  const stub = (commit: string, status = "ahead") => {
+    const calls: string[] = [];
+    const run = ((_cmd: string, args: readonly string[]) => {
+      calls.push(args.join(" "));
+      const path = args[1]!;
+      if (path.includes("/commits/")) return commit;
+      if (path.endsWith("/git/ref/heads/main")) return `${TIP}\n`;
+      if (path.includes("/compare/")) return `${status}\n`;
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    }) as unknown as typeof execFileSync;
+    return { run, calls };
+  };
+  const check = (commit: string, status?: string, host = "the-host") => {
+    const { run, calls } = stub(commit, status);
+    return { result: mainMergeOf(COMMIT, host, run, "o/r"), calls };
+  };
+
+  it("returns the first parent of GitHub's own merge of main, made for the host", () => {
+    assert.deepEqual(check(merge()).result, { firstParent: FIRST });
+  });
+
+  it("compares the second parent with main's tip as a commit, never with the bare name main, which can name a tag", () => {
+    const { calls } = check(merge());
+
+    assert.ok(calls.some((call) => call.includes("git/ref/heads/main")), calls.join("\n"));
+    assert.ok(calls.some((call) => call.includes(`compare/${SECOND}...${TIP}`)), calls.join("\n"));
+    assert.ok(!calls.some((call) => call.includes("...main")), calls.join("\n"));
+  });
+
+  it("looks the commit up by its hash", () => {
+    assert.ok(check(merge()).calls[0]!.includes(`repos/o/r/commits/${COMMIT}`));
+  });
+
+  it("accepts a second parent that is main's own tip", () => {
+    assert.deepEqual(check(merge(), "identical").result, { firstParent: FIRST });
+  });
+
+  it("matches the host's login whatever its case", () => {
+    assert.deepEqual(check(merge({ author: "The-Host" })).result, { firstParent: FIRST });
+  });
+
+  for (const [what, commit, status] of [
+    ["a commit someone else committed", merge({ committer: "a-collaborator" }), "ahead"],
+    ["a commit with no committer account", merge({ committer: null }), "ahead"],
+    ["a commit GitHub didn't verify", merge({ verified: false }), "ahead"],
+    ["a merge made for someone else, such as through the web conflict editor", merge({ author: "a-collaborator" }), "ahead"],
+    ["a merge with no author account", merge({ author: null }), "ahead"],
+    ["a commit with one parent, such as a push on top of the head", merge({ parents: [FIRST] }), "ahead"],
+    ["a commit with three parents", merge({ parents: [FIRST, SECOND, TIP] }), "ahead"],
+    ["a commit with no parents", merge({ parents: [] }), "ahead"],
+    ["a merge of something main doesn't contain", merge(), "diverged"],
+    ["a merge of something main is behind", merge(), "behind"],
+  ] as const) {
+    it(`refuses ${what}`, () => {
+      const result: MainMerge = check(commit, status).result;
+
+      assert.ok("problem" in result, JSON.stringify(result));
+    });
+  }
+
+  it("names the short hash and the reason in a problem", () => {
+    assert.deepEqual(check(merge({ verified: false })).result, { problem: `${COMMIT.slice(0, 7)} isn't a commit GitHub made and signed itself` });
+    assert.deepEqual(check(merge({ author: "a-collaborator" })).result, { problem: `${COMMIT.slice(0, 7)} wasn't made for the-host` });
+  });
+
+  it("makes no more calls than it needs for a commit it refuses early", () => {
+    assert.equal(check(merge({ committer: "a-collaborator" })).calls.length, 1);
+  });
+
+  it("lets a failed lookup through", () => {
+    const run = (() => {
+      throw new Error("HTTP 404");
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => mainMergeOf(COMMIT, "the-host", run, "o/r"));
   });
 });
 

@@ -523,6 +523,38 @@ export function updatePullRequestBranch(
   ghWithStderr(run, ["api", "--method", "PUT", `repos/${repo}/pulls/${number}/update-branch`, "-f", `expected_head_sha=${expectedHeadSha}`]);
 }
 
+// What mainMergeOf found: the first parent of a merge GitHub made of main into a branch the host updated, or why the commit is not one.
+export type MainMerge = { firstParent: string } | { problem: string };
+
+// Whether `commit` is GitHub's own merge of main into a branch, made for the host: committed by web-flow with a signature GitHub
+// verified, authored by `host` (a merge someone else makes, through the web conflict editor or the merges API, carries their
+// login, and so does one built by hand, which can't be signed as web-flow), with two parents, the second a commit main
+// contains. Main's tip is read as a commit first, since a bare `main` in the compare API can resolve to a tag. Used by
+// lib/follow-up.mts#handOffApproval to accept the heads that update-branch makes under the host's login: PR Auto-Merge's when its RELEASE_PR_PAT is the host's account, and the
+// owner's Update branch click when the owner is the host. A merge under any other login, or by GITHUB_TOKEN, is refused.
+export function mainMergeOf(
+  commit: string,
+  host: string,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): MainMerge {
+  const info = JSON.parse(
+    ghWithStderr(run, [
+      "api", `repos/${repo}/commits/${commit}`,
+      "--jq", "{parents: [.parents[].sha], committer: .committer.login, author: .author.login, verified: .commit.verification.verified}",
+    ]),
+  ) as { parents: string[]; committer: string | null; author: string | null; verified: boolean };
+  const short = commit.slice(0, 7);
+  if (info.committer !== "web-flow" || info.verified !== true) return { problem: `${short} isn't a commit GitHub made and signed itself` };
+  if (info.author === null || info.author.toLowerCase() !== host.toLowerCase()) return { problem: `${short} wasn't made for ${host}` };
+  const [first, second] = info.parents;
+  if (info.parents.length !== 2 || first === undefined || second === undefined) return { problem: `${short} isn't a merge` };
+  const tip = ghWithStderr(run, ["api", `repos/${repo}/git/ref/heads/main`, "--jq", ".object.sha"]).trim();
+  const status = ghWithStderr(run, ["api", `repos/${repo}/compare/${second}...${tip}`, "--jq", ".status"]).trim();
+  if (status !== "ahead" && status !== "identical") return { problem: `${short} merges ${second.slice(0, 7)}, which main doesn't contain` };
+  return { firstParent: first };
+}
+
 // One comment in a review thread, first comment first (lib/github.mts#reviewThreadsOf).
 // byBot: whether its author.__typename is "Bot".
 export type ThreadComment = { author: string | null; byBot: boolean; body: string; url: string };
@@ -800,9 +832,9 @@ export function resolveReviewThread(threadId: string, run: typeof execFileSync =
   ghWithStderr(run, ["api", "graphql", "-f", `query=${mutation}`, "-f", `threadId=${threadId}`]);
 }
 
-// Posts the follow-up pass's summary comment on a pull request
-// (lib/follow-up-pass.mts#runPass#passSummaryComment), through gh pr comment,
-// with the body on stdin.
+// Posts a comment on a pull request through gh pr comment, with the body on stdin: the follow-up pass's summary
+// (lib/follow-up-pass.mts#runPass#passSummaryComment) and the record of an approved head (lib/follow-up.mts#recordApprovedHead).
+// It posts as the signed-in login, the host's, and handOffApproval trusts a record only from that login.
 export function commentOnPullRequest(
   number: number,
   body: string,
@@ -1261,7 +1293,9 @@ function isContentEdit(value: unknown): value is ContentEdit {
 
 // One comment, with when it was posted, so markerCommentsSince can tell
 // which side of a label's removal it falls on, and who posted it.
-export type TimestampedComment = { body: string; createdAt: string; author: string };
+// `updatedAt` is when the comment was last edited (GitHub sets it to the creation time for one never edited). Only issueComments fills it in,
+// and lib/follow-up.mts#handOffApproval counts a head record only when it equals createdAt, so a comment without it counts for no record.
+export type TimestampedComment = { body: string; createdAt: string; updatedAt?: string; author: string };
 
 // The comments in `comments` that `poster` posted and that carry `marker`,
 // posted after `label` was last removed from this issue or PR (its most
@@ -1339,15 +1373,20 @@ export function markerComments(
   run: typeof execFileSync = execFileSync,
   poster: string = (signedInLogin ??= hostLogin(run)),
 ): TimestampedComment[] {
-  const comments = jsonLines(
-    ghWithStderr(run, [
-      "api", "--paginate", `repos/${repo}/issues/${number}/comments`,
-      "--jq", ".[] | {body, createdAt: .created_at, author: .user.login} | @json",
-    ]),
-  ) as TimestampedComment[];
+  const comments = issueComments(number, run, repo);
   const timeline = labelTimeline(number, run, repo);
   const createdAt = ghWithStderr(run, ["api", `repos/${repo}/issues/${number}`, "--jq", ".created_at"]).trim();
   return markerCommentsSince(comments, timeline, label, marker, createdAt, poster);
+}
+
+// Every comment on the issue or PR `number`, oldest first (PRs share the issues API).
+export function issueComments(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): TimestampedComment[] {
+  return jsonLines(
+    ghWithStderr(run, [
+      "api", "--paginate", `repos/${repo}/issues/${number}/comments`,
+      "--jq", ".[] | {body, createdAt: .created_at, updatedAt: .updated_at, author: .user.login} | @json",
+    ]),
+  ) as TimestampedComment[];
 }
 
 // A label only the host or a human applies to hand work back: the issue's or

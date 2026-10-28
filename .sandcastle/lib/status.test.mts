@@ -833,7 +833,7 @@ describe("terminalText", () => {
     "an unassigned default-ignorable code point": "\u2065",
     "a noncharacter": "\uffff",
     "a supplementary private-use code point": "\u{F0000}",
-    "the last code point": "\u{10FFFF}",
+    "the last private-use code point": "\u{10FFFD}",
     "a Hangul filler": "\u3164",
     "a halfwidth Hangul filler": "\uffa0",
     "a Braille blank": "\u2800",
@@ -894,7 +894,7 @@ describe("terminalText", () => {
 
   it("reads only the letter and its marks right before a joiner: a longer run of marks drops it", () => {
     const marks = "\u064e".repeat(20);
-    assert.equal(terminalText(`\u0645${marks}\u200c\u0646`), `\u0645${marks}\u0646`);
+    assert.equal(terminalText(`\u0645${marks}\u200c\u0646`), `\u0645${"\u064e".repeat(3)}\u0646`);
   });
 
   it("keeps at most a few joiners in one text, however many there are", () => {
@@ -924,6 +924,16 @@ describe("terminalText", () => {
     assert.equal(terminalText("a\u200c 1"), "a 1");
     assert.equal(terminalText("x\ufe0f"), "x");
     assert.equal(terminalText("\u{1F468}\ufe00"), "\u{1F468}");
+  });
+
+  it("keeps at most a few private-use or unassigned code points in one text, and a few combining marks in a row", () => {
+    const odd = terminalText("\ue000".repeat(20));
+    const marks = terminalText(`e${"\u0301".repeat(10)}x`);
+
+    assert.equal(odd, "\ue000".repeat(8));
+    assert.equal(marks, `e${"\u0301".repeat(3)}x`);
+    assert.equal(terminalText(odd), odd);
+    assert.equal(terminalText(marks), marks);
   });
 
   it("keeps a private-use or unassigned code point, which draws a glyph or a box, and drops a noncharacter", () => {

@@ -323,24 +323,34 @@ const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 // draws as a blank, and code point of the supplementary private-use planes is dropped. Nothing in it can overwrite a line of the report
 // or fake one. Three joiners keep their place where they do the work they are for: a zero-width joiner between two pictographs (an emoji
 // sequence, with a skin tone or an emoji's variation selector in it), that variation selector right after a pictograph, and a zero-width
-// non-joiner between two letters of a script that uses it (Arabic, for Persian, and the Indic scripts). Anywhere else they are dropped,
-// and at most MAX_KEPT_JOINERS survive in one text, so a few invisible bits are all that can ride on them. Keycap and flag-tag emoji
-// sequences fall apart. A private-use code point of the Basic Multilingual Plane (an icon-font glyph) or an unassigned one draws a glyph
-// or a box, so it stays.
+// non-joiner between two letters of a script that uses it (Arabic, for Persian, and the Indic scripts; a zero-width joiner between two
+// letters is dropped, so a conjunct such as Sinhala's "Sri" loses it). Anywhere else they are dropped, and at most MAX_KEPT_JOINERS
+// survive in one text. What may still draw as nothing is capped too: at most MAX_KEPT_ODD private-use (an icon-font glyph) or unassigned
+// code points, and no more than MAX_MARKS combining marks in a row. So a few invisible bits are all that can ride on one text. Keycap and
+// flag-tag emoji sequences fall apart.
 export function terminalText(text: string): string {
   let kept = 0;
-  return text
-    // Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
-    .replace(/[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu, " ")
-    .replace(HIDDEN_CHARACTERS, (character, offset: number, whole: string) => {
-      const keep = kept < MAX_KEPT_JOINERS && keptJoiner(character, whole.slice(Math.max(0, offset - JOINER_LOOKBEHIND), offset), whole.slice(offset + character.length, offset + 3));
-      if (keep) kept += 1;
-      return keep ? character : "";
-    })
-    // Dropping a character can leave the spaces on either side of it side by side.
-    .replace(/ {2,}/g, " ")
-    .trim();
+  let odd = 0;
+  return (
+    text
+      // Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
+      .replace(/[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu, " ")
+      .replace(HIDDEN_CHARACTERS, (character, offset: number, whole: string) => {
+        const keep = kept < MAX_KEPT_JOINERS && keptJoiner(character, whole.slice(Math.max(0, offset - JOINER_LOOKBEHIND), offset), whole.slice(offset + character.length, offset + 3));
+        if (keep) kept += 1;
+        return keep ? character : "";
+      })
+      .replace(/[\p{Co}\p{Cn}]/gu, (character) => ((odd += 1) <= MAX_KEPT_ODD ? character : ""))
+      .replace(new RegExp(`(\\p{M}{${MAX_MARKS}})\\p{M}+`, "gu"), "$1")
+      // Dropping a character can leave the spaces on either side of it side by side.
+      .replace(/ {2,}/g, " ")
+      .trim()
+  );
 }
+
+// The most private-use or unassigned code points, and the most combining marks in a row, one text keeps.
+const MAX_KEPT_ODD = 8;
+const MAX_MARKS = 3;
 
 const HIDDEN_CHARACTERS =
   /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0\u{F0000}-\u{10FFFF}]/gu;

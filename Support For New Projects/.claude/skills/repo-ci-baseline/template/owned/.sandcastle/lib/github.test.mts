@@ -64,6 +64,7 @@ import {
   type MainMerge,
 } from "./github.mts";
 import { HandBackReport, targetUrl } from "./report.mts";
+import { isGitHubServerError } from "./build.mts";
 
 describe("ownerApproved", () => {
   // An issue carrying `comments`, each an [author, body] pair.
@@ -336,12 +337,31 @@ describe("readRepoName", () => {
   });
 
   it("names why gh couldn't run when it printed no stderr, and keeps the original error as the cause", () => {
-    const original = new Error("spawnSync gh ENOENT");
+    const original = Object.assign(new Error("spawnSync gh ENOENT"), { code: "ENOENT" });
     const run = (() => {
       throw original;
     }) as unknown as typeof execFileSync;
 
-    assert.throws(() => readRepoName(run), (error: Error) => error.message === "gh repo view failed:\nspawnSync gh ENOENT" && error.cause === original);
+    assert.throws(() => readRepoName(run), (error: Error) => error.message === "gh repo view failed:\ngh couldn't run (ENOENT)" && error.cause === original);
+  });
+
+  it("never puts the command line in the message when gh printed nothing: a title in it could pass for gh's own output", () => {
+    const commandLine = "Command failed: gh pr create --repo o/r --title Fix Internal Server Error page --body-file -";
+    const exited = Object.assign(new Error(commandLine), { status: 1, stderr: "  \n" });
+    const killed = Object.assign(new Error(commandLine), { signal: "SIGKILL", stderr: "" });
+    const odd = "not an error";
+
+    for (const [thrown, expected] of [
+      [exited, "gh exited with status 1 and printed nothing"],
+      [killed, "gh was killed by SIGKILL"],
+      [odd, "gh failed and printed nothing"],
+    ] as const) {
+      const run = (() => {
+        throw thrown;
+      }) as unknown as typeof execFileSync;
+
+      assert.throws(() => readRepoName(run), (error: Error) => error.message === `gh repo view failed:\n${expected}` && !isGitHubServerError(error));
+    }
   });
 
   it("throws when gh prints no name", () => {

@@ -242,6 +242,14 @@ function openSameRepositoryPullRequests(...filters: string[]): OpenPullRequest[]
 // name doesn't count.
 // Run gh with its stderr captured, and throw with that stderr in the message,
 // so a caller can say why it failed.
+function whyGhStopped(error: unknown): string {
+  const { code, signal, status } = (error ?? {}) as { code?: unknown; signal?: unknown; status?: unknown };
+  if (typeof code === "string") return `gh couldn't run (${code})`;
+  if (typeof signal === "string") return `gh was killed by ${signal}`;
+  if (typeof status === "number") return `gh exited with status ${status} and printed nothing`;
+  return "gh failed and printed nothing";
+}
+
 function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, maxBuffer?: number): string {
   try {
     return run("gh", args, {
@@ -253,8 +261,9 @@ function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, 
     });
   } catch (error) {
     const stderr = (error as { stderr?: unknown }).stderr;
-    // gh's own text when it printed some; else why it couldn't run (not installed, killed).
-    const detail = (typeof stderr === "string" ? stderr.trim() : "") || (error instanceof Error ? error.message : String(error));
+    // gh's own text when it printed some; else why it stopped, from the error's own fields: its message holds the whole command line,
+    // which quotes titles and branch names (build.mts's commandOutput reads what follows "failed:" for that reason).
+    const detail = (typeof stderr === "string" ? stderr.trim() : "") || whyGhStopped(error);
     throw new Error(`gh ${args.slice(0, 2).join(" ")} failed:\n${detail}`, { cause: error });
   }
 }

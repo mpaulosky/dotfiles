@@ -370,10 +370,12 @@ OWNED = (
     "scripts/check-git-hooks.sh",
     "scripts/review.sh",
     "scripts/sync-copilot-review.sh",
+    "scripts/watch-pr.sh",
     "scripts/tests/check-branch-name.test.sh",
     "scripts/tests/check-pr-title.test.sh",
     "scripts/tests/check-git-hooks.test.sh",
     "scripts/tests/sync-copilot-review.test.sh",
+    "scripts/tests/watch-pr.test.sh",
     ".claude/skills/pre-push-review/",
     ".claude/skills/hardening-review/",
 )

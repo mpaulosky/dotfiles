@@ -18,6 +18,8 @@ other repo copies (see its `SKILL.md` and `CONTEXT.md`).
 
 ## Commands
 
+After opening a PR, run `scripts/watch-pr.sh <pr>` in the background and act on what it prints ([`watch-pr.md`](<Support For New Projects/.claude/skills/repo-ci-baseline/references/watch-pr.md>)).
+
 The repo uses pnpm (pinned by `packageManager` in `package.json`); npm is refused. Run `pnpm install` after changing `package.json`, and
 commit `pnpm-lock.yaml` with the change.
 

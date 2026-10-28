@@ -131,6 +131,7 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".github/hooks/post-checkout",
   "scripts/check-branch-name.sh",
   "scripts/review.sh",
+  "scripts/watch-pr.sh",
   ".claude/agents/pre-push-reviewer.md",
   ".claude/skills/pre-push-review/SKILL.md",
   ".claude/skills/pre-push-review/lenses.md",

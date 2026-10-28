@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { createCheckedSandbox } from "./build.mts";
-import { BUILDING_LABEL, FOLLOW_UP_MARKER, FOLLOW_UP_PASS_CAP, FOLLOW_UP_REPLY_MARKER, SESSION_REPLY_MARKER } from "./config.mts";
+import {
+  BUILDING_LABEL,
+  FOLLOW_UP_MARKER,
+  FOLLOW_UP_PASS_CAP,
+  FOLLOW_UP_REPLY_MARKER,
+  GIVE_UP_MARKER,
+  SESSION_REPLY_MARKER,
+  WORKTREE_TAMPERED_MARKER,
+} from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
@@ -572,6 +580,25 @@ describe("giveUpComment", () => {
 
   it("names how to re-queue the PR", () => {
     assert.match(giveUpComment("a conflict couldn't be resolved", undefined), /sandcastle:needs-human/);
+  });
+
+  // The PR comment is posted under the owner's token, so scripts/watch-pr.sh skips it only by this first line.
+  it("opens with GIVE_UP_MARKER on a line of its own, so the PR watcher skips it", () => {
+    const comment = giveUpComment("a conflict couldn't be resolved", "FAIL");
+
+    assert.equal(comment.split("\n")[0], GIVE_UP_MARKER);
+  });
+
+  it("keeps GIVE_UP_MARKER when the comment is cut to GitHub's limit", () => {
+    const comment = giveUpComment("the gate is red", "x".repeat(400_000));
+
+    assert.ok(comment.startsWith(`${GIVE_UP_MARKER}\n`));
+  });
+
+  it("keeps the text it had before the marker, after the marker line", () => {
+    const comment = giveUpComment("a conflict couldn't be resolved", undefined);
+
+    assert.match(comment.split("\n").slice(1).join("\n"), /^Sandcastle stopped its follow-up passes on this PR: a conflict/);
   });
 });
 
@@ -1244,6 +1271,20 @@ describe("runPass", () => {
     assert.equal(outcome.kind, "gave-up");
     assert.ok(calls.commentOnPullRequest.some((c) => /no longer points at this repository/.test(c.body)));
     assert.equal(calls.handBack.length, 1);
+  });
+
+  it("opens the tampered-worktree PR comment with WORKTREE_TAMPERED_MARKER, so the PR watcher skips it", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => {
+      throw new TamperedWorktreeError("setting the identity failed; left /work/tree in place", "/work/tree");
+    };
+
+    await runPass(passTarget(), issue, BASE, passHost);
+
+    const comment = calls.commentOnPullRequest.find((c) => /no longer points at this repository/.test(c.body));
+    assert.ok(comment, "the tampered-worktree comment was posted");
+    assert.equal(comment.body.split("\n")[0], WORKTREE_TAMPERED_MARKER);
+    assert.match(comment.body.split("\n").slice(1).join("\n"), /^Sandcastle stopped: the worktree for /);
   });
 
   it("skips a PR that needs no merge and has no thread for the role, without creating a sandbox", async () => {

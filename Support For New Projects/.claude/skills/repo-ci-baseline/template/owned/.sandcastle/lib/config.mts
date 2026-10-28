@@ -380,6 +380,14 @@ export const FOLLOW_UP_MARKER = "<!-- sandcastle:follow-up -->";
 // so an author check alone can't tell the two apart.
 export const FOLLOW_UP_REPLY_MARKER = "<!-- sandcastle:follow-up-reply -->";
 
+// Marks the PR comment the host posts when the follow-up passes give up on a PR. Sandcastle posts under the owner's token, so
+// without a marker the comment would wake `scripts/watch-pr.sh` for nothing; the watcher skips every comment that starts with one.
+export const GIVE_UP_MARKER = "<!-- sandcastle:give-up -->";
+
+// Marks the PR comment the host posts when a worktree was left in place because it no longer points at this repository, for the
+// same reason as GIVE_UP_MARKER.
+export const WORKTREE_TAMPERED_MARKER = "<!-- sandcastle:worktree-tampered -->";
+
 // Passes per PR, counted by FOLLOW_UP_MARKER comments since
 // sandcastle:needs-human was last removed from it (lib/follow-up-pass.mts,
 // "Giving up" in Blazor-Server's docs/plans/sandcastle-workflow.md).

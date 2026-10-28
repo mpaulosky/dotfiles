@@ -35,7 +35,8 @@ def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=Fa
         "reviews": {"nodes": [{"author": {"login": review[0]},
                                "commit": {"oid": review[1], "parents": {"totalCount": 2 if review[3:] == ("merge",) else 1}},
                                "body": review[2] if len(review) > 2 else ""} for review in reviews]},
-        "reviewThreads": {"nodes": [{"isResolved": resolved} for resolved in threads]},
+        # A thread is True/False (resolved or not) or a full reviewThreads node.
+        "reviewThreads": {"nodes": [{"isResolved": thread} if isinstance(thread, bool) else thread for thread in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
                                           if contexts else None}}]},
     }
@@ -323,6 +324,47 @@ def test_dry_run_prints_the_calls_and_makes_none():
     assert fake.calls == [] and fake.read_back == []
     lander.poll()
     assert printed(out) == ""
+
+
+# ── Resolved bot threads nobody replied to ──────────────────────────────────
+
+def bot_thread(replies=()):
+    """A resolved Copilot thread at src/a.py:12, then one reply per login."""
+    comments = [{"url": "u1", "author": {"login": "copilot-pull-request-reviewer", "__typename": "Bot"},
+                 "pullRequestReview": {"body": ""}}]
+    comments += [{"url": "u2", "author": {"login": login, "__typename": "User"}, "pullRequestReview": None}
+                 for login in replies]
+    return {"isResolved": True, "path": "src/a.py", "line": 12, "originalLine": 12,
+            "comments": {"totalCount": len(comments), "nodes": comments}}
+
+
+def test_the_line_lists_a_resolved_bot_thread_with_no_reply():
+    fake = Fake({"o/app": [node(reviews=COPILOT, threads=[bot_thread()])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    text = printed(out)
+    assert text.count("\n") == 1 and text.rstrip("\n").endswith("notice: resolved without a reply: src/a.py:12")
+    assert "-> leave to PR Auto-Merge" in text
+
+
+def test_a_poll_reprints_the_line_when_only_the_unreplied_threads_change_and_makes_no_call():
+    fake = Fake({"o/app": [node(reviews=COPILOT, threads=[bot_thread()])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    printed(out)
+    lander.poll()
+    assert printed(out) == ""
+    # Someone replies: the notice goes, and that is a change worth a line.
+    fake.open["o/app"] = [node(reviews=COPILOT, threads=[bot_thread(replies=["octo"])])]
+    lander.poll()
+    text = printed(out)
+    assert text.count("\n") == 1 and "notice" not in text and "-> leave to PR Auto-Merge" in text
+    # A thread resolved without a reply appears: another line, with the same action and no gh call.
+    fake.open["o/app"] = [node(reviews=COPILOT, threads=[bot_thread(replies=["octo"]), bot_thread()])]
+    lander.poll()
+    text = printed(out)
+    assert text.count("\n") == 1 and "notice: resolved without a reply: src/a.py:12" in text
+    assert fake.calls == []
 
 
 # ── Change-only output ──────────────────────────────────────────────────────

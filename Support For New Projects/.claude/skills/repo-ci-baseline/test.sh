@@ -525,6 +525,11 @@ for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' 'opene
 done
 grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
   || fail "SESSION_REPLY_MARKER in lib/config.mts must be the marker docs/PROCESS.md tells a session to end its replies with"
+# A fixed Copilot or Claude thread's reply names the fixing commit (mpaulosky/dotfiles#328); PR Auto-Merge and status.sh flag a resolved bot thread with no reply.
+grep -qF -- 'short SHA' "$owned/docs/PROCESS.md" \
+  || fail "docs/PROCESS.md must tell a session that the reply to a fixed review thread names the fixing commit by its short SHA"
+grep -qF -- 'resolved without a reply' "$owned/docs/PROCESS.md" \
+  || fail "docs/PROCESS.md must say a bot thread resolved without a reply is flagged ('resolved without a reply')"
 # The record-head job of the Owned sandcastle.yml posts the comment lib/follow-up.mts#approvedHeadOf reads, from the label event's head.
 sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
 head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"

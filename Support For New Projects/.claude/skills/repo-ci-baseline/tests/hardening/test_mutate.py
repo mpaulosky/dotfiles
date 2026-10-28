@@ -122,7 +122,7 @@ def test_refuses_a_path_outside_the_root(tmp_path):
     (tmp_path / "outside.py").write_text("a = 1\n", encoding="utf-8")
     result = run(root, spec([{"path": "../outside.py", "old": "1", "new": "2", "why": "w"}]))
     assert result.returncode == 2
-    assert "outside" in result.stderr
+    assert "is outside" in result.stderr
     assert (tmp_path / "outside.py").read_text(encoding="utf-8") == "a = 1\n"
 
 

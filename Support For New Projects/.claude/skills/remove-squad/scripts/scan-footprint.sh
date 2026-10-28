@@ -10,6 +10,8 @@ cd "$root"
 url="$(git remote get-url upstream 2>/dev/null || git remote get-url origin 2>/dev/null || true)"
 repo="${GITHUB_REPOSITORY:-${url%.git}}"
 repo="${repo#*github.com[:/]}"
+# Anything but OWNER/REPO (an SSH host alias, a GHES host, a port) can't tell gh its repository.
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || repo=""
 
 section() { printf '\n== %s ==\n' "$1"; }
 
@@ -51,14 +53,20 @@ git branch -a --format='%(refname:short)' | grep -iE "(^|/)(${term}|sprint)/" ||
 
 section "Issue-tracker labels"
 if [ -z "$repo" ]; then
-  echo "(no git remote; check labels by hand)"
+  echo "(couldn't read OWNER/REPO from the remote; check labels by hand)"
 elif command -v gh >/dev/null 2>&1; then # gh-repo: ok
-  GH_REPO="${repo:?}" gh label list --limit 500 --json name --jq '.[].name' 2>/dev/null | grep -i "$term" || echo "(none)"
-  echo "-- open issues/PRs carrying those labels --"
-  GH_REPO="${repo:?}" gh label list --limit 500 --json name --jq '.[].name' 2>/dev/null | grep -i "$term" | while read -r l; do
-    n="$(GH_REPO="${repo:?}" gh issue list --state open --label "$l" --json number --jq 'length' 2>/dev/null || echo '?')"
-    echo "$l: $n open"
-  done
+  if labels="$(GH_REPO="${repo:?}" gh label list --limit 500 --json name --jq '.[].name')"; then
+    matching="$(grep -i "$term" <<<"$labels" || true)"
+    echo "${matching:-(none)}"
+    echo "-- open issues/PRs carrying those labels --"
+    while IFS= read -r l; do
+      [ -n "$l" ] || continue
+      n="$(GH_REPO="${repo:?}" gh issue list --state open --label "$l" --json number --jq 'length' 2>/dev/null || echo '?')"
+      echo "$l: $n open"
+    done <<<"$matching"
+  else
+    echo "(gh couldn't list the labels of $repo; check labels by hand)"
+  fi
 else
   echo "(gh not installed; check labels by hand)" # gh-repo: ok
 fi

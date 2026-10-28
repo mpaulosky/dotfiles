@@ -95,7 +95,7 @@ if [[ ! "$repo" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]]; then
   echo "watch-pr: can't tell which repository to watch: set GITHUB_REPOSITORY or add an upstream or origin remote" >&2
   exit 2
 fi
-export GH_REPO="$repo"
+export GH_REPO="${repo:?}"
 
 common_dir="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
 seen_file="$common_dir/watch-pr-$pr.seen"

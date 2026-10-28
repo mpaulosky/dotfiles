@@ -411,9 +411,10 @@ function rerunLog(pr: number, names: readonly string[], host: PassHost, log: (li
 }
 
 // The PR hand-back comment for a pass that gave up (runPass's step 4, 9, 10,
-// 11): GIVE_UP_MARKER on a line of its own (so scripts/watch-pr.sh skips it), why, then the tail of the last gate output or the role's error (when
-// given) in a fence longer than any backtick run in it, and how to re-queue
-// the PR (remove sandcastle:needs-human).
+// 11): GIVE_UP_MARKER on a line of its own (so scripts/watch-pr.sh skips it),
+// why, then the tail of the last gate output or the role's error (when given)
+// in a fence longer than any backtick run in it, and how to re-queue the PR
+// (remove sandcastle:needs-human).
 export function giveUpComment(reason: string, output: string | undefined): string {
   const parts = [
     `Sandcastle stopped its follow-up passes on this PR: ${reason}. It's labelled \`sandcastle:needs-human\` until a person ` +
@@ -888,7 +889,8 @@ function planPass(
 // What the PR is told when a worktree was left in place, with its sandbox,
 // because it no longer points at this repository, under WORKTREE_TAMPERED_MARKER.
 const tamperedWorktreeComment = (branch: string) =>
-  `${WORKTREE_TAMPERED_MARKER}\nSandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
+  `${WORKTREE_TAMPERED_MARKER}\n` +
+  `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
   "person to look at. Don't run git in it.";
 
 // Hands the PR back with sandcastle:needs-human (see giveUpComment), quoting

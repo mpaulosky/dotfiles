@@ -195,7 +195,7 @@ def test_untold_reads_a_script_that_isnt_utf8(tmp_path):
     assert found == [f"{path}:2: gh pr view 1"]
 
 
-def test_untold_skips_a_binary_file(tmp_path):
+def test_untold_reads_a_file_with_a_nul_byte_as_bash_does_with_the_nul_removed(tmp_path):
     # Arrange
     path = tmp_path / "blob"
     path.write_bytes(b"\x00\x01gh pr view\n")
@@ -204,7 +204,7 @@ def test_untold_skips_a_binary_file(tmp_path):
     found = check_gh_repo.untold(path)
 
     # Assert
-    assert found == []
+    assert found == [f"{path}:1: \x01gh pr view"]
 
 
 def test_main_fails_when_a_script_under_the_root_isnt_told(tmp_path, capsys):
@@ -321,9 +321,9 @@ def test_check_repo_checks_an_extensionless_script_with_a_shell_shebang(tmp_path
     "#!/usr/bin/env node\n" + UNTOLD,
     UNTOLD,
 ])
-def test_check_repo_skips_an_extensionless_file_that_isnt_a_shell_script(tmp_path, content):
+def test_check_repo_skips_an_extensionless_skill_file_that_isnt_a_shell_script(tmp_path, content):
     # Arrange, Act
-    found = repo_check(tmp_path, {"scripts/tool": content})
+    found = repo_check(tmp_path, {".claude/skills/mine/tool": content})
 
     # Assert
     assert found == []
@@ -338,12 +338,12 @@ def test_check_repo_skips_files_that_arent_shell_or_markdown(tmp_path, name):
     assert found == []
 
 
-def test_check_repo_skips_a_binary_file(tmp_path):
+def test_check_repo_checks_a_file_with_a_nul_byte_as_bash_reads_it(tmp_path):
     # Arrange, Act
     found = repo_check(tmp_path, {"scripts/blob.sh": b"\x00\x01gh pr view\n"})
 
     # Assert
-    assert found == []
+    assert found == ["scripts/blob.sh:1: \x01gh pr view"]
 
 
 @pytest.mark.parametrize("name", ["src/x.sh", "docs/x.md", ".github/other/x.sh", ".github/workflows/x.sh", "x.sh",
@@ -376,8 +376,9 @@ def test_check_repo_doesnt_follow_a_symlink_out_of_the_repo(tmp_path):
     # Act
     found = check_gh_repo.check_repo(repo)
 
-    # Assert
-    assert found == []
+    # Assert: refused (mpaulosky/dotfiles#344 R60), and what is outside the root is not read into the report.
+    assert sorted(entry.split(":")[0] for entry in found) == ["scripts/link.sh", "scripts/linked"]
+    assert not any("gh pr view" in entry for entry in found)
 
 
 def test_check_repo_passes_a_repo_without_any_folder_in_scope(tmp_path):
@@ -652,7 +653,7 @@ def test_untold_markdown_reads_a_file_that_isnt_utf8(tmp_path):
     assert found == [f"{path}:3: gh pr view 1"]
 
 
-def test_untold_markdown_skips_a_binary_file(tmp_path):
+def test_untold_markdown_reads_a_file_with_a_nul_byte_with_the_nul_removed(tmp_path):
     # Arrange
     path = tmp_path / "SKILL.md"
     path.write_bytes(b"\x00```\ngh pr view 1\n```\n")
@@ -661,7 +662,7 @@ def test_untold_markdown_skips_a_binary_file(tmp_path):
     found = check_gh_repo.untold_markdown(path)
 
     # Assert
-    assert found == []
+    assert found == [f"{path}:2: gh pr view 1"]
 
 
 def test_check_repo_checks_skills_line_by_line_but_scripts_with_their_export(tmp_path):
@@ -887,9 +888,9 @@ def test_untold_markdown_still_refuses_the_next_line_after_a_marked_one(tmp_path
 
 # R50: an extensionless file with no shebang is skipped even when it holds a gh line (the empty file it replaces had none to find).
 @pytest.mark.parametrize("content", ["\n" + UNTOLD, "# notes\n" + UNTOLD, " #!/bin/bash\n" + UNTOLD])
-def test_check_repo_skips_an_extensionless_file_without_a_shell_shebang_that_holds_a_gh_line(tmp_path, content):
+def test_check_repo_skips_an_extensionless_skill_file_without_a_shell_shebang_that_holds_a_gh_line(tmp_path, content):
     # Arrange, Act
-    found = repo_check(tmp_path, {"scripts/tool": content})
+    found = repo_check(tmp_path, {".claude/skills/mine/tool": content})
 
     # Assert
     assert found == []
@@ -1433,3 +1434,469 @@ def test_gotchas_md_holds_the_rules_the_docstring_used_to(rule):
 
     # Act, Assert
     assert re.search(rule, text)
+
+
+# --- mpaulosky/dotfiles#344: hardening of the checker ---
+
+# R49: a wrapper that drops or unsets GH_REPO before gh runs hides gh from the export.
+@pytest.mark.parametrize("command", [
+    "sudo gh pr view 1",
+    "su -c 'gh pr view 1' bob",
+    "ssh host gh pr view 1",
+    "env -i gh pr view 1",
+    "env -u GH_REPO gh pr view 1",
+    "env -S 'gh pr view 1'",
+    "doas gh pr view 1",
+    "runuser -l bob -c 'gh pr view 1'",
+    "pkexec gh pr view 1",
+    "env --ignore-environment gh pr view 1",
+    "env --unset=GH_REPO gh pr view 1",
+    "true && sudo gh pr view 1",
+    "sudo -u bob gh pr view 1",
+    "ssh -o BatchMode=yes host 'gh pr view 1'",
+])
+def test_untold_refuses_a_gh_behind_a_wrapper_that_drops_gh_repo_even_after_an_export(tmp_path, command):
+    # Arrange
+    text = f"export GH_REPO=o/r\n{command}\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, 2)
+
+
+@pytest.mark.parametrize("command", [
+    "bash -c 'gh pr view 1'",
+    "eval 'gh pr view 1'",
+    "echo 'gh pr view 1' | sh",
+    "xargs gh pr view 1",
+    # Only GH_REPO and the whole environment are lost to the wrappers above.
+    "env -u GH_TOKEN gh pr view 1",
+    "env GH_TOKEN=x gh pr view 1",
+    # A wrapper's own GH_REPO= right before gh tells it.
+    "sudo GH_REPO=o/r gh pr view 1",
+    "sudo -u bob GH_REPO=o/r gh pr view 1",
+    # sudo that does not run gh, then a gh on its own line.
+    "sudo true\ngh pr view 1",
+])
+def test_untold_accepts_a_gh_that_inherits_the_export_or_is_told_by_its_own_prefix(tmp_path, command):
+    # Arrange, Act
+    found = untold(tmp_path, f"export GH_REPO=o/r\n{command}\n")
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("command", ["sudo GH_REPO=o/r gh pr view 1", "su -c 'GH_REPO=o/r gh pr view 1' bob"])
+def test_untold_accepts_a_wrapped_gh_told_by_its_own_gh_repo_prefix_without_an_export(tmp_path, command):
+    # Arrange, Act
+    found = untold(tmp_path, f"{command}\n")
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("command", ["sudo GH_REPO= gh pr view 1", "sudo GH_REPO=\"$repo\" gh pr view 1"])
+def test_untold_refuses_a_wrapped_gh_whose_own_gh_repo_prefix_may_be_empty_even_after_an_export(tmp_path, command):
+    # Arrange
+    text = f"export GH_REPO=o/r\n{command}\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, 2)
+
+
+# R51: a NUL byte is dropped by bash, so a file with one is checked as bash reads it, not skipped.
+def nul_script(tail):
+    """A script whose NUL comes after its first 100 bytes, as bash needs to run it."""
+    return b"#!/usr/bin/env bash\n" + b"# padding " * 12 + b"\n" + b"echo start\x00\n" + tail
+
+
+def test_untold_refuses_an_untold_gh_in_a_file_with_a_nul_after_100_bytes(tmp_path):
+    # Arrange
+    path = tmp_path / "script.sh"
+    path.write_bytes(nul_script(b"gh pr view 1\n"))
+    assert path.read_bytes().index(b"\0") > 100
+
+    # Act
+    found = check_gh_repo.untold(path)
+
+    # Assert
+    assert found == [f"{path}:4: gh pr view 1"]
+
+
+def test_untold_accepts_a_file_with_a_nul_after_100_bytes_whose_gh_lines_are_told(tmp_path):
+    # Arrange
+    path = tmp_path / "script.sh"
+    path.write_bytes(nul_script(b"export GH_REPO=o/r\ngh pr view 1\n"))
+
+    # Act
+    found = check_gh_repo.untold(path)
+
+    # Assert
+    assert found == []
+
+
+def test_untold_takes_an_export_a_nul_splits_as_bash_reads_it(tmp_path):
+    # Arrange: bash reads the first line as an export of an empty GH_REPO, which tells nothing.
+    path = tmp_path / "script.sh"
+    path.write_bytes(b"exp\0ort GH_REPO=\ngh pr view 1\n")
+
+    # Act
+    found = check_gh_repo.untold(path)
+
+    # Assert
+    assert found == [f"{path}:2: gh pr view 1"]
+
+
+def test_untold_finds_a_gh_whose_letters_a_nul_splits(tmp_path):
+    # Arrange
+    path = tmp_path / "script.sh"
+    path.write_bytes(b"echo start\ng\0h pr view 1\n")
+
+    # Act
+    found = check_gh_repo.untold(path)
+
+    # Assert
+    assert found == [f"{path}:2: g\0h pr view 1"]
+
+
+def test_check_repo_refuses_an_untold_gh_in_a_script_with_a_nul_after_100_bytes(tmp_path):
+    # Arrange, Act
+    found = repo_check(tmp_path, {"scripts/x.sh": nul_script(b"gh pr view 1\n")})
+
+    # Assert
+    assert found == ["scripts/x.sh:4: gh pr view 1"]
+
+
+def test_check_repo_passes_a_script_with_a_nul_after_100_bytes_whose_gh_lines_are_told(tmp_path):
+    # Arrange, Act
+    found = repo_check(tmp_path, {"scripts/x.sh": nul_script(b"export GH_REPO=o/r\ngh pr view 1\n")})
+
+    # Assert
+    assert found == []
+
+
+def test_check_repo_refuses_an_untold_gh_in_a_skill_with_a_nul_after_100_bytes(tmp_path):
+    # Arrange
+    skill = b"# Skill\n" + b"padding " * 14 + b"\x00\n```bash\ngh pr view 1\n```\n"
+
+    # Act
+    found = repo_check(tmp_path, {".claude/skills/mine/SKILL.md": skill})
+
+    # Assert
+    assert found == [".claude/skills/mine/SKILL.md:4: gh pr view 1"]
+
+
+# R54: a Markdown code block is also indented, <pre>, or a <code> element; HTML comments, <script> and <style> aren't code.
+@pytest.mark.parametrize("text, line", [
+    ("Intro.\n\n    gh pr view 1\n", 3),
+    ("Intro.\n\n\tgh pr view 1\n", 3),
+    ("Intro.\n\n        gh pr view 1\n", 3),
+    # Any line of the block, after blank lines inside it too.
+    ("Intro.\n\n    echo hi\n    gh pr view 1\n", 4),
+    ("Intro.\n\n    echo hi\n\n    gh pr view 1\n", 5),
+    ("Intro.\n\n    gh pr view 1 --repo o/r\n    gh pr list\n", 4),
+    ("# Title\n\n    GH_REPO=\"$repo\" gh pr view 1\n", 3),
+    ("> Intro.\n\nText.\n\n    gh issue list\n", 5),
+])
+def test_untold_markdown_refuses_a_gh_command_in_an_indented_code_block(tmp_path, text, line):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "Intro.\n\n    gh pr view 1 --repo o/r\n",
+    "Intro.\n\n\tgh pr view 1 --repo o/r\n",
+    "Intro.\n\n    GH_REPO=o/r gh pr view 1\n",
+    "Intro.\n\n    echo hi\n",
+    # Prose, not code: fewer than 4 spaces, or no blank line before it.
+    "Intro.\n\n   gh pr view 1\n",
+    "Intro.\n    gh pr view 1\n",
+    # A list item's continuation line is no indented block, with a blank line before it or not.
+    "- Run it:\n    gh pr view 1\n",
+    "- Run it\n\n    gh pr view 1 by hand\n",
+    "1. Run it\n\n    gh pr view 1 by hand\n",
+    "* Item\n  gh pr view 1\n",
+    # The block ended at the first line that isn't indented.
+    "Intro.\n\n    echo hi\n\nThen gh pr view 1 by hand.\n",
+    # An opt-out on the flagged line.
+    "Intro.\n\n    gh pr view 1 <!-- gh-repo: ok -->\n",
+])
+def test_untold_markdown_accepts_an_indented_block_that_is_told_and_what_is_no_such_block(tmp_path, text):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text, line", [
+    ("<pre>\ngh pr view 1\n</pre>\n", 2),
+    ("<pre>\necho hi\ngh pr view 1\n</pre>\n", 3),
+    ("<pre class=\"sh\">\ngh pr view 1\n</pre>\n", 2),
+    ("<pre><code>gh pr view 1\n</code></pre>\n", 1),
+    ("<pre><code class=\"language-bash\">\ngh pr view 1\n</code></pre>\n", 2),
+    ("<pre>gh pr view 1</pre>\n", 1),
+    ("Text\n\n<pre>\n\ngh pr view 1\n\n</pre>\n", 5),
+])
+def test_untold_markdown_refuses_a_gh_command_in_a_pre_block(tmp_path, text, line):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "<pre>\ngh pr view 1 --repo o/r\n</pre>\n",
+    "<pre><code>GH_REPO=o/r gh pr view 1\n</code></pre>\n",
+    "<pre>gh pr view 1 --repo o/r</pre>\n",
+    # After the closing tag it is prose again.
+    "<pre>\necho hi\n</pre>\nRun gh pr view 1 yourself.\n",
+    "<pre>echo hi</pre>\ngh pr view 1\n",
+    # A tag that only starts with pre isn't <pre>.
+    "<prefix>\ngh pr view 1\n</prefix>\n",
+    "<pre>\ngh pr view 1 <!-- gh-repo: ok -->\n</pre>\n",
+])
+def test_untold_markdown_accepts_a_pre_block_that_is_told_or_ended_or_opted_out(tmp_path, text):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text, line", [
+    ("Run <code>gh pr view 1</code> now.\n", 1),
+    ("Text\n<code>gh issue list</code>\n", 2),
+    ("Use <code>gh pr view 1 --repo o/r</code> or <code>gh pr list</code>.\n", 1),
+    ("<code class=\"sh\">gh pr view 1</code>\n", 1),
+])
+def test_untold_markdown_refuses_a_gh_command_in_a_code_element(tmp_path, text, line):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "Run <code>gh pr view 1 --repo o/r</code> now.\n",
+    "Run <code>GH_REPO=o/r gh pr view 1</code>.\n",
+    # Like a bare `gh` span, <code>gh</code> names the tool.
+    "Needs <code>gh</code> installed.\n",
+    "Needs <code>gh.exe</code> installed.\n",
+    "Run <code>gh pr view 1</code> now <!-- gh-repo: ok -->\n",
+    # An element whose closing tag isn't on its line is no inline span.
+    "Run <code>gh pr view 1\nnow</code>.\n",
+])
+def test_untold_markdown_accepts_a_code_element_that_is_told_or_names_the_tool_or_is_opted_out(tmp_path, text):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text", [
+    "<!-- gh pr view 1 -->\n",
+    "<!--\ngh pr view 1\n-->\n",
+    "<script>\ngh pr view 1\n</script>\n",
+    "<script>gh pr view 1</script>\n",
+    "<style>\ngh pr view 1\n</style>\n",
+    "<style>gh pr view 1</style>\n",
+])
+def test_untold_markdown_doesnt_read_html_comments_scripts_or_styles(tmp_path, text):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+# R60: the repo walk reads a file by what it is, not by how its name is cased or spelled.
+@pytest.mark.parametrize("name", ["scripts/up.SH", "scripts/up.Sh", "scripts/x.BASH", "scripts/z.zsh", "scripts/z.ZSH",
+                                  ".github/ci/up.SH", ".github/ci/z.zsh"])
+def test_check_repo_checks_a_shell_file_by_its_suffix_in_lower_case_and_zsh(tmp_path, name):
+    # Arrange, Act
+    found = repo_check(tmp_path, {name: UNTOLD})
+
+    # Assert
+    assert found == [f"{name}:1: gh pr view 1"]
+
+
+def test_check_repo_checks_a_markdown_file_by_its_suffix_in_lower_case(tmp_path):
+    # Arrange, Act
+    found = repo_check(tmp_path, {".claude/skills/mine/SKILL.MD": "`gh pr view 1`\n"})
+
+    # Assert
+    assert found == [".claude/skills/mine/SKILL.MD:1: `gh pr view 1`"]
+
+
+@pytest.mark.parametrize("name", ["scripts/noext", "scripts/tests/noext", ".github/ci/noext"])
+@pytest.mark.parametrize("content", [UNTOLD, "\n" + UNTOLD, "#!/usr/bin/env python3\n" + UNTOLD, "# notes\n" + UNTOLD])
+def test_check_repo_treats_every_extensionless_file_under_scripts_and_github_ci_as_shell(tmp_path, name, content):
+    # Arrange, Act
+    found = repo_check(tmp_path, {name: content})
+
+    # Assert
+    assert [entry.split(":")[0] for entry in found] == [name]
+
+
+def test_check_repo_passes_an_extensionless_file_under_scripts_whose_gh_lines_are_told(tmp_path):
+    # Arrange, Act
+    found = repo_check(tmp_path, {"scripts/noext": TOLD, ".github/ci/noext": TOLD})
+
+    # Assert
+    assert found == []
+
+
+def test_check_repo_keeps_the_shebang_test_for_an_extensionless_file_under_skills(tmp_path):
+    # Arrange, Act
+    found = repo_check(tmp_path, {".claude/skills/mine/plain": UNTOLD, ".claude/skills/mine/tool": "#!/bin/bash\n" + UNTOLD})
+
+    # Assert
+    assert found == [".claude/skills/mine/tool:2: gh pr view 1"]
+
+
+def refused_names(found):
+    return sorted(entry.split(":")[0] for entry in found)
+
+
+def test_check_repo_refuses_a_scripts_folder_that_is_a_symlink_out_of_the_repo(tmp_path):
+    # Arrange
+    outside = make_repo(tmp_path / "elsewhere", {"x.sh": UNTOLD})
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "scripts").symlink_to(outside, target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts"]
+
+
+@pytest.mark.parametrize("folder", [".github/ci", ".claude/skills"])
+def test_check_repo_refuses_a_scope_folder_that_is_a_symlink_out_of_the_repo(tmp_path, folder):
+    # Arrange
+    outside = make_repo(tmp_path / "elsewhere", {"x.sh": TOLD})
+    repo = tmp_path / "repo"
+    (repo / folder).parent.mkdir(parents=True)
+    (repo / folder).symlink_to(outside, target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == [folder]
+
+
+def test_check_repo_refuses_a_symlinked_file_out_of_the_repo_even_when_its_target_is_told(tmp_path):
+    # Arrange
+    outside = make_repo(tmp_path / "elsewhere", {"x.sh": TOLD})
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "link.sh").symlink_to(outside / "x.sh")
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts/link.sh"]
+
+
+def test_check_repo_refuses_a_symlinked_folder_out_of_the_repo_inside_a_scope_folder(tmp_path):
+    # Arrange
+    outside = make_repo(tmp_path / "elsewhere", {"y.sh": TOLD})
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "linked").symlink_to(outside, target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts/linked"]
+
+
+def test_check_repo_refuses_a_dangling_symlink(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "dangling.sh").symlink_to(tmp_path / "repo" / "missing.sh")
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts/dangling.sh"]
+
+
+def test_check_repo_refuses_a_dangling_symlinked_folder(tmp_path):
+    # Arrange
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "scripts").symlink_to(tmp_path / "missing", target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert refused_names(found) == ["scripts"]
+
+
+def test_check_repo_passes_a_symlink_to_a_file_inside_the_root(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/real.sh": TOLD, "lib/real.sh": TOLD})
+    (repo / "scripts" / "link.sh").symlink_to(repo / "scripts" / "real.sh")
+    (repo / "scripts" / "relative.sh").symlink_to(Path("..") / "lib" / "real.sh")
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert found == []
+
+
+def test_check_repo_passes_a_symlinked_folder_inside_the_root(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/real/x.sh": TOLD})
+    (repo / "scripts" / "linked").symlink_to(repo / "scripts" / "real", target_is_directory=True)
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert found == []
+
+
+def test_check_repo_walks_the_target_of_a_symlink_inside_the_root_as_itself(tmp_path):
+    # Arrange
+    repo = make_repo(tmp_path / "repo", {"scripts/real.sh": UNTOLD})
+    (repo / "scripts" / "link.sh").symlink_to(repo / "scripts" / "real.sh")
+
+    # Act
+    found = check_gh_repo.check_repo(repo)
+
+    # Assert
+    assert "scripts/real.sh:1: gh pr view 1" in found
+    assert refused_names(found) in (["scripts/link.sh", "scripts/real.sh"], ["scripts/real.sh"])
+
+
+def test_main_repo_mode_fails_for_a_symlink_out_of_the_repo_and_names_it(tmp_path, capsys):
+    # Arrange
+    outside = make_repo(tmp_path / "elsewhere", {"x.sh": UNTOLD})
+    repo = make_repo(tmp_path / "repo", {"scripts/ok.sh": TOLD})
+    (repo / "scripts" / "link.sh").symlink_to(outside / "x.sh")
+
+    # Act
+    code = check_gh_repo.main(["--repo", str(repo)])
+
+    # Assert
+    assert code == 1
+    assert "scripts/link.sh" in capsys.readouterr().out

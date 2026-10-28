@@ -124,7 +124,7 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       writeFileSync(uiPrompt, originals.get(uiPrompt)!);
       const complete = run();
       assert.equal(complete.status, 0, `${complete.stdout}${complete.stderr}`);
-      assert.match(complete.stdout, /skipped 0/, "the check should run, not be skipped");
+      assert.match(complete.stdout, /✔[^\n]*has the prompts the ui role needs/, "the check should run and pass, not be skipped");
 
       writeFileSync(backend, originals.get(backend)!.replace("{{UI_DEVELOPER}}", ""));
       const withoutPlaceholder = run();

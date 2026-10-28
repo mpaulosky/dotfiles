@@ -3130,6 +3130,27 @@ test("names at most three unreplied threads in the notice and counts the rest", 
   assert.ok(!notices[0].includes("f4.py") && !notices[0].includes("f5.py"), notices[0]);
 });
 
+test("escapes control, bidi and zero-width characters in a thread's path in the notice, as the Python status line does", async () => {
+  const path = "a\nb\x1b[31m\u202Ec\u200Bd\x7F\x85.py";
+  const { merges, logs } = await evaluate(readyPr({ reviewThreads: threadsBy({ login: COPILOT, resolved: true, path, line: 4 }) }));
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  const notices = unrepliedNotices(logs);
+  assert.equal(notices.length, 1, logs.join("\n"));
+  assert.ok(notices[0].includes("a\\nb\\x1b[31m\\u202ec\\u200bd\\x7f\\x85.py:4"), notices[0]);
+  assert.ok(!/[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u200B\u202E]/u.test(notices[0].replace(/\n/g, "")), notices[0]);
+});
+
+test("names a thread by line ?? originalLine and strips [bot] from the opener's login", async () => {
+  const thread = threadsBy({ login: COPILOT + "[bot]", resolved: true, path: "d.py", kind: "Bot" }).nodes[0];
+  thread.line = null;
+  thread.originalLine = 9;
+  const { merges, logs } = await evaluate(readyPr({ reviewThreads: { totalCount: 1, nodes: [thread] } }));
+
+  assert.equal(merges.length, 1, logs.join("\n"));
+  assert.ok(unrepliedNotices(logs).some((line) => line.includes("d.py:9")), logs.join("\n"));
+});
+
 test("old thread nodes without comments or a path log no notice and don't throw", async () => {
   const pr = readyPr({ reviewThreads: { totalCount: 2, nodes: [{ isResolved: true }, { isResolved: true, comments: null }] } });
   const { merges, logs } = await evaluate(pr);

@@ -487,8 +487,20 @@ jobs:
             // read counts as replied, and a node without comments isn't a bot
             // thread. Names the thread as path:line with the opening comment's url.
             function unrepliedBotThreads(threads) {
+              // Every character that isn't a letter, mark, number, punctuation, symbol or
+              // space is escaped by code point, as the Python status script's printable()
+              // does: a path is PR-controlled text, and bidi overrides, zero-width
+              // characters and C1 controls would pass JSON.stringify unchanged.
+              const SHORT_ESCAPES = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
               const printable = (text) =>
-                [...String(text)].map((char) => (/^[\p{L}\p{N}\p{P}\p{S} ]$/u.test(char) ? char : JSON.stringify(char).slice(1, -1))).join("");
+                [...String(text)].map((char) => {
+                  if (/^[\p{L}\p{M}\p{N}\p{P}\p{S} ]$/u.test(char)) return char;
+                  if (SHORT_ESCAPES[char]) return SHORT_ESCAPES[char];
+                  const code = char.codePointAt(0);
+                  if (code < 0x100) return "\\x" + code.toString(16).padStart(2, "0");
+                  if (code < 0x10000) return "\\u" + code.toString(16).padStart(4, "0");
+                  return "\\U" + code.toString(16).padStart(8, "0");
+                }).join("");
               const isBotThread = (opening) => {
                 if (opening?.author?.__typename !== "Bot") return false;
                 const login = (opening.author.login ?? "").replace(/\[bot\]$/, "");

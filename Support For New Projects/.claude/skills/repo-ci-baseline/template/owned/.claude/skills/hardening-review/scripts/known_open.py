@@ -119,7 +119,6 @@ def private_folder(folder):
         folder = folder.parent
     for made in reversed(missing):
         made.mkdir(mode=0o700)
-        made.chmod(0o700)
 
 
 def changed(root, entry):

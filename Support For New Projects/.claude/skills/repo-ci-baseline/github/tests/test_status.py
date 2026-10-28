@@ -284,3 +284,31 @@ def test_only_a_pr_with_every_thread_resolved_and_a_bot_review_gets_the_comments
     state = st.to_state(by_number[1], **st.repo_flags("full"))
     assert state.unreplied_threads == ("src/a.py:12",)
     assert st.to_state(by_number[5], **st.repo_flags("full")).unreplied_threads == ()
+
+
+def test_a_failed_or_empty_comments_query_keeps_the_repo_readable_and_gives_no_notice(monkeypatch, capsys):
+    reviewed = [("copilot-pull-request-reviewer", HEAD)]
+    boom = dict(pr_node(number=1, reviews=reviewed, threads=[True]), id="PR_boom")
+    gone = dict(pr_node(number=2, reviews=reviewed, threads=[True]), id="PR_gone")
+    fine = dict(pr_node(number=3, reviews=reviewed, threads=[True]), id="PR_fine")
+    data = repo(boom, gone, fine)
+    monkeypatch.setattr(st, "COMMENTS_FAILED", set())
+
+    def graphql(query, *fields, **raw):
+        if query != st.THREADS_QUERY:
+            return data
+        if raw["id"] == "PR_boom":
+            raise RuntimeError("502 Bad Gateway")
+        if raw["id"] == "PR_gone":
+            return {"node": None}
+        return {"node": {"reviewThreads": {"nodes": [thread_node()]}}}
+    monkeypatch.setattr(st, "graphql", graphql)
+    out, err = io.StringIO(), io.StringIO()
+    assert st.main(["owner/app"], out=out, err=err) == 0
+    lines = out.getvalue().splitlines()
+    assert len(lines) == 3
+    assert "notice" not in lines[0] and "notice" not in lines[1]
+    assert lines[2].endswith("notice: resolved without a reply: src/a.py:12")
+    assert "502 Bad Gateway" in capsys.readouterr().err
+    st.gh_graphql("owner", "app")
+    assert capsys.readouterr().err.count("502 Bad Gateway") == 0

@@ -70,6 +70,9 @@ query($id: ID!) {
 
 TITLE_WIDTH = 40
 
+# PR ids whose THREADS_QUERY failure was already reported, so a polling land.py says it once.
+COMMENTS_FAILED = set()
+
 
 def graphql(query, *fields, **raw):
     """The data of one `gh api graphql` call: fields are "key=value" for -F, raw are -f (strings as they are)."""
@@ -98,12 +101,20 @@ def gh_graphql(owner, name):
     about 53 points a read instead of 3. A PR whose threads are all resolved
     and that a bot reviewed gets THREADS_QUERY (1 point), and its thread nodes
     are replaced by that query's, which carry the comments the notice reads.
+    The notice is advisory, so a failed or empty comments query keeps the
+    comment-less nodes (no notice) and never costs the repo's read; the first
+    failure for a PR is reported on stderr.
     """
     data = graphql(QUERY, f"owner={owner}", f"name={name}")
     for node in data["repository"]["pullRequests"]["nodes"]:
         threads = node["reviewThreads"]["nodes"]
         if threads and all(thread["isResolved"] for thread in threads) and bot_reviewed(node):
-            node["reviewThreads"]["nodes"] = graphql(THREADS_QUERY, id=node["id"])["node"]["reviewThreads"]["nodes"]
+            try:
+                node["reviewThreads"]["nodes"] = graphql(THREADS_QUERY, id=node["id"])["node"]["reviewThreads"]["nodes"]
+            except Exception as error:  # noqa: BLE001 - an advisory notice mustn't make the repo unreadable
+                if node["id"] not in COMMENTS_FAILED:
+                    COMMENTS_FAILED.add(node["id"])
+                    sys.stderr.write(f"{owner}/{name}#{node.get('number')}: thread comments unreadable, no notice: {error!r}\n")
     return data
 
 

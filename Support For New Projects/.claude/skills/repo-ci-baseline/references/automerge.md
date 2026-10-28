@@ -286,6 +286,8 @@ running, failed and cancelled checks, and the next action. It costs one GraphQL 
 
 A line ends with `notice: resolved without a reply: path:line, ...` (3 named, then `and N more`) when resolved Copilot or Claude Review threads
 got no reply, by the rule above. `decide()` ignores it (`PrState.unreplied_threads`), and `land.sh` prints the line again when the notice changes.
+A failed or empty `THREADS_QUERY` for one PR keeps that PR's comment-less threads (no notice) and is reported once on stderr; it never
+makes the repo unreadable.
 Tests: `test_landing.py` (the rule and the notice text), `test_status.py` (the line and the query), `test_land.py` and `pr-automerge.test.mjs`.
 
 `landing.decide(PrState)` returns one action, the rules PRs are landed by:

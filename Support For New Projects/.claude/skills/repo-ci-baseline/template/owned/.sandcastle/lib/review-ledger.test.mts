@@ -2538,7 +2538,7 @@ describe("repoSlugProblem and the repo command", () => {
 
 describe("OWNED_PATHS", () => {
   it("matches folders and globs as the rule means them", () => {
-    for (const path of [".github/workflows/ci.yml", ".github/hooks/tests/pre-push.test.sh", ".github/scripts/a/b/c.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".sandcastle/lib/build.mts"]) {
+    for (const path of [".github/workflows/ci.yml", ".github/hooks/tests/pre-push.test.sh", ".github/scripts/a/b/c.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".claude/skills/hardening-review/SKILL.md", ".claude/skills/hardening-review/scripts/mutate.py", ".claude/skills/hardening-review/references/brief.md", ".sandcastle/lib/build.mts"]) {
       assert.equal(isOwnedPath(path), true, path);
     }
     for (const path of [
@@ -2546,6 +2546,9 @@ describe("OWNED_PATHS", () => {
       ".github/workflows/nested/ci.yml",
       ".github/instructions/a/b.md",
       ".sandcastle/lib/nested/build.mts",
+      ".claude/skills/hardening-review-notes/SKILL.md",
+      ".claude/skills/hardening-reviewer/scripts/mutate.py",
+      ".claude/skills/other/SKILL.md",
       ".github/ci/gate-checks.sh",
       "scripts/gate.shx",
       "global.json.bak",

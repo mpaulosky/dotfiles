@@ -1214,8 +1214,9 @@ def test_the_untold_gh_commands_of_the_skills_beside_the_template_are_fixed(skil
 
 
 # R45 and R52: gotchas.md holds the rules; the docstring points at it.
-GOTCHAS = HERE.parents[0].parent / "references" / "gotchas.md"
-SEED_SKILLS_README = HERE.parents[0].parent / "template" / "seed" / ".claude" / "skills" / "README.md"
+BASELINE_SKILL = HERE.parents[1]
+GOTCHAS = BASELINE_SKILL / "references" / "gotchas.md"
+SEED_SKILLS_README = BASELINE_SKILL / "template" / "seed" / ".claude" / "skills" / "README.md"
 
 
 def test_the_checkers_docstring_is_one_line_that_points_at_gotchas_md():

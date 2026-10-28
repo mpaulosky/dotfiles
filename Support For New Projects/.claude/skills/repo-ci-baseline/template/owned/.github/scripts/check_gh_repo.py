@@ -41,6 +41,16 @@ READS_GH_REPO = re.compile(r"repo[ \t]+(rename|deploy-key|autolink)\b")
 NAMED = re.compile(r"repo[ \t]+[a-z-]+[ \t]+(?!-)" + VALUE)
 
 
+def prefix_repository(before):
+    """The value of the last GH_REPO= among the NAME=value words right before gh, or None when there is none."""
+    prefix = PREFIX.search(before)
+    if prefix is None:
+        return None
+    repositories = [word.partition("=")[2].rstrip(" \t") for word in re.findall(ASSIGNMENT_WORD, prefix.group())
+                    if word.startswith("GH_REPO=")]
+    return repositories[-1] if repositories else None
+
+
 def told(before, after, exported):
     """Whether the gh between before and after is told its repository."""
     # gh closing a quoted word: judge what follows the quote.
@@ -58,13 +68,8 @@ def told(before, after, exported):
         named = NAMED.match(rest)
         repository = named.group(1) if named else ""
         return bool(NAMES_ITS_OWN.match(rest)) or "/" in repository or "${" in repository
-    prefix = PREFIX.search(before)
-    if prefix:
-        repositories = [word.partition("=")[2].rstrip(" \t") for word in re.findall(ASSIGNMENT_WORD, prefix.group())
-                        if word.startswith("GH_REPO=")]
-        if repositories:
-            return re.fullmatch(VALUE, repositories[-1]) is not None
-    return exported
+    prefixed = prefix_repository(before)
+    return exported if prefixed is None else re.fullmatch(VALUE, prefixed) is not None
 
 
 # A heredoc operator and its delimiter: <<EOF, <<-'EOF', <<"EOF", <<\\EOF (not the here-string <<<).

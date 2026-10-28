@@ -229,20 +229,22 @@ export function statusOf(
   }
 
   const subject = "subject" in admitted ? admitted.subject : undefined;
+  const split = "unreadable" in threads ? undefined : threads;
+  const decidable = subject !== undefined && origin === undefined;
   let held: Held;
   if (unreadable !== undefined) {
     held = { state: "skipped", reason: unreadable };
-  } else if ("unreadable" in threads && subject !== undefined && origin === undefined) {
+  } else if (decidable && "unreadable" in threads) {
     held = { state: "waiting", reason: `its threads couldn't be read (${threads.unreadable}), so the sweep leaves it alone this round` };
   } else {
     held = heldReason({
       pr,
       admitted,
       origin,
-      decision: subject !== undefined && origin === undefined && !("unreadable" in threads) ? decide(thin, now, github.isOwner) : undefined,
+      decision: decidable && split !== undefined ? decide(thin, now, github.isOwner) : undefined,
       passesUsed,
       answered,
-      human: "unreadable" in threads ? 0 : threads.other,
+      human: split?.other ?? 0,
     });
   }
 
@@ -287,8 +289,7 @@ const SHOWN_LABELS = [BUILDING_LABEL, "sandcastle:needs-human", FOLLOW_UP_LABEL,
 function renderPr(status: PrStatus): string[] {
   const shown = status.labels.filter((label) => SHOWN_LABELS.includes(label.toLowerCase()));
   const state = status.draft ? `${status.mergeState}, draft` : status.mergeState;
-  const subject =
-    status.subject === "issue" && status.issueNumber !== undefined ? `issue #${status.issueNumber}` : status.subject === "issue" ? "issue" : status.subject;
+  const subject = status.subject === "issue" && status.issueNumber !== undefined ? `issue #${status.issueNumber}` : status.subject;
   const passes = "unreadable" in status.passes ? `unknown (${status.passes.unreadable})` : `${status.passes.used} of ${status.passes.cap}`;
   const threads =
     "unreadable" in status.threads
@@ -336,7 +337,7 @@ export function renderStatus(report: StatusReport): string[] {
 // The queue scope status reports on: the default queue when the environment names none, so a bare `pnpm run sandcastle:status`
 // shows what GitHub Actions' scope would do, hand-offs included. A variable that is set is read as the run does, with its errors.
 export function statusScopeFrom(env: Record<string, string | undefined>): QueueScope {
-  const named = (value: string | undefined) => value?.trim() !== undefined && value.trim() !== "";
+  const named = (value: string | undefined) => (value ?? "").trim() !== "";
   if (!named(env.SANDCASTLE_ISSUE) && !named(env.SANDCASTLE_LABEL) && env.GITHUB_ACTIONS !== "true") {
     return { kind: "label", label: QUEUE_LABEL };
   }

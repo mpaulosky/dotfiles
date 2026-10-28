@@ -51,7 +51,7 @@ directory, so a moved scripts/ can't pass unchecked.
 The repo-wide check, which every repo's scripts/gate.sh runs
 (mpaulosky/dotfiles#321). It walks scripts/, .github/ci/ and .claude/skills/
 under root, skipping node_modules, .git, symlinks and the Owned Baseline files
-(OWNED: the Template's Owned scripts and pre-push-review skill, which a repo
+(OWNED: the Template's Owned scripts and its pre-push-review and hardening-review skills, which a repo
 can't edit, and which test.sh checks in dotfiles). A .sh or .bash file, or one
 with no extension and a sh or bash shebang, is checked as a script, with the
 rules above; a .md file is checked as a skill; anything else is skipped. It
@@ -178,6 +178,7 @@ OWNED = (
     "scripts/tests/check-git-hooks.test.sh",
     "scripts/tests/sync-copilot-review.test.sh",
     ".claude/skills/pre-push-review/",
+    ".claude/skills/hardening-review/",
 )
 # The folders --repo walks.
 SCOPE = ("scripts", ".github/ci", ".claude/skills")

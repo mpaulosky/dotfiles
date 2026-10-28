@@ -409,6 +409,8 @@ def test_check_repo_reports_each_file_with_its_own_path(tmp_path):
     "scripts/tests/sync-copilot-review.test.sh",
     ".claude/skills/pre-push-review/SKILL.md",
     ".claude/skills/pre-push-review/references/more.md",
+    ".claude/skills/hardening-review/SKILL.md",
+    ".claude/skills/hardening-review/scripts/mutate.py",
 ])
 def test_check_repo_skips_the_owned_baseline_files(tmp_path, name):
     # Arrange, Act
@@ -455,10 +457,10 @@ def test_every_owned_entry_exists_in_the_template():
     assert missing == []
 
 
-def test_owned_names_files_and_folders_under_scripts_and_the_pre_push_review_skill_only():
+def test_owned_names_files_and_folders_under_scripts_and_the_review_skills_only():
     # Arrange, Act, Assert
     assert check_gh_repo.OWNED
-    assert all(entry.startswith(("scripts/", ".claude/skills/pre-push-review/")) for entry in check_gh_repo.OWNED)
+    assert all(entry.startswith(("scripts/", ".claude/skills/pre-push-review/", ".claude/skills/hardening-review/")) for entry in check_gh_repo.OWNED)
 
 
 def test_scope_is_scripts_github_ci_and_skills():

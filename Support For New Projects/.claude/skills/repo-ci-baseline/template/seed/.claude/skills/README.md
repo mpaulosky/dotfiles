@@ -7,5 +7,5 @@ Put a skill here only when it's about this repo: its architecture, its review st
 apply to every repo, such as `repo-ci-baseline`, live in the personal `~/.claude/skills/` instead, so there's one copy
 to keep current.
 
-`pre-push-review` is the exception: the Baseline's Owned review skill, which Apply keeps current in a repo with Sandcastle.
-Don't edit it here (the next Apply reverts it); the repo's own skills, such as `code-review`, go beside it.
+`pre-push-review` and `hardening-review` are the exception: the Baseline's Owned review skills, which Apply keeps current in a repo with Sandcastle.
+Don't edit them here (the next Apply reverts them); the repo's own skills, such as `code-review`, go beside them.

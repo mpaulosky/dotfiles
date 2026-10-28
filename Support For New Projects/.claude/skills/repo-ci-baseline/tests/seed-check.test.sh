@@ -28,7 +28,7 @@ chmod +x "$STUBS/pnpm"
 
 # Every path the script's pathspec names, plus a file it doesn't.
 PATHS=(.sandcastle/lib/x.mts package.json pnpm-workspace.yaml pnpm-lock.yaml scripts/review.sh
-  .claude/skills/pre-push-review/SKILL.md .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml)
+  .claude/skills/pre-push-review/SKILL.md .claude/skills/hardening-review/SKILL.md .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml)
 
 git init -q -b main "$REPO"
 mkdir -p "$REPO/.sandcastle"

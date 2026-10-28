@@ -82,15 +82,21 @@ def printable(text):
     return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
 
 
+def thread_name(node):
+    """A thread's path:line, or what of them it has, printable; "thread" with no path."""
+    path = node.get("path")
+    if not path:
+        return "thread"
+    line_number = node.get("line") or node.get("originalLine")
+    return printable(f"{path}:{line_number}" if line_number else path)
+
+
 def to_thread(node):
     """A Thread from one reviewThreads node of QUERY; a node without comments has no opener and is no bot thread."""
     comments = node.get("comments") or {}
     nodes = [comment or {} for comment in comments.get("nodes") or []]
     author = (nodes[0].get("author") or {}) if nodes else {}
     review = (nodes[0].get("pullRequestReview") or {}) if nodes else {}
-    line_number = node.get("line") or node.get("originalLine")
-    path = node.get("path")
-    name = "thread" if not path else f"{path}:{line_number}" if line_number else path
     return Thread(
         resolved=bool(node.get("isResolved")),
         opener=author.get("login") or "",
@@ -98,7 +104,7 @@ def to_thread(node):
         opener_review=review.get("body") or "",
         repliers=tuple((comment.get("author") or {}).get("login") or "" for comment in nodes[1:]),
         partial=comments.get("totalCount", len(nodes)) > len(nodes),
-        name=printable(name),
+        name=thread_name(node),
     )
 
 

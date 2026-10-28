@@ -477,8 +477,6 @@ jobs:
               return true;
             }
 
-            // An open PR from this repository into main: the PRs this workflow
-            // manages, drafts included.
             // The resolved Copilot and Claude Review threads nobody replied to
             // (mpaulosky/dotfiles#328), by the rule claude-review.yml reads
             // threads by: the opening comment is a Bot named
@@ -491,25 +489,29 @@ jobs:
             function unrepliedBotThreads(threads) {
               const printable = (text) =>
                 [...String(text)].map((char) => (/^[\p{L}\p{N}\p{P}\p{S} ]$/u.test(char) ? char : JSON.stringify(char).slice(1, -1))).join("");
+              const isBotThread = (opening) => {
+                if (opening?.author?.__typename !== "Bot") return false;
+                const login = (opening.author.login ?? "").replace(/\[bot\]$/, "");
+                if (login === COPILOT_REVIEWER) return true;
+                return login === "github-actions" && (opening.pullRequestReview?.body ?? "").startsWith(CLAUDE_MARKER);
+              };
+              const nameOf = (thread) => {
+                if (!thread.path) return "thread";
+                const place = thread.line ?? thread.originalLine;
+                return place ? `${thread.path}:${place}` : thread.path;
+              };
               return threads.filter((thread) => {
                 if (!thread.isResolved) return false;
                 const comments = thread.comments?.nodes ?? [];
                 const opening = comments[0];
-                const login = (opening?.author?.login ?? "").replace(/\[bot\]$/, "");
-                if (opening?.author?.__typename !== "Bot") return false;
-                const isBot =
-                  login === COPILOT_REVIEWER ||
-                  (login === "github-actions" && (opening.pullRequestReview?.body ?? "").startsWith(CLAUDE_MARKER));
-                if (!isBot) return false;
-                if ((thread.comments?.totalCount ?? comments.length) > comments.length) return false;
+                if (!isBotThread(opening)) return false;
+                if ((thread.comments.totalCount ?? comments.length) > comments.length) return false;
                 return comments.slice(1).every((comment) => comment?.author?.login === opening.author.login);
-              }).map((thread) => {
-                const place = thread.line ?? thread.originalLine;
-                const name = !thread.path ? "thread" : place ? `${thread.path}:${place}` : thread.path;
-                return `${printable(name)} (${thread.comments.nodes[0].url})`;
-              });
+              }).map((thread) => `${printable(nameOf(thread))} (${thread.comments.nodes[0].url})`);
             }
 
+            // An open PR from this repository into main: the PRs this workflow
+            // manages, drafts included.
             function isOpenSameRepoPrIntoMain(pr) {
               return Boolean(pr) && pr.state === "OPEN" && !pr.isCrossRepository && pr.baseRefName === "main";
             }

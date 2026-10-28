@@ -11,6 +11,9 @@ Seed: `docs/CONTRIBUTING.md` (links to `PROCESS.md`) and `.github/dependabot.yml
   `CONTRIBUTING.md` and `CLAUDE.md` link to it rather than repeat it. Before, each repo's CONTRIBUTING said something
   different (Articles still documented `squad/` branches, and the Seed said maintainers approve and merge, contradicting
   auto-merge), and a Seed is never refreshed.
+- **A fixed review thread's reply names the fixing commit.** `PROCESS.md` has the reply give the short SHA and what changed
+  (mpaulosky/dotfiles#328). Only a notice enforces it: PR Auto-Merge, `status.sh` and `land.sh` flag a Copilot or Claude Review thread
+  resolved with no reply, and the merge isn't held ([automerge.md](automerge.md)).
 - **PR titles follow the commit format.** The title is the squash commit's subject and the Release's name. The survey
   found lowercase titles in four repos, so the format is a required check (**PR title**), not a guideline.
 - **PR descriptions share one shape.** The template's headings are Why, What changed and Verification, and `Fixes #`.

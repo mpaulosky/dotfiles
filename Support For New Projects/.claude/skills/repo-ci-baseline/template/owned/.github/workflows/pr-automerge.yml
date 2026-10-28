@@ -234,6 +234,10 @@ jobs:
             // Accepted limit (repo-ci-baseline's ADR 0004): the marker proves the
             // login, not that Claude wrote the review; see claude-review.yml.
             const CLAUDE_MARKER = "<!-- claude-review -->";
+            // Copilot's review comments are authored by this Bot.
+            const COPILOT_REVIEWER = "copilot-pull-request-reviewer";
+            // At most this many unreplied threads are named in the notice.
+            const UNREPLIED_NAMED = 3;
             // The second line of a Claude review with findings outside the
             // diff: they open no thread, so the review itself holds the merge.
             const OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->";
@@ -392,10 +396,22 @@ jobs:
                          }
                        }
                        # Every unresolved thread holds the merge, whoever opened it.
+                       # Resolved ones are read for the notice of a bot thread nobody replied to.
                        reviewThreads(first: 100) {
                          totalCount
                          nodes {
                            isResolved
+                           path
+                           line
+                           originalLine
+                           comments(first: 10) {
+                             totalCount
+                             nodes {
+                               url
+                               author { login __typename }
+                               pullRequestReview { body }
+                             }
+                           }
                          }
                        }
                        labels(first: 100) {
@@ -459,6 +475,51 @@ jobs:
               }
 
               return true;
+            }
+
+            // The resolved Copilot and Claude Review threads nobody replied to
+            // (mpaulosky/dotfiles#328), by the rule claude-review.yml reads
+            // threads by: the opening comment is a Bot named
+            // copilot-pull-request-reviewer, or github-actions in a review whose
+            // body starts with CLAUDE_MARKER. A reply is any later comment by
+            // another login; its text isn't read, so Sandcastle's and a
+            // session's replies count. A thread with more comments than were
+            // read counts as replied, and a node without comments isn't a bot
+            // thread. Names the thread as path:line with the opening comment's url.
+            function unrepliedBotThreads(threads) {
+              // Every character that isn't a letter, mark, number, punctuation, symbol or
+              // space is escaped by code point, as the Python status script's printable()
+              // does: a path is PR-controlled text, and bidi overrides, zero-width
+              // characters and C1 controls would pass JSON.stringify unchanged.
+              const SHORT_ESCAPES = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+              const printable = (text) =>
+                [...String(text)].map((char) => {
+                  if (/^[\p{L}\p{M}\p{N}\p{P}\p{S} ]$/u.test(char)) return char;
+                  if (SHORT_ESCAPES[char]) return SHORT_ESCAPES[char];
+                  const code = char.codePointAt(0);
+                  if (code < 0x100) return "\\x" + code.toString(16).padStart(2, "0");
+                  if (code < 0x10000) return "\\u" + code.toString(16).padStart(4, "0");
+                  return "\\U" + code.toString(16).padStart(8, "0");
+                }).join("");
+              const isBotThread = (opening) => {
+                if (opening?.author?.__typename !== "Bot") return false;
+                const login = (opening.author.login ?? "").replace(/\[bot\]$/, "");
+                if (login === COPILOT_REVIEWER) return true;
+                return login === "github-actions" && (opening.pullRequestReview?.body ?? "").startsWith(CLAUDE_MARKER);
+              };
+              const nameOf = (thread) => {
+                if (!thread.path) return "thread";
+                const place = thread.line ?? thread.originalLine;
+                return place ? `${thread.path}:${place}` : thread.path;
+              };
+              return threads.filter((thread) => {
+                if (!thread.isResolved) return false;
+                const comments = thread.comments?.nodes ?? [];
+                const opening = comments[0];
+                if (!isBotThread(opening)) return false;
+                if ((thread.comments.totalCount ?? comments.length) > comments.length) return false;
+                return comments.slice(1).every((comment) => comment?.author?.login === opening.author.login);
+              }).map((thread) => `${printable(nameOf(thread))} (${thread.comments.nodes[0].url})`);
             }
 
             // An open PR from this repository into main: the PRs this workflow
@@ -1424,6 +1485,18 @@ jobs:
               if (unresolved > 0) {
                 core.info(`Waiting on PR #${pullNumber}: ${unresolved} unresolved review thread(s).`);
                 return;
+              }
+
+              // All threads are resolved here. A bot thread resolved with no
+              // reply leaves the PR without a record of its fix: a notice, not
+              // a hold (mpaulosky/dotfiles#328). To hold instead, return here.
+              const unreplied = unrepliedBotThreads(pr.reviewThreads.nodes);
+              if (unreplied.length > 0) {
+                const more = unreplied.length - UNREPLIED_NAMED;
+                core.notice(
+                  `PR #${pullNumber}: resolved without a reply, so the PR doesn't document the fix (docs/PROCESS.md): ` +
+                  unreplied.slice(0, UNREPLIED_NAMED).join(", ") + (more > 0 ? ` and ${more} more` : "")
+                );
               }
 
               // Claude's off-diff findings hold on the newest commit Claude

@@ -7,8 +7,10 @@
 Each line: repo#number, title, head, draft, merge state, which reviewer
 reviewed the head (review:copilot, review:claude or review:no), open threads,
 auto-merge, running/failed/cancelled checks,
-and the landing decision's next action (github/landing.py). One GraphQL query
-per repo, read-only. Prints nothing else, apart from one line when no PR is
+and the landing decision's next action (github/landing.py), then a
+`notice:` naming the resolved Copilot or Claude Review threads nobody replied to. One GraphQL query
+per repo, plus one for each PR whose threads are all resolved and that Copilot or Claude Review reviewed (it reads the
+thread comments the notice needs; they would cost far more in the repo query), read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
 
 Every listed repo requires checks and runs PR Auto-Merge, which merges a
@@ -21,8 +23,9 @@ import json
 import subprocess
 import sys
 
-from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, claude_off_diff, claude_reviews,
-                     copilot_declined, copilot_reviews, decide, summarize_checks)
+from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, Thread, claude_off_diff, claude_reviews,
+                     copilot_declined, copilot_reviews, decide, is_claude_review, summarize_checks, unreplied_notice,
+                     unreplied_threads)
 from settings import read_repo_list
 
 QUERY = """
@@ -30,7 +33,7 @@ query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 50, orderBy: {field: CREATED_AT, direction: ASC}) {
       nodes {
-        number title state isDraft headRefName headRefOid mergeStateStatus
+        id number title state isDraft headRefName headRefOid mergeStateStatus
         autoMergeRequest { enabledAt }
         labels(first: 20) { nodes { name } }
         reviewRequests(first: 20) { nodes { requestedReviewer {
@@ -51,16 +54,68 @@ query($owner: String!, $name: String!) {
 }
 """
 
+# The comments of one PR's review threads, for the notice: 1 + 100 requests, 1 point.
+THREADS_QUERY = """
+query($id: ID!) {
+  node(id: $id) {
+    ... on PullRequest {
+      reviewThreads(first: 100) { nodes {
+        isResolved path line originalLine
+        comments(first: 10) { totalCount nodes { url author { login __typename } pullRequestReview { body } } }
+      } }
+    }
+  }
+}
+"""
+
 TITLE_WIDTH = 40
 
+# PR ids whose THREADS_QUERY failure was already reported, so a polling land.py says it once.
+COMMENTS_FAILED = set()
 
-def gh_graphql(owner, name):
-    """The query's data for one repo, through `gh api graphql`."""
-    run = subprocess.run(["gh", "api", "graphql", "-f", f"query={QUERY}", "-F", f"owner={owner}", "-F", f"name={name}"],
-                         capture_output=True, text=True)
+
+def graphql(query, *fields, **raw):
+    """The data of one `gh api graphql` call: fields are "key=value" for -F, raw are -f (strings as they are)."""
+    argv = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for field in fields:
+        argv += ["-F", field]
+    for key, value in raw.items():
+        argv += ["-f", f"{key}={value}"]
+    run = subprocess.run(argv, capture_output=True, text=True)
     if run.returncode != 0:
         raise RuntimeError(run.stderr.strip() or run.stdout.strip())
     return json.loads(run.stdout)["data"]
+
+
+def bot_reviewed(node):
+    """Whether Copilot or Claude Review ever reviewed this PR, from QUERY's reviews."""
+    return any(COPILOT.search((review.get("author") or {}).get("login") or "")
+               or is_claude_review((review.get("author") or {}).get("login"), "-", review.get("body"))
+               for review in node["reviews"]["nodes"])
+
+
+def gh_graphql(owner, name):
+    """The query's data for one repo, through `gh api graphql`.
+
+    QUERY reads no thread comments: on 50 PRs of 100 threads they would cost
+    about 53 points a read instead of 3. A PR whose threads are all resolved
+    and that a bot reviewed gets THREADS_QUERY (1 point), and its thread nodes
+    are replaced by that query's, which carry the comments the notice reads.
+    The notice is advisory, so a failed or empty comments query keeps the
+    comment-less nodes (no notice) and never costs the repo's read; the first
+    failure for a PR is reported on stderr.
+    """
+    data = graphql(QUERY, f"owner={owner}", f"name={name}")
+    for node in data["repository"]["pullRequests"]["nodes"]:
+        threads = node["reviewThreads"]["nodes"]
+        if threads and all(thread["isResolved"] for thread in threads) and bot_reviewed(node):
+            try:
+                node["reviewThreads"]["nodes"] = graphql(THREADS_QUERY, id=node["id"])["node"]["reviewThreads"]["nodes"]
+            except Exception as error:  # noqa: BLE001 - an advisory notice mustn't make the repo unreadable
+                if node["id"] not in COMMENTS_FAILED:
+                    COMMENTS_FAILED.add(node["id"])
+                    sys.stderr.write(f"{owner}/{name}#{node.get('number')}: thread comments unreadable, no notice: {error!r}\n")
+    return data
 
 
 def to_check(node):
@@ -71,6 +126,37 @@ def to_check(node):
         return Check(node["context"], "COMPLETED", state, node.get("createdAt") or "")
     return Check(node["name"], node["status"], node.get("conclusion"), node.get("startedAt") or "",
                  node.get("databaseId") or 0)
+
+
+def printable(text):
+    """text with every character that isn't printable replaced by its repr escape; thread paths are PR-controlled."""
+    return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
+
+
+def thread_name(node):
+    """A thread's path:line, or what of them it has, printable; "thread" with no path."""
+    path = node.get("path")
+    if not path:
+        return "thread"
+    line_number = node.get("line") or node.get("originalLine")
+    return printable(f"{path}:{line_number}" if line_number else path)
+
+
+def to_thread(node):
+    """A Thread from one reviewThreads node of QUERY; a node without comments has no opener and is no bot thread."""
+    comments = node.get("comments") or {}
+    nodes = [comment or {} for comment in comments.get("nodes") or []]
+    author = (nodes[0].get("author") or {}) if nodes else {}
+    review = (nodes[0].get("pullRequestReview") or {}) if nodes else {}
+    return Thread(
+        resolved=bool(node.get("isResolved")),
+        opener=author.get("login") or "",
+        opener_kind=author.get("__typename") or "",
+        opener_review=review.get("body") or "",
+        repliers=tuple((comment.get("author") or {}).get("login") or "" for comment in nodes[1:]),
+        partial=comments.get("totalCount", len(nodes)) > len(nodes),
+        name=thread_name(node),
+    )
 
 
 def repo_flags(scope):
@@ -112,6 +198,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         claude_requested=REVIEW_CLAUDE in labels,
         copilot_dropped=copilot_dropped,
         open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
+        unreplied_threads=unreplied_threads([to_thread(thread) for thread in node["reviewThreads"]["nodes"]]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),
         checks_required=checks_required,
@@ -130,12 +217,13 @@ def line(repo, node, pr):
     checks = summarize_checks(pr.checks)
     decision = decide(pr)
     name = repo.split("/")[-1]
+    notice = unreplied_notice(pr)
     return (f"{name}#{node['number']} {shorten(node['title']):<{TITLE_WIDTH}} {pr.head[:7]}"
             f" {'draft' if pr.draft else 'ready'} {pr.merge_state}"
             f" review:{pr.head_reviewer or 'no'} threads:{pr.open_threads}"
             f" automerge:{'on' if pr.auto_merge_armed else 'off'}"
             f" running:{len(checks.running)} failed:{len(checks.failed)} cancelled:{len(checks.cancelled)}"
-            f" -> {decision.action} ({decision.reason})")
+            f" -> {decision.action} ({decision.reason})" + (f" {notice}" if notice else ""))
 
 
 def main(argv=None, fetch=gh_graphql, out=sys.stdout, err=sys.stderr):

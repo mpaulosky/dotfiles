@@ -381,3 +381,92 @@ def test_a_queued_rerun_outranks_an_older_green_run():
     checks = (ld.Check("Test Suite", "COMPLETED", "SUCCESS", "2026-10-07T10:00:00Z", rank=1),
               ld.Check("Test Suite", "QUEUED", None, "", rank=2))
     assert ld.summarize_checks(checks).running == ("Test Suite",)
+
+
+# ── Resolved bot threads nobody replied to (a notice, not a hold) ───────────
+
+def thread(**overrides):
+    """A resolved Copilot thread at src/a.py:12 with no reply, unless overridden."""
+    fields = dict(resolved=True, opener=ld.COPILOT_REVIEWER, opener_kind="Bot", opener_review="", repliers=(),
+                  partial=False, name="src/a.py:12")
+    return ld.Thread(**{**fields, **overrides})
+
+
+def claude_thread(**overrides):
+    return thread(opener=ld.GITHUB_ACTIONS, opener_review=ld.CLAUDE_MARKER + "\n**Claude Review**", **overrides)
+
+
+def test_a_resolved_copilot_thread_with_no_reply_is_listed():
+    assert ld.unreplied_threads([thread()]) == ("src/a.py:12",)
+
+
+def test_a_resolved_copilot_thread_with_a_reply_naming_a_commit_is_not_listed():
+    assert ld.unreplied_threads([thread(repliers=("octo",))]) == ()
+
+
+def test_a_reply_is_enough_whatever_it_says_so_sandcastles_and_a_sessions_replies_count():
+    # Sandcastle's marker reply and a session's reply come from the owner's login; their text isn't read.
+    assert ld.unreplied_threads([thread(repliers=("octo",)), thread(repliers=("someone-else",), name="b.py:1")]) == ()
+
+
+def test_a_resolved_claude_review_thread_with_no_reply_is_listed():
+    assert ld.unreplied_threads([claude_thread()]) == ("src/a.py:12",)
+    assert ld.unreplied_threads([claude_thread(repliers=("octo",))]) == ()
+
+
+def test_a_github_actions_thread_without_the_claude_marker_is_not_a_bot_thread():
+    other = thread(opener=ld.GITHUB_ACTIONS, opener_review="Some other workflow's review.")
+    assert not ld.bot_thread(other)
+    assert ld.unreplied_threads([other]) == ()
+
+
+def test_a_persons_own_resolved_thread_is_not_listed():
+    assert ld.unreplied_threads([thread(opener="octo", opener_kind="User")]) == ()
+
+
+def test_a_user_named_like_copilot_is_not_a_bot_thread():
+    assert ld.unreplied_threads([thread(opener_kind="User")]) == ()
+
+
+def test_a_thread_with_no_author_or_another_bots_is_not_a_bot_thread():
+    assert ld.unreplied_threads([thread(opener="", opener_kind=""), thread(opener="dependabot", opener_kind="Bot")]) == ()
+
+
+def test_an_unresolved_bot_thread_is_not_listed():
+    assert ld.unreplied_threads([thread(resolved=False)]) == ()
+
+
+def test_a_reply_by_the_opener_itself_is_no_reply():
+    assert ld.unreplied_threads([thread(repliers=(ld.COPILOT_REVIEWER,))]) == ("src/a.py:12",)
+
+
+def test_a_thread_with_more_comments_than_were_read_counts_as_replied():
+    assert ld.unreplied_threads([thread(partial=True)]) == ()
+
+
+def test_unreplied_threads_keep_the_order_given():
+    threads = [thread(name="b.py:2"), thread(name="a.py:1", repliers=("octo",)), claude_thread(name="c.py:3")]
+    assert ld.unreplied_threads(threads) == ("b.py:2", "c.py:3")
+
+
+def test_the_unreplied_threads_are_a_notice_decide_ignores_them():
+    assert ld.decide(replace(READY, unreplied_threads=("src/a.py:12",))) == ld.decide(READY)
+    waiting = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_requested=True)
+    assert ld.decide(replace(waiting, unreplied_threads=("src/a.py:12",))) == ld.decide(waiting)
+    assert ld.decide(replace(READY, unreplied_threads=("src/a.py:12",))).action == ld.ARM_AUTO_MERGE
+
+
+def test_the_notice_names_the_threads_and_is_empty_when_there_are_none():
+    assert ld.unreplied_notice(READY) == ""
+    one = replace(READY, unreplied_threads=("src/a.py:12",))
+    assert ld.unreplied_notice(one) == "notice: resolved without a reply: src/a.py:12"
+    two = replace(READY, unreplied_threads=("src/a.py:12", "b.py:3"))
+    assert ld.unreplied_notice(two) == "notice: resolved without a reply: src/a.py:12, b.py:3"
+
+
+def test_the_notice_names_at_most_three_threads_and_counts_the_rest():
+    names = ("a.py:1", "b.py:2", "c.py:3", "d.py:4", "e.py:5")
+    notice = ld.unreplied_notice(replace(READY, unreplied_threads=names))
+    assert notice == "notice: resolved without a reply: a.py:1, b.py:2, c.py:3 and 2 more"
+    exactly = ld.unreplied_notice(replace(READY, unreplied_threads=names[:3]))
+    assert exactly == "notice: resolved without a reply: a.py:1, b.py:2, c.py:3"

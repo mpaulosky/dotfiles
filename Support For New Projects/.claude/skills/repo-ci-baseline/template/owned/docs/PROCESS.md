@@ -72,8 +72,10 @@ post, word for word. Keep it current: after every follow-up commit, update it so
 - **Required checks:** Build Solution, Test Suite, Branch name, PR title, actionlint, zizmor, shellcheck, markdownlint
   and yamllint. A docs-only PR skips the build and tests, and so does a Dependabot GitHub Actions bump; a skipped check
   counts as passing.
-- **Copilot reviews every push**, drafts included. Fix a thread you agree with, push the fix, then reply saying what
-  changed. Resolve it if Copilot or Claude Review opened it; leave a person's thread for them. Don't resolve a thread
+- **Copilot reviews every push**, drafts included. Fix a thread you agree with, push the fix, then reply naming the fixing
+  commit by its short SHA (7 characters) and saying what changed (`Fixed in 1a2b3c4: <what changed>.`), so the PR documents
+  its fixes. Resolve it if Copilot or Claude Review opened it; leave a person's thread for them. A Copilot or Claude Review
+  thread resolved without a reply is flagged, in PR Auto-Merge's log and in `status.sh` and `land.sh`, but it doesn't hold the merge. Don't resolve a thread
   before the push: PR Auto-Merge merges once the last thread is resolved, fix or not. On every other thread, whoever
   opened it (one you decline, one raising a finding someone accepted, one waiting on a person's decision), reply only
   "Left for the owner." and leave it unresolved, so the hold keeps it for the owner. The same reply on all of them

@@ -102,6 +102,9 @@ The 5,000 REST requests an hour, the allowance that ran out on 2026-10-18, are l
 - **A quiet round** costs one `gh api graphql` per repo: status.py's `QUERY`, about 3 GraphQL points
   (50 PRs, each with five nested lists and the head's check list: 301 requests, divided by 100).
   With `github/repos.txt`'s seven repos that's 420 queries and about 1,260 of the account's 5,000 GraphQL points an hour.
+  A PR whose review threads are all resolved and that Copilot or Claude Review reviewed adds one more query a poll, `THREADS_QUERY`
+  (the comments of its threads, for the unreplied-thread notice: 101 requests, 1 point).
+  The comments aren't in `QUERY`: nested under 50 PRs of 100 threads they'd add 5,000 requests, about 53 points a read.
 - **Actions** cost more, once per PR head: updating a branch is `gh pr update-branch`, `gh pr edit --add-reviewer @copilot` and a read-back `gh pr view`;
   requesting Copilot is one `gh pr edit` and one read-back; adding `review:claude`, marking a PR ready and arming auto-merge are one call each.
 - **A watched PR that left the open list** costs one `gh pr view` a round until it reads MERGED or CLOSED.

@@ -7,7 +7,8 @@
 Each line: repo#number, title, head, draft, merge state, which reviewer
 reviewed the head (review:copilot, review:claude or review:no), open threads,
 auto-merge, running/failed/cancelled checks,
-and the landing decision's next action (github/landing.py). One GraphQL query
+and the landing decision's next action (github/landing.py), then a
+`notice:` naming the resolved Copilot or Claude Review threads nobody replied to. One GraphQL query
 per repo, read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
 
@@ -21,8 +22,8 @@ import json
 import subprocess
 import sys
 
-from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, claude_off_diff, claude_reviews,
-                     copilot_declined, copilot_reviews, decide, summarize_checks)
+from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, Thread, claude_off_diff, claude_reviews,
+                     copilot_declined, copilot_reviews, decide, summarize_checks, unreplied_notice, unreplied_threads)
 from settings import read_repo_list
 
 QUERY = """
@@ -39,7 +40,10 @@ query($owner: String!, $name: String!) {
           ... on Team { name }
         } } }
         reviews(last: 100) { nodes { author { login } commit { oid parents { totalCount } } body } }
-        reviewThreads(first: 100) { nodes { isResolved } }
+        reviewThreads(first: 100) { nodes {
+          isResolved path line originalLine
+          comments(first: 10) { totalCount nodes { url author { login __typename } pullRequestReview { body } } }
+        } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
           ... on CheckRun { databaseId name status conclusion startedAt }
@@ -71,6 +75,31 @@ def to_check(node):
         return Check(node["context"], "COMPLETED", state, node.get("createdAt") or "")
     return Check(node["name"], node["status"], node.get("conclusion"), node.get("startedAt") or "",
                  node.get("databaseId") or 0)
+
+
+def printable(text):
+    """text with every character that isn't printable replaced by its repr escape; thread paths are PR-controlled."""
+    return "".join(char if char.isprintable() else repr(char)[1:-1] for char in text)
+
+
+def to_thread(node):
+    """A Thread from one reviewThreads node of QUERY; a node without comments has no opener and is no bot thread."""
+    comments = node.get("comments") or {}
+    nodes = [comment or {} for comment in comments.get("nodes") or []]
+    author = (nodes[0].get("author") or {}) if nodes else {}
+    review = (nodes[0].get("pullRequestReview") or {}) if nodes else {}
+    line_number = node.get("line") or node.get("originalLine")
+    path = node.get("path")
+    name = "thread" if not path else f"{path}:{line_number}" if line_number else path
+    return Thread(
+        resolved=bool(node.get("isResolved")),
+        opener=author.get("login") or "",
+        opener_kind=author.get("__typename") or "",
+        opener_review=review.get("body") or "",
+        repliers=tuple((comment.get("author") or {}).get("login") or "" for comment in nodes[1:]),
+        partial=comments.get("totalCount", len(nodes)) > len(nodes),
+        name=printable(name),
+    )
 
 
 def repo_flags(scope):
@@ -112,6 +141,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         claude_requested=REVIEW_CLAUDE in labels,
         copilot_dropped=copilot_dropped,
         open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
+        unreplied_threads=unreplied_threads([to_thread(thread) for thread in node["reviewThreads"]["nodes"]]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),
         checks_required=checks_required,
@@ -130,12 +160,13 @@ def line(repo, node, pr):
     checks = summarize_checks(pr.checks)
     decision = decide(pr)
     name = repo.split("/")[-1]
+    notice = unreplied_notice(pr)
     return (f"{name}#{node['number']} {shorten(node['title']):<{TITLE_WIDTH}} {pr.head[:7]}"
             f" {'draft' if pr.draft else 'ready'} {pr.merge_state}"
             f" review:{pr.head_reviewer or 'no'} threads:{pr.open_threads}"
             f" automerge:{'on' if pr.auto_merge_armed else 'off'}"
             f" running:{len(checks.running)} failed:{len(checks.failed)} cancelled:{len(checks.cancelled)}"
-            f" -> {decision.action} ({decision.reason})")
+            f" -> {decision.action} ({decision.reason})" + (f" {notice}" if notice else ""))
 
 
 def main(argv=None, fetch=gh_graphql, out=sys.stdout, err=sys.stderr):

@@ -12,6 +12,8 @@ owner's gh login, so they are almost all GraphQL points, out of the account's
 5,000 an hour (the 5,000 REST requests an hour RELEASE_PR_PAT and Sandcastle
 spend are left alone, though they share the account): see references/tokens.md.
 
+The printed line carries status.py's notice for resolved bot threads nobody replied to.
+
 Every watched PR goes through landing.decide(), and the command does what the
 decision says, once per PR head:
 
@@ -210,7 +212,7 @@ class Lander:
         decision = decide(state)
         pr.title = node["title"]
         seen = (state.state, state.head, state.draft, state.merge_state, state.head_reviewer,
-                state.open_threads, state.auto_merge_armed, decision.action, decision.reason)
+                state.open_threads, state.unreplied_threads, state.auto_merge_armed, decision.action, decision.reason)
         if seen == pr.seen:
             return
         pr.seen = seen

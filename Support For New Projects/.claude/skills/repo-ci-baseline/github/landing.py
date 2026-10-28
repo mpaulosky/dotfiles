@@ -9,6 +9,8 @@ skill lands PRs by (references/automerge.md):
   Claude Review's own) is a blocker to report, never something to arm past;
   so is a merge conflict;
 - a draft is marked ready only when the caller says it should be;
+- resolved Copilot and Claude Review threads nobody replied to are listed in
+  PrState.unreplied_threads: a notice beside the decision, never a hold;
 - a branch BEHIND main is updated, and Copilot asked to review the new head;
 - a head no reviewer has reviewed waits for Copilot while it's requested, and
   for Claude while the PR carries review:claude. With neither on its way,
@@ -156,15 +158,40 @@ class Thread:
 
 
 def bot_thread(thread):
-    raise NotImplementedError("Not implemented")
+    """A Copilot or Claude Review thread, by the rule claude-review.yml reviews threads by.
+
+    The opening comment's author is the Bot copilot-pull-request-reviewer, or
+    github-actions with the Claude marker first in the opening review's body.
+    """
+    login = thread.opener.removesuffix("[bot]")
+    if thread.opener_kind != "Bot":
+        return False
+    return login == COPILOT_REVIEWER or (login == GITHUB_ACTIONS and (thread.opener_review or "").startswith(CLAUDE_MARKER))
 
 
 def unreplied_threads(threads):
-    raise NotImplementedError("Not implemented")
+    """The names of the resolved bot threads nobody but their opener commented on.
+
+    A reply's text isn't read: Sandcastle's and a session's replies come from
+    the owner's login and count as replies. A thread with more comments than
+    were read counts as replied.
+    """
+    return tuple(thread.name for thread in threads
+                 if thread.resolved and bot_thread(thread) and not thread.partial
+                 and all(replier == thread.opener for replier in thread.repliers))
+
+
+UNREPLIED_NAMED = 3
 
 
 def unreplied_notice(pr):
-    raise NotImplementedError("Not implemented")
+    """The line's notice for the resolved bot threads nobody replied to; "" when there are none."""
+    names = pr.unreplied_threads
+    if not names:
+        return ""
+    shown = ", ".join(names[:UNREPLIED_NAMED])
+    more = len(names) - UNREPLIED_NAMED
+    return f"notice: resolved without a reply: {shown}" + (f" and {more} more" if more > 0 else "")
 
 
 @dataclass(frozen=True)
@@ -183,6 +210,8 @@ class PrState:
     request didn't register (dropped or refused). Only a caller that asked
     and read it back knows this (land.py); a one-shot read (status.py) never
     sets it, so it shows the Copilot step.
+    unreplied_threads: names of the resolved bot threads nobody replied to; a
+    notice, not a hold: decide() ignores it.
     copilot_declined: the commit oids Copilot answered with its quota note
     (see copilot_declined()); on the head it calls in Claude. Claude's review
     of a commit counts when that commit is in copilot_declined, or is the head

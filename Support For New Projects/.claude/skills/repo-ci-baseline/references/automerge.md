@@ -57,6 +57,14 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Blazor-Server#390 merge an unreviewed head and made Claude Review skip that head and Blazor-Server#392's (Blazor-Server#393).
   A reviewer must have reviewed the `headRefOid`, or the commit a chain of clean merges from main sits on (below).
   More threads than one page is left to a person.
+- **Resolved bot threads nobody replied to (mpaulosky/dotfiles#328).** `docs/PROCESS.md` has a session reply to a fixed thread with the
+  fixing commit's short SHA and what changed, but nothing made it, and a thread resolved by hand in the GitHub UI skips the reply.
+  Once every thread is resolved, the run logs a notice (`core.notice`) naming up to 3 such threads as `path:line` with the opening comment's url
+  and `and N more`. It is a notice, not a hold: the PR merges. A thread counts when it is resolved, its opening comment is by the Bot
+  `copilot-pull-request-reviewer` or by `github-actions` in a review starting with `CLAUDE_MARKER` (the rule `claude-review.yml` reads threads by),
+  and no later comment is by another login. The reply's text isn't read, so Sandcastle's reply (a reason, not a commit) and a session's reply count;
+  a person's thread, another bot's and a thread with more comments than the 10 read don't. To make it a hold, return from `mergeIfReady`
+  after the notice and have `decide()` return `WAIT` for `unreplied_threads`. The notice repeats on each evaluation of a PR that waits on something else.
 - **Review cap.** Each reviewer re-reviews every push and can raise something new each time, so a PR could chase its reviews forever.
   Once Copilot and Claude between them have reviewed `COPILOT_REVIEW_CAP` (3) distinct non-merge commits, the merge stops waiting for a review of the head.
   Their unresolved threads, and Claude's off-diff findings on its review of the head, still hold it (#146): IssueTracker#236, IssueManager#281 and
@@ -275,6 +283,10 @@ status.sh mpaulosky/<repo>    # just this repo
 Each line shows the PR's head, draft, merge state, which reviewer reviewed the head (`review:copilot`, `review:claude` or `review:no`), open threads, auto-merge,
 running, failed and cancelled checks, and the next action. It costs one GraphQL query per repo and prints nothing else
 (one line when no PR is open), so it's the status check to run while PRs land, instead of hand-written queries.
+
+A line ends with `notice: resolved without a reply: path:line, ...` (3 named, then `and N more`) when resolved Copilot or Claude Review threads
+got no reply, by the rule above. `decide()` ignores it (`PrState.unreplied_threads`), and `land.sh` prints the line again when the notice changes.
+Tests: `test_landing.py` (the rule and the notice text), `test_status.py` (the line and the query), `test_land.py` and `pr-automerge.test.mjs`.
 
 `landing.decide(PrState)` returns one action, the rules PRs are landed by:
 nothing for a merged, closed or already-armed PR; **report blocker** for a failed check, a cancelled check nothing newer replaced, or a conflict;

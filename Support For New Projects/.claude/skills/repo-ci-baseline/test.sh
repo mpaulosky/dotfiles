@@ -65,6 +65,10 @@ else
 fi
 (cd "$owned" && "${pytest_cmd[@]}" -q -p no:cacheprovider .github/scripts/tests) || fail "pytest"
 
+step "Hardening review script tests"
+# The mutation runner and the known-open list that .claude/skills/hardening-review/ ships; the tests stay here, out of the Template.
+(cd "$skill_dir/tests" && "${pytest_cmd[@]}" -q -p no:cacheprovider hardening) || fail "hardening pytest"
+
 step "Renderer oracle"
 # release_post.py's output rendered by cmark-gfm (GitHub) and kramdown (GitHub
 # Pages); kramdown runs from a local Ruby with its pinned gems, else Docker.
@@ -222,6 +226,10 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh \
   scripts/review.sh .claude/agents/pre-push-reviewer.md .claude/skills/pre-push-review/SKILL.md \
   .claude/skills/pre-push-review/lenses.md .claude/skills/pre-push-review/review-bar.md \
+  .claude/skills/hardening-review/SKILL.md .claude/skills/hardening-review/references/brief.md \
+  .claude/skills/hardening-review/references/mutations.md .claude/skills/hardening-review/references/state.md \
+  .claude/skills/hardening-review/references/triage.md .claude/skills/hardening-review/scripts/known_open.py \
+  .claude/skills/hardening-review/scripts/mutate.py \
   .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/critique-prompt.md \
   .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
   .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
@@ -252,6 +260,11 @@ while IFS= read -r rel; do
   cmp -s "$owned/.sandcastle/$rel" "$dotfiles/.sandcastle/$rel" \
     || fail "dotfiles' .sandcastle/$rel differs from the Template's; copy it over"
 done < <(cd "$owned/.sandcastle" && find . -type f -printf '%P\n' | sort)
+# Likewise every file of the hardening-review skill.
+while IFS= read -r rel; do
+  cmp -s "$owned/.claude/skills/hardening-review/$rel" "$dotfiles/.claude/skills/hardening-review/$rel" \
+    || fail "dotfiles' .claude/skills/hardening-review/$rel differs from the Template's; copy it over"
+done < <(cd "$owned/.claude/skills/hardening-review" && find . -type f -printf '%P\n' | sort)
 
 step "Sandcastle workflow"
 # A repo without the SANDCASTLE_GH_TOKEN secret doesn't run Sandcastle in Actions, and its cron would fail every two hours if the workflow

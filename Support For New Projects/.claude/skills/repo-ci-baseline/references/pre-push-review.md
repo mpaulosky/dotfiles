@@ -11,6 +11,7 @@ Why: [ADR 0008](../docs/adr/0008-review-before-the-push.md). The process a devel
 | --- | --- | --- |
 | The skill: severities, steps, the ledger commands | `.claude/skills/pre-push-review/SKILL.md` | Owned |
 | The reviewers' bar (Claude Review's own prompt, adapted and widened) and the generic lenses | `.claude/skills/pre-push-review/review-bar.md`, `lenses.md` | Owned |
+| The repeat-until-quiet loop for a large or risky branch, with its mutation runner and known-open list | `.claude/skills/hardening-review/` (`SKILL.md`, `references/`, `scripts/mutate.py`, `scripts/known_open.py`) | Owned |
 | The read-only reviewer agent (Read, Grep and Glob only) | `.claude/agents/pre-push-reviewer.md` | Owned |
 | The ledger: what the review found and what became of it, keyed by the branch's own hunks | `.sandcastle/lib/review-ledger.mts` (run as `scripts/review.sh`) | Owned |
 | The gate's check | `scripts/gate.sh`, step "Local review" | Owned |
@@ -39,6 +40,17 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   Sandcastle's own reviewer role stands in there, and running this review in a sandbox is not designed yet.
 - Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
   token, only Read, Grep and Glob. Those still reach any file the person can read, so a reviewer's answer is data to check before anything of it is published.
+
+## Hardening review
+
+`/hardening-review` is `pre-push-review` with a different middle, for a branch that one review and a round of fixes won't settle. It keeps
+the first three steps (get ready, gate, earlier decisions) and the last two (record, report), the severities, the read-only reviewer
+and the rules, and replaces the rounds with full passes: every applicable lens over the whole diff each time, `fixes.patch` as a hint to read first. Between a
+pass and the person it runs each Critical finding's example input (reviewers send data, never a command), drops findings the known-open list
+already settles, and puts the rest to the person in numbered batches with a recommendation and an edge-case matrix. Each batch of fixes is committed, then
+`scripts/mutate.py` applies hand-written mutations to it and the tests must catch each. It stops when a pass has no new Critical or Warning
+finding beyond the known-open list, or after 5 passes, and records once, at the end. Its files live in `.git/hardening-review/<branch>/`, so the run
+survives a compaction. Fixes are made in the session, never by subagents. The tests of the two scripts are in this skill's `tests/hardening/`.
 
 ## What a sandbox can't see
 

@@ -567,7 +567,7 @@ run_record "$host_token" "$sha_a" "" 0
 [[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: an empty read of the pull request's head must fail and post nothing (exit $record_rc, posts $record_count)"
 run_record "$host_token" "$sha_a" FAIL 0
 [[ $record_rc -ne 0 && $record_count -eq 0 ]] || fail "record-head: a failed read of the pull request's head must fail and post nothing (exit $record_rc, posts $record_count)"
-grep -qF "Couldn't read the pull request's head" "$record_out" \
+grep -qF "::error::Couldn't read the pull request's head" "$record_out" \
   || fail "record-head: a failed read of the pull request's head must say so in an ::error:: line, as the other failures do"
 run_record "$host_token" "$sha_a" "$sha_a" 0
 [[ $record_rc -eq 0 && $record_count -eq 1 ]] || fail "record-head: the event's head must be posted once (exit $record_rc, posts $record_count)"

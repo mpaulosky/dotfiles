@@ -129,7 +129,7 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   the Update branch button when the owner is that account), but not a merge a collaborator makes, nor one made by `GITHUB_TOKEN` or
   another account. The sweep records a head it reached through such merges, so the walk starts from there next time;
   more than `MAX_MAIN_MERGES` merges since the last posted record end the follow-up, with the reason in the run log.
-  A commit anyone else pushes after the label, a force-push, or a record that failed to post leaves the head unapproved,
+  A commit anyone else pushes after the label, a force-push, or a record that couldn't be made (the job couldn't read the pull request's head, or its post failed three times) leaves the head unapproved,
   and the pull request is not followed up until the owner removes and re-adds the label.
   The record needs the Sandcastle workflow in Actions with `SANDCASTLE_GH_TOKEN` set, and that token must belong to the account the sweep runs as (`signedInHostLogin`):
   a repo that runs Sandcastle only locally, or whose token is another account's, can't hand a pull request off.

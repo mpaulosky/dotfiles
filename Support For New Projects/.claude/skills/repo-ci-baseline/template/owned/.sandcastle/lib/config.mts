@@ -348,9 +348,10 @@ export const COPILOT_REREQUEST_AFTER_MS = 60 * 60 * 1000;
 // (withoutOwnCheck below): running, it would hold the PR that
 // started the run, and red after a hand-back, it would send the follow-up
 // role Sandcastle's own job log. The workflow's record-head job, "Record the approved head", is a different check and is not
-// left out. It runs on pull_request_target, whose checks report on the PR's head (PR Auto-Merge's own check does too), so a record
-// that fails (three failed posts, or a head that moved) leaves a red "Record the approved head" check on the PR until the owner
-// removes and adds the label and the job passes.
+// left out. It runs on pull_request_target, whose checks report on the PR's head (PR Auto-Merge's own does: its pull_request_target
+// run on mpaulosky/dotfiles#342 had the PR's head as its head_sha), so a record the job can't make (a head that isn't a SHA or has
+// moved, a read of the head that fails, or three failed posts) leaves a red "Record the approved head" check on the PR until the
+// owner removes and adds the label and the job passes.
 export const SANDCASTLE_CHECK = "Sandcastle";
 
 // The Sandcastle workflow's name (the top-level `name:` of

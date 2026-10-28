@@ -192,9 +192,13 @@ python3 -I "$owned/.github/scripts/check_gh_repo.py" "$owned/scripts" \
 # covers dotfiles' own, without a change to its scripts/gate.sh.
 python3 -I "$owned/.github/scripts/check_gh_repo.py" --repo "$(cd "$skill_dir/../../../.." && pwd)" \
   || fail "tell every gh command in dotfiles' own scripts and skills its repository"
+# The Seed files land in every Applied repo's scripts, .github/ci and skills, where
+# a repo's gate checks them with no Owned file to edit.
+python3 -I -B "$owned/.github/scripts/check_gh_repo.py" --repo "$seed" \
+  || fail "tell every gh command in a Seed script or skill its repository"
 # The check skips the Owned Baseline files by name (OWNED), so a new Owned
 # script or skill has to be listed, or it would be checked in every repo.
-python3 -I - "$owned" "$owned/.github/scripts" <<'PY' || fail "list new Owned scripts and skills in check_gh_repo.py's OWNED"
+python3 -I -B - "$owned" "$owned/.github/scripts" <<'PY' || fail "list new Owned scripts and skills in check_gh_repo.py's OWNED"
 import pathlib, sys
 
 sys.path.insert(0, sys.argv[2])

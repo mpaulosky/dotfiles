@@ -805,3 +805,52 @@ def test_check_repo_passes_a_repo_of_200_small_files(tmp_path):
 
     # Assert
     assert found == []
+
+
+@pytest.mark.parametrize("text", [
+    "command -v gh >/dev/null || exit 1 # gh-repo: ok\n",
+    "echo \"needs gh\" #gh-repo: ok\n",
+    "cat ~/.config/gh/hosts.yml\n",
+    "ls /root/.config/gh/\n",
+])
+def test_untold_skips_a_line_marked_gh_repo_ok_and_a_folder_named_gh(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text", [
+    "command -v gh >/dev/null\n",
+    "echo gh-repo: ok; gh pr view 1\n",
+    "gh pr view 1 # gh-repo: okay\n",
+    "# gh-repo: ok\ngh pr view 1\n",
+])
+def test_untold_refuses_a_gh_command_without_the_marker_on_its_own_line(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found
+
+
+@pytest.mark.parametrize("text", [
+    "Needs `gh` <!-- gh-repo: ok -->, as in `gh auth status`.\n",
+    "```bash\ncommand -v gh # gh-repo: ok\n```\n",
+    "Keep the token in `~/.config/gh/hosts.yml`.\n",
+])
+def test_untold_markdown_skips_a_line_marked_gh_repo_ok_and_a_folder_named_gh(tmp_path, text):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+def test_untold_markdown_still_refuses_the_next_line_after_a_marked_one(tmp_path):
+    # Arrange, Act
+    found = untold_md(tmp_path, "`gh auth status` <!-- gh-repo: ok -->\n`gh pr view 1`\n")
+
+    # Assert
+    assert [line.split(":")[1] for line in found] == ["2"]

@@ -106,6 +106,11 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   (`--repo=` and `-R` work too) on its line, except for `gh api`, which has no such flag. `gh repo`'s subcommands take
   the repository first in a skill too. Keep a command on one line; a backslash continuation or `"$@"` is refused.
   Prose such as "the gh CLI" and a span that is only `` `gh` `` are not commands.
+
+  A line that names `gh` without running it (`command -v gh >/dev/null`, `echo "needs gh"`) ends in a comment
+  `# gh-repo: ok` in a script or a fenced block, or carries `<!-- gh-repo: ok -->` in a skill, and the check skips it.
+  A path such as `~/.config/gh/hosts.yml` is not a command. The marker is the way out for a line the rules misread; a
+  real `gh` command is told its repository instead.
 - **Script tests need pytest,** which the system Python may lack. `uvx pytest -q .github/scripts/tests` runs them
   without installing anything.
 

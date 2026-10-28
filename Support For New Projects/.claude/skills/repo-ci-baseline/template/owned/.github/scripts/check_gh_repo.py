@@ -29,6 +29,10 @@ same rule:
   or a quoted word ("$work/bin/gh"), counts once the script has exported
   GH_REPO; anything else after it ({repo,} view, a list's ", ") is refused.
 
+A line that is no gh command to run but names gh (command -v gh, echo "needs gh")
+carries a comment saying so, # gh-repo: ok, and is skipped. A path such as
+~/.config/gh/hosts.yml names no command either.
+
 Whole-line comments are skipped, and so are binary files (with a NUL byte).
 Bash doesn't care about encoding, so any other file is read whatever bytes it
 holds.
@@ -60,7 +64,8 @@ the GH_REPO=<value> prefix right before it, or by --repo <value>, --repo=<value>
 or -R <value> after it on its line (not for gh api, which has no such flag).
 gh repo's subcommands take the repository first, as in a script. A backslash
 continuation or an expansion after gh, or a gh with no subcommand on its line,
-is refused: a gh command stays on one line.
+is refused: a gh command stays on one line. <!-- gh-repo: ok --> on a line, or
+# gh-repo: ok in a fenced block, skips it.
 """
 
 import os
@@ -74,8 +79,11 @@ VALUE = (r"""("[^"$` \t]+"|'[^' \t]+'|[^ \t`"'$;&|,()<>]+"""
          r"""|"?\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}"'`]*\}"?)""")
 EXPORTS = re.compile(r"^export GH_REPO=" + VALUE + r"[ \t]*(;[ \t]*)?(#.*)?$")
 TOLD = re.compile(r"(^|[^A-Za-z0-9_])GH_REPO=" + VALUE + r"[ \t]+$")
-# gh as a word: not part of gh_, neigh or gh.exe.
-GH = re.compile(r"(?<![A-Za-z0-9_.-])gh(?![A-Za-z0-9_.-])")
+# gh as a word: not part of gh_, neigh or gh.exe, nor a folder in a path (~/.config/gh/hosts.yml).
+GH = re.compile(r"(?<![A-Za-z0-9_.-])gh(?![A-Za-z0-9_.-]|/)")
+# A line that says its gh isn't a command to run (command -v gh, echo "needs gh"):
+# # gh-repo: ok in a script, <!-- gh-repo: ok --> in a skill.
+OPT_OUT = re.compile(r"(#|<!--)[ \t]*gh-repo:[ \t]*ok(?![A-Za-z0-9_-])")
 # Its subcommand, written out.
 SUBCOMMAND = re.compile(r"[ \t]+(?=[a-z-])")
 # A backslash continuation, or a word gh's subcommand could come from.
@@ -149,6 +157,8 @@ def untold(path):
         elif UNSET.search(line) or any(
                 not PREFIX_OF_GH.match(line, assignment.start()) for assignment in ASSIGNMENT.finditer(line)):
             exported = False
+        if OPT_OUT.search(line):
+            continue
         if any(not told(line[:match.start()], line[match.end():], exported) for match in GH.finditer(line)):
             found.append(f"{path}:{number}: {shown(line)}")
     return found
@@ -251,7 +261,7 @@ def untold_markdown(path):
         else:
             # A span that is only gh names the tool in prose.
             code = [span for span in code_spans(line) if span.strip() != "gh"]
-        if any(untold_in_code(piece) for piece in code):
+        if not OPT_OUT.search(line) and any(untold_in_code(piece) for piece in code):
             found.append(f"{path}:{number}: {shown(line)}")
     return found
 

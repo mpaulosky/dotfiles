@@ -254,7 +254,7 @@ jobs:
             // used up, with no note) is given this long after its checks finish
             // and the PR last became reviewable (marked ready, or reopened)
             // before Claude is called in (mpaulosky/dotfiles#318).
-            const COPILOT_GRACE_MS = 10 * 60 * 1000;
+            const COPILOT_GRACE_MS = 5 * 60 * 1000;
             // How many merges from main in a row a reviewed commit can sit
             // under and still count as reviewed: each one costs a few API
             // calls, and a PR that chased main further gets a fresh review.

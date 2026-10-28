@@ -46,6 +46,10 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     const review = join(scratch, "scripts/review.sh");
     cpSync(join(owned, "scripts/review.sh"), review);
     chmodSync(review, statSync(join(owned, "scripts/review.sh")).mode);
+    // lib/config.test.mts runs scripts/watch-pr.sh --would-skip on every Sandcastle marker.
+    const watcher = join(scratch, "scripts/watch-pr.sh");
+    cpSync(join(owned, "scripts/watch-pr.sh"), watcher);
+    chmodSync(watcher, statSync(join(owned, "scripts/watch-pr.sh")).mode);
     symlinkSync(join(root, "node_modules"), join(scratch, "node_modules"));
   });
 

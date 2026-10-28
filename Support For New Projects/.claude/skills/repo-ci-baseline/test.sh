@@ -258,7 +258,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .github/workflows/sandcastle.yml \
   .github/scripts/post_claude_review.py \
   .github/hooks/pre-commit .github/hooks/pre-push .github/hooks/post-checkout scripts/check-branch-name.sh \
-  scripts/review.sh .claude/agents/pre-push-reviewer.md .claude/skills/pre-push-review/SKILL.md \
+  scripts/review.sh scripts/watch-pr.sh .claude/agents/pre-push-reviewer.md .claude/skills/pre-push-review/SKILL.md \
   .claude/skills/pre-push-review/lenses.md .claude/skills/pre-push-review/review-bar.md \
   .claude/skills/hardening-review/SKILL.md .claude/skills/hardening-review/references/brief.md \
   .claude/skills/hardening-review/references/mutations.md .claude/skills/hardening-review/references/state.md \

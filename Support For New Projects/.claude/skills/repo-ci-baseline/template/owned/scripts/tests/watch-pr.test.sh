@@ -37,7 +37,7 @@ repo=""
 # still to fail; GH_FAKE_GARBAGE=1 prints text that is not JSON.
 fakebin="$work/fakebin"
 mkdir "$fakebin"
-cat > "$fakebin/gh" <<'EOF'
+cat > "$fakebin/gh" <<'EOF' # gh-repo: ok
 #!/usr/bin/env bash
 {
   printf 'GH_REPO=%s ::' "${GH_REPO-}"
@@ -48,7 +48,7 @@ if [[ -n "${GH_FAKE_FAIL_FILE-}" && -s "$GH_FAKE_FAIL_FILE" ]]; then
   left="$(<"$GH_FAKE_FAIL_FILE")"
   if ((left > 0)); then
     echo $((left - 1)) > "$GH_FAKE_FAIL_FILE"
-    echo "gh: HTTP 502" >&2
+    echo "gh: HTTP 502" >&2 # gh-repo: ok
     exit 1
   fi
 fi
@@ -58,7 +58,7 @@ if [[ -n "${GH_FAKE_GARBAGE-}" ]]; then
 fi
 cat "$GH_FIXTURE"
 EOF
-chmod +x "$fakebin/gh"
+chmod +x "$fakebin/gh" # gh-repo: ok
 # A fake sleep that returns at once and logs how long it was asked to wait.
 cat > "$fakebin/sleep" <<'EOF'
 #!/usr/bin/env bash
@@ -73,7 +73,7 @@ for tool in bash env git sed grep cat date mkdir mktemp dirname basename head ta
   path="$(command -v "$tool" 2>/dev/null || true)"
   [[ -n "$path" && "$path" == /* ]] && ln -s "$path" "$nojq/$tool"
 done
-cp "$fakebin/gh" "$fakebin/sleep" "$nojq/"
+cp "$fakebin/gh" "$fakebin/sleep" "$nojq/" # gh-repo: ok
 
 export GH_LOG="$work/gh.log"
 export SLEEP_LOG="$work/sleep.log"
@@ -189,7 +189,7 @@ quiet() { # quiet <description>
 new_repo
 run --once 7
 quiet "a green open PR with nothing to say"
-check "a quiet poll is one gh call" polls_are 1
+check "a quiet poll is one gh call" polls_are 1 # gh-repo: ok
 check "--once never sleeps" sleeps_are 0
 
 new_repo
@@ -519,8 +519,8 @@ quiet "a Sandcastle comment alone"
 new_repo
 pr '{"mergeStateStatus":"BEHIND"}'
 run --once 7
-check "every gh call is 'api graphql'" test "$(grep -vc ':: api graphql' "$GH_LOG")" -eq 0
-check "no gh call carries a mutation" log_lacks "mutation"
+check "every gh call is 'api graphql'" test "$(grep -vc ':: api graphql' "$GH_LOG")" -eq 0 # gh-repo: ok
+check "no gh call carries a mutation" log_lacks "mutation" # gh-repo: ok
 check "the query names the PR number" log_has "7"
 
 new_repo
@@ -593,8 +593,8 @@ done
 out="$(cd "$repo" && PATH="$work/nogh-$n" bash "$SCRIPT" --once 7 2>"$work/err")"
 status=$?
 err="$(<"$work/err")"
-check "no gh on PATH: exit 2" status_is 2
-check "no gh on PATH: the message names gh" err_has "gh"
+check "no gh on PATH: exit 2" status_is 2 # gh-repo: ok
+check "no gh on PATH: the message names gh" err_has "gh" # gh-repo: ok
 
 # ---------------------------------------------------------------------------
 # Polling, retries and the timeout.
@@ -633,7 +633,7 @@ pr '{"state":"MERGED","merged":true}'
 run --interval 60 --timeout 120 7
 woken merged
 check "a first poll with a reason doesn't sleep" sleeps_are 0
-check "a first poll with a reason is one gh call" polls_are 1
+check "a first poll with a reason is one gh call" polls_are 1 # gh-repo: ok
 
 # One failed poll is retried silently; the next one succeeds.
 new_repo

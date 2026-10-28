@@ -37,7 +37,9 @@ import {
   FOLLOW_UP_REPLY_MARKER,
   GATE_COMMENT_LINES,
   GATE_FIXER_ATTEMPTS,
+  GIVE_UP_MARKER,
   SESSION_REPLY_MARKER,
+  WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
@@ -409,7 +411,7 @@ function rerunLog(pr: number, names: readonly string[], host: PassHost, log: (li
 }
 
 // The PR hand-back comment for a pass that gave up (runPass's step 4, 9, 10,
-// 11): why, then the tail of the last gate output or the role's error (when
+// 11): GIVE_UP_MARKER on a line of its own (so scripts/watch-pr.sh skips it), why, then the tail of the last gate output or the role's error (when
 // given) in a fence longer than any backtick run in it, and how to re-queue
 // the PR (remove sandcastle:needs-human).
 export function giveUpComment(reason: string, output: string | undefined): string {
@@ -427,7 +429,7 @@ export function giveUpComment(reason: string, output: string | undefined): strin
     "To have Sandcastle pick the PR up again, remove `sandcastle:needs-human`. That also starts its count of follow-up " +
       "passes again.",
   );
-  return cutToLimit(parts.join("\n\n"));
+  return cutToLimit(`${GIVE_UP_MARKER}\n${parts.join("\n\n")}`);
 }
 
 // What one call to runPass decided or did:
@@ -884,9 +886,9 @@ function planPass(
 }
 
 // What the PR is told when a worktree was left in place, with its sandbox,
-// because it no longer points at this repository.
+// because it no longer points at this repository, under WORKTREE_TAMPERED_MARKER.
 const tamperedWorktreeComment = (branch: string) =>
-  `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
+  `${WORKTREE_TAMPERED_MARKER}\nSandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
   "person to look at. Don't run git in it.";
 
 // Hands the PR back with sandcastle:needs-human (see giveUpComment), quoting

@@ -1038,6 +1038,52 @@ def test_untold_still_reads_the_body_of_a_heredoc_fed_to_a_shell(tmp_path, text,
     assert_refused_at(found, text, line)
 
 
+# An unquoted delimiter lets bash run the $(...) and backticks in the body; eval, source and . run the body itself.
+@pytest.mark.parametrize("text, line", [
+    ("body=$(cat <<EOF\nOpen PRs: $(gh pr list --state open)\nEOF\n)\n", 2),
+    ("cat <<EOF\nOpen PRs: `gh pr list`\nEOF\n", 2),
+    ("cat <<-EOF\n\tOpen: $(gh pr list)\n\tEOF\n", 2),
+    ("cat <<EOF\nNow: $(echo $(gh pr list))\nEOF\n", 2),
+    ("eval \"$(cat <<EOF\ngh pr view 1\nEOF\n)\"\n", 2),
+    ("source /dev/stdin <<EOF\ngh pr view 1\nEOF\n", 2),
+    (". /dev/stdin <<EOF\ngh pr view 1\nEOF\n", 2),
+])
+def test_untold_reads_what_an_unquoted_heredoc_runs(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "cat <<'EOF'\nOpen PRs: $(gh pr list)\nEOF\n",
+    "cat <<\"EOF\"\nOpen PRs: `gh pr list`\nEOF\n",
+    "cat <<\\EOF\nOpen PRs: $(gh pr list)\nEOF\n",
+    "cat <<EOF\nOpen PRs: \\$(gh pr list)\nEOF\n",
+    "export GH_REPO=o/r\ncat <<EOF\nOpen PRs: $(gh pr list)\nEOF\n",
+    "cat <<EOF\nOpen PRs: $(GH_REPO=o/r gh pr list)\nEOF\n",
+    "cat <<EOF\nOpen PRs: $(gh pr list) # gh-repo: ok\nEOF\n",
+])
+def test_untold_accepts_a_heredoc_whose_substitutions_are_told_or_never_run(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+def test_untold_judges_the_line_after_a_heredoc_with_a_substitution(tmp_path):
+    # Arrange
+    text = "cat <<EOF\n$(date)\nEOF\ngh pr view 1\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, 4)
+
+
 def test_untold_judges_the_line_after_a_data_heredocs_terminator(tmp_path):
     # Arrange
     text = "export GH_REPO=o/r\ncat <<EOF\ngh pr view 1\nEOF\ngh repo view\n"

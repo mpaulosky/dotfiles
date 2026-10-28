@@ -74,15 +74,17 @@ def told(before, after, exported):
 
 # A heredoc operator and its delimiter: <<EOF, <<-'EOF', <<"EOF", <<\\EOF (not the here-string <<<).
 HEREDOC = re.compile(r"""(?<!<)<<(-?)[ \t]*(?:"([^"]*)"|'([^']*)'|\\?([^ \t;&|()<>"'\\]+))""")
-# A word that may run the heredoc's body as code: sh, bash, /bin/bash, dash, zsh, ksh.
-SHELL_WORD = re.compile(r"(?<![A-Za-z0-9_.-])(ba|da|z|k)?sh(?![A-Za-z0-9_.-])")
+# A word that may run the heredoc's body as code: sh, bash, /bin/bash, dash, zsh, ksh, eval, source, or . (as in . /dev/stdin).
+SHELL_WORD = re.compile(
+    r"(?<![A-Za-z0-9_.-])((ba|da|z|k)?sh|eval|source)(?![A-Za-z0-9_.-])|(?:^|[;&|({])[ \t]*\.[ \t]")
 
 
 def data_heredocs(line, later):
-    """The (delimiter, tabs) of each heredoc on line whose body is data, not code, in the order the bodies follow.
+    """The (delimiter, tabs, quoted) of each heredoc on line whose body is data, not code, in the order the bodies follow.
 
-    A line that names a shell anywhere (bash <<EOF, cat <<EOF | sh) feeds its body to it, so its body is read
-    as code. A heredoc whose delimiter never comes again, or one inside (( )), is no heredoc.
+    A line that names a shell anywhere (bash <<EOF, cat <<EOF | sh, eval, source) feeds its body to it, so its body is
+    read as code. An unquoted delimiter still lets bash run the $(...) and backticks in a data body.
+    A heredoc whose delimiter never comes again, or one inside (( )), is no heredoc.
     """
     if SHELL_WORD.search(line):
         return []
@@ -91,9 +93,35 @@ def data_heredocs(line, later):
         if line[:match.start()].count("((") > line[:match.start()].count("))"):
             continue
         delimiter = next(group for group in match.groups()[1:] if group is not None)
+        quoted = match.group(4) is None or match.group(0).count("\\") > 0
         if not any((text.lstrip("\t") if match.group(1) else text) == delimiter for text in later):
             continue
-        found.append((delimiter, bool(match.group(1))))
+        found.append((delimiter, bool(match.group(1)), quoted))
+    return found
+
+
+def substitutions(line):
+    """The commands bash runs in line's $(...) and backticks: the text inside each, to the line's end when unclosed."""
+    found = []
+    position = 0
+    while position < len(line):
+        if line[position] == "\\":
+            position += 2
+        elif line.startswith("$(", position):
+            depth, end = 1, position + 2
+            while end < len(line) and depth:
+                depth += (line[end] == "(") - (line[end] == ")")
+                end += 1
+            found.append(line[position + 2:end - 1 if depth == 0 else end])
+            position += 2
+        elif line[position] == "`":
+            end = position + 1
+            while end < len(line) and line[end] != "`":
+                end += 2 if line[end] == "\\" else 1
+            found.append(line[position + 1:end])
+            position = end + 1
+        else:
+            position += 1
     return found
 
 
@@ -122,9 +150,13 @@ def untold(path):
     bodies = []
     for number, line in enumerate(lines, 1):
         if bodies:
-            delimiter, tabs = bodies[0]
+            delimiter, tabs, quoted = bodies[0]
             if (line.lstrip("\t") if tabs else line) == delimiter:
                 bodies.pop(0)
+            elif not quoted and not OPT_OUT.search(line) and any(
+                    not told(code[:match.start()], code[match.end():], exported)
+                    for code in substitutions(line) for match in GH.finditer(code)):
+                found.append(f"{path}:{number}: {shown(line)}")
             continue
         if re.match(r"[ \t]*#", line):
             continue

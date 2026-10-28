@@ -111,8 +111,9 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   - `gh.exe` is `gh`: it is judged by the same rules, and a longer word (`gh.executable`, `neigh.exe`) or a folder
     (`~/.config/gh.exe/`) is not.
   - The body of a heredoc that feeds data to a program (`cat <<EOF` usage text) is no code, as an `echo` message is not,
-    so prose naming `gh` in it is skipped. A heredoc fed to a shell (`bash <<EOF`, `sh <<EOF`, `cat <<EOF | sh`) is code
-    and stays read.
+    so prose naming `gh` in it is skipped. A heredoc fed to a shell or to a program that runs its input (`bash <<EOF`,
+    `sh <<EOF`, `cat <<EOF | sh`, `eval`, `source`, `. /dev/stdin <<EOF`) is code and stays read. An unquoted delimiter
+    (`<<EOF`, not `<<'EOF'`) still lets bash run the `$(...)` and backticks in a data body, so a `gh` inside one is judged.
   - Lines end only at a newline, as bash's do (an optional `\r` before it is dropped). A binary file (with a NUL byte)
     is skipped; any other file is read whatever bytes it holds.
 

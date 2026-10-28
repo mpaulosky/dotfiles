@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { BranchRefs } from "./branches.mts";
 import {
@@ -1939,6 +1940,15 @@ describe("sweepSubject", () => {
 });
 
 describe("recordApprovedHead", () => {
+  it("reads back the comment the Sandcastle workflow's record-head job posts, once the head is put in", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/sandcastle.yml", import.meta.url), "utf8");
+    const firstLine = /^ +body="(.*)$/m.exec(workflow)?.[1];
+    assert.ok(firstLine !== undefined, "sandcastle.yml's record-head script must build its comment as body=\"...\"");
+    const head = "0123456789abcdef0123456789abcdef01234567";
+
+    assert.equal(approvedHeadOf(`${firstLine.replace("$HEAD_SHA", head)}\nSandcastle follows this pull request up.`), head);
+  });
+
   it("posts the record of the head on the PR it names, which approvedHeadOf reads back", () => {
     const posted: { number: number; body: string }[] = [];
 
@@ -2463,6 +2473,54 @@ describe("sweepPullRequests and hand-off PRs", () => {
 
       assert.ok(lines.some((line) => line.includes("Couldn't record PR #201's head bbbbbbb") && line.includes("post failed")), lines.join("\n"));
       assert.deepEqual(updatedBranches, [{ number: 201, expectedHeadSha: "b".repeat(40) }]);
+    });
+
+    describe("when a read of the approval throws", () => {
+      // PR #201's head is a commit nobody recorded, so its approval reads the merge; PR #202 is recorded and settled.
+      const unrecorded = () => behind({ headRefOid: "b".repeat(40), reviews: [{ author: COPILOT_REVIEWER, commitOid: "b".repeat(40) }] });
+      const second = () => behind({ number: 202, id: "PR_202", headRefName: "chore/another-tidy" });
+      const comments = () => [headRecord("a".repeat(40), HOST)];
+
+      it("leaves the PR unapproved and unswept when the read of its head's merge fails, and still sweeps the others", () => {
+        const lines: string[] = [];
+        const recorded: number[] = [];
+        const { updatedBranches, github } = stubGithub(
+          owned({
+            prs: [unrecorded(), second()],
+            pullRequestComments: comments,
+            mergeOfMain: () => {
+              throw new Error("gh api failed: HTTP 502");
+            },
+            recordApprovedHead: (number) => void recorded.push(number),
+          }),
+        );
+
+        const { needsPass } = sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+        assert.ok(lines.some((line) => line.includes("Couldn't follow up PR #201") && line.includes("HTTP 502")), lines.join("\n"));
+        assert.deepEqual(updatedBranches, [{ number: 202, expectedHeadSha: "a".repeat(40) }]);
+        assert.deepEqual(recorded, []);
+        assert.ok(!needsPass.includes(201));
+      });
+
+      it("leaves the PR unapproved and unswept when the read of its comments fails, and still sweeps the others", () => {
+        const lines: string[] = [];
+        const { updatedBranches, github } = stubGithub(
+          owned({
+            prs: [unrecorded(), second()],
+            pullRequestComments: (number) => {
+              if (number === 201) throw new Error("gh api failed: HTTP 502");
+              return comments(number);
+            },
+          }),
+        );
+
+        const { needsPass } = sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+        assert.ok(lines.some((line) => line.includes("Couldn't follow up PR #201") && line.includes("HTTP 502")), lines.join("\n"));
+        assert.deepEqual(updatedBranches, [{ number: 202, expectedHeadSha: "a".repeat(40) }]);
+        assert.ok(!needsPass.includes(201));
+      });
     });
 
     it("restarts the merge count at a recorded head, so later merges are followed again", () => {

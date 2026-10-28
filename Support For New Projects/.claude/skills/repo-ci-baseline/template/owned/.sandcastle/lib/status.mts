@@ -321,8 +321,8 @@ const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 // space, and every control character (ESC and the C1 set, so no CSI sequence), format character (bidi marks, zero-width characters,
 // the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, noncharacter, filler that
 // draws as a blank, and code point of the supplementary private-use planes is dropped. Nothing in it can overwrite a line of the report
-// or fake one. Three joiners keep their place where they do the work they are for: a zero-width joiner between two pictographs (an emoji
-// sequence, with a skin tone or an emoji's variation selector in it), that variation selector right after a pictograph, and a zero-width
+// or fake one. Three joiners keep their place where they do the work they are for: a zero-width joiner between two assigned pictographs (an emoji
+// sequence, with a skin tone or an emoji's variation selector in it), that variation selector right after an assigned pictograph, and a zero-width
 // non-joiner between two letters of a script that uses it (Arabic, for Persian, and the Indic scripts; a zero-width joiner between two
 // letters is dropped, so a conjunct such as Sinhala's "Sri" loses it). Anywhere else they are dropped, and at most MAX_KEPT_JOINERS
 // survive in one text. What may still draw as nothing is capped too: at most MAX_KEPT_ODD private-use (an icon-font glyph) or unassigned

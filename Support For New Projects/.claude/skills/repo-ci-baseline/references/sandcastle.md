@@ -133,8 +133,8 @@ whether or not that label counts, and says how many other open PRs it left out.
   Text from GitHub (a title, a branch, a reason, gh's error text on stderr, a warning a read prints and the log lines) is printed through `terminalText`: whitespace
   becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, noncharacter, filler and
   supplementary-plane private-use characters are dropped, so it can't overwrite or fake a line of the report. Three joiners stay where
-  they do their work: a zero-width joiner between two pictographs (an emoji sequence, with a skin tone or variation selector in it),
-  that variation selector right after a pictograph, and a zero-width non-joiner between two letters of Arabic (Persian too), Syriac,
+  they do their work: a zero-width joiner between two assigned pictographs (an emoji sequence, with a skin tone or variation selector in it),
+  that variation selector right after an assigned pictograph, and a zero-width non-joiner between two letters of Arabic (Persian too), Syriac,
   Thaana or an Indic script. At most eight survive in one text, so a few invisible bits can ride on them and no more. Keycap and
   flag-tag emoji fall apart, and in the Indic scripts only the non-joiner survives: a zero-width joiner between two letters (Sinhala's
   "Sri", a Devanagari half-form) is dropped. A private-use code point of the Basic Multilingual Plane (an icon glyph) or an unassigned

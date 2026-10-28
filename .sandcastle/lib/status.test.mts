@@ -962,10 +962,30 @@ describe("terminalText", () => {
     assert.equal(terminalText("\u{1F468}\u200d\u{1F469}"), "\u{1F468}\u200d\u{1F469}");
   });
 
-  it("is idempotent for a kept non-joiner beside marks and odd code points", () => {
+  it("keeps a joiner after an assigned pictograph only before an assigned one, so the cap can't leave it dangling", () => {
+    const text = "\u0378".repeat(8) + "\u{1F468}\u200d\u{1FC00}";
+    const once = terminalText(text);
+
+    assert.ok(!once.includes("\u200d"));
+    assert.equal(terminalText(once), once);
+  });
+
+  it("keeps a variation selector only after an assigned pictograph, so the cap can't leave it dangling", () => {
+    const text = "\u0378".repeat(8) + "a\u{1FC00}\ufe0f";
+    const once = terminalText(text);
+
+    assert.ok(!once.includes("\ufe0f"));
+    assert.equal(terminalText(once), once);
+    assert.equal(terminalText("\u2764\ufe0f"), "\u2764\ufe0f");
+    assert.equal(terminalText("\u{1F600}\ufe0f"), "\u{1F600}\ufe0f");
+  });
+
+  it("keeps a non-joiner a run of marks sits beside, and is idempotent beside marks and odd code points", () => {
     const text = `\u0645${"\u064e".repeat(10)}\u200c\u0646\ue000\u0378${"\u0301".repeat(6)}`;
     const once = terminalText(text);
 
+    assert.ok(once.includes("\u200c"));
+    assert.ok(once.endsWith(`\ue000\u0378${"\u0301".repeat(3)}`));
     assert.equal(terminalText(once), once);
   });
 

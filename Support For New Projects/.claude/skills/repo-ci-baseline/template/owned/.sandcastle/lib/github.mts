@@ -238,12 +238,14 @@ function openSameRepositoryPullRequests(...filters: string[]): OpenPullRequest[]
 }
 
 // Why gh stopped when it printed nothing, built from the error's own fields: Node's message holds the whole command line, which quotes
-// titles and branch names. A spawn failure (gh missing or not executable) is "couldn't run"; a signal, with the code Node set beside it
-// (ETIMEDOUT) if any, is "killed"; any other string code (ENOBUFS: its output outgrew maxBuffer) only says gh stopped.
+// titles and branch names. A spawn failure (gh missing or not executable) is "couldn't run"; ENOBUFS (its output outgrew maxBuffer, which
+// Node also ends with SIGTERM) says so; a signal, with the code Node set beside it (ETIMEDOUT) if any, is "killed"; any other string code
+// only says gh stopped.
 function whyGhStopped(error: unknown): string {
   const { code, signal, status } = (error ?? {}) as { code?: unknown; signal?: unknown; status?: unknown };
   const named = typeof code === "string" ? ` (${code})` : "";
   if (typeof code === "string" && ["ENOENT", "EACCES", "EPERM"].includes(code)) return `gh couldn't run${named}`;
+  if (code === "ENOBUFS") return `gh's output outgrew its buffer${named}`;
   if (typeof signal === "string") return `gh was killed by ${signal}${named}`;
   if (typeof code === "string") return `gh stopped${named}`;
   if (typeof status === "number") return `gh exited with status ${status} and printed nothing`;
@@ -263,8 +265,8 @@ function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, 
     });
   } catch (error) {
     const { stderr } = (error ?? {}) as { stderr?: unknown };
-    // gh's own text when it printed some; else why it stopped (build.mts's commandOutput reads what follows "failed:", so it never holds
-    // the command line).
+    // gh's own text when it printed some; else why it stopped, so the text after "failed:" (all build.mts's commandOutput reads) never holds
+    // Node's command line, which quotes titles and branch names.
     const detail = (typeof stderr === "string" ? stderr.trim() : "") || whyGhStopped(error);
     throw new Error(`gh ${args.slice(0, 2).join(" ")} failed:\n${detail}`, { cause: error });
   }

@@ -6,6 +6,7 @@ Baseline repo's gate check for gh commands that reach gh's default repository
 
 import ast
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,59 +21,70 @@ import check_gh_repo  # noqa: E402
 OWNED_SCRIPTS = TEMPLATE_OWNED / "scripts"
 
 
+def lines_of(found):
+    """The line numbers of found, whose entries are path:line: text."""
+    return [int(re.match(r".*?:([0-9]+): ", entry).group(1)) for entry in found]
+
+
+def assert_refused_at(found, text, line):
+    """found is exactly one refusal, of the given line of text, with that line's text as its message."""
+    assert lines_of(found) == [line]
+    assert found[0].split(f":{line}: ", 1)[1] == text.split("\n")[line - 1]
+
+
 def untold(tmp_path, text, name="script.sh"):
     path = tmp_path / name
     path.write_text(text)
     return check_gh_repo.untold(path)
 
 
-@pytest.mark.parametrize("text", [
-    "#!/usr/bin/env bash\ngh pr view 1\n",
-    "gh issue list\n",
-    "gh api repos/{owner}/{repo}/pulls\n",
-    "echo \"$(gh pr view --json number)\"\n",
-    "gh pr view 1 --repo o/r\n",
-    "gh pr view 1\nexport GH_REPO=o/r\n",
-    "export GH_REPO=\nexport GH_REPO=''\ngh pr view 1\n",
-    "GH_REPO= gh pr view 1\n",
-    "GH_REPO=o/r echo; gh pr view 1\n",
-    "export GH_REPO=o/r && gh pr view 1\n",
-    "gh \\\n  pr view 1\n",
-    "if command -v gh\n",
+@pytest.mark.parametrize("text, line", [
+    ("#!/usr/bin/env bash\ngh pr view 1\n", 2),
+    ("gh issue list\n", 1),
+    ("gh api repos/{owner}/{repo}/pulls\n", 1),
+    ("echo \"$(gh pr view --json number)\"\n", 1),
+    ("gh pr view 1 --repo o/r\n", 1),
+    ("gh pr view 1\nexport GH_REPO=o/r\n", 1),
+    ("export GH_REPO=\nexport GH_REPO=''\ngh pr view 1\n", 3),
+    ("GH_REPO= gh pr view 1\n", 1),
+    ("GH_REPO=o/r echo; gh pr view 1\n", 1),
+    ("export GH_REPO=o/r && gh pr view 1\n", 1),
+    ("gh \\\n  pr view 1\n", 1),
+    ("if command -v gh\n", 1),
     # The subcommand arrives through a variable or a wrapper.
-    "gh \"$@\"\n",
-    "gh $sub view 1\n",
-    "gh \"${args[@]}\"\n",
-    "gh_() { (cd \"$primary\" && gh \"$@\"); }\ngh_ pr view 1\n",
+    ("gh \"$@\"\n", 1),
+    ("gh $sub view 1\n", 1),
+    ("gh \"${args[@]}\"\n", 1),
+    ("gh_() { (cd \"$primary\" && gh \"$@\"); }\ngh_ pr view 1\n", 1),
     # A variable that's empty where the script runs leaves gh its default.
-    "export GH_REPO=\"$GITHUB_REPOSITORY\"\ngh pr view 1\n",
-    "export GH_REPO=$repo\ngh pr view 1\n",
-    "GH_REPO=\"$repo\" gh api repos/{owner}/{repo}/pulls\n",
+    ("export GH_REPO=\"$GITHUB_REPOSITORY\"\ngh pr view 1\n", 2),
+    ("export GH_REPO=$repo\ngh pr view 1\n", 2),
+    ("GH_REPO=\"$repo\" gh api repos/{owner}/{repo}/pulls\n", 1),
     # The hidden subcommand can be gh repo view, which ignores GH_REPO.
-    "export GH_REPO=o/r\ngh_() { gh \"$@\"; }\ngh_ repo view --json name\n",
-    "export GH_REPO=o/r\ngh $sub view\n",
+    ("export GH_REPO=o/r\ngh_() { gh \"$@\"; }\ngh_ repo view --json name\n", 2),
+    ("export GH_REPO=o/r\ngh $sub view\n", 2),
     # A character bash doesn't end a line on hides no export behind it.
-    "echo x\u2028export GH_REPO=o/r\ngh pr view 1\n",
-    "echo x\x0cexport GH_REPO=o/r\ngh pr view 1\n",
+    ("echo x\u2028export GH_REPO=o/r\ngh pr view 1\n", 2),
+    ("echo x\x0cexport GH_REPO=o/r\ngh pr view 1\n", 2),
     # A redirection or a brace expansion before the subcommand hides it.
-    "export GH_REPO=o/r\ngh 2>/dev/null repo view --json name\n",
-    "export GH_REPO=o/r\ngh >\"$log\" repo edit o\n",
-    "export GH_REPO=o/r\ngh {repo,} view\n",
+    ("export GH_REPO=o/r\ngh 2>/dev/null repo view --json name\n", 2),
+    ("export GH_REPO=o/r\ngh >\"$log\" repo edit o\n", 2),
+    ("export GH_REPO=o/r\ngh {repo,} view\n", 2),
     # Emptied or removed after the export.
-    "export GH_REPO=o/r\nGH_REPO= gh pr view 1\n",
-    "export GH_REPO=o/r\nunset GH_REPO\ngh pr view 1\n",
-    "export GH_REPO=o/r\nGH_REPO=\"$repo\"\ngh pr view 1\n",
+    ("export GH_REPO=o/r\nGH_REPO= gh pr view 1\n", 2),
+    ("export GH_REPO=o/r\nunset GH_REPO\ngh pr view 1\n", 3),
+    ("export GH_REPO=o/r\nGH_REPO=\"$repo\"\ngh pr view 1\n", 3),
     # A list of gh's words, where no export reaches it.
-    "export GH_REPO=o/r\nsubprocess.run([\"gh\", \"pr\", \"view\"])\n",
+    ("export GH_REPO=o/r\nsubprocess.run([\"gh\", \"pr\", \"view\"])\n", 2),
     # An export that runs only sometimes.
-    "if [[ -n \"${CI:-}\" ]]; then\n  export GH_REPO=o/r\nfi\ngh pr view 1\n",
+    ("if [[ -n \"${CI:-}\" ]]; then\n  export GH_REPO=o/r\nfi\ngh pr view 1\n", 4),
 ])
-def test_untold_refuses_a_gh_command_not_told_its_repository(tmp_path, text):
+def test_untold_refuses_a_gh_command_not_told_its_repository(tmp_path, text, line):
     # Arrange, Act
     found = untold(tmp_path, text)
 
     # Assert
-    assert found
+    assert_refused_at(found, text, line)
 
 
 @pytest.mark.parametrize("text", [
@@ -125,25 +137,25 @@ def test_untold_accepts_gh_repo_naming_its_repository(tmp_path, text):
     assert found == []
 
 
-@pytest.mark.parametrize("text", [
-    "gh repo view\n",
-    "gh repo view --json name\n",
-    "gh repo\n",
+@pytest.mark.parametrize("text, line", [
+    ("gh repo view\n", 1),
+    ("gh repo view --json name\n", 1),
+    ("gh repo\n", 1),
     # GH_REPO doesn't reach view, edit and most of gh repo's subcommands.
-    "export GH_REPO=o/r\ngh repo view\n",
-    "GH_REPO=o/r gh repo view --json name\n",
+    ("export GH_REPO=o/r\ngh repo view\n", 2),
+    ("GH_REPO=o/r gh repo view --json name\n", 1),
     # view and edit have no -R or --repo; gh refuses them as unknown flags.
-    "gh repo edit -R o/r --enable-auto-merge\n",
-    "gh repo view --repo=o/r\n",
-    "gh repo view \"$repo\"\n",
-    "gh repo rename new-name\n",
+    ("gh repo edit -R o/r --enable-auto-merge\n", 1),
+    ("gh repo view --repo=o/r\n", 1),
+    ("gh repo view \"$repo\"\n", 1),
+    ("gh repo rename new-name\n", 1),
 ])
-def test_untold_refuses_gh_repo_without_its_repository(tmp_path, text):
+def test_untold_refuses_gh_repo_without_its_repository(tmp_path, text, line):
     # Arrange, Act
     found = untold(tmp_path, text)
 
     # Assert
-    assert found
+    assert_refused_at(found, text, line)
 
 
 def test_untold_names_the_file_and_line(tmp_path):
@@ -308,7 +320,6 @@ def test_check_repo_checks_an_extensionless_script_with_a_shell_shebang(tmp_path
     "#!/usr/bin/env python3\n" + UNTOLD,
     "#!/usr/bin/env node\n" + UNTOLD,
     UNTOLD,
-    "",
 ])
 def test_check_repo_skips_an_extensionless_file_that_isnt_a_shell_script(tmp_path, content):
     # Arrange, Act
@@ -493,58 +504,58 @@ def test_kind_reads_the_shebang_of_an_extensionless_file(tmp_path):
 
 # Skills (Markdown): only gh in code counts.
 
-@pytest.mark.parametrize("text", [
-    "```bash\ngh pr view 1\n```\n",
-    "```\ngh pr view 1\n```\n",
-    "~~~\ngh pr view 1\n~~~\n",
-    "   ```bash\ngh pr view 1\n   ```\n",
-    "Run `gh pr view 1` to see it.\n",
-    "- Run `gh pr list`\n",
-    "1. Then ``gh pr list`` shows them.\n",
-    "Use `gh pr view 1` or `gh pr view 2 --repo o/r`.\n",
+@pytest.mark.parametrize("text, line", [
+    ("```bash\ngh pr view 1\n```\n", 2),
+    ("```\ngh pr view 1\n```\n", 2),
+    ("~~~\ngh pr view 1\n~~~\n", 2),
+    ("   ```bash\ngh pr view 1\n   ```\n", 2),
+    ("Run `gh pr view 1` to see it.\n", 1),
+    ("- Run `gh pr list`\n", 1),
+    ("1. Then ``gh pr list`` shows them.\n", 1),
+    ("Use `gh pr view 1` or `gh pr view 2 --repo o/r`.\n", 1),
     # The repository comes from a variable gh would find empty, or from another command.
-    "```bash\nGH_REPO=\"$repo\" gh pr view 1\n```\n",
-    "```bash\ngh pr view 1 --repo \"$repo\"\n```\n",
-    "```bash\nexport GH_REPO=o/r\ngh pr view 1\n```\n",
-    "```bash\nGH_REPO=o/r echo; gh pr view 1\n```\n",
-    "```bash\nGH_REPO= gh pr view 1\n```\n",
+    ("```bash\nGH_REPO=\"$repo\" gh pr view 1\n```\n", 2),
+    ("```bash\ngh pr view 1 --repo \"$repo\"\n```\n", 2),
+    ("```bash\nexport GH_REPO=o/r\ngh pr view 1\n```\n", 3),
+    ("```bash\nGH_REPO=o/r echo; gh pr view 1\n```\n", 2),
+    ("```bash\nGH_REPO= gh pr view 1\n```\n", 2),
     # gh api has no --repo flag.
-    "```bash\ngh api repos/o/r/pulls --repo o/r\n```\n",
-    "```bash\ngh api repos/{owner}/{repo}/pulls\n```\n",
+    ("```bash\ngh api repos/o/r/pulls --repo o/r\n```\n", 2),
+    ("```bash\ngh api repos/{owner}/{repo}/pulls\n```\n", 2),
     # gh repo's subcommands take the repository first.
-    "```bash\ngh repo view\n```\n",
-    "```bash\ngh repo view --json name\n```\n",
-    "```bash\ngh repo view --repo o/r\n```\n",
-    "```bash\nGH_REPO=o/r gh repo view\n```\n",
-    "Run `gh repo edit --enable-auto-merge`.\n",
+    ("```bash\ngh repo view\n```\n", 2),
+    ("```bash\ngh repo view --json name\n```\n", 2),
+    ("```bash\ngh repo view --repo o/r\n```\n", 2),
+    ("```bash\nGH_REPO=o/r gh repo view\n```\n", 2),
+    ("Run `gh repo edit --enable-auto-merge`.\n", 1),
     # A command split across lines, or with its subcommand hidden.
-    "```bash\ngh \\\n  pr view 1 --repo o/r\n```\n",
-    "```bash\ngh pr view 1 \\\n  --repo o/r\n```\n",
-    "```bash\ngh \"$@\"\n```\n",
-    "```bash\ngh $sub view 1\n```\n",
-    "```bash\ngh\n```\n",
+    ("```bash\ngh \\\n  pr view 1 --repo o/r\n```\n", 2),
+    ("```bash\ngh pr view 1 \\\n  --repo o/r\n```\n", 2),
+    ("```bash\ngh \"$@\"\n```\n", 2),
+    ("```bash\ngh $sub view 1\n```\n", 2),
+    ("```bash\ngh\n```\n", 2),
     # An unclosed fence is code to the end of the file; a longer fence isn't closed by a shorter one.
-    "```bash\necho\ngh pr view 1\n",
-    "````\n```\ngh pr view 1\n```\n````\n",
-    "~~~\n```\ngh pr view 1\n```\n~~~\n",
-    "```bash\necho\n```\n```bash\ngh pr view 1\n```\n",
-    "Text\n\n```bash\necho\n```\n\nMore `gh issue list`\n",
+    ("```bash\necho\ngh pr view 1\n", 3),
+    ("````\n```\ngh pr view 1\n```\n````\n", 3),
+    ("~~~\n```\ngh pr view 1\n```\n~~~\n", 3),
+    ("```bash\necho\n```\n```bash\ngh pr view 1\n```\n", 5),
+    ("Text\n\n```bash\necho\n```\n\nMore `gh issue list`\n", 7),
     # A fence in a blockquote or a list item is still a fence.
-    "> ```bash\n> gh pr view 1\n> ```\n",
-    "> [!NOTE]\n> ```bash\n> gh pr view 1\n> ```\n",
-    ">> ```bash\n>> gh pr view 1\n>> ```\n",
-    "- ```bash\n  gh pr view 1\n  ```\n",
-    "1. ```bash\n   gh pr view 1\n   ```\n",
-    "* Step:\n  > ```bash\n  > gh pr view 1\n  > ```\n",
-    "> ~~~\n> gh pr view 1\n> ~~~\n",
-    "- ```bash\n  gh pr view 1\n",
+    ("> ```bash\n> gh pr view 1\n> ```\n", 2),
+    ("> [!NOTE]\n> ```bash\n> gh pr view 1\n> ```\n", 3),
+    (">> ```bash\n>> gh pr view 1\n>> ```\n", 2),
+    ("- ```bash\n  gh pr view 1\n  ```\n", 2),
+    ("1. ```bash\n   gh pr view 1\n   ```\n", 2),
+    ("* Step:\n  > ```bash\n  > gh pr view 1\n  > ```\n", 3),
+    ("> ~~~\n> gh pr view 1\n> ~~~\n", 2),
+    ("- ```bash\n  gh pr view 1\n", 2),
 ])
-def test_untold_markdown_refuses_a_gh_command_in_code_not_told_its_repository(tmp_path, text):
+def test_untold_markdown_refuses_a_gh_command_in_code_not_told_its_repository(tmp_path, text, line):
     # Arrange, Act
     found = untold_md(tmp_path, text)
 
     # Assert
-    assert found
+    assert_refused_at(found, text, line)
 
 
 @pytest.mark.parametrize("text", [
@@ -578,7 +589,7 @@ def test_untold_markdown_refuses_a_gh_command_in_code_not_told_its_repository(tm
     "The gh command reaches the default repository.\n",
     "Install gh first; `gh` is a program.\n",
     "Call `gh` to talk to GitHub.\n",
-    "```bash\nneigh pr view 1\ngh_ pr view 1\ngh.exe pr view 1\n```\n",
+    "```bash\nneigh pr view 1\ngh_ pr view 1\n```\n",
     "Plain gh pr view 1 outside code.\n",
     "# gh pr view 1\n\n- gh issue list\n",
     # Code that closed: what follows is prose again.
@@ -837,18 +848,18 @@ def test_untold_skips_a_line_marked_gh_repo_ok_and_a_folder_named_gh(tmp_path, t
     assert found == []
 
 
-@pytest.mark.parametrize("text", [
-    "command -v gh >/dev/null\n",
-    "echo gh-repo: ok; gh pr view 1\n",
-    "gh pr view 1 # gh-repo: okay\n",
-    "# gh-repo: ok\ngh pr view 1\n",
+@pytest.mark.parametrize("text, line", [
+    ("command -v gh >/dev/null\n", 1),
+    ("echo gh-repo: ok; gh pr view 1\n", 1),
+    ("gh pr view 1 # gh-repo: okay\n", 1),
+    ("# gh-repo: ok\ngh pr view 1\n", 2),
 ])
-def test_untold_refuses_a_gh_command_without_the_marker_on_its_own_line(tmp_path, text):
+def test_untold_refuses_a_gh_command_without_the_marker_on_its_own_line(tmp_path, text, line):
     # Arrange, Act
     found = untold(tmp_path, text)
 
     # Assert
-    assert found
+    assert_refused_at(found, text, line)
 
 
 @pytest.mark.parametrize("text", [
@@ -870,3 +881,374 @@ def test_untold_markdown_still_refuses_the_next_line_after_a_marked_one(tmp_path
 
     # Assert
     assert [line.split(":")[1] for line in found] == ["2"]
+
+
+# --- mpaulosky/dotfiles#339: follow-ups from the review of #336 ---
+
+# R50: an extensionless file with no shebang is skipped even when it holds a gh line (the empty file it replaces had none to find).
+@pytest.mark.parametrize("content", ["\n" + UNTOLD, "# notes\n" + UNTOLD, " #!/bin/bash\n" + UNTOLD])
+def test_check_repo_skips_an_extensionless_file_without_a_shell_shebang_that_holds_a_gh_line(tmp_path, content):
+    # Arrange, Act
+    found = repo_check(tmp_path, {"scripts/tool": content})
+
+    # Assert
+    assert found == []
+
+
+def test_check_repo_checks_an_extensionless_file_whose_shebang_is_shell_and_whose_gh_line_follows_blank_lines(tmp_path):
+    # Arrange, Act
+    found = repo_check(tmp_path, {"scripts/tool": "#!/bin/bash\n\n" + UNTOLD})
+
+    # Assert
+    assert found == ["scripts/tool:3: gh pr view 1"]
+
+
+# R55: a lookup line that ends in || or && goes on to its next command, not to a hidden subcommand.
+@pytest.mark.parametrize("text", [
+    "command -v gh >/dev/null 2>&1 ||\n  exit 1\nexport GH_REPO=o/r\ngh pr view 1\n",
+    "command -v gh >/dev/null 2>&1 &&\n  echo found\nexport GH_REPO=o/r\ngh pr view 1\n",
+    "command -v gh ||\n  exit 1\nexport GH_REPO=o/r\ngh pr view 1\n",
+    "command -v gh &>/dev/null &&\n  echo found\nexport GH_REPO=o/r\ngh pr view 1\n",
+    "command -v gh >/dev/null 2>&1 ||   \n  exit 1\nexport GH_REPO=o/r\ngh pr view 1\n",
+])
+def test_untold_accepts_a_lookup_line_ending_in_or_or_and_before_the_export(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text, line", [
+    # A pipe or a backslash carries the line on to the next one, which may hold gh's subcommand.
+    ("command -v gh |\n  cat\nexport GH_REPO=o/r\ngh pr view 1\n", 1),
+    ("command -v gh >/dev/null 2>&1 |\n  cat\nexport GH_REPO=o/r\ngh pr view 1\n", 1),
+    ("command -v gh \\\n  >/dev/null\nexport GH_REPO=o/r\ngh pr view 1\n", 1),
+    ("command -v gh >/dev/null 2>&1 \\\n  || exit 1\nexport GH_REPO=o/r\ngh pr view 1\n", 1),
+    # A gh with a subcommand is no lookup, whatever follows it.
+    ("gh pr view 1 ||\n  exit 1\nexport GH_REPO=o/r\n", 1),
+    ("gh pr view 1 &&\n  echo\nexport GH_REPO=o/r\n", 1),
+    # The || does not tell the later gh anything: it is judged by the export before it.
+    ("command -v gh ||\n  exit 1\ngh pr view 1\n", 3),
+])
+def test_untold_refuses_a_gh_line_that_goes_on_by_pipe_or_backslash_or_has_a_subcommand(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+# R56: the NAME=value words before gh are walked back over, and the last GH_REPO= among them is judged.
+@pytest.mark.parametrize("text", [
+    "GH_REPO=o/r GH_TOKEN=x gh pr view 1\n",
+    "GH_TOKEN=x GH_REPO=o/r gh pr view 1\n",
+    "GH_REPO=o/r GH_TOKEN=x GH_HOST=github.com gh pr list\n",
+    "GH_TOKEN=x GH_REPO=o/r GH_HOST=github.com gh api repos/{owner}/{repo}/pulls\n",
+    "GH_REPO=\"${repo:?}\" GH_TOKEN=\"$token\" gh pr view 1\n",
+    "GH_REPO= GH_REPO=o/r gh pr view 1\n",
+    "GH_REPO=o/r GH_TOKEN=x gh repo view o/r\n",
+    "GH_REPO=o/r GH_TOKEN=x GH_REPO=o/s gh pr view 1\n",
+    # A prefix that names a repository leaves the export standing, however many assignments it has.
+    "export GH_REPO=o/r\nGH_REPO=o/s GH_TOKEN=x gh pr view 1\ngh pr view 2\n",
+    # The export tells the gh behind a prefix with no GH_REPO= of its own.
+    "export GH_REPO=o/r\nGH_TOKEN=x gh pr view 1\n",
+])
+def test_untold_accepts_a_gh_prefixed_by_assignments_and_a_told_gh_repo(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text, line", [
+    ("GH_REPO=o/r GH_REPO= gh pr view 1\n", 1),
+    ("GH_REPO=o/r GH_REPO=\"$repo\" gh pr view 1\n", 1),
+    ("GH_REPO=\"$repo\" GH_TOKEN=x gh pr view 1\n", 1),
+    ("GH_REPO= GH_TOKEN=x gh pr view 1\n", 1),
+    ("GH_TOKEN=x GH_REPO= gh pr view 1\n", 1),
+    ("export GH_REPO=o/r\nGH_REPO= GH_TOKEN=x gh pr view 1\n", 2),
+    # GH_REPO does not reach gh repo view.
+    ("GH_REPO=o/r GH_TOKEN=x gh repo view\n", 1),
+    # A wrapper between the assignments and gh is not walked over.
+    ("GH_REPO=o/r GH_TOKEN=x env gh pr view 1\n", 1),
+    ("GH_REPO=o/r env gh pr view 1\n", 1),
+    ("GH_REPO=o/r GH_TOKEN=x sudo gh pr view 1\n", 1),
+    # The assignments are no prefix of a gh that comes after another command.
+    ("GH_REPO=o/r GH_TOKEN=x echo; gh pr view 1\n", 1),
+    ("GH_REPO=o/r GH_TOKEN=x echo && gh pr view 1\n", 1),
+])
+def test_untold_refuses_a_gh_whose_assignments_dont_name_a_repository_or_end_at_a_wrapper(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+def test_untold_ends_the_export_when_an_assignment_before_a_wrapper_empties_it(tmp_path):
+    # Arrange
+    text = "export GH_REPO=o/r\nGH_REPO= GH_TOKEN=x env true\ngh pr view 1\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, 3)
+
+
+# R57: a heredoc that feeds data to a program is no code, as an echo message is not; one fed to a shell is code.
+@pytest.mark.parametrize("text", [
+    "cat <<EOF\nusage: needs gh pr view <n>\nEOF\nexport GH_REPO=o/r\ngh pr list\n",
+    "cat <<'EOF'\nusage: gh pr view <n>\nEOF\nexport GH_REPO=o/r\ngh pr list\n",
+    "cat <<\"EOF\"\nusage: gh pr view <n>\nEOF\nexport GH_REPO=o/r\ngh pr list\n",
+    "cat <<-EOF\n\tusage: gh pr view <n>\n\tEOF\nexport GH_REPO=o/r\ngh pr list\n",
+    "cat > usage.txt <<END\nRun gh pr view 1 to see it.\nEND\nexport GH_REPO=o/r\ngh pr list\n",
+    "cat <<EOF >&2\nneeds gh\nEOF\nexport GH_REPO=o/r\ngh pr list\n",
+    "usage() {\n  cat <<EOF\nneeds gh\nEOF\n}\nexport GH_REPO=o/r\ngh pr list\n",
+    # Several lines of prose, a blank line among them.
+    "cat <<EOF\nline one\n\ngh pr view 1\ngh repo view\nEOF\nexport GH_REPO=o/r\ngh pr list\n",
+    # Prose naming gh at the very top, before anything else.
+    "#!/usr/bin/env bash\ncat <<'EOF'\ngh pr view 1\nEOF\n",
+])
+def test_untold_skips_the_body_of_a_data_only_heredoc(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text, line", [
+    ("bash <<EOF\ngh pr view 1\nEOF\n", 2),
+    ("sh <<EOF\ngh pr view 1\nEOF\n", 2),
+    ("bash <<'EOF'\ngh pr view 1\nEOF\n", 2),
+    ("bash -e <<EOF\ngh pr view 1\nEOF\n", 2),
+    ("bash -s -- arg <<-EOF\n\tgh pr view 1\n\tEOF\n", 2),
+    ("/bin/bash <<EOF\ngh pr view 1\nEOF\n", 2),
+    ("export GH_REPO=o/r\nbash <<EOF\ngh repo view\nEOF\n", 3),
+    ("export GH_REPO=o/r\nsh <<EOF\ngh \"$@\"\nEOF\n", 3),
+])
+def test_untold_still_reads_the_body_of_a_heredoc_fed_to_a_shell(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+def test_untold_judges_the_line_after_a_data_heredocs_terminator(tmp_path):
+    # Arrange
+    text = "export GH_REPO=o/r\ncat <<EOF\ngh pr view 1\nEOF\ngh repo view\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, 5)
+
+
+def test_untold_takes_no_export_from_the_body_of_a_data_heredoc(tmp_path):
+    # Arrange
+    text = "cat <<EOF\nexport GH_REPO=o/r\nEOF\ngh pr view 1\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, 4)
+
+
+def test_untold_takes_no_unset_from_the_body_of_a_data_heredoc(tmp_path):
+    # Arrange
+    text = "export GH_REPO=o/r\ncat <<EOF\nunset GH_REPO\nEOF\ngh pr view 1\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+def test_untold_reads_the_heredoc_of_a_shell_after_a_data_one(tmp_path):
+    # Arrange
+    text = "cat <<EOF\ngh pr view 1\nEOF\nbash <<EOF\ngh pr view 2\nEOF\n"
+
+    # Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, 5)
+
+
+# R42: gh.exe is gh.
+@pytest.mark.parametrize("text, line", [
+    ("gh.exe pr view 1\n", 1),
+    ("gh.exe issue list\n", 1),
+    ("gh.exe repo view\n", 1),
+    ("export GH_REPO=o/r\ngh.exe repo view\n", 2),
+    ("gh.exe \"$@\"\n", 1),
+    ("gh.exe $sub view 1\n", 1),
+    ("export GH_REPO=o/r\nGH_REPO= gh.exe pr view 1\n", 2),
+    ("gh.exe pr view 1\nexport GH_REPO=o/r\n", 1),
+    ("echo \"$(gh.exe pr view 1)\"\n", 1),
+    ("command -v gh.exe >/dev/null\n", 1),
+    ("if command -v gh.exe\n", 1),
+])
+def test_untold_refuses_a_gh_exe_command_not_told_its_repository(tmp_path, text, line):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "export GH_REPO=o/r\ngh.exe pr view 1\n",
+    "GH_REPO=o/r gh.exe pr view 1\n",
+    "GH_REPO=o/r GH_TOKEN=x gh.exe pr view 1\n",
+    "gh.exe repo view o/r\n",
+    "export GH_REPO=o/r\ncommand -v gh.exe >/dev/null || exit 1\n",
+    "command -v gh.exe >/dev/null # gh-repo: ok\n",
+])
+def test_untold_accepts_a_gh_exe_command_told_its_repository(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text", [
+    "agh.exe pr view 1\n",
+    "neigh.exe pr view 1\n",
+    "gh.executable pr view 1\n",
+    "gh.exe2 pr view 1\n",
+    "gh_.exe pr view 1\n",
+    "mygh.exe pr view 1\n",
+    "cat ~/.config/gh.exe/hosts.yml\n",
+])
+def test_untold_doesnt_read_a_longer_word_that_contains_gh_exe_as_gh(tmp_path, text):
+    # Arrange, Act
+    found = untold(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+@pytest.mark.parametrize("text, line", [
+    ("```bash\ngh.exe pr view 1\n```\n", 2),
+    ("Run `gh.exe pr list`.\n", 1),
+    ("```bash\ngh.exe repo view\n```\n", 2),
+    ("```bash\ngh.exe pr view 1 --repo o/r\ngh.exe pr list\n```\n", 3),
+])
+def test_untold_markdown_refuses_a_gh_exe_command_in_code_not_told_its_repository(tmp_path, text, line):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+@pytest.mark.parametrize("text", [
+    "```bash\ngh.exe pr view 1 --repo o/r\n```\n",
+    "```bash\nGH_REPO=o/r gh.exe pr view 1\n```\n",
+    "Run `gh.exe pr view 1 -R o/r`.\n",
+    "Needs the gh.exe CLI.\n",
+    "Install `gh.exe` first.\n",
+])
+def test_untold_markdown_accepts_a_gh_exe_command_told_its_repository_or_named_in_prose(tmp_path, text):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert found == []
+
+
+# R52: a skill's gh line is copy-pasteable, so a <owner>/<repo> placeholder doesn't tell it its repository.
+@pytest.mark.parametrize("text, line", [
+    ("```bash\ngh pr view 1 --repo <owner>/<repo>\n```\n", 2),
+    ("```bash\ngh pr view 1 --repo=<owner>/<repo>\n```\n", 2),
+    ("```bash\ngh pr view 1 -R <owner>/<repo>\n```\n", 2),
+    ("```bash\nGH_REPO=<owner>/<repo> gh pr view 1\n```\n", 2),
+    ("```bash\ngh repo view <owner>/<repo>\n```\n", 2),
+    ("Run `gh pr list --repo <owner>/<repo>`.\n", 1),
+    ("Run `gh pr list -R OWNER/REPO` or `gh pr list --repo <owner>/<repo>`.\n", 1),
+])
+def test_untold_markdown_refuses_a_placeholder_repository_after_repo(tmp_path, text, line):
+    # Arrange, Act
+    found = untold_md(tmp_path, text)
+
+    # Assert
+    assert_refused_at(found, text, line)
+
+
+def test_check_repo_refuses_a_placeholder_repository_in_a_skill_by_its_relative_path(tmp_path):
+    # Arrange, Act
+    found = repo_check(tmp_path, {".claude/skills/mine/SKILL.md": "# Mine\n\n```bash\ngh issue list --repo <owner>/<repo>\n```\n"})
+
+    # Assert
+    assert found == [".claude/skills/mine/SKILL.md:4: gh issue list --repo <owner>/<repo>"]
+
+
+# R47: the skills dotfiles keeps beside the Template pass the check, though --repo doesn't walk them (their folder isn't dotfiles' own).
+SKILLS = HERE.parents[2]
+
+
+@pytest.mark.parametrize("skill_name", ["review-changes", "remove-squad"])
+def test_the_untold_gh_commands_of_the_skills_beside_the_template_are_fixed(skill_name):
+    # Arrange
+    checked = [path for path in sorted((SKILLS / skill_name).rglob("*"))
+               if path.is_file() and check_gh_repo.kind(path) is not None]
+    assert checked
+
+    # Act
+    found = [entry
+             for path in checked
+             for entry in (check_gh_repo.untold_markdown(path) if check_gh_repo.kind(path) == "markdown"
+                           else check_gh_repo.untold(path))]
+
+    # Assert
+    assert found == []
+
+
+# R45 and R52: gotchas.md holds the rules; the docstring points at it.
+GOTCHAS = HERE.parents[0].parent / "references" / "gotchas.md"
+SEED_SKILLS_README = HERE.parents[0].parent / "template" / "seed" / ".claude" / "skills" / "README.md"
+
+
+def test_the_checkers_docstring_is_one_line_that_points_at_gotchas_md():
+    # Arrange
+    docstring = check_gh_repo.__doc__.strip()
+
+    # Act, Assert
+    assert len(docstring.splitlines()) == 1
+    assert "gotchas.md" in docstring
+
+
+def test_gotchas_md_says_a_placeholder_repository_in_a_skill_is_refused():
+    # Arrange
+    text = GOTCHAS.read_text()
+
+    # Act, Assert
+    assert "<owner>/<repo>" in text
+    assert re.search(r"<owner>/<repo>[^.]*\brefused\b|\brefused\b[^.]*<owner>/<repo>", text)
+
+
+def test_the_seed_skills_readme_says_a_placeholder_repository_in_a_skill_is_refused():
+    # Arrange
+    text = SEED_SKILLS_README.read_text()
+
+    # Act, Assert
+    assert "<owner>/<repo>" in text
+    assert re.search(r"<owner>/<repo>[^.]*\brefused\b|\brefused\b[^.]*<owner>/<repo>", text)
+
+
+@pytest.mark.parametrize("rule", [r"gh\.exe", r"heredoc", r"binary"])
+def test_gotchas_md_holds_the_rules_the_docstring_used_to(rule):
+    # Arrange
+    text = GOTCHAS.read_text()
+
+    # Act, Assert
+    assert re.search(rule, text)

@@ -89,6 +89,7 @@ export const CHECK_PATHS: readonly string[] = [
   "scripts/",
   ".github/ci/",
   ".github/workflows/",
+  ".claude/skills/",
   "package.json",
   `${SKILL}test.sh`,
   `${SKILL}tests/`,

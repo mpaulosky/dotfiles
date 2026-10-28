@@ -89,7 +89,15 @@ export const GATE_SCRIPT = "scripts/gate.sh";
 // whose branch changes a file under them lists it in its body for the reviewer
 // (lib/build.mts#publish). Folders end in a slash. List every place the gate
 // reads its checks from, not only where its script sits.
-export const CHECK_PATHS: readonly string[] = [".sandcastle/", "scripts/", ".github/ci/", ".github/workflows/", "package.json"];
+export const CHECK_PATHS: readonly string[] = [
+  ".sandcastle/",
+  "scripts/",
+  ".github/ci/",
+  ".github/workflows/",
+  ".github/scripts/check_gh_repo.py",
+  ".claude/skills/",
+  "package.json",
+];
 
 // This repository as OWNER/REPO, which the pre-push-review skill gives every gh
 // command as GH_REPO (`scripts/review.sh repo`): in a clone whose only remote is

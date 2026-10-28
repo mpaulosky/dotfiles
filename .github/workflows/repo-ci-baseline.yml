@@ -19,6 +19,8 @@ name: repo-ci-baseline Template
       - ".github/workflows/pr-automerge.yml"
       - ".github/scripts/post_claude_review.py"
       - ".github/hooks/**"
+      - ".claude/skills/**"
+      - ".claude/agents/**"
       - "scripts/**"
       - ".sandcastle/**"
       - "package.json"

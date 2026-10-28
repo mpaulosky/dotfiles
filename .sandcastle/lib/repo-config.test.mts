@@ -7,6 +7,7 @@ import type { OpenPullRequest } from "./github.mts";
 import { findOverlaps, holdOverlappingPicks, pathKey, type FilePick, type OverlapGitHub } from "./overlap.mts";
 import { OutcomeReport } from "./report.mts";
 import {
+  CHECK_PATHS,
   GATE_COVERED_CHECKS,
   MAX_ITERATIONS,
   ROLE_AGENTS,
@@ -256,5 +257,46 @@ describe("holdOverlappingPicks with the Template and root copies", () => {
 
     assert.deepEqual(held.map((p) => p.number), [1]);
     assert.ok(gh.calls.includes("files 9"));
+  });
+});
+
+// mpaulosky/dotfiles#339 (R43, R44): the gh-repo check reads the repo's skills and agents, so a change to them reruns the CI and shows
+// in a PR's list of changed check files.
+describe("the places the gate's checks are read from (mpaulosky/dotfiles#339)", () => {
+  const seedConfig = readFileSync(new URL("lib/repo-config.mts", seedFolder), "utf8");
+  const stepEight = (): string => {
+    const reference = readFileSync(new URL(`${skill}/references/sandcastle.md`, root), "utf8");
+    const start = reference.indexOf("\n8. Set `GATE_SCRIPT`");
+    assert.notEqual(start, -1, "references/sandcastle.md has no step 8 that sets GATE_SCRIPT");
+    return reference.slice(start + 1, reference.indexOf("\n\n", start));
+  };
+
+  it("lists .claude/skills/ in dotfiles' own CHECK_PATHS, beside the Template's folders", () => {
+    assert.ok(CHECK_PATHS.includes(".claude/skills/"), "CHECK_PATHS lacks the root .claude/skills/");
+  });
+
+  it("reruns the Template CI on a push that changes .claude/skills/ or .claude/agents/", () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/repo-ci-baseline.yml", import.meta.url), "utf8");
+    const pushPaths = /^ {2}push:\n(?:.*\n)*? {4}paths:\n((?: {6}- .*\n)+)/m.exec(workflow)?.[1] ?? "";
+
+    assert.notEqual(pushPaths, "", "repo-ci-baseline.yml has no push paths filter");
+    assert.match(pushPaths, /^ {6}- "\.claude\/skills\/\*\*"$/m);
+    assert.match(pushPaths, /^ {6}- "\.claude\/agents\/\*\*"$/m);
+  });
+
+  it("lists the checker and .claude/skills/ in the Seed lib/repo-config.mts CHECK_PATHS", () => {
+    const declaration = /export const CHECK_PATHS[^=]*=\s*\[([^\]]*)\]/.exec(seedConfig)?.[1] ?? "";
+    const listed = [...declaration.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+
+    assert.notEqual(declaration, "", "the Seed has no CHECK_PATHS list");
+    assert.ok(listed.includes(".github/scripts/check_gh_repo.py"), `the Seed CHECK_PATHS ${JSON.stringify(listed)} lacks the checker`);
+    assert.ok(listed.includes(".claude/skills/"), `the Seed CHECK_PATHS ${JSON.stringify(listed)} lacks .claude/skills/`);
+  });
+
+  it("names the checker and .claude/skills/ in references/sandcastle.md's step 8", () => {
+    const step = stepEight();
+
+    assert.match(step, /check_gh_repo\.py/);
+    assert.match(step, /\.claude\/skills\//);
   });
 });

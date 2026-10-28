@@ -165,7 +165,6 @@ while true; do
   fi
 
   if ((ok)); then
-    failures=0
     seen_text=""
     if [[ -f "$seen_file" ]]; then seen_text="$(<"$seen_file")"; fi
     if ! reasons="$(printf '%s' "$resp" | jq -r --arg session "$MARKER" --arg seen "$seen_text" "$REASONS_JQ" 2>/dev/null)"; then
@@ -175,6 +174,7 @@ while true; do
   fi
 
   if ((ok)); then
+    failures=0
     if [[ -n "$reasons" ]]; then
       while IFS=$'\x1f' read -r code detail id; do
         echo "watch-pr: $code: $detail"

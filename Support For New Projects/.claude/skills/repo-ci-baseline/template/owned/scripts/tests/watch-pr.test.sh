@@ -668,6 +668,15 @@ pr '{}'
 run --interval 60 --timeout 1 7
 check "three failures, then quiet until the timeout: exit 1" status_is 1
 
+# A response with GitHub's shape whose text can't be read (a number for a comment body) is a failed poll every time: the failures add up
+# across polls and end the watcher, rather than each one counting as the first.
+new_repo
+echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","commits":{"nodes":[]},"reviewThreads":{"nodes":[]},"reviews":{"nodes":[]},"comments":{"nodes":[{"id":"C_1","author":{"__typename":"User","login":"reviewer"},"body":5}]}}}}}' > "$GH_FIXTURE"
+run --interval 60 --timeout 120 7
+check "an unreadable answer five times: exit 2" status_is 2
+check "an unreadable answer is never reported as quiet" out_is_empty
+check "an unreadable answer: it gave up at five" polls_are 5
+
 # Output that isn't JSON is a failure, never quiet.
 new_repo
 export GH_FAKE_GARBAGE=1

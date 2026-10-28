@@ -131,11 +131,13 @@ whether or not that label counts, and says how many other open PRs it left out.
   A flag is `decide`'s answer, not a promise that a pass runs: `planPass` skips a flagged PR that has no needed merge, no red check with
   an Actions run behind it and no thread for the role, or whose head moved, or whose thread author it can't check, and the reason says so.
   Text from GitHub (a title, a branch, a reason, gh's error text on stderr, a warning a read prints and the log lines) is printed through `terminalText`: whitespace
-  becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, unassigned, private-use and filler
-  characters are dropped, so it can't overwrite, fake or hide text in a line of the report. The cost: a joiner and an emoji's variation
-  selector go too, so an emoji sequence falls apart into its emoji. `readableRepo` reads the repository name first with gh's stderr
-  captured, and `plainStderr` cleans what a read warns on stderr. Not covered: `repoName()`'s own second read (gh's stderr inherited)
-  and `protectHostGit`'s `git config` calls, which let gh and git write their stderr themselves.
+  becomes one space, and control, format (bidi, zero-width, tag), default-ignorable, surrogate, noncharacter and filler characters are
+  dropped, so it can't overwrite, fake or hide text in a line of the report. A zero-width joiner between two pictographs, an emoji's
+  variation selector right after a pictograph and a zero-width non-joiner between two letters stay, so an emoji sequence and a Persian
+  word are printed whole; anywhere else, a run of them included, they go. A private-use or unassigned code point stays, since it draws a
+  glyph or a box. `plainStderr` cleans what a read warns on stderr. gh's and git's own stderr never reach the terminal themselves: the
+  reads that run them (`repoName()`, `protectHostGit`'s `git config`) capture it and put it in the thrown message, which the entry file
+  prints through `terminalText`.
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),
   and `answered` for those the host replied to, which now wait on the owner. A thread read that failed shows `unknown (why)`, for a

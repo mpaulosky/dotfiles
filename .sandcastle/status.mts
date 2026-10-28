@@ -14,7 +14,7 @@
 import { QueueScopeError, describeQueueScope, type QueueScope } from "./lib/config.mts";
 import { protectHostGit } from "./lib/host-safety.mts";
 import { useQueueScope } from "./lib/queue.mts";
-import { plainStderr, readableRepo, statusCommand, statusScopeFrom, terminalText } from "./lib/status.mts";
+import { plainStderr, statusCommand, statusScopeFrom, terminalText } from "./lib/status.mts";
 
 // The queue scope comes first, so a bad variable exits with the usage message before git or gh is touched.
 let scope: QueueScope;
@@ -34,8 +34,6 @@ try {
   // gh reads git's config, and an agent may have written one: pin every git command to this repository's own, as the run
   // does, before the first gh call. This is the only startup step the status takes; the others write to GitHub.
   protectHostGit();
-  // The repository name first, with gh's stderr captured: the sweep's own read of it lets gh write to the terminal itself.
-  readableRepo();
   statusCommand();
 } catch (error) {
   // gh's own text (its stderr is in the message) goes to the terminal as plain text, as the report's does.

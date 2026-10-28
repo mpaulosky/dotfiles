@@ -40,6 +40,7 @@ import {
   pullRequestLabels,
   pullRequestsWithLabel,
   pushAccess,
+  readRepoName,
   repositoryOwnerLogin,
   removeIssueLabel,
   removePullRequestLabel,
@@ -310,6 +311,34 @@ describe("ownerApproved", () => {
 
     assert.deepEqual(kept, ["First comment.", "Second comment."]);
     assert.equal(calls.length, 1);
+  });
+});
+
+describe("readRepoName", () => {
+  it("returns the name gh printed, asking gh with its stderr captured", () => {
+    const asked: { file: string; args: readonly string[]; stdio: unknown }[] = [];
+    const run = ((file: string, args: readonly string[], options: { stdio?: unknown }) => {
+      asked.push({ file, args, stdio: options.stdio });
+      return "o/r\n";
+    }) as unknown as typeof execFileSync;
+
+    assert.equal(readRepoName(run), "o/r");
+    assert.deepEqual(asked.map((call) => [call.file, ...call.args]), [["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]]);
+    assert.deepEqual(asked[0]?.stdio, ["ignore", "pipe", "pipe"]);
+  });
+
+  it("throws with gh's stderr in the message, so the caller prints it as plain text", () => {
+    const run = (() => {
+      throw Object.assign(new Error("exit 1"), { stderr: "gh: not signed in\n" });
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => readRepoName(run), /gh repo view failed:\ngh: not signed in/);
+  });
+
+  it("throws when gh prints no name", () => {
+    const run = (() => "\n") as unknown as typeof execFileSync;
+
+    assert.throws(() => readRepoName(run), /printed no repository name/);
   });
 });
 

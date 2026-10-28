@@ -99,6 +99,8 @@ export function repoGitDir(): string {
 export function worktreeConfigProblem(gitDir: string): string | undefined {
   const enabled = execFileSync("git", ["config", "--file", join(gitDir, "config"), "--type=bool", "--default", "false", "extensions.worktreeConfig"], {
     encoding: "utf8",
+    // git's stderr is captured, so a failure reaches the terminal only through the thrown message.
+    stdio: ["ignore", "pipe", "pipe"],
   }).trim();
   return enabled === "true"
     ? `${join(gitDir, "config")} sets extensions.worktreeConfig, so git would read config.worktree files that agents can write. ` +
@@ -133,7 +135,10 @@ export function configIncludeProblem(gitDir: string): string | undefined {
   const config = join(gitDir, "config");
   let output: string;
   try {
-    output = execFileSync("git", ["config", "--file", config, "--get-regexp", "-z", "^include(if\\..*)?\\.path$"], { encoding: "utf8" });
+    output = execFileSync("git", ["config", "--file", config, "--get-regexp", "-z", "^include(if\\..*)?\\.path$"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   } catch (error) {
     if ((error as { status?: number }).status === 1) return undefined; // git exits 1 when nothing matches
     throw error;

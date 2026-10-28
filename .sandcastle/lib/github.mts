@@ -17,8 +17,16 @@ let repo: string | undefined;
 // Read on first use rather than at import, so importing a module never shells
 // out to gh.
 export function repoName(): string {
-  repo ??= sh(process.cwd(), "gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner");
+  repo ??= readRepoName();
   return repo;
+}
+
+// One read of the name, with gh's stderr captured: a failure reaches the terminal only through the thrown message, where a caller
+// can print it as plain text, never written by gh itself. Takes the runner, for a test.
+export function readRepoName(run: typeof execFileSync = execFileSync): string {
+  const name = ghWithStderr(run, ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
+  if (name === "") throw new Error("gh repo view failed: it printed no repository name");
+  return name;
 }
 
 // The login in `repoName()`'s "owner/name": the account the repository belongs to. For an organisation's repository it

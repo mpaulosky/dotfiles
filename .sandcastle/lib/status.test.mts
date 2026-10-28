@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
@@ -22,7 +21,6 @@ import {
   PASS_MAY_SKIP,
   isListed,
   plainStderr,
-  readableRepo,
   liveStatusGitHub,
   renderStatus,
   terminalLine,
@@ -129,8 +127,8 @@ const run = (overrides: Partial<WorkflowRun> = {}): WorkflowRun => ({
 });
 
 // What terminalText must never leave in a line: a control, format (bidi, zero-width, tag, soft hyphen) or surrogate character, a variation selector,
-// private-use and unassigned code points, default-ignorable ones and the fillers that draw as blanks.
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
+// noncharacters, default-ignorable code points and the fillers that draw as blanks.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
 
 const SCOPE: QueueScope = { kind: "label", label: QUEUE_LABEL };
 
@@ -831,9 +829,8 @@ describe("terminalText", () => {
     "a Hangul Jungseong filler": "\u1160",
     "a Khmer inherent vowel": "\u17b4",
     "a second Khmer inherent vowel": "\u17b5",
-    "an unassigned code point": "\u0378",
     "an unassigned default-ignorable code point": "\u2065",
-    "a private-use code point": "\ue000",
+    "a noncharacter": "\uffff",
     "a Hangul filler": "\u3164",
     "a halfwidth Hangul filler": "\uffa0",
     "a Braille blank": "\u2800",
@@ -868,6 +865,37 @@ describe("terminalText", () => {
     assert.equal(terminalText("a \u200b b"), "a b");
     const once = terminalText("x \u2060\u200b  y\u{E0041} z");
     assert.equal(terminalText(once), once);
+  });
+
+  it("keeps the joiners that do their work, and no others", () => {
+    const family = "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}";
+    const heart = "\u2764\ufe0f\u200d\u{1F525}";
+    const persian = "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645";
+
+    assert.equal(terminalText(family), family);
+    assert.equal(terminalText(heart), heart);
+    assert.equal(terminalText("\u26a0\ufe0f Fix"), "\u26a0\ufe0f Fix");
+    assert.equal(terminalText(persian), persian);
+  });
+
+  it("drops a joiner that has no pictograph or letter on both sides, and every one of a run", () => {
+    assert.equal(terminalText("\u{1F468}\u200d\u200d\u{1F469}"), "\u{1F468}\u{1F469}");
+    assert.equal(terminalText("\u{1F468}\u200dx"), "\u{1F468}x");
+    assert.equal(terminalText("x\u200d\u{1F468}"), "x\u{1F468}");
+    assert.equal(terminalText("a\u200cb\u200c\u200cc"), "a\u200cbc");
+    assert.equal(terminalText("a\u200c 1"), "a 1");
+    assert.equal(terminalText("x\ufe0f"), "x");
+    assert.equal(terminalText("\u{1F468}\ufe00"), "\u{1F468}");
+  });
+
+  it("keeps a private-use or unassigned code point, which draws a glyph or a box, and drops a noncharacter", () => {
+    assert.equal(terminalText("a\ue000b\u0378c"), "a\ue000b\u0378c");
+    assert.equal(terminalText("a\uffffb"), "ab");
+  });
+
+  it("gives the same text when a joiner it kept is cleaned again", () => {
+    const text = "\u{1F468}\u200d\u{1F469} \u200b \u0645\u06cc\u200c\u062e";
+    assert.equal(terminalText(terminalText(text)), terminalText(text));
   });
 
   it("leaves a title's letters, digits, punctuation, emoji and accents alone", () => {
@@ -1044,6 +1072,18 @@ describe("plainStderr", () => {
     assert.deepEqual(printed, ["  \u26a0 gh said[2K hidden boom line two"]);
   });
 
+  it("never lets an Error's message act as the format string, whatever follows it", () => {
+    const printed: string[] = [];
+    const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
+
+    plainStderr(sink);
+    sink.error(new Error("100%s done"), "x");
+    sink.error(new Error("a %% b"), 1);
+    sink.error(new Error("only 100%s"));
+
+    assert.deepEqual(printed, ["100%s done x", "a %% b 1", "only 100%s"]);
+  });
+
   it("prints an object, a format string's arguments and a null-prototype object as console would, cleaned", () => {
     const printed: string[] = [];
     const sink = { error: (...data: unknown[]) => void printed.push(data.join("|")) };
@@ -1064,44 +1104,6 @@ describe("plainStderr", () => {
     sink.error(`${" ".repeat(200)}x`);
 
     assert.equal(printed[0], `${" ".repeat(8)}x`);
-  });
-});
-
-describe("readableRepo", () => {
-  it("returns the repository name gh printed, asking gh with its stderr captured", () => {
-    const asked: { file: string; args: readonly string[]; options: { encoding?: string; stdio?: unknown[] } }[] = [];
-    const run = ((file: string, args: readonly string[], options: { encoding?: string; stdio?: unknown[] }) => {
-      asked.push({ file, args, options });
-      return "o/r\n";
-    }) as unknown as typeof execFileSync;
-
-    assert.equal(readableRepo(run), "o/r");
-    assert.deepEqual(asked.map((call) => [call.file, ...call.args]), [["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]]);
-    assert.equal(asked[0]?.options.stdio?.[2], "pipe");
-    assert.equal(asked[0]?.options.encoding, "utf8");
-  });
-
-  it("throws when gh prints no name", () => {
-    const run = (() => "\n") as unknown as typeof execFileSync;
-
-    assert.throws(() => readableRepo(run), /printed no repository name/);
-  });
-
-  it("names why gh couldn't run when it printed no stderr, and keeps the original error as the cause", () => {
-    const original = new Error("spawnSync gh ENOENT");
-    const run = (() => {
-      throw original;
-    }) as unknown as typeof execFileSync;
-
-    assert.throws(() => readableRepo(run), (error: Error) => error.message === "gh repo view failed: spawnSync gh ENOENT" && error.cause === original);
-  });
-
-  it("throws with gh's stderr in the message, so the caller prints it as plain text, instead of letting gh write it", () => {
-    const run = (() => {
-      throw Object.assign(new Error("exit 1"), { stderr: "gh: not signed in\n" });
-    }) as unknown as typeof execFileSync;
-
-    assert.throws(() => readableRepo(run), /gh repo view failed: gh: not signed in/);
   });
 });
 

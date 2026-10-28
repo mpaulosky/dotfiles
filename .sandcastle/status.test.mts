@@ -181,17 +181,12 @@ describe("status.mts's source", () => {
     }
   });
 
-  it("calls plainStderr before the command, and readableRepo after protectHostGit, inside the try whose catch exits 1", () => {
-    const protect = source.search(/\bprotectHostGit\(\)/);
-    const repo = source.search(/\breadableRepo\(\)/);
+  it("calls plainStderr before the command", () => {
     const plain = source.search(/\bplainStderr\(\)/);
     const command = source.search(/\bstatusCommand\(/);
-    const tryAt = source.search(/\btry \{\n\s*\/\/ gh reads git's config/);
-    const catchAt = source.search(/\} catch \(error\) \{\n\s*\/\/ gh's own text/);
 
-    assert.ok(repo >= 0 && plain >= 0 && command >= 0 && protect >= 0, "status.mts should call protectHostGit, readableRepo, plainStderr and statusCommand");
-    assert.ok(plain < command && protect < repo && repo < command, `order: plainStderr ${plain}, protectHostGit ${protect}, readableRepo ${repo}, command ${command}`);
-    assert.ok(tryAt >= 0 && tryAt < protect && repo < catchAt, "readableRepo() should sit inside the try whose catch prints the cause and exits 1");
+    assert.ok(plain >= 0 && command >= 0, "status.mts should call plainStderr and statusCommand");
+    assert.ok(plain < command, `order: plainStderr ${plain}, command ${command}`);
   });
 
   it("reads the scope first, then protects host git before the first gh call, then runs the command", () => {

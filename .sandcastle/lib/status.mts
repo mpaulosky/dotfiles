@@ -8,7 +8,6 @@
 // report's data and rendering, and writes nothing to GitHub or git.
 // ---------------------------------------------------------------------------
 
-import { execFileSync } from "node:child_process";
 import { format } from "node:util";
 import {
   BUILDING_LABEL,
@@ -320,18 +319,35 @@ const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 
 // GitHub's and gh's text (a title, a branch, a reason, an error) made safe for a terminal: whitespace, including a line break, is one
 // space, and every control character (ESC and the C1 set, so no CSI sequence), format character (bidi marks, zero-width characters,
-// the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, unassigned and
-// private-use code point, variation selector and filler that draws as a blank is dropped. Nothing in it can overwrite a line of the
-// report, fake one or carry text a reader can't see. The cost: a zero-width joiner or non-joiner and an emoji's variation selector go
-// too, so an emoji sequence falls apart into its emoji and a word that needs a joiner is respelled.
+// the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, noncharacter, variation
+// selector and filler that draws as a blank is dropped. Nothing in it can overwrite a line of the report, fake one or carry text a reader
+// can't see. Three joiners keep their place where they do the work they are for: a zero-width joiner between two pictographs (an emoji
+// sequence) and an emoji's variation selector right after a pictograph, and a zero-width non-joiner between two letters (a Persian or
+// Indic word). Anywhere else, a run of them included, they are dropped, so none can carry hidden text. A private-use or unassigned code
+// point draws a glyph (or a box), so it stays.
 export function terminalText(text: string): string {
   return text
     // Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
     .replace(/[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu, " ")
-    .replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/gu, "")
+    .replace(HIDDEN_CHARACTERS, (character, offset: number, whole: string) =>
+      keptJoiner(character, whole.slice(Math.max(0, offset - JOINER_LOOKBEHIND), offset), whole.slice(offset + character.length, offset + 3)) ? character : "",
+    )
     // Dropping a character can leave the spaces on either side of it side by side.
     .replace(/ {2,}/g, " ")
     .trim();
+}
+
+const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0]/gu;
+
+// How much text before a joiner is read to decide whether it stays (a letter and its combining marks).
+const JOINER_LOOKBEHIND = 16;
+
+// Whether a joiner stays: `before` and `after` are the text on either side of it.
+function keptJoiner(character: string, before: string, after: string): boolean {
+  if (character === "\u200d") return /\p{Extended_Pictographic}\ufe0f?$/u.test(before) && /^\p{Extended_Pictographic}/u.test(after);
+  if (character === "\ufe0f") return /\p{Extended_Pictographic}$/u.test(before);
+  if (character === "\u200c") return /\p{L}\p{M}*$/u.test(before) && /^\p{L}/u.test(after);
+  return false;
 }
 
 // The most indent a log line keeps: more would let text GitHub supplied pad a line to look like a different one.
@@ -435,24 +451,11 @@ export function statusCommand(
 export function plainStderr(target: { error: (...data: unknown[]) => void } = console): void {
   const print = target.error.bind(target);
   // One line, formatted as console formats it (%s, objects), so the line's own indent is the only one kept.
-  target.error = (...data: unknown[]) => print(terminalLine(format(...data.map((item) => (item instanceof Error ? item.message : item)))));
-}
-
-// Reads the repository name with gh's stderr captured, so a failure reaches the terminal only through the entry file's catch, as
-// plain text. repoName() runs gh with its stderr inherited and caches only a success: the status asks here first, so a read that fails
-// ends the run before that. A second read that fails after this one succeeded still lets gh write its own text (an open finding).
-export function readableRepo(run: typeof execFileSync = execFileSync): string {
-  let name: string;
-  try {
-    name = run("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-  } catch (error) {
-    const stderr = (error as { stderr?: unknown }).stderr;
-    // gh's own text when it printed some; else why it couldn't run (not installed, killed).
-    const detail = (typeof stderr === "string" ? stderr.trim() : "") || (error instanceof Error ? error.message : String(error));
-    throw new Error(`gh repo view failed: ${detail}`, { cause: error });
-  }
-  if (name === "") throw new Error("gh repo view failed: it printed no repository name");
-  return name;
+  target.error = (...data: unknown[]) => {
+    // An Error's message is data, never the format string: its % is escaped when other arguments follow it (a lone argument isn't formatted).
+    const items = data.map((item, at) => (item instanceof Error ? (at === 0 && data.length > 1 ? item.message.replace(/%/g, "%%") : item.message) : item));
+    print(terminalLine(format(...items)));
+  };
 }
 
 // The live reads. Only the sweep's reads are taken from liveFollowUpGitHub, none of its writes, and the queue is read with

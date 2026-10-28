@@ -33,6 +33,32 @@ describe("worktreeConfigProblem", () => {
   });
 });
 
+// git run as a stand-in that fails with a message of its own on stderr: the host's two config reads must capture it, so it reaches the
+// terminal only through the thrown message.
+describe("the host's git config reads", () => {
+  const withFailingGit = (run: () => void) => {
+    const bin = mkdtempSync(join(tmpdir(), "sandcastle-failing-git-"));
+    const path = process.env.PATH;
+    try {
+      writeFileSync(join(bin, "git"), "#!/bin/sh\necho 'fatal: from the stand-in git' >&2\nexit 128\n");
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+      run();
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  };
+
+  it("worktreeConfigProblem throws with git's stderr in the message", () => {
+    withFailingGit(() => assert.throws(() => worktreeConfigProblem("/nonexistent/.git"), /fatal: from the stand-in git/));
+  });
+
+  it("configIncludeProblem throws with git's stderr in the message, other than for git's exit 1", () => {
+    withFailingGit(() => assert.throws(() => configIncludeProblem("/nonexistent/.git"), /fatal: from the stand-in git/));
+  });
+});
+
 describe("configIncludeProblem", () => {
   // setup gets the repo's config path and a directory outside the checkout and .git.
   const configIn = (setup: (config: string, outside: string) => void) => {

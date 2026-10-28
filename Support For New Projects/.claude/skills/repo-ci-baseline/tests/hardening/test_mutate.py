@@ -122,6 +122,7 @@ def test_refuses_a_path_outside_the_root(tmp_path):
     (tmp_path / "outside.py").write_text("a = 1\n", encoding="utf-8")
     result = run(root, spec([{"path": "../outside.py", "old": "1", "new": "2", "why": "w"}]))
     assert result.returncode == 2
+    assert "outside" in result.stderr
     assert (tmp_path / "outside.py").read_text(encoding="utf-8") == "a = 1\n"
 
 
@@ -198,3 +199,17 @@ def test_restores_every_file_when_interrupted(tmp_path):
     proc.communicate(timeout=20)
     assert proc.returncode != 0
     assert (root / "target.py").read_bytes() == before
+
+
+def test_each_mutation_is_undone_before_the_next_runs(tmp_path):
+    # A stale mutation in one file would make a harmless one in another look caught.
+    (tmp_path / "r").mkdir()
+    root = make_repo(tmp_path / "r")
+    (root / "other.py").write_text("value = 1  # keep\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "other")
+    result = run(root, spec([mutation("x > 0", "x >= 0"),
+                             {"path": "other.py", "old": "# keep", "new": "# gone", "why": "w"}]))
+    assert result.returncode == 1, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("CAUGHT") and lines[1].startswith("SURVIVED"), result.stdout

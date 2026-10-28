@@ -80,6 +80,8 @@ def test_refuses_a_duplicate_id_a_bad_range_and_an_outside_path(tmp_path):
     assert add(tmp_path, listing).returncode == 2
     assert add(tmp_path, listing, ident="R4", start="3", end="2").returncode == 2
     assert add(tmp_path, listing, ident="R5", start="-1", end="2").returncode == 2
+    # The file has 4 lines: a range ending just past them is refused, not hashed short.
+    assert add(tmp_path, listing, ident="R7", start="3", end="5").returncode == 2
     outside = cli("add", str(listing), "--root", str(tmp_path), "--id", "R6", "--lens", "L", "--path", "../x",
                   "--start", "1", "--end", "1", "--reason", "r")
     assert outside.returncode == 2

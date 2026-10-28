@@ -65,7 +65,7 @@ elif command -v gh >/dev/null 2>&1; then # gh-repo: ok
       echo "$l: $n open"
     done <<<"$matching"
   else
-    echo "(gh couldn't list the labels of $repo; check labels by hand)"
+    echo "(gh couldn't list the labels of $repo; check labels by hand)" # gh-repo: ok
   fi
 else
   echo "(gh not installed; check labels by hand)" # gh-repo: ok

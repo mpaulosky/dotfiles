@@ -235,20 +235,11 @@ export function recordApprovedHead(number: number, head: string, post: (number: 
 // skips the PR, or a record that fails to post, leaves the count growing).
 export const MAX_MAIN_MERGES = 5;
 
-// Whether the repository owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it,
-// its latest labeled event is the owner's, nobody but the owner has renamed it or edited its description since
-// (lib/queue.mts#approval), where "the owner" is `isOwner`: the host or any login with push access, and its head is one
-// the owner approved. The Sandcastle workflow records the head the label was added to, from the event itself (and only for
-// the repository owner's own label, so another login's label passes the event check and is never followed up), and the host
-// records each head it pushes. A head also counts when it is a merge of main that GitHub made for the host (lib/github.mts#mainMergeOf)
-// on top of one that counts, up to MAX_MAIN_MERGES deep, so an update of the branch made under the host's login (PR Auto-Merge with a
-// RELEASE_PR_PAT of the same account, the owner's Update branch button when the owner is the host) doesn't end the follow-up; an update
-// under another login, or by GITHUB_TOKEN, does. The sweep records the head it reached through such merges (recordApprovedHead), so the
-// next walk starts there.
-// A commit anyone else pushes later leaves the head unapproved, so the PR isn't followed up until the owner removes and
-// re-adds the label. Only the host's own comments count, posted at or after the label and never edited since (a login with
-// push access can edit a comment), so a stranger can't record a head and an earlier label's record doesn't carry over.
-// The author check keeps a collaborator from handing off a PR of their own.
+// Whether the owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it, the latest
+// labeled event is the owner's with no later edit of the title or description by anyone else (lib/queue.mts#approval),
+// and the head is one the owner approved: recorded by the Sandcastle workflow or the host, or reached from such a head
+// through at most MAX_MAIN_MERGES merges of main that GitHub made for the host (lib/github.mts#mainMergeOf; the sweep
+// records the head it reached). The model, and why each check is there, is in references/sandcastle.md#hand-off-prs.
 export function handOffApproval(
   pr: Pick<SweepPullRequest, "number" | "author" | "headRefOid">,
   github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "recordApprovedHead" | "isOwner" | "repositoryOwner">,

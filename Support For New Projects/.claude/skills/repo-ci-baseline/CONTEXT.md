@@ -47,8 +47,8 @@ and read by both reviews by id, lens and path only. Its README is a Seed file; i
 _Avoid_: Security log, findings database
 
 **Sandcastle section**:
-The Template's files under `.sandcastle/`, with the Seed `package.json` and `pnpm-workspace.yaml`, the Sandcastle workflow and its Seed skills list
-`.github/ci/sandcastle-skills.txt`, the Seed session guidance `.claude/rules/sandcastle-hand-off.md`, and the local review's skills (`pre-push-review` and `hardening-review`), agent and
-`scripts/review.sh`, that a repo running Sandcastle shares.
+The Template's files for a repo that runs Sandcastle: `.sandcastle/`, its workflow and Seed skills list, the Seed session guidance
+`.claude/rules/sandcastle-hand-off.md`, and the local review's skills, agent and `scripts/review.sh`.
 Apply adds them only to a repo that has a `.sandcastle/` folder or no commits yet.
+The files, and the model for handing a PR off, are in [references/sandcastle.md](references/sandcastle.md#hand-off-prs).
 _Avoid_: Sandcastle template, agent kit

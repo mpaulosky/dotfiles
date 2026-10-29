@@ -26,12 +26,21 @@ and `land.sh` does so as soon as its own request for the head read back as dropp
 Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
 A request the run can't read in full counts as pending, so the rule fails closed.
 Claude's review of the head also waits for the grace to be over, so a label added by hand right after a push, before the ruleset's request registers, is not taken for Copilot's review.
-A head with no check besides Claude's and the workflow's own has no grace to wait for, so the workflow never counts Claude's review of it: it goes to the owner's notices.
+A head with no check besides Claude's and the workflow's own has no grace to wait for, so the workflow never counts Claude's review of it:
+with or without `review:claude`, the run logs a notice to review and merge it by hand (mpaulosky/dotfiles#331).
 `land.sh` counts Claude's review of a head its own request was dropped for with no grace, so such a PR can wait up to the grace after Claude's review before the workflow merges it.
 That rests on GitHub keeping Copilot's request in `reviewRequests` until its review is submitted.
-Once Copilot really reviews the head, Copilot's review covers it and the label comes off (#271). The new path applies to any same-repo PR,
-so a repo whose ruleset never requests Copilot gets Claude's review too. The cost is a small window where a Copilot review that is merely very late arrives after Claude's;
+Once Copilot really reviews the head, Copilot's review covers it and the label comes off (#271). The new path applies to every same-repo PR,
+so a repo whose ruleset never requests Copilot gets Claude's review too. The owner decided (mpaulosky/dotfiles#331) to accept that and not to check the ruleset:
+a check is an extra API read and failure mode, and without Copilot such a repo would otherwise never get a review at all. The label is still the gate,
+so the cost there is one Claude review per labelled PR. The other cost is a small window where a Copilot review that is merely very late arrives after Claude's;
 its threads still hold the merge, and the 5-minute grace keeps that window short.
+
+A bot's push of a clean merge H2 of `main` on top of a head H1 Claude reviewed gets a review of its own (mpaulosky/dotfiles#331).
+H2's own Claude Review run is skipped (the action refuses a bot), and under a dropped request H1 has no note, so a review of H1 would count for nothing at the gate.
+So the run for H1 that sees H2 at its check step reviews H2 itself, against `main`'s current tip, since H2 holds a newer `main` than the base that run's event carries.
+PR Auto-Merge does not re-trigger `review:claude` for H2. That covers only a run that sees H2 at its check step: when H1's run is past that step or has finished before the bot pushes,
+nothing starts a run for H2, and it waits for a person's push or label.
 
 ## Considered Options
 
@@ -41,6 +50,8 @@ its threads still hold the merge, and the 5-minute grace keeps that window short
   It reviews in a read-only job and answers in a JSON schema; a separate job posts.
 - **An advisory review in the local pre-push gate**: rejected as the backup because the merge gate needs a review recorded on the PR.
   It may still come later as its own issue.
+- **Limit the dropped-request path to repos whose ruleset requests Copilot**: rejected (mpaulosky/dotfiles#331) because the ruleset check adds an API read and a failure mode,
+  and a repo without Copilot would otherwise never get a review.
 - **Count Copilot's and Claude's rounds separately**: rejected because switching reviewer would reset the cap.
 
 ## Consequences

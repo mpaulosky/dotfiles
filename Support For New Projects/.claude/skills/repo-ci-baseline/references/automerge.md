@@ -36,10 +36,11 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   Even then it counts as a review of a commit only where Copilot can't review it: Claude is the backup. Copilot can't when its quota note is on that
   commit, or when it is the head and Copilot has no review of it, no pending review request and the grace is over (GitHub drops the request "without a word" once the
   budget is used up, #318; ADR 0004's update; a request list the run can't read in full counts as pending). A Claude review of an earlier commit with no note covers
-  nothing, label or not (so `land.sh` and the workflow agree on that),
-  and a head with no check besides Claude's and the workflow's own has no grace to count, so it goes to the owner's notices,
-  and `land.sh` counts Claude's review of a head its own request was dropped for without a grace, while the workflow waits for the grace,
-  and neither does one of a head Copilot's request is still pending for (unless the note is on it), since that review may be merely late and counting Claude's would let the PR merge before Copilot's
+  nothing, label or not (so `land.sh` and the workflow agree on that).
+  A head with no check besides Claude's and the workflow's own has no grace to count, so the workflow never counts Claude's review of it:
+  with or without `review:claude`, the run logs a notice to review and merge it by hand.
+  `land.sh` counts Claude's review of a head its own request was dropped for without a grace, while the workflow waits for the grace.
+  Neither counts Claude's review of a head Copilot's request is still pending for (unless the note is on it), since that review may be merely late and counting Claude's would let the PR merge before Copilot's
   findings arrive (`pr-automerge.test.mjs` pins each case).
   A Copilot review counts only when it reviewed something. Once the account's Copilot code review quota is used up, Copilot still posts a review
   of each head whose body starts "Copilot was unable to review" (`COPILOT_NO_REVIEW`). It covers no commit and counts toward no round.
@@ -49,8 +50,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   `claude-review.yml`'s reviewed list holds a Claude review of a commit with Copilot's note and of the PR's current head (whatever the grace or a pending request, so a head isn't reviewed twice),
   and none of an earlier commit without a note,
   so a clean merge of main into an earlier commit Claude reviewed under a dropped request gets a review of its own when its push starts a run, instead of waiting for a person.
-  When a bot pushes a clean merge H2 of main while Claude Review is running for the earlier head H1, that run reviews H1 only if H1 carries Copilot's note, since the gate counts
-  a review of a commit that is no longer the head only then; without the note it skips with a notice, and the PR waits for a person or a push that starts its own run.
+  When a bot pushes a clean merge H2 of main while Claude Review is running for the earlier head H1, that run reviews H1 if H1 carries Copilot's note, since the gate counts
+  a review of a commit that is no longer the head only then; without the note it reviews H2 itself, against main's current tip, because H2's own run is skipped (a bot's push).
+  This covers only a run that sees H2 at its check step: when H1's run is past that step or finished before the bot pushed, nothing starts a run for H2, and PR Auto-Merge doesn't re-trigger
+  `review:claude` for it, so H2 waits for a person's push or label.
   `land.sh` treats a head Copilot answered with the note as it treats a dropped request: it adds `review:claude` rather than asking Copilot again.
   PR Auto-Merge does the same (#190), so a PR nobody lands with `land.sh` gets Claude's review too (#189 waited for one that never came).
   Counting it let
@@ -107,7 +110,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   `event` has replaced, as when the owner starts the workflow again on the head (mpaulosky/dotfiles#238). It reads the head's
   checks again after the runs and waits if they changed, as a run may have finished between the two reads. When everything is quiet but no CI check exists (path filters left out every CI
   workflow, or a push with `GITHUB_TOKEN` started none, leaving GraphQL's `statusCheckRollup` null), nothing will start the
-  workflow again, so the run logs a notice to add the label or merge by hand. A failed read of the runs isn't settled.
+  workflow again, so the run logs a notice to review and merge it by hand. A failed read of the runs isn't settled.
   As for an update, that holds only off a PR event, where CI may not have created the required checks yet.
   Once the label is added, the run logs a notice that it has no required check.
   A person who took the label off decides for that PR, so it isn't added back; this workflow's own removals don't count.
@@ -127,7 +130,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   A dropped request brings no event when `COPILOT_GRACE_MS` runs out either, so the next scheduled sweep, up to an hour later, adds the label.
   The grace counts from the later of the newest finish of the head's checks and the PR's latest ready-for-review or reopened event,
   since GitHub requests Copilot's review then (a commit status still pending, a check without a finish time or more checks than one page
-  holds keep it waiting); a head with no check but Claude Review's and this job's own goes to the owner's notices above.
+  holds keep it waiting); a head with no check but Claude Review's and this job's own gets the notice above to review and merge it by hand.
 - **Reviewing until a review comes back clean (#193).** Claude Review reviews every push while the label is on,
   so a fix for its findings is reviewed in turn. Reviewing is done when a review of the head comes back clean
   (no threads, no findings outside the diff): that covers the head, and the PR merges once its checks are green.
@@ -149,7 +152,7 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   It reviews anyway when the base's `pr-automerge.yml` lacks the rule (a re-Apply PR's `main` has the old one),
   and skips a run whose head is no longer the PR's, unless the newer head only merges `main` into it
   and no run for it got past the job's condition (an app's or Copilot's push of that merge starts no review, so the older head is reviewed
-  if it carries Copilot's note, which covers the merge; otherwise the run skips it with a notice).
+  if it carries Copilot's note, which covers the merge; otherwise the run reviews the newer head itself).
   That review and its post take concurrency groups keyed by the older head, so they can't cancel the newer head's review,
   and a Claude Review run's completion evaluates every open PR holding its commit, not only the PR whose head it is.
 - **Bringing a ready PR up to date.** A PR that passes every check above but is `BEHIND` (and `MERGEABLE`, every required check's newest run passed,

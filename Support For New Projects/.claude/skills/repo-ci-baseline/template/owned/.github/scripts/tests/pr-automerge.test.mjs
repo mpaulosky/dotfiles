@@ -783,6 +783,13 @@ test("doesn't call in Claude with no required check while a check is still runni
   }
 });
 
+// The notice for a head with no CI check tells the owner to review and merge by hand, and no longer to add the label,
+// since Claude's review of such a head never counts (mpaulosky/dotfiles#331).
+const NO_CI_ADVICE_TEXT = /review and merge it by hand/;
+const NO_CI_ADVICE = {
+  test: (line) => NO_CI_ADVICE_TEXT.test(line) && !line.includes(CLAUDE_LABEL) && line.includes("Claude isn't called in")
+};
+
 // A head whose only checks are Claude Review's, or this job's own, says nothing of CI (mpaulosky/dotfiles#233).
 test("doesn't call in Claude with no required check when the head has only Claude Review's SKIPPED checks (mpaulosky/dotfiles#233)", async () => {
   const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
@@ -811,7 +818,7 @@ test("tells the owner when a quiet head has no CI check and no workflow run is a
   const quiet = await evaluate(pr, [], options);
   assert.deepEqual(quiet.addedLabels, []);
   assert.ok(
-    quiet.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check") && line.includes(`add ${CLAUDE_LABEL}`)),
+    quiet.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check") && NO_CI_ADVICE.test(line)),
     quiet.logs.join("\n")
   );
 
@@ -945,7 +952,7 @@ test("tells the owner when a head has no status check rollup and no workflow run
   const quiet = await evaluate(pr, [], options);
   assert.deepEqual(quiet.addedLabels, []);
   assert.ok(
-    quiet.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check") && line.includes(`add ${CLAUDE_LABEL}`)),
+    quiet.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check") && NO_CI_ADVICE.test(line)),
     quiet.logs.join("\n")
   );
   assert.ok(quiet.headRunRequests.length > 0 && quiet.headRunRequests.every((params) => params.head_sha === HEAD), "the runs check");
@@ -1634,6 +1641,143 @@ test("tells the owner about a head with no CI check even while the grace has not
 
   assert.deepEqual(addedLabels, []);
   assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check")), logs.join("\n"));
+});
+
+// A head with no check besides Claude Review's and the job's own: Claude's review of it never counts, label or not (mpaulosky/dotfiles#331).
+const noCiHead = () => {
+  const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
+  return checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false }));
+};
+const noCiNotice = (logs) => logs.find((line) => line.startsWith("notice: PR #7") && line.includes("no CI check"));
+
+test("tells the owner to review and merge by hand when a labelled head with no CI has Claude's review (mpaulosky/dotfiles#331)", async () => {
+  for (const copilotReviews of [copilotReviewsOf(), copilotReviewsOf("one")]) {
+    const pr = readyPr({
+      copilotReviews,
+      claudeReviews: claudeReviewsOf(HEAD),
+      labels: labelled(CLAUDE_LABEL),
+      headRef: noCiHead(),
+      quotaNotes: false
+    });
+    const { merges, addedLabels, removedLabels, logs } = await evaluate(pr, [], { push: true, requiredChecks: [] });
+
+    const notice = noCiNotice(logs);
+    assert.ok(notice, logs.join("\n"));
+    assert.ok(NO_CI_ADVICE.test(notice), notice);
+    assert.ok(notice.includes(HEAD), notice);
+    assert.deepEqual(merges, []);
+    assert.deepEqual(addedLabels, []);
+    assert.deepEqual(removedLabels, []);
+  }
+});
+
+test("gives a labelled head with no CI and Claude's review the notice only once, and never mentions the label (mpaulosky/dotfiles#331)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: noCiHead(),
+    quotaNotes: false
+  });
+  const { logs } = await evaluate(pr, [], { push: true, requiredChecks: [] });
+
+  assert.equal(logs.filter((line) => line.includes("no CI check")).length, 1, logs.join("\n"));
+  assert.ok(!logs.some((line) => line.includes("no CI check") && line.includes(CLAUDE_LABEL)), logs.join("\n"));
+});
+
+test("doesn't give the no-CI notice to a labelled head that has CI, and merges on Claude's review (mpaulosky/dotfiles#331)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
+    quotaNotes: false
+  });
+  const { merges, logs } = await evaluate(pr, [], { push: true });
+
+  assert.equal(merges.length, 1);
+  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
+});
+
+test("doesn't give the no-CI notice to a labelled head before Claude has reviewed it (mpaulosky/dotfiles#331)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("older"),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: noCiHead(),
+    quotaNotes: false
+  });
+  const { merges, logs } = await evaluate(pr, [], { push: true, requiredChecks: [] });
+
+  assert.deepEqual(merges, []);
+  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
+});
+
+test("doesn't give the no-CI notice to a labelled head on a PR event, where CI may not have started (mpaulosky/dotfiles#331)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: noCiHead(),
+    quotaNotes: false
+  });
+  const { merges, logs } = await evaluate(pr, [], { requiredChecks: [] });
+
+  assert.deepEqual(merges, []);
+  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
+});
+
+test("doesn't give a labelled head with no CI the notice while a workflow run for it is active (mpaulosky/dotfiles#331)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: noCiHead(),
+    quotaNotes: false
+  });
+  const { logs } = await evaluate(pr, [], { push: true, requiredChecks: [], headRuns: [{ id: 1, head_sha: HEAD, status: "queued" }] });
+
+  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
+});
+
+test("tells the owner to review and merge by hand for an unlabelled no-CI head whether or not Copilot left a note (mpaulosky/dotfiles#331)", async () => {
+  for (const copilotReviews of [copilotReviewsOf(), copilotReviewsOf("one"), copilotReviewsOf({ oid: HEAD, note: true })]) {
+    const { merges, addedLabels, logs } = await evaluate(readyPr({ copilotReviews, headRef: noCiHead() }), [], { push: true, requiredChecks: [] });
+
+    const notice = noCiNotice(logs);
+    assert.ok(notice, logs.join("\n"));
+    assert.ok(NO_CI_ADVICE.test(notice), notice);
+    assert.deepEqual(addedLabels, []);
+    assert.deepEqual(merges, []);
+  }
+});
+
+// A bot-pushed clean merge H2 (the head) needs a Claude review of its own: a review of H1 with no Copilot note covers nothing (mpaulosky/dotfiles#331).
+test("merges on Claude's review of the head when an earlier Claude review of the previous head has no Copilot note (mpaulosky/dotfiles#331)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("older", HEAD),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
+    quotaNotes: false
+  });
+  const { merges } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
+});
+
+test("doesn't merge a bot-pushed clean merge on Claude's review of the previous head alone when there is no Copilot note (mpaulosky/dotfiles#331)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf("older"),
+    labels: labelled(CLAUDE_LABEL),
+    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
+    quotaNotes: false
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of")), logs.join("\n"));
 });
 
 test("doesn't count Claude's review of the head when the quota note is on an earlier head and Copilot's request is pending", async () => {

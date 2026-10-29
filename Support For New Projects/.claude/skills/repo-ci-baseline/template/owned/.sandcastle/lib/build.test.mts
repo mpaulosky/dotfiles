@@ -3055,7 +3055,7 @@ describe("build's console.error lines", () => {
 
     const notice = lines.find((line) => line.includes("GitHub server error"));
     assert.ok(notice, lines.join("\n"));
-    assert.ok(notice.includes("held:     settled: all clear"), notice);
+    assert.ok(notice.includes("held: settled: all clear"), notice);
     assert.doesNotMatch(notice, HIDDEN, JSON.stringify(notice));
   });
 
@@ -3074,7 +3074,7 @@ describe("build's console.error lines", () => {
 
       const line = lines.find((candidate) => says.test(candidate));
       assert.ok(line, lines.join("\n"));
-      assert.ok(line.includes("held:     settled: all clear"), line);
+      assert.ok(line.includes("held: settled: all clear"), line);
       assert.doesNotMatch(line, HIDDEN, JSON.stringify(line));
     });
   }

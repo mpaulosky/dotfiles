@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -378,92 +380,62 @@ def test_remove_keeps_the_list_private_and_leaves_no_temporary_file(tmp_path):
 
 
 # mpaulosky/dotfiles#341 (R67): two adds started together both load the list and replace it, so the later one dropped the other's entry.
-def test_two_adds_run_together_keep_both_entries(tmp_path):
-    import threading
-    import time
-    root, listing = setup(tmp_path)
-    module = load_module()
+def together(module, *calls):
+    """Run each call, which returns an exit code, in its own thread, with `load` slowed so that an unlocked second command reads the same,
+    old list. The exit codes come back in the order of the calls."""
     real = module.load
 
     def slow(path):
         entries = real(path)
-        time.sleep(0.3)  # the window in which an unlocked second add reads the same, old list
+        time.sleep(0.3)
         return entries
 
     module.load = slow
-    codes = {}
+    codes = [None] * len(calls)
 
-    def run(ident, start):
-        codes[ident] = module.main(["add", str(listing), "--root", str(root), "--id", ident, "--lens", "Security", "--path", "src/f.sh",
-                                    "--start", start, "--end", start, "--reason", "r"])
+    def run(index, call):
+        codes[index] = call()
 
-    threads = [threading.Thread(target=run, args=(ident, start)) for ident, start in (("R1", "1"), ("R2", "2"))]
+    threads = [threading.Thread(target=run, args=(index, call)) for index, call in enumerate(calls)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
-    assert codes == {"R1": 0, "R2": 0}
-    assert sorted(e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))) == ["R1", "R2"]
+    return codes
+
+
+def add_args(listing, root, ident, start="1"):
+    return ["add", str(listing), "--root", str(root), "--id", ident, "--lens", "Security", "--path", "src/f.sh",
+            "--start", start, "--end", start, "--reason", "r"]
+
+
+def ids_in(listing):
+    return [e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))]
+
+
+def test_two_adds_run_together_keep_both_entries(tmp_path):
+    root, listing = setup(tmp_path)
+    module = load_module()
+    codes = together(module, lambda: module.main(add_args(listing, root, "R1", "1")), lambda: module.main(add_args(listing, root, "R2", "2")))
+    assert codes == [0, 0]
+    assert sorted(ids_in(listing)) == ["R1", "R2"]
 
 
 def test_two_adds_of_one_id_run_together_keep_one_and_refuse_the_other(tmp_path):
-    import threading
-    import time
     root, listing = setup(tmp_path)
     module = load_module()
-    real = module.load
-
-    def slow(path):
-        entries = real(path)
-        time.sleep(0.3)
-        return entries
-
-    module.load = slow
-    codes = []
-
-    def run():
-        codes.append(module.main(["add", str(listing), "--root", str(root), "--id", "R1", "--lens", "Security", "--path", "src/f.sh",
-                                  "--start", "1", "--end", "1", "--reason", "r"]))
-
-    threads = [threading.Thread(target=run) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    codes = together(module, *[lambda: module.main(add_args(listing, root, "R1"))] * 2)
     assert sorted(codes) == [0, 2]
-    assert [e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))] == ["R1"]
+    assert ids_in(listing) == ["R1"]
 
 
 def test_an_add_and_a_remove_run_together_keep_the_add_and_drop_the_removed(tmp_path):
-    import threading
-    import time
     root, listing = setup(tmp_path)
     assert add(root, listing, ident="R3").returncode == 0
     module = load_module()
-    real = module.load
-
-    def slow(path):
-        entries = real(path)
-        time.sleep(0.3)
-        return entries
-
-    module.load = slow
-    codes = {}
-
-    def adding():
-        codes["add"] = module.main(["add", str(listing), "--root", str(root), "--id", "R9", "--lens", "Security", "--path", "src/f.sh",
-                                    "--start", "1", "--end", "1", "--reason", "r"])
-
-    def removing():
-        codes["remove"] = module.main(["remove", str(listing), "--id", "R3"])
-
-    threads = [threading.Thread(target=adding), threading.Thread(target=removing)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    assert codes == {"add": 0, "remove": 0}
-    assert [e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))] == ["R9"]
+    codes = together(module, lambda: module.main(add_args(listing, root, "R9")), lambda: module.main(["remove", str(listing), "--id", "R3"]))
+    assert codes == [0, 0]
+    assert ids_in(listing) == ["R9"]
 
 
 def test_many_adds_started_at_once_as_separate_processes_keep_every_entry(tmp_path):

@@ -753,9 +753,9 @@ def test_a_run_killed_from_a_subfolder_is_named_by_its_path_from_the_top(tmp_pat
 
 def test_a_run_killed_from_the_top_is_named_correctly_to_a_run_from_a_subfolder(tmp_path):
     root, sub = repo_with_sub(tmp_path)
-    top_spec = {"test": [sys.executable, "sub/check.py"], "mutations": [{"path": "sub/target.py", "old": "x > 0", "new": "x >= 0", "why": "w"}]}
     # sub/check.py imports target from the current directory, so run it with the top as cwd through a wrapper that changes into sub.
-    top_spec["test"] = [sys.executable, "-c", "import os, runpy; os.chdir('sub'); runpy.run_path('check.py', run_name='__main__')"]
+    top_spec = {"test": [sys.executable, "-c", "import os, runpy; os.chdir('sub'); runpy.run_path('check.py', run_name='__main__')"],
+                "mutations": [{"path": "sub/target.py", "old": "x > 0", "new": "x >= 0", "why": "w"}]}
     kill_in_the_middle(root, top_spec, sub)
     [journal] = journals(root)
     assert list(json.loads(journal.read_text(encoding="utf-8"))["files"]) == ["sub/target.py"]

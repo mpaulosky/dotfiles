@@ -304,13 +304,106 @@ def test_stale_reviews_cant_cancel_the_newer_heads(repo):
     assert "stale: ${{ needs.merge-from-main.outputs.stale }}" in workflow
 
 
-def test_skips_a_stale_head_whose_review_the_gate_would_not_count(repo, tmp_path):
+def test_reviews_a_bot_pushed_clean_merge_itself_when_the_stale_head_has_no_copilot_note(repo, tmp_path):
     # PR Auto-Merge counts a Claude review of an earlier commit only with Copilot's note on it (mpaulosky/dotfiles#318),
-    # so a review of rev can't cover the newer clean merge, and posting it would spend a review for nothing.
+    # so a review of rev can't cover the newer clean merge. This run reviews the merge itself (mpaulosky/dotfiles#331).
     newer = repo.merge("main")
-    code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], noted=[])
-    assert (code, skip) == (0, "true")
-    assert "has no Copilot note" in out and "wouldn't count" in out
+    outputs = {}
+    code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], noted=[], outputs=outputs)
+    assert (code, skip) == (0, "false")
+    assert "has no Copilot note" in out and f"Claude reviews {newer} itself" in out
+    assert outputs["sha"] == newer
+    assert outputs["base"] == repo.git("rev-parse", "main")
+    assert outputs["stale"] == "true"
+
+
+def test_reviews_the_merge_against_the_current_main_tip_not_the_stale_heads_base(repo, tmp_path):
+    # The merge contains a newer main than the base the stale head's event carried, so the diff must start at main's tip.
+    newer = repo.merge("main")
+    repo.git("checkout", "-q", "main")
+    repo.commit({"lib": "lib 2\n"}, "main2")
+    repo.git("checkout", "-q", "feature")
+    outputs = {}
+    assert repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], noted=[], outputs=outputs)[:2] == (0, "false")
+    assert outputs["base"] == repo.git("rev-parse", "main")
+    assert outputs["base"] != repo.main1
+
+
+def test_reviews_a_bot_pushed_clean_merge_under_a_chain_of_clean_merges_when_the_stale_head_has_no_note(repo, tmp_path):
+    repo.merge("main")
+    repo.git("checkout", "-q", "main")
+    repo.commit({"lib": "lib 2\n"}, "main2")
+    repo.git("checkout", "-q", "feature")
+    newer = repo.merge("main")
+    outputs = {}
+    assert repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], noted=[], outputs=outputs)[:2] == (0, "false")
+    assert outputs["sha"] == newer
+
+
+def test_still_reviews_the_stale_head_that_carries_copilots_note(repo, tmp_path):
+    newer = repo.merge("main")
+    outputs = {}
+    code, skip, out = repo.check(repo.rev, [], tmp_path, current=newer, runs=["skipped"], noted=[repo.rev], outputs=outputs)
+    assert (code, skip) == (0, "false")
+    assert f"Claude reviews {repo.rev}" in out
+    assert outputs["sha"] == repo.rev
+    assert outputs["base"] == ""
+
+
+def test_reviews_the_event_head_when_it_is_the_pull_requests_head(repo, tmp_path):
+    outputs = {}
+    assert repo.check(repo.rev, [], tmp_path, outputs=outputs)[:2] == (0, "false")
+    assert outputs["sha"] == repo.rev
+    assert outputs["base"] == ""
+    assert outputs["stale"] == "false"
+
+
+@pytest.mark.parametrize("shape", ["merge that edits a file", "added commit", "run that reviews", "reviewed under", "no PR Auto-Merge on main"])
+def test_still_skips_a_stale_head_without_naming_the_newer_head_to_review(repo, tmp_path, shape):
+    kwargs = {"runs": ["skipped"], "noted": []}
+    reviewed = []
+    if shape == "merge that edits a file":
+        newer = repo.merge("main", edit={"app": "app 2\n"})
+    elif shape == "added commit":
+        newer = repo.commit({"app": "app 3\n"}, "fix")
+    elif shape == "run that reviews":
+        newer = repo.merge("main")
+        kwargs["runs"] = ["skipped", "success"]
+    elif shape == "reviewed under":
+        newer = repo.merge("main")
+        reviewed = [repo.rev]
+    else:
+        repo.git("checkout", "-q", "main")
+        repo.commit({".github/workflows/pr-automerge.yml": None}, "no PR Auto-Merge")
+        repo.git("checkout", "-q", "feature")
+        newer = repo.merge("main")
+    outputs = {}
+    code, skip, _ = repo.check(repo.rev, reviewed, tmp_path, current=newer, outputs=outputs, **kwargs)
+    assert (code, skip) == (0, "true"), shape
+    assert outputs.get("sha") != newer, shape
+
+
+def test_merge_from_main_job_hands_the_commit_and_base_to_the_review_and_post_jobs():
+    """The review checks out and diffs the commit the check names, and the post lands on it, each with the event's values as the fallback."""
+    workflow = WORKFLOW.read_text()
+    check_job = workflow.split("  merge-from-main:", 1)[1].split("\n  review:", 1)[0]
+    review_job = workflow.split("\n  review:", 1)[1].split("\n  post:", 1)[0]
+    post_job = workflow.split("\n  post:", 1)[1]
+    assert "sha: ${{ steps.check.outputs.sha }}" in check_job
+    assert "base: ${{ steps.check.outputs.base }}" in check_job
+    assert "ref: ${{ needs.merge-from-main.outputs.sha || github.event.pull_request.head.sha }}" in review_job
+    assert "HEAD_SHA: ${{ needs.merge-from-main.outputs.sha || github.event.pull_request.head.sha }}" in review_job
+    assert "BASE_SHA: ${{ needs.merge-from-main.outputs.base || github.event.pull_request.base.sha }}" in review_job
+    assert "sha: ${{ needs.merge-from-main.outputs.sha }}" in review_job
+    assert "HEAD_SHA: ${{ needs.review.outputs.sha || github.event.pull_request.head.sha }}" in post_job
+
+
+def test_concurrency_groups_stay_keyed_by_the_events_head():
+    import re
+    workflow = WORKFLOW.read_text()
+    groups = re.findall(r"group: claude-review[^\n]*", workflow)
+    assert groups and all("github.event.pull_request.head.sha" in group for group in groups)
+    assert not any("outputs.sha" in group for group in groups)
 
 
 def test_reviews_a_stale_head_that_carries_copilots_note(repo, tmp_path):

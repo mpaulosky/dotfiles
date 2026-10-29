@@ -539,6 +539,40 @@ for grace_doc in "$skill_dir/references/automerge.md" "$skill_dir/docs/adr/0004-
     fail "${grace_doc#"$skill_dir"/} still says 10 minutes: PR Auto-Merge's Copilot grace is 5 minutes"
   fi
 done
+# No-CI head, Copilot-less repos and a bot-pushed clean merge (mpaulosky/dotfiles#331).
+automerge_doc="$skill_dir/references/automerge.md"
+adr_0004="$skill_dir/docs/adr/0004-claude-review-as-copilots-backup.md"
+adr_0005="$skill_dir/docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md"
+# The no-CI point and the land.sh-versus-workflow point are sentences of their own, not clauses of one long sentence.
+grep -qE "(^|\. )[[:space:]]*A head with no check besides Claude's" "$automerge_doc" \
+  || fail "references/automerge.md must state the no-CI point as its own sentence ('A head with no check besides Claude's ...')"
+grep -qE "(^|\. )[[:space:]]*\`land\.sh\` counts Claude.s review" "$automerge_doc" \
+  || fail "references/automerge.md must state the land.sh-versus-workflow point as its own sentence ('\`land.sh\` counts Claude's review ...')"
+# A no-CI head's notice says to review and merge by hand, label or not; it is no longer 'the owner's notices' or advice to add the label.
+for notice_doc in "$automerge_doc" "$adr_0004"; do
+  if grep -qF -- "owner's notices" "$notice_doc"; then
+    fail "${notice_doc#"$skill_dir"/} still says a no-CI head 'goes to the owner's notices': say the run logs a notice to review and merge it by hand"
+  fi
+  grep -qF -- 'review and merge' "$notice_doc" \
+    || fail "${notice_doc#"$skill_dir"/} must say a head with no CI gets a notice to review and merge it by hand"
+done
+if grep -qF -- 'notice to add the label or merge by hand' "$automerge_doc"; then
+  fail "references/automerge.md still tells the owner to add the label for a head with no CI: the notice says to review and merge by hand"
+fi
+# R38: ADR 0004 records that the dropped-request path applies to every same-repo PR, a ruleset check is rejected, and who decided.
+grep -qE 'every same-repo PR' "$adr_0004" \
+  || fail "ADR 0004 must state the dropped-request path applies to every same-repo PR, including a repo whose ruleset never requests Copilot"
+grep -qF -- 'mpaulosky/dotfiles#331' "$adr_0004" \
+  || fail "ADR 0004 must cite mpaulosky/dotfiles#331 for the decision to accept the path for every same-repo PR"
+adr_options="$(sed -n '/^## Considered Options/,/^## Consequences/p' "$adr_0004")"
+grep -qiE 'ruleset (requests|check)' <<<"$adr_options" \
+  || fail "ADR 0004's Considered Options must list limiting the path to repos whose ruleset requests Copilot, as rejected"
+# A bot-pushed clean merge H2 is reviewed by Claude Review itself: the docs no longer say its run skips H2 with a notice.
+grep -qF -- 'reviews H2 itself' "$automerge_doc" \
+  || fail "references/automerge.md must say Claude Review reviews a bot-pushed clean merge H2 itself ('reviews H2 itself')"
+if grep -qF -- 'skips it with a notice' "$automerge_doc" "$adr_0005"; then
+  fail "references/automerge.md and ADR 0005 still say Claude Review skips a bot-pushed clean merge with a notice: it reviews H2 itself"
+fi
 # The record-head job of the Owned sandcastle.yml posts the comment lib/follow-up.mts#approvedHeadOf reads, from the label event's head.
 sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
 head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"

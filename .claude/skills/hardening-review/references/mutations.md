@@ -27,12 +27,15 @@ shell.
   restored.
 - The tests run in their own process group, which is killed when they end, time out or are interrupted, so a
   `pnpm run test` leaves no `node` behind. `git` and the tests get no `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE`, and
-  Python tests get `PYTHONDONTWRITEBYTECODE` and a fresh `PYTHONPYCACHEPREFIX`, so a same-size mutation can't load a
+  Python tests get `PYTHONDONTWRITEBYTECODE` and `PYTHONPYCACHEPREFIX` (one new folder per run, shared by the baseline and every mutation), so a same-size mutation can't load a
   stale `.pyc`. A Python test command must not run with `-I`, which ignores those variables.
-- A runner killed with SIGKILL can't restore its file. It claims a journal under `review/` in the git directory
+- A runner killed with SIGKILL can't restore its file. It claims a journal under `review/` in the common git directory
   (`mutate-journal-<hash>.txt`, a folder Sandcastle hides from its sandboxes) before the baseline run and writes the
-  originals into it before the first mutation. Until the journal is deleted, the next run (or a second one started
-  meanwhile) refuses to start. After a kill, check `git diff`, `git checkout -- <file>` and delete the journal it names.
+  originals into it before the first mutation, named relative to the worktree's top level. There is one journal per
+  worktree, shared by every `--root` in it. Until the journal is deleted, the next run (or a second one started
+  meanwhile) refuses to start. After a kill, check `git diff`, run `git checkout -- <file>` from the top level the
+  message names and delete the journal it names. An empty journal is what a run killed before it wrote its claim leaves:
+  the next run removes it. When the tests fail before any mutation, the last lines of their output are printed.
 - POSIX only: the tests run in a process group, so on Windows outside WSL the runner refuses with exit 2.
 - **CAUGHT only means the tests failed.** A mutation that leaves the file unparsable or uncompilable fails every test, so
   write mutations that keep the file valid, and run the first one by hand to see that the test failing is one that

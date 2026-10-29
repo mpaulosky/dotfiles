@@ -28,5 +28,7 @@ Rewritten, not appended, whenever a step changes it. After a compaction this fil
 
 ## Open items
 
-<Ids that wait for the person, each as id, lens, path. Their reasons are in the private folder's known-open.json.>
+<Ids that wait for the person, each as id, lens, path. Their reasons are in the private folder's known-open.json. When a fix moves an
+accepted item's lines, its entry is `changed`: a re-accepted finding is removed and added again (`known_open.py remove`, then `add`), so
+the line numbers here and in known-open.json agree.>
 ```

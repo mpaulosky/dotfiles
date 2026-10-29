@@ -1291,6 +1291,21 @@ jobs:
                 return;
               }
               if (pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
+                // Claude has reviewed this head and its review still doesn't
+                // count: with no CI check on the head there is no grace to
+                // count it by, so the owner is told (mpaulosky/dotfiles#331).
+                // Before Claude's review, nothing is said: it is coming, and
+                // Claude Review's workflow_run re-evaluates the PR after it.
+                if (claudeReviews.some((review) => review.commit?.oid === pr.headRefOid)) {
+                  const { waiting, noCiCheck } = await checksBeforeClaude(pullNumber, pr);
+                  if (noCiCheck) {
+                    core.notice(
+                      `PR #${pullNumber}: Claude reviewed ${pr.headRefOid}, but ${waiting}, so its review doesn't count and Claude isn't called in again; ` +
+                      "review and merge it by hand."
+                    );
+                    return;
+                  }
+                }
                 // The label is on, so Claude Review runs on each push, but not
                 // on every push: a notice when no review of this head is
                 // coming (mpaulosky/dotfiles#209).
@@ -1319,8 +1334,8 @@ jobs:
                 // A notice: nothing will start this workflow again for the
                 // head, so the PR waits for its owner (mpaulosky/dotfiles#233).
                 core.notice(
-                  `PR #${pullNumber}: Copilot couldn't review ${head}, but ${waiting}, so Claude isn't called in. ` +
-                  `If CI skips this PR, add ${CLAUDE_LABEL} or review and merge it by hand.`
+                  `PR #${pullNumber}: Copilot couldn't review ${head}, but ${waiting}, so Claude isn't called in; ` +
+                  "review and merge it by hand."
                 );
                 return;
               }

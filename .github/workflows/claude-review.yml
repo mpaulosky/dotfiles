@@ -65,7 +65,10 @@ name: Claude Review
 # app or Copilot may have pushed it, and this job skips their runs, so this
 # head is reviewed instead if it carries Copilot's note (the gate counts a
 # review of a commit that is no longer the head only then), which covers the
-# merge.
+# merge. Without the note a review of this head would cover nothing, so the
+# run reviews the newer head itself, against main's current tip
+# (mpaulosky/dotfiles#331). That covers only a run that sees the newer head
+# at its check step: PR Auto-Merge doesn't start a review for it.
 #
 # Each review also gets the PR's resolved Copilot and Claude Review threads,
 # and doesn't raise a resolved thread's problem again unless the code has
@@ -121,6 +124,12 @@ jobs:
       # Whether this run reviews a head the PR has moved on from; its review
       # and post jobs then take concurrency groups of their own.
       stale: ${{ steps.check.outputs.stale == 'true' }}
+      # The commit to review (the event's head, or the PR's newer head when it
+      # only merges main into a head without Copilot's note) and, for the
+      # newer head, the base to diff it against: main's current tip. Empty
+      # when the check wrote none, which reviews the event's head.
+      sha: ${{ steps.check.outputs.sha }}
+      base: ${{ steps.check.outputs.base }}
     steps:
       # Only a push can be a merge from main; a label or a reopen asks for a
       # review, unless the PR has moved on to a newer head (see the check).
@@ -148,8 +157,9 @@ jobs:
       # an app's or Copilot's, whose runs this job skips, so this head is
       # reviewed instead, and that review covers the newer head, but only if
       # this head carries Copilot's note: the gate counts a review of a commit
-      # that is no longer the head only then, so without it the review would
-      # cover nothing (mpaulosky/dotfiles#318). Not when a
+      # that is no longer the head only then, so without it this run reviews
+      # the newer head itself, against main's current tip (mpaulosky/dotfiles#318,
+      # mpaulosky/dotfiles#331). Not when a
       # run for the newer head is already past this job's condition (a
       # person's push): that run reviews. The stale review takes concurrency
       # groups of its own, so it can never cancel the newer head's review,
@@ -286,6 +296,10 @@ jobs:
           main = "refs/remotes/origin/" + os.environ["BASE_REF"]
           head = os.environ["HEAD_SHA"]
           current = os.environ.get("CURRENT_HEAD") or head
+          # The commit to review, and the base to diff it against when that is
+          # not the event's (empty otherwise).
+          review_sha = head
+          review_base = ""
           # Only PR Auto-Merge counts a review for a merge from main, and only
           # since it has reviewCovering: without that on the base (dotfiles, or
           # the re-Apply PR that brings it), the merge needs a review of its own.
@@ -321,10 +335,24 @@ jobs:
                   skip = True
               elif head not in noted:
                   # PR Auto-Merge counts a review of a commit that is no longer the head only with Copilot's note
-                  # on it, so this review wouldn't cover the newer head, and its run may be skipped (a bot's push).
-                  print(f"::notice::The PR's head is now {current}, which only merges main into {head}, but {head} has "
-                        f"no Copilot note, so a review of it wouldn't count at the gate; Claude doesn't review it.")
-                  skip = True
+                  # on it, so a review of this head wouldn't cover the newer one, whose own run may be skipped (a
+                  # bot's push). Review the newer head itself, against main's current tip: it holds a newer main
+                  # than the base this event carries (mpaulosky/dotfiles#331). If git can't name that tip, skip.
+                  try:
+                      review_base = git("rev-parse", main).strip()
+                  except subprocess.CalledProcessError:
+                      review_base = ""
+                  if review_base:
+                      print(f"::notice::The PR's head is now {current}, which only merges main into {head}, but {head} has "
+                            f"no Copilot note, so a review of it wouldn't count at the gate; Claude reviews {current} "
+                            f"itself, as its own run is skipped (a bot's push).")
+                      skip = False
+                      review_sha = current
+                  else:
+                      print(f"::notice::The PR's head is now {current}, which only merges main into {head}, but {head} has "
+                            f"no Copilot note, so a review of it wouldn't count at the gate, and main's tip couldn't be "
+                            f"read to review {current}; Claude doesn't review it.")
+                      skip = True
               else:
                   print(f"::notice::The PR's head is now {current}, which only merges main into {head}, so Claude "
                         f"reviews {head}: that covers {current}, whose own run may be skipped (an app's or Copilot's push).")
@@ -340,6 +368,8 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as file:
               file.write(f"skip={'true' if skip else 'false'}\n")
               file.write(f"stale={'true' if current != head and not skip else 'false'}\n")
+              file.write(f"sha={review_sha}\n")
+              file.write(f"base={review_base}\n")
           PY
 
   review:
@@ -370,6 +400,7 @@ jobs:
       # should run, and post_claude_review.py fails on the empty findings.
       reviewed: ${{ steps.claude.outputs.structured_output != '' }}
       stale: ${{ needs.merge-from-main.outputs.stale }}
+      sha: ${{ needs.merge-from-main.outputs.sha }}
     steps:
       - name: Check for CLAUDE_CODE_OAUTH_TOKEN
         id: secret
@@ -387,7 +418,7 @@ jobs:
         if: steps.secret.outputs.enabled == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ needs.merge-from-main.outputs.sha || github.event.pull_request.head.sha }}
           # The whole history, so the diff can be taken from the merge base.
           fetch-depth: 0
           persist-credentials: false
@@ -477,8 +508,8 @@ jobs:
         id: diff
         if: steps.secret.outputs.enabled == 'true'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ needs.merge-from-main.outputs.base || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ needs.merge-from-main.outputs.sha || github.event.pull_request.head.sha }}
         run: |
           mkdir -p "${RUNNER_TEMP}/claude-review"
           git --attr-source="${BASE_SHA}" -c core.quotePath=true diff --no-color --no-ext-diff --no-textconv --no-renames "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/claude-review/pr.diff"
@@ -2165,7 +2196,7 @@ jobs:
           REDACTED: ${{ needs.review.outputs.redacted }}
           REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ needs.review.outputs.sha || github.event.pull_request.head.sha }}
         run: |
           script="${RUNNER_TEMP}/post_claude_review.py"
           if ! git rev-parse --verify -q "HEAD^2" >/dev/null; then

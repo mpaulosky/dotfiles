@@ -78,8 +78,8 @@ quotes, into every command and reviewer prompt: shell variables don't carry betw
 `private` sits under `.git/review/`, which Sandcastle hides from its sandboxes and which the deny rule
 `Read(//**/.git/review/**)` keeps Claude Code's own Read tool out of in a repo that has added it (`pre-push-review.md`,
 Adapting step 2): read and write it with Bash and the scripts below. The brief tells reviewers to read only the files it
-names. `run` is not hidden from a sandbox, and a sandbox agent can write it, so it never holds a known-open reason or anything
-about a finding still in the code beyond its id, lens and path. It holds each fixed or dismissed finding's summary and
+names. `run` is not hidden from a sandbox, and a sandbox agent can write it, so it never holds a known-open reason for a security
+finding or anything about a security finding still in the code beyond its id, lens and path. It holds each fixed or dismissed finding's summary and
 reason, and a refuted finding's command with the one output line that contradicts `expect`. It does disclose where
 settled findings are: the brief lists each known-open entry's lens, file and line range,
 and `decisions.md` lists open security findings, and `.security/` entries, by id, lens, path and status.
@@ -196,12 +196,22 @@ decision for good (`needsPerson`), to the list:
 
 ```bash
 python3 -I .claude/skills/hardening-review/scripts/known_open.py add '<private>/known-open.json' --root '<worktree>' \
-  --id R3 --lens='Security' --path='src/a.sh' --start 10 --end 14 --reason '<the person's decision, in your own words, with no single quote>'
+  --id R3 --lens='Security' --path='src/a.sh' --start 10 --end 14 --reason='<the decision, in your own words, with no single quote>'
 ```
 
 `--start` and `--end` are 1-based and inclusive; `--start 0 --end 0` is for a finding with no line, and hashes the
 whole file. It exits 2 for a duplicate id, a blank id, lens or reason, a bad range, a range past the end of the file or
-a path outside the worktree.
+a path outside the worktree. Two `add` calls started together both keep their entry: the script holds a lock from reading the
+list to replacing it.
+
+An entry is anchored to the text of its lines, so a fix above an accepted item moves them and the entry is `changed` again,
+which is on purpose. Nothing edits an entry: a re-accepted finding is removed and added again, with the same id:
+
+```bash
+python3 -I .claude/skills/hardening-review/scripts/known_open.py remove '<private>/known-open.json' --id='<id>'
+```
+
+`remove` exits 2 for an id that is not in the list, and leaves the list as it was.
 
 For each finding being fixed, fill in the **edge-case matrix** before writing code and show it with the batch: a row per
 case in the Edge cases lens (empty, whitespace-only, Unicode, malformed, oversized, boundary, missing or null,

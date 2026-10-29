@@ -4,6 +4,7 @@
     known_open.py add LIST.json --root DIR --id R3 --lens Security --path src/a.sh --start 10 --end 14 --reason "..."
     known_open.py check LIST.json --root DIR [--for-reviewers]
     known_open.py match LIST.json --root DIR --lens Security --path src/a.sh --line 12
+    known_open.py remove LIST.json --id R3
 
 An entry holds a hash of the lines it points at: 1-based and inclusive, or `--start 0 --end 0` for the
 whole file. Lines end at a newline only. `check` prints every entry with `changed`: true when those
@@ -12,9 +13,15 @@ prints id, lens, path, start, end and changed, never the reason, so no summary o
 reviewer. `match` says whether a finding (lens, path and line; line 0 for a finding with none) is
 settled: `suppressed` is true only when an entry covers it, with a lens in common (`Bar/Security` has
 two), the same file, and the line inside its range (a whole-file entry covers any line), and that
-entry's lines are unchanged. A finding outside every range is new. Exit 2: refused.
+entry's lines are unchanged. A finding outside every range is new. `remove` drops the entry with that id and
+refuses an id that is not in the list: a fix above an accepted item moves its lines, which makes it `changed`
+again, so a re-accepted finding is removed and added again. `add` and `remove` hold an exclusive lock on
+LIST.json.lock from reading the list to replacing it, so commands started together all keep their effect.
+Exit 2: refused.
 """
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import io
 import json
@@ -61,8 +68,12 @@ def load(listing):
 
 
 def inside(root, relative):
-    base = Path(root).resolve()
-    resolved = (base / relative).resolve()
+    try:
+        base = Path(root).resolve()
+        resolved = (base / relative).resolve()
+    except (OSError, RuntimeError) as error:
+        # RuntimeError: a symlink loop, on a Python before 3.13.
+        raise Refused(f"cannot resolve {relative} in {root}: {error}")
     try:
         resolved.relative_to(base)
     except ValueError:
@@ -89,10 +100,43 @@ def not_blank(value, what):
         raise Refused(f"{what} must not be blank")
 
 
+@contextlib.contextmanager
+def locked(listing):
+    """Hold an exclusive lock on LIST.json.lock, so a second add or remove waits from its load to its replace."""
+    listing = Path(listing)
+    try:
+        private_folder(listing.parent)
+        descriptor = os.open(f"{listing}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as error:
+        raise Refused(f"cannot write the list: {error}")
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as error:
+            raise Refused(f"cannot lock the list: {error}")
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def replace(listing, entries):
+    """Write the list to a temporary file in its folder and move it over; the temporary never outlives a failure."""
+    listing = Path(listing)
+    temporary = None
+    try:
+        handle, temporary = tempfile.mkstemp(dir=listing.parent, suffix=".tmp")
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(entries, stream, indent=2)
+        os.replace(temporary, listing)
+    except OSError as error:
+        raise Refused(f"cannot write the list: {error}")
+    finally:
+        if temporary:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
+
+
 def add(args):
-    entries = load(args.listing)
-    if any(entry["id"] == args.id for entry in entries):
-        raise Refused(f"{args.id} is already in the list")
     for value, what in ((args.id, "--id"), (args.lens, "--lens"), (args.reason, "--reason")):
         not_blank(value, what)
     if not valid_range(args.start, args.end):
@@ -101,17 +145,25 @@ def add(args):
     value = digest(file, args.start, args.end)
     if value is None:
         raise Refused(f"{args.path} lacks lines {args.start}-{args.end}")
-    entries.append({"id": args.id, "lens": args.lens, "path": file.relative_to(base).as_posix(), "start": args.start,
-                    "end": args.end, "hash": value, "reason": args.reason})
+    with locked(args.listing):
+        entries = load(args.listing)
+        if any(entry["id"] == args.id for entry in entries):
+            raise Refused(f"{args.id} is already in the list")
+        entries.append({"id": args.id, "lens": args.lens, "path": file.relative_to(base).as_posix(), "start": args.start,
+                        "end": args.end, "hash": value, "reason": args.reason})
+        replace(args.listing, entries)
+
+
+def remove(args):
     listing = Path(args.listing)
-    try:
-        private_folder(listing.parent)
-        handle, temporary = tempfile.mkstemp(dir=listing.parent, suffix=".tmp")
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(entries, stream, indent=2)
-        os.replace(temporary, listing)
-    except OSError as error:
-        raise Refused(f"cannot write the list: {error}")
+    if not listing.parent.exists():
+        raise Refused(f"{args.id} is not in the list: {args.listing} does not exist")
+    with locked(listing):
+        entries = load(listing)
+        kept = [entry for entry in entries if entry["id"] != args.id]
+        if len(kept) == len(entries):
+            raise Refused(f"{args.id} is not in the list")
+        replace(listing, kept)
 
 
 def private_folder(folder):
@@ -179,6 +231,9 @@ def main(argv):
     adding.add_argument("--start", type=int, required=True)
     adding.add_argument("--end", type=int, required=True)
     adding.add_argument("--reason", required=True)
+    removing = commands.add_parser("remove")
+    removing.add_argument("listing")
+    removing.add_argument("--id", required=True)
     commands.choices["check"].add_argument("--for-reviewers", action="store_true")
     matching = commands.choices["match"]
     matching.add_argument("--lens", required=True)
@@ -186,7 +241,7 @@ def main(argv):
     matching.add_argument("--line", type=int, required=True)
     args = parser.parse_args(argv)
     try:
-        {"add": add, "check": check, "match": match}[args.command](args)
+        {"add": add, "remove": remove, "check": check, "match": match}[args.command](args)
     except Refused as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2

@@ -1,6 +1,7 @@
 """Tests for the hardening-review skill's mutation runner."""
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -581,7 +582,7 @@ def test_an_unexpected_error_exits_two_without_a_traceback_and_leaves_nothing(tm
     assert not journals(root), "a journal the run created must not outlive it"
 
 
-@pytest.mark.parametrize("content", ["{not json", "[]", '"x"', "{}", '{"files": []}', '{"files": "x"}', ""])
+@pytest.mark.parametrize("content", ["{not json", "[]", '"x"', "{}", '{"files": []}', '{"files": "x"}'])
 def test_a_journal_that_cannot_be_read_is_still_refused_not_a_traceback(tmp_path, content):
     root = make_repo(tmp_path)
     journal = load_runner().journal_path(root)
@@ -695,3 +696,146 @@ def test_a_journal_write_that_fails_does_not_leave_the_empty_journal_behind(tmp_
     assert runner.main([str(spec_file), "--root", str(root)]) == 2
     assert "unexpected OSError" in capsys.readouterr().err
     assert not journals(root)
+
+
+# mpaulosky/dotfiles#341 (R69): the journal is shared by every --root in a worktree, so its names are relative to the worktree's top
+# level, not to the --root of the run that wrote it.
+SUB_SLOW = (
+    "import sys, time, pathlib\nsys.path.insert(0, '.')\nimport target as c\n"
+    "if c.f(0):\n    pathlib.Path('started').write_text('1'); time.sleep(20)\nsys.exit(0 if c.f(1) else 1)\n")
+
+
+def repo_with_sub(tmp_path):
+    """A top-level target.py (never mutated here) and a sub/target.py with a slow test, both tracked."""
+    root = make_repo(tmp_path)
+    sub = root / "sub"
+    sub.mkdir()
+    (sub / "target.py").write_text("def f(x):\n    return x > 0\n", encoding="utf-8")
+    (sub / "check.py").write_text(SUB_SLOW, encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "sub")
+    return root, sub
+
+
+def kill_in_the_middle(sub, spec_value, target):
+    """Start a run with --root sub (or the top) whose mutated test sleeps, and SIGKILL it there."""
+    spec_file = write_spec(sub.parent if sub.name == "sub" else sub, spec_value)
+    proc = subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(spec_file), "--root", str(sub)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env())
+    for _ in range(300):
+        if (target / "started").exists():
+            break
+        time.sleep(0.1)
+    else:
+        proc.kill()
+        raise AssertionError("the mutated test run never started")
+    proc.kill()
+    proc.communicate(timeout=20)
+
+
+def names_of(text, base="target.py"):
+    return re.findall(r"[\w./-]*" + re.escape(base), text)
+
+
+def test_a_run_killed_from_a_subfolder_is_named_by_its_path_from_the_top(tmp_path):
+    root, sub = repo_with_sub(tmp_path)
+    kill_in_the_middle(sub, spec([mutation("x > 0", "x >= 0")]), sub)
+    assert (sub / "target.py").read_text(encoding="utf-8") != "def f(x):\n    return x > 0\n", "the mutation was not on disk"
+    # The journal records names relative to the worktree's top level.
+    [journal] = journals(root)
+    assert list(json.loads(journal.read_text(encoding="utf-8"))["files"]) == ["sub/target.py"]
+    # A run from the top must not name the top-level target.py, which is a different file.
+    again = run(root, spec([mutation("x > 0", "x > 5")]))
+    assert again.returncode == 2
+    assert "killed" in again.stderr and "git checkout" in again.stderr
+    assert names_of(again.stderr) and set(names_of(again.stderr)) == {"sub/target.py"}, again.stderr
+
+
+def test_a_run_killed_from_the_top_is_named_correctly_to_a_run_from_a_subfolder(tmp_path):
+    root, sub = repo_with_sub(tmp_path)
+    # sub/check.py imports target from the current directory, so run it with the top as cwd through a wrapper that changes into sub.
+    top_spec = {"test": [sys.executable, "-c", "import os, runpy; os.chdir('sub'); runpy.run_path('check.py', run_name='__main__')"],
+                "mutations": [{"path": "sub/target.py", "old": "x > 0", "new": "x >= 0", "why": "w"}]}
+    kill_in_the_middle(root, top_spec, sub)
+    [journal] = journals(root)
+    assert list(json.loads(journal.read_text(encoding="utf-8"))["files"]) == ["sub/target.py"]
+    again = run(sub, spec([mutation("x > 0", "x > 5")]))
+    assert again.returncode == 2
+    assert "killed" in again.stderr and "unknown files" not in again.stderr, again.stderr
+    assert set(names_of(again.stderr)) == {"sub/target.py"}, again.stderr
+    assert re.search(re.escape(str(root.resolve())) + r"(?![\w/])", again.stderr), "git checkout has to run from the top, where the names are relative to"
+
+
+# mpaulosky/dotfiles#341 (R70): splitlines() also splits on U+2028, U+0085 and others, so such a checkout path read as "not in a git repository".
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e"])
+def test_a_checkout_path_holding_a_unicode_line_separator_still_runs(tmp_path, separator):
+    try:
+        root = make_repo(tmp_path, name=f"r{separator}x")
+    except OSError:
+        pytest.skip("this file system refuses that name")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "not in a git repository" not in result.stderr
+    assert not journals(root)
+
+
+# mpaulosky/dotfiles#341 (decision 6): a run killed between creating the journal and writing to it leaves an empty file, which is no
+# run in progress and no mutation to restore.
+def test_an_empty_journal_is_a_leftover_and_is_removed_instead_of_blocking_the_run(tmp_path):
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    journal.write_bytes(b"")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "in progress" not in result.stderr
+    assert not journals(root)
+
+
+def test_a_journal_with_content_still_blocks_the_run(tmp_path):
+    # Only the empty file is a leftover: a claimed journal is `{"files": {}}`, and that is a run in progress.
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    journal.write_text(json.dumps({"files": {}}), encoding="utf-8")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2 and "in progress" in result.stderr
+    assert journals(root) == [journal]
+
+
+# mpaulosky/dotfiles#341: test output went to /dev/null, so a failed baseline gave no reason.
+NOISY_FAILURE = (
+    "import sys\nfor n in range(1, 301):\n    print('line-%03d' % n)\n"
+    "print('the-reason-on-stderr', file=sys.stderr)\nsys.exit(1)\n")
+
+
+def test_a_failed_baseline_shows_the_last_lines_of_the_test_output(tmp_path):
+    root = make_repo(tmp_path, check=NOISY_FAILURE)
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2
+    assert "fail before" in result.stderr
+    assert "line-300" in result.stderr and "the-reason-on-stderr" in result.stderr
+    assert "line-001" not in result.stderr, "only the last lines are kept"
+    assert "Traceback" not in result.stderr
+
+
+def test_a_failed_baseline_with_no_output_still_refuses_cleanly(tmp_path):
+    root = make_repo(tmp_path, check="import sys\nsys.exit(1)\n")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2 and "fail before" in result.stderr and "Traceback" not in result.stderr
+    assert not journals(root)
+
+
+def test_a_passing_run_does_not_print_the_test_output(tmp_path):
+    root = make_repo(tmp_path, check="print('noise-from-a-passing-test')\n" + CHECK)
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "noise-from-a-passing-test" not in result.stdout + result.stderr
+
+
+# mpaulosky/dotfiles#341 (R74): the docstring said the journal is in the git directory; it is in the common one, one per worktree.
+def test_the_docstring_says_the_journal_is_in_the_common_git_directory_one_per_worktree():
+    doc = " ".join((load_runner().__doc__ or "").split())
+    assert "common git directory" in doc
+    assert "one journal per worktree" in doc
+    assert "in the git directory" not in doc

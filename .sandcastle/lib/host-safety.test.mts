@@ -301,6 +301,20 @@ describe("protectedRecordMounts", () => {
     assert.deepEqual(made, ["/repo/.security"]);
   });
 
+  it("makes a folder that already exists readable only by its owner", () => {
+    const checkout = mkdtempSync(join(tmpdir(), "record-mounts-"));
+    try {
+      mkdirSync(join(checkout, ".security"), { mode: 0o755 });
+      chmodSync(join(checkout, ".security"), 0o755);
+
+      protectedRecordMounts(checkout, existsSync, "/empty");
+
+      assert.equal(statSync(join(checkout, ".security")).mode & 0o777, 0o700);
+    } finally {
+      rmSync(checkout, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
   it("covers them with a folder that is empty", () => {
     const [mount] = protectedRecordMounts("/repo", () => false, undefined, () => {});
 

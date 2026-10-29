@@ -217,7 +217,11 @@ export function protectedRecordMounts(
   checkout: string,
   _exists: (path: string) => boolean = existsSync,
   empty: string = emptyFolder(),
-  makeDir: (path: string) => void = (path) => mkdirSync(path, { recursive: true, mode: 0o700 }),
+  makeDir: (path: string) => void = (path) => {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    // The Seed's README makes the folder at checkout with the umask's mode; mkdir's mode only applies to a new folder.
+    chmodSync(path, 0o700);
+  },
 ): ReadOnlyMount[] {
   const record = join(checkout, ".security");
   const found = lstatSync(record, { throwIfNoEntry: false });

@@ -2667,6 +2667,55 @@ describe("the security record", () => {
       assert.match(firstEntry(), /^- Status: open$/m);
     });
 
+    // The entry `accept` changes is the one the finding was recorded against, not one found again from its text.
+    it("accept leaves a fixed entry fixed, with a warning, when a later branch's finding repeats it and is recorded open", () => {
+      recordHere([weakness()]);
+      commit(repo, "later.cs", "a later change\n", "later change");
+
+      recordHere([weakness({ id: "R2", status: "open", test: null })]);
+      const result = cli(["accept", "R2", "The", "policy", "is", "gone", "here."]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.match(result.err, /^\.security: 0001 is fixed, so it stays fixed/m);
+      assert.doesNotMatch(result.err, /marked 0001 accepted/);
+      assert.match(firstEntry(), /^- Status: fixed$/m);
+      assert.doesNotMatch(firstEntry(), /## Accepted/);
+      assert.equal(readLedger(repo, diffKey(repo, mergeBase(repo)))?.findings[0]?.status, "accepted");
+    });
+
+    it("accept turns the open entry accepted that a finding was matched to through `repeats` in other words", () => {
+      recordHere([weakness({ status: "open", test: null })]);
+      commit(repo, "later.cs", "a later change\n", "later change");
+
+      recordHere([weakness({ id: "R2", summary: "Files can be written above the upload folder.", status: "open", test: null, repeats: "0001" })]);
+      const result = cli(["accept", "R2", "The folder is a sandbox."]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.match(result.err, /^\.security: marked 0001 accepted$/m);
+      assert.deepEqual(entries().length, 1);
+      assert.match(firstEntry(), /^- Status: accepted$/m);
+      assert.match(firstEntry(), /The folder is a sandbox\./);
+    });
+
+    it("accept still finds the entry by the finding's text when no note of the entry was kept (an older record)", () => {
+      recordHere([weakness({ status: "open", test: null })]);
+      for (const name of readdirSync(ledgerDir(repo))) if (name.endsWith(".entries")) rmSync(join(ledgerDir(repo), name));
+
+      const result = cli(["accept", "R1", "Fine."]);
+
+      assert.match(result.err, /^\.security: marked 0001 accepted$/m);
+      assert.match(firstEntry(), /^- Status: accepted$/m);
+    });
+
+    it("the note of which entry each finding went to isn't a ledger, and holds no entry text", () => {
+      recordHere([weakness({ policy: MARKER })]);
+
+      const names = readdirSync(ledgerDir(repo)).filter((name) => name.endsWith(".entries"));
+      assert.equal(names.length, 1);
+      assert.equal(readFileSync(join(ledgerDir(repo), names[0] ?? ""), "utf8").trim(), '{"R1":"0001"}');
+      assert.equal(cli(["latest"]).code, 0);
+    });
+
     it("record writes no entry for a finding that isn't a security weakness, or one dismissed", () => {
       const result = recordHere([
         weakness({ id: "R1", lens: "Edge cases", severity: "critical", security: false, summary: "An email of only spaces passes." }),

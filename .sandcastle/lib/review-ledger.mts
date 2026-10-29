@@ -501,6 +501,34 @@ function writeLedger(cwd: string, ledger: Ledger): void {
   renameSync(temporary, path);
 }
 
+// Which security entry each of a ledger's findings was recorded against, kept beside the ledger (`<key>.entries`, not
+// `.json`, so no reader of ledgers sees it) and not in it, so the ledger is as before. `accept` reads it: a finding matched
+// to an entry through `repeats` in other words, or to a fixed entry, can't be found again from its own text.
+const entriesPath = (cwd: string, key: string) => join(ledgerDir(cwd), `${key}.entries`);
+
+function writeEntryMap(cwd: string, key: string, entries: Record<string, string>): void {
+  const path = entriesPath(cwd, key);
+  // Nothing recorded against an entry: no file, and none left over from an earlier record of this diff.
+  if (Object.keys(entries).length === 0) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(entries)}\n`, { mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+// The entry id `findingId` was recorded against, or undefined when unknown (an older record, or none written).
+function readEntryMap(cwd: string, key: string, findingId: string): string | undefined {
+  try {
+    const entries: unknown = JSON.parse(readFileSync(entriesPath(cwd, key), "utf8"));
+    const found = (entries as Record<string, unknown>)[findingId];
+    return typeof found === "string" && /^\d{4,}$/.test(found) ? found : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Run `change` holding the review folder's lock, so two writers (a `record`
 // and an `accept`) can't interleave. One lock for every key, not one per key:
 // a record reads every review of the branch for the ids taken (takenIds), so a
@@ -647,7 +675,12 @@ export function recordReview(
     try {
       outcome = recordSecurity(cwd, ledger, inputs, { ...(parsed.pr === undefined ? {} : { pr: parsed.pr }), slug });
     } catch (error) {
-      outcome = { written: [], repeated: [], warnings: [`the security record couldn't be written: ${(error as Error).message ?? String(error)}`] };
+      outcome = { written: [], repeated: [], entries: {}, warnings: [`the security record couldn't be written: ${(error as Error).message ?? String(error)}`] };
+    }
+    try {
+      writeEntryMap(cwd, key, outcome.entries);
+    } catch (error) {
+      outcome.warnings.push(`couldn't note which entry each finding went to: ${(error as Error).message ?? String(error)}`);
     }
     onSecurity?.(outcome);
   });
@@ -656,7 +689,7 @@ export function recordReview(
 
 // Accept an open finding on the ledger for HEAD's diff, with the person's
 // reason. A finding that isn't open stays as it is. The security record's entry
-// for the weakness is accepted too, and `onSecurity` hears of it (or of why it
+// the finding was recorded against is accepted too if it is open (a fixed one stays, with a warning), and `onSecurity` hears of it (or of why it
 // couldn't be): the acceptance itself stands either way.
 export function acceptFinding(cwd: string, base: string, id: string, reason: string, onSecurity?: (message: string) => void): Ledger {
   if (reason.trim() === "") throw new Error("say why the finding is accepted");
@@ -672,7 +705,7 @@ export function acceptFinding(cwd: string, base: string, id: string, reason: str
     writeLedger(cwd, ledgerSchema.parse(ledger));
     if (isSecurity(finding)) {
       try {
-        const entry = markAccepted(cwd, finding, reason.trim());
+        const entry = markAccepted(cwd, finding, reason.trim(), readEntryMap(cwd, key, id), onSecurity);
         if (entry !== undefined) onSecurity?.(`marked ${entry} accepted`);
       } catch (error) {
         onSecurity?.(`couldn't mark the entry accepted: ${(error as Error).message ?? String(error)}`);

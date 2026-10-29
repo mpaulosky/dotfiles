@@ -18,7 +18,7 @@
 // not a failed review.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { plainText } from "./plain-text.mts";
 import type { Ledger } from "./review-ledger.mts";
@@ -53,9 +53,10 @@ export type SecurityInput = {
   repeats?: string;
 };
 
-// What a call did: the entry files it wrote, the findings that repeated a weakness an entry held (and which entry), and
-// the problems it hit, as sentences for the person.
-export type SecurityOutcome = { written: string[]; repeated: { finding: string; entry: string }[]; warnings: string[] };
+// What a call did: the entry files it wrote, the findings that repeated a weakness an entry held (and which entry),
+// the entry each finding resolved to (written or repeated; finding id to entry id), and the problems it hit, as
+// sentences for the person.
+export type SecurityOutcome = { written: string[]; repeated: { finding: string; entry: string }[]; entries: Record<string, string>; warnings: string[] };
 
 // The variables a hook sets, which would point a worktree's git at another checkout's.
 const hookGitVariables = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR"];
@@ -228,7 +229,7 @@ export function recordSecurity(
   findings: SecurityInput[],
   context: { pr?: number; slug: string },
 ): SecurityOutcome {
-  const outcome: SecurityOutcome = { written: [], repeated: [], warnings: [] };
+  const outcome: SecurityOutcome = { written: [], repeated: [], entries: {}, warnings: [] };
   if (findings.length === 0) return outcome;
   try {
     const directory = securityDir(cwd);
@@ -243,6 +244,9 @@ export function recordSecurity(
       return outcome;
     }
     mkdirSync(directory, { recursive: true, mode: 0o700 });
+    // mkdir's mode only applies to a folder it creates; the Seed's README makes the folder at checkout, with the umask's
+    // mode, and the entries' file names (summary slugs) would be listable by other local users.
+    chmodSync(directory, 0o700);
     const known = entriesIn(directory);
     for (const finding of findings) {
       const print = fingerprint(finding.path, finding.summary);
@@ -254,6 +258,7 @@ export function recordSecurity(
       }
       if (holder !== undefined) {
         outcome.repeated.push({ finding: finding.id, entry: holder.id });
+        outcome.entries[finding.id] = holder.id;
         if (holder.status === "open" && finding.status === "fixed") {
           let text = withStatus(readFileSync(holder.path, "utf8"), "fixed");
           text = withSection(text, "Policy", policyOf(finding));
@@ -269,6 +274,7 @@ export function recordSecurity(
       // "wx": never over a file that's there, whatever it is.
       writeFileSync(path, entryText(id, finding, ledger.branch, context), { flag: "wx", mode: 0o600 });
       outcome.written.push(file);
+      outcome.entries[finding.id] = id;
       known.push({ id, file, path, status: finding.status, lens: finding.lens, findingPath: finding.path, fingerprint: print });
     }
   } catch (error) {
@@ -278,12 +284,28 @@ export function recordSecurity(
 }
 
 // Turn the entry that holds `finding`'s weakness accepted, with the person's reason, and return its id; undefined when
-// no entry holds it. An entry already accepted is left as it is. Throws on a write error, which the caller reports.
-export function markAccepted(cwd: string, finding: { path: string; summary: string }, reason: string): string | undefined {
+// nothing was accepted. The entry is the one `entryId` names (the one the finding was recorded against, which also covers
+// a finding matched through `repeats` in other words), else the one with the finding's fingerprint. Only an open entry is
+// changed: an accepted one is left as it is, and a fixed one, which other branches rely on, is left alone with a `warn`ing,
+// since a branch-local acceptance mustn't downgrade it. Throws on a write error, which the caller reports.
+export function markAccepted(
+  cwd: string,
+  finding: { path: string; summary: string },
+  reason: string,
+  entryId?: string,
+  warn?: (message: string) => void,
+): string | undefined {
+  const entries = readEntries(cwd);
   const print = fingerprint(finding.path, finding.summary);
-  const entry = readEntries(cwd).find((candidate) => holdsWeakness(candidate) && candidate.fingerprint === print);
+  const entry =
+    (entryId === undefined ? undefined : entries.find((candidate) => holdsWeakness(candidate) && Number(candidate.id) === Number(entryId))) ??
+    entries.find((candidate) => holdsWeakness(candidate) && candidate.fingerprint === print);
   if (entry === undefined) return undefined;
   if (entry.status === "accepted") return entry.id;
+  if (entry.status !== "open") {
+    warn?.(`${entry.id} is ${entry.status}, so it stays ${entry.status}: a fixed entry is a record other branches rely on`);
+    return undefined;
+  }
   const text = withSection(withStatus(readFileSync(entry.path, "utf8"), "accepted"), "Accepted", plainText(reason));
   writeFileSync(entry.path, text);
   return entry.id;

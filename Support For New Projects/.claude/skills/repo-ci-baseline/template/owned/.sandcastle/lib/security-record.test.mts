@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
@@ -120,6 +120,16 @@ describe("recordSecurity numbering", () => {
       entryFiles().map((name) => name.slice(0, 4)),
       ["0001", "0002"],
     );
+  });
+
+  it("makes a folder that already exists, with the README the Seed commits, readable only by its owner", () => {
+    mkdirSync(join(repo, SECURITY_DIR), { mode: 0o755 });
+    chmodSync(join(repo, SECURITY_DIR), 0o755);
+    writeFileSync(join(repo, SECURITY_DIR, "README.md"), "# The record\n");
+
+    record([input()]);
+
+    assert.equal(statSync(join(repo, SECURITY_DIR)).mode & 0o777, 0o700);
   });
 
   it("falls back to the slug `finding` for a summary with no letters or digits", () => {
@@ -369,6 +379,36 @@ describe("readEntries", () => {
 });
 
 describe("markAccepted", () => {
+  it("leaves a fixed entry fixed and warns, even when the finding's text matches it", () => {
+    record([input()]);
+    const warnings: string[] = [];
+
+    const id = markAccepted(repo, { path: input().path, summary: input().summary }, "Because.", undefined, (message) => warnings.push(message));
+
+    assert.equal(id, undefined);
+    assert.match(entryText(entryFiles()[0] ?? ""), /^- Status: fixed$/m);
+    assert.doesNotMatch(entryText(entryFiles()[0] ?? ""), /## Accepted/);
+    assert.match(warnings.join("\n"), /^0001 is fixed, so it stays fixed/);
+  });
+
+  it("changes the entry it is told, not one whose text happens to match", () => {
+    record([input({ status: "open", test: null }), input({ id: "R2", path: "b.sh", summary: "Other.", status: "open", test: null })]);
+
+    const id = markAccepted(repo, { path: input().path, summary: input().summary }, "Because.", "0002");
+
+    assert.equal(id, "0002");
+    assert.match(entryText(entryFiles()[0] ?? ""), /^- Status: open$/m);
+    assert.match(entryText(entryFiles()[1] ?? ""), /^- Status: accepted$/m);
+  });
+
+  it("says which entry each finding resolved to, written or repeated", () => {
+    record([input()]);
+
+    const outcome = record([input({ id: "R2" }), input({ id: "R3", path: "c.sh", summary: "New." })]);
+
+    assert.deepEqual(outcome.entries, { R2: "0001", R3: "0002" });
+  });
+
   it("turns the entry holding the weakness accepted, with the person's reason, and returns its id", () => {
     record([input({ status: "open", test: null })]);
 

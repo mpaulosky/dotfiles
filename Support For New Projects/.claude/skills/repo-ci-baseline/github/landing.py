@@ -11,13 +11,17 @@ skill lands PRs by (references/automerge.md):
 - a draft is marked ready only when the caller says it should be;
 - resolved Copilot and Claude Review threads nobody replied to are listed in
   PrState.unreplied_threads: a notice beside the decision, never a hold;
-- a branch BEHIND main is updated, and Copilot asked to review the new head;
+- a branch BEHIND main is updated (nobody is asked to review: Copilot is asked once per PR);
 - a head no reviewer has reviewed waits for Copilot while it's requested, and
-  for Claude while the PR carries review:claude. With neither on its way,
-  Copilot is asked first. Claude backs Copilot up only where Copilot can't
-  review that head: it answered with its quota note (copilot_declined), or
-  its request for the head didn't register (copilot_dropped, which the caller
-  remembers per head). A Claude review of any other head covers nothing.
+  for Claude while the PR carries review:claude. With neither on its way and
+  Copilot never asked for the PR, Copilot is asked, once: a comment records the
+  ask (COPILOT_ASKED_MARKER) and the request follows. Claude backs Copilot up
+  only where Copilot can't review that head (copilot_gone): it answered with its
+  quota note (copilot_declined), or it was asked, the ask settled (30 seconds)
+  and no request is pending, or the caller read this head's request back and it
+  didn't register (copilot_dropped). A Claude review of any other head covers
+  nothing. Copilot isn't asked again for a later head: a settled record is
+  enough to take it to Claude (mpaulosky/dotfiles#360).
   Only then is review:claude added, and only once the head has at least one check other than Claude
   Review's own and every such check is green: a Claude review costs money,
   and one of a head that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS
@@ -48,10 +52,11 @@ on the same head exists: CI's concurrency cancels runs, and the newest counts.
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 WAIT = "wait"
 MARK_READY = "mark ready"
-UPDATE_BRANCH = "update branch and request Copilot"
+UPDATE_BRANCH = "update branch"
 REQUEST_COPILOT = "request Copilot"
 REQUEST_CLAUDE = "add review:claude"
 ARM_AUTO_MERGE = "arm auto-merge"
@@ -87,8 +92,8 @@ CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", 
 # review cap's 3, so a fix for a second round's findings is reviewed too (#193):
 # Claude reviews every push while review:claude is on, until a review comes
 # back clean. PR Auto-Merge calls in Claude too, when Copilot's quota note is
-# the head's only review (#190) or it has no review and no request pending after
-# a grace period (#318), and takes review:claude off once Claude has
+# the head's only review (#190) or Copilot was asked and its request didn't
+# register within 30 seconds (mpaulosky/dotfiles#360), and takes review:claude off once Claude has
 # reviewed this many commits: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must
 # match these.
 MAX_CLAUDE_ROUNDS = 3
@@ -215,13 +220,18 @@ class PrState:
     copilot_dropped: Copilot's review was requested for this head and the
     request didn't register (dropped or refused). Only a caller that asked
     and read it back knows this (land.py); a one-shot read (status.py) never
-    sets it, so it shows the Copilot step.
+    sets it.
+    copilot_asked: the PR carries the record that Copilot was asked (see
+    copilot_ask()), or the record couldn't be read, which counts as asked so
+    nothing asks twice.
+    copilot_ask_settled: the record is at least COPILOT_ASK_SETTLE_SECONDS old,
+    long enough for GitHub to have registered the request.
     unreplied_threads: names of the resolved bot threads nobody replied to; a
     notice, not a hold: decide() ignores it.
     copilot_declined: the commit oids Copilot answered with its quota note
     (see copilot_declined()); on the head it calls in Claude. Claude's review
     of a commit counts when that commit is in copilot_declined, or is the head
-    and copilot_dropped is set (see copilot_blocked).
+    and copilot_gone (see copilot_blocked).
     merge_commits: the reviewed commit oids that are merge commits, which don't
     count toward the review cap.
     want_ready: the caller's say that a draft should be marked ready.
@@ -271,12 +281,18 @@ class PrState:
 
     @property
     def copilot_blocked(self):
-        """The commit oids Copilot can't review: it posted its quota note, or its request for the head was dropped."""
-        return self.copilot_declined | ({self.head} if self.copilot_dropped and self.head else frozenset())
+        """The commit oids Copilot can't review: it posted its quota note, or it is gone from the head (see copilot_gone)."""
+        return self.copilot_declined | ({self.head} if self.copilot_gone and self.head else frozenset())
 
     @property
     def copilot_gone(self):
-        raise NotImplementedError("Not implemented")
+        """Copilot won't review the head: its request didn't register.
+
+        Either the caller read the request back and it was dropped, or Copilot
+        was asked for the PR, the ask settled and no request is pending (a
+        pending one is waited for, as a request GitHub keeps is not a drop).
+        """
+        return self.copilot_dropped or (self.copilot_asked and self.copilot_ask_settled and not self.copilot_requested)
 
     @property
     def reviewer_on_head(self):
@@ -311,7 +327,28 @@ def copilot_declined(reviews):
 
 
 def copilot_ask(comments, owner, now):
-    raise NotImplementedError("Not implemented")
+    """(asked, settled): whether the PR carries the record that Copilot was asked, and whether it has settled.
+
+    comments are (author login, body, created_at ISO-8601) triples, oldest first,
+    or None when they couldn't be read, which counts as asked but not settled:
+    nothing asks, and nothing is called dropped, on a record nobody can see.
+    Only github-actions (PR Auto-Merge) or the repository owner (land.py) can
+    write the record: anyone can comment the marker. The first record decides;
+    it settles COPILOT_ASK_SETTLE_SECONDS after it was written, and one with an
+    unreadable time never settles. now is epoch seconds.
+    """
+    if comments is None:
+        return True, False
+    for login, body, created_at in comments:
+        who = (login or "").removesuffix("[bot]")
+        if COPILOT_ASKED_MARKER not in (body or "") or not who or who not in (GITHUB_ACTIONS, owner):
+            continue
+        try:
+            written = datetime.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            return True, False
+        return True, now - written >= COPILOT_ASK_SETTLE_SECONDS
+    return False, False
 
 
 def is_claude_review(login, oid, body):
@@ -413,8 +450,10 @@ def review_needed(pr, checks):
     # of a head Copilot neither declined nor dropped covers nothing, and none further is coming.
     if pr.claude_requested and pr.head not in pr.claude_reviewed:
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
-    if not pr.copilot_dropped and not declined:
-        return Decision(REQUEST_COPILOT, waiting + "; Copilot not requested")
+    if not (declined or pr.copilot_gone):
+        if pr.copilot_asked:
+            return Decision(WAIT, waiting + "; Copilot was asked, waiting for the request to show")
+        return Decision(REQUEST_COPILOT, waiting + "; Copilot not asked yet")
     if len(pr.claude_reviewed) >= MAX_CLAUDE_ROUNDS:
         return Decision(WAIT, waiting + f"; Claude's {MAX_CLAUDE_ROUNDS} review rounds are used, the owner decides")
     running = [name for name in checks.running if name not in CLAUDE_CHECKS]

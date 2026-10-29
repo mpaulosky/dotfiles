@@ -20,21 +20,17 @@ The first version counted Claude's review only where Copilot's quota note was on
 That left the commonest case stranded: once the budget is used up GitHub usually drops the request with no note, so a PR sat with no review until a person added `review:claude`
 and merged it by hand (dotfiles#325, #326).
 Now a head Copilot can't review is one with its note, or with no Copilot review and no pending Copilot request.
-PR Auto-Merge waits `COPILOT_GRACE_MS` (5 minutes) after the head's checks finished, and after the PR last became reviewable
-(marked ready or reopened, when GitHub requests Copilot's review), before it calls in Claude for the second kind,
-and `land.sh` does so as soon as its own request for the head read back as dropped.
+This version guessed at a dropped request: PR Auto-Merge waited `COPILOT_GRACE_MS` (5 minutes) after the head's checks finished before it called in Claude for the second kind.
+The #360 update below replaces that grace (mpaulosky/dotfiles#360); the rest of this section stands.
 Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
 A request the run can't read in full counts as pending, so the rule fails closed.
-Claude's review of the head also waits for the grace to be over, so a label added by hand right after a push, before the ruleset's request registers, is not taken for Copilot's review.
-A head with no check besides Claude's and the workflow's own has no grace to wait for, so the workflow never counts Claude's review of it:
-with or without `review:claude`, the run logs a notice to review and merge it by hand (mpaulosky/dotfiles#331).
-`land.sh` counts Claude's review of a head its own request was dropped for with no grace, so such a PR can wait up to the grace after Claude's review before the workflow merges it.
+A head with no check besides Claude's and the workflow's own gets no label from the run: with `review:claude` off, it logs a notice to review and merge it by hand (mpaulosky/dotfiles#331).
 That rests on GitHub keeping Copilot's request in `reviewRequests` until its review is submitted.
 Once Copilot really reviews the head, Copilot's review covers it and the label comes off (#271). The new path applies to every same-repo PR,
 so a repo whose ruleset never requests Copilot gets Claude's review too. The owner decided (mpaulosky/dotfiles#331) to accept that and not to check the ruleset:
 a check is an extra API read and failure mode, and without Copilot such a repo would otherwise never get a review at all. The label is still the gate,
 so the cost there is one Claude review per labelled PR. The other cost is a small window where a Copilot review that is merely very late arrives after Claude's;
-its threads still hold the merge, and the 5-minute grace keeps that window short.
+its threads still hold the merge, and the short window the #360 update leaves keeps that window small.
 
 A bot's push of a clean merge H2 of `main` on top of a head H1 Claude reviewed gets a review of its own (mpaulosky/dotfiles#331).
 H2's own Claude Review run is skipped (the action refuses a bot), and under a dropped request H1 has no note, so a review of H1 would count for nothing at the gate.
@@ -42,7 +38,50 @@ So the run for H1 that sees H2 at its check step reviews H2 itself, against `mai
 PR Auto-Merge does not re-trigger `review:claude` for H2. That covers only a run that sees H2 at its check step: when H1's run is past that step or has finished before the bot pushes,
 nothing starts a run for H2, and it waits for a person's push or label.
 
+## Update (#360): ask once, read back, fall back in 30 seconds
+
+The 5-minute grace of the #318 update guessed at a dropped request, and a dropped request brings no event: nothing runs when the grace runs out,
+so the label waited for the hourly sweep. `land.sh` only knew a request was dropped while its process kept running, so each `--once` run forgot the drop and asked again,
+and mpaulosky/dotfiles PR #359 sat held on "Copilot hasn't reviewed the head yet". The owner has no Copilot code review budget, so every request is dropped.
+This update replaces the grace (mpaulosky/dotfiles#360). PR Auto-Merge and `land.sh` (`land.py`, `landing.py`) use one rule:
+
+1. **Ask once per PR.** The first time a same-repo, non-draft PR into `main` is evaluated with a head that has no real Copilot review, no quota note,
+   no pending Copilot request and no record of an ask, the tool writes the record, requests Copilot's review and reads the request back.
+   Nothing asks Copilot for that PR again: not for a later head, and not after `update-branch`.
+2. **The record is a PR comment** holding `<!-- pr-automerge:copilot-asked -->`, written before the request so a crash between them can't make a second ask.
+   Only a comment by `github-actions` (the workflow's `GITHUB_TOKEN`) or by the repository owner (`land.sh`, through the owner's `gh` login) counts:
+   anyone can comment the marker, which would otherwise switch the fallback on, the same stance as the Dependabot rebase marker.
+   The first record decides. The request itself is made with the PAT (`RELEASE_PR_PAT`), which GitHub should treat as a person's.
+3. **Copilot can't review the head** when its quota note is on it, or when the record exists and has settled (30 seconds old, or written by this very run, which read the request back)
+   and the head has neither a real Copilot review nor a pending Copilot request. A request that threw counts as dropped at once.
+   A pending request always means keep waiting, and a request list the run can't read counts as pending.
+4. **Then** `review:claude` is added on the terms it already had: the head's required checks are green, Claude has reviewed fewer than `MAX_CLAUDE_ROUNDS` commits,
+   the PR is below the review cap, and no person took the label off. Claude's review of the head counts at the gate under the same test.
+5. **A later head** needs no new record. The record is old, so Copilot is gone the moment the new head has no pending request and no real review,
+   and the `review:claude` flow takes it, with the review cap, the thread holds and the stop-on-clean rule unchanged.
+   A request that does register (the ruleset's own request per push, or a budget that came back) is waited for, and a real Copilot review of the head still takes the label off (#270).
+6. **A record that can't be read** (the comments query failed, or more than 100 comments with no marker among the last 100) counts as asked but not settled:
+   the tool never asks, and never infers a drop. A PR like that waits for a person.
+
+The run reads its own request back for up to 30 seconds (`COPILOT_ASK_WAIT_MS`, polling every 5 seconds), so a dropped request gets `review:claude` in the same run.
+`land.sh --once` needs no memory between runs: the first run asks and records, and a later run finds the record, no pending request and 30 seconds, and adds the label.
+A run under 30 seconds after the record prints why it waits and acts on the next one.
+`land.py` still keeps the read-back result for the head in a watching process, so it adds the label without waiting out the 30 seconds.
+A head with no CI check keeps the notice to review and merge it by hand; the notice for a labelled head that Claude already reviewed went with the grace it measured.
+
+Accepted costs:
+
+- A push after the record exists can be evaluated before the ruleset's own request for it registers, so Copilot is briefly gone. That matters only when the head's required checks are already green,
+  and then costs one Claude review; a pending request still blocks the gate, and a real Copilot review still takes the label off.
+- Two askers at once (two events, or `land.sh` and the workflow) can post two records and send two requests. GitHub ignores a repeat request and the first record decides.
+- `reapply.sh` still asks per head and writes no record, and Sandcastle's own re-request sweep and the ruleset's `review_on_push` are unchanged.
+  Turning `review_on_push` off where there is no budget is the owner's call, not made here.
+
 ## Considered Options
+
+- **Keep the grace and shorten it**: rejected (mpaulosky/dotfiles#360) because a dropped request still brings no event, so a shorter grace still waits for the sweep.
+- **A `copilot:asked` label as the record**: rejected because it needs a `labels.json` and settings change in every repo and carries no time for the 30 seconds.
+- **Remember the drop in `land.py`'s process**: rejected because `--once` runs forget it and ask again.
 
 - **Replace Copilot with Claude**: rejected because rounds the size of #82's come from working out the Baseline process; once work is back on one project, Copilot's budget covers it at no cost.
 - **Run both reviewers on every PR**: rejected for the same cost, and because two reviews of every head double the threads to answer.

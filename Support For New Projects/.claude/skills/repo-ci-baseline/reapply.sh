@@ -258,8 +258,9 @@ if [[ "${copilot:-0}" -gt 0 ]]; then
   exit 0
 fi
 # Not review:claude: CI has only just started on this head, a Claude review
-# costs money. land.sh asks Copilot again and adds the label once the head's
-# checks are green if Copilot still can't review it.
+# costs money. land.sh asks Copilot once for the PR (a record comment, then the
+# request) and adds the label once the head's checks are green if that request
+# didn't register.
 ref="${url#https://github.com/}"
 ref="${ref%/pull/*}#$pr"
 echo "reapply.sh: warning: Copilot's review request didn't register on #$pr (GitHub drops it once the Copilot code" \

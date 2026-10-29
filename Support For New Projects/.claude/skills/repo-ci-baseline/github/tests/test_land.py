@@ -2,12 +2,14 @@
 
 import io
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import land  # noqa: E402
+import landing  # noqa: E402
 
 HEAD = "1234567" + "0" * 33
 NEW = "abcdef0" + "0" * 33
@@ -21,10 +23,26 @@ GREEN = [{"__typename": "CheckRun", "name": "Template tests", "status": "COMPLET
 RUNNING = [{"__typename": "CheckRun", "name": "Template tests", "status": "IN_PROGRESS", "conclusion": None,
             "startedAt": "2026-10-07T10:00:00Z"}]
 SCOPES = {"o/app": "full", "o/dots": "repo-settings-only"}
+# Copilot reviewed an older commit only: the head has no review, no note and (unless a test says) no request.
+OLDER = [("copilot-pull-request-reviewer", NEW)]
+# The two calls that ask Copilot once (mpaulosky/dotfiles#360): the record comment, then the request.
+RECORD_CALL = "gh pr comment 7 -R o/app --body " + landing.COPILOT_ASKED_COMMENT
+REQUEST_CALL = "gh pr edit 7 -R o/app --add-reviewer @copilot"
+LABEL_CALL = "gh pr edit 7 -R o/app --add-label review:claude"
+
+
+def ago(seconds):
+    """An ISO-8601 time `seconds` ago, as GraphQL reports createdAt."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
+
+
+def record(age=3600, login="github-actions"):
+    """The comment that records Copilot was asked, posted `age` seconds ago: (login, body, createdAt)."""
+    return (login, landing.COPILOT_ASKED_COMMENT, ago(age))
 
 
 def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=False, merge_state="CLEAN",
-         reviews=(), threads=(), contexts=(), armed=False, labels=(), requested=()):
+         reviews=(), threads=(), contexts=(), armed=False, labels=(), requested=(), comments=()):
     return {
         "number": number, "title": title, "state": "OPEN", "isDraft": draft, "headRefName": branch,
         "headRefOid": head, "mergeStateStatus": merge_state,
@@ -39,6 +57,10 @@ def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=Fa
         "reviewThreads": {"nodes": [{"isResolved": thread} if isinstance(thread, bool) else thread for thread in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
                                           if contexts else None}}]},
+        # The PR's comments as (login, body, createdAt); None is a read that failed.
+        "comments": None if comments is None else {
+            "totalCount": len(comments),
+            "nodes": [{"author": {"login": login}, "body": body, "createdAt": created} for login, body, created in comments]},
     }
 
 
@@ -110,38 +132,53 @@ def test_dotfiles_leaves_a_reviewed_pr_to_its_pr_auto_merge():
     assert fake.calls == []
 
 
-def test_a_behind_branch_is_updated_and_copilot_asked_again_once_per_head():
-    fake = Fake({"o/app": [node(merge_state="BEHIND")]})
+def test_a_behind_branch_is_updated_once_per_head_and_copilot_isnt_asked():
+    fake = Fake({"o/app": [node(merge_state="BEHIND", reviews=COPILOT)]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
-    assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
-    assert fake.read_back == [("o/app", 7)]
+    assert fake.calls == ["gh pr update-branch 7 -R o/app"]
+    assert fake.read_back == []
     text = printed(out)
     assert "  ran: gh pr update-branch 7 -R o/app" in text and "  failed:" not in text
     # Still BEHIND on the same head (the API lags) with a new thread: printed, not redone.
-    fake.open["o/app"] = [node(merge_state="BEHIND", threads=[False])]
+    fake.open["o/app"] = [node(merge_state="BEHIND", reviews=COPILOT, threads=[False])]
     lander.poll()
-    assert "-> update branch" in printed(out) and len(fake.calls) == 2
+    assert "-> update branch" in printed(out) and len(fake.calls) == 1
+
+
+def test_update_branch_is_just_update_branch_now_that_it_asks_nobody():
+    assert landing.UPDATE_BRANCH == "update branch"
+    assert landing.UPDATE_BRANCH in landing.ACTIONS
+    assert land.commands(landing.UPDATE_BRANCH, "o/app", 7, HEAD) == [["gh", "pr", "update-branch", "7", "-R", "o/app"]]
+
+
+def test_requesting_copilot_records_the_ask_in_a_comment_first_and_then_requests_the_review():
+    assert land.commands(landing.REQUEST_COPILOT, "o/app", 7, HEAD) == [
+        ["gh", "pr", "comment", "7", "-R", "o/app", "--body", landing.COPILOT_ASKED_COMMENT],
+        ["gh", "pr", "edit", "7", "-R", "o/app", "--add-reviewer", "@copilot"]]
+    assert landing.COPILOT_ASKED_MARKER in landing.COPILOT_ASKED_COMMENT
 
 
 def test_a_copilot_request_github_dropped_is_warned_about_and_backed_up_by_claude():
-    fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)})
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN)]}, dropped={("o/app", 7)})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
-    assert fake.calls == ["gh pr update-branch 7 -R o/app", "gh pr edit 7 -R o/app --add-reviewer @copilot"]
+    assert fake.calls == [RECORD_CALL, REQUEST_CALL]
+    assert fake.read_back == [("o/app", 7)]
     text = printed(out)
-    assert ("  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review "
-            "budget is used up); review:claude backs Copilot up for this head once its checks are green" in text)
+    assert "-> request Copilot" in text
+    assert "  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review budget " \
+           "is used up); review:claude backs Copilot up for this PR" in text
     assert "  failed:" not in text
-    # The update's new head: Copilot is asked for it, and the drop is remembered for it.
-    fake.open["o/app"] = [node(head=NEW, contexts=RUNNING)]
+    # The same run polls again: the record is on the PR now, 2 s old, and the drop it read back is remembered for this
+    # head, so review:claude is added as soon as the checks are green, without waiting out the 30 seconds.
+    fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, comments=[record(2)])]
     lander.poll()
-    assert "-> request Copilot" in printed(out)
-    assert fake.calls[2:] == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
-    # Copilot can't review a head whose request was dropped (#318): once its checks are green, Claude is called in.
-    fake.open["o/app"] = [node(head=NEW, contexts=GREEN)]
+    assert "-> add review:claude" in printed(out) and fake.calls[2:] == [LABEL_CALL]
+    # A later head: the record is old, so Copilot is not asked again and Claude is called in.
+    fake.open["o/app"] = [node(head=NEW, reviews=OLDER[:0], contexts=GREEN, comments=[record(3600)])]
     lander.poll()
-    assert "-> add review:claude" in printed(out) and fake.calls[3:] == ["gh pr edit 7 -R o/app --add-label review:claude"]
+    assert "-> add review:claude" in printed(out) and fake.calls[3:] == [LABEL_CALL]
 
 
 def test_claude_is_called_in_once_copilot_posted_its_quota_note_and_checks_are_green():
@@ -158,31 +195,42 @@ def test_claude_is_called_in_once_copilot_posted_its_quota_note_and_checks_are_g
     assert len(fake.calls) == 1
 
 
-def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
-    older = [("copilot-pull-request-reviewer", NEW)]
-    fake = Fake({"o/app": [node(reviews=older, contexts=GREEN)]})
+def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before_and_only_once():
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN)]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
-    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot"]
+    assert fake.calls == [RECORD_CALL, REQUEST_CALL]
     assert "-> request Copilot" in printed(out)
     # It registered: Copilot is requested, so nothing more, and never Claude.
-    fake.open["o/app"] = [node(reviews=older, contexts=GREEN, requested=["Copilot"])]
+    fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, requested=["Copilot"], comments=[record(5)])]
     lander.poll()
-    assert "Copilot is requested" in printed(out) and len(fake.calls) == 1
+    assert "Copilot is requested" in printed(out) and len(fake.calls) == 2
+    # Long after, with the request gone (answered by nothing): no second ask, Claude is called in.
+    fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, comments=[record(3600)])]
+    lander.poll()
+    assert fake.calls[2:] == [LABEL_CALL]
 
 
 def test_a_copilot_request_github_refused_outright_is_warned_about():
     # TicketManager#141: "Could not add requested reviewers". No request is
     # left to read back, so it's handled like a dropped one.
-    request = "gh pr edit 7 -R o/app --add-reviewer @copilot"
-    fake = Fake({"o/app": [node(merge_state="BEHIND")]}, dropped={("o/app", 7)}, fail_calls={request})
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN)]}, dropped={("o/app", 7)}, fail_calls={REQUEST_CALL})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
-    assert fake.calls == ["gh pr update-branch 7 -R o/app", request]
+    assert fake.calls == [RECORD_CALL, REQUEST_CALL]
     assert fake.read_back == [("o/app", 7)]
     text = printed(out)
-    assert f"  warning: {request} failed (boom)" in text
-    assert "review:claude backs Copilot up for this head once its checks are green" in text
+    assert f"  warning: {REQUEST_CALL} failed (boom)" in text
+    assert "review:claude backs Copilot up for this PR" in text
+
+
+def test_no_request_is_made_when_the_record_comment_fails():
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN)]}, fail={"comment"})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert len(fake.calls) == 1 and fake.calls[0].startswith("gh pr comment 7 -R o/app --body ")
+    assert fake.read_back == []
+    assert "  failed: gh pr comment 7 -R o/app" in printed(out)
 
 
 def test_claude_isnt_called_in_while_copilot_is_requested_or_the_label_is_on():
@@ -228,35 +276,97 @@ def test_a_failed_review_claude_label_is_reported_as_failed():
     assert "  failed: gh pr edit 7 -R o/app --add-label review:claude (boom)" in printed(out)
 
 
-def test_a_copilot_request_whose_read_back_fails_is_asked_again_next_poll():
-    fake = Fake({"o/app": [node(contexts=GREEN)]})
-    answers = iter([RuntimeError("HTTP 502"), True])
-
-    def read_back(repo, number):
-        answer = next(answers)
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-
-    fake.copilot_requested = read_back
+def test_a_copilot_request_whose_read_back_fails_is_not_asked_again_next_poll():
+    # Copilot is asked once per PR (mpaulosky/dotfiles#360): the record now on the PR, not a retry here, decides what's next.
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN)]})
+    fake.copilot_requested = lambda repo, number: (_ for _ in ()).throw(RuntimeError("HTTP 502"))
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert "couldn't be read back on #7 (HTTP 502)" in printed(out)
     lander.poll()
-    assert fake.calls == ["gh pr edit 7 -R o/app --add-reviewer @copilot"] * 2
-    # It registered this time: no third request.
     lander.poll()
-    assert len(fake.calls) == 2
+    assert fake.calls == [RECORD_CALL, REQUEST_CALL]
 
 
 def test_a_copilot_request_that_cant_be_read_back_is_reported_as_failed():
-    fake = Fake({"o/app": [node(merge_state="BEHIND")]})
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN)]})
     fake.copilot_requested = lambda repo, number: (_ for _ in ()).throw(RuntimeError("HTTP 502"))
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert len(fake.calls) == 2
     assert ("  failed: Copilot's review request couldn't be read back on #7 (HTTP 502); request it at "
             "https://github.com/o/app/pull/7" in printed(out))
+
+
+# ── --once asks once and falls back without remembering anything between runs (mpaulosky/dotfiles#360) ──
+
+def once(fake, text="o/app#7"):
+    lander, out, err = start(fake, {"o/app": {7}})
+    code = land.main(["--once", text], lander=lander, out=out, err=err)
+    return code, printed(out)
+
+
+def test_once_adds_review_claude_after_a_dropped_request_with_nothing_remembered_from_the_run_that_asked():
+    # Run 1 asks: the record comment, then the request, read back as dropped.
+    first = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN)]}, dropped={("o/app", 7)})
+    assert once(first)[0] == 0
+    assert first.calls == [RECORD_CALL, REQUEST_CALL]
+    # Run 2 is a new process: all it has is the PR, which now carries the record (31 s old) and no request.
+    second = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, comments=[record(31)])]})
+    code, text = once(second)
+    assert code == 0
+    assert second.calls == [LABEL_CALL]
+    assert "-> add review:claude" in text
+    assert second.read_back == []
+
+
+def test_once_waits_while_the_record_is_under_30_seconds_old_and_asks_nothing():
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, comments=[record(10)])]})
+    code, text = once(fake)
+    assert code == 0 and fake.calls == []
+    assert "-> wait" in text and "Copilot was asked" in text
+
+
+def test_once_never_asks_a_second_time_whoever_ran_before():
+    for age in (5, 31, 3600):
+        fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, comments=[record(age)])]})
+        once(fake)
+        assert RECORD_CALL not in fake.calls and REQUEST_CALL not in fake.calls, age
+
+
+def test_once_waits_while_copilots_request_is_pending_whatever_the_age_of_the_record():
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, requested=["Copilot"], comments=[record(3600)])]})
+    code, text = once(fake)
+    assert fake.calls == [] and "Copilot is requested" in text
+
+
+def test_once_does_not_ask_or_add_the_label_when_the_comments_could_not_be_read():
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, comments=None)]})
+    once(fake)
+    assert fake.calls == []
+
+
+def test_once_ignores_a_record_from_a_stranger_and_asks():
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, comments=[record(3600, login="stranger")])]})
+    once(fake)
+    assert fake.calls == [RECORD_CALL, REQUEST_CALL]
+
+
+def test_once_trusts_a_record_from_the_repo_owner():
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, comments=[record(3600, login="o")])]})
+    once(fake)
+    assert fake.calls == [LABEL_CALL]
+
+
+def test_a_new_head_after_an_update_isnt_asked_for_either():
+    # Behind main with a record on the PR: the update makes a new head; Copilot is not asked about it.
+    fake = Fake({"o/app": [node(merge_state="BEHIND", reviews=OLDER, comments=[record(3600)])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert fake.calls == ["gh pr update-branch 7 -R o/app"]
+    fake.open["o/app"] = [node(head=NEW, reviews=[], contexts=GREEN, comments=[record(3600)])]
+    lander.poll()
+    assert fake.calls[1:] == [LABEL_CALL]
 
 
 def test_dotfiles_leaves_a_claude_reviewed_pr_to_its_pr_auto_merge():
@@ -319,7 +429,7 @@ def test_dry_run_prints_the_calls_and_makes_none():
     lander.poll()
     text = printed(out)
     assert "  would run: gh pr update-branch 7 -R o/app" in text
-    assert "  would run: gh pr edit 7 -R o/app --add-reviewer @copilot" in text
+    assert "--add-reviewer" not in text
     assert f"  would run: gh pr merge 8 -R o/app --auto --squash --match-head-commit {HEAD}" in text
     assert fake.calls == [] and fake.read_back == []
     lander.poll()

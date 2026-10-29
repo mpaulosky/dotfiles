@@ -37,7 +37,8 @@ Two buckets matter, and the GraphQL one is the likelier to run out:
 - **GraphQL (1,000 points an hour):** `MergeReadiness` is most of PR Auto-Merge's load. It has seven connections (the head's checks, two review lists,
   threads and labels, and the review commits' parents), so it costs about 1 point, and at most a few when both review lists are full.
   A run evaluating a PR makes at least two queries (the first snapshot and a fresh one), up to four more retries while GitHub reports `UNKNOWN`,
-  and one more in `noRequiredCheckState`: 2 to 7 queries, so about 2 to 7 points.
+  and one more in `noRequiredCheckState`: 2 to 7 queries, so about 2 to 7 points. The run that asks Copilot for its review (once per PR) reads the request
+  back every 5 seconds for up to 30, which adds up to six reads, and then evaluates the PR again.
   A push starts about ten runs, so it costs roughly 20 to 30 points, and a sweep costs 2 to 7 points per open PR.
   Between 30 and 50 pushes an hour, or a sweep over a few dozen open PRs, would use up the 1,000, so a repo with many open PRs and frequent pushes is the one to watch.
 
@@ -54,6 +55,7 @@ PAT means `RELEASE_PR_PAT`. Every workflow below falls back to `GITHUB_TOKEN` wh
 | Workflow | Call | Client | Why |
 | --- | --- | --- | --- |
 | pr-automerge | `graphql` (`MergeReadiness` in `getPullRequestStatus`: one or two a PR, up to four retries while GitHub reports `UNKNOWN`, one more in `noRequiredCheckState`) | GITHUB_TOKEN | A read. Its `statusCheckRollup` reads check runs and commit statuses, hence the job's `checks: read` and `statuses: read` |
+| pr-automerge | `issues.createComment` (the record that Copilot was asked, `pr-automerge:copilot-asked`; once per PR) | GITHUB_TOKEN | A write that needs no person: the record is `github-actions`' comment, which is what the rule trusts. `pull-requests: write` covers it |
 | pr-automerge | `repos.getBranchRules` (once a run) | GITHUB_TOKEN | A read: the checks `main-rules` requires |
 | pr-automerge | `pulls.list` (a sweep) | GITHUB_TOKEN | A read: the open PRs |
 | pr-automerge | `repos.listPullRequestsAssociatedWithCommit` (a `workflow_run` event) | GITHUB_TOKEN | A read: the PR the finished run's commit belongs to |
@@ -67,6 +69,7 @@ PAT means `RELEASE_PR_PAT`. Every workflow below falls back to `GITHUB_TOKEN` wh
 | pr-automerge | `actions.listWorkflowRunsForRepo` | GITHUB_TOKEN | A read: the head's runs when no check is required (`actions: read`) |
 | pr-automerge | `issues.removeLabel` (`review:claude`, at the review cap and at MAX_CLAUDE_ROUNDS) | GITHUB_TOKEN | The removal should start no workflow. `pull-requests: write` covers a PR's labels |
 | pr-automerge | `pulls.merge` | PAT | release.yml (`pull_request: closed`) and the push to main (CI, the next sweep) must start |
+| pr-automerge | `graphql` (`requestReviewsByLogin`, the one request for Copilot's review of a PR; its read-back is more `MergeReadiness` reads) | PAT | GitHub should treat the request as a person's: an Actions token's is dropped more often. Made once per PR (mpaulosky/dotfiles#360) |
 | pr-automerge | `pulls.updateBranch` | PAT | The merge from main must start CI |
 | pr-automerge | `issues.addLabels` (`review:claude`) | PAT | Claude Review's `labeled` run must start, so the PAT needs Pull requests (or Issues) write |
 | pr-automerge | `issues.createComment` (`@dependabot rebase`) | PAT | Dependabot acts only on a person's comment |
@@ -86,7 +89,7 @@ PAT means `RELEASE_PR_PAT`. Every workflow below falls back to `GITHUB_TOKEN` wh
 | code-metrics | `peter-evans/create-pull-request` | PAT | The action makes its reads and writes with one token, so they can't be split, and the PR must be a person's. Runs only on a manual publish |
 
 In PR Auto-Merge, `github` is the `GITHUB_TOKEN` client and `patClient` the PAT's, so a PAT call has to say `patClient.`.
-`pr-automerge.test.mjs` pins the five PAT calls and the thirteen `GITHUB_TOKEN` ones, and runs scenarios against a fake of each client that refuses the other's calls.
+`pr-automerge.test.mjs` pins the six PAT calls and the fourteen `GITHUB_TOKEN` ones, and runs scenarios against a fake of each client that refuses the other's calls.
 `test_tokens_doc.py` fails when the script makes a call this table doesn't list.
 
 What's left on the PAT is writes only, plus one `users.getAuthenticated` a run when Dependabot is asked to rebase.
@@ -105,8 +108,10 @@ The 5,000 REST requests an hour, the allowance that ran out on 2026-10-18, are l
   A PR whose review threads are all resolved and that Copilot or Claude Review reviewed adds one more query a poll, `THREADS_QUERY`
   (the comments of its threads, for the unreplied-thread notice: 101 requests, 1 point).
   The comments aren't in `QUERY`: nested under 50 PRs of 100 threads they'd add 5,000 requests, about 53 points a read.
-- **Actions** cost more, once per PR head: updating a branch is `gh pr update-branch`, `gh pr edit --add-reviewer @copilot` and a read-back `gh pr view`;
-  requesting Copilot is one `gh pr edit` and one read-back; adding `review:claude`, marking a PR ready and arming auto-merge are one call each.
+- **A PR awaiting its first review** adds one more query a poll, `COMMENTS_QUERY` (the last 100 comments, for the record that Copilot was asked: 101 requests, 1 point),
+  only for an open, ready PR whose head has no real Copilot review and no Copilot request.
+- **Actions** cost more, once per PR head: updating a branch is `gh pr update-branch` alone (it asks nobody for a review);
+  requesting Copilot is once per PR: one `gh pr comment` (the record), one `gh pr edit` and one read-back; adding `review:claude`, marking a PR ready and arming auto-merge are one call each.
 - **A watched PR that left the open list** costs one `gh pr view` a round until it reads MERGED or CLOSED.
 - Each `gh pr` command can make a request or two of its own on top.
 

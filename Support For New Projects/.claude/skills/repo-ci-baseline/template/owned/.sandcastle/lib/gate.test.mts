@@ -219,7 +219,45 @@ describe("gateIssues", () => {
       },
     });
 
-    assert.deepEqual(gateIssues(gh).blocked[0]!.reasons, ['its GitHub "blocked by" links couldn\'t be read']);
+    assert.deepEqual(gateIssues(gh, () => {}).blocked[0]!.reasons, ['its GitHub "blocked by" links couldn\'t be read']);
+  });
+
+  // gh's stderr rides in the thrown message (ADR 0010); the gate must print it, through terminalText, rather than drop it.
+  const HOSTILE = new Error("gh api failed:\nHTTP 404: Not Found\u001b[2K\u200b\u{E0041}\nsecond line");
+
+  it("prints why the blocked-by links couldn't be read, made safe for a terminal", () => {
+    const gh = github({
+      sandcastleIssues: () => [sandcastleIssue(71)],
+      nativeBlockers: () => {
+        throw HOSTILE;
+      },
+    });
+    const lines: string[] = [];
+
+    gateIssues(gh, (line) => lines.push(line));
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /#71/);
+    assert.ok(lines[0]!.includes("HTTP 404: Not Found[2K second line"), lines[0]!);
+    assert.doesNotMatch(lines[0]!, /[\u001b\u200b\n]|\u{E0041}/u);
+  });
+
+  it("prints why a blocker couldn't be fetched, made safe for a terminal, and still holds the issue back", () => {
+    const gh = github({
+      sandcastleIssues: () => [sandcastleIssue(72, "Blocked by #99")],
+      blocker: () => {
+        throw HOSTILE;
+      },
+    });
+    const lines: string[] = [];
+
+    const { blocked } = gateIssues(gh, (line) => lines.push(line));
+
+    assert.deepEqual(blocked[0]!.reasons, ["#99 couldn't be fetched"]);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /#99/);
+    assert.ok(lines[0]!.includes("HTTP 404: Not Found[2K second line"), lines[0]!);
+    assert.doesNotMatch(lines[0]!, /[\u001b\u200b\n]|\u{E0041}/u);
   });
 });
 

@@ -20,6 +20,7 @@ import { isIssueBranch } from "./branches.mts";
 import { BUILDING_LABEL } from "./config.mts";
 import { ghWithStderr, hasLabel, openPullRequests, repoName, type OpenPullRequest, type SandcastleIssue } from "./github.mts";
 import { loadQueue } from "./queue.mts";
+import { terminalText } from "./status.mts";
 
 export type Blocker = {
   number: number;
@@ -70,13 +71,16 @@ export const liveGitHub: GateGitHub = {
 
 // Undefined when the lookup fails (a mistyped number 404s, the network drops).
 // Callers treat that as still blocking, so one bad reference holds back only
-// its own issue instead of aborting the whole run.
-function fetchBlocker(number: number, cache: Map<number, Blocker>, github: GateGitHub): Blocker | undefined {
+// its own issue instead of aborting the whole run. The failure's reason (gh's
+// stderr, in the thrown message) goes to `warn` through terminalText, so a
+// person sees why without rerunning the command.
+function fetchBlocker(number: number, cache: Map<number, Blocker>, github: GateGitHub, warn: GateWarn): Blocker | undefined {
   let blocker = cache.get(number);
   if (!blocker) {
     try {
       blocker = github.blocker(number);
-    } catch {
+    } catch (error) {
+      warn(`  ⚠ reading blocker #${number} failed: ${terminalText(String(error))}`);
       return undefined;
     }
     cache.set(number, blocker);
@@ -134,6 +138,10 @@ function prReason(pr: OpenPullRequest): string {
   return `PR #${pr.number} (${pr.headRefName}) is already open for it`;
 }
 
+// Where the gate prints why a GitHub read failed. The reasons it returns stay fixed text, since they reach the planner's prompt; gh's stderr
+// is for the terminal only.
+export type GateWarn = (line: string) => void;
+
 // A held-back issue, why it waits, and the open PR holding it back, if any.
 export type HeldBackIssue = { issue: SandcastleIssue; reasons: string[]; pr?: OpenPullRequest };
 
@@ -146,6 +154,7 @@ export type HeldBackIssue = { issue: SandcastleIssue; reasons: string[]; pr?: Op
 // merged during the previous round becomes ready now.
 export function gateIssues(
   github: GateGitHub = liveGitHub,
+  warn: GateWarn = (line) => console.error(line),
 ): { ready: SandcastleIssue[]; blocked: HeldBackIssue[] } {
   const issues = github.sandcastleIssues();
   const openPrs = github.openPullRequests();
@@ -181,7 +190,8 @@ export function gateIssues(
     let native: Blocker[];
     try {
       native = github.nativeBlockers(issue.number);
-    } catch {
+    } catch (error) {
+      warn(`  ⚠ #${issue.number}: reading its GitHub "blocked by" links failed: ${terminalText(String(error))}`);
       // Without its native links the issue's blockers are unknown, so hold it back.
       blocked.push({ issue, reasons: ["its GitHub \"blocked by\" links couldn't be read"] });
       continue;
@@ -193,7 +203,7 @@ export function gateIssues(
 
     const reasons = [...numbers]
       .map((number) => {
-        const blocker = fetchBlocker(number, cache, github);
+        const blocker = fetchBlocker(number, cache, github, warn);
         return blocker ? unfinishedReason(blocker) : `#${number} couldn't be fetched`;
       })
       .filter((reason): reason is string => reason !== undefined);

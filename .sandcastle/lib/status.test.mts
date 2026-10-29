@@ -894,7 +894,7 @@ describe("terminalText", () => {
 
   it("reads only the letter and its marks right before a joiner: a longer run of marks drops it", () => {
     const marks = "\u064e".repeat(20);
-    assert.equal(terminalText(`\u0645${marks}\u200c\u0646`), `\u0645${"\u064e".repeat(3)}\u0646`);
+    assert.equal(terminalText(`\u0645${marks}\u200c\u0646`), `\u0645${"\u064e".repeat(8)}\u0646`);
   });
 
   it("keeps at most a few joiners in one text, however many there are", () => {
@@ -928,10 +928,10 @@ describe("terminalText", () => {
 
   it("keeps at most a few private-use or unassigned code points in one text, and a few combining marks in a row", () => {
     const odd = terminalText("\ue000".repeat(20));
-    const marks = terminalText(`e${"\u0301".repeat(10)}x`);
+    const marks = terminalText(`e${"\u0301".repeat(12)}x`);
 
     assert.equal(odd, "\ue000".repeat(8));
-    assert.equal(marks, `e${"\u0301".repeat(3)}x`);
+    assert.equal(marks, `e${"\u0301".repeat(8)}x`);
     assert.equal(terminalText(odd), odd);
     assert.equal(terminalText(marks), marks);
   });
@@ -944,13 +944,22 @@ describe("terminalText", () => {
     assert.equal(terminalText("a\ue000b".repeat(10)), "a\ue000b".repeat(8) + "ab".repeat(2));
   });
 
-  it("keeps three combining marks in a row, trims a fourth, and counts each run on its own, astral marks too", () => {
-    const three = "\u0301".repeat(3);
+  it("keeps eight combining marks in a row, trims a ninth, and counts each run on its own, astral marks too", () => {
+    const eight = "\u0301".repeat(8);
 
-    assert.equal(terminalText(`e${three}`), `e${three}`);
-    assert.equal(terminalText(`e${three}\u0301`), `e${three}`);
-    assert.equal(terminalText(`a${three}b${three}c`), `a${three}b${three}c`);
-    assert.equal(terminalText(`e${"\u{1D165}".repeat(6)}`), `e${"\u{1D165}".repeat(3)}`);
+    assert.equal(terminalText(`e${eight}`), `e${eight}`);
+    assert.equal(terminalText(`e${eight}\u0301`), `e${eight}`);
+    assert.equal(terminalText(`e${eight}\u0301\u0301\u0301`), `e${eight}`);
+    assert.equal(terminalText(`a${eight}b${eight}c`), `a${eight}b${eight}c`);
+    assert.equal(terminalText(`e${"\u{1D165}".repeat(12)}`), `e${"\u{1D165}".repeat(8)}`);
+  });
+
+  it("keeps Tibetan and Hebrew text that stacks four or more marks, which a cap of three trimmed", () => {
+    const tibetan = "\u0f40\u0f71\u0f72\u0f74\u0f7a\u0f7e";
+    const hebrew = "\u05d1\u05b0\u05bc\u05c1\u05ab\u05bd";
+
+    assert.equal(terminalText(tibetan), tibetan);
+    assert.equal(terminalText(hebrew), hebrew);
   });
 
   it("is idempotent when the cap drops what a joiner sat beside: a joiner is kept only between assigned pictographs", () => {
@@ -981,11 +990,11 @@ describe("terminalText", () => {
   });
 
   it("keeps a non-joiner a run of marks sits beside, and is idempotent beside marks and odd code points", () => {
-    const text = `\u0645${"\u064e".repeat(10)}\u200c\u0646\ue000\u0378${"\u0301".repeat(6)}`;
+    const text = `\u0645${"\u064e".repeat(10)}\u200c\u0646\ue000\u0378${"\u0301".repeat(12)}`;
     const once = terminalText(text);
 
     assert.ok(once.includes("\u200c"));
-    assert.ok(once.endsWith(`\ue000\u0378${"\u0301".repeat(3)}`));
+    assert.ok(once.endsWith(`\ue000\u0378${"\u0301".repeat(8)}`));
     assert.equal(terminalText(once), once);
   });
 

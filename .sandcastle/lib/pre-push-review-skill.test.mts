@@ -501,6 +501,16 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
     assert.match(mutations, /`PYTHONPYCACHEPREFIX` \(one new folder per run, shared by the baseline and every mutation\)/);
   });
 
+  // mpaulosky/dotfiles#361: an empty journal can't be told from a live run's, so it blocks the run; the journal is staged, hard-linked into place and replaced.
+  it("says any mutation journal blocks the run, and that it is staged, hard-linked into place and replaced, never written in place", () => {
+    const mutations = readFileSync(new URL("../../.claude/skills/hardening-review/references/mutations.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    assert.doesNotMatch(mutations, /the next run removes it/);
+    assert.doesNotMatch(mutations, /An empty journal is what a run killed before it wrote its claim leaves/);
+    assert.match(mutations, /hard link/);
+    assert.match(mutations, /`os\.replace`/);
+    assert.match(mutations, /never empty/);
+  });
+
   it("verifies a repro with its path printed, and does not call a scrubbed environment a sandbox", () => {
     assert.match(hardening, /d="\$\(mktemp -d\)" && git worktree add --detach "\$d\/tree" HEAD && printf '%s\\n' "\$d\/tree"/);
     assert.match(hardening, /removes environment variables only; it is not a sandbox/);

@@ -779,17 +779,168 @@ def test_a_checkout_path_holding_a_unicode_line_separator_still_runs(tmp_path, s
     assert not journals(root)
 
 
-# mpaulosky/dotfiles#341 (decision 6): a run killed between creating the journal and writing to it leaves an empty file, which is no
-# run in progress and no mutation to restore.
-def test_an_empty_journal_is_a_leftover_and_is_removed_instead_of_blocking_the_run(tmp_path):
+# mpaulosky/dotfiles#361: a live run's journal is empty between its creation and its write, so an empty journal can't be told from a
+# live run's. The journal is never written in place, so it is never empty, and any journal that exists blocks the run.
+def test_an_empty_journal_blocks_the_run_and_is_left_alone(tmp_path):
     root = make_repo(tmp_path)
+    before = (root / "target.py").read_bytes()
     journal = load_runner().journal_path(root)
     journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     journal.write_bytes(b"")
     result = run(root, spec([mutation("x > 0", "x >= 0")]))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "in progress" not in result.stderr
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "mutate-journal-" in result.stderr and "Traceback" not in result.stderr
+    assert journals(root) == [journal], "nothing is deleted to take the journal over"
+    assert journal.read_bytes() == b""
+    assert (root / "target.py").read_bytes() == before
+    assert not (root / "started").exists()
+
+
+def test_two_runs_started_together_against_an_empty_journal_both_leave_it_alone(tmp_path):
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    journal.write_bytes(b"")
+    spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
+    procs = [subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(spec_file), "--root", str(root)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env()) for _ in range(2)]
+    results = [(proc.communicate(timeout=60), proc.returncode) for proc in procs]
+    assert [code for _, code in results] == [2, 2], results
+    assert journals(root) == [journal] and journal.read_bytes() == b""
+
+
+def test_runs_started_together_on_a_fresh_checkout_claim_the_files_once(tmp_path):
+    # A slow baseline keeps the winner's journal in place while the others start: exactly one run may go on to mutate.
+    root = make_repo(tmp_path, check=(
+        "import sys, time\nsys.path.insert(0, '.')\nimport target as c\ntime.sleep(3)\n"
+        "sys.exit(0 if c.f(1) and not c.f(0) and not c.f(-1) else 1)\n"))
+    before = (root / "target.py").read_bytes()
+    spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
+    procs = [subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(spec_file), "--root", str(root)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env()) for _ in range(4)]
+    results = [(proc.communicate(timeout=120), proc.returncode) for proc in procs]
+    assert sorted(code for _, code in results) == [0, 2, 2, 2], results
+    assert all("in progress" in err for (_, err), code in results if code == 2), results
+    assert (root / "target.py").read_bytes() == before
     assert not journals(root)
+
+
+def test_the_journal_is_whole_when_claimed(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    assert json.loads(journal.read_bytes()) == {"files": {}}
+    assert list(journal.parent.iterdir()) == [journal], "the claim's staging file must not be left beside the journal"
+
+
+def test_the_journal_is_whole_when_written_and_replaces_the_claim_instead_of_being_written_in_place(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    claimed = journal.stat().st_ino
+    runner.write_journal(journal, top, {(root / "target.py").resolve(): (root / "target.py").read_bytes()})
+    recorded = json.loads(journal.read_bytes())["files"]
+    assert list(recorded) == ["target.py"]
+    assert journal.stat().st_ino != claimed, "a journal written in place is empty while it is truncated"
+    assert list(journal.parent.iterdir()) == [journal]
+
+
+def reader_never_sees_a_partial_journal(journal, work):
+    """Polls the journal while `work` runs; returns every read that was empty or not JSON."""
+    import threading
+    bad, stop = [], threading.Event()
+
+    def poll():
+        while not stop.is_set():
+            try:
+                data = journal.read_bytes()
+            except OSError:
+                continue
+            try:
+                json.loads(data)
+            except ValueError:
+                bad.append(data)
+
+    thread = threading.Thread(target=poll)
+    thread.start()
+    try:
+        work()
+    finally:
+        stop.set()
+        thread.join()
+    return bad
+
+
+def test_a_reader_never_sees_the_journal_empty_while_it_is_claimed(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+
+    def claim_many():
+        for _ in range(400):
+            runner.claim_journal(journal, top)
+            journal.unlink()
+
+    assert reader_never_sees_a_partial_journal(journal, claim_many) == []
+
+
+def test_a_reader_never_sees_the_journal_empty_while_it_is_written(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    originals = {(root / "target.py").resolve(): b"x" * 200000}
+
+    def write_many():
+        for _ in range(100):
+            runner.write_journal(journal, top, originals)
+
+    assert reader_never_sees_a_partial_journal(journal, write_many) == []
+    assert list(journal.parent.iterdir()) == [journal]
+
+
+def test_a_refused_claim_leaves_no_staging_file_behind(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    with pytest.raises(runner.Refused):
+        runner.claim_journal(journal, top)
+    assert list(journal.parent.iterdir()) == [journal]
+    assert json.loads(journal.read_bytes()) == {"files": {}}
+
+
+def test_a_claim_whose_write_fails_leaves_nothing_in_the_private_folder(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+
+    def full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(runner.json, "dumps", full)
+    with pytest.raises(OSError):
+        runner.claim_journal(journal, top)
+    assert not journal.exists()
+    assert list(journal.parent.iterdir()) == []
+
+
+def test_a_write_that_fails_keeps_the_claim_and_leaves_no_staging_file(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+
+    def full(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(runner.json, "dumps", full)
+    with pytest.raises(OSError):
+        runner.write_journal(journal, top, {(root / "target.py").resolve(): b"x"})
+    assert json.loads(journal.read_bytes()) == {"files": {}}, "the claim stays whole"
+    assert list(journal.parent.iterdir()) == [journal]
 
 
 def test_a_journal_with_content_still_blocks_the_run(tmp_path):
@@ -839,3 +990,12 @@ def test_the_docstring_says_the_journal_is_in_the_common_git_directory_one_per_w
     assert "common git directory" in doc
     assert "one journal per worktree" in doc
     assert "in the git directory" not in doc
+
+
+# mpaulosky/dotfiles#361: the docstring no longer says an empty journal is a leftover to remove; it says how the journal is made.
+def test_the_docstring_says_the_journal_is_never_empty_and_any_journal_blocks_the_run():
+    doc = " ".join((load_runner().__doc__ or "").split())
+    assert "hard link" in doc
+    assert "os.replace" in doc
+    assert "next run removes it" not in doc
+    assert "An empty journal is what a run killed before it wrote its claim leaves" not in doc

@@ -419,7 +419,9 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
     assert.match(hardening, /lists each known-open entry's lens, file and line range/);
     // The skill itself puts a refuted finding's output line and each outcome's reason in `run`: it can't say it holds none.
     assert.doesNotMatch(flat, /never holds a reason, an input or an output/);
-    assert.match(flat, /never holds a known-open reason or anything about a finding still in the code beyond its id, lens and path/);
+    // The rule covers security findings only (mpaulosky/dotfiles#341, R73): a non-security finding's reason is not a weakness.
+    assert.doesNotMatch(flat, /anything about a finding still in the code/);
+    assert.match(flat, /never holds a known-open reason for a security finding or anything about a security finding still in the code beyond its id, lens and path/);
     // A umask is shell state, which doesn't carry between Bash calls.
     assert.match(hardening, /umask 077; mkdir -p/);
     assert.match(flat, /begin every later command that writes under it with `umask 077;`/);
@@ -460,7 +462,19 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
     assert.match(flat, /again before `add`/);
     // Every known_open.py flag built from a finding's text takes the `=` and single-quote form.
     assert.doesNotMatch(hardening, /--lens [A-Za-z<"']|--path [A-Za-z<"']/);
-    assert.match(flat, /--reason '<the person's decision, in your own words, with no single quote>'/);
+    // R72: the placeholder has no apostrophe in it, and the `=` form keeps a reason that starts with `-` from reading as a flag.
+    assert.match(flat, /--reason='<the decision, in your own words, with no single quote>'/);
+    assert.doesNotMatch(hardening, /--reason [A-Za-z<"']/);
+    assert.doesNotMatch(flat, /person's decision/);
+  });
+
+  // R31 (mpaulosky/dotfiles#341): the line-anchored hash stays strict, so a fix above an accepted item makes it `changed` again; the way out is
+  // to remove the old entry and add the finding again.
+  it("tells the person that a re-accepted finding is removed and added again, in SKILL.md and state.md", () => {
+    const state = readFileSync(new URL("../../.claude/skills/hardening-review/references/state.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    assert.match(flat, /known_open\.py remove '<private>\/known-open\.json' --id='?<id>/);
+    assert.match(flat, /a re-accepted finding is removed and added again/);
+    assert.match(state, /a re-accepted finding is removed and added again/);
   });
 
   it("deletes a verification checkout only after checking a path a sandbox could have written", () => {
@@ -475,6 +489,16 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
     assert.match(triage, /is listed in one line/);
     assert.match(mutations, /mutate-journal-<hash>\.txt/);
     assert.match(mutations, /POSIX only/);
+  });
+
+  // mpaulosky/dotfiles#341 (R74): the journal is under the common git directory, one per worktree; the pycache folder is one per run.
+  it("says the mutation journal is in the common git directory, one per worktree, and that the pycache prefix is one folder per run", () => {
+    const mutations = readFileSync(new URL("../../.claude/skills/hardening-review/references/mutations.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    assert.match(mutations, /common git directory/);
+    assert.match(mutations, /one journal per worktree/);
+    assert.doesNotMatch(mutations, /under `review\/` in the git directory/);
+    assert.doesNotMatch(mutations, /a fresh `PYTHONPYCACHEPREFIX`/);
+    assert.match(mutations, /`PYTHONPYCACHEPREFIX` \(one new folder per run, shared by the baseline and every mutation\)/);
   });
 
   it("verifies a repro with its path printed, and does not call a scrubbed environment a sandbox", () => {

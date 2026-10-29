@@ -300,3 +300,14 @@ describe("the places the gate's checks are read from (mpaulosky/dotfiles#339)", 
     assert.match(step, /\.claude\/skills\//);
   });
 });
+
+// mpaulosky/dotfiles#341: Apply writes a Seed file only where a repo has none, so an existing repo keeps its old `.sandcastle/check.sh`.
+describe("the Seed check.sh in an existing repo (mpaulosky/dotfiles#341)", () => {
+  it("references/sandcastle.md says Apply writes check.sh only where a repo has none, and an existing repo copies the new pathspec by hand", () => {
+    const reference = readFileSync(new URL(`${skill}/references/sandcastle.md`, root), "utf8").replace(/\s+/g, " ");
+
+    assert.match(reference, /`\.sandcastle\/check\.sh`[^.]*\bonly where a repo has none/);
+    assert.match(reference, /an existing repo copies the new pathspec by hand/);
+    assert.match(reference, /\.claude\/skills\/hardening-review\//);
+  });
+});

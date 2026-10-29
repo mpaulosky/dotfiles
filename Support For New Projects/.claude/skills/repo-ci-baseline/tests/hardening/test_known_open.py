@@ -309,3 +309,245 @@ def test_a_folder_path_that_is_a_dangling_symlink_or_a_file_is_refused_not_a_tra
         result = add(root, tmp_path / blocker / "known-open.json")
         assert result.returncode == 2 and "Traceback" not in result.stderr, result.stderr
         assert "cannot write the list" in result.stderr
+
+
+# mpaulosky/dotfiles#341 (R31): the hash stays anchored to the lines, so a shifted range is `changed`; `remove` is how a re-accepted
+# finding replaces its old entry.
+def remove(listing, ident="R3"):
+    return cli("remove", str(listing), "--id", ident)
+
+
+def test_remove_drops_only_the_entry_with_that_id(tmp_path):
+    root, listing = setup(tmp_path)
+    add(root, listing, ident="R3")
+    add(root, listing, ident="R4", start="1", end="1")
+    result = remove(listing, "R3")
+    assert result.returncode == 0, result.stderr
+    assert [e["id"] for e in check(root, listing)] == ["R4"]
+
+
+def test_a_shifted_entry_is_replaced_by_a_remove_and_an_add(tmp_path):
+    root, listing = setup(tmp_path)
+    add(root, listing)
+    (root / "src/f.sh").write_text("new\na\nb\nc\nd\n", encoding="utf-8")
+    assert check(root, listing)[0]["changed"] is True
+    assert add(root, listing).returncode == 2, "the stale entry still holds the id"
+    assert remove(listing).returncode == 0
+    assert add(root, listing, start="3", end="4").returncode == 0
+    assert [(e["id"], e["start"], e["changed"]) for e in check(root, listing)] == [("R3", 3, False)]
+
+
+def test_removing_the_last_entry_leaves_an_empty_list(tmp_path):
+    root, listing = setup(tmp_path)
+    add(root, listing)
+    assert remove(listing).returncode == 0
+    assert json.loads(listing.read_text(encoding="utf-8")) == []
+    assert check(root, listing) == []
+
+
+def test_remove_refuses_an_id_that_is_not_in_the_list_and_leaves_the_list_alone(tmp_path):
+    root, listing = setup(tmp_path)
+    add(root, listing)
+    before = listing.read_bytes()
+    result = remove(listing, "R9")
+    assert result.returncode == 2 and "R9" in result.stderr and "Traceback" not in result.stderr
+    assert listing.read_bytes() == before
+
+
+def test_remove_on_a_missing_list_is_refused_and_creates_nothing(tmp_path):
+    _, listing = setup(tmp_path)
+    result = remove(listing)
+    assert result.returncode == 2 and "Traceback" not in result.stderr
+    assert not listing.exists()
+
+
+def test_remove_needs_an_id(tmp_path):
+    root, listing = setup(tmp_path)
+    add(root, listing)
+    assert cli("remove", str(listing)).returncode == 2
+    assert [e["id"] for e in check(root, listing)] == ["R3"]
+
+
+def test_remove_keeps_the_list_private_and_leaves_no_temporary_file(tmp_path):
+    root, listing = setup(tmp_path)
+    add(root, listing)
+    add(root, listing, ident="R4")
+    assert remove(listing, "R4").returncode == 0
+    assert listing.stat().st_mode & 0o077 == 0
+    assert not list(listing.parent.glob("*.tmp"))
+
+
+# mpaulosky/dotfiles#341 (R67): two adds started together both load the list and replace it, so the later one dropped the other's entry.
+def test_two_adds_run_together_keep_both_entries(tmp_path):
+    import threading
+    import time
+    root, listing = setup(tmp_path)
+    module = load_module()
+    real = module.load
+
+    def slow(path):
+        entries = real(path)
+        time.sleep(0.3)  # the window in which an unlocked second add reads the same, old list
+        return entries
+
+    module.load = slow
+    codes = {}
+
+    def run(ident, start):
+        codes[ident] = module.main(["add", str(listing), "--root", str(root), "--id", ident, "--lens", "Security", "--path", "src/f.sh",
+                                    "--start", start, "--end", start, "--reason", "r"])
+
+    threads = [threading.Thread(target=run, args=(ident, start)) for ident, start in (("R1", "1"), ("R2", "2"))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert codes == {"R1": 0, "R2": 0}
+    assert sorted(e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))) == ["R1", "R2"]
+
+
+def test_two_adds_of_one_id_run_together_keep_one_and_refuse_the_other(tmp_path):
+    import threading
+    import time
+    root, listing = setup(tmp_path)
+    module = load_module()
+    real = module.load
+
+    def slow(path):
+        entries = real(path)
+        time.sleep(0.3)
+        return entries
+
+    module.load = slow
+    codes = []
+
+    def run():
+        codes.append(module.main(["add", str(listing), "--root", str(root), "--id", "R1", "--lens", "Security", "--path", "src/f.sh",
+                                  "--start", "1", "--end", "1", "--reason", "r"]))
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(codes) == [0, 2]
+    assert [e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))] == ["R1"]
+
+
+def test_an_add_and_a_remove_run_together_keep_the_add_and_drop_the_removed(tmp_path):
+    import threading
+    import time
+    root, listing = setup(tmp_path)
+    assert add(root, listing, ident="R3").returncode == 0
+    module = load_module()
+    real = module.load
+
+    def slow(path):
+        entries = real(path)
+        time.sleep(0.3)
+        return entries
+
+    module.load = slow
+    codes = {}
+
+    def adding():
+        codes["add"] = module.main(["add", str(listing), "--root", str(root), "--id", "R9", "--lens", "Security", "--path", "src/f.sh",
+                                    "--start", "1", "--end", "1", "--reason", "r"])
+
+    def removing():
+        codes["remove"] = module.main(["remove", str(listing), "--id", "R3"])
+
+    threads = [threading.Thread(target=adding), threading.Thread(target=removing)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert codes == {"add": 0, "remove": 0}
+    assert [e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))] == ["R9"]
+
+
+def test_many_adds_started_at_once_as_separate_processes_keep_every_entry(tmp_path):
+    root, listing = setup(tmp_path, "".join(f"line{n}\n" for n in range(12)))
+    command = lambda n: [sys.executable, "-I", str(SCRIPT), "add", str(listing), "--root", str(root), "--id", f"R{n}", "--lens", "Security",
+                         "--path", "src/f.sh", "--start", str(n), "--end", str(n), "--reason", "r"]
+    procs = [subprocess.Popen(command(n), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for n in range(1, 13)]
+    results = [proc.communicate(timeout=60) + (proc.returncode,) for proc in procs]
+    assert [code for _, _, code in results] == [0] * 12, results
+    assert sorted(e["id"] for e in check(root, listing)) == sorted(f"R{n}" for n in range(1, 13))
+
+
+# mpaulosky/dotfiles#341 (R68): a failed add left its mkstemp file in the private folder, holding part of the list.
+def test_a_failed_add_leaves_no_temporary_file(tmp_path, monkeypatch, capsys):
+    root, listing = setup(tmp_path)
+    assert add(root, listing, ident="R1").returncode == 0
+    module = load_module()
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(module.os, "replace", broken)
+    code = module.main(["add", str(listing), "--root", str(root), "--id", "R2", "--lens", "Security", "--path", "src/f.sh",
+                        "--start", "1", "--end", "1", "--reason", "r"])
+    assert code == 2
+    assert "cannot write the list" in capsys.readouterr().err
+    assert not list(listing.parent.glob("*.tmp")), "the temporary file was left behind"
+    assert [e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))] == ["R1"]
+
+
+def test_a_failed_remove_leaves_no_temporary_file(tmp_path, monkeypatch, capsys):
+    root, listing = setup(tmp_path)
+    assert add(root, listing, ident="R1").returncode == 0
+    module = load_module()
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(module.os, "replace", broken)
+    assert module.main(["remove", str(listing), "--id", "R1"]) == 2
+    assert "Traceback" not in capsys.readouterr().err
+    assert not list(listing.parent.glob("*.tmp"))
+    assert [e["id"] for e in json.loads(listing.read_text(encoding="utf-8"))] == ["R1"]
+
+
+# mpaulosky/dotfiles#341: on a Python before 3.13 Path.resolve() raises RuntimeError for a symlink loop, which was a traceback
+# where a refusal belongs. The error is simulated, since newer Pythons don't raise it.
+def looping(monkeypatch):
+    real = Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        if self.name == "loop":
+            raise RuntimeError(f"Symlink loop from {self}")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+
+
+def test_add_refuses_a_path_whose_resolve_loops_instead_of_a_traceback(tmp_path, monkeypatch, capsys):
+    root, listing = setup(tmp_path)
+    looping(monkeypatch)
+    code = load_module().main(["add", str(listing), "--root", str(root), "--id", "R1", "--lens", "Security", "--path", "src/loop",
+                               "--start", "1", "--end", "1", "--reason", "r"])
+    assert code == 2
+    assert "refused:" in capsys.readouterr().err
+    assert not listing.exists()
+
+
+def test_check_and_match_do_not_trace_back_on_a_hand_edited_entry_whose_path_loops(tmp_path, monkeypatch, capsys):
+    root, listing = setup(tmp_path)
+    add(root, listing)
+    entries = json.loads(listing.read_text(encoding="utf-8"))
+    listing.write_text(json.dumps([{**entries[0], "id": "R9", "path": "src/loop"}, *entries]), encoding="utf-8")
+    looping(monkeypatch)
+    module = load_module()
+    assert module.main(["check", str(listing), "--root", str(root)]) in (0, 2)
+    assert module.main(["match", str(listing), "--root", str(root), "--lens", "Security", "--path", "src/f.sh", "--line", "2"]) in (0, 2)
+    capsys.readouterr()
+    # And the looping finding path itself is refused, not raised.
+    assert module.main(["match", str(listing), "--root", str(root), "--lens", "Security", "--path", "src/loop", "--line", "2"]) == 2
+
+
+def test_a_real_symlink_loop_in_an_add_path_is_a_refusal(tmp_path):
+    root, listing = setup(tmp_path)
+    os.symlink("loop", root / "src" / "loop")
+    result = add(root, listing, path="src/loop", start="1", end="1")
+    assert result.returncode == 2 and "Traceback" not in result.stderr

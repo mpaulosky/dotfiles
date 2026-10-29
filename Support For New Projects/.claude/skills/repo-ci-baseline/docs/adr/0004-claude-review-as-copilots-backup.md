@@ -33,7 +33,7 @@ That rests on GitHub keeping Copilot's request in `reviewRequests` until its rev
 Once Copilot really reviews the head, Copilot's review covers it and the label comes off (#271). The new path applies to every same-repo PR,
 so a repo whose ruleset never requests Copilot gets Claude's review too. The owner decided (mpaulosky/dotfiles#331) to accept that and not to check the ruleset:
 a check is an extra API read and failure mode, and without Copilot such a repo would otherwise never get a review at all. The label is still the gate,
-so the cost there is one Claude review per labelled PR. The cost is a small window where a Copilot review that is merely very late arrives after Claude's;
+so the cost there is one Claude review per labelled PR. The other cost is a small window where a Copilot review that is merely very late arrives after Claude's;
 its threads still hold the merge, and the 5-minute grace keeps that window short.
 
 A bot's push of a clean merge H2 of `main` on top of a head H1 Claude reviewed gets a review of its own (mpaulosky/dotfiles#331).

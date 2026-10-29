@@ -60,7 +60,8 @@ The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-pr
 `test.sh` keeps dotfiles' own text out of them, and checks that the Dockerfile's linter versions match the Owned `scripts/gate.sh` and its .NET channel matches `global.json`.
 A repo with `Microsoft.Playwright` in its `Directory.Packages.props` sets `INSTALL_PLAYWRIGHT_DEPS=true` in the Dockerfile (it is `false` by default, like `INSTALL_DOTNET` is `true`),
 so its E2E tests find Chromium's system libraries in the sandbox. The step runs `pnpm dlx playwright@${PLAYWRIGHT_VERSION} install-deps chromium` as root and clears root's caches;
-keep `PLAYWRIGHT_VERSION` near the repo's `Microsoft.Playwright` version. It installs only the libraries: the browser itself is left to the test fixture at run time, so a Playwright bump needs no image change.
+keep `PLAYWRIGHT_VERSION` near the repo's `Microsoft.Playwright` version. It installs only the libraries: the browser itself is left to the test fixture at run time,
+so a Playwright bump needs no image change.
 A Seed file is written once, so an existing repo keeps its own Dockerfile and adds the step by hand.
 `roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo that gets `.sandcastle/`, where it stays unused. To opt in, add a `ui` entry to
 `ROLE_AGENTS` in `lib/repo-config.mts` (the Seed carries it commented out) and add this bullet to `plan-prompt.md`'s ROLES list, so the planner can pick the role:

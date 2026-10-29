@@ -22,6 +22,12 @@
 // person: anyone who can push can write one, as anyone can push with
 // --no-verify.
 //
+// `record` also keeps a local record of security findings, `.security/` in the
+// main checkout (see security-record.mts): one file per weakness, written for
+// every security finding it records, so a later branch reads what an earlier
+// one decided. It is git-ignored and never published, like the ledgers, and
+// `security` lists it for the reviews, by id, status, lens and path only.
+//
 // Run as a script: `scripts/review.sh <command>` (see USAGE below). Sandcastle
 // doesn't run this review yet; the module lives in .sandcastle/lib/ for its
 // type-check and tests.
@@ -34,6 +40,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { plainText, visibleLetters } from "./plain-text.mts";
 import { NOT_OWNED_BASELINE_PATHS, REPO_SLUG } from "./repo-config.mts";
+import { markAccepted, readEntries, recordSecurity, renderSecurityList, type SecurityInput, type SecurityOutcome } from "./security-record.mts";
 
 // The variable that skips the review check, for the gate runs that come
 // before or during the review: the skill's own (each round's), and every gate
@@ -164,25 +171,34 @@ function checkOutcome(finding: z.infer<typeof findingFields>, context: z.Refinem
 // finding: the person deciding it, or the follow-up issue, needs it. A security
 // weakness (isSecurity) is recorded fixed only with a test, which may name a
 // gate check: a reason alone leaves it open.
-export const findingSchema = findingFields
-  .extend({ severity: z.enum(SEVERITIES), security: z.boolean(), fix: z.string().trim().min(1).nullable() })
+const recordedFields = findingFields.extend({ severity: z.enum(SEVERITIES), security: z.boolean(), fix: z.string().trim().min(1).nullable() });
+
+function checkRecorded(finding: z.infer<typeof recordedFields>, context: z.RefinementCtx): void {
+  if (finding.status === "open" && finding.fix === null) {
+    context.addIssue({ code: "custom", message: `${finding.id} is open without a suggested fix` });
+  }
+  // isSecurity is what the check and the notes use, so the agent-written `security` flag alone can't dodge this.
+  if (finding.status === "fixed" && finding.test === null && isSecurity(finding)) {
+    context.addIssue({ code: "custom", message: `${finding.id} is a security weakness recorded fixed without a test: name its test or gate check, or leave it open with its suggested fix` });
+  }
+  if (finding.security && finding.severity !== "warning") {
+    context.addIssue({ code: "custom", message: `${finding.id} is a security weakness: grade it warning, not ${finding.severity}` });
+  }
+  if (finding.severity === "advisory" && /security/i.test(finding.lens)) {
+    context.addIssue({ code: "custom", message: `${finding.id}'s lens names security, so it's a security weakness: grade it warning, not advisory` });
+  }
+}
+
+export const findingSchema = recordedFields.strict().superRefine(checkOutcome).superRefine(checkRecorded);
+
+// A finding as `record` is handed it: the above, and two fields only the security record uses and the ledger never
+// stores. `policy` is the one-sentence rule that now holds for a security weakness; `repeats` is the number of the
+// entry (`0003`) triage judged the finding repeats, for a repeat worded differently from the entry.
+const inputFindingSchema = recordedFields
+  .extend({ policy: z.string().trim().min(1).nullable().optional(), repeats: z.string().regex(/^\d{4,}$/, "repeats is an entry number such as 0003").optional() })
   .strict()
   .superRefine(checkOutcome)
-  .superRefine((finding, context) => {
-    if (finding.status === "open" && finding.fix === null) {
-      context.addIssue({ code: "custom", message: `${finding.id} is open without a suggested fix` });
-    }
-    // isSecurity is what the check and the notes use, so the agent-written `security` flag alone can't dodge this.
-    if (finding.status === "fixed" && finding.test === null && isSecurity(finding)) {
-      context.addIssue({ code: "custom", message: `${finding.id} is a security weakness recorded fixed without a test: name its test or gate check, or leave it open with its suggested fix` });
-    }
-    if (finding.security && finding.severity !== "warning") {
-      context.addIssue({ code: "custom", message: `${finding.id} is a security weakness: grade it warning, not ${finding.severity}` });
-    }
-    if (finding.severity === "advisory" && /security/i.test(finding.lens)) {
-      context.addIssue({ code: "custom", message: `${finding.id}'s lens names security, so it's a security weakness: grade it warning, not advisory` });
-    }
-  });
+  .superRefine(checkRecorded);
 
 // A finding as stored. A ledger recorded before `severity` existed has none,
 // nor a `fix`, and still parses, so check, accept, report and latest read it;
@@ -229,7 +245,9 @@ export const reviewInputSchema = z
     // The agent type that read the diff (pre-push-reviewer, or the one that
     // stood in for it), so the report and the notes show who reviewed.
     reviewerAgent: reviewerAgentSchema.optional(),
-    findings: z.array(findingSchema),
+    // The number of the PR the branch has, when there is one, for the security record's entries. Not kept in the ledger.
+    pr: z.number().int().positive().optional(),
+    findings: z.array(inputFindingSchema),
   })
   .strict()
   .superRefine((input, context) => {
@@ -572,15 +590,27 @@ export function takenIds(cwd: string, base: string, head: string = headCommit(cw
 // person who read a report before a review was recorded again can't accept a
 // different finding by its id. (A rebase or an amend leaves the branch's
 // earlier commits behind, and their ids with them, unless the diff is the same.)
+//
+// Once the ledger is written, every security finding recorded fixed or open also
+// goes to the security record (recordSecurity), under the same lock. That can't
+// fail the record: the ledger is what the gate checks, so a problem writing
+// entries comes back through `onSecurity` as warnings. `slug` is the repository
+// the entries name a PR of.
 export function recordReview(
   cwd: string,
   base: string,
   input: ReviewInput,
   now: Date = new Date(),
   taken: typeof takenIds = takenIds,
+  { slug = REPO_SLUG, onSecurity }: { slug?: string; onSecurity?: (outcome: SecurityOutcome) => void } = {},
 ): Ledger {
   const parsed = reviewInputSchema.parse(input);
-  const dirty = git(cwd, "status", "--porcelain", "--untracked-files=all");
+  // The security record is local and not code (see security-record.mts): an untracked README, or a symlink put in its
+  // place, isn't a change HEAD fails to vouch for. Tracked changes there still count.
+  const dirty = git(cwd, "status", "--porcelain", "--untracked-files=all")
+    .split("\n")
+    .filter((line) => !/^\?\? \.security(\/|$)/.test(line))
+    .join("\n");
   if (dirty !== "") {
     throw new Error(`the worktree has uncommitted changes, so the review can't vouch for HEAD:\n${dirty}`);
   }
@@ -598,7 +628,8 @@ export function recordReview(
     recordedAt: now.toISOString(),
     rounds: parsed.rounds,
     ...(parsed.reviewerAgent === undefined ? {} : { reviewerAgent: parsed.reviewerAgent }),
-    findings: parsed.findings,
+    // The security record's own fields stay out of the ledger, so every reader of it is as before.
+    findings: parsed.findings.map(({ policy: _policy, repeats: _repeats, ...stored }) => stored),
   };
   withLock(cwd, () => {
     const floor = taken(cwd, base, head, key);
@@ -608,13 +639,26 @@ export function recordReview(
     }
     ledger = { ...ledger, lastId: Math.max(floor, highestId(ledger)) };
     writeLedger(cwd, ledger);
+    const security = parsed.findings.filter((finding): finding is typeof finding & { status: "fixed" | "open" } => isSecurity(finding) && (finding.status === "fixed" || finding.status === "open"));
+    const inputs: SecurityInput[] = security.map(({ id, lens, path, summary, status, test, reason, fix, policy, repeats }) => ({
+      id, lens, path, summary, status, test, reason, fix, policy, ...(repeats === undefined ? {} : { repeats }),
+    }));
+    let outcome: SecurityOutcome;
+    try {
+      outcome = recordSecurity(cwd, ledger, inputs, { ...(parsed.pr === undefined ? {} : { pr: parsed.pr }), slug });
+    } catch (error) {
+      outcome = { written: [], repeated: [], warnings: [`the security record couldn't be written: ${(error as Error).message ?? String(error)}`] };
+    }
+    onSecurity?.(outcome);
   });
   return ledger;
 }
 
 // Accept an open finding on the ledger for HEAD's diff, with the person's
-// reason. A finding that isn't open stays as it is.
-export function acceptFinding(cwd: string, base: string, id: string, reason: string): Ledger {
+// reason. A finding that isn't open stays as it is. The security record's entry
+// for the weakness is accepted too, and `onSecurity` hears of it (or of why it
+// couldn't be): the acceptance itself stands either way.
+export function acceptFinding(cwd: string, base: string, id: string, reason: string, onSecurity?: (message: string) => void): Ledger {
   if (reason.trim() === "") throw new Error("say why the finding is accepted");
   const key = diffKey(cwd, base);
   return withLock(cwd, () => {
@@ -626,6 +670,14 @@ export function acceptFinding(cwd: string, base: string, id: string, reason: str
     finding.status = "accepted";
     finding.reason = reason.trim();
     writeLedger(cwd, ledgerSchema.parse(ledger));
+    if (isSecurity(finding)) {
+      try {
+        const entry = markAccepted(cwd, finding, reason.trim());
+        if (entry !== undefined) onSecurity?.(`marked ${entry} accepted`);
+      } catch (error) {
+        onSecurity?.(`couldn't mark the entry accepted: ${(error as Error).message ?? String(error)}`);
+      }
+    }
     return ledger;
   });
 }
@@ -932,7 +984,7 @@ const USAGE = `Usage: scripts/review.sh <command>
                          the round before printed) the fixes since to <dir>/fixes.patch; print the key, then HEAD
   key                    print the ledger key of HEAD's diff against origin/main
   check [<base>]         the gate's check: exit 1 unless HEAD's diff was reviewed clean
-  record <file>          record a review from JSON ({ reviewedKey, reviewedHead, rounds, reviewerAgent, findings }); - reads stdin
+  record <file>          record a review from JSON ({ reviewedKey, reviewedHead, rounds, reviewerAgent, pr, findings }); - reads stdin
   accept <id> <reason>   accept an open finding on HEAD's review
   report                 print HEAD's review report
   notes                  print the "## Review notes" section for the PR description
@@ -940,6 +992,7 @@ const USAGE = `Usage: scripts/review.sh <command>
   body <in> <out>        write to <out> the PR description in <in> (- reads stdin) with its Review notes replaced;
                          <out> is removed first and written only on success
   latest                 print the nearest earlier review of this branch's work as JSON ({} when none)
+  security               list the local security record (.security/ in the main checkout): id, status, lens, path, file
   repo                   print this repository as OWNER/REPO, for GH_REPO (lib/repo-config.mts's REPO_SLUG)
   next                   print the first finding id this run may use`;
 
@@ -994,13 +1047,25 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
       case "record": {
         if (rest[0] === undefined) return fail(USAGE);
         const text = readFileSync(rest[0] === "-" ? 0 : rest[0], "utf8");
-        out(renderReport(recordReview(cwd, mergeBase(cwd), JSON.parse(text) as ReviewInput)));
+        const note = (message: string) => process.stderr.write(`.security: ${message}\n`);
+        const report = renderReport(
+          recordReview(cwd, mergeBase(cwd), JSON.parse(text) as ReviewInput, undefined, undefined, {
+            slug,
+            onSecurity: (outcome) => {
+              const status = new Map(readEntries(cwd).map((entry) => [entry.file, entry.status]));
+              for (const file of outcome.written) note(`wrote ${file} (${status.get(file) ?? "unknown"})`);
+              for (const { finding, entry } of outcome.repeated) note(`${finding} repeats ${entry}, no new entry`);
+              for (const warning of outcome.warnings) note(plainText(warning));
+            },
+          }),
+        );
+        out(report);
         return 0;
       }
       case "accept": {
         const [id, ...reason] = rest;
         if (id === undefined || reason.length === 0) return fail(USAGE);
-        out(renderReport(acceptFinding(cwd, mergeBase(cwd), id, reason.join(" "))));
+        out(renderReport(acceptFinding(cwd, mergeBase(cwd), id, reason.join(" "), (message) => process.stderr.write(`.security: ${message}\n`))));
         return 0;
       }
       case "report":
@@ -1034,6 +1099,9 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
         out(ledger === undefined ? "{}" : JSON.stringify(ledger, null, 2));
         return 0;
       }
+      case "security":
+        out(renderSecurityList(readEntries(cwd)));
+        return 0;
       case "next":
         out(`R${takenIds(cwd, mergeBase(cwd)) + 1}`);
         return 0;

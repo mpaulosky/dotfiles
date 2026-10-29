@@ -8,6 +8,8 @@
 #   scripts/review.sh advisory               the follow-up issue's open Advisory findings
 #   scripts/review.sh body <in> <out>        the PR description in <in> with those notes put in, written to <out>
 #                                            (the only way they go into a description: see the skill's step 9)
+#   scripts/review.sh security               the local security record (.security/, git-ignored, never published):
+#                                            id, status, lens, path and file of each entry; `record` writes them
 # The logic and the other commands are in .sandcastle/lib/review-ledger.mts. It
 # works on the repository of the current directory, with the tsx this checkout
 # installed (`pnpm install`).

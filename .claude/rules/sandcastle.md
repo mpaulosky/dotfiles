@@ -49,7 +49,8 @@ guardrails keep agent-written code from running on the host. A change keeps ever
 - Host git runs with hooks off and `GIT_COMMON_DIR` pinned (`lib/host-safety.mts`), in the main checkout only.
 - Each sandbox mounts `.git/config` and `.git/hooks` read-only through the provider's `create()` (`lib/skills.mts`), and an empty read-only
   folder over `.git/review` (the local review's ledgers hold accepted security findings, never published), at every path a mount puts `.git`
-  (`protectedGitMounts`, `withCreateMounts`). Every sandbox also sets `GATE_SKIP_REVIEW=1` (`SANDBOX_ENV`): Sandcastle doesn't run that review yet.
+  (`protectedGitMounts`, `withCreateMounts`), and one over the main checkout's `.security` (the local security record, never published:
+  `protectedRecordMounts`). Every sandbox also sets `GATE_SKIP_REVIEW=1` (`SANDBOX_ENV`): Sandcastle doesn't run that review yet.
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
 - The host pushes the commit the gate passed on, after the secret scan (`lib/scan.mts`), and posts only
   `publicErrorText` on public issues.

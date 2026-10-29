@@ -199,10 +199,9 @@ def claim_journal(journal, top):
     journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     staged = stage(journal, json.dumps({"files": {}}))
     try:
-        try:
-            os.link(staged, journal)
-        except FileExistsError:
-            raise Refused(describe_journal(journal, top))
+        os.link(staged, journal)
+    except FileExistsError:
+        raise Refused(describe_journal(journal, top))
     finally:
         staged.unlink(missing_ok=True)
 

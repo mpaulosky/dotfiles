@@ -944,7 +944,7 @@ def test_a_write_that_fails_keeps_the_claim_and_leaves_no_staging_file(tmp_path,
 
 
 def test_a_journal_with_content_still_blocks_the_run(tmp_path):
-    # Only the empty file is a leftover: a claimed journal is `{"files": {}}`, and that is a run in progress.
+    # A claimed journal is `{"files": {}}`, and that is a run in progress.
     root = make_repo(tmp_path)
     journal = load_runner().journal_path(root)
     journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

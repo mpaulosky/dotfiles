@@ -9,7 +9,6 @@ import { endOf } from "./checkpoint.mts";
 import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
-import { sh } from "./shell.mts";
 
 let repo: string | undefined;
 
@@ -211,8 +210,8 @@ export function sameRepository<T extends Pick<ListedPullRequest, "isCrossReposit
 // The open pull requests from this repository's branches, and their head
 // branches. gh pages through results up to --limit, so the cap sits far above
 // any real queue: a PR missed here would let its issue be built twice.
-export function openPullRequests(): OpenPullRequest[] {
-  return openSameRepositoryPullRequests();
+export function openPullRequests(run: typeof execFileSync = execFileSync, repo: string = repoName()): OpenPullRequest[] {
+  return openSameRepositoryPullRequests(run, repo);
 }
 
 // The open pull requests into main from this repository's branches, from any
@@ -221,18 +220,18 @@ export function openPullRequests(): OpenPullRequest[] {
 // reads each one's files with pullRequestFiles. Fork PRs are left out, as
 // sameRepository explains: counting them would let anyone with a fork hold the
 // whole queue back.
-export function openPullRequestsIntoMain(): OpenPullRequest[] {
-  return openSameRepositoryPullRequests("--base", BASE_BRANCH.replace(/^origin\//, ""));
+export function openPullRequestsIntoMain(run: typeof execFileSync = execFileSync, repo: string = repoName()): OpenPullRequest[] {
+  return openSameRepositoryPullRequests(run, repo, "--base", BASE_BRANCH.replace(/^origin\//, ""));
 }
 
 // The open pull requests from this repository's branches that gh pr list
 // returns with `filters`, and their head branches.
-function openSameRepositoryPullRequests(...filters: string[]): OpenPullRequest[] {
+function openSameRepositoryPullRequests(run: typeof execFileSync, repo: string, ...filters: string[]): OpenPullRequest[] {
   const listed = JSON.parse(
-    sh(
-      process.cwd(), "gh", "pr", "list", "--repo", repoName(), "--state", "open", ...filters, "--limit", "1000",
+    ghWithStderr(run, [
+      "pr", "list", "--repo", repo, "--state", "open", ...filters, "--limit", "1000",
       "--json", "number,headRefName,isCrossRepository",
-    ),
+    ]),
   ) as ListedPullRequest[];
   return sameRepository(listed).map(({ number, headRefName }) => ({ number, headRefName }));
 }
@@ -254,7 +253,7 @@ function whyGhStopped(error: unknown): string {
 
 // Run gh with its stderr captured, and throw with that stderr in the message,
 // so a caller can say why it failed.
-function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, maxBuffer?: number): string {
+export function ghWithStderr(run: typeof execFileSync, args: string[], input?: string, maxBuffer?: number): string {
   try {
     return run("gh", args, {
       cwd: process.cwd(),
@@ -894,18 +893,20 @@ export function pullRequestFiles(pr: number, run: typeof execFileSync = execFile
 }
 
 // Any issue's body, or "" when it has none.
-export function issueBody(number: number): string {
-  return sh(process.cwd(), "gh", "api", `repos/${repoName()}/issues/${number}`, "--jq", '.body // ""');
+export function issueBody(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): string {
+  return ghWithStderr(run, ["api", `repos/${repo}/issues/${number}`, "--jq", '.body // ""']).trim();
 }
 
 // Add the native "#issue blocked by #blocker" link. The API names the blocker
 // by its id, not its number.
-export function addBlockedBy(issue: number, blocker: number): void {
-  const id = sh(process.cwd(), "gh", "api", `repos/${repoName()}/issues/${blocker}`, "--jq", ".id");
-  sh(
-    process.cwd(), "gh", "api", "--method", "POST", `repos/${repoName()}/issues/${issue}/dependencies/blocked_by`,
-    "-F", `issue_id=${id}`,
-  );
+export function addBlockedBy(
+  issue: number,
+  blocker: number,
+  run: typeof execFileSync = execFileSync,
+  repo: string = repoName(),
+): void {
+  const id = ghWithStderr(run, ["api", `repos/${repo}/issues/${blocker}`, "--jq", ".id"]).trim();
+  ghWithStderr(run, ["api", "--method", "POST", `repos/${repo}/issues/${issue}/dependencies/blocked_by`, "-F", `issue_id=${id}`]);
 }
 
 // The numbers of `issue`'s native "blocked by" links to issues in this
@@ -1028,12 +1029,7 @@ export function commentOnIssue(
   run: typeof execFileSync = execFileSync,
   repo: string = repoName(),
 ): void {
-  run("gh", ["issue", "comment", String(issue), "--repo", repo, "--body-file", "-"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "inherit"],
-    input: body,
-  });
+  ghWithStderr(run, ["issue", "comment", String(issue), "--repo", repo, "--body-file", "-"], body);
 }
 
 // Creates any of `labels` this repository doesn't already have, with its

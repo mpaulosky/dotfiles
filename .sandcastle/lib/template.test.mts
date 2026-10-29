@@ -42,6 +42,8 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
     // lib/pre-push-review-skill.test.mts checks the workflow's accepted-findings step against the ledger's markers.
     mkdirSync(join(scratch, ".github/workflows"), { recursive: true });
     cpSync(join(owned, ".github/workflows/claude-review.yml"), join(scratch, ".github/workflows/claude-review.yml"));
+    // lib/review-ledger.test.mts reads the Template's .gitignore for the security record's two lines.
+    cpSync(join(owned, ".gitignore"), join(scratch, ".gitignore"));
     // lib/review-ledger.test.mts runs scripts/review.sh the same way.
     const review = join(scratch, "scripts/review.sh");
     cpSync(join(owned, "scripts/review.sh"), review);

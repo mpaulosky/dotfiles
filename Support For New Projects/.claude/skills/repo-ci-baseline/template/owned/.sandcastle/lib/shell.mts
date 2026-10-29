@@ -1,10 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { hostGitEnv, repoGitDir } from "./host-safety.mts";
 
-// Run a command on the host in `cwd` and return trimmed stdout. Throws on failure.
-export const sh = (cwd: string, cmd: string, ...args: string[]) =>
-  execFileSync(cmd, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim();
-
 // The environment and arguments for a host git command in the main checkout at
 // `checkout`, whose .git directory is `gitDir`: hooks off, both in the
 // environment and with -c, and GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE pinned,

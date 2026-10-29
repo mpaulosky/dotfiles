@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import type { execFileSync } from "node:child_process";
 import { COPILOT_REVIEWER, FOLLOW_UP_LABEL, FOLLOW_UP_MARKER, FOLLOW_UP_LABEL_DEFINITION, HOST_LABELS, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
 import {
+  addBlockedBy,
   addIssueLabel,
   addPullRequestLabel,
   addSubIssue,
@@ -23,6 +24,7 @@ import {
   hasLabel,
   headChecksOf,
   hostLogin,
+  issueBody,
   issueEvents,
   issueLabels,
   type IssueEvent,
@@ -33,6 +35,8 @@ import {
   markerCommentsSince,
   openIssuesWithComment,
   openPullRequest,
+  openPullRequests,
+  openPullRequestsIntoMain,
   openPullRequestsForSweep,
   ownerApproved,
   pullRequestBodyEdits,
@@ -401,7 +405,7 @@ describe("commentOnIssue", () => {
 
   it("throws when gh fails, so a failed comment isn't mistaken for a posted one", () => {
     const run = (() => {
-      throw new Error("gh: HTTP 502");
+      throw Object.assign(new Error("Command failed: gh issue comment"), { stderr: "gh: HTTP 502" });
     }) as unknown as typeof execFileSync;
 
     assert.throws(() => commentOnIssue(69, "body", run, "o/r"), /HTTP 502/);
@@ -2044,5 +2048,73 @@ describe("sandcastleWorkflowRuns", () => {
     }) as unknown as typeof execFileSync;
 
     assert.throws(() => sandcastleWorkflowRuns(10, run, "o/r"), /workflow sandcastle\.yml not found/);
+  });
+});
+
+// The callers that ran gh with stderr inherited or let Node's message through (mpaulosky/dotfiles#347), under ADR 0010: gh's stderr is
+// captured, so it reaches the terminal only through the thrown message, and that message is built from the error's fields, never Node's
+// own, which holds the whole command line and so can quote a title or a branch name.
+describe("gh callers that follow ADR 0010's stderr convention", () => {
+  const STDERR = "HTTP 500: Internal Server Error\u001b[2K\u200b\u{E0041}";
+  const COMMAND_LINE = "Command failed: gh issue comment 7 --repo o/r --body-file - [title: Hostile Title\u001b[2K]";
+
+  // A run that records each call and answers `answer`, or throws as execFileSync does: Node's message (the command line) and the
+  // child's stderr as a field. `failOn` is the 1-based call that fails (none by default).
+  const runner = (answer: string, failOn?: number) => {
+    const calls: { args: readonly string[]; options: { stdio?: unknown } }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { stdio?: unknown } = {}) => {
+      calls.push({ args, options });
+      if (calls.length === failOn) throw Object.assign(new Error(COMMAND_LINE), { stderr: STDERR, status: 1 });
+      return answer;
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+
+  const callers: { name: string; calls: number; call: (run: typeof execFileSync) => unknown; answer: string }[] = [
+    { name: "commentOnIssue", calls: 1, answer: "", call: (run) => commentOnIssue(7, "body", run, "o/r") },
+    { name: "issueBody", calls: 1, answer: "the body", call: (run) => issueBody(7, run, "o/r") },
+    { name: "addBlockedBy", calls: 2, answer: "123", call: (run) => addBlockedBy(7, 8, run, "o/r") },
+    { name: "openPullRequests", calls: 1, answer: "[]", call: (run) => openPullRequests(run, "o/r") },
+    { name: "openPullRequestsIntoMain", calls: 1, answer: "[]", call: (run) => openPullRequestsIntoMain(run, "o/r") },
+  ];
+
+  for (const { name, calls: callCount, call, answer } of callers) {
+    it(`${name} captures gh's stderr instead of letting it through to the terminal`, () => {
+      const { calls, run } = runner(answer);
+
+      call(run);
+
+      assert.equal(calls.length, callCount);
+      for (const { options } of calls) assert.equal((options.stdio as unknown[])[2], "pipe", JSON.stringify(options.stdio));
+    });
+
+    for (let failing = 1; failing <= callCount; failing++) {
+      it(`${name} throws gh's stderr, not Node's command line, when call ${failing} fails`, () => {
+        const { run } = runner(answer, failing);
+
+        assert.throws(
+          () => call(run),
+          (error: Error) => {
+            assert.match(error.message, /^gh [^\n]* failed:\n/);
+            assert.ok(error.message.includes(STDERR), error.message);
+            assert.doesNotMatch(error.message, /Command failed|Hostile Title/);
+            return true;
+          },
+        );
+      });
+    }
+  }
+
+  it("openPullRequests and openPullRequestsIntoMain still name the repository and drop fork pull requests", () => {
+    const listed = JSON.stringify([
+      { number: 1, headRefName: "feature/1-a", isCrossRepository: false },
+      { number: 2, headRefName: "feature/2-b", isCrossRepository: true },
+    ]);
+    for (const list of [openPullRequests, openPullRequestsIntoMain]) {
+      const { calls, run } = runner(listed);
+
+      assert.deepEqual(list(run, "o/r"), [{ number: 1, headRefName: "feature/1-a" }]);
+      assert.deepEqual(calls[0]!.args.slice(0, 4), ["pr", "list", "--repo", "o/r"]);
+    }
   });
 });

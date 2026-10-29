@@ -48,6 +48,7 @@ import { intakePromptArgs } from "./prompts.mts";
 import { activeQueueScope } from "./queue.mts";
 import { handBackReport, intakeStopReport, type HandBackReport, type IntakeStopReport } from "./report.mts";
 import { agentSandbox } from "./skills.mts";
+import { terminalText } from "./status.mts";
 
 // Lenient where a slip is harmless, because one verdict that fails the schema
 // costs every verdict in the block: the issue JSON gives `number` as a
@@ -221,7 +222,7 @@ export function applyVerdicts(
       }
       log(`  ${applyVerdict(issue, verdict, run, repo, report, log, splitGithub)}`);
     } catch (error) {
-      log(`  ⚠ Couldn't apply intake's ${verdict.verdict} verdict on ${ref}, so it's judged again in a later round or run: ${error}`);
+      log(`  ⚠ Couldn't apply intake's ${verdict.verdict} verdict on ${ref}, so it's judged again in a later round or run: ${terminalText(String(error))}`);
       counts.failed += 1;
       if (counts.failed === 1) firstError = error;
       continue;
@@ -277,7 +278,7 @@ function applyVerdict(
   try {
     commentOnIssue(number, readyComment(verdict), run, repo);
   } catch (error) {
-    log(`  ⚠ #${number} is marked sandcastle:ready, but posting intake's reason failed: ${error}`);
+    log(`  ⚠ #${number} is marked sandcastle:ready, but posting intake's reason failed: ${terminalText(String(error))}`);
   }
   return `✓ Intake marks #${number} ready${bugNote}: ${verdict.reason}`;
 }
@@ -354,7 +355,7 @@ function applySplit(
     try {
       splitGithub.unmarkSplitting(number);
     } catch (unmarkError) {
-      log(`  ⚠ Marking #${number} for its split failed, and so did taking the mark back off: if it carries sandcastle:needs-human, remove it by hand: ${unmarkError}`);
+      log(`  ⚠ Marking #${number} for its split failed, and so did taking the mark back off: if it carries sandcastle:needs-human, remove it by hand: ${terminalText(String(unmarkError))}`);
     }
     throw error;
   }
@@ -382,7 +383,7 @@ function applySplit(
     splitGithub.comment(number, umbrellaComment(verdict, children));
   } catch (error) {
     const created = children.length > 0 ? `after creating ${issueRefs(children)}` : "before creating any child";
-    log(`  ⚠ Splitting #${number} failed ${created}: ${error}`);
+    log(`  ⚠ Splitting #${number} failed ${created}: ${terminalText(String(error))}`);
     try {
       handBack(
         { kind: "issue", number },
@@ -394,7 +395,7 @@ function applySplit(
         report,
       );
     } catch (handBackError) {
-      log(`  ⚠ Splitting #${number} failed, and handing it back failed too; it keeps sandcastle:needs-human, so intake leaves it alone: ${handBackError}`);
+      log(`  ⚠ Splitting #${number} failed, and handing it back failed too; it keeps sandcastle:needs-human, so intake leaves it alone: ${terminalText(String(handBackError))}`);
     }
     return `🛑 Intake's split of #${number} failed partway, so it's handed back with sandcastle:needs-human.`;
   }
@@ -404,7 +405,7 @@ function applySplit(
     try {
       splitGithub.unmarkSplitting(held);
     } catch (error) {
-      log(`  ⚠ #${number}'s split finished, but removing sandcastle:needs-human from #${held} failed, so a person has to: ${error}`);
+      log(`  ⚠ #${number}'s split finished, but removing sandcastle:needs-human from #${held} failed, so a person has to: ${terminalText(String(error))}`);
     }
   }
   const bugNote = verdict.bug ? " (a bug)" : "";
@@ -672,10 +673,10 @@ export async function intakeRound(
   async function narrow(batch: SandcastleIssue[], error: unknown): Promise<void> {
     if (stopped) return;
     if (batch.length === 1) {
-      warn(`  ✗ Intake failed on ${refs(batch)}, so it's judged again in a later round or run: ${error}`);
+      warn(`  ✗ Intake failed on ${refs(batch)}, so it's judged again in a later round or run: ${terminalText(String(error))}`);
       return;
     }
-    log(`  Intake failed on ${refs(batch)}, so it's trying them in halves: ${error}`);
+    log(`  Intake failed on ${refs(batch)}, so it's trying them in halves: ${terminalText(String(error))}`);
     const middle = Math.ceil(batch.length / 2);
     for (const half of [batch.slice(0, middle), batch.slice(middle)]) {
       if (stopped) return;
@@ -700,14 +701,17 @@ export async function intakeRound(
   }
 }
 
-// The message of the innermost error in `error`'s cause chain. The host's gh
-// wrapper (lib/github.mts#ghWithStderr) wraps Node's error, whose message is
-// the command line followed by gh's stderr, so for a gh failure this is that
-// text, command line included (it can quote a title or a branch name).
+// A message ghWithStderr built: "gh <command> failed:", a line break, and why gh stopped.
+const GH_FAILURE = /^gh [^\n]* failed:\n([\s\S]*)$/;
+
+// The text that says why a step stopped. The host's gh wrapper (lib/github.mts#ghWithStderr) wraps Node's error, whose message is the
+// command line (it can quote a title or a branch name), so the walk down the cause chain stops at the wrapper's own message, built from
+// gh's stderr (ADR 0010), and the result is what follows its "failed:"; any other error ends at the innermost cause's message.
 function rootMessage(error: unknown): string {
   let root = error;
-  while (root instanceof Error && root.cause !== undefined) root = root.cause;
-  return root instanceof Error ? root.message : String(root);
+  while (root instanceof Error && root.cause !== undefined && !GH_FAILURE.test(root.message)) root = root.cause;
+  if (!(root instanceof Error)) return String(root);
+  return GH_FAILURE.exec(root.message)?.[1] ?? root.message;
 }
 
 // Phase 0a as main.mts runs it: load the queue and the open PRs, then run
@@ -729,6 +733,6 @@ export async function intakePhase(
     await round(issues, openPrs);
   } catch (error) {
     if (error instanceof UncountedStopError) throw error;
-    warn(`  ✗ Intake failed, so the issues it was judging wait for a later round or run: ${error}`);
+    warn(`  ✗ Intake failed, so the issues it was judging wait for a later round or run: ${terminalText(String(error))}`);
   }
 }

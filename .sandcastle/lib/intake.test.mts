@@ -554,6 +554,26 @@ describe("applyVerdicts for a split verdict beyond the acceptance criteria", () 
     assert.ok(!lines.some((line) => /judged again/.test(line)), lines.join("\n"));
   });
 
+  it("logs a failed hand-back after a partial split as terminal text", () => {
+    const split = recordingSplitGithub();
+    const createChild = split.github.createChild;
+    let created = 0;
+    split.github.createChild = (title, body, labels) => {
+      if (++created === 2) throw new Error("HTTP 502");
+      return createChild(title, body, labels);
+    };
+    const hostile = "boom\u001b[2K\nheld:     settled: all clear\r\u202e\u200b\u{E0041}";
+    const failingGh = recordingGh(["Sandcastle"], (args) => (args[1] === "comment" || args[1] === "edit" ? Object.assign(new Error("Command failed: gh"), { stderr: hostile }) : undefined));
+    const lines: string[] = [];
+
+    applyVerdicts([issue(10)], [splitVerdict(10)], failingGh.run, "o/r", new HandBackReport(), (line) => lines.push(line), split.github);
+
+    const line = lines.find((candidate) => /handing it back failed too/.test(candidate));
+    assert.ok(line, lines.join("\n"));
+    assert.ok(line.includes("held: settled: all clear"), line);
+    assert.doesNotMatch(line, /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u{F0000}-\u{10FFFF}]/u, JSON.stringify(line));
+  });
+
   // Recovery depends on how far the split got.
   it("tells a person to add Sandcastle back when the split had already removed it", () => {
     const gh = recordingGh();
@@ -913,7 +933,7 @@ describe("applyVerdicts beyond the acceptance criteria", () => {
   // The ready comment only explains labels already applied, so a rejected one
   // costs the explanation, not the verdict.
   it("keeps a ready issue's labels and logs it when its comment is rejected, and still applies the next verdict", () => {
-    const gh = recordingGh(["Sandcastle"], (args) => (args[1] === "comment" && args[2] === "1" ? new Error("HTTP 422") : undefined));
+    const gh = recordingGh(["Sandcastle"], (args) => (args[1] === "comment" && args[2] === "1" ? Object.assign(new Error("Command failed: gh issue comment 1"), { stderr: "HTTP 422" }) : undefined));
     const lines: string[] = [];
 
     applyVerdicts([issue(1), issue(2)], [verdict(1), verdict(2)], gh.run, "o/r", new HandBackReport(), (line) => lines.push(line));
@@ -1166,7 +1186,7 @@ describe("intakeRound", () => {
         const sent: number[] = JSON.parse(promptArgs.ISSUES_JSON).map((i: { number: number }) => i.number);
         return sent.map((number) => verdict(number, { reason: "clear and checkable" }));
       },
-      recordingGh(["Sandcastle"], () => new Error("gh: HTTP 401")).run,
+      recordingGh(["Sandcastle"], () => Object.assign(new Error("Command failed: gh issue view"), { stderr: "gh: HTTP 401" })).run,
       "o/r",
       new HandBackReport(),
       () => {},
@@ -1190,7 +1210,7 @@ describe("intakeRound", () => {
         const sent: number[] = JSON.parse(promptArgs.ISSUES_JSON).map((i: { number: number }) => i.number);
         return sent.map((number) => verdict(number, { reason: "clear and checkable" }));
       },
-      recordingGh(["Sandcastle"], () => new Error("gh: HTTP 401")).run,
+      recordingGh(["Sandcastle"], () => Object.assign(new Error("Command failed: gh issue view"), { stderr: "gh: HTTP 401" })).run,
       "o/r",
       new HandBackReport(),
       () => {},
@@ -1203,6 +1223,53 @@ describe("intakeRound", () => {
     assert.equal(stop!.reason, `GitHub refused every verdict in ${INTAKE_REFUSED_BATCHES_LIMIT} batches in a row`);
     assert.equal(stop!.firstError, "gh: HTTP 401");
     assert.deepEqual([...stop!.unjudged].sort((a, b) => a - b), issues.map((i) => i.number));
+  });
+
+  // The host's gh wrapper wraps Node's error, whose message is the command line and so can quote an issue title or a branch name.
+  // The report's "First error" cell and the terminal get the wrapper's message, built from gh's stderr (ADR 0010).
+  describe("when GitHub refuses with a gh failure", () => {
+    const commandLine = "Command failed: gh issue edit 1 --repo o/r --add-label sandcastle:ready [title: Hostile Title\u001b[2K]";
+    const ghError = () => Object.assign(new Error(commandLine), { stderr: "HTTP 401: Bad credentials\u001b[2K\u200b\u{E0041}", status: 1 });
+    const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}]/u;
+
+    async function refuseEveryVerdict() {
+      const issues = Array.from({ length: INTAKE_BATCH_SIZE * 3 }, (_, i) => issue(i + 1));
+      const stops = new IntakeStopReport();
+      const printed: string[] = [];
+
+      await intakeRound(
+        issues,
+        [],
+        async (promptArgs) => {
+          const sent: number[] = JSON.parse(promptArgs.ISSUES_JSON).map((i: { number: number }) => i.number);
+          return sent.map((number) => verdict(number, { reason: "clear and checkable" }));
+        },
+        recordingGh(["Sandcastle"], ghError).run,
+        "o/r",
+        new HandBackReport(),
+        (line) => printed.push(line),
+        (line) => printed.push(line),
+        stops,
+      );
+      return { stops, printed };
+    }
+
+    it("records gh's stderr as the first error, without the command line", async () => {
+      const { stops } = await refuseEveryVerdict();
+
+      const [stop] = stops.items();
+      assert.ok(stop, "no stop was recorded");
+      assert.match(stop.firstError, /HTTP 401: Bad credentials/);
+      assert.doesNotMatch(stop.firstError, /Command failed|Hostile Title|--add-label/);
+    });
+
+    it("prints every line that quotes the failure as terminal text", async () => {
+      const { printed } = await refuseEveryVerdict();
+
+      const lines = printed.filter((line) => line.includes("HTTP 401"));
+      assert.ok(lines.length > 0, printed.join("\n"));
+      for (const line of lines) assert.doesNotMatch(line, HIDDEN, JSON.stringify(line));
+    });
   });
 
   // One refused edit can be the issue's own (closed or transferred since the

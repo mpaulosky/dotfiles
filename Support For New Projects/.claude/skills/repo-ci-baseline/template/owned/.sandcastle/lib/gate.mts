@@ -15,11 +15,12 @@
 // didn't approve, never reaches it.
 // ---------------------------------------------------------------------------
 
+import { execFileSync } from "node:child_process";
 import { isIssueBranch } from "./branches.mts";
 import { BUILDING_LABEL } from "./config.mts";
-import { hasLabel, openPullRequests, repoName, type OpenPullRequest, type SandcastleIssue } from "./github.mts";
+import { ghWithStderr, hasLabel, openPullRequests, repoName, type OpenPullRequest, type SandcastleIssue } from "./github.mts";
 import { loadQueue } from "./queue.mts";
-import { sh } from "./shell.mts";
+import { terminalText } from "./status.mts";
 
 export type Blocker = {
   number: number;
@@ -42,30 +43,49 @@ export type GateGitHub = {
   blocker(number: number): Blocker;
 };
 
+// The gate's GitHub reads, run through `run` (execFileSync by default) against `repo` (this checkout's repository by default). Each
+// goes through ghWithStderr, so gh's stderr reaches the terminal only through the thrown message (ADR 0010).
+export function gateGitHub(run: typeof execFileSync = execFileSync, repo: string = repoName()): GateGitHub {
+  return {
+    sandcastleIssues: () => loadQueue(),
+    openPullRequests: () => openPullRequests(run, repo),
+    nativeBlockers: (issueNumber) =>
+      ghWithStderr(run, [
+        "api", "--paginate", `repos/${repo}/issues/${issueNumber}/dependencies/blocked_by`, "--jq", `.[] | ${blockerFields}`,
+      ])
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Blocker),
+    blocker: (number) => JSON.parse(ghWithStderr(run, ["api", `repos/${repo}/issues/${number}`, "--jq", blockerFields])) as Blocker,
+  };
+}
+
+// The live reads. Each call builds gateGitHub() afresh, so importing the module never shells out to gh for the repository's name.
 export const liveGitHub: GateGitHub = {
-  sandcastleIssues: () => loadQueue(),
-  openPullRequests,
-  nativeBlockers: (issueNumber) =>
-    sh(
-      process.cwd(), "gh", "api", "--paginate", `repos/${repoName()}/issues/${issueNumber}/dependencies/blocked_by`,
-      "--jq", `.[] | ${blockerFields}`,
-    )
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Blocker),
-  blocker: (number) =>
-    JSON.parse(sh(process.cwd(), "gh", "api", `repos/${repoName()}/issues/${number}`, "--jq", blockerFields)) as Blocker,
+  sandcastleIssues: () => gateGitHub().sandcastleIssues(),
+  openPullRequests: () => gateGitHub().openPullRequests(),
+  nativeBlockers: (issueNumber) => gateGitHub().nativeBlockers(issueNumber),
+  blocker: (number) => gateGitHub().blocker(number),
 };
 
 // Undefined when the lookup fails (a mistyped number 404s, the network drops).
 // Callers treat that as still blocking, so one bad reference holds back only
-// its own issue instead of aborting the whole run.
-function fetchBlocker(number: number, cache: Map<number, Blocker>, github: GateGitHub): Blocker | undefined {
+// its own issue instead of aborting the whole run. The failure's reason (gh's
+// stderr, in the thrown message) goes to `warn` as plain terminal text, so a
+// person needn't rerun the command by hand to learn it.
+function fetchBlocker(
+  number: number,
+  cache: Map<number, Blocker>,
+  github: GateGitHub,
+  warn: (line: string) => void,
+): Blocker | undefined {
   let blocker = cache.get(number);
   if (!blocker) {
     try {
       blocker = github.blocker(number);
-    } catch {
+    } catch (error) {
+      warn(terminalText(`  ⚠ Couldn't fetch blocker #${number}: ${String(error)}`));
       return undefined;
     }
     cache.set(number, blocker);
@@ -132,9 +152,12 @@ export type HeldBackIssue = { issue: SandcastleIssue; reasons: string[]; pr?: Op
 // each held-back issue and its open PR, which the critique compares the
 // round's picks with.
 // Blockers are resolved afresh on every call: an issue whose blocker's PR
-// merged during the previous round becomes ready now.
+// merged during the previous round becomes ready now. A GitHub read that fails
+// is reported to `warn` through terminalText, since the hold-back reason alone
+// doesn't say why gh failed.
 export function gateIssues(
   github: GateGitHub = liveGitHub,
+  warn: (line: string) => void = console.error,
 ): { ready: SandcastleIssue[]; blocked: HeldBackIssue[] } {
   const issues = github.sandcastleIssues();
   const openPrs = github.openPullRequests();
@@ -170,7 +193,8 @@ export function gateIssues(
     let native: Blocker[];
     try {
       native = github.nativeBlockers(issue.number);
-    } catch {
+    } catch (error) {
+      warn(terminalText(`  ⚠ Couldn't read issue #${issue.number}'s "blocked by" links: ${String(error)}`));
       // Without its native links the issue's blockers are unknown, so hold it back.
       blocked.push({ issue, reasons: ["its GitHub \"blocked by\" links couldn't be read"] });
       continue;
@@ -182,7 +206,7 @@ export function gateIssues(
 
     const reasons = [...numbers]
       .map((number) => {
-        const blocker = fetchBlocker(number, cache, github);
+        const blocker = fetchBlocker(number, cache, github, warn);
         return blocker ? unfinishedReason(blocker) : `#${number} couldn't be fetched`;
       })
       .filter((reason): reason is string => reason !== undefined);

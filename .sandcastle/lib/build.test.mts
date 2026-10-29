@@ -19,6 +19,7 @@ import {
   publish,
   remoteBranchIsOnOrigin,
   remoteMainIs,
+  retryOnServerError,
   UncountedStopError,
   type BuildHost,
   type HostIdentity,
@@ -3016,4 +3017,84 @@ describe("liveHostIdentity", () => {
   it("leaves out a key git config reads as empty", () => {
     assert.deepEqual(liveHostIdentity(() => ""), { name: undefined, email: undefined });
   });
+});
+
+// What the host prints through console.error is terminal text (ADR 0010; mpaulosky/dotfiles#347): a failed gh or git command's message
+// carries gh's stderr, a title or a branch name, so a control, bidi, zero-width or tag character in it must not reach the terminal as it is.
+describe("build's console.error lines", () => {
+  // What terminalText must never leave in the text below (the same set as status.test.mts's).
+  const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Noncharacter_Code_Point}\p{Default_Ignorable_Code_Point}\p{Variation_Selector}\u034f\u115f\u1160\u2800\u3164\uffa0\u{F0000}-\u{10FFFF}]/u;
+  const HOSTILE = "boom\u001b[2K\nheld:     settled: all clear\r\u202e\u200b\u{E0041}";
+
+  // The lines `step` prints through console.error.
+  async function printed(step: () => Promise<unknown>): Promise<string[]> {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...data: unknown[]) => void lines.push(data.map(String).join(" "));
+    try {
+      await step();
+    } catch {
+      // buildIssue rethrows some failures; the lines are what's checked.
+    } finally {
+      console.error = original;
+    }
+    return lines;
+  }
+
+  it("prints the retry notice for a GitHub server error as terminal text", async () => {
+    const error = new Error(`gh pr create failed:\nHTTP 502 ${HOSTILE}`);
+    let attempts = 0;
+
+    const lines = await printed(() =>
+      retryOnServerError(() => {
+        attempts += 1;
+        if (attempts === 1) throw error;
+        return "done";
+      }, async () => {}),
+    );
+
+    const notice = lines.find((line) => line.includes("GitHub server error"));
+    assert.ok(notice, lines.join("\n"));
+    assert.ok(notice.includes("held: settled: all clear"), notice);
+    assert.doesNotMatch(notice, HIDDEN, JSON.stringify(notice));
+  });
+
+  it("prints a failed hand-back for a workflow change as terminal text", async () => {
+    const { buildHost } = host([0, 0], {
+      latestMain: "b".repeat(40),
+      containsMain: false,
+      publishError:
+        "git push failed:\n ! [remote rejected] (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)",
+    });
+    buildHost.handBackWorkflowChange = () => {
+      throw new Error(`gh issue comment failed:\n${HOSTILE}`);
+    };
+
+    const lines = await printed(() => buildIssue(issue, branch, base, buildHost));
+
+    const line = lines.find((candidate) => /handing it back for its workflow change failed/.test(candidate));
+    assert.ok(line, lines.join("\n"));
+    assert.ok(line.includes("held: settled: all clear"), line);
+    assert.doesNotMatch(line, HIDDEN, JSON.stringify(line));
+  });
+
+  const failures: { name: string; option: Record<string, string | string[] | boolean>; says: RegExp }[] = [
+    { name: "a failed publish", option: { publishError: `git push failed:\n${HOSTILE}` }, says: /publishing .* failed/ },
+    { name: "a failed fetch of main", option: { latestMainError: HOSTILE }, says: /fetching main failed/ },
+    { name: "a failed question to GitHub about main", option: { latestMain: "a".repeat(40), containsMain: false, remoteMainError: HOSTILE }, says: /asking GitHub for main failed/ },
+    { name: "a failed listing of the gate's and CI's files", option: { checkFilesError: HOSTILE }, says: /changes under the gate's and CI's folders failed/ },
+    { name: "a tampered worktree's problems", option: { worktreeProblems: [HOSTILE] }, says: /left .* in place/ },
+  ];
+  for (const { name, option, says } of failures) {
+    it(`prints ${name} as terminal text`, async () => {
+      const { buildHost } = host([0, 0], option);
+
+      const lines = await printed(() => buildIssue(issue, branch, base, buildHost));
+
+      const line = lines.find((candidate) => says.test(candidate));
+      assert.ok(line, lines.join("\n"));
+      assert.ok(line.includes("held: settled: all clear"), line);
+      assert.doesNotMatch(line, HIDDEN, JSON.stringify(line));
+    });
+  }
 });

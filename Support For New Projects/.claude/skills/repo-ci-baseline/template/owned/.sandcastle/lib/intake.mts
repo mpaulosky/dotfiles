@@ -701,6 +701,9 @@ export async function intakeRound(
   }
 }
 
+// A message ghWithStderr built: "gh <command> failed:", a line break, and why gh stopped.
+const GH_FAILURE = /^gh [^\n]* failed:\n([\s\S]*)$/;
+
 // The text that says why a step stopped. The host's gh wrapper (lib/github.mts#ghWithStderr) wraps Node's error, whose message is the
 // command line (it can quote a title or a branch name), so the walk down the cause chain stops at the wrapper's own message, built from
 // gh's stderr (ADR 0010), and the result is what follows its "failed:"; any other error ends at the innermost cause's message.
@@ -710,9 +713,6 @@ function rootMessage(error: unknown): string {
   if (!(root instanceof Error)) return String(root);
   return GH_FAILURE.exec(root.message)?.[1] ?? root.message;
 }
-
-// A message ghWithStderr built: "gh <command> failed:", a line break, and why gh stopped.
-const GH_FAILURE = /^gh [^\n]* failed:\n([\s\S]*)$/;
 
 // Phase 0a as main.mts runs it: load the queue and the open PRs, then run
 // intake over them. Intake runs before the gate, over blocked issues too, so a

@@ -7,9 +7,9 @@ name: PR Auto-Merge
 # Review (claude-review.yml) posts a review under github-actions[bot] whose
 # body starts with CLAUDE_MARKER, and counts only where Copilot can't review:
 # on a commit carrying its quota note below, or on the head when Copilot has
-# no review of it, no request pending, its checks finished and the PR last became
-# reviewable (marked ready, or reopened) COPILOT_GRACE_MS ago (a dropped
-# request, mpaulosky/dotfiles#318). The main ruleset asks Copilot to review
+# no review of it and no request pending, after this run asked for its review
+# of the PR (once, see below) or a record of that ask is COPILOT_ASK_SETTLE_MS
+# old: its request didn't register (mpaulosky/dotfiles#360). The main ruleset asks Copilot to review
 # each push but doesn't require its review, so merging on green alone would
 # usually land a PR before that review arrives. Each trigger below is a
 # moment one of those conditions can become true; the job re-checks all of
@@ -32,11 +32,17 @@ name: PR Auto-Merge
 # (ADR 0002).
 # When Copilot's quota is used up it answers a head with a note instead of a
 # review, and no review of that head is coming. Often it answers nothing: GitHub
-# drops the request, so the head has neither a review nor a pending request,
-# and COPILOT_GRACE_MS after its checks finished (and the PR last became
-# reviewable, marked ready or reopened) the run treats it the same
-# way (mpaulosky/dotfiles#318; a sweep notices it, so allow up to an hour more).
-# The run then calls in Claude
+# drops the request, and a dropped request brings no event. So the run asks for
+# Copilot's review of a PR's first reviewable head itself, once: it posts a
+# comment holding COPILOT_ASKED_MARKER (the record of the ask), requests the
+# review with the PAT, and reads the request back for up to COPILOT_ASK_WAIT_MS.
+# A request that fails or doesn't register counts as dropped at once, and a
+# record COPILOT_ASK_SETTLE_MS old with no review of the head and no request
+# pending counts the same way, whoever wrote it (land.sh writes the same
+# record). Copilot is never asked again for the PR: a later head goes straight
+# to Claude, and the main ruleset's own request per push, which this run doesn't
+# make, is waited for while it shows (mpaulosky/dotfiles#360, which replaces the
+# grace of mpaulosky/dotfiles#318). The run then calls in Claude
 # Review by adding review:claude (mpaulosky/dotfiles#190), on the terms land.sh uses
 # (github/landing.py): every other check on the head passed, Claude has
 # reviewed fewer than MAX_CLAUDE_ROUNDS of the PR's commits, the PR is below
@@ -53,7 +59,7 @@ name: PR Auto-Merge
 # The run takes review:claude off a PR once Copilot has really reviewed its head
 # (mpaulosky/dotfiles#270): Copilot has budget, and Claude's review would cover
 # nothing (a Claude review counts for a commit with Copilot's quota note, and for
-# the head while Copilot has no request pending and the grace is over; a request
+# the head once the ask has settled and Copilot has no request pending; a request
 # it can't read counts as pending). At the cap it takes it off too
 # (mpaulosky/dotfiles#170), once Claude has reviewed it since the label was
 # last added: Claude Review reviews every push while it's on, and each review
@@ -183,8 +189,10 @@ jobs:
             // must start CI; review:claude, which callInClaude adds and
             // Claude Review must see, so the PAT needs Pull requests (or
             // Issues) write (without it Claude is never called in, and each
-            // run only warns); and `@dependabot rebase`, which Dependabot
-            // takes only from a person. repo-ci-baseline's
+            // run only warns); `@dependabot rebase`, which Dependabot
+            // takes only from a person; and the one request for Copilot's
+            // review of a PR (askCopilotOnce), which GitHub should treat as
+            // a person's. The record comment of that ask is github's. repo-ci-baseline's
             // references/tokens.md lists every call and why.
             const patClient = getOctokit(process.env.PAT_TOKEN);
 
@@ -249,12 +257,22 @@ jobs:
             // test_copilot_no_review.py holds the three together). Copilot's
             // "wasn't able to review any files" (every file excluded) still counts.
             const COPILOT_NO_REVIEW = /^[ \t\r\n]*Copilot was unable to review/;
-            // A head Copilot has not reviewed and has no pending request for
-            // (GitHub drops the request once the Copilot code review budget is
-            // used up, with no note) is given this long after its checks finish
-            // and the PR last became reviewable (marked ready, or reopened)
-            // before Claude is called in (mpaulosky/dotfiles#318).
-            const COPILOT_GRACE_MS = 5 * 60 * 1000;
+            // The record that Copilot was asked to review the PR: a comment
+            // holding this marker, posted before the request so that a crash
+            // can't make a second ask (mpaulosky/dotfiles#360). github/landing.py
+            // has the same marker (a test holds them equal), and land.sh writes it too.
+            const COPILOT_ASKED_MARKER = "<!-- pr-automerge:copilot-asked -->";
+            // A PR whose record is this old, and whose head has no Copilot
+            // review and no pending Copilot request, had its request dropped
+            // (GitHub drops it once the Copilot code review budget is used up,
+            // with no note), so Claude is called in. github/landing.py's
+            // COPILOT_ASK_SETTLE_SECONDS must match.
+            const COPILOT_ASK_SETTLE_MS = 30 * 1000;
+            // How long this run reads its own request back, for it to show as
+            // pending (GitHub registers a request within seconds), and the pause
+            // between reads. Tests set both to 0.
+            const COPILOT_ASK_WAIT_MS = Number(process.env.COPILOT_ASK_WAIT_MS ?? COPILOT_ASK_SETTLE_MS);
+            const COPILOT_ASK_POLL_MS = Number(process.env.COPILOT_ASK_POLL_MS || 5000);
             // How many merges from main in a row a reviewed commit can sit
             // under and still count as reviewed: each one costs a few API
             // calls, and a PR that chased main further gets a fresh review.
@@ -300,6 +318,7 @@ jobs:
                  ) {
                    repository(owner: $owner, name: $repo) {
                      pullRequest(number: $number) {
+                       id
                        state
                        isDraft
                        isCrossRepository
@@ -345,18 +364,18 @@ jobs:
                            }
                          }
                        }
-                       # When the PR last became reviewable: GitHub requests Copilot's
-                       # review then, not when the checks finished, so the grace
-                       # starts at the later of the two (mpaulosky/dotfiles#318).
-                       reviewableEvents: timelineItems(last: 5, itemTypes: [READY_FOR_REVIEW_EVENT, REOPENED_EVENT]) {
+                       # The PR's last 100 comments, for the record that Copilot was
+                       # asked (mpaulosky/dotfiles#360): its author, body and time.
+                       comments(last: 100) {
+                         totalCount
                          nodes {
-                           __typename
-                           ... on ReadyForReviewEvent { createdAt }
-                           ... on ReopenedEvent { createdAt }
+                           author { login }
+                           body
+                           createdAt
                          }
                        }
                        # Copilot's pending request: with none and no review of the
-                       # head, GitHub dropped it (mpaulosky/dotfiles#318).
+                       # head, once the ask has settled, GitHub dropped it.
                        reviewRequests(first: 20) {
                          totalCount
                          nodes {
@@ -991,15 +1010,12 @@ jobs:
               const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
               // Claude is Copilot's backup only: its review of a commit
               // qualifies when Copilot's quota note is on that same commit, or
-              // when it is the head, Copilot has no request pending for it and
-              // the grace since the head's checks finished and the PR last became
-              // reviewable is over (a dropped
-              // request, mpaulosky/dotfiles#318; land.py, which saw the drop
-              // itself, waits for no grace). A request list that can't be read, or a
-              // request with no reviewer, counts as pending. A head with no check
-              // besides Claude's and this job's own, or whose checks can't be
-              // read, has no grace to count: it goes to callInClaude's notice.
-              const copilotAbsentOnHead = !copilotPending(pr) && graceState(pr) === "elapsed";
+              // when it is the head and Copilot is gone from it (copilotGone:
+              // asked, the ask settled and no request pending, so the request
+              // didn't register, mpaulosky/dotfiles#360). A request list that
+              // can't be read, or a request with no reviewer, counts as pending,
+              // and a record that can't be read as not settled.
+              const copilotGoneOnHead = copilotGone(pr);
               const declinedCommits = new Set(
                 pr.copilotReviews.nodes
                   .filter((review) => COPILOT_NO_REVIEW.test(review.body ?? ""))
@@ -1008,7 +1024,7 @@ jobs:
               );
               const backupReviews = claudeReviews.filter((review) => {
                 const oid = review.commit?.oid;
-                return declinedCommits.has(oid) || (oid === pr.headRefOid && copilotAbsentOnHead);
+                return declinedCommits.has(oid) || (oid === pr.headRefOid && copilotGoneOnHead);
               });
               const reviewed = [...copilotReviews, ...backupReviews]
                 .map((review) => review.commit)
@@ -1201,62 +1217,127 @@ jobs:
               });
             }
 
-            // How far the head is from the grace period over: "elapsed" when
-            // its checks all finished, and the PR last became reviewable (marked
-            // ready, or reopened), at least COPILOT_GRACE_MS ago (the newest of
-            // those times counts, since GitHub requests Copilot's review when
-            // the PR becomes reviewable), "waiting" when a check is still
-            // running, has no finish time or isn't all read, or those events
-            // can't be read, and "none" when the head has
-            // no check but Claude Review's and this job's own, which
-            // checksBeforeClaude then reports to the owner.
-            function graceState(pr) {
-              const contexts = headCommit(pr)?.statusCheckRollup?.contexts;
-              if (!contexts) {
-                return "none";
+            // The record that Copilot was asked to review this PR, read from
+            // the PR's last 100 comments: { state, at } where state is "none"
+            // (no record), "asked" (the first record counts, at its time in
+            // ms; or this very run asked) or "unread" (the comments weren't
+            // read, or more than a page exist and the record isn't among the
+            // ones read). Only github-actions (this workflow) and the
+            // repository owner (land.sh) can write it: anyone can comment the
+            // marker, which would switch Claude on for a head Copilot may
+            // still review. An unread record counts as asked but never as
+            // settled, so nothing asks twice and no drop is inferred from it.
+            function copilotAsk(pr) {
+              if (pr.copilotAskedHere) {
+                return { state: "asked", at: Date.now() };
               }
-              if (contexts.totalCount > contexts.nodes.length) {
-                return "waiting";
+              const comments = pr.comments;
+              if (!comments || !Array.isArray(comments.nodes)) {
+                return { state: "unread" };
               }
-              let newest = -Infinity;
-              let counted = 0;
-              for (const [name, check] of newestChecks(contexts)) {
-                if (name === SELF_CHECK || CLAUDE_CHECKS.includes(name)) {
-                  continue;
+              const record = comments.nodes.find((comment) => {
+                const login = comment?.author?.login?.replace(/\[bot\]$/, "");
+                return (login === "github-actions" || login === owner) && (comment.body ?? "").includes(COPILOT_ASKED_MARKER);
+              });
+              if (record) {
+                return { state: "asked", at: Date.parse(record.createdAt) };
+              }
+              return comments.totalCount > comments.nodes.length ? { state: "unread" } : { state: "none" };
+            }
+
+            // Whether the record is old enough for GitHub to have registered
+            // the request: COPILOT_ASK_SETTLE_MS since it was written, or
+            // written by this run (its own read-back is the evidence, which
+            // also spares comparing GitHub's clock with the runner's).
+            function copilotAskSettled(pr) {
+              const ask = copilotAsk(pr);
+              if (ask.state !== "asked") {
+                return false;
+              }
+              return pr.copilotAskedHere || Date.now() - ask.at >= COPILOT_ASK_SETTLE_MS;
+            }
+
+            // Copilot's request for the head didn't register: it was asked,
+            // the ask settled and no request is pending. A pending request is
+            // waited for, as is one that can't be read.
+            function copilotGone(pr) {
+              return copilotAskSettled(pr) && !copilotPending(pr);
+            }
+
+            // Whether Copilot has reviewed the head, or posted its quota note on it.
+            function copilotAnsweredHead(pr) {
+              return pr.copilotReviews.nodes.some((review) => review.commit?.oid === pr.headRefOid);
+            }
+
+            // Asks for Copilot's review of the PR, once: a PR with no record
+            // of an ask, whose head has no Copilot review or note and no
+            // request pending. Posts the record (GITHUB_TOKEN) before the
+            // request (the PAT) and reads the request back, so the caller can
+            // act on the outcome at once instead of waiting for an event: a
+            // dropped request brings none. Returns whether it asked, in which
+            // case the caller reads the PR again. Never asked again for a later
+            // head: the record stays on the PR (mpaulosky/dotfiles#360).
+            async function askCopilotOnce(pullNumber, pr) {
+              if (copilotAsk(pr).state !== "none" || copilotAnsweredHead(pr) || copilotPending(pr) || !pr.id) {
+                return false;
+              }
+              try {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  body: "PR Auto-Merge asked Copilot to review this PR. It asks once per PR; if GitHub drops the " +
+                    "request, `review:claude` calls in Claude instead. mpaulosky/dotfiles#360\n\n" + COPILOT_ASKED_MARKER
+                });
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
                 }
-                counted++;
-                const status = check.__typename === "StatusContext";
-                const finished = status ? check.createdAt : check.completedAt;
-                const running = status ? ["PENDING", "EXPECTED"].includes(check.state) : check.status !== "COMPLETED";
-                if (running || !finished) {
-                  return "waiting";
+                // No record, no request: a request without one could be made twice.
+                core.warning(`Couldn't record the ask for Copilot's review of PR #${pullNumber}, so it wasn't made: ${error.message}`);
+                return false;
+              }
+              try {
+                await patClient.graphql(
+                  `mutation($pullRequestId: ID!) {
+                     requestReviewsByLogin(input: { pullRequestId: $pullRequestId, botLogins: ["copilot-pull-request-reviewer[bot]"], union: true }) {
+                       clientMutationId
+                     }
+                   }`,
+                  { pullRequestId: pr.id }
+                );
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
                 }
-                newest = Math.max(newest, Date.parse(finished));
+                core.warning(`Couldn't request Copilot's review of PR #${pullNumber}: ${error.message}`);
+                core.info(`Copilot's review of PR #${pullNumber} wasn't requested, so Claude is called in.`);
+                return true;
               }
-              if (counted === 0) {
-                return "none";
-              }
-              const events = pr.reviewableEvents?.nodes;
-              if (!events) {
-                return "waiting";
-              }
-              for (const event of events) {
-                const reviewableAt = Date.parse(event?.createdAt);
-                if (Number.isNaN(reviewableAt)) {
-                  return "waiting";
+              // Read the request back: GitHub accepts the call and registers
+              // nothing once the Copilot code review budget is used up.
+              const deadline = Date.now() + COPILOT_ASK_WAIT_MS;
+              let registered = false;
+              do {
+                await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(COPILOT_ASK_POLL_MS, deadline - Date.now()))));
+                const seen = await getPullRequestStatus(pullNumber);
+                if (!seen || seen.headRefOid !== pr.headRefOid) {
+                  break;
                 }
-                newest = Math.max(newest, reviewableAt);
-              }
-              return Date.now() - newest >= COPILOT_GRACE_MS ? "elapsed" : "waiting";
+                registered = copilotPending(seen) || copilotAnsweredHead(seen);
+              } while (!registered && Date.now() < deadline);
+              core.info(registered
+                ? `Copilot's review request for PR #${pullNumber} registered.`
+                : `Copilot's review request for PR #${pullNumber} didn't register (GitHub drops it once the Copilot code review budget is used up).`);
+              return true;
             }
 
             // Copilot can't review the head, so no review of it is coming:
-            // its quota note is on the head, or it has no review of the head
-            // and no pending request and the grace period since the checks
-            // finished and the PR last became reviewable is over (a dropped
-            // request, mpaulosky/dotfiles#318). Add review:claude,
-            // on land.sh's terms (see the header). Called only for a head no
-            // review covers, below the cap.
+            // its quota note is on the head, or it was asked, the ask settled
+            // and it has no review of the head and no pending request (a
+            // request that didn't register, mpaulosky/dotfiles#360). Add
+            // review:claude, on land.sh's terms (see the header). Called only
+            // for a head no review covers, below the cap.
             // Never throws on a PR event, where a failure would be a failed
             // check on the PR; a sweep stops on an error that holds for the
             // whole run, as an update does.
@@ -1271,11 +1352,19 @@ jobs:
                 if (copilotReviewed || copilotPending(pr)) {
                   return;
                 }
-                if (graceState(pr) === "waiting") {
+                if (!copilotAskSettled(pr)) {
+                  let why = `it was asked less than ${COPILOT_ASK_SETTLE_MS / 1000} seconds ago.`;
+                  switch (copilotAsk(pr).state) {
+                    case "none":
+                      why = "it has not been asked yet.";
+                      break;
+                    case "unread":
+                      why = "the record of whether it was asked could not be read.";
+                      break;
+                  }
                   core.info(
                     `Not calling in Claude for PR #${pullNumber} yet: Copilot has not reviewed ${pr.headRefOid} and has no ` +
-                    `request pending, but the ${COPILOT_GRACE_MS / 60000}-minute grace since its checks finished and the PR last became ` +
-                    `reviewable has not passed (or those times could not be read).`
+                    `request pending, but ${why}`
                   );
                   return;
                 }
@@ -1291,21 +1380,6 @@ jobs:
                 return;
               }
               if (pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
-                // Claude has reviewed this head and its review still doesn't
-                // count: with no CI check on the head there is no grace to
-                // count it by, so the owner is told (mpaulosky/dotfiles#331).
-                // Before Claude's review, nothing is said: it is coming, and
-                // Claude Review's workflow_run re-evaluates the PR after it.
-                if (claudeReviews.some((review) => review.commit?.oid === pr.headRefOid)) {
-                  const { waiting, noCiCheck } = await checksBeforeClaude(pullNumber, pr);
-                  if (noCiCheck) {
-                    core.notice(
-                      `PR #${pullNumber}: Claude reviewed ${pr.headRefOid}, but ${waiting}, so its review doesn't count and Claude isn't called in again; ` +
-                      "review and merge it by hand."
-                    );
-                    return;
-                  }
-                }
                 // The label is on, so Claude Review runs on each push, but not
                 // on every push: a notice when no review of this head is
                 // coming (mpaulosky/dotfiles#209).
@@ -1355,7 +1429,7 @@ jobs:
               }
               if (process.env.HAS_RELEASE_PR_PAT !== "true") {
                 core.notice(
-                  `PR #${pullNumber}: Copilot couldn't review ${head} (a quota note, or no review and no request pending). RELEASE_PR_PAT is not ` +
+                  `PR #${pullNumber}: Copilot couldn't review ${head} (a quota note, or a request that didn't register). RELEASE_PR_PAT is not ` +
                   `set, and a label added with GITHUB_TOKEN starts no workflow, so add ${CLAUDE_LABEL} by hand.`
                 );
                 return;
@@ -1384,7 +1458,7 @@ jobs:
                   return;
                 }
                 await patClient.rest.issues.addLabels({ owner, repo, issue_number: pullNumber, labels: [CLAUDE_LABEL] });
-                core.info(`Copilot couldn't review ${head} (a quota note, or no review and no request pending): added ${CLAUDE_LABEL} to PR #${pullNumber}, so Claude Review reviews it.`);
+                core.info(`Copilot couldn't review ${head} (a quota note, or a request that didn't register): added ${CLAUDE_LABEL} to PR #${pullNumber}, so Claude Review reviews it.`);
                 if (noneRequired) {
                   // A notice, as the rulesets may be missing a required check.
                   // Only now: it says Claude was called in (mpaulosky/dotfiles#233).
@@ -1402,8 +1476,15 @@ jobs:
               }
             }
 
-            async function mergeIfReady(pullNumber) {
-              let pr = await getPullRequestStatus(pullNumber);
+            // askedCopilot: this call follows the run's own ask for Copilot's
+            // review (askCopilotOnce), so every snapshot it takes trusts that
+            // record without waiting out COPILOT_ASK_SETTLE_MS.
+            async function mergeIfReady(pullNumber, { askedCopilot = false } = {}) {
+              const snapshot = async () => {
+                const status = await getPullRequestStatus(pullNumber);
+                return status && askedCopilot ? { ...status, copilotAskedHere: true } : status;
+              };
+              let pr = await snapshot();
               // Before any check that can end this run: a draft, a handed-back
               // PR or a red one is still reviewed on every push while the
               // label is on.
@@ -1432,10 +1513,10 @@ jobs:
               // check below reads this snapshot, so anything that changed
               // meanwhile (a new label or thread, a new head, a failing
               // check) counts, and the merge is pinned to its head.
-              pr = await getPullRequestStatus(pullNumber);
+              pr = await snapshot();
               for (let attempt = 0; pr?.mergeStateStatus === "UNKNOWN" && attempt < MERGE_STATE_RETRIES; attempt++) {
                 await new Promise((resolve) => setTimeout(resolve, MERGE_STATE_RETRY_MS));
-                pr = await getPullRequestStatus(pullNumber);
+                pr = await snapshot();
               }
               if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
                 return;
@@ -1474,6 +1555,11 @@ jobs:
                   return;
                 }
                 if (!reviewedHead && !capReached) {
+                  // Ask Copilot for its review of the PR, once, and judge the
+                  // head again on what came of it (mpaulosky/dotfiles#360).
+                  if (!askedCopilot && (await askCopilotOnce(pullNumber, pr))) {
+                    return mergeIfReady(pullNumber, { askedCopilot: true });
+                  }
                   await callInClaude(pullNumber, pr, claudeReviews);
                   core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);
                   return;

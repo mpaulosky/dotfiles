@@ -9,6 +9,7 @@ import { test } from "node:test";
 const WORKFLOW = new URL("../../workflows/pr-automerge.yml", import.meta.url);
 const OWNER = "octo";
 const HEAD = "abc123";
+const PR_NODE_ID = "PR_kwDOdemo7";
 const NEEDS_HUMAN = "sandcastle:needs-human";
 
 // Returns the body of the `script: |` block scalar with its indentation removed.
@@ -33,10 +34,11 @@ const run = new AsyncFunction("github", "context", "core", "getOctokit", inlineS
 
 // A same-repo PR into main that is ready to merge unless a test changes it.
 // Claude's reviews count as backup for Copilot's quota note on the same
-// commit (or, for the head, where Copilot has no review and no request
-// pending, mpaulosky/dotfiles#318), so each Claude review given here comes with
-// that note, unless { quotaNotes: false } says Copilot never posted one, or
-// the test's own copilotReviews already hold the notes it wants.
+// commit (or, for the head, where Copilot can't review it: PR Auto-Merge asked
+// once, and the request didn't register, mpaulosky/dotfiles#360), so each
+// Claude review given here comes with that note, unless { quotaNotes: false }
+// says Copilot never posted one, or the test's own copilotReviews already
+// hold the notes it wants.
 function readyPr({ quotaNotes = true, ...overrides } = {}) {
   if (quotaNotes && overrides.claudeReviews) {
     const reviewed = overrides.copilotReviews?.nodes ?? [{ commit: { oid: HEAD } }];
@@ -50,6 +52,7 @@ function readyPr({ quotaNotes = true, ...overrides } = {}) {
     isDraft: false,
     isCrossRepository: false,
     baseRefName: "main",
+    id: PR_NODE_ID,
     headRefOid: HEAD,
     mergeable: "MERGEABLE",
     mergeStateStatus: "CLEAN",
@@ -58,7 +61,7 @@ function readyPr({ quotaNotes = true, ...overrides } = {}) {
     headRef: checksOn(HEAD, requiredCheck("Build Solution")),
     copilotReviews: { nodes: [{ commit: { oid: HEAD } }] },
     reviewRequests: { totalCount: 0, nodes: [] },
-    reviewableEvents: { nodes: [] },
+    comments: { totalCount: 0, nodes: [] },
     claudeReviews: { nodes: [] },
     reviewThreads: { totalCount: 0, nodes: [] },
     labels: { totalCount: 0, nodes: [] },
@@ -257,7 +260,21 @@ async function evaluate(pr, events = [], options = {}) {
     // Error in place of a snapshot is thrown by that read.
     byNumber = {},
     // PR numbers whose read throws.
-    readErrors = []
+    readErrors = [],
+    // What happens to PR Auto-Merge's one Copilot request (mpaulosky/dotfiles#360):
+    // "drops" (GitHub accepts the call and registers nothing, as it does
+    // without Copilot code review budget), "registers" (Copilot shows as
+    // requested on every later read), "quota-note" (Copilot answers with its
+    // quota note on the head) or an Error the PAT's call throws.
+    copilotRequest = "drops",
+    // With "registers": the request only shows from this many reads after it.
+    registersAfterReads = 0,
+    // An error thrown by the comment that records the ask.
+    askCommentError,
+    // The read-back window and its poll interval, in ms (the workflow's
+    // COPILOT_ASK_WAIT_MS and COPILOT_ASK_POLL_MS).
+    askWaitMs = 0,
+    askPollMs = 0
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -297,6 +314,34 @@ async function evaluate(pr, events = [], options = {}) {
   const pullRequests = Array.isArray(pr) ? [...pr] : [pr];
   const reads = {};
   const eventSets = Array.isArray(events[0]) ? [...events] : [events];
+  // The Copilot ask (mpaulosky/dotfiles#360): the record comments GITHUB_TOKEN
+  // posted, the PAT's review requests, and every ask-related step in order.
+  const asked = [];
+  const requests = [];
+  const order = [];
+  let readsSinceRequest = 0;
+  let requested = false;
+  // What a read shows once this run has acted: its own record comment, and
+  // Copilot's request if it registered.
+  const withRunsOwnWrites = (snapshot) => {
+    if (!snapshot || typeof snapshot !== "object" || snapshot instanceof Error) {
+      return snapshot;
+    }
+    let shown = snapshot;
+    if (asked.length > 0 && snapshot.comments) {
+      const nodes = [...snapshot.comments.nodes, ...asked.map((comment) => ({ author: { login: ACTIONS }, body: comment.body, createdAt: new Date().toISOString() }))];
+      shown = { ...shown, comments: { totalCount: snapshot.comments.totalCount + asked.length, nodes } };
+    }
+    if (requested && copilotRequest === "registers" && readsSinceRequest > registersAfterReads) {
+      const present = shown.reviewRequests ?? { totalCount: 0, nodes: [] };
+      shown = { ...shown, reviewRequests: { totalCount: present.totalCount + 1, nodes: [...present.nodes, ...COPILOT_PENDING.nodes] } };
+    }
+    if (requested && copilotRequest === "quota-note" && readsSinceRequest > registersAfterReads) {
+      const note = { body: COPILOT_QUOTA_NOTE, commit: { oid: shown.headRefOid, parents: { totalCount: 1 } } };
+      shown = { ...shown, copilotReviews: { nodes: [...shown.copilotReviews.nodes, note] } };
+    }
+    return shown;
+  };
   const rest = {
     pulls: {
       merge: refusedByToken("pulls.merge"),
@@ -315,7 +360,14 @@ async function evaluate(pr, events = [], options = {}) {
       listComments: viaToken("issues.listComments", async () => {
         throw new Error("issues.listComments is only called through paginate");
       }),
-      createComment: refusedByToken("issues.createComment"),
+      // GITHUB_TOKEN: the record that Copilot was asked.
+      createComment: viaToken("issues.createComment", async (params) => {
+        order.push("record");
+        if (askCommentError) {
+          throw askCommentError;
+        }
+        asked.push(params);
+      }),
       // GITHUB_TOKEN: a removal that starts no workflow is what's wanted.
       removeLabel: viaToken("issues.removeLabel", async (params) => {
         removedLabels.push(params);
@@ -380,6 +432,10 @@ async function evaluate(pr, events = [], options = {}) {
     graphql: async (query, variables = {}) => {
       clientCall("token", "graphql");
       queries.push(query);
+      if (requested) {
+        readsSinceRequest++;
+        order.push("read-back");
+      }
       const number = variables.number;
       if (readErrors.includes(number)) {
         graphqlRequests++;
@@ -393,9 +449,9 @@ async function evaluate(pr, events = [], options = {}) {
         if (snapshot instanceof Error) {
           throw snapshot;
         }
-        return { repository: { pullRequest: snapshot } };
+        return { repository: { pullRequest: withRunsOwnWrites(snapshot) } };
       }
-      return { repository: { pullRequest: pullRequests[Math.min(graphqlRequests++, pullRequests.length - 1)] } };
+      return { repository: { pullRequest: withRunsOwnWrites(pullRequests[Math.min(graphqlRequests++, pullRequests.length - 1)]) } };
     },
     paginate: async (method, params) => {
       clientCall("token", methodNames.get(method) ?? "unknown paginate method");
@@ -484,6 +540,17 @@ async function evaluate(pr, events = [], options = {}) {
     };
   };
   const patClient = patOnly("patClient", {
+    // The one Copilot review request (mpaulosky/dotfiles#360): GitHub treats a
+    // request from a person's token differently from an Actions token's.
+    graphql: viaPat("graphql", async (query, variables) => {
+      order.push("request");
+      requests.push({ query, variables });
+      requested = true;
+      if (copilotRequest instanceof Error) {
+        throw copilotRequest;
+      }
+      return { requestReviewsByLogin: { clientMutationId: null } };
+    }),
     rest: patOnly("patClient.rest", {
       pulls: patOnly("patClient.rest.pulls", {
         merge: viaPat("pulls.merge", async (params) => {
@@ -532,6 +599,8 @@ async function evaluate(pr, events = [], options = {}) {
   process.env.HAS_RELEASE_PR_PAT = pat ? "true" : "false";
   process.env.PAT_TOKEN = PAT_TOKEN;
   process.env.MERGE_STATE_RETRY_MS = "0";
+  process.env.COPILOT_ASK_WAIT_MS = String(askWaitMs);
+  process.env.COPILOT_ASK_POLL_MS = String(askPollMs);
   try {
     await run(github, context, core, getOctokit);
   } catch (error) {
@@ -541,7 +610,7 @@ async function evaluate(pr, events = [], options = {}) {
   }
   return {
     merges, updates, posted, logs, eventRequests, queries, patTokens, calls, graphqlRequests, rulesRequests, removedLabels,
-    addedLabels, listRequests, runRequests, headRunRequests
+    addedLabels, listRequests, runRequests, headRunRequests, asked, requests, order
   };
 }
 
@@ -1107,9 +1176,9 @@ test("doesn't call in Claude for a head with a merge conflict, as landing.decide
   }
 });
 
-test("doesn't call in Claude when Copilot just hasn't reviewed the head, or its note is of an older commit", async () => {
+test("doesn't call in Claude while Copilot's request for the head is pending, whatever it reviewed or noted before", async () => {
   for (const copilotReviews of [copilotReviewsOf("one"), copilotReviewsOf({ oid: "one", note: true })]) {
-    const { addedLabels } = await evaluate(readyPr({ copilotReviews }));
+    const { addedLabels } = await evaluate(readyPr({ copilotReviews, reviewRequests: COPILOT_PENDING }));
     assert.deepEqual(addedLabels, []);
   }
 });
@@ -1280,148 +1349,357 @@ test("merges on Claude's review of the head when Copilot only posted its quota n
   assert.equal(merges.length, 1);
 });
 
-// A dropped Copilot request (mpaulosky/dotfiles#318): no review, no note and nothing pending.
+// ── Ask Copilot once per PR, then fall back to Claude (mpaulosky/dotfiles#360) ──
+// PR Auto-Merge asks for Copilot's review of a PR's first reviewable head once,
+// records the ask in a PR comment, and reads back whether the request registered.
+// A request that fails or doesn't register, or is answered with the quota note,
+// brings review:claude in at once; a record 30 seconds old with nothing pending
+// does the same. Copilot isn't asked again for the PR. This replaces #318's grace.
 const COPILOT_PENDING = {
   totalCount: 1,
   nodes: [{ requestedReviewer: { __typename: "Bot", login: "copilot-pull-request-reviewer" } }]
 };
-const FINISHED_LONG_AGO = () => new Date(Date.now() - 11 * 60 * 1000).toISOString();
+const COPILOT_ASKED_MARKER = "<!-- pr-automerge:copilot-asked -->";
+const LABEL_FOR_CLAUDE = [{ owner: OWNER, repo: "demo", issue_number: 7, labels: ["review:claude"] }];
 
-test("counts Claude's review of the head when Copilot posted no quota note, has no request pending and the grace is over (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
-    quotaNotes: false
-  });
-  const { merges } = await evaluate(pr);
-
-  assert.equal(merges.length, 1);
-});
-
-// A PR that sat as a draft with green CI is marked ready, or reopened: GitHub requests Copilot's review then,
-// asynchronously, long after the head's checks finished (mpaulosky/dotfiles#318).
-const MINUTES_AGO = (minutes) => new Date(Date.now() - minutes * 60 * 1000).toISOString();
-const finishedLongAgo = { headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })) };
-
-test("counts Claude's review of the head when the PR became reviewable more than the grace ago (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    reviewableEvents: { nodes: [{ __typename: "ReadyForReviewEvent", createdAt: MINUTES_AGO(11) }] },
-    ...finishedLongAgo,
-    quotaNotes: false
-  });
-  const { merges } = await evaluate(pr);
-
-  assert.equal(merges.length, 1);
-});
-
-for (const [name, event] of [["marked ready for review", "ReadyForReviewEvent"], ["reopened", "ReopenedEvent"]]) {
-  test(`doesn't count Claude's review, or call it in, while the grace since the PR was ${name} is running (mpaulosky/dotfiles#318)`, async () => {
-    const reviewableEvents = { nodes: [{ __typename: "ReadyForReviewEvent", createdAt: MINUTES_AGO(600) }, { __typename: event, createdAt: MINUTES_AGO(1) }] };
-    const counted = await evaluate(readyPr({
-      copilotReviews: copilotReviewsOf(),
-      claudeReviews: claudeReviewsOf(HEAD),
-      labels: labelled(CLAUDE_LABEL),
-      reviewableEvents,
-      ...finishedLongAgo,
-      quotaNotes: false
-    }));
-    assert.deepEqual(counted.merges, []);
-    const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents, ...finishedLongAgo }));
-    assert.deepEqual(called.addedLabels, []);
-    assert.ok(called.logs.some((line) => line.includes("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), called.logs.join("\n"));
-  });
+// The record that Copilot was asked, as the comments query reports it: posted by login, ageSeconds ago.
+function askedBy(login, ageSeconds, body = "PR Auto-Merge asked Copilot to review this PR.\n\n" + COPILOT_ASKED_MARKER) {
+  return { author: login === null ? null : { login }, body, createdAt: new Date(Date.now() - ageSeconds * 1000).toISOString() };
 }
 
-test("treats a PR whose ready and reopened times can't be read as still in the grace (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    reviewableEvents: undefined,
-    ...finishedLongAgo,
-    quotaNotes: false
-  });
-  const { merges } = await evaluate(pr);
+function commentsOf(...nodes) {
+  return { totalCount: nodes.length, nodes };
+}
 
+// A head Copilot hasn't reviewed (it reviewed an earlier commit only), whose checks passed.
+const unreviewed = { copilotReviews: copilotReviewsOf("one") };
+// Claude's review of the head, with review:claude on and no quota note from Copilot.
+const claudeOnly = () => ({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL), quotaNotes: false });
+const noAsk = ({ asked, requests }, scenario) => {
+  assert.deepEqual(asked, [], `${scenario}: no record comment`);
+  assert.deepEqual(requests, [], `${scenario}: no Copilot request`);
+};
+
+test("asks Copilot once for an unreviewed head: a record comment from GITHUB_TOKEN, then one request from the PAT, then a read-back (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr(unreviewed));
+
+  assert.equal(result.asked.length, 1);
+  assert.equal(result.asked[0].owner, OWNER);
+  assert.equal(result.asked[0].repo, "demo");
+  assert.equal(result.asked[0].issue_number, 7);
+  assert.ok(result.asked[0].body.includes(COPILOT_ASKED_MARKER), result.asked[0].body);
+  assert.equal(result.requests.length, 1);
+  assert.match(result.requests[0].query, /requestReviewsByLogin/);
+  assert.match(result.requests[0].query, /copilot-pull-request-reviewer\[bot\]/);
+  assert.match(result.requests[0].query, /union:\s*true/);
+  assert.equal(result.requests[0].variables.pullRequestId, PR_NODE_ID);
+  assert.ok(result.calls.some(({ client, call }) => client === "token" && call === "issues.createComment"), JSON.stringify(result.calls));
+  assert.ok(result.calls.some(({ client, call }) => client === "pat" && call === "graphql"), JSON.stringify(result.calls));
+  // The record is written before the request, so a crash between them can't make a second ask; the read-back follows.
+  const record = result.order.indexOf("record");
+  const request = result.order.indexOf("request");
+  assert.ok(record !== -1 && record < request, result.order.join(","));
+  assert.ok(result.order.indexOf("read-back") > request, result.order.join(","));
+});
+
+test("adds review:claude in the same run when the request reads back as dropped, without waiting 30 seconds (mpaulosky/dotfiles#360)", async () => {
+  const { merges, addedLabels, logs, requests } = await evaluate(readyPr(unreviewed));
+
+  assert.equal(requests.length, 1);
+  assert.deepEqual(merges, []);
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+  assert.ok(logs.some((line) => line.includes("didn't register")), logs.join("\n"));
+  assert.ok(logs.some((line) => line.includes(`added ${CLAUDE_LABEL} to PR #7`) && line.includes("a request that didn't register")), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.includes("no review and no request pending")), "the old wording is gone");
+});
+
+test("keeps waiting when the request registers: no label, no merge, no second request (mpaulosky/dotfiles#360)", async () => {
+  const { merges, addedLabels, requests, asked, logs } = await evaluate(readyPr(unreviewed), [], { copilotRequest: "registers" });
+
+  assert.deepEqual(addedLabels, []);
+  assert.deepEqual(merges, []);
+  assert.equal(requests.length, 1);
+  assert.equal(asked.length, 1);
+  assert.ok(logs.some((line) => line.includes("registered")), logs.join("\n"));
+});
+
+test("adds review:claude when Copilot answers the request with its quota note (mpaulosky/dotfiles#360)", async () => {
+  const { addedLabels, requests, merges } = await evaluate(readyPr(unreviewed), [], { copilotRequest: "quota-note" });
+
+  assert.equal(requests.length, 1);
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
   assert.deepEqual(merges, []);
 });
 
-test("treats a ready or reopened event without a readable time, or a null event, as still in the grace (mpaulosky/dotfiles#318)", async () => {
-  const unreadable = [
-    { nodes: [{ __typename: "ReadyForReviewEvent", createdAt: null }] },
-    { nodes: [{ __typename: "ReopenedEvent", createdAt: "not a date" }] },
-    { nodes: [{ __typename: "ReopenedEvent" }] },
-    { nodes: [null] }
-  ];
-  for (const reviewableEvents of unreadable) {
-    const counted = await evaluate(readyPr({
-      copilotReviews: copilotReviewsOf(),
-      claudeReviews: claudeReviewsOf(HEAD),
-      labels: labelled(CLAUDE_LABEL),
-      reviewableEvents,
-      ...finishedLongAgo,
-      quotaNotes: false
-    }));
-    assert.deepEqual(counted.merges, [], JSON.stringify(reviewableEvents));
-    const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents, ...finishedLongAgo }));
-    assert.deepEqual(called.addedLabels, [], JSON.stringify(reviewableEvents));
-    assert.ok(called.logs.some((line) => line.includes("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), called.logs.join("\n"));
+test("reads the request back until it registers, within the window (mpaulosky/dotfiles#360)", async () => {
+  const { addedLabels, merges, requests, order } = await evaluate(readyPr(unreviewed), [], {
+    copilotRequest: "registers",
+    registersAfterReads: 2,
+    askWaitMs: 2000,
+    askPollMs: 5
+  });
+
+  assert.deepEqual(addedLabels, []);
+  assert.deepEqual(merges, []);
+  assert.equal(requests.length, 1);
+  assert.ok(order.filter((step) => step === "read-back").length >= 3, order.join(","));
+});
+
+test("reads a dropped request back for the whole window before calling in Claude (mpaulosky/dotfiles#360)", async () => {
+  const started = Date.now();
+  const { addedLabels, order } = await evaluate(readyPr(unreviewed), [], { askWaitMs: 80, askPollMs: 10 });
+
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+  assert.ok(Date.now() - started >= 60, `the run took ${Date.now() - started} ms`);
+  assert.ok(order.filter((step) => step === "read-back").length >= 2, order.join(","));
+});
+
+test("adds review:claude at once when the request fails, without waiting out the window (mpaulosky/dotfiles#360)", async () => {
+  const started = Date.now();
+  const { addedLabels, requests, logs } = await evaluate(readyPr(unreviewed), [], {
+    copilotRequest: Object.assign(new Error("Resource not accessible by personal access token"), { status: 403 }),
+    askWaitMs: 4000,
+    askPollMs: 1000
+  });
+
+  assert.equal(requests.length, 1);
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && line.includes("Resource not accessible")), logs.join("\n"));
+  assert.ok(Date.now() - started < 2000, `the run took ${Date.now() - started} ms`);
+});
+
+test("makes no request and adds no label when the record comment can't be posted (mpaulosky/dotfiles#360)", async () => {
+  const { addedLabels, requests, merges, logs } = await evaluate(readyPr(unreviewed), [], {
+    askCommentError: Object.assign(new Error("Resource not accessible by integration"), { status: 403 })
+  });
+
+  assert.deepEqual(requests, []);
+  assert.deepEqual(addedLabels, []);
+  assert.deepEqual(merges, []);
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && line.includes("Resource not accessible")), logs.join("\n"));
+});
+
+test("a record 31 seconds old with nothing pending adds review:claude with no ask, and one 29 seconds old waits (mpaulosky/dotfiles#360)", async () => {
+  const settled = await evaluate(readyPr({ ...unreviewed, comments: commentsOf(askedBy(ACTIONS, 31)) }));
+  noAsk(settled, "a settled record");
+  assert.deepEqual(settled.addedLabels, LABEL_FOR_CLAUDE);
+
+  const fresh = await evaluate(readyPr({ ...unreviewed, comments: commentsOf(askedBy(ACTIONS, 29)) }));
+  noAsk(fresh, "a record 29 seconds old");
+  assert.deepEqual(fresh.addedLabels, []);
+  assert.ok(fresh.logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), fresh.logs.join("\n"));
+});
+
+test("a record with Copilot's request pending keeps waiting however old it is (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ ...unreviewed, reviewRequests: COPILOT_PENDING, comments: commentsOf(askedBy(ACTIONS, 3600)) }));
+
+  noAsk(result, "a pending request");
+  assert.deepEqual(result.addedLabels, []);
+  assert.deepEqual(result.merges, []);
+});
+
+test("the settle time is 30 seconds, and the 5-minute grace and its timeline query are gone (mpaulosky/dotfiles#360)", () => {
+  const source = readFileSync(WORKFLOW, "utf8");
+
+  assert.match(source, /const COPILOT_ASK_SETTLE_MS = 30 \* 1000;/);
+  assert.match(source, /const COPILOT_ASKED_MARKER = "<!-- pr-automerge:copilot-asked -->";/);
+  assert.ok(!/COPILOT_GRACE_MS/.test(source), "COPILOT_GRACE_MS is gone");
+  assert.ok(!/\bgraceState\b/.test(source), "graceState is gone");
+  assert.ok(!/reviewableEvents|READY_FOR_REVIEW_EVENT/.test(source), "the reviewable-events query is gone");
+  assert.ok(!/5-minute grace/.test(source), "the 5-minute grace wording is gone");
+});
+
+test("asks for the PR's last 100 comments with their author, body and time, and not the reviewable events (mpaulosky/dotfiles#360)", async () => {
+  const { queries } = await evaluate(readyPr());
+
+  assert.ok(queries.length > 0);
+  assert.ok(
+    queries.every((query) => /\bcomments\(last: 100\)\s*\{\s*totalCount\s+nodes\s*\{[^}]*author\s*\{\s*login\s*\}[^}]*\bbody\b[^}]*\bcreatedAt\b/.test(query)),
+    queries.join("\n")
+  );
+  assert.ok(queries.every((query) => !/reviewableEvents|READY_FOR_REVIEW_EVENT/.test(query)), queries.join("\n"));
+});
+
+// A head Copilot answered, or that Claude must call in, never gets a second ask.
+test("doesn't ask when Copilot's quota note is on the head, and adds review:claude (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ copilotReviews: DECLINED }));
+
+  noAsk(result, "a quota note");
+  assert.deepEqual(result.addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("doesn't ask when Copilot has really reviewed the head (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(HEAD) }));
+
+  noAsk(result, "a Copilot review of the head");
+  assert.equal(result.merges.length, 1);
+});
+
+test("doesn't ask when Copilot's request is already pending (the ruleset's own), and waits (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ ...unreviewed, reviewRequests: COPILOT_PENDING }));
+
+  noAsk(result, "a pending request");
+  assert.deepEqual(result.addedLabels, []);
+});
+
+test("doesn't ask Copilot again for a later head: it goes to review:claude with no comment or request (mpaulosky/dotfiles#360)", async () => {
+  // The record is two hours old, written for an earlier head; this head has no Copilot review and no request.
+  const result = await evaluate(readyPr({ ...unreviewed, comments: commentsOf(askedBy(ACTIONS, 7200)) }));
+
+  noAsk(result, "a later head");
+  assert.deepEqual(result.addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("doesn't ask for a later head either when Claude already reviewed an earlier one (mpaulosky/dotfiles#360)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf("one"),
+    claudeReviews: claudeReviewsOf("one"),
+    labels: labelled(CLAUDE_LABEL),
+    comments: commentsOf(askedBy(ACTIONS, 7200)),
+    quotaNotes: false
+  });
+  const result = await evaluate(pr);
+
+  noAsk(result, "a later head with the label on");
+  assert.deepEqual(result.addedLabels, []);
+  assert.deepEqual(result.merges, []);
+});
+
+test("waits for a later head's pending request, and still doesn't ask (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ ...unreviewed, reviewRequests: COPILOT_PENDING, comments: commentsOf(askedBy(ACTIONS, 7200)) }));
+
+  noAsk(result, "a later head with a request pending");
+  assert.deepEqual(result.addedLabels, []);
+});
+
+test("a second sweep over the same PR asks nothing more, whether the first request registered or was dropped (mpaulosky/dotfiles#360)", async () => {
+  for (const copilotRequest of ["registers", "drops"]) {
+    const { asked, requests, addedLabels } = await evaluate(readyPr(unreviewed), [], { push: true, openPrs: [7, 7], copilotRequest });
+
+    assert.equal(asked.length, 1, copilotRequest);
+    assert.equal(requests.length, 1, copilotRequest);
+    assert.ok(addedLabels.length <= 1, copilotRequest);
   }
 });
 
-test("asks for the PR's latest ready-for-review and reopened events (mpaulosky/dotfiles#318)", async () => {
-  const { queries } = await evaluate(readyPr());
-
-  assert.ok(queries.every((query) => /timelineItems\(last: \d+, itemTypes: \[READY_FOR_REVIEW_EVENT, REOPENED_EVENT\]\)[^]*?createdAt/.test(query)), queries.join("\n"));
+test("doesn't ask for a draft, a cross-repository PR, a handed-back PR, one with auto-merge armed, one past the cap or one a clean merge covers (mpaulosky/dotfiles#360)", async () => {
+  const cases = {
+    draft: readyPr({ ...unreviewed, isDraft: true }),
+    "cross-repository": readyPr({ ...unreviewed, isCrossRepository: true }),
+    "handed back": readyPr({ ...unreviewed, labels: labelled(NEEDS_HUMAN) }),
+    "auto-merge armed": readyPr({ ...unreviewed, autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" } }),
+    "past the cap": readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three") }),
+    "covered by a clean merge": mergedPr("merge1")
+  };
+  for (const [name, pr] of Object.entries(cases)) {
+    noAsk(await evaluate(pr), name);
+  }
 });
 
-test("doesn't count Claude's review of the head while the grace since its checks finished is running (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: new Date().toISOString() })),
-    quotaNotes: false
-  });
-  const { merges, logs } = await evaluate(pr);
+// Claude's review counts at the gate once Copilot can't review the head.
+test("counts Claude's review of the head under a record 31 seconds old with nothing pending, and merges (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ ...claudeOnly(), comments: commentsOf(askedBy(ACTIONS, 31)) }));
 
-  assert.deepEqual(merges, []);
-  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of")), logs.join("\n"));
+  noAsk(result, "a settled record");
+  assert.equal(result.merges.length, 1);
 });
 
-test("doesn't count Claude's review of the head while Copilot's request is pending (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    reviewRequests: COPILOT_PENDING,
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    quotaNotes: false
-  });
-  const { merges, logs } = await evaluate(pr);
+test("counts Claude's review of the head in the run that asked, when the request reads back as dropped (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr(claudeOnly()));
 
-  assert.deepEqual(merges, []);
-  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of")), logs.join("\n"));
+  assert.equal(result.requests.length, 1);
+  assert.equal(result.merges.length, 1);
 });
 
-test("doesn't count Claude's review of an earlier commit Copilot left without a note, only of the head (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("older"),
-    labels: labelled(CLAUDE_LABEL),
-    quotaNotes: false
-  });
+test("doesn't count Claude's review of the head when the request the run just made registered (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr(claudeOnly()), [], { copilotRequest: "registers" });
+
+  assert.equal(result.requests.length, 1);
+  assert.deepEqual(result.merges, []);
+});
+
+test("doesn't count Claude's review of the head under a record 29 seconds old, a pending request or an unread record (mpaulosky/dotfiles#360)", async () => {
+  const manyComments = { totalCount: 150, nodes: Array.from({ length: 100 }, () => askedBy("someone", 3600, "Looks good.")) };
+  const cases = {
+    "a record 29 seconds old": { comments: commentsOf(askedBy(ACTIONS, 29)) },
+    "a pending request": { comments: commentsOf(askedBy(ACTIONS, 3600)), reviewRequests: COPILOT_PENDING },
+    "comments that weren't read": { comments: undefined },
+    "more comments than one page, the record not among them": { comments: manyComments }
+  };
+  for (const [name, overrides] of Object.entries(cases)) {
+    const result = await evaluate(readyPr({ ...claudeOnly(), ...overrides }));
+
+    assert.deepEqual(result.merges, [], name);
+    noAsk(result, name);
+  }
+});
+
+test("neither asks nor adds review:claude when the record can't be read, and never infers a dropped request (mpaulosky/dotfiles#360)", async () => {
+  const manyComments = { totalCount: 150, nodes: Array.from({ length: 100 }, () => askedBy("someone", 3600, "Looks good.")) };
+  for (const comments of [undefined, null, manyComments]) {
+    const result = await evaluate(readyPr({ ...unreviewed, comments }));
+
+    noAsk(result, JSON.stringify(comments)?.slice(0, 40));
+    assert.deepEqual(result.addedLabels, []);
+    assert.deepEqual(result.merges, []);
+  }
+});
+
+test("finds the record among more comments than one page when it is in the last 100 (mpaulosky/dotfiles#360)", async () => {
+  const nodes = [...Array.from({ length: 99 }, () => askedBy("someone", 3600, "Looks good.")), askedBy(ACTIONS, 3600)];
+  const result = await evaluate(readyPr({ ...unreviewed, comments: { totalCount: 150, nodes } }));
+
+  noAsk(result, "a record on the page");
+  assert.deepEqual(result.addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("trusts a record only from github-actions or the repository owner, and asks when a stranger left the marker (mpaulosky/dotfiles#360)", async () => {
+  for (const login of [ACTIONS, OWNER]) {
+    const result = await evaluate(readyPr({ ...unreviewed, comments: commentsOf(askedBy(login, 3600)) }));
+
+    noAsk(result, login);
+    assert.deepEqual(result.addedLabels, LABEL_FOR_CLAUDE, login);
+  }
+  for (const author of ["stranger", "copilot-pull-request-reviewer", null]) {
+    const result = await evaluate(readyPr({ ...unreviewed, comments: commentsOf(askedBy(author, 3600)) }), [], { copilotRequest: "registers" });
+
+    assert.equal(result.requests.length, 1, String(author));
+    assert.equal(result.asked.length, 1, String(author));
+    assert.deepEqual(result.addedLabels, [], String(author));
+  }
+});
+
+test("ignores a comment by github-actions that lacks the marker (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ ...unreviewed, comments: commentsOf(askedBy(ACTIONS, 3600, "PR Auto-Merge asked Copilot.")) }), [], { copilotRequest: "registers" });
+
+  assert.equal(result.requests.length, 1);
+});
+
+test("a labelled head with no CI check and a settled record merges on Claude's review (mpaulosky/dotfiles#360)", async () => {
+  const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
+  const headRef = checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false }));
+  const result = await evaluate(readyPr({ ...claudeOnly(), headRef, comments: commentsOf(askedBy(ACTIONS, 31)) }), [], { push: true, requiredChecks: [] });
+
+  assert.equal(result.merges.length, 1);
+  assert.ok(!result.logs.some((line) => line.includes("no CI check")), result.logs.join("\n"));
+});
+
+// The rest of the Claude flow is unchanged after the ask.
+test("counts Claude's review of the head only for the head, not an earlier commit Copilot left without a note (mpaulosky/dotfiles#360)", async () => {
+  const result = await evaluate(readyPr({ ...claudeOnly(), claudeReviews: claudeReviewsOf("older"), comments: commentsOf(askedBy(ACTIONS, 31)) }));
+
+  assert.deepEqual(result.merges, []);
+  assert.ok(result.logs.some((line) => line.includes("no Copilot or Claude review of")), result.logs.join("\n"));
+});
+
+test("doesn't reach the cap on Claude's reviews of earlier commits that carry no quota note (mpaulosky/dotfiles#360)", async () => {
+  const pr = readyPr({ ...claudeOnly(), claudeReviews: claudeReviewsOf("one", "two", "three"), comments: commentsOf(askedBy(ACTIONS, 31)) });
   const { merges } = await evaluate(pr);
 
   assert.deepEqual(merges, []);
 });
 
-test("counts Claude's reviews of earlier commits that carry Copilot's quota note even while a request is pending (mpaulosky/dotfiles#318)", async () => {
+test("counts Claude's reviews of earlier commits that carry Copilot's quota note even while a request is pending", async () => {
   // Three reviewed commits reach the review cap, which merges the PR at a head no review covers: only if the notes' commits count.
   const notes = ["one", "two", "three"].map((oid) => ({ oid, note: true }));
   const pr = readyPr({
@@ -1437,308 +1715,57 @@ test("counts Claude's reviews of earlier commits that carry Copilot's quota note
   assert.ok(logs.some((line) => line.includes("Review cap (3) reached")), logs.join("\n"));
 });
 
-test("doesn't reach the cap on Claude's reviews of earlier commits that have no quota note (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("one", "two", "three"),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
-    quotaNotes: false
-  });
-  const { merges } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-});
-
-test("fails closed when Copilot's pending request can't be seen: too many requests, or one without a reviewer (mpaulosky/dotfiles#318)", async () => {
+test("fails closed when Copilot's pending request can't be seen: too many requests, or one without a reviewer", async () => {
   const manyRequests = { totalCount: 21, nodes: [] };
   const nullReviewer = { totalCount: 1, nodes: [{ requestedReviewer: null }] };
   for (const reviewRequests of [manyRequests, nullReviewer, undefined]) {
-    const counted = await evaluate(readyPr({
-      copilotReviews: copilotReviewsOf(),
-      reviewRequests,
-      claudeReviews: claudeReviewsOf(HEAD),
-      labels: labelled(CLAUDE_LABEL),
-      headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
-      quotaNotes: false
-    }));
+    const counted = await evaluate(readyPr({ ...claudeOnly(), reviewRequests, comments: commentsOf(askedBy(ACTIONS, 3600)) }));
     assert.deepEqual(counted.merges, [], "Claude's review of the head doesn't count");
-    const called = await evaluate(readyPr({
-      copilotReviews: copilotReviewsOf("one"),
-      reviewRequests,
-      headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }))
-    }));
+    const called = await evaluate(readyPr({ ...unreviewed, reviewRequests, comments: commentsOf(askedBy(ACTIONS, 3600)) }));
     assert.deepEqual(called.addedLabels, [], "Claude isn't called in");
+    noAsk(called, "an unreadable request list");
   }
 });
 
-test("asks for Copilot's pending requests with their total, and for the checks' finish times (mpaulosky/dotfiles#318)", async () => {
+test("asks for Copilot's pending requests with their total", async () => {
   const { queries } = await evaluate(readyPr());
 
   assert.ok(queries.every((query) => /reviewRequests\(first: \d+\)\s*\{\s*totalCount\s+nodes\s*\{\s*requestedReviewer\s*\{[^}]*\.\.\. on Bot \{ login \}/.test(query)), queries.join("\n"));
-  assert.ok(queries.every((query) => /\.\.\. on CheckRun \{[^}]*\bcompletedAt\b/.test(query)), queries.join("\n"));
 });
 
-test("calls in Claude past a still-pending Copilot request when its quota note is on the head (mpaulosky/dotfiles#318)", async () => {
+test("calls in Claude past a still-pending Copilot request when its quota note is on the head", async () => {
   const { addedLabels } = await evaluate(readyPr({ copilotReviews: DECLINED, reviewRequests: COPILOT_PENDING }));
 
   assert.equal(addedLabels.length, 1);
 });
 
-test("calls in Claude for a head with no Copilot review, no request pending and checks finished long past the grace (mpaulosky/dotfiles#318)", async () => {
+test("doesn't call in Claude for a dropped request while a required check is still running (mpaulosky/dotfiles#360)", async () => {
   const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one"),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }))
-  });
-  const { merges, addedLabels } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-  assert.deepEqual(addedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, labels: [CLAUDE_LABEL] }]);
-});
-
-test("waits out the grace period before calling in Claude for a dropped request (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one"),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: new Date().toISOString() }))
+    ...unreviewed,
+    comments: commentsOf(askedBy(ACTIONS, 3600)),
+    headRef: checksOn(HEAD, requiredCheck("Build Solution"), requiredCheck("Test Suite", { status: "IN_PROGRESS", conclusion: null }))
   });
   const { addedLabels, logs } = await evaluate(pr);
 
   assert.deepEqual(addedLabels, []);
-  assert.ok(logs.some((line) => line.includes("has no request pending")), logs.join("\n"));
+  assert.ok(logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet")), logs.join("\n"));
 });
 
-test("doesn't call in Claude while Copilot's request is pending, however long the checks finished ago (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one"),
-    reviewRequests: COPILOT_PENDING,
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }))
-  });
-  const { addedLabels } = await evaluate(pr);
-
-  assert.deepEqual(addedLabels, []);
-});
-
-test("doesn't call in Claude for a dropped request while a check is still running (mpaulosky/dotfiles#318)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one"),
-    headRef: checksOn(
-      HEAD,
-      requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }),
-      requiredCheck("Test Suite", { status: "IN_PROGRESS", conclusion: null })
-    )
-  });
-  const { addedLabels } = await evaluate(pr);
-
-  assert.deepEqual(addedLabels, []);
-});
-
-// The grace is 5 minutes (mpaulosky/dotfiles#353): the boundary is pinned from both sides.
-test("a head whose checks finished 4 minutes ago still waits out the grace (mpaulosky/dotfiles#353)", async () => {
-  const headRef = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: MINUTES_AGO(4) }));
-  const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }));
-  assert.deepEqual(called.addedLabels, [], "Claude isn't called in");
-  assert.ok(called.logs.some((line) => line.includes("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), called.logs.join("\n"));
-  const counted = await evaluate(readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef,
-    quotaNotes: false
-  }));
-  assert.deepEqual(counted.merges, [], "Claude's review doesn't count");
-});
-
-test("a head whose checks finished 5 minutes ago counts the grace as elapsed (mpaulosky/dotfiles#353)", async () => {
-  const headRef = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: MINUTES_AGO(5) }));
-  const called = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }));
-  assert.deepEqual(called.addedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, labels: [CLAUDE_LABEL] }]);
-  const counted = await evaluate(readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef,
-    quotaNotes: false
-  }));
-  assert.equal(counted.merges.length, 1, "Claude's review counts");
-});
-
-test("a PR that became reviewable 4 minutes ago still waits, and one reviewable 5 minutes ago doesn't (mpaulosky/dotfiles#353)", async () => {
-  const reviewable = (minutes) => ({ nodes: [{ __typename: "ReadyForReviewEvent", createdAt: MINUTES_AGO(minutes) }] });
-  const waiting = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents: reviewable(4), ...finishedLongAgo }));
-  assert.deepEqual(waiting.addedLabels, []);
-  const elapsed = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), reviewableEvents: reviewable(5), ...finishedLongAgo }));
-  assert.equal(elapsed.addedLabels.length, 1);
-});
-
-test("the notice for a head still in the grace says the 5-minute grace (mpaulosky/dotfiles#353)", async () => {
-  const headRef = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: MINUTES_AGO(1) }));
-  const { logs } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }));
-  const line = logs.find((entry) => entry.includes("Not calling in Claude for PR #7 yet"));
-  assert.ok(line, logs.join("\n"));
-  assert.ok(line.includes("the 5-minute grace"), line);
-  assert.ok(!line.includes("10-minute"), line);
-});
-
-test("COPILOT_GRACE_MS is 5 * 60 * 1000 (mpaulosky/dotfiles#353)", () => {
-  assert.match(readFileSync(WORKFLOW, "utf8"), /const COPILOT_GRACE_MS = 5 \* 60 \* 1000;/);
-});
-
-const FRESH = () => new Date().toISOString();
-
-test("measures the grace from the newest finish, and ignores Claude Review's and this job's own checks (mpaulosky/dotfiles#318)", async () => {
-  const dropped = { copilotReviews: copilotReviewsOf("one") };
-  const mixed = await evaluate(readyPr({
-    ...dropped,
-    headRef: checksOn(
-      HEAD,
-      requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }),
-      requiredCheck("Test Suite", { completedAt: FRESH() })
-    )
-  }));
-  assert.deepEqual(mixed.addedLabels, [], "a fresh finish restarts the grace");
-
-  const own = await evaluate(readyPr({
-    ...dropped,
-    headRef: checksOn(
-      HEAD,
-      requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }),
-      requiredCheck("Review with Claude", { isRequired: false, completedAt: FRESH() }),
-      requiredCheck("Merge same-repo PRs when ready", { isRequired: false, completedAt: FRESH() })
-    )
-  }));
-  assert.equal(own.addedLabels.length, 1, "Claude Review's and this job's checks don't extend it");
-});
-
-test("holds the grace for a commit status that is still pending, and releases it for a successful one (mpaulosky/dotfiles#318)", async () => {
-  const status = (state) => ({ __typename: "StatusContext", context: "ci/external", state, createdAt: FINISHED_LONG_AGO(), isRequired: false });
-  const dropped = { copilotReviews: copilotReviewsOf("one") };
-  for (const state of ["PENDING", "EXPECTED"]) {
-    const waiting = await evaluate(readyPr({ ...dropped, headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }), status(state)) }));
-    assert.deepEqual(waiting.addedLabels, [], state);
-    assert.ok(waiting.logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), state);
-  }
-  const done = await evaluate(readyPr({ ...dropped, headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }), status("SUCCESS")) }));
-  assert.equal(done.addedLabels.length, 1);
-});
-
-test("holds the grace for a check run without a finish time and for more checks than one page holds (mpaulosky/dotfiles#318)", async () => {
-  const dropped = { copilotReviews: copilotReviewsOf("one") };
-  const unfinished = await evaluate(readyPr({ ...dropped, headRef: checksOn(HEAD, requiredCheck("Build Solution")) }));
-  assert.deepEqual(unfinished.addedLabels, []);
-  assert.ok(unfinished.logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet: Copilot has not reviewed")));
-
-  const overflowing = checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() }));
-  overflowing.target.statusCheckRollup.contexts.totalCount = 101;
-  const paged = await evaluate(readyPr({ ...dropped, headRef: overflowing }));
-  assert.deepEqual(paged.addedLabels, []);
-  assert.ok(paged.logs.some((line) => line.startsWith("Not calling in Claude for PR #7 yet: Copilot has not reviewed")), paged.logs.join("\n"));
-});
-
-test("tells the owner about a head with no CI check even while the grace has nothing to measure (mpaulosky/dotfiles#318)", async () => {
+test("tells the owner about a head with no CI check even though Copilot was asked (mpaulosky/dotfiles#360)", async () => {
   const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
   const headRef = checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false }));
-  const { addedLabels, logs } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one"), headRef }), [], { push: true, requiredChecks: [] });
+  const { addedLabels, logs } = await evaluate(readyPr({ ...unreviewed, headRef }), [], { push: true, requiredChecks: [] });
 
   assert.deepEqual(addedLabels, []);
   assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes("no CI check")), logs.join("\n"));
 });
 
-// A head with no check besides Claude Review's and the job's own: Claude's review of it never counts, label or not (mpaulosky/dotfiles#331).
+// A head with no check besides Claude Review's and the job's own: the unlabelled head's notice says to review and merge by hand (mpaulosky/dotfiles#331).
 const noCiHead = () => {
   const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
   return checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false }));
 };
 const noCiNotice = (logs) => logs.find((line) => line.startsWith("notice: PR #7") && line.includes("no CI check"));
-
-test("tells the owner to review and merge by hand when a labelled head with no CI has Claude's review (mpaulosky/dotfiles#331)", async () => {
-  for (const copilotReviews of [copilotReviewsOf(), copilotReviewsOf("one")]) {
-    const pr = readyPr({
-      copilotReviews,
-      claudeReviews: claudeReviewsOf(HEAD),
-      labels: labelled(CLAUDE_LABEL),
-      headRef: noCiHead(),
-      quotaNotes: false
-    });
-    const { merges, addedLabels, removedLabels, logs } = await evaluate(pr, [], { push: true, requiredChecks: [] });
-
-    const notice = noCiNotice(logs);
-    assert.ok(notice, logs.join("\n"));
-    assert.ok(NO_CI_ADVICE.test(notice), notice);
-    assert.ok(notice.includes(HEAD), notice);
-    assert.deepEqual(merges, []);
-    assert.deepEqual(addedLabels, []);
-    assert.deepEqual(removedLabels, []);
-  }
-});
-
-test("gives a labelled head with no CI and Claude's review the notice only once, and never mentions the label (mpaulosky/dotfiles#331)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: noCiHead(),
-    quotaNotes: false
-  });
-  const { logs } = await evaluate(pr, [], { push: true, requiredChecks: [] });
-
-  assert.equal(logs.filter((line) => line.includes("no CI check")).length, 1, logs.join("\n"));
-  assert.ok(!logs.some((line) => line.includes("no CI check") && line.includes(CLAUDE_LABEL)), logs.join("\n"));
-});
-
-test("doesn't give the no-CI notice to a labelled head that has CI, and merges on Claude's review (mpaulosky/dotfiles#331)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
-    quotaNotes: false
-  });
-  const { merges, logs } = await evaluate(pr, [], { push: true });
-
-  assert.equal(merges.length, 1);
-  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
-});
-
-test("doesn't give the no-CI notice to a labelled head before Claude has reviewed it (mpaulosky/dotfiles#331)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("older"),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: noCiHead(),
-    quotaNotes: false
-  });
-  const { merges, logs } = await evaluate(pr, [], { push: true, requiredChecks: [] });
-
-  assert.deepEqual(merges, []);
-  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
-});
-
-test("doesn't give the no-CI notice to a labelled head on a PR event, where CI may not have started (mpaulosky/dotfiles#331)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: noCiHead(),
-    quotaNotes: false
-  });
-  const { merges, logs } = await evaluate(pr, [], { requiredChecks: [] });
-
-  assert.deepEqual(merges, []);
-  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
-});
-
-test("doesn't give a labelled head with no CI the notice while a workflow run for it is active (mpaulosky/dotfiles#331)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: noCiHead(),
-    quotaNotes: false
-  });
-  const { logs } = await evaluate(pr, [], { push: true, requiredChecks: [], headRuns: [{ id: 1, head_sha: HEAD, status: "queued" }] });
-
-  assert.ok(!logs.some((line) => line.includes("no CI check")), logs.join("\n"));
-});
 
 test("tells the owner to review and merge by hand for an unlabelled no-CI head whether or not Copilot left a note (mpaulosky/dotfiles#331)", async () => {
   for (const copilotReviews of [copilotReviewsOf(), copilotReviewsOf("one"), copilotReviewsOf({ oid: HEAD, note: true })]) {
@@ -1754,26 +1781,14 @@ test("tells the owner to review and merge by hand for an unlabelled no-CI head w
 
 // A bot-pushed clean merge H2 (the head) needs a Claude review of its own: a review of H1 with no Copilot note covers nothing (mpaulosky/dotfiles#331).
 test("merges on Claude's review of the head when an earlier Claude review of the previous head has no Copilot note (mpaulosky/dotfiles#331)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("older", HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
-    quotaNotes: false
-  });
+  const pr = readyPr({ ...claudeOnly(), claudeReviews: claudeReviewsOf("older", HEAD), comments: commentsOf(askedBy(ACTIONS, 31)) });
   const { merges } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
 });
 
 test("doesn't merge a bot-pushed clean merge on Claude's review of the previous head alone when there is no Copilot note (mpaulosky/dotfiles#331)", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("older"),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
-    quotaNotes: false
-  });
+  const pr = readyPr({ ...claudeOnly(), claudeReviews: claudeReviewsOf("older"), comments: commentsOf(askedBy(ACTIONS, 31)) });
   const { merges, logs } = await evaluate(pr);
 
   assert.deepEqual(merges, []);
@@ -1786,24 +1801,10 @@ test("doesn't count Claude's review of the head when the quota note is on an ear
     reviewRequests: COPILOT_PENDING,
     claudeReviews: claudeReviewsOf(HEAD),
     labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, requiredCheck("Build Solution", { completedAt: FINISHED_LONG_AGO() })),
+    comments: commentsOf(askedBy(ACTIONS, 3600)),
     quotaNotes: false
   });
   const { merges } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-});
-
-test("doesn't count Claude's review of a head with no check besides Claude's and the job's own (mpaulosky/dotfiles#318)", async () => {
-  const skipped = (name) => requiredCheck(name, { isRequired: false, conclusion: "SKIPPED" });
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf(HEAD),
-    labels: labelled(CLAUDE_LABEL),
-    headRef: checksOn(HEAD, skipped("Review with Claude"), requiredCheck("Merge same-repo PRs when ready", { isRequired: false })),
-    quotaNotes: false
-  });
-  const { merges } = await evaluate(pr, [], { push: true, requiredChecks: [] });
 
   assert.deepEqual(merges, []);
 });
@@ -3002,18 +3003,25 @@ function commentAbove(anchor) {
 // Which client makes each API call (mpaulosky/dotfiles#231). A PAT is the
 // owner's account, whose 5,000 REST requests an hour everything acting as the
 // owner shares, so only the calls GitHub must treat as a person's use it:
-// the ones that have to start another workflow, and `@dependabot rebase`.
-// Every other call is made with GITHUB_TOKEN, which has an allowance of its
-// own for this repo. references/tokens.md lists them and says why.
+// the ones that have to start another workflow, and `@dependabot rebase`, and
+// the one Copilot review request (mpaulosky/dotfiles#360), which GitHub should
+// treat as a person's. Every other call is made with GITHUB_TOKEN, which has an
+// allowance of its own for this repo. references/tokens.md lists them and says why.
 const PAT_CALLS = [
   "pulls.merge",
   "pulls.updateBranch",
   "issues.addLabels",
   "issues.createComment",
-  "users.getAuthenticated"
+  "users.getAuthenticated",
+  "graphql"
 ];
+// Both clients make these: GITHUB_TOKEN's graphql reads the PR and the PAT's
+// graphql requests Copilot's review; GITHUB_TOKEN posts the record that Copilot
+// was asked and the PAT `@dependabot rebase`.
+const BOTH_CALLS = ["graphql", "issues.createComment"];
 const TOKEN_CALLS = [
   "graphql",
+  "issues.createComment",
   "pulls.list",
   "pulls.listCommits",
   "repos.getBranchRules",
@@ -3036,20 +3044,20 @@ function scriptCode() {
     .join("\n");
 }
 
-test("pins which client makes each call: the PAT's five calls, and GITHUB_TOKEN's other thirteen (mpaulosky/dotfiles#231)", () => {
+test("pins which client makes each call: the PAT's six calls, GITHUB_TOKEN's reads and its record comment (mpaulosky/dotfiles#231, mpaulosky/dotfiles#360)", () => {
   const code = scriptCode();
   const used = { patClient: new Set(), github: new Set() };
   for (const [, client, call] of code.matchAll(/\b(github|patClient)\.(graphql|paginate|rest\.\w+\.\w+)/g)) {
     used[client].add(call.replace(/^rest\./, ""));
   }
 
-  // paginate and graphql are only ever GITHUB_TOKEN's.
+  // paginate is only ever GITHUB_TOKEN's; the PAT's graphql is the one Copilot request.
   assert.ok(!used.patClient.has("paginate"), "patClient.paginate");
-  assert.ok(!used.patClient.has("graphql"), "patClient.graphql");
+  assert.ok(used.patClient.has("graphql"), "patClient.graphql requests Copilot's review");
   assert.deepEqual([...used.patClient].sort(), [...PAT_CALLS].sort(), "calls made through patClient");
   const tokenNames = [...used.github].filter((name) => name !== "paginate").sort();
   assert.deepEqual(tokenNames, [...TOKEN_CALLS].sort(), "calls made through github");
-  assert.deepEqual(PAT_CALLS.filter((name) => TOKEN_CALLS.includes(name)), [], "a call on both lists");
+  assert.deepEqual(PAT_CALLS.filter((name) => TOKEN_CALLS.includes(name)).sort(), [...BOTH_CALLS].sort(), "calls on both lists");
 });
 
 test("has no client but github and patClient in front of .rest, so a read can't go through an alias (mpaulosky/dotfiles#231)", () => {
@@ -3075,7 +3083,7 @@ function assertClients({ calls }, scenario) {
     if (client === "pat") {
       assert.ok(PAT_CALLS.includes(call), `${scenario}: ${call} went through the PAT`);
     } else {
-      assert.ok(!PAT_CALLS.includes(call), `${scenario}: ${call} went through GITHUB_TOKEN`);
+      assert.ok(BOTH_CALLS.includes(call) || !PAT_CALLS.includes(call), `${scenario}: ${call} went through GITHUB_TOKEN`);
       assert.ok(TOKEN_CALLS.includes(call), `${scenario}: ${call} is missing from TOKEN_CALLS`);
     }
   }
@@ -3084,7 +3092,7 @@ function assertClients({ calls }, scenario) {
 const patCallsOf = ({ calls }) => calls.filter(({ client }) => client === "pat").map(({ call }) => call);
 const tokenCallsOf = ({ calls }) => calls.filter(({ client }) => client === "token").map(({ call }) => call);
 
-test("makes every read with GITHUB_TOKEN and only the PAT's five calls with the PAT (mpaulosky/dotfiles#231)", async () => {
+test("makes every read with GITHUB_TOKEN and only the PAT's six calls with the PAT (mpaulosky/dotfiles#231)", async () => {
   const atCap = readyPr({
     copilotReviews: copilotReviewsOf(),
     claudeReviews: claudeReviewsOf("one", "two", HEAD),
@@ -3114,6 +3122,11 @@ test("makes every read with GITHUB_TOKEN and only the PAT's five calls with the 
       run: await evaluate(readyPr({ copilotReviews: DECLINED })),
       pat: ["issues.addLabels"],
       token: ["graphql"]
+    },
+    "asking Copilot once, then calling in Claude when the request is dropped (mpaulosky/dotfiles#360)": {
+      run: await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one") })),
+      pat: ["graphql", "issues.addLabels"],
+      token: ["graphql", "issues.createComment"]
     },
     "taking review:claude off at the review cap": {
       run: await evaluate(atCap),

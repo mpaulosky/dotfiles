@@ -1245,7 +1245,7 @@ async function buildMarkedIssue(
           host.handBackWorkflowChange(issue.number, branch, detail, change);
         } catch (handBackError) {
           console.error(
-            `  ⚠ #${issue.number}: handing it back for its workflow change failed, so the next round tries again: ${handBackError}`,
+            `  ⚠ #${issue.number}: handing it back for its workflow change failed, so the next round tries again: ${terminalText(String(handBackError))}`,
           );
         }
         return {

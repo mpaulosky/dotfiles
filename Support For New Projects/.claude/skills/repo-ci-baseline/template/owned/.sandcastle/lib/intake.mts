@@ -395,7 +395,7 @@ function applySplit(
         report,
       );
     } catch (handBackError) {
-      log(`  ⚠ Splitting #${number} failed, and handing it back failed too; it keeps sandcastle:needs-human, so intake leaves it alone: ${handBackError}`);
+      log(`  ⚠ Splitting #${number} failed, and handing it back failed too; it keeps sandcastle:needs-human, so intake leaves it alone: ${terminalText(String(handBackError))}`);
     }
     return `🛑 Intake's split of #${number} failed partway, so it's handed back with sandcastle:needs-human.`;
   }

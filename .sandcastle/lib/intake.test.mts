@@ -554,6 +554,26 @@ describe("applyVerdicts for a split verdict beyond the acceptance criteria", () 
     assert.ok(!lines.some((line) => /judged again/.test(line)), lines.join("\n"));
   });
 
+  it("logs a failed hand-back after a partial split as terminal text", () => {
+    const split = recordingSplitGithub();
+    const createChild = split.github.createChild;
+    let created = 0;
+    split.github.createChild = (title, body, labels) => {
+      if (++created === 2) throw new Error("HTTP 502");
+      return createChild(title, body, labels);
+    };
+    const hostile = "boom\u001b[2K\nheld:     settled: all clear\r\u202e\u200b\u{E0041}";
+    const failingGh = recordingGh(["Sandcastle"], (args) => (args[1] === "comment" || args[1] === "edit" ? Object.assign(new Error("Command failed: gh"), { stderr: hostile }) : undefined));
+    const lines: string[] = [];
+
+    applyVerdicts([issue(10)], [splitVerdict(10)], failingGh.run, "o/r", new HandBackReport(), (line) => lines.push(line), split.github);
+
+    const line = lines.find((candidate) => /handing it back failed too/.test(candidate));
+    assert.ok(line, lines.join("\n"));
+    assert.ok(line.includes("held: settled: all clear"), line);
+    assert.doesNotMatch(line, /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u{F0000}-\u{10FFFF}]/u, JSON.stringify(line));
+  });
+
   // Recovery depends on how far the split got.
   it("tells a person to add Sandcastle back when the split had already removed it", () => {
     const gh = recordingGh();

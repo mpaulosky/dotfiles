@@ -3059,6 +3059,25 @@ describe("build's console.error lines", () => {
     assert.doesNotMatch(notice, HIDDEN, JSON.stringify(notice));
   });
 
+  it("prints a failed hand-back for a workflow change as terminal text", async () => {
+    const { buildHost } = host([0, 0], {
+      latestMain: "b".repeat(40),
+      containsMain: false,
+      publishError:
+        "git push failed:\n ! [remote rejected] (refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission)",
+    });
+    buildHost.handBackWorkflowChange = () => {
+      throw new Error(`gh issue comment failed:\n${HOSTILE}`);
+    };
+
+    const lines = await printed(() => buildIssue(issue, branch, base, buildHost));
+
+    const line = lines.find((candidate) => /handing it back for its workflow change failed/.test(candidate));
+    assert.ok(line, lines.join("\n"));
+    assert.ok(line.includes("held: settled: all clear"), line);
+    assert.doesNotMatch(line, HIDDEN, JSON.stringify(line));
+  });
+
   const failures: { name: string; option: Record<string, string | string[] | boolean>; says: RegExp }[] = [
     { name: "a failed publish", option: { publishError: `git push failed:\n${HOSTILE}` }, says: /publishing .* failed/ },
     { name: "a failed fetch of main", option: { latestMainError: HOSTILE }, says: /fetching main failed/ },

@@ -2,6 +2,7 @@
 
 import io
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -10,9 +11,24 @@ import status as st  # noqa: E402
 HEAD = "1234567" + "0" * 33
 
 
+def ago(seconds):
+    """An ISO-8601 time `seconds` ago, as GraphQL reports createdAt."""
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
+
+
+def asked(age=3600, login="github-actions"):
+    """The comment that records Copilot was asked (mpaulosky/dotfiles#360), as COMMENTS_QUERY reports it."""
+    return {"author": {"login": login}, "body": "Asked Copilot.\n\n<!-- pr-automerge:copilot-asked -->", "createdAt": ago(age)}
+
+
+def comments_of(*nodes, total=None):
+    return {"totalCount": len(nodes) if total is None else total, "nodes": list(nodes)}
+
+
 def pr_node(number=7, title="feat: Something", draft=False, merge_state="CLEAN", reviews=(), threads=(),
-            contexts=(), armed=False):
+            contexts=(), armed=False, comments=comments_of()):
     return {
+        "id": f"PR_{number}", "comments": comments,
         "number": number, "title": title, "state": "OPEN", "isDraft": draft, "headRefOid": HEAD,
         "mergeStateStatus": merge_state,
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
@@ -258,6 +274,8 @@ def fake_graphql(monkeypatch, repo_data, threads_by_id):
     calls = []
 
     def graphql(query, *fields, **raw):
+        if query == st.COMMENTS_QUERY:
+            return {"node": {"comments": comments_of()}}
         calls.append(raw.get("id"))
         if query == st.THREADS_QUERY:
             return {"node": {"reviewThreads": {"nodes": threads_by_id[raw["id"]]}}}
@@ -312,3 +330,124 @@ def test_a_failed_or_empty_comments_query_keeps_the_repo_readable_and_gives_no_n
     assert "502 Bad Gateway" in capsys.readouterr().err
     st.gh_graphql("owner", "app")
     assert capsys.readouterr().err.count("502 Bad Gateway") == 0
+
+
+# ── The record that Copilot was asked (mpaulosky/dotfiles#360) ──────────────
+
+GREEN = [{"__typename": "CheckRun", "name": "Test Suite", "status": "COMPLETED", "conclusion": "SUCCESS",
+          "startedAt": "2026-10-07T10:00:00Z"}]
+OLDER = [("copilot-pull-request-reviewer", "f" * 40)]
+FLAGS = st.repo_flags("full")
+NOW = 1_800_000_000.0
+
+
+def at(age):
+    """asked(), as of NOW: a record `age` seconds old."""
+    node = asked(0)
+    node["createdAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(NOW - age))
+    return node
+
+
+def test_to_state_reads_the_record_and_when_it_settles():
+    state = st.to_state(pr_node(comments=comments_of(at(31))), **FLAGS, owner="o", now=NOW)
+    assert state.copilot_asked and state.copilot_ask_settled
+    state = st.to_state(pr_node(comments=comments_of(at(29))), **FLAGS, owner="o", now=NOW)
+    assert state.copilot_asked and not state.copilot_ask_settled
+    state = st.to_state(pr_node(comments=comments_of()), **FLAGS, owner="o", now=NOW)
+    assert not state.copilot_asked and not state.copilot_ask_settled
+
+
+def test_to_state_trusts_a_record_only_from_github_actions_or_the_owner():
+    for login, owner, counts in (("github-actions", "o", True), ("o", "o", True), ("stranger", "o", False), ("o", "p", False)):
+        state = st.to_state(pr_node(comments=comments_of(at(3600) | {"author": {"login": login}})), **FLAGS, owner=owner, now=NOW)
+        assert state.copilot_asked is counts, (login, owner)
+    nobody = at(3600) | {"author": None}
+    assert not st.to_state(pr_node(comments=comments_of(nobody)), **FLAGS, owner="o", now=NOW).copilot_asked
+
+
+def test_comments_that_were_not_read_count_as_asked_but_not_settled():
+    failed = pr_node(comments=None)
+    absent = pr_node()
+    del absent["comments"]
+    # 150 comments with 1 read and no record among them: the record may be on a page that wasn't read.
+    partial = pr_node(comments=comments_of(at(3600) | {"body": "LGTM"}, total=150))
+    for node in (failed, absent, partial):
+        state = st.to_state(node, **FLAGS, owner="o", now=NOW)
+        assert state.copilot_asked and not state.copilot_ask_settled
+
+
+def test_a_record_on_the_page_counts_even_when_there_are_more_comments():
+    state = st.to_state(pr_node(comments=comments_of(at(3600), total=150)), **FLAGS, owner="o", now=NOW)
+    assert state.copilot_asked and state.copilot_ask_settled
+
+
+def test_the_line_asks_copilot_for_an_unasked_head_and_calls_in_claude_for_a_settled_record(monkeypatch):
+    monkeypatch.setattr(st, "read_repo_list", lambda: {"octo/app": "full"})
+    unasked = pr_node(reviews=OLDER, contexts=GREEN)
+    settled = pr_node(number=8, reviews=OLDER, contexts=GREEN, comments=comments_of(asked(3600, login="octo")))
+    fresh = pr_node(number=9, reviews=OLDER, contexts=GREEN, comments=comments_of(asked(5)))
+    unread = pr_node(number=10, reviews=OLDER, contexts=GREEN)
+    unread["comments"] = None
+    code, out, _ = run([], {"octo/app": repo(unasked, settled, fresh, unread)})
+    lines = out.splitlines()
+    assert "-> request Copilot" in lines[0]
+    # The owner is the repo's owner, taken from its name.
+    assert "-> add review:claude" in lines[1]
+    assert "-> wait" in lines[2] and "Copilot was asked" in lines[2]
+    assert "-> wait" in lines[3] and "-> request Copilot" not in lines[3] and "-> add review:claude" not in lines[3]
+
+
+def test_the_comments_query_reads_the_last_100_comments_with_their_author_body_and_time():
+    for field in ("$id: ID!", "comments(last: 100)", "totalCount", "author { login }", "body", "createdAt"):
+        assert field in st.COMMENTS_QUERY, field
+    assert "comments(" not in st.QUERY
+
+
+def comments_graphql(monkeypatch, repo_data, comments_by_id):
+    """Replace st.graphql: the repo query answers repo_data, the comments query a PR's comments by id; returns the ids asked."""
+    asked_ids = []
+
+    def graphql(query, *fields, **raw):
+        if query == st.COMMENTS_QUERY:
+            asked_ids.append(raw["id"])
+            answer = comments_by_id[raw["id"]]
+            if isinstance(answer, Exception):
+                raise answer
+            return {"node": {"comments": answer}}
+        if query == st.THREADS_QUERY:
+            raise AssertionError("no thread comments wanted here")
+        return repo_data
+    monkeypatch.setattr(st, "graphql", graphql)
+    return asked_ids
+
+
+def test_only_an_open_ready_pr_whose_head_copilot_hasnt_reviewed_or_been_asked_for_gets_the_comments_query(monkeypatch):
+    on_head = [("copilot-pull-request-reviewer", HEAD)]
+    wanted = pr_node(number=1, reviews=OLDER, comments=None)
+    never_reviewed = pr_node(number=2, comments=None)
+    draft = pr_node(number=3, draft=True, reviews=OLDER, comments=None)
+    reviewed = pr_node(number=4, reviews=on_head, comments=None)
+    requested = dict(pr_node(number=5, reviews=OLDER, comments=None),
+                     reviewRequests={"nodes": [{"requestedReviewer": {"login": "Copilot"}}]})
+    asked_ids = comments_graphql(monkeypatch, repo(wanted, never_reviewed, draft, reviewed, requested),
+                                 {"PR_1": comments_of(asked(3600)), "PR_2": comments_of(asked(3600), asked(5))})
+    data = st.gh_graphql("owner", "app")
+    assert asked_ids == ["PR_1", "PR_2"]
+    by_number = {node["number"]: node for node in data["repository"]["pullRequests"]["nodes"]}
+    assert by_number[1]["comments"]["totalCount"] == 1 and by_number[2]["comments"]["totalCount"] == 2
+    assert [by_number[number]["comments"] for number in (3, 4, 5)] == [None, None, None]
+
+
+def test_a_failed_comments_query_keeps_the_repo_readable_and_makes_the_record_unread(monkeypatch, capsys):
+    boom = pr_node(number=1, reviews=OLDER, contexts=GREEN)
+    fine = pr_node(number=2, reviews=OLDER, contexts=GREEN)
+    asked_ids = comments_graphql(monkeypatch, repo(boom, fine), {"PR_1": RuntimeError("502 Bad Gateway"), "PR_2": comments_of(asked(3600))})
+    monkeypatch.setattr(st, "COMMENTS_FAILED", set())
+    out, err = io.StringIO(), io.StringIO()
+    assert st.main(["owner/app"], out=out, err=err) == 0
+    lines = out.getvalue().splitlines()
+    assert asked_ids == ["PR_1", "PR_2"]
+    # PR 1's record is unread: neither a Copilot request nor Claude is called for.
+    assert "-> request Copilot" not in lines[0] and "-> add review:claude" not in lines[0] and "-> wait" in lines[0]
+    assert "-> add review:claude" in lines[1]
+    assert "502 Bad Gateway" in capsys.readouterr().err

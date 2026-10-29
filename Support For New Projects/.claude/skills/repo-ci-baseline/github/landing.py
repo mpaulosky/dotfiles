@@ -73,6 +73,12 @@ GITHUB_ACTIONS = "github-actions"
 CLAUDE_MARKER = "<!-- claude-review -->"
 OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->"
 REVIEW_CLAUDE = "review:claude"
+# The record that PR Auto-Merge or land.py asked Copilot to review the PR (mpaulosky/dotfiles#360): a comment
+# containing the marker. The Template's pr-automerge.yml has the same marker and settle time.
+COPILOT_ASKED_MARKER = "<!-- pr-automerge:copilot-asked -->"
+COPILOT_ASK_SETTLE_SECONDS = 30
+COPILOT_ASKED_COMMENT = ("Copilot's review was requested for this PR. It is asked once per PR; if GitHub drops the request, "
+                         "review:claude calls in Claude instead. mpaulosky/dotfiles#360\n\n" + COPILOT_ASKED_MARKER)
 # Claude Review's own checks (claude-review.yml's job names). Removing the
 # label cancels a run in progress and its next add starts a fresh one, so a
 # cancelled run of these needs no rerun, and they don't gate calling it in.
@@ -233,6 +239,8 @@ class PrState:
     copilot_requested: bool = False
     claude_requested: bool = False
     copilot_dropped: bool = False
+    copilot_asked: bool = False
+    copilot_ask_settled: bool = False
     copilot_declined: frozenset[str] = field(default_factory=frozenset)
     merge_commits: frozenset[str] = field(default_factory=frozenset)
     open_threads: int = 0
@@ -267,6 +275,10 @@ class PrState:
         return self.copilot_declined | ({self.head} if self.copilot_dropped and self.head else frozenset())
 
     @property
+    def copilot_gone(self):
+        raise NotImplementedError("Not implemented")
+
+    @property
     def reviewer_on_head(self):
         return bool(self.head_reviewer)
 
@@ -296,6 +308,10 @@ def copilot_declined(reviews):
     """
     return frozenset(oid for login, oid, body in reviews
                      if login and oid and COPILOT.search(login) and COPILOT_NO_REVIEW.match(body or ""))
+
+
+def copilot_ask(comments, owner, now):
+    raise NotImplementedError("Not implemented")
 
 
 def is_claude_review(login, oid, body):

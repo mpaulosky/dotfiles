@@ -575,23 +575,29 @@ grep -qF -- 'short SHA' "$owned/docs/PROCESS.md" \
   || fail "docs/PROCESS.md must tell a session that the reply to a fixed review thread names the fixing commit by its short SHA"
 grep -qF -- 'resolved without a reply' "$owned/docs/PROCESS.md" \
   || fail "docs/PROCESS.md must say a bot thread resolved without a reply is flagged ('resolved without a reply')"
-# PR Auto-Merge's Copilot grace is 5 minutes (mpaulosky/dotfiles#353): the docs that name it say so, and none says 10.
-for grace_doc in "$skill_dir/references/automerge.md" "$skill_dir/docs/adr/0004-claude-review-as-copilots-backup.md" "$owned/docs/PROCESS.md"; do
-  grep -qE '(^|[^0-9])5[ -]minute' "$grace_doc" \
-    || fail "${grace_doc#"$skill_dir"/} must name PR Auto-Merge's Copilot grace as 5 minutes"
-  if grep -qE '(^|[^0-9])10[ -]minute' "$grace_doc"; then
-    fail "${grace_doc#"$skill_dir"/} still says 10 minutes: PR Auto-Merge's Copilot grace is 5 minutes"
+# PR Auto-Merge asks Copilot once per PR and falls back to Claude 30 seconds after a request that didn't register (mpaulosky/dotfiles#360),
+# which replaces #318's grace: the docs that describe the rule say so, and the two that describe today's behaviour name no grace.
+for ask_doc in "$skill_dir/references/automerge.md" "$skill_dir/docs/adr/0004-claude-review-as-copilots-backup.md" "$owned/docs/PROCESS.md"; do
+  grep -qE '(^|[^0-9])30[ -]seconds?' "$ask_doc" \
+    || fail "${ask_doc#"$skill_dir"/} must name the 30 seconds PR Auto-Merge waits after Copilot's one request before calling in Claude"
+done
+for current_doc in "$skill_dir/references/automerge.md" "$owned/docs/PROCESS.md"; do
+  if grep -qE 'COPILOT_GRACE_MS|[0-9]+[ -]minute grace' "$current_doc"; then
+    fail "${current_doc#"$skill_dir"/} still describes #318's grace (COPILOT_GRACE_MS, a N-minute grace): mpaulosky/dotfiles#360 replaced it with one Copilot request and a 30-second fallback"
   fi
 done
+grep -qiE 'once per PR|once for each PR|one request' "$skill_dir/references/automerge.md" \
+  || fail "references/automerge.md must say Copilot is asked once per PR"
+grep -qF -- 'pr-automerge:copilot-asked' "$skill_dir/references/automerge.md" \
+  || fail "references/automerge.md must name the comment that records the ask (the pr-automerge:copilot-asked marker)"
+grep -qE '^## .*360' "$skill_dir/docs/adr/0004-claude-review-as-copilots-backup.md" \
+  || fail "ADR 0004 must have a section for mpaulosky/dotfiles#360 (ask once, read back, fall back in 30 seconds)"
+grep -qiE 'replaces' "$skill_dir/docs/adr/0004-claude-review-as-copilots-backup.md" \
+  || fail "ADR 0004 must say the #360 rule replaces #318's grace"
 # No-CI head, Copilot-less repos and a bot-pushed clean merge (mpaulosky/dotfiles#331).
 automerge_doc="$skill_dir/references/automerge.md"
 adr_0004="$skill_dir/docs/adr/0004-claude-review-as-copilots-backup.md"
 adr_0005="$skill_dir/docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md"
-# The no-CI point and the land.sh-versus-workflow point are sentences of their own, not clauses of one long sentence.
-grep -qE "(^|\. )[[:space:]]*A head with no check besides Claude's" "$automerge_doc" \
-  || fail "references/automerge.md must state the no-CI point as its own sentence ('A head with no check besides Claude's ...')"
-grep -qE "(^|\. )[[:space:]]*\`land\.sh\` counts Claude.s review" "$automerge_doc" \
-  || fail "references/automerge.md must state the land.sh-versus-workflow point as its own sentence ('\`land.sh\` counts Claude's review ...')"
 # A no-CI head's notice says to review and merge by hand, label or not; it is no longer 'the owner's notices' or advice to add the label.
 for notice_doc in "$automerge_doc" "$adr_0004"; do
   if grep -qF -- "owner's notices" "$notice_doc"; then

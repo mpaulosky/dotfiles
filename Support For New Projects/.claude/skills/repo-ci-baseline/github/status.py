@@ -54,6 +54,9 @@ query($owner: String!, $name: String!) {
 }
 """
 
+# The last 100 comments of one PR, for the record that Copilot was asked (mpaulosky/dotfiles#360).
+COMMENTS_QUERY = ""  # Not implemented
+
 # The comments of one PR's review threads, for the notice: 1 + 100 requests, 1 point.
 THREADS_QUERY = """
 query($id: ID!) {
@@ -169,7 +172,8 @@ def repo_flags(scope):
     return {"checks_required": True, "merged_by_workflow": True}
 
 
-def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, copilot_dropped=False):
+def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, copilot_dropped=False, owner="",
+             now=None):
     """A PrState from one pullRequests node of QUERY.
 
     copilot_dropped is the caller's memory that Copilot's request for this

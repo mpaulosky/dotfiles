@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { BUILDING_LABEL } from "./config.mts";
-import { bodyBlockers, gateIssues, openPrReason, readinessReason, unfinishedReason, type Blocker, type GateGitHub } from "./gate.mts";
+import type { execFileSync } from "node:child_process";
+import { bodyBlockers, gateGitHub, gateIssues, openPrReason, readinessReason, unfinishedReason, type Blocker, type GateGitHub } from "./gate.mts";
 
 // An issue already judged ready by intake, since that's the common case the
 // other gate checks (blockers, open PRs, sandcastle:building) are about.
@@ -220,4 +221,53 @@ describe("gateIssues", () => {
 
     assert.deepEqual(gateIssues(gh).blocked[0]!.reasons, ['its GitHub "blocked by" links couldn\'t be read']);
   });
+});
+
+// The gate's live reads run gh with stderr captured, and throw a message built from the error's fields (ADR 0010; mpaulosky/dotfiles#347):
+// Node's own message holds the command line, and gh's stderr must not reach the terminal by itself.
+describe("gateGitHub", () => {
+  const STDERR = "HTTP 500: Internal Server Error\u001b[2K\u200b\u{E0041}";
+  const COMMAND_LINE = "Command failed: gh api repos/o/r/issues/7 [title: Hostile Title\u001b[2K]";
+  const blocker = { number: 7, state: "closed", state_reason: "completed", merged_at: null, is_pr: false };
+
+  const runner = (answer: string, fails = false) => {
+    const calls: { args: readonly string[]; options: { stdio?: unknown } }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { stdio?: unknown } = {}) => {
+      calls.push({ args, options });
+      if (fails) throw Object.assign(new Error(COMMAND_LINE), { stderr: STDERR, status: 1 });
+      return answer;
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+
+  const reads: { name: string; answer: string; read: (github: GateGitHub) => unknown }[] = [
+    { name: "nativeBlockers", answer: `${JSON.stringify(blocker)}\n`, read: (github) => github.nativeBlockers(7) },
+    { name: "blocker", answer: JSON.stringify(blocker), read: (github) => github.blocker(7) },
+  ];
+
+  for (const { name, answer, read } of reads) {
+    it(`${name} reads the issue through gh in the named repository, with stderr captured`, () => {
+      const { calls, run } = runner(answer);
+
+      assert.deepEqual(read(gateGitHub(run, "o/r")), name === "blocker" ? blocker : [blocker]);
+
+      assert.equal(calls.length, 1);
+      assert.ok(calls[0]!.args.some((arg) => arg.startsWith("repos/o/r/issues/7")), calls[0]!.args.join(" "));
+      assert.equal((calls[0]!.options.stdio as unknown[])[2], "pipe", JSON.stringify(calls[0]!.options.stdio));
+    });
+
+    it(`${name} throws gh's stderr, not Node's command line, when gh fails`, () => {
+      const { run } = runner("", true);
+
+      assert.throws(
+        () => read(gateGitHub(run, "o/r")),
+        (error: Error) => {
+          assert.match(error.message, /^gh [^\n]* failed:\n/);
+          assert.ok(error.message.includes(STDERR), error.message);
+          assert.doesNotMatch(error.message, /Command failed|Hostile Title/);
+          return true;
+        },
+      );
+    });
+  }
 });

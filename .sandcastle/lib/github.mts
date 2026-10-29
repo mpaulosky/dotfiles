@@ -211,7 +211,8 @@ export function sameRepository<T extends Pick<ListedPullRequest, "isCrossReposit
 // The open pull requests from this repository's branches, and their head
 // branches. gh pages through results up to --limit, so the cap sits far above
 // any real queue: a PR missed here would let its issue be built twice.
-export function openPullRequests(): OpenPullRequest[] {
+export function openPullRequests(run?: typeof execFileSync, repo?: string): OpenPullRequest[] {
+  if (run !== undefined || repo !== undefined) throw new Error("Not implemented");
   return openSameRepositoryPullRequests();
 }
 
@@ -221,7 +222,8 @@ export function openPullRequests(): OpenPullRequest[] {
 // reads each one's files with pullRequestFiles. Fork PRs are left out, as
 // sameRepository explains: counting them would let anyone with a fork hold the
 // whole queue back.
-export function openPullRequestsIntoMain(): OpenPullRequest[] {
+export function openPullRequestsIntoMain(run?: typeof execFileSync, repo?: string): OpenPullRequest[] {
+  if (run !== undefined || repo !== undefined) throw new Error("Not implemented");
   return openSameRepositoryPullRequests("--base", BASE_BRANCH.replace(/^origin\//, ""));
 }
 
@@ -894,13 +896,15 @@ export function pullRequestFiles(pr: number, run: typeof execFileSync = execFile
 }
 
 // Any issue's body, or "" when it has none.
-export function issueBody(number: number): string {
+export function issueBody(number: number, run?: typeof execFileSync, repo?: string): string {
+  if (run !== undefined || repo !== undefined) throw new Error("Not implemented");
   return sh(process.cwd(), "gh", "api", `repos/${repoName()}/issues/${number}`, "--jq", '.body // ""');
 }
 
 // Add the native "#issue blocked by #blocker" link. The API names the blocker
 // by its id, not its number.
-export function addBlockedBy(issue: number, blocker: number): void {
+export function addBlockedBy(issue: number, blocker: number, run?: typeof execFileSync, repo?: string): void {
+  if (run !== undefined || repo !== undefined) throw new Error("Not implemented");
   const id = sh(process.cwd(), "gh", "api", `repos/${repoName()}/issues/${blocker}`, "--jq", ".id");
   sh(
     process.cwd(), "gh", "api", "--method", "POST", `repos/${repoName()}/issues/${issue}/dependencies/blocked_by`,

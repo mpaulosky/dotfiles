@@ -15,6 +15,7 @@
 // didn't approve, never reaches it.
 // ---------------------------------------------------------------------------
 
+import type { execFileSync } from "node:child_process";
 import { isIssueBranch } from "./branches.mts";
 import { BUILDING_LABEL } from "./config.mts";
 import { hasLabel, openPullRequests, repoName, type OpenPullRequest, type SandcastleIssue } from "./github.mts";
@@ -41,6 +42,12 @@ export type GateGitHub = {
   nativeBlockers(issueNumber: number): Blocker[];
   blocker(number: number): Blocker;
 };
+
+// The gate's GitHub reads, run through `run` (execFileSync by default) against `repo` (this checkout's repository by default).
+export function gateGitHub(run?: typeof execFileSync, repo?: string): GateGitHub {
+  if (run !== undefined || repo !== undefined) throw new Error("Not implemented");
+  return liveGitHub;
+}
 
 export const liveGitHub: GateGitHub = {
   sandcastleIssues: () => loadQueue(),

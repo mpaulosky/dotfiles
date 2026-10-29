@@ -1297,7 +1297,6 @@ jobs:
                 core.warning(`Couldn't record the ask for Copilot's review of PR #${pullNumber}, so it wasn't made: ${error.message}`);
                 return false;
               }
-              let failed = false;
               try {
                 await patClient.graphql(
                   `mutation($pullRequestId: ID!) {
@@ -1311,10 +1310,7 @@ jobs:
                 if (sweeping && endsRun(error)) {
                   throw error;
                 }
-                failed = true;
                 core.warning(`Couldn't request Copilot's review of PR #${pullNumber}: ${error.message}`);
-              }
-              if (failed) {
                 core.info(`Copilot's review of PR #${pullNumber} wasn't requested, so Claude is called in.`);
                 return true;
               }
@@ -1357,15 +1353,18 @@ jobs:
                   return;
                 }
                 if (!copilotAskSettled(pr)) {
-                  const state = copilotAsk(pr).state;
+                  let why = `it was asked less than ${COPILOT_ASK_SETTLE_MS / 1000} seconds ago.`;
+                  switch (copilotAsk(pr).state) {
+                    case "none":
+                      why = "it has not been asked yet.";
+                      break;
+                    case "unread":
+                      why = "the record of whether it was asked could not be read.";
+                      break;
+                  }
                   core.info(
                     `Not calling in Claude for PR #${pullNumber} yet: Copilot has not reviewed ${pr.headRefOid} and has no ` +
-                    `request pending, but ` +
-                    (state === "none"
-                      ? "it has not been asked yet."
-                      : state === "unread"
-                        ? "the record of whether it was asked could not be read."
-                        : `it was asked less than ${COPILOT_ASK_SETTLE_MS / 1000} seconds ago.`)
+                    `request pending, but ${why}`
                   );
                   return;
                 }

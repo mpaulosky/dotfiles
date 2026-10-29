@@ -30,7 +30,7 @@ Once Copilot really reviews the head, Copilot's review covers it and the label c
 so a repo whose ruleset never requests Copilot gets Claude's review too. The owner decided (mpaulosky/dotfiles#331) to accept that and not to check the ruleset:
 a check is an extra API read and failure mode, and without Copilot such a repo would otherwise never get a review at all. The label is still the gate,
 so the cost there is one Claude review per labelled PR. The other cost is a small window where a Copilot review that is merely very late arrives after Claude's;
-its threads still hold the merge, and the short window the #360 update leaves keeps that window small.
+its threads still hold the merge, and the short window the #360 update leaves keeps it small.
 
 A bot's push of a clean merge H2 of `main` on top of a head H1 Claude reviewed gets a review of its own (mpaulosky/dotfiles#331).
 H2's own Claude Review run is skipped (the action refuses a bot), and under a dropped request H1 has no note, so a review of H1 would count for nothing at the gate.
@@ -82,7 +82,6 @@ Accepted costs:
 - **Keep the grace and shorten it**: rejected (mpaulosky/dotfiles#360) because a dropped request still brings no event, so a shorter grace still waits for the sweep.
 - **A `copilot:asked` label as the record**: rejected because it needs a `labels.json` and settings change in every repo and carries no time for the 30 seconds.
 - **Remember the drop in `land.py`'s process**: rejected because `--once` runs forget it and ask again.
-
 - **Replace Copilot with Claude**: rejected because rounds the size of #82's come from working out the Baseline process; once work is back on one project, Copilot's budget covers it at no cost.
 - **Run both reviewers on every PR**: rejected for the same cost, and because two reviews of every head double the threads to answer.
 - **Let Claude post the review itself**: rejected so the model never holds a write token.

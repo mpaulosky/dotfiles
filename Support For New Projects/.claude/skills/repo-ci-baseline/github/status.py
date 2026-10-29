@@ -107,13 +107,16 @@ def bot_reviewed(node):
                for review in node["reviews"]["nodes"])
 
 
+def requested_reviewers(node):
+    """The reviewers a PR's review requests name (a Bot has a login, a team a name)."""
+    return [(request.get("requestedReviewer") or {}) for request in (node.get("reviewRequests") or {}).get("nodes", [])]
+
+
 def needs_record(node):
     """Whether the record that Copilot was asked matters for this PR: open, ready, no real Copilot review of the head, no request."""
     if node.get("state") != "OPEN" or node.get("isDraft"):
         return False
-    if any(COPILOT.search((request.get("requestedReviewer") or {}).get("login")
-                          or (request.get("requestedReviewer") or {}).get("name") or "")
-           for request in (node.get("reviewRequests") or {}).get("nodes", [])):
+    if any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested_reviewers(node)):
         return False
     reviews = [((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"))
                for review in node["reviews"]["nodes"]]
@@ -238,7 +241,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
     reviews = [((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"))
                for review in node["reviews"]["nodes"]]
     # Copilot is requested as a Bot; a login or a team name, like reapply.sh's copilot_jq.
-    requested = [(request.get("requestedReviewer") or {}) for request in (node.get("reviewRequests") or {}).get("nodes", [])]
+    requested = requested_reviewers(node)
     labels = {label["name"] for label in (node.get("labels") or {}).get("nodes", []) if label}
     return PrState(
         state=node["state"],

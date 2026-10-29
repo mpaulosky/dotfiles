@@ -126,7 +126,7 @@ said = {int(n) for n in re.findall(r"\b(\d+)[ -]seconds?\b", process)}
 check(f"docs/PROCESS.md states the Copilot fallback's wait as COPILOT_ASK_SETTLE_MS's {seconds} seconds", seconds in said, f"seconds named: {sorted(said)}")
 
 # ---- One source: the other places say less or point to the reference ------------------------------------------------------
-check("the Seed rule is shorter than it was (3470 characters): the model is in the reference", len(seed_rule) <= 3000, f"{len(seed_rule)} characters")
+check("the Seed rule stays short (at most 3000 characters): the model is in the reference", len(seed_rule) <= 3000, f"{len(seed_rule)} characters")
 check("the Seed rule doesn't walk through how the head is recorded (RELEASE_PR_PAT, the workflow comment): the reference does",
       "RELEASE_PR_PAT" not in seed_rule and "workflow comment" not in seed_rule)
 check("the Seed rule doesn't mention dotfiles or link to references/ (it loads in every Baseline repo)",
@@ -135,7 +135,7 @@ check("the Seed rule doesn't mention dotfiles or link to references/ (it loads i
 row = next((l for l in skill_md.splitlines() if l.startswith("| Sandcastle |")), "")
 check("SKILL.md has a Sandcastle row in its table of parts", bool(row))
 check("SKILL.md's Sandcastle row links to references/sandcastle.md", "references/sandcastle.md" in row)
-check("SKILL.md's Sandcastle row stays short (it was 519 characters)", 0 < len(row) <= 400, f"{len(row)} characters")
+check("SKILL.md's Sandcastle row stays short (at most 400 characters)", 0 < len(row) <= 400, f"{len(row)} characters")
 listed = [name for name in ("sandcastle-hand-off.md", "repo-config.mts", "sandcastle-skills.txt", "main.mts", "status.mts", "Dockerfile") if name in row]
 check("SKILL.md's Sandcastle row doesn't list the Template's files one by one (the reference's tables do)", not listed, ", ".join(listed))
 
@@ -157,7 +157,7 @@ if at is not None:
 header_text = flat(" ".join(header))
 check("handOffApproval has a comment block in lib/follow-up.mts", bool(header))
 check("handOffApproval's comment points to references/sandcastle.md for the model", "references/sandcastle.md" in header_text)
-check("handOffApproval's comment is at most 8 lines (it was 14 and restated the reference's Who and The head bullets)", 0 < len(header) <= 8, f"{len(header)} lines")
+check("handOffApproval's comment is at most 8 lines (the reference's Who and The head bullets hold the rest)", 0 < len(header) <= 8, f"{len(header)} lines")
 check("handOffApproval's comment doesn't restate the update-branch accounts (PR Auto-Merge's RELEASE_PR_PAT, the Update branch button)",
       "RELEASE_PR_PAT" not in header_text and "Update branch" not in header_text)
 

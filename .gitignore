@@ -9,3 +9,8 @@ __pycache__/
 
 # Sandcastle's pnpm packages.
 node_modules/
+
+# The review's local record of security findings (scripts/review.sh record): never
+# committed or published. Its README can be committed.
+.security/*
+!.security/README.md

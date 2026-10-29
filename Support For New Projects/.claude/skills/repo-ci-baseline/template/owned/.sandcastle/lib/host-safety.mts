@@ -21,7 +21,8 @@
 //   GIT_DIR (see git in lib/shell.mts);
 // - the sandbox can't change .git/config or .git/hooks, or read the local
 //   review's ledgers in .git/review, at any path a mount puts .git
-//   (protectedGitMounts, and withCreateMounts in lib/skills.mts);
+//   (protectedGitMounts, and withCreateMounts in lib/skills.mts), or read the
+//   local security record in the checkout's .security (protectedRecordMounts);
 // - the host runs its own git and gh in the main checkout, never in a worktree
 //   (lib/build.mts and lib/branches.mts);
 // - Sandcastle runs git in a worktree when it reuses one and when it closes
@@ -205,6 +206,30 @@ export function protectedGitMounts(
     .filter((path) => exists(path))
     .map((path) => ({ hostPath: path, sandboxPath: path, readonly: true }));
   return [...commands, { hostPath: empty, sandboxPath: join(gitDir, "review"), readonly: true }];
+}
+
+// An empty read-only folder over `<checkout>/.security`, the local record of security findings (security-record.mts), which
+// agents must not read: head-mode sandboxes mount the main checkout itself, agents read untrusted text, and the host publishes
+// what they write. Covered whether or not the folder exists yet, so an entry written during the run lands in the hidden folder
+// too. The host makes the folder first, or Docker would make it as root; a symlink or a file there is refused, since Docker's
+// cover would follow the link and leave the entries open at their own path.
+export function protectedRecordMounts(
+  checkout: string,
+  _exists: (path: string) => boolean = existsSync,
+  empty: string = emptyFolder(),
+  makeDir: (path: string) => void = (path) => {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    // The Seed's README makes the folder at checkout with the umask's mode; mkdir's mode only applies to a new folder.
+    chmodSync(path, 0o700);
+  },
+): ReadOnlyMount[] {
+  const record = join(checkout, ".security");
+  const found = lstatSync(record, { throwIfNoEntry: false });
+  if (found !== undefined && !found.isDirectory()) {
+    throw new Error(`${record} isn't a real folder, so the security record can't be hidden from the sandbox. Inspect it and remove it.`);
+  }
+  makeDir(record);
+  return [{ hostPath: empty, sandboxPath: record, readonly: true }];
 }
 
 // Where Sandcastle 0.12 puts a branch's worktree (its worktree mode's create()).

@@ -438,3 +438,8 @@ docs/coverage/
 # Personal screenshots and JetBrains Junie agent files
 .images/
 .junie/
+
+# The review's local record of security findings (scripts/review.sh record): never
+# committed or published. Its README, which a re-Apply writes once, can be committed.
+.security/*
+!.security/README.md

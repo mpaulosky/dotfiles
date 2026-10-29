@@ -32,6 +32,7 @@ import {
   type ReviewInput,
 } from "./review-ledger.mts";
 import { NOT_OWNED_BASELINE_PATHS } from "./repo-config.mts";
+import { fingerprint } from "./security-record.mts";
 
 // Only the config each test sets: a machine's global or system git config
 // (commit signing, a hooks path, merge.ff=only, colour) mustn't decide these
@@ -110,7 +111,7 @@ function rewriteFindings(path: string, change: (finding: Record<string, unknown>
 const nearest = () => latestLedger(repo, mergeBase(repo));
 
 // Run main() with stdout and stderr captured.
-function cli(args: string[], cwd = repo, env: NodeJS.ProcessEnv = {}): { code: number; out: string; err: string } {
+function cli(args: string[], cwd = repo, env: NodeJS.ProcessEnv = {}, slug?: string): { code: number; out: string; err: string } {
   const out: string[] = [];
   const err: string[] = [];
   const stdout = process.stdout.write;
@@ -118,7 +119,7 @@ function cli(args: string[], cwd = repo, env: NodeJS.ProcessEnv = {}): { code: n
   process.stdout.write = ((chunk: string) => (out.push(chunk), true)) as typeof process.stdout.write;
   process.stderr.write = ((chunk: string) => (err.push(chunk), true)) as typeof process.stderr.write;
   try {
-    const code = main(args, cwd, env);
+    const code = main(args, cwd, env, slug);
     return { code, out: out.join(""), err: err.join("") };
   } finally {
     process.stdout.write = stdout;
@@ -2566,5 +2567,408 @@ describe("OWNED_PATHS", () => {
       assert.equal(underOwnedPattern(path), true, `${path} isn't under an Owned pattern, so listing it does nothing`);
       assert.equal(isOwnedPath(path), false, path);
     }
+  });
+});
+
+// The local, git-ignored record of security findings (.security/ in the main checkout). `record` writes it; two reviews read it
+// through `security`. The unit-level cases are in security-record.test.mts; these go through scripts/review.sh's own command.
+describe("the security record", () => {
+  // The Template's .gitignore (dotfiles' own, in its copy of this test) carries the record's two lines.
+  const templateIgnore = readFileSync(new URL("../../.gitignore", import.meta.url), "utf8");
+  const MARKER = "SECRET-MARKER-5d1f";
+
+  // A security finding as triage records it: a Warning, marked security. `policy` and `repeats` are only the record's, and
+  // aren't kept in the ledger.
+  type SecurityFinding = Finding & { policy?: string; repeats?: string };
+  const weakness = (overrides: Partial<SecurityFinding> = {}): SecurityFinding => ({
+    id: "R1",
+    lens: "Security",
+    path: "scripts/upload.sh",
+    line: 3,
+    summary: "The upload handler writes outside the target folder.",
+    severity: "warning",
+    security: true,
+    status: "fixed",
+    test: "tests/upload.test.sh::rejects_dotdot",
+    reason: null,
+    fix: "Resolve the path and refuse one outside the folder.",
+    ...overrides,
+  });
+
+  // `scripts/review.sh record`, run in `cwd` on a file holding the review of that checkout's HEAD.
+  let inputs = 0;
+  function recordIn(cwd: string, findings: SecurityFinding[], options: { pr?: number; slug?: string } = {}): { code: number; out: string; err: string } {
+    const body = {
+      reviewedKey: diffKey(cwd, mergeBase(cwd)),
+      reviewedHead: run(cwd, "rev-parse", "HEAD"),
+      rounds: 1,
+      ...(options.pr === undefined ? {} : { pr: options.pr }),
+      findings,
+    };
+    inputs += 1;
+    const file = join(root, `input-${inputs}.json`);
+    writeFileSync(file, JSON.stringify(body));
+    return cli(["record", file], cwd, {}, options.slug ?? "o/r");
+  }
+  const recordHere = (findings: SecurityFinding[], options: { pr?: number; slug?: string } = {}) => recordIn(repo, findings, options);
+
+  const securityFiles = (checkout = repo) => (existsSync(join(checkout, ".security")) ? readdirSync(join(checkout, ".security")).sort() : []);
+  const entries = (checkout = repo) => securityFiles(checkout).filter((name) => /^\d+-/.test(name));
+  const entry = (name: string, checkout = repo) => readFileSync(join(checkout, ".security", name), "utf8");
+
+  const firstEntry = () => {
+    assert.notEqual(entries().length, 0, "no entry was written");
+    return entry(entries()[0] ?? "");
+  };
+
+  // A second worktree of the clone, on its own branch with a change of its own.
+  function otherWorktree(): string {
+    const other = join(root, "wt");
+    run(repo, "worktree", "add", "--quiet", "-b", "feature/2-other", other, "origin/main");
+    commit(other, "other.cs", "changed in the other worktree\n", "change other");
+    return other;
+  }
+
+  describe("with the Template's .gitignore", () => {
+    beforeEach(() => {
+      commit(repo, ".gitignore", templateIgnore, "ignore the record");
+    });
+
+    // Criterion 4.
+    it("has the .gitignore lines that ignore every entry and not the README", () => {
+      assert.match(templateIgnore, /^\.security\/\*$/m);
+      assert.match(templateIgnore, /^!\.security\/README\.md$/m);
+      mkdirSync(join(repo, ".security"));
+      const ignored = (path: string) => spawnSync("git", ["check-ignore", "-q", path], { cwd: repo }).status === 0;
+
+      assert.equal(ignored(".security/0001-x.md"), true);
+      assert.equal(ignored(".security/README.md"), false);
+    });
+
+    // Criterion 1.
+    it("record writes .security/0001-<slug>.md for a Warning", () => {
+      const result = recordHere([weakness({ summary: "Path traversal in the upload handler is not checked" })]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.deepEqual(entries(), ["0001-path-traversal-in-the-upload-handler.md"]);
+    });
+
+    it("record writes an entry for a Warning marked security: false, which counts as a security weakness all the same", () => {
+      const result = recordHere([weakness({ security: false })]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.equal(entries().length, 1);
+    });
+
+    it("record writes an entry for a finding marked security: true, an open one too", () => {
+      const result = recordHere([weakness({ status: "open", test: null })]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.match(firstEntry(), /^- Status: open$/m);
+    });
+
+    // The entry `accept` changes is the one the finding was recorded against, not one found again from its text.
+    it("accept leaves a fixed entry fixed, with a warning, when a later branch's finding repeats it and is recorded open", () => {
+      recordHere([weakness()]);
+      commit(repo, "later.cs", "a later change\n", "later change");
+
+      recordHere([weakness({ id: "R2", status: "open", test: null })]);
+      const result = cli(["accept", "R2", "The", "policy", "is", "gone", "here."]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.match(result.err, /^\.security: 0001 is fixed, so it stays fixed/m);
+      assert.doesNotMatch(result.err, /marked 0001 accepted/);
+      assert.match(firstEntry(), /^- Status: fixed$/m);
+      assert.doesNotMatch(firstEntry(), /## Accepted/);
+      assert.equal(readLedger(repo, diffKey(repo, mergeBase(repo)))?.findings[0]?.status, "accepted");
+    });
+
+    it("accept turns the open entry accepted that a finding was matched to through `repeats` in other words", () => {
+      recordHere([weakness({ status: "open", test: null })]);
+      commit(repo, "later.cs", "a later change\n", "later change");
+
+      recordHere([weakness({ id: "R2", summary: "Files can be written above the upload folder.", status: "open", test: null, repeats: "0001" })]);
+      const result = cli(["accept", "R2", "The folder is a sandbox."]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.match(result.err, /^\.security: marked 0001 accepted$/m);
+      assert.deepEqual(entries().length, 1);
+      assert.match(firstEntry(), /^- Status: accepted$/m);
+      assert.match(firstEntry(), /The folder is a sandbox\./);
+    });
+
+    it("accept still finds the entry by the finding's text when no note of the entry was kept (an older record)", () => {
+      recordHere([weakness({ status: "open", test: null })]);
+      for (const name of readdirSync(ledgerDir(repo))) if (name.endsWith(".entries")) rmSync(join(ledgerDir(repo), name));
+
+      const result = cli(["accept", "R1", "Fine."]);
+
+      assert.match(result.err, /^\.security: marked 0001 accepted$/m);
+      assert.match(firstEntry(), /^- Status: accepted$/m);
+    });
+
+    it("the note of which entry each finding went to isn't a ledger, and holds no entry text", () => {
+      recordHere([weakness({ policy: MARKER })]);
+
+      const names = readdirSync(ledgerDir(repo)).filter((name) => name.endsWith(".entries"));
+      assert.equal(names.length, 1);
+      assert.equal(readFileSync(join(ledgerDir(repo), names[0] ?? ""), "utf8").trim(), '{"R1":"0001"}');
+      assert.equal(cli(["latest"]).code, 0);
+    });
+
+    it("record writes no entry for a finding that isn't a security weakness, or one dismissed", () => {
+      const result = recordHere([
+        weakness({ id: "R1", lens: "Edge cases", severity: "critical", security: false, summary: "An email of only spaces passes." }),
+        weakness({ id: "R2", lens: "Edge cases", severity: "advisory", security: false, status: "open", test: null, summary: "A comment is stale." }),
+        weakness({ id: "R3", status: "dismissed", test: null, reason: "The code at app.cs:3 shows it isn't reachable.", summary: "Not a weakness." }),
+      ]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.deepEqual(securityFiles(), []);
+    });
+
+    it("record numbers an entry after the highest one, padded to four digits, and the README doesn't count", () => {
+      mkdirSync(join(repo, ".security"));
+      writeFileSync(join(repo, ".security", "README.md"), "# The record\n");
+      writeFileSync(join(repo, ".security", "0007-old.md"), "- Status: fixed\n");
+
+      recordHere([weakness()]);
+
+      assert.deepEqual(entries().map((name) => name.slice(0, 5)), ["0007-", "0008-"]);
+    });
+
+    // Criterion 2.
+    it("an entry names the weakness, the policy, the pinning test, the status, the branch and the PR it came from", () => {
+      recordHere([weakness({ policy: "Every path is resolved and refused when it leaves the folder." })], { pr: 12, slug: "o/r" });
+
+      const text = firstEntry();
+      assert.match(text, /The upload handler writes outside the target folder\./);
+      assert.match(text, /Every path is resolved and refused when it leaves the folder\./);
+      assert.match(text, /tests\/upload\.test\.sh::rejects_dotdot/);
+      assert.match(text, /^- Status: fixed$/m);
+      assert.match(text, /^- Branch: feature\/1-thing$/m);
+      assert.match(text, /^- PR: o\/r#12$/m);
+    });
+
+    it("an entry says none when no PR was recorded", () => {
+      recordHere([weakness()]);
+
+      assert.match(firstEntry(), /^- PR: none when recorded$/m);
+    });
+
+    it("record prints on stderr what it wrote, and its stdout stays the report", () => {
+      const result = recordHere([weakness()]);
+
+      assert.match(result.err, /^\.security: wrote 0001-[a-z0-9-]+\.md \(fixed\)$/m);
+      assert.doesNotMatch(result.out, /\.security/);
+      assert.match(result.out, /R1/);
+    });
+
+    it("record keeps a finding's policy, repeats and the review's pr out of the ledger", () => {
+      const result = recordHere([weakness({ policy: "A policy sentence.", repeats: "0042" })], { pr: 12 });
+
+      assert.equal(result.code, 0, result.err);
+      const files = readdirSync(ledgerDir(repo)).filter((name) => name.endsWith(".json"));
+      assert.equal(files.length > 0, true);
+      for (const name of files) {
+        const text = readFileSync(join(ledgerDir(repo), name), "utf8");
+        assert.doesNotMatch(text, /"policy"|"repeats"|"pr"|A policy sentence/, name);
+      }
+    });
+
+    // Criterion 4.
+    it("git status shows no entry after a record", () => {
+      recordHere([weakness()]);
+
+      assert.equal(entries().length, 1);
+      assert.equal(run(repo, "status", "--porcelain", "--untracked-files=all"), "");
+    });
+
+    // Criterion 3.
+    it("a weakness an entry holds gets no second file, however the later record words it", () => {
+      recordHere([weakness()]);
+      commit(repo, "other.cs", "again\n", "another change");
+
+      const again = recordHere([weakness({ id: "R2", summary: "  THE upload handler writes\noutside the target   folder. " })]);
+
+      assert.equal(again.code, 0, again.err);
+      assert.deepEqual(entries().length, 1);
+      assert.match(again.err, /R2 repeats 0001/);
+    });
+
+    it("a finding naming `repeats` holds the weakness of that entry", () => {
+      recordHere([weakness({ status: "open", test: null })]);
+      commit(repo, "other.cs", "again\n", "another change");
+
+      recordHere([weakness({ id: "R2", summary: "Uploads can leave their folder.", repeats: "0001" })]);
+
+      assert.equal(entries().length, 1);
+    });
+
+    it("an open entry recorded fixed later is updated in place, not written twice", () => {
+      recordHere([weakness({ status: "open", test: null })]);
+      commit(repo, "other.cs", "again\n", "another change");
+
+      recordHere([weakness({ id: "R2" })]);
+
+      assert.equal(entries().length, 1);
+      assert.match(firstEntry(), /^- Status: fixed$/m);
+    });
+
+    // Criterion 3 and 9: another branch, in another worktree.
+    it("a review on another branch, in another worktree, writes no second file for a weakness an entry holds", () => {
+      recordHere([weakness()]);
+      const other = otherWorktree();
+
+      const result = recordIn(other, [weakness({ summary: "the upload handler writes outside the target folder." })]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.equal(entries().length, 1);
+      assert.match(result.err, /R1 repeats 0001/);
+      assert.deepEqual(securityFiles(other), []);
+    });
+
+    // Criterion 9.
+    it("an entry written in one worktree is listed by `security` in another, from the main checkout's directory", () => {
+      const other = otherWorktree();
+      recordHere([weakness()]);
+
+      const listed = cli(["security"], other);
+
+      assert.equal(listed.code, 0, listed.err);
+      const columns = listed.out.trim().split("\n")[0]?.split("\t");
+      assert.deepEqual(columns, ["0001", "fixed", "Security", "scripts/upload.sh", join(repo, ".security", entries()[0] ?? "")]);
+      assert.deepEqual(securityFiles(other), []);
+    });
+
+    it("a record made in a linked worktree writes into the main checkout's .security, and the main checkout lists it", () => {
+      const other = otherWorktree();
+
+      const result = recordIn(other, [weakness()]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.equal(entries().length, 1);
+      assert.deepEqual(securityFiles(other), []);
+      assert.match(cli(["security"], repo).out, /^0001\tfixed\t/);
+    });
+
+    it("security prints that there are no entries, and exits 0, when the directory doesn't exist", () => {
+      const result = cli(["security"]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.equal(result.out.trim(), "No security entries.");
+    });
+
+    it("security lists a fixed, an accepted and an open entry by id, status, lens, path and file, and prints nothing of their text", () => {
+      recordHere([
+        weakness({ id: "R1", path: "a.sh", summary: `Fixed ${MARKER}.`, policy: `Policy ${MARKER}.` }),
+        weakness({ id: "R2", path: "b.sh", summary: "Open one.", status: "open", test: null }),
+        weakness({ id: "R3", path: "c.sh", summary: "Soon accepted.", status: "open", test: null }),
+      ]);
+      assert.equal(cli(["accept", "R3", `Because ${MARKER}.`]).code, 0);
+
+      const listed = cli(["security"]);
+
+      assert.deepEqual(listed.out.trim().split("\n").map((line) => line.split("\t").slice(0, 4)), [
+        ["0001", "fixed", "Security", "a.sh"],
+        ["0002", "open", "Security", "b.sh"],
+        ["0003", "accepted", "Security", "c.sh"],
+      ]);
+      assert.doesNotMatch(listed.out, new RegExp(MARKER));
+    });
+
+    // Criterion 2 again: accepting a finding is seen in its entry.
+    it("accept turns the open finding's entry accepted, with the person's reason", () => {
+      recordHere([weakness({ status: "open", test: null })]);
+
+      assert.equal(cli(["accept", "R1", "The folder is a sandbox."]).code, 0);
+
+      const text = firstEntry();
+      assert.match(text, /^- Status: accepted$/m);
+      assert.match(text, /The folder is a sandbox\./);
+    });
+
+    // Criterion 10.
+    it("an accepted or open entry is read but changes neither the check nor the report", () => {
+      recordHere([]);
+      const before = { check: cli(["check"]), report: cli(["report"]) };
+      assert.equal(before.check.code, 0);
+      mkdirSync(join(repo, ".security"), { recursive: true });
+      const hand = (id: string, status: string) =>
+        writeFileSync(join(repo, ".security", `${id}-hand.md`), `# ${id}: Hand\n\n- Status: ${status}\n- Lens: Security\n- Path: scripts/upload.sh\n- Fingerprint: ${fingerprint("scripts/upload.sh", "x")}\n`);
+      hand("0001", "accepted");
+      hand("0002", "open");
+      hand("0003", "fixed");
+
+      const after = { check: cli(["check"]), report: cli(["report"]) };
+
+      assert.deepEqual(after, before);
+      assert.deepEqual(cli(["security"]).out.trim().split("\n").map((line) => line.split("\t")[1]), ["accepted", "open", "fixed"]);
+    });
+
+    // Criterion 5.
+    it("no text of an entry reaches the record's output, the report, the notes, the follow-up issue's list, the PR body or the ledgers", () => {
+      mkdirSync(join(repo, ".security"));
+      writeFileSync(
+        join(repo, ".security", "0001-hand-written.md"),
+        `# 0001: ${MARKER}\n\n- Status: fixed\n- Lens: Security\n- Path: scripts/upload.sh\n- Branch: ${MARKER}\n- PR: none when recorded\n` +
+          `- Fingerprint: ${fingerprint("scripts/upload.sh", "The upload handler writes outside the target folder.")}\n\n## Weakness\n\n${MARKER}\n\n## Policy\n\n${MARKER}\n\n## Pinned by\n\n${MARKER}\n`,
+      );
+      writeFileSync(join(root, "old-body.md"), "Closes the issue.\n");
+
+      const recorded = recordHere([
+        weakness({ id: "R1", policy: `The policy: ${MARKER}.` }),
+        weakness({ id: "R2", path: "scripts/other.sh", summary: "A second weakness.", policy: `Another policy: ${MARKER}.`, status: "open", test: null }),
+        weakness({ id: "R3", lens: "Docs match the code", path: "README.md", severity: "advisory", security: false, status: "open", test: null, summary: "A comment is stale." }),
+      ]);
+      assert.equal(recorded.code, 0, recorded.err);
+      const outputs = [
+        recorded.out,
+        recorded.err,
+        cli(["report"]).out,
+        cli(["notes"]).out,
+        cli(["advisory"]).out,
+        cli(["latest"]).out,
+        cli(["body", join(root, "old-body.md"), join(root, "new-body.md")]).out,
+        readFileSync(join(root, "new-body.md"), "utf8"),
+        ...readdirSync(ledgerDir(repo)).map((name) => readFileSync(join(ledgerDir(repo), name), "utf8")),
+      ];
+
+      assert.match(cli(["advisory"]).out, /A comment is stale\./);
+      for (const output of outputs) assert.doesNotMatch(output, new RegExp(MARKER));
+    });
+  });
+
+  // Criterion 4: a repo whose .gitignore lacks the line never gets an entry that git status would show.
+  describe("without the ignore line", () => {
+    it("record writes no entry, says to re-Apply on stderr, and still records the review", () => {
+      const result = recordHere([weakness()]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.deepEqual(securityFiles(), []);
+      assert.match(result.err, /^\.security: .*isn't git-ignored/m);
+      assert.match(result.err, /re-Apply/);
+      assert.equal(cli(["check"]).code, 0);
+    });
+  });
+
+  // A .security that can't be trusted is no reason to lose the review.
+  describe("with a .security that is a symlink", () => {
+    it("record writes nothing through it, warns, and still records the review", () => {
+      commit(repo, ".gitignore", templateIgnore, "ignore the record");
+      mkdirSync(join(root, "elsewhere"));
+      symlinkSync(join(root, "elsewhere"), join(repo, ".security"));
+
+      const result = recordHere([weakness()]);
+
+      assert.equal(result.code, 0, result.err);
+      assert.deepEqual(readdirSync(join(root, "elsewhere")), []);
+      assert.match(result.err, /^\.security: /m);
+      assert.equal(cli(["check"]).code, 0);
+    });
+  });
+
+  it("is a command the usage lists", () => {
+    assert.match(cli(["nonsense"]).err, /^ {2}security {3,}/m);
   });
 });

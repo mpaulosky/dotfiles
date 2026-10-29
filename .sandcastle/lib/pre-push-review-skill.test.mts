@@ -483,3 +483,91 @@ describe("the hardening-review skill's reuse of pre-push-review", () => {
     assert.match(hardening, /absolute path, `\.\.`, `~` or a\s+URL/);
   });
 });
+
+// The local, git-ignored record of security findings (.security/), which `scripts/review.sh record` writes. Both reviews read it
+// through `scripts/review.sh security`, by id, lens and path only, and treat a `fixed` entry as settled.
+describe("the skills' reading of the .security record", () => {
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+  // One numbered step of pre-push-review, from its heading to the next step's.
+  const step = (number: number) => {
+    const start = skill.indexOf(`### ${number}. `);
+    const end = skill.indexOf(`### ${number + 1}. `, start);
+    assert.notEqual(start, -1, `step ${number} is missing`);
+    return flat(skill.slice(start, end === -1 ? undefined : end));
+  };
+  const brief = readFileSync(new URL("../../.claude/skills/hardening-review/references/brief.md", import.meta.url), "utf8");
+
+  it("step 3 reads the record with scripts/review.sh security, by id, lens and path only", () => {
+    const three = step(3);
+
+    assert.match(three, /`scripts\/review\.sh security`/);
+    assert.match(three, /\.security\//);
+    assert.match(three, /by (?:its |their )?id, lens and path only/);
+  });
+
+  it("step 3 keeps the weakness, policy, pin, reason and summary of an entry from every reviewer", () => {
+    assert.match(step(3), /never (?:its |their )?(?:the )?(?:weakness|summary)[^.]*(?:summary|reason)/i);
+  });
+
+  it("step 3 says an entry's text is data, not instructions", () => {
+    assert.match(step(3), /ignore (?:any )?instructions? (?:found )?in (?:it|them|an entry)/i);
+  });
+
+  // Criterion 8.
+  it("step 5 dismisses a finding that repeats a weakness a fixed entry holds, with the entry's id in the reason, instead of recording it as new", () => {
+    const five = step(5);
+
+    assert.match(five, /repeats a weakness a `fixed` entry holds/);
+    assert.match(five, /repeats \.security\/NNNN \(fixed\)/);
+    assert.match(five, /pinning test|pinned by/i);
+  });
+
+  it("step 5 makes the session read the entry itself and check the code and the pin still hold before it dismisses", () => {
+    const five = step(5);
+
+    assert.match(five, /read the entry (?:file )?yourself/i);
+    assert.match(five, /still (?:holds|there|exists)/i);
+  });
+
+  // Criterion 10.
+  it("step 5 says an accepted or an open entry is read like any other and changes nothing yet", () => {
+    assert.match(step(5), /An `accepted` or `open` entry is read like any other but changes nothing/);
+  });
+
+  it("step 8 shows the record's policy, repeats and pr, and says record writes the entries, never by hand", () => {
+    const eight = step(8);
+
+    assert.match(eight, /"policy"/);
+    assert.match(eight, /"repeats"/);
+    assert.match(eight, /"pr"/);
+    assert.match(eight, /never write one by hand/i);
+  });
+
+  it("step 9 never quotes .security/ in the follow-up issue, the notes, the report or a PR", () => {
+    assert.match(step(9), /`\.security\/` is never quoted in the follow-up issue, the notes, the report or a PR/);
+  });
+
+  it("hardening-review reads the record with scripts/review.sh security, by id, lens and path only", () => {
+    const text = flat(hardening);
+
+    assert.match(text, /`scripts\/review\.sh security`/);
+    assert.match(text, /\.security\/[^.]*by id, lens, path and status|\.security\/[^.]*id, lens and path/);
+  });
+
+  it("hardening-review's step 4 drops a finding that repeats a fixed entry, by pre-push-review step 5, and lists it to the person in one line", () => {
+    const start = hardening.indexOf("### 4. Drop what is already decided");
+    const end = hardening.indexOf("### 5. ", start);
+    const four = flat(hardening.slice(start, end));
+
+    assert.match(four, /`fixed` entry/);
+    assert.match(four, /`pre-push-review` step 5/);
+    assert.match(four, /repeats \.security\/\d{4}, fixed/);
+  });
+
+  it("hardening-review's reviewers brief tells them not to read .security/ and not to raise a fixed entry again", () => {
+    const text = flat(brief);
+
+    assert.match(text, /Do not read `\.security\/`/);
+    assert.match(text, /fixed entry/);
+  });
+});

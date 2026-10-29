@@ -55,6 +55,9 @@ printf 'name: Sandcastle\n' > "$skill/template/owned/.github/workflows/sandcastl
 printf '# skills\n' > "$skill/template/seed/.github/ci/sandcastle-skills.txt"
 # The session guidance for handing a pull request off to Sandcastle (a Seed rules file, so a repo can keep or change it).
 printf '# Hand a pull request off to Sandcastle\n' > "$skill/template/seed/.claude/rules/sandcastle-hand-off.md"
+# The security record's README: a Seed file in every repo, whose entries and edits a re-Apply leaves alone.
+mkdir -p "$skill/template/seed/.security"
+printf '# The security record\n' > "$skill/template/seed/.security/README.md"
 apply="$skill/apply.sh"
 
 # Hooks off: a global init.templateDir can install hooks (such as a
@@ -299,6 +302,30 @@ git init -q -b main "$repo"
 out="$("$apply" --dry-run "$repo")"
 check "sandcastle, dry run without a remote: {{REPO}} in a Sandcastle Seed file is unfilled" \
   'grep -A3 "unfilled placeholders" <<< "$out" | grep -q ".sandcastle/roles/architect.md"'
+
+# ── The security record: README from the Seed once, entries and edits left alone ───
+repo="$work/security record"
+new_repo "$repo"
+touch "$repo/Widget.slnx"
+printf '.security/*\n!.security/README.md\n' > "$repo/.gitignore"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+"$apply" "$repo" >/dev/null
+check "security record: the README is written from the Seed" 'grep -qx "# The security record" "$repo/.security/README.md"'
+printf 'Our own note.\n' >> "$repo/.security/README.md"
+printf '# 0001: An entry\n\n- Status: fixed\n' > "$repo/.security/0001-an-entry.md"
+commit_all "$repo" "apply"
+before="$(cat "$repo/.security/README.md" "$repo/.security/0001-an-entry.md")"
+dry="$("$apply" --dry-run "$repo")"
+check "security record: dry run lists no .security file as overwritten or added" \
+  '! awk "/^Owned files that would be (added|overwritten)/ {on = 1; next} /^\$/ {on = 0} on" <<< "$dry" | grep -q "\.security/"'
+check "security record: dry run lists the README as a Seed file skipped" \
+  'grep -A5 "Seed files skipped" <<< "$dry" | grep -q "\.security/README.md"'
+check "security record: dry run lists the entry nowhere" '! grep -q "0001-an-entry" <<< "$dry"'
+"$apply" "$repo" >/dev/null
+check "security record: a re-Apply leaves the README's edits and the entry alone" \
+  '[[ "$(cat "$repo/.security/README.md" "$repo/.security/0001-an-entry.md")" == "$before" ]]'
+check "security record: a re-Apply leaves the worktree clean, the entry ignored" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
 
 echo "apply.test.sh: $pass passed, $failed failed"
 [[ $failed -eq 0 ]]

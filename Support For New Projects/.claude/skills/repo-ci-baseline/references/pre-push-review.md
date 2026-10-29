@@ -14,6 +14,7 @@ Why: [ADR 0008](../docs/adr/0008-review-before-the-push.md). The process a devel
 | The repeat-until-quiet loop for a large or risky branch, with its mutation runner and known-open list | `.claude/skills/hardening-review/` (`SKILL.md`, `references/`, `scripts/mutate.py`, `scripts/known_open.py`) | Owned |
 | The read-only reviewer agent (Read, Grep and Glob only) | `.claude/agents/pre-push-reviewer.md` | Owned |
 | The ledger: what the review found and what became of it, keyed by the branch's own hunks | `.sandcastle/lib/review-ledger.mts` (run as `scripts/review.sh`) | Owned |
+| The security record: a local, git-ignored file per security finding, written by `record` and read by both reviews | `.security/` in the main checkout (`.sandcastle/lib/security-record.mts`) | Owned code; Seed `.security/README.md`; Owned `.gitignore` lines |
 | The gate's check | `scripts/gate.sh`, step "Local review" | Owned |
 | The repo's name for `GH_REPO` (`scripts/review.sh repo`) and its own non-Template files under Owned patterns | `REPO_SLUG`, `NOT_OWNED_BASELINE_PATHS` in `.sandcastle/lib/repo-config.mts` | Seed |
 | The repo's own lenses, and the guidance reviewers read | `.claude/skills/code-review/SKILL.md`, `CLAUDE.md`, `docs/CODING_STANDARDS.md`, `.claude/rules/` | the repo's |
@@ -58,11 +59,41 @@ with its reasons, harness output, mutation specs). The second is under `.git/rev
 `Read(//**/.git/review/**)` in a repo that has added it (Adapting, step 2).
 The tests of the two scripts are in repo-ci-baseline's own `tests/hardening/` (not shipped to other repos), and `test.sh` runs them.
 
+## The security record
+
+`.git/review/*.json` holds findings per diff, and `latest` looks only at the same branch's commits, so a weakness one branch settled was raised
+again, and settled differently, on the next (one weakness took six rounds). The security record keeps those decisions across branches and worktrees.
+
+- **What it is.** `.security/` in the main checkout, shaped like `docs/adr/`: one file per weakness, `0001-<slug>.md`, numbered after the highest entry in four digits.
+  An entry states the weakness, the policy that resolves it, the test or gate check that pins it, its status (`fixed`, `accepted` or `open`), the lens and
+  path, and the branch and PR it came from.
+- **Who writes it.** `scripts/review.sh record` writes an entry for every security finding it records `fixed` or `open` (every Warning, and any finding marked
+  `security: true`; see `isSecurity`), under the ledger's lock, after the ledger is written. A problem writing entries is a warning on stderr (`.security: ...`),
+  never a failed record. The finding may carry a `policy` (one sentence, the rule that now holds) and `repeats` (the number of the entry it repeats), and the review a `pr`;
+  none is stored in the ledger. `scripts/review.sh accept` turns the matching entry `accepted`. A person may edit an entry; an entry whose status can't be
+  read counts as `unknown` and suppresses nothing.
+- **No second file.** A finding for a weakness an entry holds writes none: the entry it names in `repeats`, else the one with the same fingerprint (a hash of the
+  path and the summary, case and spacing set aside). An `open` entry recorded `fixed` later is updated in place. The match is exact on purpose: a wrongly merged
+  entry would hide a real weakness, while a reworded repeat only gets a second file.
+- **Where.** The main worktree's `.security/`, found with `git worktree list`, so a review in any worktree or branch reads and writes the same entries. A bare clone has none:
+  nothing is written, with a warning. The directory is mode 0700, entries 0600, written with `wx`; a symlink there is refused.
+- **Git-ignored, never published.** The Owned `.gitignore` carries `.security/*` and `!.security/README.md`, and `record` writes nothing, with a warning to
+  re-Apply, where `git check-ignore` says the directory isn't ignored. The README comes from the Seed once, and a re-Apply leaves it and every entry alone. (The
+  ignore lines are in the Owned `.gitignore`, not the Seed: Apply overwrites that file, so a Seed copy would never be written.) The follow-up issue, the PR's Review notes and the
+  report never include an entry's text. The worktree check of `record` does not count an untracked `.security/` file as a change.
+- **Who reads it.** `scripts/review.sh security` lists the entries (id, status, lens, finding path, file), never their text. Step 3 of `pre-push-review` and of
+  `hardening-review` read that list, and it reaches reviewers by id, lens and path only. A finding that repeats a weakness a `fixed` entry holds isn't raised again as new:
+  step 5 dismisses it after the session reads the entry itself and finds the policy still in the code and the pinning test still there. `accepted` and `open` entries are read
+  like any other and change no behaviour yet; what each tells a reviewer is for a later change.
+- **ADRs.** An entry is a local decision about one weakness. A policy that deserves a decision for the repository is promoted to `docs/adr/` by a person.
+
 ## What a sandbox can't see
 
 Ledgers hold accepted security findings, which are never published, and so does the hardening review's `.git/review/hardening/`.
 Every Sandcastle sandbox gets an empty read-only folder over `.git/review`, at every
 path a mount puts `.git` (`protectedGitMounts` in `lib/host-safety.mts`, `withCreateMounts` in `lib/skills.mts`).
+The security record is hidden the same way: head-mode sandboxes (planner, critique, intake) mount the main checkout itself, so
+`protectedRecordMounts` puts an empty read-only folder over `<checkout>/.security`. Like the other mounts, it needs a run against a real sandbox before merging.
 
 ## Adapting
 

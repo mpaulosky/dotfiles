@@ -280,7 +280,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .sandcastle/lib/queue.mts .sandcastle/lib/queue.test.mts .sandcastle/lib/report.mts .sandcastle/lib/report.test.mts \
   .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts \
   .sandcastle/lib/round.mts .sandcastle/lib/round.test.mts .sandcastle/lib/sandbox-env.mts .sandcastle/lib/sandbox-env.test.mts \
-  .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
+  .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/security-record.mts .sandcastle/lib/security-record.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
   .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/status.mts .sandcastle/lib/status.test.mts .sandcastle/lib/ui-role-fixture.mts .sandcastle/lib/ui-role-fixture.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
   .sandcastle/lib/work.mts .sandcastle/lib/work.test.mts .sandcastle/main.mts .sandcastle/status.mts .sandcastle/status.test.mts .sandcastle/tsconfig.json; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
@@ -300,6 +300,50 @@ while IFS= read -r rel; do
   cmp -s "$owned/.claude/skills/hardening-review/$rel" "$dotfiles/.claude/skills/hardening-review/$rel" \
     || fail "dotfiles' .claude/skills/hardening-review/$rel differs from the Template's; copy it over"
 done < <(cd "$owned/.claude/skills/hardening-review" && find . -type f -printf '%P\n' | sort)
+
+step "The security record: its README is a Seed file, and the .gitignore keeps its entries out"
+# The review writes .security/NNNN-<slug>.md in the main checkout, one per security finding. The entries are local and never
+# published, so the Owned .gitignore ignores them (the README excepted, so it can be committed); the README comes from the Seed
+# once, and a repo keeps its own edits and entries across a re-Apply.
+[[ -f "$seed/.security/README.md" ]] || fail "the Seed must carry .security/README.md"
+[[ ! -e "$owned/.security" ]] || fail "the Template's .security/ must be Seed only: an Owned copy would be overwritten on every Apply"
+[[ -f "$dotfiles/.security/README.md" ]] || fail "dotfiles must carry its own .security/README.md, written from the Seed"
+for ignore_file in "$owned/.gitignore" "$dotfiles/.gitignore"; do
+  grep -qxF '.security/*' "$ignore_file" || fail "$ignore_file must ignore .security/*"
+  grep -qxF '!.security/README.md' "$ignore_file" || fail "$ignore_file must keep .security/README.md"
+  security_ignore="$md_tmp/security-ignore"
+  rm -rf "$security_ignore"
+  git init -q "$security_ignore"
+  command cp -f "$ignore_file" "$security_ignore/.gitignore"
+  git -C "$security_ignore" check-ignore -q .security/0001-x.md || fail "$ignore_file must ignore a .security entry"
+  if git -C "$security_ignore" check-ignore -q .security/README.md; then
+    fail "$ignore_file must not ignore .security/README.md"
+  fi
+done
+# A re-Apply of the real Template leaves the README's edits and the entries alone, and --dry-run lists neither as overwritten.
+security_repo="$md_tmp/security-repo"
+git init -q -b main "$security_repo"
+git -C "$security_repo" remote add origin "https://github.com/acme/Widget.git"
+"$skill_dir/apply.sh" "$security_repo" > /dev/null || fail "apply.sh failed on an empty repo"
+[[ -f "$security_repo/.security/README.md" ]] || fail "apply.sh must write .security/README.md from the Seed"
+mkdir -p "$security_repo/.security"
+printf '\nOur own note on the record.\n' >> "$security_repo/.security/README.md"
+printf '# 0001: An entry\n\n- Status: fixed\n' > "$security_repo/.security/0001-an-entry.md"
+[[ -z "$(git -C "$security_repo" status --porcelain --untracked-files=all -- .security/0001-an-entry.md)" ]] \
+  || fail "git status must show no .security entry after Apply"
+git -C "$security_repo" -c core.hooksPath=/dev/null add -A
+git -C "$security_repo" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.com commit -q -m "apply"
+git -C "$security_repo" switch -q -c chore/standardize-baseline
+security_before="$(cat "$security_repo/.security/README.md" "$security_repo/.security/0001-an-entry.md")"
+security_dry="$("$skill_dir/apply.sh" --dry-run "$security_repo")"
+if awk '/^Owned files that would be (added|overwritten)/ {on = 1; next} /^$/ {on = 0} on' <<< "$security_dry" | grep -q '\.security/'; then
+  fail "apply.sh --dry-run must not list .security/ files as added or overwritten"
+fi
+grep -A40 '^Seed files skipped' <<< "$security_dry" | grep -qF '.security/README.md' \
+  || fail "apply.sh --dry-run must list .security/README.md as a Seed file skipped"
+"$skill_dir/apply.sh" "$security_repo" > /dev/null || fail "a re-Apply failed"
+[[ "$(cat "$security_repo/.security/README.md" "$security_repo/.security/0001-an-entry.md")" == "$security_before" ]] \
+  || fail "a re-Apply must leave .security/README.md and its entries alone"
 
 step "Sandcastle workflow"
 # A repo without the SANDCASTLE_GH_TOKEN secret doesn't run Sandcastle in Actions, and its cron would fail every two hours if the workflow

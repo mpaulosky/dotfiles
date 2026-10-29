@@ -15,7 +15,9 @@ You review one branch's diff through the lens your prompt names. You can only re
 - The whole diff: <run>/diff.patch
 - Pass <N>. <In pass 2 and later: "Read <run>/fixes.patch first, since regressions cluster there, then review the whole
   diff: a problem anywhere counts.">
-- Already decided: <run>/decisions.md. Do not raise again what it records as fixed or dismissed.
+- Already decided: <run>/decisions.md. Do not raise again what it records as fixed or dismissed, nor a weakness it lists as a
+  fixed entry of `.security/` (the local security record, listed there by id, lens, path and status). Do not read `.security/`:
+  the list is all of it you get, and a fixed entry you are given is settled. An `accepted` or `open` entry: raise it again if it is still in the code.
 - Known open (accepted or deferred by the person), as id, lens, path, range and changed:
   <the output of `known_open.py check --for-reviewers`>. Skip a finding only when its line is inside the range of an
   entry whose `changed` is false and whose lens you share. A weakness elsewhere in the same file is still yours to

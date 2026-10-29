@@ -19,11 +19,11 @@ gh and git also write to the process's stderr themselves when they are run with 
 
 - **`terminalText` is the one way GitHub-derived text reaches the terminal.** Whitespace, a line break too, becomes one space. Control, format (bidi, zero-width, tag),
   default-ignorable, surrogate, noncharacter, filler and supplementary-plane private-use characters are dropped.
-- **Three joiners stay where they do their work:** a zero-width joiner between two pictographs (a skin tone or an emoji variation selector may sit in it), that
-  variation selector right after a pictograph, and a zero-width non-joiner between two letters of Arabic, Syriac, Thaana or an Indic script. Elsewhere they are dropped,
+- **Three joiners stay where they do their work:** a zero-width joiner between two assigned pictographs (a skin tone or an emoji variation selector may sit in it), that
+  variation selector right after an assigned pictograph, and a zero-width non-joiner between two letters of Arabic, Syriac, Thaana or an Indic script. Elsewhere they are dropped,
   and at most eight survive in one text. In the Indic scripts only the non-joiner survives, so Sinhala's "Sri" and Devanagari half-forms lose their joiner, and keycap
   and flag-tag emoji fall apart.
-- **What may draw as nothing is capped, not removed:** at most eight private-use (icon glyph) or unassigned code points per text, and no more than three combining marks
+- **What may draw as nothing is capped, not removed:** at most eight private-use (icon glyph) or unassigned code points per text, and no more than eight combining marks
   in a row. The limit is honest: a few invisible bits can still ride on one text, and no more.
 - **`terminalText` is idempotent**, and `terminalLine` keeps at most eight spaces of indent. `plainStderr` makes `console.error` plain text: its arguments are data (a
   string as it is, an Error as its message, anything else through `inspect`), never a format string.
@@ -35,8 +35,8 @@ gh and git also write to the process's stderr themselves when they are run with 
 
 ## Consequences
 
-- Text in a script that needs a joiner outside the kept cases loses it, and text that stacks more than three combining marks (Tibetan, Hebrew with niqqud and
-  cantillation, some Indic clusters) loses the extras. Both are known costs, noted in the code and in the reference. Whether three is the right number is the owner's call.
+- Text in a script that needs a joiner outside the kept cases loses it, and text that stacks more than eight combining marks (Tibetan, Hebrew with niqqud and
+  cantillation, some Indic clusters) loses the extras. Both are known costs, noted in the code and in the reference. The owner settled the number at eight on mpaulosky/dotfiles#348.
 - A zero-width joiner and a variation selector stay only beside assigned pictographs, since the cap on unassigned code points could otherwise drop the pictograph
   they sat beside and leave them dangling.
 - The rest of the pipeline follows the same convention (mpaulosky/dotfiles#347): `sh()` is gone, `commentOnIssue`, the issue-body helpers, the open-PR lists and the gate's

@@ -19,15 +19,20 @@ Every watched PR goes through landing.decide(), and the command does what the
 decision says, once per PR head:
 
 - mark ready:       gh pr ready (only with --ready; otherwise a draft waits)
-- update branch:    gh pr update-branch, then gh pr edit --add-reviewer @copilot,
-                    read back: gh exits 0 even when GitHub drops the request,
-                    so a dropped or refused one is warned about
-- request Copilot:  gh pr edit --add-reviewer @copilot for a head no reviewer
-                    has reviewed or is on its way to, read back the same way;
-                    a request that didn't register is remembered for the head
+- update branch:    gh pr update-branch; nobody is asked to review the new head
+- request Copilot:  once per PR, for a head no reviewer has reviewed or is on its
+                    way to: gh pr comment with the record that Copilot was asked
+                    (landing.COPILOT_ASKED_MARKER), then gh pr edit --add-reviewer
+                    @copilot, read back: gh exits 0 even when GitHub drops the
+                    request, so a dropped or refused one is warned about. No
+                    request follows a comment that failed. The record is on the PR,
+                    so no run asks twice, whoever ran before
 - add review:claude: gh pr edit --add-label review:claude, so Claude Review
                     reviews a head Copilot can't review (its quota note, or a
-                    request that didn't register); the
+                    request that didn't register: a request read back as dropped
+                    here, or an ask recorded 30 seconds ago with no request
+                    pending, which a later --once run finds with nothing
+                    remembered from the run that asked); the
                     decision makes it only once the head's checks are green,
                     and never past Claude's review rounds
                     (landing.MAX_CLAUDE_ROUNDS)
@@ -54,7 +59,8 @@ import sys
 import time
 from dataclasses import dataclass, field
 
-from landing import ARM_AUTO_MERGE, MARK_READY, REQUEST_CLAUDE, REQUEST_COPILOT, REVIEW_CLAUDE, UPDATE_BRANCH, decide
+from landing import (ARM_AUTO_MERGE, COPILOT_ASKED_COMMENT, MARK_READY, REQUEST_CLAUDE, REQUEST_COPILOT, REVIEW_CLAUDE,
+                     UPDATE_BRANCH, decide)
 from settings import read_repo_list
 from status import gh_graphql, line, repo_flags, to_state
 
@@ -84,9 +90,11 @@ def commands(action, repo, number, head):
     if action == MARK_READY:
         return [["gh", "pr", "ready", *pr]]
     if action == UPDATE_BRANCH:
-        return [["gh", "pr", "update-branch", *pr], ["gh", "pr", "edit", *pr, "--add-reviewer", "@copilot"]]
+        return [["gh", "pr", "update-branch", *pr]]
     if action == REQUEST_COPILOT:
-        return [["gh", "pr", "edit", *pr, "--add-reviewer", "@copilot"]]
+        # The record first: a request without one could be made twice. The loop stops at a failed comment.
+        return [["gh", "pr", "comment", *pr, "--body", COPILOT_ASKED_COMMENT],
+                ["gh", "pr", "edit", *pr, "--add-reviewer", "@copilot"]]
     if action == REQUEST_CLAUDE:
         return [["gh", "pr", "edit", *pr, "--add-label", REVIEW_CLAUDE]]
     if action == ARM_AUTO_MERGE:
@@ -184,7 +192,7 @@ class Lander:
                 self.watched.setdefault((repo, number), Watched())
         blog_open = False
         for number, node in open_prs.items():
-            state = to_state(node, **flags, want_ready=self.want_ready)
+            state = to_state(node, **flags, want_ready=self.want_ready, owner=owner)
             if state.release_blog:
                 self.watched.setdefault((repo, number), Watched())
                 blog_open = True
@@ -208,7 +216,7 @@ class Lander:
         return True
 
     def update_open(self, repo, number, pr, node, flags):
-        state = to_state(node, **flags, want_ready=self.want_ready,
+        state = to_state(node, **flags, want_ready=self.want_ready, owner=repo.split("/", 1)[0],
                          copilot_dropped=(repo, number, node["headRefOid"]) in self.copilot_dropped)
         decision = decide(state)
         pr.title = node["title"]
@@ -235,26 +243,23 @@ class Lander:
                     self.say("  ran: " + " ".join(argv))
                 else:
                     self.say("  warning: " + " ".join(argv) + " failed" + (f" ({message})" if message else ""))
-                # After update-branch the head is new and unknown here, so only
-                # a request for the head as read is remembered.
-                asked = decision.action == REQUEST_COPILOT
-                if not self.read_back_copilot(repo, number, state.head if asked else None) and asked:
-                    # Unknown whether it registered: ask and read back again next poll.
-                    self.acted.discard(key)
-                    pr.seen = None
+                # A read-back that fails isn't retried by asking again: Copilot is asked once per PR, and
+                # the record now on it decides what the next poll does.
+                self.read_back_copilot(repo, number, state.head)
                 continue
             self.say(("  ran: " if ok else "  failed: ") + " ".join(argv) + (f" ({message})" if message and not ok else ""))
             if not ok:
                 break
 
-    def read_back_copilot(self, repo, number, head=None):
+    def read_back_copilot(self, repo, number, head):
         """Read Copilot's review request back, and warn when GitHub dropped it.
 
-        A dropped request for head is remembered, so the decision calls in
-        Claude for it once the checks are green, as it does after Copilot's
-        quota note (#318). A
-        read-back that fails remembers nothing, and returns False; otherwise
-        True.
+        A dropped request for head is remembered for the next poll, so the
+        decision calls in Claude for it once the checks are green without
+        waiting out the record's 30 seconds, as it does after Copilot's quota
+        note. A later run remembers nothing and doesn't need to: the record on
+        the PR settles. A read-back that fails remembers nothing, and returns
+        False; otherwise True.
         """
         url = f"https://github.com/{repo}/pull/{number}"
         try:
@@ -266,7 +271,7 @@ class Lander:
         if head:
             self.copilot_dropped.add((repo, number, head))
         self.say(f"  warning: Copilot's review request didn't register on #{number} (GitHub drops it once the Copilot "
-                 f"code review budget is used up); {REVIEW_CLAUDE} backs Copilot up for this head once its checks are green")
+                 f"code review budget is used up); {REVIEW_CLAUDE} backs Copilot up for this PR once its checks are green")
         return True
 
     def update_gone(self, repo, number, pr, flags):

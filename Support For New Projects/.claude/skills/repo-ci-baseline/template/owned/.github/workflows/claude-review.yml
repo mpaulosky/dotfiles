@@ -3,9 +3,9 @@ name: Claude Review
 
 # Claude reviews a PR as a backup to Copilot, whose review it stands in for
 # only where Copilot can't review the head: it answered with its quota note
-# (the account's Copilot code review budget is used up), or its request was
-# dropped and no review or pending request shows after a grace period
-# (mpaulosky/dotfiles#318). It runs only on request: while the PR
+# (the account's Copilot code review budget is used up), or its one request for
+# the PR didn't register: PR Auto-Merge asks once and reads the request back
+# (mpaulosky/dotfiles#360). It runs only on request: while the PR
 # carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) in
 # either case, as the repo-ci-baseline skill's land.sh (in
 # mpaulosky/dotfiles, not this repo) does, and a person can add at any time;
@@ -20,7 +20,7 @@ name: Claude Review
 # threads like Copilot's, and a body that starts with <!-- claude-review -->:
 # PR Auto-Merge accepts that review of the head in place of Copilot's when
 # Copilot can't review that commit: its note is on it, or it is the head, Copilot
-# has no review or pending request for it and the grace is over. A
+# was asked, has no review or pending request for it and the ask has settled. A
 # finding outside the diff can't be a thread, so it goes in the body under a
 # second marker, which PR Auto-Merge holds on until the next push gets a fresh
 # review (past the review cap too), and the post job warns. It doesn't
@@ -205,8 +205,8 @@ jobs:
           # Commits Copilot reviewed, or Claude Review (a marked github-actions[bot]
           # review) did: on a commit with Copilot's note that it couldn't review
           # (its quota is used up), which PR Auto-Merge counts, or on the PR's
-          # current head, whatever the grace or a pending request (so the same
-          # head isn't reviewed twice; mpaulosky/dotfiles#318). The note
+          # current head, whatever Copilot's request or the ask's state (so the same
+          # head isn't reviewed twice; mpaulosky/dotfiles#360). The note
           # itself covers nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
           # Claude's review of an earlier commit with no note isn't listed: the
           # gate doesn't count it, so a clean merge of main into that commit

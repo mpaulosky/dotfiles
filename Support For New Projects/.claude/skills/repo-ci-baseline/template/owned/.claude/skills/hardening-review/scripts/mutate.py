@@ -13,13 +13,18 @@ Each target must be tracked and committed, so a restore can't lose work. The tes
 list with no shell, in their own process group that is killed when they end, time out or are
 interrupted. Exit 0: every mutation was CAUGHT (or EQUIVALENT with a reason). Exit 1: one SURVIVED,
 was NOT FOUND, AMBIGUOUS or INVALID. Exit 2: the spec or the tree was refused. Exit 130: interrupted
-(SIGINT, SIGTERM or SIGHUP); the files are restored.
+(SIGINT, SIGTERM or SIGHUP); the files are restored. When the tests fail before any mutation, the
+last lines of their output (stdout and stderr) are printed with the refusal.
 
 A runner killed with SIGKILL can't restore anything. It claims a journal first (a text file under
-review/ in the git directory, which Sandcastle hides from its sandboxes), writes the originals into
-it before the first mutation, and the next run, or a second run at the same time, refuses to start
-until the files are restored (git checkout) and the journal is deleted. POSIX only: the tests run
-in a process group.
+review/ in the common git directory, which Sandcastle hides from its sandboxes; one journal per
+worktree, shared by every --root in it), writes the originals into it, named relative to the
+worktree's top level, before the first mutation, and the next run, or a second run at the same
+time, refuses to start until the files are restored (git checkout, from the top level) and the
+journal is deleted. The journal is never written in place: the claim is staged in a file of its own and
+hard-linked into position (a hard link fails if the journal exists), and the originals replace it with
+os.replace, so it is never empty and any journal blocks the run; nothing is deleted to take over.
+POSIX only: the tests run in a process group.
 """
 import argparse
 import base64
@@ -34,6 +39,8 @@ import tempfile
 from pathlib import Path
 
 MAX_TIMEOUT = 86400
+TAIL_LINES = 20
+TAIL_BYTES = 8192
 POSIX = hasattr(os, "killpg") and hasattr(signal, "SIGHUP")
 
 
@@ -122,16 +129,29 @@ def target_files(root, mutations):
     return originals
 
 
-def journal_path(root):
-    """Under review/ in the common git dir: Sandcastle hides it from its sandboxes (which can write the rest of .git), and the ledger
-    reads only *.json there. One per worktree (keyed on its top level, not on --root, so a run from a subfolder shares it), so
-    two worktrees don't block each other."""
-    result = git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel")
-    lines = result.stdout.splitlines()
-    if result.returncode != 0 or len(lines) != 2:
+def git_line(root, option):
+    """The one path `git rev-parse OPTION` prints. Only the final newline is cut: a path can hold any other line separator."""
+    result = git(root, "rev-parse", "--path-format=absolute", option)
+    output = result.stdout.removesuffix("\n")
+    if result.returncode != 0 or not output or "\n" in output:
         raise Refused(f"{root} is not in a git repository")
-    digest = hashlib.sha256(os.fsencode(str(Path(lines[1]).resolve()))).hexdigest()[:16]
-    return Path(lines[0]) / "review" / f"mutate-journal-{digest}.txt"
+    return output
+
+
+def locate(root):
+    """(the journal's path, the worktree's top level).
+
+    The journal is under review/ in the common git dir: Sandcastle hides it from its sandboxes (which can write the rest of .git), and
+    the ledger reads only *.json there. One per worktree (keyed on its top level, not on --root, so a run from a subfolder shares it),
+    so two worktrees don't block each other. Its names are relative to that top level."""
+    common = git_line(root, "--git-common-dir")
+    top = Path(git_line(root, "--show-toplevel")).resolve()
+    digest = hashlib.sha256(os.fsencode(str(top))).hexdigest()[:16]
+    return Path(common) / "review" / f"mutate-journal-{digest}.txt", top
+
+
+def journal_path(root):
+    return locate(root)[0]
 
 
 def inside(root, name):
@@ -142,7 +162,7 @@ def inside(root, name):
         return False
 
 
-def describe_journal(journal, root):
+def describe_journal(journal, top):
     """Why a journal blocks the run. It is a plain file, so only names inside the checkout are repeated."""
     try:
         recorded = json.loads(journal.read_text(encoding="utf-8"))["files"]
@@ -152,51 +172,84 @@ def describe_journal(journal, root):
         recorded = None
     if recorded == {}:
         return f"another run is in progress, or one was killed before it changed a file: delete {journal} if none is running"
-    files = ", ".join(sorted(name for name in recorded or () if inside(root, name))) or "unknown files"
+    files = ", ".join(sorted(name for name in recorded or () if inside(top, name))) or "unknown files"
     return (f"a previous run was killed and may have left a mutation in {files}: check `git diff`, restore them with "
-            f"`git checkout -- <file>` in {root}, then delete {journal}")
+            f"`git checkout -- <file>` in {top}, then delete {journal}")
 
 
-def claim_journal(journal, root):
-    """Create the journal before anything slow, so a second run sees it; exclusive, so two can't both pass."""
-    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+def stage(journal, text):
+    """Write text to a file of its own beside the journal and return its path. The file is removed again if the write fails."""
+    handle, name = tempfile.mkstemp(prefix=".mutate-journal-", suffix=".tmp", dir=journal.parent)
     try:
-        handle = journal.open("x", encoding="utf-8")
-    except FileExistsError:
-        raise Refused(describe_journal(journal, root))
-    try:
-        with handle:
-            handle.write(json.dumps({"files": {}}))
+        with os.fdopen(handle, "w", encoding="utf-8") as staged:
+            staged.write(text)
+            staged.flush()
+            os.fsync(staged.fileno())
     except BaseException:
-        # Created but not written (a full disk): nothing was mutated, so the next run must not be told a run was killed.
-        journal.unlink(missing_ok=True)
+        Path(name).unlink(missing_ok=True)
+        raise
+    return Path(name)
+
+
+def claim_journal(journal, top):
+    """Claim the journal before anything slow, so a second run sees it; exclusive, so two can't both pass.
+
+    The claim is staged in a file of its own and hard-linked into position, which fails if the journal exists: the journal is never
+    empty, so any journal that exists blocks the run and nothing is deleted to take over."""
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staged = stage(journal, json.dumps({"files": {}}))
+    try:
+        os.link(staged, journal)
+    except FileExistsError:
+        raise Refused(describe_journal(journal, top))
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def write_journal(journal, top, originals):
+    """Replace the claim with the originals in one step, so a reader never sees the journal empty or half written."""
+    data = {str(path.relative_to(top)): base64.b64encode(content).decode("ascii") for path, content in originals.items()}
+    staged = stage(journal, json.dumps({"files": data}))
+    try:
+        os.replace(staged, journal)
+    except BaseException:
+        staged.unlink(missing_ok=True)
         raise
 
 
-def write_journal(journal, root, originals):
-    data = {str(path.relative_to(root)): base64.b64encode(content).decode("ascii") for path, content in originals.items()}
-    journal.write_text(json.dumps({"files": data}), encoding="utf-8")
+def output_tail(stream, name):
+    """The last TAIL_LINES lines of one stream the tests wrote, from at most its last TAIL_BYTES bytes, under its name."""
+    try:
+        size = stream.seek(0, os.SEEK_END)
+        stream.seek(max(0, size - TAIL_BYTES))
+        lines = stream.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    return f"{name}:\n" + "\n".join(lines[-TAIL_LINES:]) if lines else ""
 
 
 def run_tests(argv, root, timeout, pycache):
-    """(passed, timed_out). The whole process group dies with the run, whatever ended it."""
-    try:
-        process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   env=clean_env(pycache), start_new_session=True)
-    except (OSError, ValueError) as error:
-        raise Refused(f"cannot run the test command: {error}")
-    try:
+    """(passed, timed_out, the tail of the output). The whole process group dies with the run, whatever ended it."""
+    # Two files, not one: a test's buffered stdout would otherwise land after its stderr and push the reason out of the tail.
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         try:
-            process.wait(timeout=timeout)
-            return process.returncode == 0, False
-        except subprocess.TimeoutExpired:
-            return False, True
-    finally:
+            process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                       env=clean_env(pycache), start_new_session=True)
+        except (OSError, ValueError) as error:
+            raise Refused(f"cannot run the test command: {error}")
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        process.wait()
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return False, True, ""
+            tail = "\n".join(part for part in (output_tail(out, "stdout"), output_tail(err, "stderr")) if part)
+            return process.returncode == 0, False, tail
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            process.wait()
 
 
 def restore(originals):
@@ -234,17 +287,18 @@ def main(argv):
         signal.signal(getattr(signal, name), interrupted)
     try:
         test, timeout, mutations = load_spec(args.spec)
-        journal = journal_path(root)
-        claim_journal(journal, root)
+        journal, top = locate(root)
+        claim_journal(journal, top)
         claimed = True
         pycache = tempfile.mkdtemp(prefix="mutate-pycache-")
         originals = target_files(root, mutations)
-        passed, timed_out = run_tests(test, root, timeout, pycache)
+        passed, timed_out, tail = run_tests(test, root, timeout, pycache)
         if timed_out:
             raise Refused(f"the tests did not finish within {timeout:g} seconds before any mutation: raise \"timeout\", or fix them")
         if not passed:
-            raise Refused("the tests fail before any mutation: fix them first, or every mutation would look caught")
-        write_journal(journal, root, originals)
+            raise Refused("the tests fail before any mutation: fix them first, or every mutation would look caught"
+                          + (f"\nthe last lines of their output:\n{tail}" if tail else ""))
+        write_journal(journal, top, originals)
         failed = False
         for item in mutations:
             path = (root / item["path"]).resolve()
@@ -267,7 +321,7 @@ def main(argv):
                 continue
             try:
                 path.write_bytes(text.replace(item["old"], item["new"], 1).encode("utf-8"))
-                passed, timed_out = run_tests(test, root, timeout, pycache)
+                passed, timed_out, _ = run_tests(test, root, timeout, pycache)
             finally:
                 restore(originals)
             if not passed:

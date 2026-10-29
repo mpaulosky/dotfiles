@@ -86,8 +86,9 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   catches it locally: a test, a check in `.github/ci/gate-checks.sh`, or a sharper lens in the repo's `code-review` skill. The review's own
   `lenses.md` and `review-bar.md` are Owned, so a lesson for them goes to the Template first.
 - **PR Auto-Merge squash-merges** a same-repo PR once its checks pass, Copilot has reviewed its latest commit and every
-  thread is resolved. Where Copilot can't review it (a quota note, or a request GitHub dropped, with no review or request
-  showing 5 minutes after the checks finished and the PR was last marked ready or reopened), it adds `review:claude` itself and accepts Claude's review instead.
+  thread is resolved. It asks Copilot for a review of the PR once; where Copilot can't review a head (a quota note, or a request that didn't
+  register, which it reads back, or 30 seconds after the ask with no review or request showing), it adds `review:claude` itself and accepts Claude's review instead.
+  Copilot isn't asked again for that PR.
   After three review rounds it stops waiting for a review of the latest commit, so a PR can't chase
   reviews forever, but every unresolved thread still holds it, Copilot's and Claude's included. At that point, once
   Claude has reviewed since `review:claude` was last added, it also takes the label off, so Claude stops reviewing new

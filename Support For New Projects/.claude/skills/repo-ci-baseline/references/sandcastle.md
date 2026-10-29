@@ -143,7 +143,7 @@ whether or not that label counts, and says how many other open PRs it left out.
   Thaana or an Indic script. At most eight survive in one text, so a few invisible bits can ride on them and no more. Keycap and
   flag-tag emoji fall apart, and in the Indic scripts only the non-joiner survives: a zero-width joiner between two letters (Sinhala's
   "Sri", a Devanagari half-form) is dropped. A private-use code point of the Basic Multilingual Plane (an icon glyph) or an unassigned
-  one stays, since it draws a glyph or a box, but only eight of them per text, and no more than three combining marks in a row
+  one stays, since it draws a glyph or a box, but only eight of them per text, and no more than eight combining marks in a row
   (text that stacks more, as Tibetan and Hebrew with cantillation can, loses the extras).
   `plainStderr` cleans what a read warns on stderr, joining the arguments as data, never as a format string.
   On the status's path, gh's and git's own stderr never reach the terminal themselves: the reads that run them (every gh read through
@@ -294,6 +294,10 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
    branch's base, fails without running.
 
 9. Add `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` to `lib/repo-config.mts` as one-line `export const` lines, and the settings deny rules, as [pre-push-review.md](pre-push-review.md#adapting) says.
+
+Apply writes `.sandcastle/check.sh` only where a repo has none, as it does for every Seed file, so an existing repo keeps its old copy and Apply does not refresh it. An old copy
+doesn't run `check:sandcastle` for an edit that touches only `.claude/skills/hardening-review/`: an existing repo copies the new pathspec by hand from the Seed's `check.sh`
+(`.claude/skills/pre-push-review`, `.claude/skills/hardening-review`, `.claude/agents/pre-push-reviewer.md` and `.github/workflows/claude-review.yml`).
 
 Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES
 list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and

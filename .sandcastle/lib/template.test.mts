@@ -257,3 +257,37 @@ describe("pnpm run sandcastle:status in the Template", () => {
     });
   });
 });
+
+// The cap on combining marks in a row (MAX_MARKS in lib/status.mts, 8 by the owner's decision on mpaulosky/dotfiles#348) is stated in the
+// code's comment, ADR 0010 and the reference, which must agree with it. ADR 0010 also says "assigned" pictographs, as the code does.
+describe("the combining-mark cap and ADR 0010's wording", () => {
+  const adr = readFileSync(join(skill, "docs/adr/0010-status-text-is-sanitised-and-stderr-is-captured.md"), "utf8").replace(/\s+/g, " ");
+  const reference = readFileSync(join(skill, "references/sandcastle.md"), "utf8").replace(/\s+/g, " ");
+  const source = readFileSync(join(owned, ".sandcastle/lib/status.mts"), "utf8");
+
+  it("is 8 in lib/status.mts, and its comment says so", () => {
+    assert.match(source, /const MAX_MARKS = 8;/);
+    assert.match(source, /no more than MAX_MARKS combining marks in a row/);
+    assert.doesNotMatch(source, /const MAX_MARKS = 3;/);
+  });
+
+  it("is 8 in ADR 0010, and the owner's call on the number is settled", () => {
+    assert.match(adr, /no more than eight combining marks in a row/);
+    assert.match(adr, /stacks more than eight combining marks/);
+    assert.doesNotMatch(adr, /three combining marks/);
+    assert.doesNotMatch(adr, /more than three combining marks/);
+    assert.doesNotMatch(adr, /Whether three is the right number/);
+  });
+
+  it("is 8 in references/sandcastle.md", () => {
+    assert.match(reference, /no more than eight combining marks in a row/);
+    assert.doesNotMatch(reference, /three combining marks/);
+  });
+
+  it("says assigned pictographs in ADR 0010's Decisions bullet", () => {
+    assert.match(adr, /a zero-width joiner between two assigned pictographs/);
+    assert.match(adr, /variation selector right after an assigned pictograph/);
+    assert.doesNotMatch(adr, /between two pictographs/);
+    assert.doesNotMatch(adr, /right after a pictograph/);
+  });
+});

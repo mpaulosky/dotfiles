@@ -36,10 +36,15 @@ def inline_script(workflow):
 
 
 def automerge_calls():
-    """{call name: "pat" | "token"} for every API call pr-automerge.yml's script makes."""
-    calls = {}
+    """{(call name, "pat" | "token")} for every API call pr-automerge.yml's script makes.
+
+    A call can be made through both clients: graphql (GITHUB_TOKEN reads the PR, the PAT requests Copilot's
+    review) and issues.createComment (GITHUB_TOKEN records that Copilot was asked, the PAT asks Dependabot to
+    rebase), mpaulosky/dotfiles#360. Each pair needs its own row.
+    """
+    calls = set()
     for client, call in re.findall(r"\b(github|patClient)\.(graphql|rest\.\w+\.\w+)", inline_script("pr-automerge.yml")):
-        calls[re.sub(r"^rest\.", "", call)] = "pat" if client == "patClient" else "token"
+        calls.add((re.sub(r"^rest\.", "", call), "pat" if client == "patClient" else "token"))
     return calls
 
 
@@ -71,21 +76,36 @@ def test_pr_automerge_makes_calls_through_two_clients():
     calls = automerge_calls()
 
     assert calls, "found no API calls in pr-automerge.yml's script"
-    assert set(calls.values()) == {"pat", "token"}
+    assert {client for _call, client in calls} == {"pat", "token"}
 
 
 def test_lists_every_pr_automerge_call_with_its_client_and_why():
     rows = table_rows(page())
 
-    for call, client in automerge_calls().items():
-        listed = [row for row in rows if len(row) >= 4 and f"`{call}`" in row[1]]
+    for call, client in sorted(automerge_calls()):
+        listed = [row for row in rows if len(row) >= 4 and f"`{call}" in row[1]]
         assert listed, f"tokens.md has no table row for `{call}`"
-        _workflow, _call, who, why = listed[0][:4]
-        assert why, f"`{call}`'s row gives no reason"
         if client == "pat":
-            assert "PAT" in who and "GITHUB_TOKEN" not in who, f"`{call}` needs the PAT: {who!r}"
+            matching = [row for row in listed if "PAT" in row[2] and "GITHUB_TOKEN" not in row[2]]
         else:
-            assert "GITHUB_TOKEN" in who, f"`{call}` doesn't need the PAT: {who!r}"
+            matching = [row for row in listed if "GITHUB_TOKEN" in row[2]]
+        assert matching, f"tokens.md has no row for `{call}` through {client}: {[row[2] for row in listed]}"
+        assert all(row[3] for row in matching), f"`{call}`'s row gives no reason"
+
+
+def test_pr_automerge_asks_copilot_with_the_pat_and_records_the_ask_with_github_token():
+    # mpaulosky/dotfiles#360: the one Copilot request is a person's call; the record comment is GITHUB_TOKEN's.
+    calls = automerge_calls()
+
+    assert ("graphql", "pat") in calls and ("graphql", "token") in calls
+    assert ("issues.createComment", "token") in calls and ("issues.createComment", "pat") in calls
+    rows = table_rows(page())
+    request = [row for row in rows if len(row) >= 4 and "PAT" in row[2] and "graphql" in row[1]
+               and re.search(r"requestReviews|Copilot", row[1])]
+    record = [row for row in rows if len(row) >= 4 and "GITHUB_TOKEN" in row[2] and "createComment" in row[1]
+              and re.search(r"Copilot|asked|record", row[1])]
+    assert request, "tokens.md has no PAT row for the graphql call that requests Copilot's review (name Copilot or requestReviewsByLogin)"
+    assert record, "tokens.md has no GITHUB_TOKEN row for the comment that records Copilot was asked"
 
 
 @pytest.mark.parametrize(

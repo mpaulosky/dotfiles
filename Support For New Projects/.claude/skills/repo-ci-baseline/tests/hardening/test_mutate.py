@@ -1,6 +1,7 @@
 """Tests for the hardening-review skill's mutation runner."""
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -581,7 +582,7 @@ def test_an_unexpected_error_exits_two_without_a_traceback_and_leaves_nothing(tm
     assert not journals(root), "a journal the run created must not outlive it"
 
 
-@pytest.mark.parametrize("content", ["{not json", "[]", '"x"', "{}", '{"files": []}', '{"files": "x"}', ""])
+@pytest.mark.parametrize("content", ["{not json", "[]", '"x"', "{}", '{"files": []}', '{"files": "x"}'])
 def test_a_journal_that_cannot_be_read_is_still_refused_not_a_traceback(tmp_path, content):
     root = make_repo(tmp_path)
     journal = load_runner().journal_path(root)
@@ -691,7 +692,332 @@ def test_a_journal_write_that_fails_does_not_leave_the_empty_journal_behind(tmp_
         raise OSError("disk full")
 
     spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
-    monkeypatch.setattr(runner.json, "dumps", full)
+    monkeypatch.setattr(runner.os, "fsync", full)  # after the staging file exists, so stage() has to clean it up
     assert runner.main([str(spec_file), "--root", str(root)]) == 2
     assert "unexpected OSError" in capsys.readouterr().err
     assert not journals(root)
+
+
+# mpaulosky/dotfiles#341 (R69): the journal is shared by every --root in a worktree, so its names are relative to the worktree's top
+# level, not to the --root of the run that wrote it.
+SUB_SLOW = (
+    "import sys, time, pathlib\nsys.path.insert(0, '.')\nimport target as c\n"
+    "if c.f(0):\n    pathlib.Path('started').write_text('1'); time.sleep(20)\nsys.exit(0 if c.f(1) else 1)\n")
+
+
+def repo_with_sub(tmp_path):
+    """A top-level target.py (never mutated here) and a sub/target.py with a slow test, both tracked."""
+    root = make_repo(tmp_path)
+    sub = root / "sub"
+    sub.mkdir()
+    (sub / "target.py").write_text("def f(x):\n    return x > 0\n", encoding="utf-8")
+    (sub / "check.py").write_text(SUB_SLOW, encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "sub")
+    return root, sub
+
+
+def kill_in_the_middle(sub, spec_value, target):
+    """Start a run with --root sub (or the top) whose mutated test sleeps, and SIGKILL it there."""
+    spec_file = write_spec(sub.parent if sub.name == "sub" else sub, spec_value)
+    proc = subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(spec_file), "--root", str(sub)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env())
+    for _ in range(300):
+        if (target / "started").exists():
+            break
+        time.sleep(0.1)
+    else:
+        proc.kill()
+        raise AssertionError("the mutated test run never started")
+    proc.kill()
+    proc.communicate(timeout=20)
+
+
+def names_of(text, base="target.py"):
+    return re.findall(r"[\w./-]*" + re.escape(base), text)
+
+
+def test_a_run_killed_from_a_subfolder_is_named_by_its_path_from_the_top(tmp_path):
+    root, sub = repo_with_sub(tmp_path)
+    kill_in_the_middle(sub, spec([mutation("x > 0", "x >= 0")]), sub)
+    assert (sub / "target.py").read_text(encoding="utf-8") != "def f(x):\n    return x > 0\n", "the mutation was not on disk"
+    # The journal records names relative to the worktree's top level.
+    [journal] = journals(root)
+    assert list(json.loads(journal.read_text(encoding="utf-8"))["files"]) == ["sub/target.py"]
+    # A run from the top must not name the top-level target.py, which is a different file.
+    again = run(root, spec([mutation("x > 0", "x > 5")]))
+    assert again.returncode == 2
+    assert "killed" in again.stderr and "git checkout" in again.stderr
+    assert names_of(again.stderr) and set(names_of(again.stderr)) == {"sub/target.py"}, again.stderr
+
+
+def test_a_run_killed_from_the_top_is_named_correctly_to_a_run_from_a_subfolder(tmp_path):
+    root, sub = repo_with_sub(tmp_path)
+    # sub/check.py imports target from the current directory, so run it with the top as cwd through a wrapper that changes into sub.
+    top_spec = {"test": [sys.executable, "-c", "import os, runpy; os.chdir('sub'); runpy.run_path('check.py', run_name='__main__')"],
+                "mutations": [{"path": "sub/target.py", "old": "x > 0", "new": "x >= 0", "why": "w"}]}
+    kill_in_the_middle(root, top_spec, sub)
+    [journal] = journals(root)
+    assert list(json.loads(journal.read_text(encoding="utf-8"))["files"]) == ["sub/target.py"]
+    again = run(sub, spec([mutation("x > 0", "x > 5")]))
+    assert again.returncode == 2
+    assert "killed" in again.stderr and "unknown files" not in again.stderr, again.stderr
+    assert set(names_of(again.stderr)) == {"sub/target.py"}, again.stderr
+    assert re.search(re.escape(str(root.resolve())) + r"(?![\w/])", again.stderr), "git checkout has to run from the top, where the names are relative to"
+
+
+# mpaulosky/dotfiles#341 (R70): splitlines() also splits on U+2028, U+0085 and others, so such a checkout path read as "not in a git repository".
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e"])
+def test_a_checkout_path_holding_a_unicode_line_separator_still_runs(tmp_path, separator):
+    try:
+        root = make_repo(tmp_path, name=f"r{separator}x")
+    except OSError:
+        pytest.skip("this file system refuses that name")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "not in a git repository" not in result.stderr
+    assert not journals(root)
+
+
+# mpaulosky/dotfiles#361: a live run's journal is empty between its creation and its write, so an empty journal can't be told from a
+# live run's. The journal is never written in place, so it is never empty, and any journal that exists blocks the run.
+def test_an_empty_journal_blocks_the_run_and_is_left_alone(tmp_path):
+    root = make_repo(tmp_path)
+    before = (root / "target.py").read_bytes()
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    journal.write_bytes(b"")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "mutate-journal-" in result.stderr and "Traceback" not in result.stderr
+    assert journals(root) == [journal], "nothing is deleted to take the journal over"
+    assert journal.read_bytes() == b""
+    assert (root / "target.py").read_bytes() == before
+    assert not (root / "started").exists()
+
+
+def test_two_runs_started_together_against_an_empty_journal_both_leave_it_alone(tmp_path):
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    journal.write_bytes(b"")
+    spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
+    procs = [subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(spec_file), "--root", str(root)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env()) for _ in range(2)]
+    results = [(proc.communicate(timeout=60), proc.returncode) for proc in procs]
+    assert [code for _, code in results] == [2, 2], results
+    assert journals(root) == [journal] and journal.read_bytes() == b""
+
+
+def test_runs_started_together_on_a_fresh_checkout_claim_the_files_once(tmp_path):
+    # A slow baseline keeps the winner's journal in place while the others start: exactly one run may go on to mutate.
+    root = make_repo(tmp_path, check=(
+        "import sys, time\nsys.path.insert(0, '.')\nimport target as c\ntime.sleep(3)\n"
+        "sys.exit(0 if c.f(1) and not c.f(0) and not c.f(-1) else 1)\n"))
+    before = (root / "target.py").read_bytes()
+    spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
+    procs = [subprocess.Popen([sys.executable, "-I", str(SCRIPT), str(spec_file), "--root", str(root)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=clean_env()) for _ in range(4)]
+    results = [(proc.communicate(timeout=120), proc.returncode) for proc in procs]
+    assert sorted(code for _, code in results) == [0, 2, 2, 2], results
+    assert all("in progress" in err for (_, err), code in results if code == 2), results
+    assert (root / "target.py").read_bytes() == before
+    assert not journals(root)
+
+
+def test_the_journal_is_whole_when_claimed(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    assert json.loads(journal.read_bytes()) == {"files": {}}
+    assert list(journal.parent.iterdir()) == [journal], "the claim's staging file must not be left beside the journal"
+
+
+def test_the_journal_is_whole_when_written_and_replaces_the_claim_instead_of_being_written_in_place(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    claimed = journal.stat().st_ino
+    runner.write_journal(journal, top, {(root / "target.py").resolve(): (root / "target.py").read_bytes()})
+    recorded = json.loads(journal.read_bytes())["files"]
+    assert list(recorded) == ["target.py"]
+    assert journal.stat().st_ino != claimed, "a journal written in place is empty while it is truncated"
+    assert list(journal.parent.iterdir()) == [journal]
+
+
+def reader_never_sees_a_partial_journal(journal, work):
+    """Polls the journal while `work` runs; returns every read that was empty or not JSON."""
+    import threading
+    bad, stop = [], threading.Event()
+
+    def poll():
+        while not stop.is_set():
+            try:
+                data = journal.read_bytes()
+            except OSError:
+                continue
+            try:
+                json.loads(data)
+            except ValueError:
+                bad.append(data)
+
+    thread = threading.Thread(target=poll)
+    thread.start()
+    try:
+        work()
+    finally:
+        stop.set()
+        thread.join()
+    return bad
+
+
+def test_a_reader_never_sees_the_journal_empty_while_it_is_claimed(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+
+    def claim_many():
+        for _ in range(400):
+            runner.claim_journal(journal, top)
+            journal.unlink()
+
+    assert reader_never_sees_a_partial_journal(journal, claim_many) == []
+
+
+def test_a_reader_never_sees_the_journal_empty_while_it_is_written(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    originals = {(root / "target.py").resolve(): b"x" * 200000}
+
+    def write_many():
+        for _ in range(100):
+            runner.write_journal(journal, top, originals)
+
+    assert reader_never_sees_a_partial_journal(journal, write_many) == []
+    assert list(journal.parent.iterdir()) == [journal]
+
+
+def test_a_refused_claim_leaves_no_staging_file_behind(tmp_path):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    with pytest.raises(runner.Refused):
+        runner.claim_journal(journal, top)
+    assert list(journal.parent.iterdir()) == [journal]
+    assert json.loads(journal.read_bytes()) == {"files": {}}
+
+
+def fail_after_staging(runner, monkeypatch, journal, seen):
+    """Make os.fsync fail once the staging file exists, noting what the folder held at that moment."""
+
+    def full(*args, **kwargs):
+        seen.append(sorted(journal.parent.iterdir()))
+        raise OSError("disk full")
+
+    monkeypatch.setattr(runner.os, "fsync", full)
+
+
+def test_a_claim_whose_write_fails_leaves_nothing_in_the_private_folder(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    seen = []
+    fail_after_staging(runner, monkeypatch, journal, seen)
+    with pytest.raises(OSError):
+        runner.claim_journal(journal, top)
+    assert len(seen) == 1 and len(seen[0]) == 1, "the write failed with the staging file in place"
+    assert not journal.exists()
+    assert list(journal.parent.iterdir()) == []
+
+
+def test_a_write_that_fails_keeps_the_claim_and_leaves_no_staging_file(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+    seen = []
+    fail_after_staging(runner, monkeypatch, journal, seen)
+    with pytest.raises(OSError):
+        runner.write_journal(journal, top, {(root / "target.py").resolve(): b"x"})
+    assert len(seen) == 1 and len(seen[0]) == 2, "the write failed with the staging file beside the claim"
+    assert json.loads(journal.read_bytes()) == {"files": {}}, "the claim stays whole"
+    assert list(journal.parent.iterdir()) == [journal]
+
+
+def test_a_write_whose_replace_fails_keeps_the_claim_and_leaves_no_staging_file(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+
+    def refused(*args, **kwargs):
+        raise OSError("replace refused")
+
+    monkeypatch.setattr(runner.os, "replace", refused)
+    with pytest.raises(OSError):
+        runner.write_journal(journal, top, {(root / "target.py").resolve(): b"x"})
+    assert json.loads(journal.read_bytes()) == {"files": {}}, "the claim stays whole"
+    assert list(journal.parent.iterdir()) == [journal]
+
+
+def test_a_journal_with_content_still_blocks_the_run(tmp_path):
+    # A claimed journal is `{"files": {}}`, and that is a run in progress.
+    root = make_repo(tmp_path)
+    journal = load_runner().journal_path(root)
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    journal.write_text(json.dumps({"files": {}}), encoding="utf-8")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2 and "in progress" in result.stderr
+    assert journals(root) == [journal]
+
+
+# mpaulosky/dotfiles#341: test output went to /dev/null, so a failed baseline gave no reason.
+NOISY_FAILURE = (
+    "import sys\nfor n in range(1, 301):\n    print('line-%03d' % n)\n"
+    "print('the-reason-on-stderr', file=sys.stderr)\nsys.exit(1)\n")
+
+
+def test_a_failed_baseline_shows_the_last_lines_of_the_test_output(tmp_path):
+    root = make_repo(tmp_path, check=NOISY_FAILURE)
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2
+    assert "fail before" in result.stderr
+    assert "line-300" in result.stderr and "the-reason-on-stderr" in result.stderr
+    assert "line-001" not in result.stderr, "only the last lines are kept"
+    assert "Traceback" not in result.stderr
+
+
+def test_a_failed_baseline_with_no_output_still_refuses_cleanly(tmp_path):
+    root = make_repo(tmp_path, check="import sys\nsys.exit(1)\n")
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 2 and "fail before" in result.stderr and "Traceback" not in result.stderr
+    assert not journals(root)
+
+
+def test_a_passing_run_does_not_print_the_test_output(tmp_path):
+    root = make_repo(tmp_path, check="print('noise-from-a-passing-test')\n" + CHECK)
+    result = run(root, spec([mutation("x > 0", "x >= 0")]))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "noise-from-a-passing-test" not in result.stdout + result.stderr
+
+
+# mpaulosky/dotfiles#341 (R74): the docstring said the journal is in the git directory; it is in the common one, one per worktree.
+def test_the_docstring_says_the_journal_is_in_the_common_git_directory_one_per_worktree():
+    doc = " ".join((load_runner().__doc__ or "").split())
+    assert "common git directory" in doc
+    assert "one journal per worktree" in doc
+    assert "in the git directory" not in doc
+
+
+# mpaulosky/dotfiles#361: the docstring no longer says an empty journal is a leftover to remove; it says how the journal is made.
+def test_the_docstring_says_the_journal_is_never_empty_and_any_journal_blocks_the_run():
+    doc = " ".join((load_runner().__doc__ or "").split())
+    assert "hard link" in doc
+    assert "os.replace" in doc
+    assert "next run removes it" not in doc
+    assert "An empty journal is what a run killed before it wrote its claim leaves" not in doc

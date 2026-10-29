@@ -3,6 +3,7 @@
 import re
 import sys
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -69,7 +70,7 @@ def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
     # Copilot reviewed an older head and nothing is requested now.
     decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD})))
     assert decision.action == ld.REQUEST_COPILOT
-    assert decision.reason.endswith("Copilot not requested")
+    assert decision.reason.endswith("Copilot not asked yet")
 
 
 def test_claude_is_called_in_once_copilot_answered_the_head_with_its_quota_note_and_checks_are_green():
@@ -223,7 +224,9 @@ def test_there_is_no_review_cap_so_an_open_thread_waits_after_any_number_of_roun
     assert ld.decide(rounds) == ld.Decision(ld.WAIT, "1 open thread(s)")
 
 
-def test_a_behind_branch_is_updated_and_copilot_asked_again():
+def test_a_behind_branch_is_updated_and_nobody_is_asked():
+    assert ld.UPDATE_BRANCH == "update branch"
+    assert ld.UPDATE_BRANCH in ld.ACTIONS
     assert ld.decide(replace(READY, merge_state="BEHIND")).action == ld.UPDATE_BRANCH
     # Behind wins over a missing review: the update makes a new head to review anyway.
     behind_unreviewed = replace(READY, merge_state="BEHIND", copilot_reviewed=frozenset())
@@ -470,3 +473,158 @@ def test_the_notice_names_at_most_three_threads_and_counts_the_rest():
     assert notice == "notice: resolved without a reply: a.py:1, b.py:2, c.py:3 and 2 more"
     exactly = ld.unreplied_notice(replace(READY, unreplied_threads=names[:3]))
     assert exactly == "notice: resolved without a reply: a.py:1, b.py:2, c.py:3"
+
+
+# ── Copilot is asked once per PR, then Claude backs it up (mpaulosky/dotfiles#360) ──
+
+NOW = 1_800_000_000.0
+MARKER = ld.COPILOT_ASKED_MARKER
+
+
+def iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def comment(login="github-actions", age=3600, body=None):
+    """A comment as copilot_ask reads it: (login, body, created_at)."""
+    return (login, f"Asked Copilot.\n\n{MARKER}" if body is None else body, iso(NOW - age))
+
+
+def test_the_record_is_a_comment_with_the_marker_and_the_settle_time_is_30_seconds():
+    assert MARKER == "<!-- pr-automerge:copilot-asked -->"
+    assert ld.COPILOT_ASK_SETTLE_SECONDS == 30
+    assert MARKER in ld.COPILOT_ASKED_COMMENT
+
+
+def test_pr_auto_merge_uses_the_same_marker_and_settle_time():
+    workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
+    text = workflow.read_text(encoding="utf-8")
+    assert f'const COPILOT_ASKED_MARKER = "{MARKER}";' in text
+    assert f"const COPILOT_ASK_SETTLE_MS = {ld.COPILOT_ASK_SETTLE_SECONDS} * 1000;" in text
+
+
+def test_no_record_means_copilot_was_not_asked():
+    assert ld.copilot_ask([], "o", NOW) == (False, False)
+    assert ld.copilot_ask([comment(body="Looks good to me."), comment(login="o", body="thanks")], "o", NOW) == (False, False)
+
+
+def test_a_record_by_github_actions_or_the_owner_counts():
+    assert ld.copilot_ask([comment("github-actions")], "o", NOW) == (True, True)
+    assert ld.copilot_ask([comment("github-actions[bot]")], "o", NOW) == (True, True)
+    assert ld.copilot_ask([comment("o")], "o", NOW) == (True, True)
+
+
+def test_a_record_by_anyone_else_is_ignored():
+    for login in ("stranger", "copilot-pull-request-reviewer", "o-other", "", "github-actions-fake"):
+        assert ld.copilot_ask([comment(login)], "o", NOW) == (False, False), login
+    assert ld.copilot_ask([comment("o")], "", NOW) == (False, False)
+
+
+def test_the_record_settles_after_30_seconds():
+    assert ld.copilot_ask([comment(age=29)], "o", NOW) == (True, False)
+    assert ld.copilot_ask([comment(age=30)], "o", NOW) == (True, True)
+    assert ld.copilot_ask([comment(age=31)], "o", NOW) == (True, True)
+    assert ld.copilot_ask([comment(age=0)], "o", NOW) == (True, False)
+
+
+def test_the_first_record_decides_when_there_are_several():
+    # Oldest first: the first record is the ask, a later one (a second asker's) changes nothing.
+    assert ld.copilot_ask([comment(age=3600), comment(age=5)], "o", NOW) == (True, True)
+    assert ld.copilot_ask([comment(age=5), comment(age=3600)], "o", NOW) == (True, False)
+    assert ld.copilot_ask([comment("stranger", age=3600), comment(age=5)], "o", NOW) == (True, False)
+
+
+def test_a_record_after_other_comments_is_found():
+    assert ld.copilot_ask([comment(body="LGTM"), comment("o", body="thanks"), comment(age=100)], "o", NOW) == (True, True)
+
+
+def test_comments_that_could_not_be_read_count_as_asked_but_not_settled():
+    assert ld.copilot_ask(None, "o", NOW) == (True, False)
+
+
+def test_a_record_with_an_unreadable_time_is_asked_but_not_settled():
+    for created in ("not a date", "", None):
+        assert ld.copilot_ask([("github-actions", MARKER, created)], "o", NOW) == (True, False), created
+
+
+UNASKED = replace(READY, copilot_reviewed=frozenset({OLD}))
+ASKED = replace(UNASKED, copilot_asked=True)
+SETTLED = replace(ASKED, copilot_ask_settled=True)
+
+
+def test_copilot_is_gone_when_asked_and_settled_with_nothing_pending_or_dropped_or_declined():
+    assert not UNASKED.copilot_gone
+    assert not ASKED.copilot_gone
+    assert SETTLED.copilot_gone
+    assert not replace(SETTLED, copilot_requested=True).copilot_gone
+    assert replace(UNASKED, copilot_dropped=True).copilot_gone
+    assert replace(ASKED, copilot_dropped=True).copilot_gone
+    assert not replace(UNASKED, copilot_ask_settled=True).copilot_gone
+
+
+def test_an_unasked_head_asks_copilot():
+    decision = ld.decide(UNASKED)
+    assert decision.action == ld.REQUEST_COPILOT
+    assert decision.reason.endswith("Copilot not asked yet")
+
+
+def test_an_asked_head_waits_for_the_request_to_show_until_the_record_settles():
+    decision = ld.decide(ASKED)
+    assert decision.action == ld.WAIT
+    assert "Copilot was asked" in decision.reason and "no Copilot or Claude review of aaaaaaa" in decision.reason
+
+
+def test_a_settled_record_with_nothing_pending_calls_in_claude_once_checks_are_green():
+    assert ld.decide(SETTLED).action == ld.REQUEST_CLAUDE
+    waiting = ld.decide(replace(SETTLED, checks=(passed("Build Solution"), running("Test Suite"))))
+    assert waiting.action == ld.WAIT and waiting.reason.endswith("waiting for checks before calling in Claude: Test Suite")
+    assert ld.decide(replace(SETTLED, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+    assert ld.decide(replace(SETTLED, checks=())).action == ld.WAIT
+
+
+def test_a_settled_record_with_a_pending_request_waits():
+    decision = ld.decide(replace(SETTLED, copilot_requested=True))
+    assert decision.action == ld.WAIT and decision.reason.endswith("Copilot is requested")
+
+
+def test_a_dropped_request_read_back_in_this_process_calls_in_claude_before_the_record_settles():
+    assert ld.decide(replace(ASKED, copilot_dropped=True)).action == ld.REQUEST_CLAUDE
+
+
+def test_claudes_rounds_are_capped_for_a_settled_record_too():
+    used = replace(SETTLED, claude_reviewed=frozenset({"c" * 40, "d" * 40, "e" * 40, OLD}))
+    assert ld.decide(used).action == ld.WAIT
+
+
+def test_the_label_waits_for_claude_whatever_the_record_says():
+    assert ld.decide(replace(SETTLED, claude_requested=True)).action == ld.WAIT
+    assert "review:claude is on" in ld.decide(replace(SETTLED, claude_requested=True)).reason
+
+
+def test_claudes_review_of_the_head_counts_only_where_copilot_is_gone():
+    reviewed = replace(UNASKED, claude_reviewed=frozenset({HEAD}), claude_requested=True)
+    assert reviewed.head_reviewer == "" and ld.decide(reviewed).action == ld.REQUEST_COPILOT
+    assert replace(reviewed, copilot_asked=True).head_reviewer == ""
+    gone = replace(reviewed, copilot_asked=True, copilot_ask_settled=True)
+    assert gone.head_reviewer == "claude"
+    assert ld.decide(gone).action == ld.ARM_AUTO_MERGE
+    assert replace(gone, copilot_requested=True).head_reviewer == ""
+    # Copilot's own review comes first.
+    assert replace(gone, copilot_reviewed=frozenset({HEAD})).head_reviewer == "copilot"
+
+
+def test_claudes_review_of_an_older_commit_isnt_backed_by_a_settled_record():
+    older = replace(SETTLED, claude_reviewed=frozenset({OLD}))
+    assert older.head_reviewer == ""
+    assert ld.decide(older).action == ld.REQUEST_CLAUDE
+
+
+def test_the_review_cap_counts_claudes_review_of_the_head_only_where_copilot_is_gone():
+    two_copilot = replace(READY, merged_by_workflow=True, copilot_reviewed=frozenset({OLD, "c" * 40}), claude_reviewed=frozenset({HEAD}))
+    assert not two_copilot.past_review_cap
+    assert not replace(two_copilot, copilot_asked=True).past_review_cap
+    assert replace(two_copilot, copilot_asked=True, copilot_ask_settled=True).past_review_cap
+    assert not replace(two_copilot, copilot_asked=True, copilot_ask_settled=True, copilot_requested=True).past_review_cap
+    # A Claude review of an earlier commit, with no note on it, never counts toward the cap.
+    earlier = replace(two_copilot, claude_reviewed=frozenset({"d" * 40}), copilot_asked=True, copilot_ask_settled=True)
+    assert not earlier.past_review_cap

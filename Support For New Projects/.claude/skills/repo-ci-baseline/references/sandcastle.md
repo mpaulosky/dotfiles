@@ -143,7 +143,7 @@ whether or not that label counts, and says how many other open PRs it left out.
   Thaana or an Indic script. At most eight survive in one text, so a few invisible bits can ride on them and no more. Keycap and
   flag-tag emoji fall apart, and in the Indic scripts only the non-joiner survives: a zero-width joiner between two letters (Sinhala's
   "Sri", a Devanagari half-form) is dropped. A private-use code point of the Basic Multilingual Plane (an icon glyph) or an unassigned
-  one stays, since it draws a glyph or a box, but only eight of them per text, and no more than three combining marks in a row
+  one stays, since it draws a glyph or a box, but only eight of them per text, and no more than eight combining marks in a row
   (text that stacks more, as Tibetan and Hebrew with cantillation can, loses the extras).
   `plainStderr` cleans what a read warns on stderr, joining the arguments as data, never as a format string.
   On the status's path, gh's and git's own stderr never reach the terminal themselves: the reads that run them (every gh read through

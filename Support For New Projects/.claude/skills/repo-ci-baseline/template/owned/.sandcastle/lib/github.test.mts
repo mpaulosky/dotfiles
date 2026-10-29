@@ -405,7 +405,7 @@ describe("commentOnIssue", () => {
 
   it("throws when gh fails, so a failed comment isn't mistaken for a posted one", () => {
     const run = (() => {
-      throw new Error("gh: HTTP 502");
+      throw Object.assign(new Error("Command failed: gh issue comment"), { stderr: "gh: HTTP 502" });
     }) as unknown as typeof execFileSync;
 
     assert.throws(() => commentOnIssue(69, "body", run, "o/r"), /HTTP 502/);

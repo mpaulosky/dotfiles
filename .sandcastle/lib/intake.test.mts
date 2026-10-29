@@ -913,7 +913,7 @@ describe("applyVerdicts beyond the acceptance criteria", () => {
   // The ready comment only explains labels already applied, so a rejected one
   // costs the explanation, not the verdict.
   it("keeps a ready issue's labels and logs it when its comment is rejected, and still applies the next verdict", () => {
-    const gh = recordingGh(["Sandcastle"], (args) => (args[1] === "comment" && args[2] === "1" ? new Error("HTTP 422") : undefined));
+    const gh = recordingGh(["Sandcastle"], (args) => (args[1] === "comment" && args[2] === "1" ? Object.assign(new Error("Command failed: gh issue comment 1"), { stderr: "HTTP 422" }) : undefined));
     const lines: string[] = [];
 
     applyVerdicts([issue(1), issue(2)], [verdict(1), verdict(2)], gh.run, "o/r", new HandBackReport(), (line) => lines.push(line));
@@ -1166,7 +1166,7 @@ describe("intakeRound", () => {
         const sent: number[] = JSON.parse(promptArgs.ISSUES_JSON).map((i: { number: number }) => i.number);
         return sent.map((number) => verdict(number, { reason: "clear and checkable" }));
       },
-      recordingGh(["Sandcastle"], () => new Error("gh: HTTP 401")).run,
+      recordingGh(["Sandcastle"], () => Object.assign(new Error("Command failed: gh issue view"), { stderr: "gh: HTTP 401" })).run,
       "o/r",
       new HandBackReport(),
       () => {},
@@ -1190,7 +1190,7 @@ describe("intakeRound", () => {
         const sent: number[] = JSON.parse(promptArgs.ISSUES_JSON).map((i: { number: number }) => i.number);
         return sent.map((number) => verdict(number, { reason: "clear and checkable" }));
       },
-      recordingGh(["Sandcastle"], () => new Error("gh: HTTP 401")).run,
+      recordingGh(["Sandcastle"], () => Object.assign(new Error("Command failed: gh issue view"), { stderr: "gh: HTTP 401" })).run,
       "o/r",
       new HandBackReport(),
       () => {},

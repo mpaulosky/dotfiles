@@ -15,12 +15,11 @@
 // didn't approve, never reaches it.
 // ---------------------------------------------------------------------------
 
-import type { execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { isIssueBranch } from "./branches.mts";
 import { BUILDING_LABEL } from "./config.mts";
-import { hasLabel, openPullRequests, repoName, type OpenPullRequest, type SandcastleIssue } from "./github.mts";
+import { ghWithStderr, hasLabel, openPullRequests, repoName, type OpenPullRequest, type SandcastleIssue } from "./github.mts";
 import { loadQueue } from "./queue.mts";
-import { sh } from "./shell.mts";
 
 export type Blocker = {
   number: number;
@@ -43,25 +42,30 @@ export type GateGitHub = {
   blocker(number: number): Blocker;
 };
 
-// The gate's GitHub reads, run through `run` (execFileSync by default) against `repo` (this checkout's repository by default).
-export function gateGitHub(run?: typeof execFileSync, repo?: string): GateGitHub {
-  if (run !== undefined || repo !== undefined) throw new Error("Not implemented");
-  return liveGitHub;
+// The gate's GitHub reads, run through `run` (execFileSync by default) against `repo` (this checkout's repository by default). Each
+// goes through ghWithStderr, so gh's stderr reaches the terminal only through the thrown message (ADR 0010).
+export function gateGitHub(run: typeof execFileSync = execFileSync, repo: string = repoName()): GateGitHub {
+  return {
+    sandcastleIssues: () => loadQueue(),
+    openPullRequests: () => openPullRequests(run, repo),
+    nativeBlockers: (issueNumber) =>
+      ghWithStderr(run, [
+        "api", "--paginate", `repos/${repo}/issues/${issueNumber}/dependencies/blocked_by`, "--jq", `.[] | ${blockerFields}`,
+      ])
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Blocker),
+    blocker: (number) => JSON.parse(ghWithStderr(run, ["api", `repos/${repo}/issues/${number}`, "--jq", blockerFields])) as Blocker,
+  };
 }
 
+// The live reads. Each call builds gateGitHub() afresh, so importing the module never shells out to gh for the repository's name.
 export const liveGitHub: GateGitHub = {
-  sandcastleIssues: () => loadQueue(),
-  openPullRequests,
-  nativeBlockers: (issueNumber) =>
-    sh(
-      process.cwd(), "gh", "api", "--paginate", `repos/${repoName()}/issues/${issueNumber}/dependencies/blocked_by`,
-      "--jq", `.[] | ${blockerFields}`,
-    )
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Blocker),
-  blocker: (number) =>
-    JSON.parse(sh(process.cwd(), "gh", "api", `repos/${repoName()}/issues/${number}`, "--jq", blockerFields)) as Blocker,
+  sandcastleIssues: () => gateGitHub().sandcastleIssues(),
+  openPullRequests: () => gateGitHub().openPullRequests(),
+  nativeBlockers: (issueNumber) => gateGitHub().nativeBlockers(issueNumber),
+  blocker: (number) => gateGitHub().blocker(number),
 };
 
 // Undefined when the lookup fails (a mistyped number 404s, the network drops).

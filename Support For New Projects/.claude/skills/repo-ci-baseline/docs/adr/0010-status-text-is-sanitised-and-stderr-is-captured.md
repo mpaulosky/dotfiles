@@ -39,5 +39,6 @@ gh and git also write to the process's stderr themselves when they are run with 
   cantillation, some Indic clusters) loses the extras. Both are known costs, noted in the code and in the reference. Whether three is the right number is the owner's call.
 - A zero-width joiner and a variation selector stay only beside assigned pictographs, since the cap on unassigned code points could otherwise drop the pictograph
   they sat beside and leave them dangling.
-- Elsewhere in the pipeline `sh()` and `commentOnIssue` still let stderr through. mpaulosky/dotfiles#347 moves them to the same convention.
+- The rest of the pipeline follows the same convention (mpaulosky/dotfiles#347): `sh()` is gone, `commentOnIssue`, the issue-body helpers, the open-PR lists and the gate's
+  reads go through `ghWithStderr`, `build.mts` and `intake.mts` print an error through `terminalText`, and intake's report quotes gh's stderr, not Node's command line.
 - A new read on the status's path goes through `ghWithStderr`, and a new line it prints goes through `terminalText` or `terminalLine`.

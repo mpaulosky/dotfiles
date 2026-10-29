@@ -692,7 +692,7 @@ def test_a_journal_write_that_fails_does_not_leave_the_empty_journal_behind(tmp_
         raise OSError("disk full")
 
     spec_file = write_spec(root, spec([mutation("x > 0", "x >= 0")]))
-    monkeypatch.setattr(runner.json, "dumps", full)
+    monkeypatch.setattr(runner.os, "fsync", full)  # after the staging file exists, so stage() has to clean it up
     assert runner.main([str(spec_file), "--root", str(root)]) == 2
     assert "unexpected OSError" in capsys.readouterr().err
     assert not journals(root)
@@ -912,17 +912,25 @@ def test_a_refused_claim_leaves_no_staging_file_behind(tmp_path):
     assert json.loads(journal.read_bytes()) == {"files": {}}
 
 
+def fail_after_staging(runner, monkeypatch, journal, seen):
+    """Make os.fsync fail once the staging file exists, noting what the folder held at that moment."""
+
+    def full(*args, **kwargs):
+        seen.append(sorted(journal.parent.iterdir()))
+        raise OSError("disk full")
+
+    monkeypatch.setattr(runner.os, "fsync", full)
+
+
 def test_a_claim_whose_write_fails_leaves_nothing_in_the_private_folder(tmp_path, monkeypatch):
     root = make_repo(tmp_path)
     runner = load_runner()
     journal, top = runner.locate(root)
-
-    def full(*args, **kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(runner.json, "dumps", full)
+    seen = []
+    fail_after_staging(runner, monkeypatch, journal, seen)
     with pytest.raises(OSError):
         runner.claim_journal(journal, top)
+    assert len(seen) == 1 and len(seen[0]) == 1, "the write failed with the staging file in place"
     assert not journal.exists()
     assert list(journal.parent.iterdir()) == []
 
@@ -932,11 +940,25 @@ def test_a_write_that_fails_keeps_the_claim_and_leaves_no_staging_file(tmp_path,
     runner = load_runner()
     journal, top = runner.locate(root)
     runner.claim_journal(journal, top)
+    seen = []
+    fail_after_staging(runner, monkeypatch, journal, seen)
+    with pytest.raises(OSError):
+        runner.write_journal(journal, top, {(root / "target.py").resolve(): b"x"})
+    assert len(seen) == 1 and len(seen[0]) == 2, "the write failed with the staging file beside the claim"
+    assert json.loads(journal.read_bytes()) == {"files": {}}, "the claim stays whole"
+    assert list(journal.parent.iterdir()) == [journal]
 
-    def full(*args, **kwargs):
-        raise OSError("disk full")
 
-    monkeypatch.setattr(runner.json, "dumps", full)
+def test_a_write_whose_replace_fails_keeps_the_claim_and_leaves_no_staging_file(tmp_path, monkeypatch):
+    root = make_repo(tmp_path)
+    runner = load_runner()
+    journal, top = runner.locate(root)
+    runner.claim_journal(journal, top)
+
+    def refused(*args, **kwargs):
+        raise OSError("replace refused")
+
+    monkeypatch.setattr(runner.os, "replace", refused)
     with pytest.raises(OSError):
         runner.write_journal(journal, top, {(root / "target.py").resolve(): b"x"})
     assert json.loads(journal.read_bytes()) == {"files": {}}, "the claim stays whole"

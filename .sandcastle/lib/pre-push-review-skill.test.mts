@@ -571,4 +571,3 @@ describe("the skills' reading of the .security record", () => {
     assert.match(text, /fixed entry/);
   });
 });
-

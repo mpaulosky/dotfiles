@@ -91,6 +91,9 @@ export function fingerprint(path: string, summary: string): string {
   return createHash("sha256").update(`${path}\0${summary.toLowerCase().replace(/\s+/g, " ").trim()}`).digest("hex");
 }
 
+// An entry whose status can be read. One of unknown status never holds a weakness, so a hand edit can't hide a finding.
+const holdsWeakness = (entry: SecurityEntry) => entry.status !== "unknown";
+
 const isRegularFile = (path: string) => lstatSync(path, { throwIfNoEntry: false })?.isFile() === true;
 
 const field = (text: string, name: string) => new RegExp(`^- ${name}: (.*)$`, "m").exec(text)?.[1]?.trim();
@@ -243,10 +246,9 @@ export function recordSecurity(
     const known = entriesIn(directory);
     for (const finding of findings) {
       const print = fingerprint(finding.path, finding.summary);
-      const holding = (entry: SecurityEntry) => entry.status !== "unknown";
-      let holder = known.find((entry) => holding(entry) && entry.fingerprint === print);
+      let holder = known.find((entry) => holdsWeakness(entry) && entry.fingerprint === print);
       if (finding.repeats !== undefined) {
-        const named = known.find((entry) => holding(entry) && Number(entry.id) === Number(finding.repeats));
+        const named = known.find((entry) => holdsWeakness(entry) && Number(entry.id) === Number(finding.repeats));
         if (named === undefined) outcome.warnings.push(`${finding.id} says it repeats ${finding.repeats}, but no entry has that number; recorded by its text instead`);
         else holder = named;
       }
@@ -279,7 +281,7 @@ export function recordSecurity(
 // no entry holds it. An entry already accepted is left as it is. Throws on a write error, which the caller reports.
 export function markAccepted(cwd: string, finding: { path: string; summary: string }, reason: string): string | undefined {
   const print = fingerprint(finding.path, finding.summary);
-  const entry = readEntries(cwd).find((candidate) => candidate.status !== "unknown" && candidate.fingerprint === print);
+  const entry = readEntries(cwd).find((candidate) => holdsWeakness(candidate) && candidate.fingerprint === print);
   if (entry === undefined) return undefined;
   if (entry.status === "accepted") return entry.id;
   const text = withSection(withStatus(readFileSync(entry.path, "utf8"), "accepted"), "Accepted", plainText(reason));

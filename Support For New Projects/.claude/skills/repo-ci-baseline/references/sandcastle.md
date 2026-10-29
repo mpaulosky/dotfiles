@@ -149,7 +149,8 @@ whether or not that label counts, and says how many other open PRs it left out.
   On the status's path, gh's and git's own stderr never reach the terminal themselves: the reads that run them (every gh read through
   `ghWithStderr`, `repoName()`, `protectHostGit`'s `git config`) capture it and put it in the thrown message (when gh printed nothing, a reason built from the error's code, signal or exit
   status, never its command line, which quotes titles), which the entry file
-  prints through `terminalText`. Elsewhere in the pipeline `sh()` and `commentOnIssue` still let it through.
+  prints through `terminalText`. The rest of the pipeline does the same: `sh()` is gone, `commentOnIssue`, the issue-body helpers, the open-PR lists and the gate's reads go through
+  `ghWithStderr`, and `build.mts` and `intake.mts` print an error through `terminalText`.
   Why: [ADR 0010](../docs/adr/0010-status-text-is-sanitised-and-stderr-is-captured.md).
 - **`threads`.** The unresolved threads by who opened them: `bot`, `owner` (confirmed as the owner)
   and `other` (anyone else, or an owner check that couldn't answer),

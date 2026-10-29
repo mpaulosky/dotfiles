@@ -81,6 +81,17 @@ RUN if [ "$INSTALL_DOTNET" = true ]; then \
     fi
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 
+# Chromium's system libraries for a repo whose E2E tests use Playwright (Microsoft.Playwright in
+# Directory.Packages.props); set INSTALL_PLAYWRIGHT_DEPS=true. Only the libraries: the test fixture installs the
+# browser itself at run time, so a Playwright bump needs no image change. PLAYWRIGHT_VERSION only picks the
+# install-deps list, so keep it near the repo's Microsoft.Playwright version. It runs as root, then clears root's caches.
+ARG INSTALL_PLAYWRIGHT_DEPS=false
+ARG PLAYWRIGHT_VERSION=1.56.1
+RUN if [ "$INSTALL_PLAYWRIGHT_DEPS" = true ]; then \
+      pnpm dlx playwright@${PLAYWRIGHT_VERSION} install-deps chromium \
+      && rm -rf /var/lib/apt/lists/* /root/.cache /root/.local/share/pnpm /root/.npm; \
+    fi
+
 USER ${AGENT_UID}:${AGENT_GID}
 
 # Install Claude Code CLI

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { pathToFileURL } from "node:url";
-import { configIncludeProblem, hostGitEnv, mainGitDir, protectedGitMounts, withoutGitHooks, worktreeConfigProblem, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+import { configIncludeProblem, hostGitEnv, mainGitDir, protectedGitMounts, protectedRecordMounts, withoutGitHooks, worktreeConfigProblem, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 
 describe("worktreeConfigProblem", () => {
   const configIn = (setup: (gitDir: string) => void) => {
@@ -282,6 +282,48 @@ describe("protectedGitMounts", () => {
     assert.ok(review !== undefined);
     assert.deepEqual(readdirSync(review.hostPath), []);
   });
+});
+
+// The main checkout's .security/ holds the local record of security findings (security-record.mts). Head-mode sandboxes mount the
+// checkout itself, so an agent that reads untrusted text would otherwise read the record, and the host publishes what agents write.
+describe("protectedRecordMounts", () => {
+  it("covers the checkout's .security with one empty read-only folder, whether or not it exists yet", () => {
+    for (const exists of [() => true, () => false]) {
+      assert.deepEqual(protectedRecordMounts("/repo", exists, "/empty", () => {}), [{ hostPath: "/empty", sandboxPath: "/repo/.security", readonly: true }]);
+    }
+  });
+
+  it("makes the folder on the host first, so Docker doesn't make it as root", () => {
+    const made: string[] = [];
+
+    protectedRecordMounts("/repo", () => false, "/empty", (path) => made.push(path));
+
+    assert.deepEqual(made, ["/repo/.security"]);
+  });
+
+  it("covers them with a folder that is empty", () => {
+    const [mount] = protectedRecordMounts("/repo", () => false, undefined, () => {});
+
+    assert.ok(mount !== undefined);
+    assert.deepEqual(readdirSync(mount.hostPath), []);
+  });
+
+  for (const [kind, plant] of [
+    ["a symlink", (path: string) => symlinkSync(join(path, "..", "elsewhere"), path)],
+    ["a file", (path: string) => writeFileSync(path, "")],
+  ] as const) {
+    it(`stops, saying what to look at, when .security is ${kind}`, () => {
+      const checkout = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-checkout-")));
+      try {
+        mkdirSync(join(checkout, "elsewhere"));
+        plant(join(checkout, ".security"));
+
+        assert.throws(() => protectedRecordMounts(checkout, existsSync, "/empty"), (error: Error) => error.message.startsWith(`${join(checkout, ".security")} isn't a real folder`));
+      } finally {
+        rmSync(checkout, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    });
+  }
 });
 
 describe("worktreeLinkProblems", () => {

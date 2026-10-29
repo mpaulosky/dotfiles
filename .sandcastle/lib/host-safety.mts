@@ -207,6 +207,17 @@ export function protectedGitMounts(
   return [...commands, { hostPath: empty, sandboxPath: join(gitDir, "review"), readonly: true }];
 }
 
+// An empty read-only folder over `<checkout>/.security`, the local record of security findings, which agents must not read
+// (see security-record.mts). Not implemented yet.
+export function protectedRecordMounts(
+  _checkout: string,
+  _exists: (path: string) => boolean = existsSync,
+  _empty: string = emptyFolder(),
+  _makeDir: (path: string) => void = (path) => mkdirSync(path, { recursive: true, mode: 0o700 }),
+): ReadOnlyMount[] {
+  throw new Error("Not implemented");
+}
+
 // Where Sandcastle 0.12 puts a branch's worktree (its worktree mode's create()).
 export function worktreePathFor(checkout: string, branch: string): string {
   return join(checkout, ".sandcastle", "worktrees", branch.replaceAll("/", "-"));

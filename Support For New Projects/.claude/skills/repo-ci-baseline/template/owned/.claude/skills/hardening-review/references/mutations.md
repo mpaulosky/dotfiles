@@ -34,8 +34,9 @@ shell.
   originals into it before the first mutation, named relative to the worktree's top level. There is one journal per
   worktree, shared by every `--root` in it. Until the journal is deleted, the next run (or a second one started
   meanwhile) refuses to start. After a kill, check `git diff`, run `git checkout -- <file>` from the top level the
-  message names and delete the journal it names. An empty journal is what a run killed before it wrote its claim leaves:
-  the next run removes it. When the tests fail before any mutation, the last lines of their output are printed.
+  message names and delete the journal it names. The journal is never written in place: the claim is staged in a file of its own and
+  put into position with a hard link (which fails if the journal exists), and the originals replace it with `os.replace`. It is
+  never empty, so any journal blocks the run and nothing is deleted to take over. When the tests fail before any mutation, the last lines of their output are printed.
 - POSIX only: the tests run in a process group, so on Windows outside WSL the runner refuses with exit 2.
 - **CAUGHT only means the tests failed.** A mutation that leaves the file unparsable or uncompilable fails every test, so
   write mutations that keep the file valid, and run the first one by hand to see that the test failing is one that

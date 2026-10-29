@@ -21,8 +21,10 @@ review/ in the common git directory, which Sandcastle hides from its sandboxes; 
 worktree, shared by every --root in it), writes the originals into it, named relative to the
 worktree's top level, before the first mutation, and the next run, or a second run at the same
 time, refuses to start until the files are restored (git checkout, from the top level) and the
-journal is deleted. An empty journal is what a run killed before it wrote its claim leaves: the
-next run removes it. POSIX only: the tests run in a process group.
+journal is deleted. The journal is never written in place: the claim is staged in a file of its own and
+hard-linked into position (a hard link fails if the journal exists), and the originals replace it with
+os.replace, so it is never empty and any journal blocks the run; nothing is deleted to take over.
+POSIX only: the tests run in a process group.
 """
 import argparse
 import base64
@@ -31,7 +33,6 @@ import json
 import os
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import tempfile
@@ -176,37 +177,44 @@ def describe_journal(journal, top):
             f"`git checkout -- <file>` in {top}, then delete {journal}")
 
 
-def claim_journal(journal, top):
-    """Create the journal before anything slow, so a second run sees it; exclusive, so two can't both pass."""
-    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+def stage(journal, text):
+    """Write text to a file of its own beside the journal and return its path. The file is removed again if the write fails."""
+    handle, name = tempfile.mkstemp(prefix=".mutate-journal-", suffix=".tmp", dir=journal.parent)
     try:
-        handle = journal.open("x", encoding="utf-8")
-    except FileExistsError:
-        # A run killed between creating the journal and writing its claim left an empty file: no run, and nothing to restore.
-        try:
-            status = journal.stat()
-            leftover = stat.S_ISREG(status.st_mode) and status.st_size == 0
-        except OSError:
-            leftover = False
-        if not leftover:
-            raise Refused(describe_journal(journal, top))
-        journal.unlink(missing_ok=True)
-        try:
-            handle = journal.open("x", encoding="utf-8")
-        except FileExistsError:
-            raise Refused(describe_journal(journal, top))
-    try:
-        with handle:
-            handle.write(json.dumps({"files": {}}))
+        with os.fdopen(handle, "w", encoding="utf-8") as staged:
+            staged.write(text)
+            staged.flush()
+            os.fsync(staged.fileno())
     except BaseException:
-        # Created but not written (a full disk): nothing was mutated, so the next run must not be told a run was killed.
-        journal.unlink(missing_ok=True)
+        Path(name).unlink(missing_ok=True)
         raise
+    return Path(name)
+
+
+def claim_journal(journal, top):
+    """Claim the journal before anything slow, so a second run sees it; exclusive, so two can't both pass.
+
+    The claim is staged in a file of its own and hard-linked into position, which fails if the journal exists: the journal is never
+    empty, so any journal that exists blocks the run and nothing is deleted to take over."""
+    journal.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staged = stage(journal, json.dumps({"files": {}}))
+    try:
+        os.link(staged, journal)
+    except FileExistsError:
+        raise Refused(describe_journal(journal, top))
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def write_journal(journal, top, originals):
+    """Replace the claim with the originals in one step, so a reader never sees the journal empty or half written."""
     data = {str(path.relative_to(top)): base64.b64encode(content).decode("ascii") for path, content in originals.items()}
-    journal.write_text(json.dumps({"files": data}), encoding="utf-8")
+    staged = stage(journal, json.dumps({"files": data}))
+    try:
+        os.replace(staged, journal)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
 
 
 def output_tail(stream, name):

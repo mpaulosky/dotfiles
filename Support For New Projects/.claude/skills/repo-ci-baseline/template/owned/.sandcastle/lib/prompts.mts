@@ -29,13 +29,30 @@ export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, chec
   return { ...issuePromptArgs(issue, branch), CHECKPOINT: String(checkpoint), GATE_OUTPUT: gateOutput };
 }
 
-// The rules for the reviewer's PR description, filled in as {{PR_BODY_RULES}}
-// (see mpaulosky/dotfiles#320). Not written yet.
-export const PR_BODY_RULES = "";
+// What the host refuses in the reviewer's PR description, filled in as
+// {{PR_BODY_RULES}} in review-prompt.md. It lives here, not in the Seed
+// prompt, because Apply never overwrites a Seed file: a repo gets new wording
+// on its next re-Apply only if the Template owns it (see
+// mpaulosky/dotfiles#320). Keep it in step with lib/build.mts#reviewerPrBody:
+// build.test.mts fails when a refusal there isn't named here.
+export const PR_BODY_RULES = [
+  "The host publishes `pr-body.md` word for word. When the file breaks any rule below it publishes a generic body instead, your description is lost,",
+  "and you get no error. So:",
+  "",
+  "- Write the file, and don't leave it empty. Use exactly the headings `## Why`, `## What changed` and `## Verification`, each on a line of its own.",
+  "- Keep it under 60,000 characters.",
+  "- Never put a secret, a token or a credential in it, nor a colour code or a URL with credentials.",
+  "- Never write the words \"Review notes\", in any form: a heading, in code, split by emphasis, tags or character references, or run together with other",
+  "  letters. Only a person's local review writes that section, and the host reads your text as a reader sees it.",
+  "- Don't name another issue with a closing keyword (`Closes`, `Fixes`, `Resolves` and their other forms before `#<n>`, `owner/repo#<n>` or an issue URL):",
+  "  GitHub would close it when the PR merges. Refer to it without a keyword (\"see #<n>\"). The host adds the line that closes this issue itself.",
+  "- Don't @mention anyone outside a code span: GitHub would notify them.",
+  "- Don't write `<!--`: the host's markers start with it. Add no marker or sign-off line of your own.",
+].join("\n");
 
 // The reviewer's prompt arguments: the issue's, plus PR_BODY_RULES.
-export function reviewerPromptArgs(_issue: SandcastleIssue, _branch: string): PromptArgs {
-  throw new Error("Not implemented");
+export function reviewerPromptArgs(issue: SandcastleIssue, branch: string): PromptArgs {
+  return { ...issuePromptArgs(issue, branch), PR_BODY_RULES };
 }
 
 // The follow-up role (lib/follow-up-pass.mts#runPass) needs the issue, the

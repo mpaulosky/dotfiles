@@ -10,8 +10,9 @@ name: Claude Review
 # either case, as the repo-ci-baseline skill's land.sh (in
 # mpaulosky/dotfiles, not this repo) does, and a person can add at any time;
 # a review of a head Copilot reviewed covers nothing. PR Auto-Merge also takes
-# it off at the review cap and at MAX_CLAUDE_ROUNDS. It reviews every new head
-# while the label is on.
+# it off when the PR's review loop is exhausted (MAX_CLAUDE_ROUNDS dirty rounds in
+# a row, mpaulosky/dotfiles#375). It reviews every new head while the label is
+# on, except a clean merge of main into a reviewed commit (see below).
 #
 # Claude never holds a write token. The review job checks the PR out with a
 # read-only token, gives Claude the diff against the base and read-only tools,
@@ -19,11 +20,11 @@ name: Claude Review
 # into one review on the head commit (post_claude_review.py), with inline
 # threads like Copilot's, and a body that starts with <!-- claude-review -->:
 # PR Auto-Merge accepts that review of the head in place of Copilot's when
-# Copilot can't review that commit: its note is on it, or it is the head, Copilot
-# was asked, has no review or pending request for it and the ask has settled. A
-# finding outside the diff can't be a thread, so it goes in the body under a
-# second marker, which PR Auto-Merge holds on until the next push gets a fresh
-# review (past the review cap too), and the post job warns. It doesn't
+# Copilot can't review that commit: its note is on it, or Copilot was asked, has
+# no pending request and the ask has settled. A finding outside the diff can't be
+# a thread, so it goes in the body under a second marker, which PR Auto-Merge holds
+# on until the next push gets a fresh review (an exhausted review loop merges
+# anyway and lists it in its comment), and the post job warns. It doesn't
 # fail: a failed check leaves the PR UNSTABLE, which PR Auto-Merge never
 # merges. For the same reason a Review step that fails, times
 # out or hits the subscription's usage limit doesn't fail the job: it warns
@@ -51,10 +52,20 @@ name: Claude Review
 # A push that only merges main into a reviewed commit isn't reviewed again:
 # PR Auto-Merge counts the review of that commit for a clean merge from main
 # on top of it, and brings ready PRs up to date that way itself, so a review
-# of each merge would spend Claude's usage on code main already has. The
+# of each merge would spend Claude's usage on code main already has, and a
+# merge of main is never a round of the review loop. Any Claude review of
+# that commit counts, whatever the commit: it is the loop's review of an
+# earlier head, not only of the current one or one carrying Copilot's note
+# (mpaulosky/dotfiles#375, after mpaulosky/dotfiles#371, where two merges of
+# main used up the rounds). A merge onto a commit nobody reviewed, a merge that
+# edits a file and a merge of another branch are reviewed. The gate counts
+# Claude's review only where Copilot is gone or noted; if a Copilot request is
+# pending on the merge head, the gate waits for Copilot's review of it, which
+# arrives or is dropped and then covers. The
 # merge-from-main job decides, by PR Auto-Merge's rule, and reviews whenever
 # it can't tell, or when the base's pr-automerge.yml doesn't honour the skip
-# (dotfiles, which carries a copy of this file and has none, and the re-Apply
+# (it lacks reviewCovering, or reviewLoopState, which counts a Claude review of an
+# earlier commit: dotfiles before it carries this file's copy, and the re-Apply
 # PR that brings this to a repo, whose main still has the old one). It runs from the PR like the
 # rest of this workflow, so a push that changes it can skip its own review;
 # PR Auto-Merge, which runs from main, still waits for a review that covers
@@ -203,14 +214,13 @@ jobs:
             done < "${RUNNER_TEMP}/run-ids.txt"
           fi
           # Commits Copilot reviewed, or Claude Review (a marked github-actions[bot]
-          # review) did: on a commit with Copilot's note that it couldn't review
-          # (its quota is used up), which PR Auto-Merge counts, or on the PR's
-          # current head, whatever Copilot's request or the ask's state (so the same
-          # head isn't reviewed twice; mpaulosky/dotfiles#360). The note
-          # itself covers nothing, as PR Auto-Merge's COPILOT_NO_REVIEW decides.
-          # Claude's review of an earlier commit with no note isn't listed: the
-          # gate doesn't count it, so a clean merge of main into that commit
-          # needs a review of its own, or the PR would wait for a person.
+          # review) did, whatever the commit: a clean merge of main into any of
+          # them is no round and needs no paid review (mpaulosky/dotfiles#375).
+          # Copilot's note that it couldn't review (its quota is used up)
+          # covers nothing itself, as PR Auto-Merge's COPILOT_NO_REVIEW decides,
+          # but it makes Claude's review of its commit count at the gate; where
+          # the gate doesn't count a Claude review of an earlier commit, it
+          # waits for Copilot's review of the merge, which arrives or is dropped.
           # --slurp, so every page of reviews is read.
           gh api --paginate --slurp "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" > "${RUNNER_TEMP}/reviews.json"
           jq -r --arg head "$CURRENT_HEAD" '
@@ -220,8 +230,7 @@ jobs:
             | ([$reviews[] | select(declined) | .commit_id]) as $declined
             | $reviews[]
             | select((.user.login == "copilot-pull-request-reviewer[bot]" and (declined | not))
-              or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))
-                and (.commit_id as $commit | $commit == $head or ($declined | index($commit) != null))))
+              or (.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- claude-review -->"))))
             | .commit_id' "${RUNNER_TEMP}/reviews.json" > "${RUNNER_TEMP}/reviewed.txt"
           # The commits that carry Copilot's note: a stale head's review covers a
           # newer clean merge only if the gate counts it, which for a commit that
@@ -301,11 +310,16 @@ jobs:
           review_sha = head
           review_base = ""
           # Only PR Auto-Merge counts a review for a merge from main, and only
-          # since it has reviewCovering: without that on the base (dotfiles, or
-          # the re-Apply PR that brings it), the merge needs a review of its own.
+          # since it has reviewCovering and the review loop (reviewLoopState, which
+          # counts Claude's review of an earlier commit): without both on the base
+          # (dotfiles, or the re-Apply PR that brings them), the merge needs a review
+          # of its own.
           base_workflow = subprocess.run(["git", "show", main + ":.github/workflows/pr-automerge.yml"],
                                          capture_output=True, text=True)
-          honoured = base_workflow.returncode == 0 and "async function reviewCovering(" in base_workflow.stdout
+          honoured = base_workflow.returncode == 0 and (
+              "async function reviewCovering(" in base_workflow.stdout
+              and "async function reviewLoopState(" in base_workflow.stdout
+          )
           if current != head:
               # The PR has moved on. Unless the new head only merges main into
               # this one, its push's run reviews it. If git can't tell (the new

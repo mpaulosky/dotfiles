@@ -3,14 +3,14 @@
 Template files (Owned): `.github/workflows/pr-automerge.yml` and its tests in `.github/scripts/tests/pr-automerge.test.mjs`, `.github/workflows/pr-review-submitted.yml`,
 and Claude Review: `.github/workflows/claude-review.yml` with `.github/scripts/post_claude_review.py` and its tests in `.github/scripts/tests/test_post_claude_review.py`,
 with `dependabot-auto-merge.yml` and `release.yml` as the two deliberate exceptions.
-History: IssueTracker #140 and #201 (re-check on a submitted review); Blazor-Server #94 (the hand-back label hold) and #119 (the Copilot review cap).
+History: IssueTracker #140 and #201 (re-check on a submitted review); Blazor-Server #94 (the hand-back label hold) and #119 (the Copilot review cap, now the review loop of mpaulosky/dotfiles#375).
 IssueManager #235 moved the decision into `.github/scripts/automerge-decision.mjs` with `node --test` tests, and TicketManager carries the same shape.
 The Template keeps the script inline in the workflow and tests it there:
 `.github/scripts/tests/pr-automerge.test.mjs` reads the `script: |` block out of the workflow and runs it against a fake GitHub client, so the tests cover exactly what the workflow runs.
 CI's `Auto-merge tests` job and `test.sh` run it.
 It stays inline: a separate module would need a checkout step in the privileged `pull_request_target` job, and a module tested apart from the workflow can drift from what runs.
 TicketManager's module arms native auto-merge without waiting for review, which the Template replaces.
-IssueManager's waits for review as the Template does, without the review cap or the hand-back hold.
+IssueManager's waits for review as the Template does, without the review loop or the hand-back hold.
 Both also merge an `UNSTABLE` PR (required checks passed, optional ones pending or failing).
 The Template waits for `CLEAN` on purpose, so a failing optional check such as markdownlint gets fixed rather than merged past.
 
@@ -18,7 +18,8 @@ The Template waits for `CLEAN` on purpose, so a failing optional check such as m
 
 A same-repo PR into `main` squash-merges on its own once its required checks pass, a reviewer has reviewed its head commit, and every review thread is resolved.
 The reviewer is Copilot, or Claude as its backup when Copilot can't review the head (its quota note, or a request GitHub dropped, #318, #360): see [ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md).
-Nothing merges before the review arrives, until the review cap, and nothing merges past an unresolved thread, cap or not: see [ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md).
+Nothing merges before the review arrives, or past an unresolved thread, until the PR's review loop is exhausted (three dirty rounds in a row);
+an exhausted loop is documented in one comment and then merges with its threads open: see [ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md).
 A ready PR that falls `BEHIND` main is brought up to date, and a clean merge from main keeps the review of the commit it merges into:
 see [ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md).
 A PR handed back with `sandcastle:needs-human` never merges while it carries the label.
@@ -68,32 +69,38 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   and no later comment is by another login. The reply's text isn't read, so Sandcastle's reply (a reason, not a commit) and a session's reply count;
   a person's thread, another bot's and a thread with more comments than the 10 read don't. To make it a hold, return from `mergeIfReady`
   after the notice and have `decide()` return `WAIT` for `unreplied_threads`. The notice repeats on each evaluation of a PR that waits on something else.
-- **Review cap.** Each reviewer re-reviews every push and can raise something new each time, so a PR could chase its reviews forever.
-  Once Copilot and Claude between them have reviewed `COPILOT_REVIEW_CAP` (3) distinct non-merge commits, the merge stops waiting for a review of the head.
-  Their unresolved threads, and Claude's off-diff findings on its review of the head, still hold it (#146): IssueTracker#236, IssueManager#281 and
-  Articles#314 merged at the cap past open Claude threads. A review that arrives after a cap merge comes too late, so its findings land on a merged PR.
-  The constant keeps Copilot's name because `github-settings.sh` reads the cap by it.
-  Rounds are counted across both, so a PR can't reset the cap by switching reviewer.
-  The run takes `review:claude` off a PR once Copilot has really reviewed its head (#270): Copilot has budget, so Claude's review would cover nothing.
-  At the cap the run also takes `review:claude` off the PR, with `GITHUB_TOKEN` (#170): Claude Review reviews every push while it's on,
-  and its threads hold the merge, so the PR would keep chasing them past the cap (Blazor-Server#243 went seven rounds and 26 threads
-  before the label came off by hand). It does so before the draft, hand-back and auto-merge checks, for any open same-repo PR into `main`
-  (one predicate with `isOpenSameRepoPr`), and only once Claude has reviewed the PR since the label was last added (#174):
-  a cap reached on Copilot's reviews alone, or a label added again past the cap, keeps it until Claude's review lands.
-  Threads already open still hold; a failed removal is a warning, tried again on the next run.
-  Label events that can't be read are a warning too, and then any Claude review on the PR counts, so a failing read can't keep the label on once Claude has reviewed.
-  A Claude Review run that posts nothing (a failure, a timeout, a usage limit) leaves the label on until one posts. That's accepted:
-  such a run opens no thread and holds no merge, so it costs only the runs.
-  A label added again past the cap gets one more Claude review: claude-review.yml decides from the `labeled` event's payload and has
-  no `unlabeled` trigger, and a removal made with `GITHUB_TOKEN` starts no workflow, so that review runs to the end.
-  The merge doesn't wait for it, though: an otherwise-ready PR past the cap can merge before it lands.
-  Merges from `main` aren't rounds: the ruleset keeps branches up to date, so they'd use up the cap without a fix.
-  Everything else still holds at the cap, and the log says when the cap let a PR through without a review of its head.
-  A re-Apply PR (`chore/reapply-baseline`) is capped like any other since #174. It was exempt from #115 (Articles#298 merged past
-  a real Copilot finding on its third round), but with Claude reviewing each re-Apply commit across every repo, the exemption let a round
-  chase reviews indefinitely. A finding on a re-Apply PR is fixed in the Template and arrives with the next round.
+- **The review loop (mpaulosky/dotfiles#375, replacing the review cap of #119).** Each reviewer re-reviews every push and can raise something new each time,
+  so a PR could chase its reviews forever. One loop bounds both reviewers, counted in dirty rounds in a row:
+  - A **round** is a review of a non-merge commit, Copilot's or Claude's (Claude's counts where Copilot can't review the PR: its quota note is on that commit or on the head,
+    or the ask settled with no request pending). A merge of `main` is never a round (PR Auto-Merge's own update-branch makes them, and the ruleset keeps branches up to date),
+    and two reviews of one commit are one round.
+  - A round is **dirty** when its review raised at least one inline thread (`comments.totalCount`) or, for Claude, a finding outside the diff, and **clean** otherwise.
+  - The loop is **exhausted** after `MAX_CLAUDE_ROUNDS` (3) dirty rounds in a row, counted back from the newest reviewed commit; a clean round ends the count at zero,
+    and a merge of `main` between rounds changes nothing. `COPILOT_REVIEW_CAP` keeps its name and its value 3 because `github-settings.sh` reads it, and bounds nothing itself.
+  - Until then every new non-merge head that nobody reviewed gets a review: Copilot's, or `review:claude` added where Copilot can't review it, even if an earlier removal
+    took the label off. A clean review of the head, every thread resolved and the required checks green merges, as always.
+  - **At exhaustion** the run takes `review:claude` off (`GITHUB_TOKEN`, #170; before the draft, hand-back and auto-merge checks, for any open same-repo PR into `main`),
+    posts **one comment** with `GITHUB_TOKEN` and then lets the PR merge once its required checks pass and it has no conflict. Exhaustion doesn't hold the merge,
+    and neither do the threads still unresolved then, nor Claude's findings outside the diff on the head: the comment is where they are kept, so they can be resolved later.
+    This supersedes #146's rule that every unresolved thread held the merge, whatever the round. The comment holds a bullet list of every thread still unresolved
+    (path and line, the first line of its first comment, a link to the thread) and every off-diff finding of Claude's review of the head (its first line), and ends with the hidden marker
+    `<!-- pr-automerge:review-loop-exhausted <head> -->`, so it is posted once per exhaustion, before the merge call. Text quoted from the PR is escaped, since it is posted as `github-actions`.
+    The record is "the newest marker comment is no older than the newest round", so a head moved by update-branch while exhausted posts no second one, and a new dirty round after it does.
+    Two runs can both find no comment, so after posting a run reads the comments again and deletes its own when another run's comment for this exhaustion is listed first.
+    A comment that fails to post, or comments that weren't read in full (the last 100 are read), hold the merge until the next event. A failing required check, a conflict, a branch that is `BEHIND`
+    (updated first), a draft and the hand-back label still hold it. The log says `Review loop exhausted on PR #n: merging with N unresolved thread(s)`.
+  - **A new loop.** The owner adding `review:claude` to a PR that is still open after that comment starts one: only rounds submitted after the first `review:claude` added after the comment count
+    (the first, not the latest: PR Auto-Merge's PAT adds the label for later heads in the new loop, and a restart at that add would make it endless). Reading the label events fails closed:
+    unreadable ones neither merge nor add the label. PR Auto-Merge never adds `review:claude` while the comment is the newest word on the PR.
+  - The run takes `review:claude` off a PR once Copilot has really reviewed its head (#270) too: Copilot has budget, so Claude's review would cover nothing.
+    A failed removal is a warning, tried again on the next run. A Claude Review run that posts nothing (a failure, a timeout, a usage limit) leaves the label on until one posts
+    and makes no round. That's accepted: such a run opens no thread and holds no merge, so it costs only the runs.
+  - A review of a merge from `main` is not paid for either: `claude-review.yml` skips a clean merge of `main` into any commit a reviewer reviewed (Claude's review of any commit is listed).
+  - A re-Apply PR (`chore/reapply-baseline`) is bounded like any other since #174. It was exempt from #115 (Articles#298 merged past
+    a real Copilot finding on its third round), but with Claude reviewing each re-Apply commit across every repo, the exemption let a round
+    chase reviews indefinitely. A finding on a re-Apply PR is fixed in the Template and arrives with the next round.
 - **Asking Copilot once (#360, replacing #318's grace).** When a same-repo, non-draft PR's head has no Copilot review or quota note, no Copilot request pending, no review
-  covering it and no record of an ask, and the PR is below the cap, the run asks Copilot for its review of the PR once.
+  covering it and no record of an ask, and the PR's review loop isn't exhausted, the run asks Copilot for its review of the PR once.
   It posts a comment holding `<!-- pr-automerge:copilot-asked -->` (the record, `COPILOT_ASKED_MARKER`; written before the request, with `GITHUB_TOKEN`),
   requests the review with the PAT (GraphQL `requestReviewsByLogin`, as Sandcastle does), and reads the request back for up to `COPILOT_ASK_WAIT_MS` (30 seconds, polling every 5).
   Two runs can both post one, so the run then reads the PR's comments again (up to three times, `COPILOT_ASK_REREADS`, `COPILOT_ASK_REREAD_MS` apart, if its own record doesn't show or the read fails;
@@ -106,10 +113,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   takes the label off (#270). `land.sh` writes the same record (a comment as the owner) and makes the same request, so the two agree.
 - **Calling in Claude (#190, #318, #360).** When Copilot's quota note is the only review of the head, or Copilot was asked and the ask has settled
   (30 seconds after the record, `COPILOT_ASK_SETTLE_MS`, or in the run that asked and read the request back) and it has no review of the head and no request
-  pending, and no review covers it below the cap,
+  pending, and no review covers it while the loop isn't exhausted,
   the run adds `review:claude` on much the terms `land.sh` uses (`landing.review_needed`), whose constants a test holds in step:
   no merge conflict, the required checks passed (one with no run yet is pending) and no check failed but Claude Review's own,
-  Claude has reviewed fewer than `MAX_CLAUDE_ROUNDS` (3) of the PR's commits, after which the owner decides, and the label isn't on.
+  the label isn't on, no person took it off and no exhaustion comment is the newest word (the owner adds the label to start a new loop).
   A check that isn't required and is still running doesn't hold it, as it doesn't hold an update: unlike `land.sh`, which polls,
   this workflow waits for an event, and that check's completion may never start it (another workflow's, or an app's like CodeQL's).
   In a repo where neither main's rulesets nor `isRequired` name a required check, the head's checks must all have finished instead
@@ -145,12 +152,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
 - **Reviewing until a review comes back clean (#193).** Claude Review reviews every push while the label is on,
   so a fix for its findings is reviewed in turn. Reviewing is done when a review of the head comes back clean
   (no threads, no findings outside the diff): that covers the head, and the PR merges once its checks are green.
-  The stop is the review cap (3 reviewed commits, Copilot's and Claude's together): there the label comes off, and the PR merges
-  once every thread is resolved, without a review of the last fix ([ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md)).
-  `MAX_CLAUDE_ROUNDS` is the cap's 3, and the run also takes the label off once Claude has reviewed that many of the PR's commits
-  and reviewed since it was last added, whoever added it, since the cap doesn't count reviews of merge commits: the owner's cost rule.
-  Adding it again past that gets one more review. With 2 rounds (#190), a second round's findings left their fix unreviewed,
-  below the cap, so the PR waited for the owner (#191 and #192 both did).
+  The stop is the exhausted review loop (`MAX_CLAUDE_ROUNDS` dirty rounds in a row, Copilot's and Claude's together): there the label comes off,
+  one comment documents the threads and findings still open, and the PR merges once its checks pass, without a review of the last fix
+  ([ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md)). With the cap counted in reviewed commits (#190), a second round's findings left their fix unreviewed
+  and the PR waited for the owner (#191 and #192 both did); with merges of `main` counted, #371 stalled the same way. Neither happens now.
 - **Merges from main keep their review** ([ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)).
   The head counts as reviewed when it is a merge whose first parent is reviewed (or is such a merge, up to `MERGE_CHAIN_LIMIT`, 5, deep),
   whose second parent is on `main`, and whose every file is what a clean merge gives: where only one side changed a file since the merge base,
@@ -235,7 +240,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   each finding an inline thread, and a finding outside the diff in the body (GitHub rejects a whole review over one such comment).
   A finding at a line its changed file doesn't have is a wrong number, so it goes on the file's nearest diff line instead, as a thread.
   A body finding opens no thread, so the review's body carries a second marker, `<!-- claude-review:off-diff -->`, and this workflow holds the merge
-  while that review is Claude's latest of the newest commit it reviewed that covers the head (past the review cap too, like threads); the post job warns but passes.
+  while that review is Claude's latest of the newest commit it reviewed that covers the head
+  (until the review loop is exhausted, then it is listed in the exhaustion comment, like the threads); the post job warns but passes.
   The hold lives in the review, not the check: a failed check would leave the PR `UNSTABLE`, which this workflow never merges,
   and adding another label re-runs Claude Review with its jobs skipped, which would replace a failed check anyway.
   The review is posted with `GITHUB_TOKEN`, which starts no workflows, so PR Auto-Merge follows Claude Review's completion instead of PR Review Submitted.
@@ -317,12 +323,17 @@ Only once Copilot can't review the head (`PrState.copilot_gone`), because it ans
 (`copilot_dropped`: `land.sh` remembers it per head within a watching process), or it was asked (`copilot_asked`, from the record that `landing.copilot_ask` reads
 from the PR's last 100 comments; unreadable counts as asked) and the record is 30 seconds old (`copilot_ask_settled`) with no request pending,
 does it **add review:claude**.
-`status.sh` reads the comments of only the PRs that need the record (1 GraphQL point each) and needs no memory, and neither does a `land.sh --once` run.
+`status.sh` reads the comments of only the PRs that need the record, or whose loop could be exhausted
+(three dirty rounds in a row, before any restart; 1 GraphQL point each), and the last 30 `review:claude` label events with the repo query.
+It needs no memory, and neither does a `land.sh --once` run.
+A loop whose comments or label events can't be read is never shown as exhausted.
 It adds it once the head has at least one check other than Claude Review's own and every such check is green
-(Claude Review's own don't count: a run cancelled when the label came off needs no rerun), never while one runs or is queued, and never after Claude reviewed 3 commits of the PR
-(`MAX_CLAUDE_ROUNDS`, the owner's cost rule), when it waits for the owner.
-Past PR Auto-Merge's review cap (`REVIEW_CAP`, which must match `COPILOT_REVIEW_CAP`: 3 reviewed commits, re-Apply PRs included) it asks for neither reviewer,
-and goes on to the threads and checks as PR Auto-Merge does;
+(Claude Review's own don't count: a run cancelled when the label came off needs no rerun), never while one runs or is queued, and never while an exhaustion comment is the newest word.
+When PR Auto-Merge's review loop is exhausted (`PrState.loop_exhausted`: `MAX_CLAUDE_ROUNDS` dirty rounds in a row in `PrState.rounds`,
+re-Apply PRs included; `REVIEW_CAP` must still match `COPILOT_REVIEW_CAP`) it asks for neither reviewer,
+and goes on to the checks as PR Auto-Merge does: the threads and off-diff findings still open no longer hold it,
+and the line reads `review loop exhausted (3 rounds with findings in a row), ready to merge, N thread(s) left open`.
+While PR Auto-Merge's exhaustion comment is the newest word (no `review:claude` added since, `PrState.exhaustion_marker_newest`) it asks for no review either: the owner adds the label to start a new loop;
 then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
 or **arm auto-merge** where there is no such workflow. A repo with no required checks waits for its checks to finish green first,
 since auto-merge alone wouldn't wait for CI.
@@ -364,7 +375,7 @@ So the trigger helps only with reviews people submit; a PR whose last blocker is
 Copilot's review workflow itself ("Copilot", `dynamic/agents/copilot-pull-request-reviewer`) can't take its place: a probe on dotfiles (#38)
 showed its completion does fire `workflow_run`, but GitHub holds that run at `action_required` too, because Copilot is the actor.
 Any workflow a Copilot review starts waits for approval, so the scheduled sweep stays the way Copilot's review gets a PR merged.
-After a third reviewed non-merge commit, the log reads `Review cap (3) reached on PR #n: merging ...` if the cap is what let it through.
+After a third dirty round in a row, the log reads `Review loop exhausted on PR #n: merging with N unresolved thread(s) ...` if the exhausted loop is what let it through.
 
 **Claude Review**, on TicketManager with the secret set and Copilot unavailable: a re-Apply PR gets `review:claude` from `land.sh` once its checks are green,
 Claude's review of its head (a `github-actions[bot]` review starting with `<!-- claude-review -->`, findings as threads),

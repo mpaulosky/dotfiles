@@ -10,8 +10,8 @@ So Claude reviews as a backup: Claude Review runs Sonnet 5.5 at high effort in C
 and posts an ordinary review of the head, with inline threads, under `github-actions[bot]`.
 It runs only while a PR carries `review:claude`, which a person can add at any time. `land.sh` adds it when its own request for Copilot's review of the head
 didn't register, once the head's checks are green, and for at most 2 rounds per PR. `reapply.sh` only warns: a review of a head that then fails CI is money spent for nothing.
-PR Auto-Merge accepts a review of the head by either reviewer, holds on either's unresolved threads, and counts both reviewers' rounds toward one cap ([ADR
-0002](0002-copilot-review-cap-and-hand-back-hold.md)).
+PR Auto-Merge accepts a review of the head by either reviewer, holds on either's unresolved threads, and counts both reviewers' rounds toward one loop,
+exhausted after three dirty rounds in a row ([ADR 0002](0002-copilot-review-cap-and-hand-back-hold.md), amended by mpaulosky/dotfiles#375).
 The review body starts with `<!-- claude-review -->`: that marker, not the login alone, is how the gate tells Claude's review from anything else posted as `github-actions[bot]`.
 
 ## Update (#318): a dropped request counts too
@@ -22,7 +22,9 @@ and merged it by hand (dotfiles#325, #326).
 Now a head Copilot can't review is one with its note, or with no Copilot review and no pending Copilot request.
 This version guessed at a dropped request: PR Auto-Merge waited `COPILOT_GRACE_MS` (5 minutes) after the head's checks finished before it called in Claude for the second kind.
 The #360 update below replaces that grace (mpaulosky/dotfiles#360); the rest of this section stands.
-Claude's review counts for the head only: an earlier commit's counts only with Copilot's note on it, as `landing.py` has it.
+Claude's review counted for the head only, and an earlier commit's only with Copilot's note on it, as `landing.py` had it.
+Superseded by mpaulosky/dotfiles#375 (see the last update below): a Claude review counts as a round,
+and as cover for a clean merge of `main` above it, wherever Copilot can't review the PR now.
 A request the run can't read in full counts as pending, so the rule fails closed.
 A head with no check besides Claude's and the workflow's own gets no label from the run: with `review:claude` off, it logs a notice to review and merge it by hand (mpaulosky/dotfiles#331).
 That rests on GitHub keeping Copilot's request in `reviewRequests` until its review is submitted.
@@ -59,10 +61,10 @@ This update replaces the grace (mpaulosky/dotfiles#360). PR Auto-Merge and `land
 3. **Copilot can't review the head** when its quota note is on it, or when the record exists and has settled (30 seconds old, or written by this very run, which read the request back)
    and the head has neither a real Copilot review nor a pending Copilot request. A request that threw counts as dropped at once.
    A pending request always means keep waiting, and a request list the run can't read counts as pending.
-4. **Then** `review:claude` is added on the terms it already had: the head's required checks are green, Claude has reviewed fewer than `MAX_CLAUDE_ROUNDS` commits,
-   the PR is below the review cap, and no person took the label off. Claude's review of the head counts at the gate under the same test.
+4. **Then** `review:claude` is added on the terms it already had: the head's required checks are green, the PR's review loop isn't exhausted (mpaulosky/dotfiles#375),
+   and no person took the label off. Claude's review of the head counts at the gate under the same test.
 5. **A later head** needs no new record. The record is old, so Copilot is gone the moment the new head has no pending request and no real review,
-   and the `review:claude` flow takes it, with the review cap, the thread holds and the stop-on-clean rule unchanged.
+   and the `review:claude` flow takes it, with the review loop, the thread holds and the stop-on-clean rule unchanged.
    A request that does register (the ruleset's own request per push, or a budget that came back) is waited for, and a real Copilot review of the head still takes the label off (#270).
 6. **A record that can't be read** (the comments query failed, or more than 100 comments with no marker among the last 100) counts as asked but not settled:
    the tool never asks, and never infers a drop. A PR like that waits for a person.
@@ -83,6 +85,25 @@ Accepted costs:
 - `reapply.sh` still asks per head and writes no record, and Sandcastle's own re-request sweep and the ruleset's `review_on_push` are unchanged.
   Turning `review_on_push` off where there is no budget is the owner's call, not made here.
 
+## Update (#375): one loop for both reviewers, merges of `main` are no rounds
+
+PR #371 stalled with its head never reviewed. Its three Claude "rounds" were one real commit and two merges of `main` that PR Auto-Merge's own update-branch made, and Claude Review
+had spent a paid review on each merge head. Once the rounds were used, `review:claude` came off and nothing put it back for the next real commit. This update (mpaulosky/dotfiles#375) changes:
+
+1. **A merge of `main` is never a round**, for either reviewer, and `claude-review.yml` starts no paid review for a clean merge of `main` into a commit **any** reviewer reviewed.
+   Its `reviewed.txt` lists every Claude review (a marked `github-actions[bot]` review), whatever the commit, besides Copilot's real reviews; a merge onto an unreviewed commit,
+   a merge that edits a file and a merge of another branch are still reviewed, and so is a head the owner asked for with the label. The skip needs the base's `pr-automerge.yml` to carry
+   `reviewLoopState`, the gate that counts Claude's review of an earlier commit; a base without it reviews. One gap is documented: the workflow skips on any Claude review, while the gate counts it
+   only where Copilot can't review, so with a Copilot request pending on the merge head the gate waits for Copilot's review of it, which arrives or is dropped and then covers.
+2. **Claude's review counts wherever Copilot can't review the PR now**: Copilot's quota note is on that commit or on the head, or the ask settled and no request is pending. It is no longer
+   limited to the head or a noted commit, because the head moves on and an earlier Claude review must keep counting as a round and as cover for the merge chain above it.
+3. **The loop counts dirty rounds in a row**, not reviewed commits, and `MAX_CLAUDE_ROUNDS` is the only count (`COPILOT_REVIEW_CAP` keeps its name and value for `github-settings.sh`).
+   While the loop isn't exhausted, every new non-merge head nobody reviewed gets Copilot's review or, where Copilot can't review, `review:claude`, **even if an earlier removal took the label off**
+   (a person's removal is still respected). At exhaustion the label comes off and the exhaustion comment (`pr-automerge:review-loop-exhausted`, ADR 0002) is posted before the merge.
+4. **Automation never adds the label while the exhaustion comment is the newest word.** The owner adding `review:claude` after it starts a new loop (the first add after the comment).
+   `land.sh` and `status.sh` apply the same rule from `landing.py`, show an exhausted loop as ready to merge with the count of threads left open,
+   and ask for no review while the comment is the newest word.
+
 ## Considered Options
 
 - **Keep the grace and shorten it**: rejected (mpaulosky/dotfiles#360) because a dropped request still brings no event, so a shorter grace still waits for the sweep.
@@ -96,7 +117,7 @@ Accepted costs:
   It may still come later as its own issue.
 - **Limit the dropped-request path to repos whose ruleset requests Copilot**: rejected (mpaulosky/dotfiles#331) because the ruleset check adds an API read and a failure mode,
   and a repo without Copilot would otherwise never get a review.
-- **Count Copilot's and Claude's rounds separately**: rejected because switching reviewer would reset the cap.
+- **Count Copilot's and Claude's rounds separately**: rejected because switching reviewer would reset the loop.
 
 ## Consequences
 
@@ -120,7 +141,8 @@ Accepted costs:
   A finding on a changed file at a line the file doesn't have (past its end) is a wrong line number, not unchanged code,
   so it goes on the file's nearest line in the diff as a thread, with a note (#122). When the file's length can't be read, it holds as before.
   The post job warns instead of failing. A failing check couldn't hold the merge on its own: a later run with its jobs skipped (another label added) replaces it.
-  And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges. The review's marker holds past the review cap too (#146).
+  And it would leave the PR `UNSTABLE`, which PR Auto-Merge never merges. The review's marker holds below an exhausted review loop;
+  at exhaustion the finding is listed in the exhaustion comment instead (ADR 0002, mpaulosky/dotfiles#375).
 - Dependabot PRs are left out: their own auto-merge path is unchanged, and they get no secrets.
 - A Review step that fails, times out (its own 25 minutes, under the job's 31) or is refused at the usage limit doesn't fail the job either (#123):
   `continue-on-error` lets a warning step say so, and the post job skips when there's nothing to post (an empty output would fail it as malformed).

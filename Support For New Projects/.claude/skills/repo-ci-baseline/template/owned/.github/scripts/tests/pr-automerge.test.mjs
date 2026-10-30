@@ -95,12 +95,20 @@ const COPILOT_QUOTA_NOTE =
 
 // Copilot reviews of each given commit, oldest first. A { oid, merge: true }
 // entry is a merge commit, such as a merge from main; { oid, note: true } is
-// Copilot's quota note rather than a review.
+// Copilot's quota note rather than a review; { oid, threads: n } raised n
+// inline threads (comments.totalCount), which makes the round dirty
+// (mpaulosky/dotfiles#375), and { oid, at } was submitted at that time. A review
+// with neither has no submittedAt and no comments count, as the older fakes had.
 function copilotReviewsOf(...commits) {
   return {
     nodes: commits.map((commit) => {
-      const { oid, merge, note } = typeof commit === "string" ? { oid: commit, merge: false, note: false } : commit;
-      return { body: note ? COPILOT_QUOTA_NOTE : "", commit: { oid, parents: { totalCount: merge ? 2 : 1 } } };
+      const { oid, merge, note, threads, at } = typeof commit === "string" ? { oid: commit, merge: false, note: false } : commit;
+      return {
+        body: note ? COPILOT_QUOTA_NOTE : "",
+        ...(at === undefined ? {} : { submittedAt: at }),
+        ...(threads === undefined ? {} : { comments: { totalCount: threads } }),
+        commit: { oid, parents: { totalCount: merge ? 2 : 1 } }
+      };
     })
   };
 }
@@ -110,17 +118,31 @@ function copilotReviewsOf(...commits) {
 // entry is a merge commit; { oid, marked: false } is a github-actions[bot]
 // review without the marker; { oid, offDiff: true } has findings outside the diff;
 // { oid, at } was submitted at that time (default: the Nth minute of 2026-01-02).
+// { oid, findings: [bullet, ...] } is an off-diff review whose "Findings outside
+// the diff" section holds those bullets (as post_claude_review.py writes them),
+// and { oid, threads: n } raised n inline threads (comments.totalCount), which
+// makes the round dirty (mpaulosky/dotfiles#375).
 function claudeReviewsOf(...commits) {
   return {
     nodes: commits.map((commit, index) => {
-      const { oid, merge, marked, offDiff, at } = typeof commit === "string" ? { oid: commit } : commit;
+      const { oid, merge, marked, offDiff, at, threads, findings } = typeof commit === "string" ? { oid: commit } : commit;
       const body = marked === false
         ? "Some other workflow's review."
-        : offDiff
-          ? CLAUDE_MARKER + "\n" + OFF_DIFF_MARKER + "\n**Claude Review**"
-          : CLAUDE_MARKER + "\nNo findings.";
+        : findings
+          ? CLAUDE_MARKER + "\n" + OFF_DIFF_MARKER + "\n**Claude Review**\n\nSummary.\n\n" +
+            "Findings outside the diff (no thread to resolve, so they hold the merge until the next push gets a fresh review):\n\n" +
+            findings.join("\n")
+          : offDiff
+            ? CLAUDE_MARKER + "\n" + OFF_DIFF_MARKER + "\n**Claude Review**"
+            : CLAUDE_MARKER + "\nNo findings.";
       const submittedAt = at ?? `2026-01-02T00:${String(index).padStart(2, "0")}:00Z`;
-      return { id: `claude-${index + 1}`, body, submittedAt, commit: { oid, parents: { totalCount: merge ? 2 : 1 } } };
+      return {
+        id: `claude-${index + 1}`,
+        body,
+        submittedAt,
+        ...(threads === undefined ? {} : { comments: { totalCount: threads } }),
+        commit: { oid, parents: { totalCount: merge ? 2 : 1 } }
+      };
     })
   };
 }
@@ -130,9 +152,13 @@ function claudeReviewsOf(...commits) {
 // gives that review's body (Claude Review's starts with its marker). { path, line,
 // url } place the opening comment, { replies: [login, ...] } add later comments,
 // { kind } is the opener's GraphQL type (default: a Bot for Copilot and
-// github-actions, else a User) and { total } is comments.totalCount.
+// github-actions, else a User) and { total } is comments.totalCount. { body }
+// is the opening comment's text; { path: null } and { line: null } leave the
+// place out (originalLine follows line unless given).
 function threadsBy(...authors) {
   const nodes = authors.map((author) => {
+    // An author given as a bare login string has no options.
+    const has = (key) => typeof author === "object" && author !== null && key in author;
     const login = author.login === null ? null : (author.login ?? author);
     const kind = author.kind ?? (login === COPILOT || login === ACTIONS ? "Bot" : "User");
     const review = author.review || author.reviewBody !== undefined
@@ -141,6 +167,7 @@ function threadsBy(...authors) {
     const comments = [
       {
         url: author.url ?? "https://github.com/octo/repo/pull/7#discussion_r1",
+        ...(author.body === undefined ? {} : { body: author.body }),
         author: login === null ? null : { login, __typename: kind },
         pullRequestReview: review
       },
@@ -152,9 +179,9 @@ function threadsBy(...authors) {
     ];
     return {
       isResolved: author.resolved ?? false,
-      path: author.path ?? "src/a.py",
-      line: author.line ?? 12,
-      originalLine: author.line ?? 12,
+      path: has("path") ? author.path : "src/a.py",
+      line: has("line") ? author.line : 12,
+      originalLine: has("originalLine") ? author.originalLine : has("line") ? author.line : 12,
       comments: { totalCount: author.total ?? comments.length, nodes: comments }
     };
   });
@@ -166,6 +193,12 @@ const COPILOT = "copilot-pull-request-reviewer";
 const ACTIONS = "github-actions";
 const CLAUDE_MARKER = "<!-- claude-review -->";
 const OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->";
+// The comment PR Auto-Merge posts once a PR's review loop is exhausted
+// (mpaulosky/dotfiles#375) ends with this marker and the head it names.
+const EXHAUSTED_MARKER = "<!-- pr-automerge:review-loop-exhausted";
+const exhaustedMarker = (head) => `${EXHAUSTED_MARKER} ${head} -->`;
+// When a comment this run posts is shown as created: after every default review time.
+const POSTED_AT = "2026-06-01T00:00:00Z";
 
 function labelled(...names) {
   return { totalCount: names.length, nodes: names.map((name) => ({ name })) };
@@ -177,6 +210,48 @@ function unlabeledEvent(label, login) {
 
 function labeledEvent(label, login) {
   return { event: "labeled", label: { name: label }, actor: { login } };
+}
+
+// ── The review loop (mpaulosky/dotfiles#375) ────────────────────────────────
+// A round is a review of a non-merge commit; it is dirty when it raised a
+// thread or an off-diff finding. The loop is exhausted after MAX_CLAUDE_ROUNDS
+// (3) dirty rounds in a row, counted back from the newest reviewed commit.
+
+// A Copilot (or Claude) review entry of a commit that raised a thread.
+const dirty = (oid, extra = {}) => ({ oid, threads: 1, ...extra });
+
+// A label event at a given time, by a given login (the owner by default).
+function labelEventAt(event, label, at, login = OWNER) {
+  return { event, label: { name: label }, created_at: at, actor: { login } };
+}
+
+// One review entry per token of the pattern, a minute apart from 2026-01-02T00:00,
+// oldest first: "d" a dirty round, "c" a clean round, "m" a clean merge of main,
+// "n" a dirty merge of main (never a round).
+function roundEntries(pattern) {
+  return pattern.split(/\s+/).filter(Boolean).map((token, index) => {
+    const merge = /[mn]/.test(token);
+    return {
+      oid: `${merge ? "m" : "r"}${index + 1}`,
+      merge,
+      threads: /[dn]/.test(token) ? 1 : 0,
+      at: `2026-01-02T00:${String(index).padStart(2, "0")}:00Z`
+    };
+  });
+}
+const copilotRounds = (pattern) => copilotReviewsOf(...roundEntries(pattern));
+const claudeRounds = (pattern) => claudeReviewsOf(...roundEntries(pattern));
+
+// Three dirty Copilot rounds of earlier commits, the head unreviewed.
+const exhaustedCopilot = () => copilotRounds("d d d");
+// Three dirty Claude rounds of earlier commits with review:claude on, the head
+// unreviewed; Copilot's quota notes (readyPr) are why Claude's reviews count.
+const exhaustedClaude = (overrides = {}) =>
+  readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeRounds("d d d"), labels: labelled(CLAUDE_LABEL), ...overrides });
+
+// The comment PR Auto-Merge posted when the loop was exhausted, as the comments query reports it.
+function exhaustionComment(at, { head = HEAD, login = ACTIONS, text = "**PR Auto-Merge: the review loop is exhausted.**\n\nNothing is left open." } = {}) {
+  return { databaseId: 500, author: { login }, body: `${text}\n\n${exhaustedMarker(head)}`, createdAt: at };
 }
 
 // A commit graph for the merge-from-main checks: each commit's parents and
@@ -299,7 +374,14 @@ async function evaluate(pr, events = [], options = {}) {
     // offset is negative, as it would be if its createdAt were true to the order.
     rivalFirst,
     // The pause between the re-reads, in ms (the workflow's COPILOT_ASK_REREAD_MS).
-    askRereadMs = 0
+    askRereadMs = 0,
+    // The exhaustion comment (mpaulosky/dotfiles#375): an error thrown by posting it,
+    // by deleting a duplicate of it, and a rival run's comment of the same
+    // exhaustion, which shows listed before this run's own once this run posted it
+    // (the first read, before this run posted, never shows it).
+    exhaustionCommentError,
+    deleteCommentError,
+    exhaustionRival = false
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -346,6 +428,9 @@ async function evaluate(pr, events = [], options = {}) {
   const askedAt = [];
   const requests = [];
   const order = [];
+  // The exhaustion comments GITHUB_TOKEN posted, and the ones it deleted.
+  const exhaustionPosts = [];
+  const deletedComments = [];
   let readsSinceRequest = 0;
   let requested = false;
   let reReads = 0;
@@ -368,6 +453,29 @@ async function evaluate(pr, events = [], options = {}) {
         ? [...snapshot.comments.nodes, ...rival, ...own]
         : [...snapshot.comments.nodes, ...own, ...rival];
       shown = { ...shown, comments: { totalCount: snapshot.comments.totalCount + own.length + rival.length, nodes } };
+    }
+    if (exhaustionPosts.length > 0 && snapshot.comments) {
+      const own = exhaustionPosts
+        .map((params, index) => params.deleted ? null : {
+          databaseId: 9000 + index,
+          author: { login: ACTIONS },
+          body: params.body,
+          createdAt: POSTED_AT
+        })
+        .filter(Boolean);
+      const rival = exhaustionRival
+        ? [{
+          databaseId: 8000,
+          author: { login: ACTIONS },
+          body: "**PR Auto-Merge: the review loop is exhausted.**\n\nNothing is left open.\n\n" + exhaustedMarker(shown.headRefOid),
+          createdAt: POSTED_AT
+        }]
+        : [];
+      const present = shown.comments;
+      shown = {
+        ...shown,
+        comments: { totalCount: present.totalCount + own.length + rival.length, nodes: [...present.nodes, ...rival, ...own] }
+      };
     }
     if (requested && copilotRequest === "registers" && readsSinceRequest > registersAfterReads) {
       const present = shown.reviewRequests ?? { totalCount: 0, nodes: [] };
@@ -399,12 +507,33 @@ async function evaluate(pr, events = [], options = {}) {
       }),
       // GITHUB_TOKEN: the record that Copilot was asked.
       createComment: viaToken("issues.createComment", async (params) => {
+        // The exhaustion comment (mpaulosky/dotfiles#375) is not the ask's record.
+        if ((params.body ?? "").includes(EXHAUSTED_MARKER)) {
+          order.push("exhaustion-record");
+          if (exhaustionCommentError) {
+            throw exhaustionCommentError;
+          }
+          exhaustionPosts.push(params);
+          return { data: { id: 9000 + exhaustionPosts.length - 1 } };
+        }
         order.push("record");
         if (askCommentError) {
           throw askCommentError;
         }
         asked.push(params);
         askedAt.push(Date.now());
+      }),
+      // GITHUB_TOKEN: a run that finds another run's exhaustion comment ahead of its own deletes its own.
+      deleteComment: viaToken("issues.deleteComment", async (params) => {
+        order.push("exhaustion-delete");
+        if (deleteCommentError) {
+          throw deleteCommentError;
+        }
+        deletedComments.push(params);
+        const index = params.comment_id - 9000;
+        if (exhaustionPosts[index]) {
+          exhaustionPosts[index] = { ...exhaustionPosts[index], deleted: true };
+        }
       }),
       // GITHUB_TOKEN: a removal that starts no workflow is what's wanted.
       removeLabel: viaToken("issues.removeLabel", async (params) => {
@@ -602,6 +731,7 @@ async function evaluate(pr, events = [], options = {}) {
     rest: patOnly("patClient.rest", {
       pulls: patOnly("patClient.rest.pulls", {
         merge: viaPat("pulls.merge", async (params) => {
+          order.push("merge");
           merges.push(params);
         }),
         updateBranch: viaPat("pulls.updateBranch", async (params) => {
@@ -650,6 +780,7 @@ async function evaluate(pr, events = [], options = {}) {
   process.env.COPILOT_ASK_WAIT_MS = String(askWaitMs);
   process.env.COPILOT_ASK_POLL_MS = String(askPollMs);
   process.env.COPILOT_ASK_REREAD_MS = String(askRereadMs);
+  process.env.EXHAUSTION_REREAD_MS = "0";
   try {
     await run(github, context, core, getOctokit);
   } catch (error) {
@@ -659,7 +790,7 @@ async function evaluate(pr, events = [], options = {}) {
   }
   return {
     merges, updates, posted, logs, eventRequests, queries, patTokens, calls, graphqlRequests, rulesRequests, removedLabels,
-    addedLabels, listRequests, runRequests, headRunRequests, asked, requests, order
+    addedLabels, listRequests, runRequests, headRunRequests, asked, requests, order, exhaustionPosts, deletedComments
   };
 }
 
@@ -805,14 +936,22 @@ test("waits on an unresolved Copilot thread below the review cap", async () => {
   assert.ok(logs.some((line) => line.includes("1 unresolved review thread(s)")), logs.join("\n"));
 });
 
-test("merges without a review of the head once Copilot reviewed three commits", async () => {
-  const { merges, logs } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three") }));
+test("merges without a review of the head once Copilot's last three rounds each raised threads", async () => {
+  const { merges, logs } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }));
 
   assert.equal(merges.length, 1);
   assert.ok(
-    logs.some((line) => line.includes("Review cap (3) reached") && line.includes("without a review of " + HEAD)),
+    logs.some((line) => line.includes("Review loop exhausted") && line.includes("PR #7")),
     logs.join("\n")
   );
+});
+
+test("waits for a review of the head after three clean Copilot rounds: only dirty rounds exhaust the loop", async () => {
+  const { merges, exhaustionPosts, logs } = await evaluate(readyPr({ copilotReviews: copilotRounds("c c c") }));
+
+  assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
+  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), logs.join("\n"));
 });
 
 test("waits when Copilot's only review of the head is its quota note", async () => {
@@ -1311,18 +1450,15 @@ test("a sweep stops when reading Claude Review's runs hits a rate limit (mpaulos
   assert.equal(thrown, claudeRunsError);
 });
 
-test("stops calling in Claude after MAX_CLAUDE_ROUNDS of its reviews, and leaves it to the owner", async () => {
-  // Three commits Claude reviewed, two of them merges, which the cap doesn't count.
-  const merges = [{ oid: "m1", merge: true }, { oid: "m2", merge: true }];
-  const pr = readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one", ...merges) });
-  const { addedLabels, logs } = await evaluate(pr);
+test("calls Claude in for the next head after fewer than MAX_CLAUDE_ROUNDS dirty rounds, whatever merges of main Claude reviewed (mpaulosky/dotfiles#375)", async () => {
+  // Three commits Claude reviewed, two of them merges of main, which are never rounds.
+  const merges = [{ oid: "m1", merge: true, threads: 1 }, { oid: "m2", merge: true, threads: 1 }];
+  const pr = readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf(dirty("one"), ...merges) });
+  const { addedLabels, exhaustionPosts, logs } = await evaluate(pr);
 
-  assert.deepEqual(addedLabels, []);
-  // A notice, so the stalled PR shows on the run, not only in its log (mpaulosky/dotfiles#199).
-  assert.ok(logs.some((line) => line.startsWith("notice: PR #7") && line.includes("the owner decides")), logs.join("\n"));
-  // Two rounds are under the limit (mpaulosky/dotfiles#193).
-  const twice = await evaluate(readyPr({ copilotReviews: DECLINED, claudeReviews: claudeReviewsOf("one", "m1") }));
-  assert.equal(twice.addedLabels.length, 1);
+  assert.deepEqual(addedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, labels: [CLAUDE_LABEL] }]);
+  assert.deepEqual(exhaustionPosts, []);
+  assert.ok(!logs.some((line) => line.includes("the owner decides")), logs.join("\n"));
 });
 
 test("doesn't put review:claude back after a person took it off, but does after the cap removal", async () => {
@@ -1362,13 +1498,13 @@ test("a failure to add review:claude is a warning on a PR event, never a failed 
   assert.ok(!logs.some((line) => line.startsWith("failed:")), logs.join("\n"));
 });
 
-test("doesn't call in Claude for a draft, a handed-back PR or one past the cap", async () => {
+test("doesn't call in Claude for a draft, a handed-back PR or one whose review loop is exhausted", async () => {
   const draft = await evaluate(readyPr({ copilotReviews: DECLINED, isDraft: true }));
   assert.deepEqual(draft.addedLabels, []);
   const handedBack = await evaluate(readyPr({ copilotReviews: DECLINED, labels: labelled(NEEDS_HUMAN) }));
   assert.deepEqual(handedBack.addedLabels, []);
-  const capped = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three", { oid: HEAD, note: true }) }));
-  assert.deepEqual(capped.addedLabels, []);
+  const exhausted = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two"), dirty("three"), { oid: HEAD, note: true }) }));
+  assert.deepEqual(exhausted.addedLabels, []);
 });
 
 test("doesn't call in Claude for Dependabot's PR, which Claude Review never reviews (mpaulosky/dotfiles#201)", async () => {
@@ -1823,13 +1959,13 @@ test("a second sweep over the same PR asks nothing more, whether the first reque
   }
 });
 
-test("doesn't ask for a draft, a cross-repository PR, a handed-back PR, one with auto-merge armed, one past the cap or one a clean merge covers (mpaulosky/dotfiles#360)", async () => {
+test("doesn't ask for a draft, a cross-repository PR, a handed-back PR, one with auto-merge armed, one with an exhausted review loop or one a clean merge covers (mpaulosky/dotfiles#360)", async () => {
   const cases = {
     draft: readyPr({ ...unreviewed, isDraft: true }),
     "cross-repository": readyPr({ ...unreviewed, isCrossRepository: true }),
     "handed back": readyPr({ ...unreviewed, labels: labelled(NEEDS_HUMAN) }),
     "auto-merge armed": readyPr({ ...unreviewed, autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" } }),
-    "past the cap": readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three") }),
+    "an exhausted review loop": readyPr({ copilotReviews: exhaustedCopilot() }),
     "covered by a clean merge": mergedPr("merge1")
   };
   for (const [name, pr] of Object.entries(cases)) {
@@ -1926,34 +2062,56 @@ test("a labelled head with no CI check and a settled record merges on Claude's r
 });
 
 // The rest of the Claude flow is unchanged after the ask.
-test("counts Claude's review of the head only for the head, not an earlier commit Copilot left without a note (mpaulosky/dotfiles#360)", async () => {
+test("doesn't take Claude's review of an earlier commit for a review of the head (mpaulosky/dotfiles#360)", async () => {
   const result = await evaluate(readyPr({ ...claudeOnly(), claudeReviews: claudeReviewsOf("older"), comments: commentsOf(askedBy(ACTIONS, 31)) }));
 
   assert.deepEqual(result.merges, []);
   assert.ok(result.logs.some((line) => line.includes("no Copilot or Claude review of")), result.logs.join("\n"));
 });
 
-test("doesn't reach the cap on Claude's reviews of earlier commits that carry no quota note (mpaulosky/dotfiles#360)", async () => {
-  const pr = readyPr({ ...claudeOnly(), claudeReviews: claudeReviewsOf("one", "two", "three"), comments: commentsOf(askedBy(ACTIONS, 31)) });
-  const { merges } = await evaluate(pr);
+test("exhausts the loop on Claude's dirty reviews of earlier commits once Copilot is gone, quota notes or not (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({ ...claudeOnly(), claudeReviews: claudeRounds("d d d"), comments: commentsOf(askedBy(ACTIONS, 31)) });
+  const { merges, exhaustionPosts } = await evaluate(pr);
 
-  assert.deepEqual(merges, []);
+  assert.equal(exhaustionPosts.length, 1);
+  assert.equal(merges.length, 1);
 });
 
-test("counts Claude's reviews of earlier commits that carry Copilot's quota note even while a request is pending", async () => {
-  // Three reviewed commits reach the review cap, which merges the PR at a head no review covers: only if the notes' commits count.
+test("doesn't exhaust the loop on Claude's clean reviews of earlier commits (mpaulosky/dotfiles#360)", async () => {
+  const pr = readyPr({ ...claudeOnly(), claudeReviews: claudeRounds("c c c"), comments: commentsOf(askedBy(ACTIONS, 31)) });
+  const { merges, exhaustionPosts } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
+});
+
+test("doesn't count Claude's reviews of earlier commits while Copilot's request is pending and they carry no quota note (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({
+    ...claudeOnly(),
+    claudeReviews: claudeRounds("d d d"),
+    reviewRequests: COPILOT_PENDING,
+    comments: commentsOf(askedBy(ACTIONS, 3600))
+  });
+  const { merges, exhaustionPosts } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
+});
+
+test("counts Claude's dirty reviews of earlier commits that carry Copilot's quota note even while a request is pending", async () => {
+  // Three dirty rounds exhaust the loop, which merges the PR at a head no review covers: only if the notes' commits count.
   const notes = ["one", "two", "three"].map((oid) => ({ oid, note: true }));
   const pr = readyPr({
     copilotReviews: copilotReviewsOf(...notes),
     reviewRequests: COPILOT_PENDING,
-    claudeReviews: claudeReviewsOf("one", "two", "three"),
+    claudeReviews: claudeReviewsOf(dirty("one"), dirty("two"), dirty("three")),
     labels: labelled(CLAUDE_LABEL),
     quotaNotes: false
   });
   const { merges, logs } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
-  assert.ok(logs.some((line) => line.includes("Review cap (3) reached")), logs.join("\n"));
+  assert.ok(logs.some((line) => line.includes("Review loop exhausted")), logs.join("\n"));
 });
 
 test("fails closed when Copilot's pending request can't be seen: too many requests, or one without a reviewer", async () => {
@@ -2056,13 +2214,15 @@ test("still counts Copilot's own review of the head without a quota note", async
   assert.equal(merges.length, 1);
 });
 
-test("counts reviewed commits, not reviews, toward the cap", async () => {
-  const { merges } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "one", "two") }));
+test("counts dirty commits, not reviews, toward the exhausted state", async () => {
+  const reviews = copilotReviewsOf(dirty("one"), dirty("one"), dirty("two"));
+  const { merges, exhaustionPosts } = await evaluate(readyPr({ copilotReviews: reviews }));
 
   assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
 });
 
-test("still waits on unresolved Copilot threads at the review cap", async () => {
+test("still waits on unresolved Copilot threads while the review loop isn't exhausted", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two", HEAD),
     reviewThreads: threadsBy(COPILOT, COPILOT, { login: OWNER, resolved: true })
@@ -2073,7 +2233,7 @@ test("still waits on unresolved Copilot threads at the review cap", async () => 
   assert.ok(logs.some((line) => line.includes("2 unresolved review thread(s)")), logs.join("\n"));
 });
 
-test("still waits on a person's unresolved thread at the review cap", async () => {
+test("still waits on a person's unresolved thread while the review loop isn't exhausted", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two", HEAD),
     reviewThreads: threadsBy(OWNER)
@@ -2084,25 +2244,26 @@ test("still waits on a person's unresolved thread at the review cap", async () =
   assert.ok(logs.some((line) => line.includes("1 unresolved review thread(s)")), logs.join("\n"));
 });
 
-test("treats a thread with no known author as a person's at the review cap", async () => {
+test("treats a thread with no known author as a person's while the review loop isn't exhausted", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD), reviewThreads: threadsBy({ login: null }) });
   const { merges } = await evaluate(pr);
 
   assert.deepEqual(merges, []);
 });
 
-test("still needs green checks at the review cap", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), mergeStateStatus: "BLOCKED" });
+test("still needs green checks once the review loop is exhausted", async () => {
+  const pr = readyPr({ copilotReviews: exhaustedCopilot(), mergeStateStatus: "BLOCKED" });
   const { merges } = await evaluate(pr);
 
   assert.deepEqual(merges, []);
 });
 
-test("doesn't count Copilot reviews of merge commits toward the cap", async () => {
-  const reviews = copilotReviewsOf("one", { oid: "merge-main-1", merge: true }, { oid: "merge-main-2", merge: true });
-  const { merges, logs } = await evaluate(readyPr({ copilotReviews: reviews }));
+test("doesn't count Copilot reviews of merge commits toward the exhausted state, dirty or not", async () => {
+  const reviews = copilotReviewsOf(dirty("one"), dirty("merge-main-1", { merge: true }), dirty("merge-main-2", { merge: true }));
+  const { merges, exhaustionPosts, logs } = await evaluate(readyPr({ copilotReviews: reviews }));
 
   assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
   assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), logs.join("\n"));
 });
 
@@ -2112,60 +2273,47 @@ test("accepts a Copilot review of a merge commit at the head below the cap", asy
   assert.equal(merges.length, 1);
 });
 
-test("reaches the cap on three non-merge commits among merges from main", async () => {
-  const reviews = copilotReviewsOf("one", { oid: "merge-main", merge: true }, "two", "three");
+test("exhausts the loop on three dirty non-merge commits among merges from main", async () => {
+  const reviews = copilotReviewsOf(dirty("one"), { oid: "merge-main", merge: true }, dirty("two"), dirty("three"));
   const { merges } = await evaluate(readyPr({ copilotReviews: reviews }));
 
   assert.equal(merges.length, 1);
 });
 
-test("keeps the cap reached through many re-reviews of one commit", async () => {
-  const reviews = copilotReviewsOf("one", "two", "three", ...Array(30).fill("three"));
+test("keeps the loop exhausted through many re-reviews of one commit", async () => {
+  const reviews = copilotReviewsOf(dirty("one"), dirty("two"), dirty("three"), ...Array(30).fill(dirty("three")));
   const { merges, queries } = await evaluate(readyPr({ copilotReviews: reviews }));
 
   assert.equal(merges.length, 1);
   assert.ok(queries.every((query) => query.includes("reviews(last: 100,")), "Copilot reviews are fetched 100 at a time");
 });
 
-test("doesn't log the cap when it didn't change the outcome", async () => {
+test("doesn't log an exhausted loop when it didn't change the outcome", async () => {
   const { merges, logs } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD) }));
 
   assert.equal(merges.length, 1);
-  assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.includes("Review loop exhausted") || line.includes("Review cap")), logs.join("\n"));
 });
 
-test("merges at the review cap once every thread is resolved, without a review of the head", async () => {
+test("merges once the loop is exhausted and every thread is resolved, without a review of the head", async () => {
   const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one", "two", "three"),
+    copilotReviews: exhaustedCopilot(),
     reviewThreads: threadsBy({ login: COPILOT, resolved: true }, { login: ACTIONS, review: "claude-1", resolved: true })
   });
   const { merges, logs } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
-  assert.ok(logs.some((line) => line.includes("Review cap (3) reached") && line.includes("without a review of " + HEAD)), logs.join("\n"));
-});
-
-test("waits at the review cap on an unresolved thread even without a review of the head", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), reviewThreads: threadsBy(COPILOT) });
-  const { merges, logs } = await evaluate(pr);
-
-  assert.deepEqual(merges, []);
-  assert.ok(!logs.some((line) => line.includes("Review cap")), logs.join("\n"));
+  assert.ok(logs.some((line) => line.includes("Review loop exhausted") && line.includes("PR #7")), logs.join("\n"));
 });
 
 const CLAUDE_LABEL = "review:claude";
 
-test("takes review:claude off a PR at the review cap, even while a thread holds it", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("one", "two", HEAD),
-    reviewThreads: threadsBy({ login: ACTIONS, review: "claude-3" }),
-    labels: labelled("enhancement", CLAUDE_LABEL)
-  });
+test("takes review:claude off a PR whose review loop is exhausted, and merges it with the thread still open", async () => {
+  const pr = exhaustedClaude({ reviewThreads: threadsBy({ login: ACTIONS, review: "claude-3" }) });
   const { merges, removedLabels, logs } = await evaluate(pr);
 
   assert.deepEqual(removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
-  assert.deepEqual(merges, []);
+  assert.equal(merges.length, 1);
   assert.ok(logs.some((line) => line.includes("removed review:claude")), logs.join("\n"));
 });
 
@@ -2210,99 +2358,28 @@ test("merges on a clean review of the head after rounds with findings: that's wh
   assert.equal(merges.length, 1);
 });
 
-test("takes review:claude off once Claude has reviewed MAX_CLAUDE_ROUNDS commits, whoever added it (mpaulosky/dotfiles#190)", async () => {
-  // A merge commit among them keeps the PR below the cap, which doesn't count it.
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("one", { oid: "m1", merge: true }, HEAD),
-    labels: labelled(CLAUDE_LABEL)
-  });
-  // Claude's reviews are from 2026-01-02, after the label went on.
-  const { removedLabels, logs } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z")]);
+test("takes review:claude off once Claude's last MAX_CLAUDE_ROUNDS rounds were dirty, whoever added it; merges of main aren't rounds (mpaulosky/dotfiles#190, mpaulosky/dotfiles#375)", async () => {
+  const label = [claudeLabelled("2026-01-01T00:00:00Z")];
+  const exhausted = await evaluate(exhaustedClaude(), label);
 
-  assert.deepEqual(removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
-  assert.ok(logs.some((line) => line.includes("(MAX_CLAUDE_ROUNDS) on PR #7: removed review:claude")), logs.join("\n"));
-  // Added again since Claude's last review: that gets one more review first, as at the cap.
-  const readded = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z"), claudeLabelled("2026-01-03T00:00:00Z")]);
-  assert.deepEqual(readded.removedLabels, []);
+  assert.deepEqual(exhausted.removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
+  assert.ok(exhausted.logs.some((line) => line.includes("removed review:claude")), exhausted.logs.join("\n"));
+  // Three commits Claude reviewed, one of them a merge of main: two rounds.
+  const withMerge = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeRounds("d n d"), labels: labelled(CLAUDE_LABEL) });
+  assert.deepEqual((await evaluate(withMerge, label)).removedLabels, []);
 });
 
-test("leaves review:claude on at a cap reached on Copilot's reviews alone", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), labels: labelled(CLAUDE_LABEL) });
+test("takes review:claude off at an exhausted loop of Copilot's rounds alone", async () => {
+  const pr = readyPr({ copilotReviews: exhaustedCopilot(), labels: labelled(CLAUDE_LABEL) });
   const { removedLabels } = await evaluate(pr);
 
-  assert.deepEqual(removedLabels, []);
+  assert.deepEqual(removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
 });
 
 // A label event: review:claude added at the given time.
 function claudeLabelled(at) {
   return { event: "labeled", label: { name: CLAUDE_LABEL }, created_at: at, actor: { login: OWNER } };
 }
-
-test("leaves review:claude on past the cap until Claude has reviewed since it was last added", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("one", "two", HEAD),
-    labels: labelled(CLAUDE_LABEL)
-  });
-  const { removedLabels } = await evaluate(pr, [claudeLabelled("2026-01-03T00:00:00Z")]);
-
-  assert.deepEqual(removedLabels, []);
-});
-
-test("measures from the last time review:claude was added, not the first", async () => {
-  // Added at T1, reviewed at T2, added again at T3: the T2 review doesn't count.
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one", "two"),
-    claudeReviews: claudeReviewsOf({ oid: HEAD, at: "2026-01-02T00:00:00Z" }),
-    labels: labelled(CLAUDE_LABEL)
-  });
-  const { removedLabels } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z"), claudeLabelled("2026-01-03T00:00:00Z")]);
-
-  assert.deepEqual(removedLabels, []);
-});
-
-test("ignores unlabeled events and other labels when measuring since review:claude was added", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one", "two"),
-    claudeReviews: claudeReviewsOf({ oid: HEAD, at: "2026-01-02T00:00:00Z" }),
-    labels: labelled(CLAUDE_LABEL)
-  });
-  const events = [
-    claudeLabelled("2026-01-01T00:00:00Z"),
-    { event: "unlabeled", label: { name: CLAUDE_LABEL }, created_at: "2026-01-03T00:00:00Z", actor: { login: OWNER } },
-    { event: "labeled", label: { name: "enhancement" }, created_at: "2026-01-04T00:00:00Z", actor: { login: OWNER } }
-  ];
-  const { removedLabels } = await evaluate(pr, events);
-
-  assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
-});
-
-test("takes review:claude off past the cap once Claude has reviewed since it was last added", async () => {
-  const pr = readyPr({
-    copilotReviews: copilotReviewsOf("one", "two"),
-    claudeReviews: claudeReviewsOf({ oid: HEAD, at: "2026-01-03T00:05:00Z" }),
-    labels: labelled(CLAUDE_LABEL)
-  });
-  const { removedLabels } = await evaluate(pr, [claudeLabelled("2026-01-01T00:00:00Z"), claudeLabelled("2026-01-03T00:00:00Z")]);
-
-  assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
-});
-
-test("falls back to any Claude review at the cap when the label events can't be read", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
-  const { removedLabels, logs } = await evaluate(pr, [], { eventsError: new Error("Server Error") });
-
-  assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
-  assert.ok(logs.some((line) => line.startsWith("warning: Couldn't read PR #7's label events")), logs.join("\n"));
-});
-
-test("keeps review:claude at the cap when the label events can't be read and Claude never reviewed", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two", "three"), labels: labelled(CLAUDE_LABEL) });
-  const { removedLabels } = await evaluate(pr, [], { eventsError: new Error("Server Error") });
-
-  assert.deepEqual(removedLabels, []);
-});
 
 test("asks for when each Claude review was submitted", async () => {
   const { queries } = await evaluate(readyPr());
@@ -2316,22 +2393,22 @@ for (const [scenario, overrides] of [
   ["a merged PR", { state: "MERGED" }],
   ["a closed PR", { state: "CLOSED" }]
 ]) {
-  test(`leaves review:claude on ${scenario} at the review cap`, async () => {
-    const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf("one", "two", HEAD), labels: labelled(CLAUDE_LABEL), ...overrides });
+  test(`leaves review:claude on ${scenario} with an exhausted review loop`, async () => {
+    const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeReviewsOf(dirty("one"), dirty("two"), dirty(HEAD)), labels: labelled(CLAUDE_LABEL), ...overrides });
     const { removedLabels } = await evaluate(pr);
 
     assert.deepEqual(removedLabels, []);
   });
 }
 
-test("removes nothing at the review cap when the PR doesn't carry review:claude", async () => {
-  const { removedLabels } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two", HEAD) }));
+test("removes nothing from an exhausted loop when the PR doesn't carry review:claude", async () => {
+  const { removedLabels } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two"), dirty(HEAD)) }));
 
   assert.deepEqual(removedLabels, []);
 });
 
-test("still merges at the cap when taking review:claude off fails, warning about it", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
+test("still merges an exhausted loop when taking review:claude off fails, warning about it", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two")), claudeReviews: claudeReviewsOf(dirty(HEAD)), labels: labelled(CLAUDE_LABEL) });
   const { merges, logs } = await evaluate(pr, [], { removeLabelError: Object.assign(new Error("Resource not accessible"), { status: 403 }) });
 
   assert.equal(merges.length, 1);
@@ -2343,8 +2420,8 @@ for (const [scenario, overrides] of [
   ["handed back with " + NEEDS_HUMAN, { labels: labelled(NEEDS_HUMAN, CLAUDE_LABEL) }],
   ["red on CI", { mergeStateStatus: "UNSTABLE" }]
 ]) {
-  test(`takes review:claude off a PR at the review cap that's ${scenario}`, async () => {
-    const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf("three"), labels: labelled(CLAUDE_LABEL), ...overrides });
+  test(`takes review:claude off a PR with an exhausted review loop that's ${scenario}`, async () => {
+    const pr = readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two")), claudeReviews: claudeReviewsOf(dirty("three")), labels: labelled(CLAUDE_LABEL), ...overrides });
     const { merges, removedLabels } = await evaluate(pr);
 
     assert.deepEqual(merges, []);
@@ -2352,8 +2429,8 @@ for (const [scenario, overrides] of [
   });
 }
 
-test("says nothing at the cap when review:claude is already gone (404)", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf(HEAD), labels: labelled(CLAUDE_LABEL) });
+test("says nothing about review:claude at an exhausted loop when it is already gone (404)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two")), claudeReviews: claudeReviewsOf(dirty(HEAD)), labels: labelled(CLAUDE_LABEL) });
   const { merges, logs } = await evaluate(pr, [], { removeLabelError: Object.assign(new Error("Label does not exist"), { status: 404 }) });
 
   assert.equal(merges.length, 1);
@@ -2400,32 +2477,34 @@ test("doesn't count unmarked github-actions[bot] reviews toward the cap", async 
   assert.deepEqual(merges, []);
 });
 
-test("counts mixed Copilot and Claude rounds toward the cap", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf("three") });
+test("counts mixed Copilot and Claude dirty rounds toward the exhausted state", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(dirty("one", { at: "2026-01-02T00:00:00Z" }), dirty("two", { at: "2026-01-02T00:01:00Z" })),
+    claudeReviews: claudeReviewsOf(dirty("three", { at: "2026-01-02T00:02:00Z" }))
+  });
   const { merges, logs } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
-  assert.ok(
-    logs.some((line) => line.includes("Review cap (3) reached") && line.includes("without a review of " + HEAD)),
-    logs.join("\n")
-  );
+  assert.ok(logs.some((line) => line.includes("Review loop exhausted")), logs.join("\n"));
 });
 
 test("counts a commit both reviewers reviewed as one round", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf("two") });
-  const { merges } = await evaluate(pr);
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two")), claudeReviews: claudeReviewsOf(dirty("two")) });
+  const { merges, exhaustionPosts } = await evaluate(pr);
 
   assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
 });
 
-test("doesn't count Claude reviews of merge commits toward the cap", async () => {
-  const claude = claudeReviewsOf({ oid: "merge-main", merge: true });
-  const { merges } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claude }));
+test("doesn't count Claude reviews of merge commits toward the exhausted state", async () => {
+  const claude = claudeReviewsOf({ oid: "merge-main", merge: true, threads: 1 });
+  const { merges, exhaustionPosts } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two")), claudeReviews: claude }));
 
   assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
 });
 
-test("still waits on unresolved Copilot and Claude threads at the cap", async () => {
+test("still waits on unresolved Copilot and Claude threads while the review loop isn't exhausted", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two"),
     claudeReviews: claudeReviewsOf(HEAD),
@@ -2437,7 +2516,7 @@ test("still waits on unresolved Copilot and Claude threads at the cap", async ()
   assert.ok(logs.some((line) => line.includes("3 unresolved review thread(s)")), logs.join("\n"));
 });
 
-test("still waits on an unresolved Claude thread at the cap", async () => {
+test("still waits on an unresolved Claude thread while the review loop isn't exhausted", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two"),
     claudeReviews: claudeReviewsOf(HEAD),
@@ -2448,7 +2527,7 @@ test("still waits on an unresolved Claude thread at the cap", async () => {
   assert.deepEqual(merges, []);
 });
 
-test("still waits at the cap on a github-actions thread outside a Claude review", async () => {
+test("still waits on a github-actions thread outside a Claude review while the review loop isn't exhausted", async () => {
   const pr = readyPr({
     copilotReviews: copilotReviewsOf("one", "two", HEAD),
     claudeReviews: claudeReviewsOf({ oid: "two", marked: false }),
@@ -2489,7 +2568,7 @@ test("ignores off-diff findings on an older head", async () => {
   assert.equal(merges.length, 1);
 });
 
-test("still waits on off-diff findings at the review cap", async () => {
+test("still waits on off-diff findings while the review loop isn't exhausted", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf({ oid: HEAD, offDiff: true }) });
   const { merges, logs } = await evaluate(pr);
 
@@ -2497,7 +2576,7 @@ test("still waits on off-diff findings at the review cap", async () => {
   assert.ok(logs.some((line) => line.includes("findings outside the diff")), logs.join("\n"));
 });
 
-test("still waits at the cap on off-diff findings of the commit a merge from main covers", async () => {
+test("still waits on off-diff findings of the commit a merge from main covers while the review loop isn't exhausted", async () => {
   const pr = mergedPr("merge1", {
     copilotReviews: copilotReviewsOf("one", "two"),
     claudeReviews: claudeReviewsOf({ oid: "rev", offDiff: true })
@@ -2508,19 +2587,693 @@ test("still waits at the cap on off-diff findings of the commit a merge from mai
   assert.ok(logs.some((line) => line.includes("Claude's review of rev has findings outside the diff")), logs.join("\n"));
 });
 
-test("ignores off-diff findings on an older head at the cap", async () => {
-  const pr = readyPr({ copilotReviews: copilotReviewsOf("one", "two"), claudeReviews: claudeReviewsOf({ oid: "older", offDiff: true }) });
+test("ignores off-diff findings on an older head once the loop is exhausted: they are a dirty round, and nothing holds the merge", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two")), claudeReviews: claudeReviewsOf({ oid: "older", offDiff: true }) });
   const { merges } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
 });
 
-// A re-Apply PR is capped like any other (mpaulosky/dotfiles#174).
-test("merges a re-Apply PR past the cap without a review of the head, like any other", async () => {
-  const pr = readyPr({ headRefName: "chore/reapply-baseline", copilotReviews: copilotReviewsOf("one", "two", "three") });
+// A re-Apply PR's loop is exhausted like any other's (mpaulosky/dotfiles#174).
+test("merges a re-Apply PR whose loop is exhausted without a review of the head, like any other", async () => {
+  const pr = readyPr({ headRefName: "chore/reapply-baseline", copilotReviews: exhaustedCopilot() });
   const { merges } = await evaluate(pr);
 
   assert.equal(merges.length, 1);
+});
+
+// ── The review loop: dirty rounds in a row, merges of main never rounds (mpaulosky/dotfiles#375) ──
+// Copilot first, Claude Review when Copilot can't review. A round is a review of
+// a non-merge commit, dirty when it raised a thread or an off-diff finding. The
+// loop is exhausted after MAX_CLAUDE_ROUNDS dirty rounds in a row, counted back
+// from the newest reviewed commit; a clean round ends the count.
+
+// What a run did, for comparing two runs.
+const outcomeOf = ({ merges, exhaustionPosts, removedLabels, addedLabels }) => ({
+  merged: merges.length,
+  documented: exhaustionPosts.length,
+  removed: removedLabels.length,
+  added: addedLabels.length
+});
+
+const exhaustionBody = (result) => {
+  assert.equal(result.exhaustionPosts.length, 1, result.logs.join("\n"));
+  return result.exhaustionPosts[0].body;
+};
+const bulletsOf = (body) => body.split("\n").filter((line) => line.startsWith("- "));
+
+test("the review loop's constants: COPILOT_REVIEW_CAP stays for github-settings.sh and equals MAX_CLAUDE_ROUNDS, 3 (mpaulosky/dotfiles#375)", () => {
+  const code = scriptCode();
+
+  assert.match(code, /const COPILOT_REVIEW_CAP = 3;/);
+  assert.match(code, /const MAX_CLAUDE_ROUNDS = 3;/);
+  // github/landing.py's EXHAUSTED_MARKER must equal this one (a test there holds the two together).
+  assert.match(code, /const EXHAUSTED_MARKER = "<!-- pr-automerge:review-loop-exhausted";/);
+});
+
+test("asks for what the review loop counts: each review's submission time and thread count, a thread's first comment, a comment's id (mpaulosky/dotfiles#375)", async () => {
+  const { queries } = await evaluate(readyPr());
+  const query = queries[0];
+  const between = (from, to) => query.slice(query.indexOf(from), query.indexOf(to));
+
+  assert.match(between("copilotReviews:", "claudeReviews:"), /\bsubmittedAt\b/);
+  assert.match(between("copilotReviews:", "claudeReviews:"), /comments\s*\{\s*totalCount\s*\}/);
+  assert.match(between("claudeReviews:", "reviewThreads("), /comments\s*\{\s*totalCount\s*\}/);
+  // The opening comment's text, apart from the review's body that is already read.
+  assert.match(between("reviewThreads(", "labels(").replace(/pullRequestReview\s*\{[^}]*\}/, ""), /\bbody\b/);
+  assert.match(between("comments(last: 100)", "reviewRequests("), /\bdatabaseId\b/);
+});
+
+// Criterion 1: a merge of main is never a round, for either reviewer.
+test("a reviewed merge of main is no round: the loop ends the same with and without it, Copilot's rounds (mpaulosky/dotfiles#375)", async () => {
+  for (const [without, withMerge, documented] of [
+    ["d d", "d d m", 0],
+    ["d d", "d m d", 0],
+    ["d d", "d d n", 0],
+    ["d d d", "d d d m", 1],
+    ["d d d", "d m d m d", 1],
+    ["d d c", "d d m c", 0]
+  ]) {
+    const plain = outcomeOf(await evaluate(readyPr({ copilotReviews: copilotRounds(without) })));
+    const merged = outcomeOf(await evaluate(readyPr({ copilotReviews: copilotRounds(withMerge) })));
+
+    assert.deepEqual(merged, plain, `${without} against ${withMerge}`);
+    assert.equal(merged.documented, documented, withMerge);
+  }
+});
+
+test("a reviewed merge of main is no round: the loop ends the same with and without it, Claude's rounds (mpaulosky/dotfiles#375)", async () => {
+  for (const [without, withMerge, exhausted] of [
+    ["d d", "d d m", false],
+    ["d d", "d n d", false],
+    ["d d d", "d d d m", true],
+    ["d d d", "d m d m d", true]
+  ]) {
+    const claude = (pattern) => readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeRounds(pattern), labels: labelled(CLAUDE_LABEL) });
+    const plain = outcomeOf(await evaluate(claude(without)));
+    const merged = outcomeOf(await evaluate(claude(withMerge)));
+
+    assert.deepEqual(merged, plain, `${without} against ${withMerge}`);
+    assert.deepEqual(merged, { merged: exhausted ? 1 : 0, documented: exhausted ? 1 : 0, removed: exhausted ? 1 : 0, added: 0 }, withMerge);
+  }
+});
+
+test("PR Auto-Merge's own update-branch merge, once reviewed, covers the head and counts as no round (mpaulosky/dotfiles#375)", async () => {
+  const head = (reviews) => ({ headRefOid: "um", headRef: checksOn("um", requiredCheck("Build Solution")), ...reviews });
+  const update = { oid: "um", merge: true, at: "2026-01-02T00:09:00Z" };
+
+  // Two dirty rounds and a clean review of the merge head: not exhausted, so it merges on that review.
+  const copilot = await evaluate(readyPr(head({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two"), update) })));
+  assert.equal(copilot.merges.length, 1);
+  assert.deepEqual(copilot.exhaustionPosts, []);
+
+  // The same, reviewed by Claude: it is no third round, so the label stays on.
+  const claudePr = readyPr(head({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claudeReviewsOf(dirty("one"), dirty("two"), update),
+    labels: labelled(CLAUDE_LABEL)
+  }));
+  const claude = await evaluate(claudePr);
+  assert.equal(claude.merges.length, 1);
+  assert.deepEqual(claude.exhaustionPosts, []);
+  assert.deepEqual(claude.removedLabels, []);
+
+  // Three dirty rounds under it: exhausted with or without it.
+  const third = await evaluate(readyPr(head({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two"), dirty("three"), update) })));
+  assert.equal(third.exhaustionPosts.length, 1);
+  assert.equal(third.merges.length, 1);
+});
+
+// Criterion 3: exhausted is MAX_CLAUDE_ROUNDS dirty rounds in a row.
+const LOOP_CASES = [
+  ["d d c d", false, "a clean round in between"],
+  ["d d d", true, "three dirty rounds"],
+  ["d d m d", true, "a merge of main between the rounds"],
+  ["d m d m d", true, "merges of main between every round"],
+  ["d d d c", false, "a clean newest round ends the count"],
+  ["d d m c", false, "a clean round after a merge of main"],
+  ["c d d", false, "only two dirty rounds"],
+  ["d d n", false, "a dirty merge of main is no round"],
+  ["c d d d", true, "an older clean round doesn't matter"],
+  ["d d d d", true, "four dirty rounds"],
+  ["d c d d", false, "a clean round two back"]
+];
+
+test("exhausts Copilot's loop after MAX_CLAUDE_ROUNDS dirty rounds in a row, and no sooner (mpaulosky/dotfiles#375)", async () => {
+  for (const [pattern, exhausted, why] of LOOP_CASES) {
+    const result = await evaluate(readyPr({ copilotReviews: copilotRounds(pattern) }));
+
+    assert.equal(result.exhaustionPosts.length, exhausted ? 1 : 0, `${pattern}: ${why}`);
+    assert.equal(result.merges.length, exhausted ? 1 : 0, `${pattern}: ${why}`);
+    if (!exhausted) {
+      // The head still gets a review before it merges.
+      assert.ok(result.logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), `${pattern}: ${result.logs.join("\n")}`);
+    }
+  }
+});
+
+test("exhausts Claude's loop the same way, taking review:claude off only then (mpaulosky/dotfiles#375)", async () => {
+  for (const [pattern, exhausted, why] of LOOP_CASES) {
+    const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claudeRounds(pattern), labels: labelled(CLAUDE_LABEL) });
+    const result = await evaluate(pr);
+
+    assert.equal(result.exhaustionPosts.length, exhausted ? 1 : 0, `${pattern}: ${why}`);
+    assert.equal(result.merges.length, exhausted ? 1 : 0, `${pattern}: ${why}`);
+    assert.deepEqual(result.removedLabels.map((params) => params.name), exhausted ? [CLAUDE_LABEL] : [], `${pattern}: ${why}`);
+  }
+});
+
+test("a Claude review with findings outside the diff is a dirty round, and a Copilot review with inline threads is too (mpaulosky/dotfiles#375)", async () => {
+  const claude = claudeReviewsOf(
+    dirty("one"),
+    { oid: "two", offDiff: true, at: "2026-01-02T00:01:00Z" },
+    { oid: "three", findings: ["- `src/x.py:9`: A finding"], at: "2026-01-02T00:02:00Z" }
+  );
+  const offDiff = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claude, labels: labelled(CLAUDE_LABEL) }));
+  assert.equal(offDiff.exhaustionPosts.length, 1);
+
+  const inline = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(dirty("one", { threads: 4 }), dirty("two"), dirty("three")) }));
+  assert.equal(inline.exhaustionPosts.length, 1);
+  // A review with no thread and no off-diff finding is clean.
+  const clean = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("two"), { oid: "three", threads: 0 }) }));
+  assert.equal(clean.exhaustionPosts.length, 0);
+});
+
+test("two reviews of one commit are one round, dirty when either raised a thread (mpaulosky/dotfiles#375)", async () => {
+  const reviews = copilotReviewsOf(
+    { oid: "one", threads: 0, at: "2026-01-02T00:00:00Z" },
+    { oid: "one", threads: 2, at: "2026-01-02T00:01:00Z" },
+    dirty("two", { at: "2026-01-02T00:02:00Z" }),
+    dirty("three", { at: "2026-01-02T00:03:00Z" })
+  );
+  const three = await evaluate(readyPr({ copilotReviews: reviews }));
+  assert.equal(three.exhaustionPosts.length, 1);
+
+  // Two reviews of one dirty commit don't make two rounds.
+  const two = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(dirty("one"), dirty("one"), dirty("two")) }));
+  assert.equal(two.exhaustionPosts.length, 0);
+});
+
+test("a clean review of the head after dirty rounds merges: that is when reviewing is done (mpaulosky/dotfiles#375)", async () => {
+  const reviews = copilotReviewsOf(dirty("one"), dirty("two"), { oid: HEAD, threads: 0 });
+  const { merges, exhaustionPosts, removedLabels } = await evaluate(readyPr({ copilotReviews: reviews, labels: labelled(CLAUDE_LABEL) }));
+
+  assert.equal(merges.length, 1);
+  assert.deepEqual(exhaustionPosts, []);
+  // Copilot really reviewed the head, so Claude's label comes off for that reason (mpaulosky/dotfiles#270), not for exhaustion.
+  assert.equal(removedLabels.length, 1);
+});
+
+test("counts a Claude review of an earlier commit as a round once Copilot is gone, and doesn't while it isn't (mpaulosky/dotfiles#375)", async () => {
+  const claude = claudeRounds("d d d");
+  const base = { copilotReviews: copilotReviewsOf(), claudeReviews: claude, labels: labelled(CLAUDE_LABEL), quotaNotes: false };
+  // Asked and settled, nothing pending: gone, so every Claude review counts, whatever its commit.
+  const gone = await evaluate(readyPr({ ...base, comments: commentsOf(askedBy(ACTIONS, 3600)) }));
+  assert.equal(gone.exhaustionPosts.length, 1);
+  // A request still pending, or an ask not yet settled: Copilot may still review, so Claude's reviews aren't rounds.
+  for (const extra of [{ reviewRequests: COPILOT_PENDING, comments: commentsOf(askedBy(ACTIONS, 3600)) }, { comments: commentsOf(askedBy(ACTIONS, 5)) }]) {
+    const result = await evaluate(readyPr({ ...base, ...extra }));
+    assert.deepEqual(result.exhaustionPosts, []);
+    assert.deepEqual(result.merges, []);
+  }
+});
+
+// Criterion 4: a new non-merge head nobody reviewed gets review:claude while the loop isn't exhausted.
+// #371's shape: a real commit reviewed with threads, two merges of main PR
+// Auto-Merge made, then a fix commit as the head; Copilot has no budget.
+function stalledPr(overrides = {}) {
+  return readyPr({
+    copilotReviews: copilotReviewsOf({ oid: "real", note: true }, { oid: "um1", merge: true, note: true }, { oid: "um2", merge: true, note: true }, { oid: HEAD, note: true }),
+    claudeReviews: claudeReviewsOf(dirty("real"), { oid: "um1", merge: true }, { oid: "um2", merge: true }),
+    ...overrides
+  });
+}
+// The label went on, then PR Auto-Merge took it off when the old rule's rounds were used.
+const LABEL_REMOVED_BY_WORKFLOW = [
+  labelEventAt("labeled", CLAUDE_LABEL, "2026-01-01T00:00:00Z"),
+  labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T01:00:00Z", "github-actions[bot]")
+];
+
+test("queues the fix commit for review after a real commit with threads and two merges of main, even though an earlier cap removed the label (mpaulosky/dotfiles#371)", async () => {
+  const { addedLabels, exhaustionPosts, merges, calls, logs } = await evaluate(stalledPr(), LABEL_REMOVED_BY_WORKFLOW);
+
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+  assert.deepEqual(exhaustionPosts, []);
+  assert.deepEqual(merges, []);
+  assert.ok(calls.some(({ client, call }) => client === "pat" && call === "issues.addLabels"), JSON.stringify(calls));
+  assert.ok(!logs.some((line) => line.includes("the owner decides")), logs.join("\n"));
+});
+
+test("queues the fix commit whether Claude reviewed the merges of main or not (mpaulosky/dotfiles#371)", async () => {
+  for (const claudeReviews of [claudeReviewsOf(dirty("real")), claudeReviewsOf(dirty("real"), { oid: "um1", merge: true }), claudeReviewsOf(dirty("real"), { oid: "um1", merge: true }, { oid: "um2", merge: true, threads: 1 })]) {
+    const { addedLabels } = await evaluate(stalledPr({ claudeReviews }), LABEL_REMOVED_BY_WORKFLOW);
+
+    assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+  }
+});
+
+test("queues a new head after dirty, dirty, clean, dirty, and not after dirty ×3 (mpaulosky/dotfiles#375)", async () => {
+  const headNoted = (pattern) => readyPr({
+    copilotReviews: copilotReviewsOf(...roundEntries(pattern), { oid: HEAD, note: true }),
+    claudeReviews: claudeRounds(pattern),
+    quotaNotes: true
+  });
+  const notExhausted = await evaluate(headNoted("d d c d"), LABEL_REMOVED_BY_WORKFLOW);
+  assert.deepEqual(notExhausted.addedLabels, LABEL_FOR_CLAUDE);
+
+  const exhausted = await evaluate(headNoted("d d d"), LABEL_REMOVED_BY_WORKFLOW);
+  assert.deepEqual(exhausted.addedLabels, []);
+});
+
+test("doesn't queue the fix commit when review:claude is already on, or when a person took it off (mpaulosky/dotfiles#375)", async () => {
+  const on = await evaluate(stalledPr({ labels: labelled(CLAUDE_LABEL) }), [labelEventAt("labeled", CLAUDE_LABEL, "2026-01-01T00:00:00Z")]);
+  assert.deepEqual(on.addedLabels, []);
+  assert.deepEqual(on.removedLabels, []);
+
+  const byPerson = await evaluate(stalledPr(), [labelEventAt("labeled", CLAUDE_LABEL, "2026-01-01T00:00:00Z"), labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T01:00:00Z", "octo")]);
+  assert.deepEqual(byPerson.addedLabels, []);
+  assert.ok(byPerson.logs.some((line) => line.startsWith("notice: PR #7") && line.includes("took")), byPerson.logs.join("\n"));
+});
+
+// Criterion 5: on exhaustion, the label comes off, one comment, then the merge.
+test("documents an exhausted loop in one comment on the PR with GITHUB_TOKEN, takes review:claude off, then merges (mpaulosky/dotfiles#375)", async () => {
+  const result = await evaluate(exhaustedClaude());
+
+  assert.equal(result.exhaustionPosts.length, 1);
+  assert.equal(result.exhaustionPosts[0].owner, OWNER);
+  assert.equal(result.exhaustionPosts[0].repo, "demo");
+  assert.equal(result.exhaustionPosts[0].issue_number, 7);
+  assert.deepEqual(result.removedLabels, [{ owner: OWNER, repo: "demo", issue_number: 7, name: CLAUDE_LABEL }]);
+  assert.equal(result.merges.length, 1);
+  assert.equal(result.merges[0].sha, HEAD);
+  assert.ok(result.calls.some(({ client, call }) => client === "token" && call === "issues.createComment"), JSON.stringify(result.calls));
+  // The record exists on the merged PR: posted before the merge call.
+  const post = result.order.indexOf("exhaustion-record");
+  const merge = result.order.indexOf("merge");
+  assert.ok(post !== -1 && merge !== -1 && post < merge, result.order.join(","));
+  // It is not the record that Copilot was asked.
+  assert.deepEqual(result.asked, []);
+});
+
+test("merges an exhausted loop with unresolved threads of any author still open, and says how many (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({
+    copilotReviews: exhaustedCopilot(),
+    reviewThreads: threadsBy(COPILOT, OWNER, { login: null }, { login: COPILOT, resolved: true })
+  });
+  const { merges, logs } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
+  assert.ok(logs.some((line) => line.includes("Review loop exhausted") && line.includes("3 unresolved")), logs.join("\n"));
+});
+
+test("merges an exhausted loop with a Claude finding outside the diff unanswered on the head (mpaulosky/dotfiles#375)", async () => {
+  const claude = claudeReviewsOf(dirty("one"), dirty("two"), { oid: HEAD, findings: ["- `src/x.py:9`: Leaks the handle"] });
+  const { merges, exhaustionPosts } = await evaluate(readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claude, labels: labelled(CLAUDE_LABEL) }));
+
+  assert.equal(merges.length, 1);
+  assert.equal(exhaustionPosts.length, 1);
+});
+
+test("merges an exhausted loop whose head a clean merge from main covers, with threads still open (mpaulosky/dotfiles#375)", async () => {
+  const pr = mergedPr("merge1", {
+    copilotReviews: copilotReviewsOf(dirty("one"), dirty("two"), dirty("rev")),
+    reviewThreads: threadsBy(COPILOT)
+  });
+  const { merges, exhaustionPosts } = await evaluate(pr);
+
+  assert.equal(merges.length, 1);
+  assert.equal(exhaustionPosts.length, 1);
+});
+
+test("still holds an exhausted loop's merge for a failing or running required check, a conflict, a hand-back and BEHIND (mpaulosky/dotfiles#375)", async () => {
+  const threads = { reviewThreads: threadsBy(COPILOT) };
+  const cases = {
+    "a failed required check": { mergeStateStatus: "BLOCKED", headRef: checksOn(HEAD, requiredCheck("Build Solution", { conclusion: "FAILURE" })) },
+    "a running required check": { mergeStateStatus: "BLOCKED", headRef: checksOn(HEAD, requiredCheck("Build Solution", { status: "IN_PROGRESS", conclusion: null })) },
+    "a conflict": { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" },
+    "an unknown mergeability": { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" },
+    "the hand-back label": { labels: labelled(NEEDS_HUMAN) },
+    "a draft": { isDraft: true },
+    "auto-merge armed": { autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" } }
+  };
+  for (const [name, overrides] of Object.entries(cases)) {
+    const { merges } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), ...threads, ...overrides }));
+
+    assert.deepEqual(merges, [], name);
+  }
+  // BEHIND is brought up to date first, and merged once CI passes on the new head.
+  const behind = await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), ...threads, mergeStateStatus: "BEHIND" }));
+  assert.deepEqual(behind.merges, []);
+  assert.equal(behind.updates.length, 1);
+});
+
+test("still holds a merge below exhaustion for an unresolved thread (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(dirty("one"), dirty("two"), { oid: HEAD, threads: 0 }),
+    reviewThreads: threadsBy(COPILOT)
+  });
+  const { merges, exhaustionPosts, logs } = await evaluate(pr);
+
+  assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
+  assert.ok(logs.some((line) => line.includes("1 unresolved review thread(s)")), logs.join("\n"));
+});
+
+test("a second run over an exhausted, documented PR posts nothing new and merges (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({ copilotReviews: exhaustedCopilot(), comments: commentsOf(exhaustionComment("2026-01-03T00:00:00Z")), reviewThreads: threadsBy(COPILOT) });
+  const { exhaustionPosts, merges } = await evaluate(pr);
+
+  assert.deepEqual(exhaustionPosts, []);
+  assert.equal(merges.length, 1);
+});
+
+test("a second run over a documented PR whose head changed since posts nothing either (mpaulosky/dotfiles#375)", async () => {
+  // PR Auto-Merge's own update-branch moved the head after the comment named an earlier one.
+  const pr = readyPr({ copilotReviews: exhaustedCopilot(), comments: commentsOf(exhaustionComment("2026-01-03T00:00:00Z", { head: "olderhead" })) });
+  const { exhaustionPosts } = await evaluate(pr);
+
+  assert.deepEqual(exhaustionPosts, []);
+});
+
+test("a comment with the marker from anyone but github-actions doesn't count as the record (mpaulosky/dotfiles#375)", async () => {
+  for (const login of ["mallory", OWNER]) {
+    const pr = readyPr({ copilotReviews: exhaustedCopilot(), comments: commentsOf(exhaustionComment("2026-01-03T00:00:00Z", { login })) });
+    const { exhaustionPosts } = await evaluate(pr);
+
+    assert.equal(exhaustionPosts.length, 1, login);
+  }
+});
+
+test("one run posts the comment once, though it evaluates the PR twice (mpaulosky/dotfiles#375)", async () => {
+  const { exhaustionPosts } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }), [], { push: true, openPrs: [7, 7] });
+
+  assert.equal(exhaustionPosts.length, 1);
+});
+
+test("posts a new comment for a dirty round that lands after the comment (mpaulosky/dotfiles#375)", async () => {
+  const reviews = copilotReviewsOf(
+    dirty("one", { at: "2026-01-02T00:00:00Z" }),
+    dirty("two", { at: "2026-01-02T00:01:00Z" }),
+    dirty("three", { at: "2026-01-02T00:02:00Z" }),
+    dirty("four", { at: "2026-01-04T00:00:00Z" })
+  );
+  const { exhaustionPosts, merges } = await evaluate(readyPr({ copilotReviews: reviews, comments: commentsOf(exhaustionComment("2026-01-03T00:00:00Z")) }));
+
+  assert.equal(exhaustionPosts.length, 1);
+  assert.equal(merges.length, 1);
+});
+
+test("posts no comment while the loop isn't exhausted (mpaulosky/dotfiles#375)", async () => {
+  for (const overrides of [{ copilotReviews: copilotRounds("d d") }, { copilotReviews: copilotRounds("d d c") }]) {
+    assert.deepEqual((await evaluate(readyPr(overrides))).exhaustionPosts, []);
+  }
+});
+
+test("the exhaustion comment lists every unresolved thread: path and line, the first line of its first comment, and a link (mpaulosky/dotfiles#375)", async () => {
+  const urls = ["https://github.com/octo/repo/pull/7#discussion_r11", "https://github.com/octo/repo/pull/7#discussion_r12", "https://github.com/octo/repo/pull/7#discussion_r13"];
+  const pr = readyPr({
+    copilotReviews: exhaustedCopilot(),
+    reviewThreads: threadsBy(
+      { login: COPILOT, path: "src/a.py", line: 12, body: "Use a context manager here.\nIt also leaks the handle on error.", url: urls[0] },
+      { login: OWNER, path: "docs/guide.md", line: 3, body: "Typo in the heading", url: urls[1], replies: ["octo"] },
+      { login: COPILOT, path: "src/done.py", line: 1, body: "Already fixed", url: urls[2], resolved: true }
+    )
+  });
+  const body = exhaustionBody(await evaluate(pr));
+  const bullets = bulletsOf(body);
+
+  assert.equal(bullets.length, 2, body);
+  assert.ok(bullets[0].includes("src/a.py:12") && bullets[0].includes("Use a context manager here.") && bullets[0].includes(urls[0]), bullets[0]);
+  assert.ok(bullets[1].includes("docs/guide.md:3") && bullets[1].includes("Typo in the heading") && bullets[1].includes(urls[1]), bullets[1]);
+  // Only the first line, and only unresolved threads.
+  assert.ok(!body.includes("leaks the handle"), body);
+  assert.ok(!body.includes("Already fixed") && !body.includes("src/done.py") && !body.includes(urls[2]), body);
+});
+
+test("the exhaustion comment names a thread without a line by its original line, or by its path alone, or without a path (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({
+    copilotReviews: exhaustedCopilot(),
+    reviewThreads: threadsBy(
+      { login: COPILOT, path: "src/b.py", line: null, originalLine: 7, body: "Outdated place" },
+      { login: COPILOT, path: "src/c.py", line: null, originalLine: null, body: "No place at all" },
+      { login: COPILOT, path: null, line: null, originalLine: null, body: "No path either" }
+    )
+  });
+  const bullets = bulletsOf(exhaustionBody(await evaluate(pr)));
+
+  assert.equal(bullets.length, 3, bullets.join("\n"));
+  assert.ok(bullets[0].includes("src/b.py:7") && bullets[0].includes("Outdated place"), bullets[0]);
+  assert.ok(bullets[1].includes("src/c.py") && !bullets[1].includes("src/c.py:") && bullets[1].includes("No place at all"), bullets[1]);
+  assert.ok(bullets[2].includes("No path either"), bullets[2]);
+  for (const bullet of bullets) {
+    assert.ok(!/\b(null|undefined)\b/.test(bullet), bullet);
+  }
+});
+
+test("the exhaustion comment lists the off-diff findings of Claude's review of the head, each by its first line (mpaulosky/dotfiles#375)", async () => {
+  const claude = claudeReviewsOf(
+    { oid: "one", findings: ["- `old/file.py:1`: A finding on an older commit"] },
+    dirty("two"),
+    { oid: HEAD, findings: ["- `src/x.py:9`: Leaks the handle\n  A second line of the finding.", "- `src/y.py:2`: Wrong default"] }
+  );
+  const pr = readyPr({
+    copilotReviews: copilotReviewsOf(),
+    claudeReviews: claude,
+    labels: labelled(CLAUDE_LABEL),
+    reviewThreads: threadsBy({ login: COPILOT, path: "src/a.py", line: 4, body: "A thread too" })
+  });
+  const body = exhaustionBody(await evaluate(pr));
+  const bullets = bulletsOf(body);
+
+  assert.ok(bullets.includes("- `src/x.py:9`: Leaks the handle"), bullets.join("\n"));
+  assert.ok(bullets.includes("- `src/y.py:2`: Wrong default"), bullets.join("\n"));
+  assert.ok(bullets.some((bullet) => bullet.includes("src/a.py:4") && bullet.includes("A thread too")), bullets.join("\n"));
+  assert.equal(bullets.length, 3, bullets.join("\n"));
+  assert.ok(!body.includes("second line of the finding") && !body.includes("old/file.py"), body);
+});
+
+test("the exhaustion comment has no bullets when nothing is left open, and ends with the marker naming the head (mpaulosky/dotfiles#375)", async () => {
+  const body = exhaustionBody(await evaluate(readyPr({ copilotReviews: exhaustedCopilot() })));
+
+  assert.deepEqual(bulletsOf(body), []);
+  assert.match(body, /exhaust/i);
+  assert.ok(body.trimEnd().endsWith(exhaustedMarker(HEAD)), body);
+  assert.equal(body.split(EXHAUSTED_MARKER).length - 1, 1, "the marker appears once");
+});
+
+test("the exhaustion comment ends with the marker when threads and findings are listed too (mpaulosky/dotfiles#375)", async () => {
+  const claude = claudeReviewsOf(dirty("one"), dirty("two"), { oid: HEAD, findings: ["- `src/x.py:9`: Leaks the handle"] });
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(), claudeReviews: claude, labels: labelled(CLAUDE_LABEL), reviewThreads: threadsBy(COPILOT) });
+  const body = exhaustionBody(await evaluate(pr));
+
+  assert.equal(bulletsOf(body).length, 2, body);
+  assert.ok(body.trimEnd().endsWith(exhaustedMarker(HEAD)), body);
+});
+
+test("the exhaustion comment quotes PR-controlled text safely: no ping, tag, link, forged marker or control character (mpaulosky/dotfiles#375)", async () => {
+  const hostile = `Ping @octocat <b>bold</b> [x](http://evil.example) ${COPILOT_ASKED_MARKER} ${exhaustedMarker("forged")} ‮evil​ end`;
+  const pr = readyPr({
+    copilotReviews: exhaustedCopilot(),
+    reviewThreads: threadsBy({ login: OWNER, path: "src/<img>.py", line: 3, body: hostile })
+  });
+  const body = exhaustionBody(await evaluate(pr));
+
+  assert.equal(bulletsOf(body).length, 1, body);
+  // Quoting the Copilot ask record would switch Claude on for a head Copilot may still review.
+  assert.ok(!body.includes(COPILOT_ASKED_MARKER), body);
+  assert.equal(body.split(EXHAUSTED_MARKER).length - 1, 1, body);
+  assert.ok(!body.includes("@octocat") && !body.includes("<b>") && !body.includes("<img>") && !body.includes("[x](http"), body);
+  assert.ok(!/[‮​]/.test(body), body);
+  assert.ok(body.trimEnd().endsWith(exhaustedMarker(HEAD)), body);
+});
+
+test("the exhaustion comment cuts a long first line and names at most 50 bullets, counting the rest (mpaulosky/dotfiles#375)", async () => {
+  const long = threadsBy({ login: COPILOT, body: "a".repeat(400) });
+  const longBody = exhaustionBody(await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), reviewThreads: long })));
+  assert.ok(!longBody.includes("a".repeat(201)), longBody);
+
+  const many = threadsBy(...Array.from({ length: 60 }, (_, index) => ({ login: COPILOT, path: `src/f${index}.py`, line: index + 1, body: `Finding ${index}` })));
+  const manyBody = exhaustionBody(await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), reviewThreads: many })));
+  const bullets = bulletsOf(manyBody);
+  assert.ok(bullets.length >= 50 && bullets.length <= 51, String(bullets.length));
+  assert.ok(bullets[0].includes("src/f0.py") && bullets[49].includes("src/f49.py"), manyBody);
+  assert.ok(!manyBody.includes("src/f55.py"), manyBody);
+  assert.match(manyBody, /\b10 more\b/);
+});
+
+test("doesn't merge an exhausted loop whose comment can't be posted, and warns (mpaulosky/dotfiles#375)", async () => {
+  const exhaustionCommentError = Object.assign(new Error("Resource not accessible by integration"), { status: 403 });
+  const { merges, logs, exhaustionPosts } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }), [], { exhaustionCommentError });
+
+  assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && /exhaust/i.test(line)), logs.join("\n"));
+  assert.ok(!logs.some((line) => line.startsWith("failed:")), logs.join("\n"));
+});
+
+test("doesn't merge an exhausted loop whose comments can't be read in full, and posts nothing (mpaulosky/dotfiles#375)", async () => {
+  const manyComments = { totalCount: 150, nodes: Array.from({ length: 100 }, () => askedBy("someone", 3600, "Looks good.")) };
+  for (const comments of [manyComments, undefined]) {
+    const { merges, exhaustionPosts, logs } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), comments }));
+
+    assert.deepEqual(merges, []);
+    assert.deepEqual(exhaustionPosts, []);
+    assert.ok(logs.some((line) => line.startsWith("warning: ")), logs.join("\n"));
+  }
+});
+
+test("keeps only the earliest of two runs' exhaustion comments: a run whose own comes second deletes it and still merges (mpaulosky/dotfiles#375)", async () => {
+  const result = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }), [], { exhaustionRival: true });
+
+  assert.deepEqual(result.deletedComments, [{ owner: OWNER, repo: "demo", comment_id: 9000 }]);
+  assert.equal(result.merges.length, 1);
+  // It posted before it read again, and deleted before it merged.
+  const post = result.order.indexOf("exhaustion-record");
+  const del = result.order.indexOf("exhaustion-delete");
+  const merge = result.order.indexOf("merge");
+  assert.ok(post !== -1 && post < del && del < merge, result.order.join(","));
+});
+
+test("a run whose own exhaustion comment is first deletes nothing (mpaulosky/dotfiles#375)", async () => {
+  const result = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }));
+
+  assert.deepEqual(result.deletedComments, []);
+});
+
+test("a failure to delete the duplicate exhaustion comment only warns, and the merge goes on (mpaulosky/dotfiles#375)", async () => {
+  const deleteCommentError = Object.assign(new Error("Not Found"), { status: 404 });
+  const { merges, logs } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }), [], { exhaustionRival: true, deleteCommentError });
+
+  assert.equal(merges.length, 1);
+  assert.ok(logs.some((line) => line.startsWith("warning: ")), logs.join("\n"));
+});
+
+// Criterion 6: the owner re-adding review:claude starts a new loop.
+const MARKER_AT = "2026-01-02T01:00:00Z";
+const RE_ADDED_AT = "2026-01-02T02:00:00Z";
+const oldRounds = () => [
+  dirty("one", { at: "2026-01-02T00:00:00Z" }),
+  dirty("two", { at: "2026-01-02T00:01:00Z" }),
+  dirty("three", { at: "2026-01-02T00:02:00Z" })
+];
+const newRound = (oid, minute, extra = {}) => dirty(oid, { at: `2026-01-02T03:${String(minute).padStart(2, "0")}:00Z`, ...extra });
+const documented = () => commentsOf(exhaustionComment(MARKER_AT));
+const readded = (extra = []) => [labelEventAt("labeled", CLAUDE_LABEL, RE_ADDED_AT), ...extra];
+
+test("the owner re-adding review:claude after the comment starts a new loop: earlier rounds don't count (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(...oldRounds(), newRound("four", 0)), comments: documented(), labels: labelled(CLAUDE_LABEL) });
+  const { merges, exhaustionPosts, removedLabels, logs } = await evaluate(pr, readded());
+
+  assert.deepEqual(merges, []);
+  assert.deepEqual(exhaustionPosts, []);
+  assert.deepEqual(removedLabels, []);
+  assert.ok(logs.some((line) => line.includes("no Copilot or Claude review of " + HEAD)), logs.join("\n"));
+});
+
+test("a new loop exhausts after MAX_CLAUDE_ROUNDS new dirty rounds, and is documented again (mpaulosky/dotfiles#375)", async () => {
+  const reviews = copilotReviewsOf(...oldRounds(), newRound("four", 0), newRound("five", 1), newRound("six", 2));
+  const pr = readyPr({ copilotReviews: reviews, comments: documented(), labels: labelled(CLAUDE_LABEL) });
+  const { merges, exhaustionPosts, removedLabels } = await evaluate(pr, readded());
+
+  assert.equal(exhaustionPosts.length, 1);
+  assert.deepEqual(removedLabels.map((params) => params.name), [CLAUDE_LABEL]);
+  assert.equal(merges.length, 1);
+});
+
+test("a new loop's clean review of the head merges, however the old loop ended (mpaulosky/dotfiles#375)", async () => {
+  const reviews = copilotReviewsOf(...oldRounds(), newRound("four", 0), { oid: HEAD, threads: 0, at: "2026-01-02T03:10:00Z" });
+  const { merges, exhaustionPosts } = await evaluate(readyPr({ copilotReviews: reviews, comments: documented() }), readded());
+
+  assert.equal(merges.length, 1);
+  assert.deepEqual(exhaustionPosts, []);
+});
+
+// A design decision (mpaulosky/dotfiles#375): the loop restarts at the first
+// review:claude added after the comment, which is the owner's re-add. An add by
+// PR Auto-Merge later in the loop (its PAT adds as the owner, once Copilot took
+// the label off) mustn't discard the loop's rounds, or the loop could never be
+// exhausted.
+test("restarts at the first review:claude added after the comment, not at a later add (mpaulosky/dotfiles#375)", async () => {
+  const reviews = copilotReviewsOf(...oldRounds(), newRound("four", 0), newRound("five", 10), newRound("six", 20));
+  const pr = readyPr({ copilotReviews: reviews, comments: documented() });
+  const events = readded([
+    labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T03:25:00Z", "github-actions[bot]"),
+    labelEventAt("labeled", CLAUDE_LABEL, "2026-01-02T03:30:00Z", "octo")
+  ]);
+  const { exhaustionPosts, merges } = await evaluate(pr, events);
+
+  assert.equal(exhaustionPosts.length, 1);
+  assert.equal(merges.length, 1);
+});
+
+test("ignores other labels and unlabeled events when finding the owner's re-add (mpaulosky/dotfiles#375)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewsOf(...oldRounds(), newRound("four", 0)), comments: documented() });
+  const events = [
+    labelEventAt("labeled", "enhancement", RE_ADDED_AT),
+    labelEventAt("unlabeled", CLAUDE_LABEL, RE_ADDED_AT)
+  ];
+  // Neither is a re-add of review:claude: the old rounds and the new one are all rounds, and the loop stays exhausted and documented.
+  const { exhaustionPosts, merges } = await evaluate(pr, events);
+
+  assert.equal(exhaustionPosts.length, 1, "a dirty round after the comment is documented again");
+  assert.equal(merges.length, 1);
+});
+
+// Automation never adds the label while the comment is the newest word.
+const CLEAN_AFTER_COMMENT = () => copilotReviewsOf(...oldRounds(), { oid: "four", threads: 0, at: "2026-01-02T01:30:00Z" }, { oid: HEAD, note: true });
+
+test("never adds review:claude while the exhaustion comment is the newest word on the PR (mpaulosky/dotfiles#375)", async () => {
+  const stalled = await evaluate(readyPr({ copilotReviews: CLEAN_AFTER_COMMENT(), comments: documented() }));
+  assert.deepEqual(stalled.addedLabels, []);
+
+  // The same PR without the comment gets the label.
+  const control = await evaluate(readyPr({ copilotReviews: CLEAN_AFTER_COMMENT() }));
+  assert.deepEqual(control.addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("adds review:claude again once a person has added it after the comment (mpaulosky/dotfiles#375)", async () => {
+  const events = readded([labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T02:30:00Z", "github-actions[bot]")]);
+  const { addedLabels } = await evaluate(readyPr({ copilotReviews: CLEAN_AFTER_COMMENT(), comments: documented() }), events);
+
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("neither merges nor adds review:claude, and warns, when the label events can't be read for a documented PR (mpaulosky/dotfiles#375)", async () => {
+  // Reads 1 and 2 are the hand-back checks of the two snapshots; the third is the review loop's.
+  const pr = readyPr({ copilotReviews: exhaustedCopilot(), comments: documented() });
+  const { merges, addedLabels, exhaustionPosts, logs, eventRequests } = await evaluate(pr, [], { eventsError: new Error("Server Error"), eventsErrorAt: 3 });
+
+  assert.ok(eventRequests.length >= 3, String(eventRequests.length));
+  assert.deepEqual(merges, []);
+  assert.deepEqual(addedLabels, []);
+  assert.deepEqual(exhaustionPosts, []);
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && line.includes("label events")), logs.join("\n"));
+});
+
+test("reads the label events for the loop only when a comment exists (mpaulosky/dotfiles#375)", async () => {
+  const none = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }));
+  const marked = await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), comments: documented() }));
+
+  // The two hand-back checks read them anyway.
+  assert.equal(none.eventRequests.length, 2);
+  assert.ok(marked.eventRequests.length > 2, String(marked.eventRequests.length));
+});
+
+test("says in the workflow header that merges of main are no rounds and that an exhausted loop is documented, then merges (mpaulosky/dotfiles#375)", () => {
+  const header = workflowLines().slice(0, workflowLines().findIndex((line) => line.startsWith('"on":'))).join("\n");
+
+  assert.match(header, /exhaust/i);
+  assert.match(header, /dirty/i);
+  assert.match(header, /review-loop-exhausted|exhaustion (comment|marker)/i);
+  assert.ok(!/Past the cap every unresolved thread still holds/.test(header), "the old rule is gone");
+  assert.ok(!/at the cap[^.]*owner decides|the owner decides/.test(header), "no wait for the owner at the cap");
+});
+
+test("says in the comment above github-token that GITHUB_TOKEN also posts the exhaustion comment and deletes a duplicate (mpaulosky/dotfiles#375)", () => {
+  const comment = commentAbove(/^\s*github-token: /);
+
+  assert.match(comment, /exhaust/i);
+  assert.match(comment, /comment/i);
 });
 
 // ── Merges from main onto a reviewed commit ─────────────────────────────────
@@ -2684,8 +3437,8 @@ test("lets a fix pushed after Claude's off-diff review clear the hold, even unde
   assert.equal((await evaluate(pr, [], { commits })).merges.length, 1);
 });
 
-test("waits at the cap, with a warning, when the merge check can't read the head", async () => {
-  const pr = mergedPr("missing", { copilotReviews: copilotReviewsOf("one", "two", "three") });
+test("waits, with a warning, when the merge check can't read the head, even with the loop exhausted", async () => {
+  const pr = mergedPr("missing", { copilotReviews: exhaustedCopilot() });
   const { merges, logs } = await evaluate(pr);
 
   assert.deepEqual(merges, []);
@@ -2750,8 +3503,8 @@ test("never updates a BEHIND draft or fork PR", async () => {
   assert.deepEqual((await evaluate(armedFork)).updates, []);
 });
 
-test("updates a BEHIND PR past the review cap without a review of its head", async () => {
-  const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND", copilotReviews: copilotReviewsOf("one", "two", "three") }));
+test("updates a BEHIND PR with an exhausted review loop without a review of its head", async () => {
+  const { updates } = await evaluate(readyPr({ mergeStateStatus: "BEHIND", copilotReviews: exhaustedCopilot() }));
 
   assert.equal(updates.length, 1);
 });
@@ -3273,6 +4026,7 @@ const TOKEN_CALLS = [
   "issues.listEvents",
   "issues.listComments",
   "issues.removeLabel",
+  "issues.deleteComment",
   "actions.listWorkflowRuns",
   "actions.listWorkflowRunsForRepo"
 ];
@@ -3334,9 +4088,9 @@ const patCallsOf = ({ calls }) => calls.filter(({ client }) => client === "pat")
 const tokenCallsOf = ({ calls }) => calls.filter(({ client }) => client === "token").map(({ call }) => call);
 
 test("makes every read with GITHUB_TOKEN and only the PAT's six calls with the PAT (mpaulosky/dotfiles#231)", async () => {
-  const atCap = readyPr({
+  const exhausted = readyPr({
     copilotReviews: copilotReviewsOf(),
-    claudeReviews: claudeReviewsOf("one", "two", HEAD),
+    claudeReviews: claudeReviewsOf(dirty("one"), dirty("two"), dirty(HEAD)),
     reviewThreads: threadsBy({ login: ACTIONS, review: "claude-3" }),
     labels: labelled("enhancement", CLAUDE_LABEL)
   });
@@ -3369,10 +4123,15 @@ test("makes every read with GITHUB_TOKEN and only the PAT's six calls with the P
       pat: ["graphql", "issues.addLabels"],
       token: ["graphql", "issues.createComment"]
     },
-    "taking review:claude off at the review cap": {
-      run: await evaluate(atCap),
-      pat: [],
-      token: ["issues.removeLabel"]
+    "taking review:claude off, documenting the exhausted loop and merging it with a thread open (mpaulosky/dotfiles#375)": {
+      run: await evaluate(exhausted),
+      pat: ["pulls.merge"],
+      token: ["issues.removeLabel", "issues.createComment"]
+    },
+    "deleting this run's exhaustion comment when another run's is ahead of it (mpaulosky/dotfiles#375)": {
+      run: await evaluate(exhausted, [], { exhaustionRival: true }),
+      pat: ["pulls.merge"],
+      token: ["issues.removeLabel", "issues.createComment", "issues.deleteComment"]
     },
     "a workflow_run event on a clean merge from main": {
       run: await evaluate(mergedPr("merge1"), [], { workflowRun, associated }),

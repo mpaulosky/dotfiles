@@ -108,6 +108,30 @@ def test_pr_automerge_asks_copilot_with_the_pat_and_records_the_ask_with_github_
     assert record, "tokens.md has no GITHUB_TOKEN row for the comment that records Copilot was asked"
 
 
+def test_documents_the_exhaustion_comment_and_the_deletion_of_a_duplicate_with_github_token():
+    # mpaulosky/dotfiles#375: PR Auto-Merge posts one comment when a PR's review loop is exhausted, and a run that
+    # finds another run's comment ahead of its own deletes its own. Both are GITHUB_TOKEN's (pull-requests: write).
+    calls = automerge_calls()
+
+    assert ("issues.deleteComment", "token") in calls
+    assert ("issues.deleteComment", "pat") not in calls
+    rows = table_rows(page())
+    posted = [row for row in rows if len(row) >= 4 and "GITHUB_TOKEN" in row[2] and "createComment" in row[1]
+              and re.search(r"exhaust", " ".join(row), re.IGNORECASE)]
+    deleted = [row for row in rows if len(row) >= 4 and "GITHUB_TOKEN" in row[2] and "deleteComment" in row[1]]
+    assert posted, "tokens.md has no GITHUB_TOKEN row for the comment that documents an exhausted review loop"
+    assert deleted and deleted[0][3], "tokens.md has no GITHUB_TOKEN row, with a reason, for deleting a duplicate exhaustion comment"
+
+
+def test_tokens_md_no_longer_says_the_label_comes_off_at_the_review_cap():
+    # The label comes off when the review loop is exhausted (mpaulosky/dotfiles#375), not at a cap of reviewed commits.
+    text = page()
+
+    assert not re.search(r"review cap|MAX_CLAUDE_ROUNDS commits|reviewed MAX_CLAUDE_ROUNDS", text), \
+        "tokens.md still describes taking review:claude off at the review cap or after MAX_CLAUDE_ROUNDS reviewed commits"
+    assert re.search(r"exhaust", text, re.IGNORECASE)
+
+
 @pytest.mark.parametrize(
     "call",
     [

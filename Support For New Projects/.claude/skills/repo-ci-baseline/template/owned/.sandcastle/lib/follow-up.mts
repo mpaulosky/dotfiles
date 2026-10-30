@@ -18,6 +18,7 @@
 
 import { discardClosedWork, isHandOffBranch, isIssueBranch, type BranchRefs } from "./branches.mts";
 import {
+  APPROVAL_LAPSED_MARKER,
   APPROVED_HEAD_MARKER,
   BUILDING_LABEL,
   COPILOT_REREQUEST_AFTER_MS,
@@ -220,6 +221,21 @@ export function approvedHeadComment(head: string): string {
   return `${APPROVED_HEAD_MARKER} ${head} -->\nSandcastle follows this pull request up from ${head.slice(0, 7)}: the head the owner approved, or a merge of main made on top of it.`;
 }
 
+// The comment the sweep posts once on a hand-off PR skipped because `head` isn't one the host recorded as approved, so the owner sees why
+// it is no longer followed up and what to do.
+export function approvalLapsedComment(head: string): string {
+  return (
+    `${APPROVAL_LAPSED_MARKER} ${head} -->\n` +
+    `Sandcastle no longer follows this pull request up: its head ${head.slice(0, 7)} isn't one the host recorded as approved since the owner added ${FOLLOW_UP_LABEL}, ` +
+    `most likely because a commit was pushed after the label. Once the owner has looked at the branch, remove and re-add ${FOLLOW_UP_LABEL}.`
+  );
+}
+
+// Whether `comments` hold the host's own approvalLapsedComment for `head`. Only the host's counts, since anyone can post the same text.
+export function approvalLapsedPosted(comments: readonly TimestampedComment[], head: string, host: string): boolean {
+  return comments.some((comment) => sameLogin(comment.author, host) && comment.body.startsWith(`${APPROVAL_LAPSED_MARKER} ${head} -->`));
+}
+
 // The head a comment records as approved, or undefined when it doesn't open with the marker.
 export function approvedHeadOf(body: string): string | undefined {
   return new RegExp(`^${APPROVED_HEAD_MARKER} ([0-9a-f]{40}) -->`).exec(body)?.[1];
@@ -235,6 +251,16 @@ export function recordApprovedHead(number: number, head: string, post: (number: 
 // skips the PR, or a record that fails to post, leaves the count growing).
 export const MAX_MAIN_MERGES = 5;
 
+// A refused approval whose label counts and whose only fault is a head the host never recorded: `unrecordedHead` is that head, and the
+// sweep comments on the PR for it once (approvalLapsedComment). Any other refusal carries no such head, so nothing is posted for it.
+// `labelledAt` is when the owner's label was added (ms since the epoch), so the sweep can wait out the window in which the record isn't posted yet.
+export type LapsedApproval = { approved: false; reason: string; unrecordedHead: string; labelledAt: number };
+
+// How long after the owner's label the sweep waits before it comments that the approval lapsed. The Sandcastle workflow's record-head job
+// posts the head's record some time after the label (its own queueing, up to three post retries), and a head not yet recorded in that window
+// is not a lapse: a notice then would tell the owner to re-add a label that is working, and would stay on the PR.
+export const APPROVAL_LAPSED_GRACE_MS = 15 * 60 * 1000;
+
 // Whether the owner's sandcastle:follow-up label stands on `pr`: the repository's owner or the host opened it, the latest
 // labeled event is the owner's with no later edit of the title or description by anyone else (lib/queue.mts#approval),
 // and the head is one the owner approved: recorded by the Sandcastle workflow or the host, or reached from such a head
@@ -244,7 +270,7 @@ export function handOffApproval(
   pr: Pick<SweepPullRequest, "number" | "author" | "headRefOid">,
   github: Pick<FollowUpGitHub, "pullRequestEvents" | "pullRequestBodyEdits" | "pullRequestComments" | "mergeOfMain" | "recordApprovedHead" | "isOwner" | "repositoryOwner">,
   host: string,
-): Approval {
+): Approval | LapsedApproval {
   if (!sameLogin(pr.author, host) && !sameLogin(pr.author, github.repositoryOwner())) {
     return { approved: false, reason: `${pr.author ?? "a deleted account"} opened it, and is neither the repository's owner nor ${host}` };
   }
@@ -284,6 +310,8 @@ export function handOffApproval(
   }
   return {
     approved: false,
+    unrecordedHead: pr.headRefOid.toLowerCase(),
+    labelledAt: since,
     reason:
       `its head ${pr.headRefOid.slice(0, 7)} isn't one ${host} recorded as approved since the owner added the label${problem === "" ? "" : ` (${problem})`}: ` +
       `possible causes: a commit pushed after the label, the record edited after it was posted, more than ${MAX_MAIN_MERGES} merges of main since the last record, ` +
@@ -447,6 +475,8 @@ export type FollowUpGitHub = {
   mergeOfMain(commit: string): MainMerge;
   // Records a head that handOffApproval verified through merges of main, as the host. live: recordApprovedHead.
   recordApprovedHead(number: number, head: string): void;
+  // Posts a comment on a PR, as the host. live: commentOnPullRequest.
+  commentOnPullRequest(number: number, body: string): void;
 };
 
 // mainMergeOf for the signed-in host: the merge must be authored by that login. `host` and `merge` are injectable for the test.
@@ -475,6 +505,7 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   pullRequestComments: (number) => issueComments(number),
   mergeOfMain: (commit) => liveMergeOfMain(commit),
   recordApprovedHead: (number, head) => recordApprovedHead(number, head),
+  commentOnPullRequest: (number, body) => commentOnPullRequest(number, body),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the
@@ -575,6 +606,30 @@ export function sweepContext(
   return { context: { inScope, host, building, followsHandOffs: github.followsHandOffs() }, issues };
 }
 
+// Tells the owner on PR `number` that its follow-up approval lapsed for `head`, once per head: the host's earlier comment for that head,
+// read back from the PR, stops a repeat. Nothing is posted until the owner's label (added at `labelledAt`) is APPROVAL_LAPSED_GRACE_MS
+// old, since the head may only be waiting for its record; the next sweep looks again. A failed read or post is logged and swallowed, so
+// the sweep goes on to the other PRs and the next sweep tries again.
+function commentApprovalLapsed(
+  number: number,
+  head: string,
+  labelledAt: number,
+  now: number,
+  github: Pick<FollowUpGitHub, "pullRequestComments" | "commentOnPullRequest">,
+  host: string,
+  log: (line: string) => void,
+): void {
+  // A label time that doesn't parse (NaN) is not known to be old enough.
+  if (!(now - labelledAt >= APPROVAL_LAPSED_GRACE_MS)) return;
+  try {
+    if (approvalLapsedPosted(github.pullRequestComments(number), head, host)) return;
+    github.commentOnPullRequest(number, approvalLapsedComment(head));
+    log(`  ✉ Commented on PR #${number} that its head ${head.slice(0, 7)} isn't one ${host} recorded as approved.`);
+  } catch (error) {
+    log(`  ⚠ Couldn't comment on PR #${number} that its head ${head.slice(0, 7)} isn't approved, so the next sweep tries again: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 // What admitToSweep reads of GitHub besides the PR's events.
 export type AdmissionGitHub = Pick<
   FollowUpGitHub,
@@ -584,15 +639,18 @@ export type AdmissionGitHub = Pick<
 // Whether the sweep admits `pr`, and why not: sweepSubject with the hand-off approval wired to `github`. `events` is the
 // caller's memoised read of the PR's events, so the approval and the label-origin check share one read. A failed
 // recordApprovedHead is logged and swallowed: the approval stands, and the next sweep walks the same merges again.
+// `onUnrecordedHead` is told the head, and when the label was added, when the owner's label counts but the head isn't one the host recorded: the sweep comments on
+// the PR then. It is a callback so that admitToSweep itself never writes, and the status report that shares it stays read-only.
 export function admitToSweep(
   pr: SweepPullRequest,
   context: SweepContext,
   github: AdmissionGitHub,
   events: () => IssueEvent[],
   log: (line: string) => void,
+  onUnrecordedHead: (head: string, labelledAt: number) => void = () => {},
 ): { subject: SweepSubject } | { skip: string } {
-  return sweepSubject(pr, context, () =>
-    handOffApproval(pr, {
+  return sweepSubject(pr, context, () => {
+    const approval = handOffApproval(pr, {
       pullRequestEvents: events,
       pullRequestBodyEdits: (number) => github.pullRequestBodyEdits(number),
       pullRequestComments: (number) => github.pullRequestComments(number),
@@ -606,8 +664,10 @@ export function admitToSweep(
       },
       isOwner: github.isOwner,
       repositoryOwner: () => github.repositoryOwner(),
-    }, context.host),
-  );
+    }, context.host);
+    if (!approval.approved && "unrecordedHead" in approval) onUnrecordedHead(approval.unrecordedHead, approval.labelledAt);
+    return approval;
+  });
 }
 
 // What to do about a stranger's change of the PR's hand-back label.
@@ -679,9 +739,13 @@ export function sweepPullRequests(
       // One read of the PR's events serves both the hand-off approval and the needs-human check below.
       let events: IssueEvent[] | undefined;
       const eventsOfPr = () => (events ??= github.pullRequestEvents(pr.number));
-      const swept = admitToSweep(pr, context, github, eventsOfPr, log);
+      let lapsed: { head: string; labelledAt: number } | undefined;
+      const swept = admitToSweep(pr, context, github, eventsOfPr, log, (head, labelledAt) => {
+        lapsed = { head, labelledAt };
+      });
       if ("skip" in swept) {
         log(`  · PR #${pr.number} isn't swept: ${swept.skip}.`);
+        if (lapsed !== undefined) commentApprovalLapsed(pr.number, lapsed.head, lapsed.labelledAt, now, github, host, log);
         continue;
       }
       const { subject } = swept;

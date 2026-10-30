@@ -169,6 +169,7 @@ describe("liveSweep", () => {
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
       recordApprovedHead: () => {},
+      commentOnPullRequest: () => {},
     };
     return { github, closedCalls, handBacks };
   }

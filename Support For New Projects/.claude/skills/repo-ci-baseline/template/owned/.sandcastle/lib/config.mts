@@ -300,6 +300,11 @@ export const SESSION_REPLY_MARKER = "<!-- claude-session -->";
 // workflow's own copy of the text is pinned to this one by the Template's test.sh.
 export const APPROVED_HEAD_MARKER = "<!-- sandcastle:approved-head";
 
+// What opens the comment the sweep posts once on a hand-off PR whose head the host never recorded as approved, so the owner sees on the
+// PR why it is no longer followed up (lib/follow-up.mts#approvalLapsedComment). The head follows, as in APPROVED_HEAD_MARKER, and the
+// next sweep reads the comment back to post it only once for that head.
+export const APPROVAL_LAPSED_MARKER = "<!-- sandcastle:approval-lapsed";
+
 // Whether `scope` is the queue GitHub Actions always runs, every issue labelled QUEUE_LABEL. Only that run follows
 // hand-off pull requests.
 export function isDefaultQueueScope(scope: QueueScope): boolean {

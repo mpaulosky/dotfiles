@@ -56,7 +56,7 @@ Sandcastle and the session post under the owner's token, so the author can't tel
   on every push. A quoted marker (`> <!-- sandcastle:pr -->`) or one further down the body is a person's text and still wakes it.
 
 Every PR comment Sandcastle posts opens with a marker: `PR_MARKER`, `FOLLOW_UP_MARKER` (the pass summary), `FOLLOW_UP_REPLY_MARKER`, `APPROVED_HEAD_MARKER`,
-`OVERLAP_MARKER`, `GIVE_UP_MARKER` and `WORKTREE_TAMPERED_MARKER`, all in `.sandcastle/lib/config.mts`. `config.test.mts` runs `watch-pr.sh --would-skip` on every
+`APPROVAL_LAPSED_MARKER`, `OVERLAP_MARKER`, `GIVE_UP_MARKER` and `WORKTREE_TAMPERED_MARKER`, all in `.sandcastle/lib/config.mts`. `config.test.mts` runs `watch-pr.sh --would-skip` on every
 string that file exports starting `<!-- sandcastle:`, so a new marker is covered by exporting it from `config.mts`. A new PR comment from Sandcastle needs a marker as its first line.
 
 Anyone who can comment can forge a marker and be unheard by the watcher. That is acceptable: the watcher is a convenience for the session, not a gate.

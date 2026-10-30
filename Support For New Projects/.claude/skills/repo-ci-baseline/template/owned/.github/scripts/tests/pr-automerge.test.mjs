@@ -274,7 +274,13 @@ async function evaluate(pr, events = [], options = {}) {
     // The read-back window and its poll interval, in ms (the workflow's
     // COPILOT_ASK_WAIT_MS and COPILOT_ASK_POLL_MS).
     askWaitMs = 0,
-    askPollMs = 0
+    askPollMs = 0,
+    // A second run's record of the same ask (mpaulosky/dotfiles#369): it shows
+    // on every read after this run posted its own, written rivalOffsetMs after
+    // it (negative: before it), by rivalLogin. The first read, before this
+    // run posted, never shows it: that's the race, both runs read "none".
+    rivalOffsetMs,
+    rivalLogin = ACTIONS
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -317,6 +323,8 @@ async function evaluate(pr, events = [], options = {}) {
   // The Copilot ask (mpaulosky/dotfiles#360): the record comments GITHUB_TOKEN
   // posted, the PAT's review requests, and every ask-related step in order.
   const asked = [];
+  // When each record in asked was written.
+  const askedAt = [];
   const requests = [];
   const order = [];
   let readsSinceRequest = 0;
@@ -329,8 +337,14 @@ async function evaluate(pr, events = [], options = {}) {
     }
     let shown = snapshot;
     if (asked.length > 0 && snapshot.comments) {
-      const nodes = [...snapshot.comments.nodes, ...asked.map((comment) => ({ author: { login: ACTIONS }, body: comment.body, createdAt: new Date().toISOString() }))];
-      shown = { ...shown, comments: { totalCount: snapshot.comments.totalCount + asked.length, nodes } };
+      const own = asked.map((comment, index) => ({ author: { login: ACTIONS }, body: comment.body, createdAt: new Date(askedAt[index]).toISOString() }));
+      const rival = rivalOffsetMs === undefined ? [] : [{
+        author: { login: rivalLogin },
+        body: "PR Auto-Merge asked Copilot to review this PR.\n\n<!-- pr-automerge:copilot-asked -->",
+        createdAt: new Date(askedAt[0] + rivalOffsetMs).toISOString()
+      }];
+      const nodes = [...snapshot.comments.nodes, ...own, ...rival];
+      shown = { ...shown, comments: { totalCount: snapshot.comments.totalCount + own.length + rival.length, nodes } };
     }
     if (requested && copilotRequest === "registers" && readsSinceRequest > registersAfterReads) {
       const present = shown.reviewRequests ?? { totalCount: 0, nodes: [] };
@@ -367,6 +381,7 @@ async function evaluate(pr, events = [], options = {}) {
           throw askCommentError;
         }
         asked.push(params);
+        askedAt.push(Date.now());
       }),
       // GITHUB_TOKEN: a removal that starts no workflow is what's wanted.
       removeLabel: viaToken("issues.removeLabel", async (params) => {
@@ -435,6 +450,9 @@ async function evaluate(pr, events = [], options = {}) {
       if (requested) {
         readsSinceRequest++;
         order.push("read-back");
+      } else if (asked.length > 0) {
+        // A read of the PR after the record was posted and before the request.
+        order.push("re-read");
       }
       const number = variables.number;
       if (readErrors.includes(number)) {
@@ -1507,6 +1525,59 @@ test("the settle time is 30 seconds, and the 5-minute grace and its timeline que
   assert.ok(!/\bgraceState\b/.test(source), "graceState is gone");
   assert.ok(!/reviewableEvents|READY_FOR_REVIEW_EVENT/.test(source), "the reviewable-events query is gone");
   assert.ok(!/5-minute grace/.test(source), "the 5-minute grace wording is gone");
+});
+
+// Many events start a run for one PR within seconds, and the workflow has no
+// concurrency group, so two runs can both read "no record", both post one and
+// both request. Each run re-reads the comments after posting its record and
+// only the run whose record is the earliest makes the request (mpaulosky/dotfiles#369).
+test("doesn't request Copilot's review when a second run's record is earlier than its own (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, addedLabels, merges, order } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50 });
+
+  assert.equal(asked.length, 1, "it still posts its record: the read before it showed none");
+  assert.deepEqual(requests, [], "the earlier run makes the request");
+  assert.deepEqual(addedLabels, [], "the earlier run reads the request back and calls in Claude");
+  assert.deepEqual(merges, []);
+  assert.ok(!order.includes("request"), order.join(","));
+});
+
+test("requests Copilot's review once when a second run's record is later than its own (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, addedLabels } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: 50 });
+
+  assert.equal(asked.length, 1);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("re-reads the PR after posting its record and before it requests (mpaulosky/dotfiles#369)", async () => {
+  const { order } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: 50 });
+  const record = order.indexOf("record");
+  const request = order.indexOf("request");
+  const reRead = order.indexOf("re-read");
+
+  assert.ok(record !== -1 && request !== -1, order.join(","));
+  assert.ok(reRead > record && reRead < request, order.join(","));
+});
+
+test("an earlier record from someone else doesn't make the run stand down: only github-actions' and the owner's records count (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50, rivalLogin: "stranger" });
+
+  assert.equal(asked.length, 1);
+  assert.equal(requests.length, 1);
+});
+
+test("an earlier record from the owner makes the run stand down too (mpaulosky/dotfiles#369)", async () => {
+  const { requests, addedLabels } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50, rivalLogin: OWNER });
+
+  assert.deepEqual(requests, []);
+  assert.deepEqual(addedLabels, []);
+});
+
+test("the losing run in a sweep asks nothing more of Copilot and its second pass over the PR adds no request (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests } = await evaluate(readyPr(unreviewed), [], { push: true, openPrs: [7, 7], rivalOffsetMs: -50 });
+
+  assert.equal(asked.length, 1);
+  assert.deepEqual(requests, []);
 });
 
 test("asks for the PR's last 100 comments with their author, body and time, and not the reviewable events (mpaulosky/dotfiles#360)", async () => {

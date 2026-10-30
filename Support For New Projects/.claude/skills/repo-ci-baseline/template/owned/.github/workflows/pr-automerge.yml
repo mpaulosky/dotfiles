@@ -34,7 +34,9 @@ name: PR Auto-Merge
 # review, and no review of that head is coming. Often it answers nothing: GitHub
 # drops the request, and a dropped request brings no event. So the run asks for
 # Copilot's review of a PR's first reviewable head itself, once: it posts a
-# comment holding COPILOT_ASKED_MARKER (the record of the ask), requests the
+# comment holding COPILOT_ASKED_MARKER (the record of the ask), reads the PR's
+# comments again (two runs can both post one; only the run whose record is the
+# earliest goes on, mpaulosky/dotfiles#369), requests the
 # review with the PAT, and reads the request back for up to COPILOT_ASK_WAIT_MS.
 # A request that fails or doesn't register counts as dropped at once, and a
 # record COPILOT_ASK_SETTLE_MS old with no review of the head and no request
@@ -1217,9 +1219,21 @@ jobs:
               });
             }
 
+            // The ask records among these comments, earliest first: the ones
+            // github-actions (this workflow) or the repository owner (land.sh)
+            // wrote, which hold COPILOT_ASKED_MARKER.
+            function askRecords(nodes) {
+              return nodes
+                .filter((comment) => {
+                  const login = comment?.author?.login?.replace(/\[bot\]$/, "");
+                  return (login === "github-actions" || login === owner) && (comment.body ?? "").includes(COPILOT_ASKED_MARKER);
+                })
+                .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+            }
+
             // The record that Copilot was asked to review this PR, read from
             // the PR's last 100 comments: { state, at } where state is "none"
-            // (no record), "asked" (the first record counts, at its time in
+            // (no record), "asked" (the earliest record counts, at its time in
             // ms; or this very run asked) or "unread" (the comments weren't
             // read, or more than a page exist and the record isn't among the
             // ones read). Only github-actions (this workflow) and the
@@ -1235,10 +1249,7 @@ jobs:
               if (!comments || !Array.isArray(comments.nodes)) {
                 return { state: "unread" };
               }
-              const record = comments.nodes.find((comment) => {
-                const login = comment?.author?.login?.replace(/\[bot\]$/, "");
-                return (login === "github-actions" || login === owner) && (comment.body ?? "").includes(COPILOT_ASKED_MARKER);
-              });
+              const record = askRecords(comments.nodes)[0];
               if (record) {
                 return { state: "asked", at: Date.parse(record.createdAt) };
               }
@@ -1281,13 +1292,16 @@ jobs:
               if (copilotAsk(pr).state !== "none" || copilotAnsweredHead(pr) || copilotPending(pr) || !pr.id) {
                 return false;
               }
+              // Names this run's record among any others on the PR.
+              const askId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
               try {
                 await github.rest.issues.createComment({
                   owner,
                   repo,
                   issue_number: pullNumber,
                   body: "PR Auto-Merge asked Copilot to review this PR. It asks once per PR; if GitHub drops the " +
-                    "request, `review:claude` calls in Claude instead. mpaulosky/dotfiles#360\n\n" + COPILOT_ASKED_MARKER
+                    "request, `review:claude` calls in Claude instead. mpaulosky/dotfiles#360\n\n" + COPILOT_ASKED_MARKER +
+                    `\n<!-- pr-automerge:copilot-ask-id ${askId} -->`
                 });
               } catch (error) {
                 if (sweeping && endsRun(error)) {
@@ -1295,6 +1309,29 @@ jobs:
                 }
                 // No record, no request: a request without one could be made twice.
                 core.warning(`Couldn't record the ask for Copilot's review of PR #${pullNumber}, so it wasn't made: ${error.message}`);
+                return false;
+              }
+              // Two runs can both have read "no record" and both posted one.
+              // Read the comments again: only the run whose record is the
+              // earliest makes the request (mpaulosky/dotfiles#369). A re-read
+              // that fails or doesn't show this run's record leaves the
+              // request unmade: the record stays, so nothing asks later.
+              try {
+                const again = await getPullRequestStatus(pullNumber);
+                const records = Array.isArray(again?.comments?.nodes) ? askRecords(again.comments.nodes) : [];
+                if (!records.some((record) => (record.body ?? "").includes(askId))) {
+                  core.warning(`Couldn't find this run's record of the ask for Copilot's review of PR #${pullNumber}, so it wasn't made.`);
+                  return false;
+                }
+                if (!records[0].body.includes(askId)) {
+                  core.info(`Another run recorded the ask for Copilot's review of PR #${pullNumber} first, so it makes the request.`);
+                  return false;
+                }
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
+                }
+                core.warning(`Couldn't re-read PR #${pullNumber} after recording the ask for Copilot's review, so it wasn't made: ${error.message}`);
                 return false;
               }
               try {

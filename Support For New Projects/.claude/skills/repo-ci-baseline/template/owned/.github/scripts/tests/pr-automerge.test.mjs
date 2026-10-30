@@ -274,7 +274,29 @@ async function evaluate(pr, events = [], options = {}) {
     // The read-back window and its poll interval, in ms (the workflow's
     // COPILOT_ASK_WAIT_MS and COPILOT_ASK_POLL_MS).
     askWaitMs = 0,
-    askPollMs = 0
+    askPollMs = 0,
+    // A second run's record of the same ask (mpaulosky/dotfiles#369): it shows
+    // on every read after this run posted its own, by rivalLogin, with a
+    // createdAt rivalOffsetMs after this run's (negative: before it). Only its
+    // createdAt follows the offset; where it is listed follows rivalFirst. The
+    // first read, before this run posted, never shows it: that's the race,
+    // both runs read "none".
+    rivalOffsetMs,
+    rivalLogin = ACTIONS,
+    // The re-reads after this run's record that don't show it yet (GraphQL
+    // lagging behind the REST write), and the ones that throw.
+    ownRecordHiddenReads = 0,
+    reReadErrors = 0,
+    // What those throw: a plain server error, or one carrying a status (a 401
+    // or 429 ends a run).
+    reReadError = new Error("Server error on the re-read"),
+    // Whether the rival's record is listed before this run's own, whatever its
+    // createdAt: GitHub lists comments oldest first, and the first record
+    // listed is the one that decides. Unset, the rival is listed first when its
+    // offset is negative, as it would be if its createdAt were true to the order.
+    rivalFirst,
+    // The pause between the re-reads, in ms (the workflow's COPILOT_ASK_REREAD_MS).
+    askRereadMs = 0
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -317,10 +339,13 @@ async function evaluate(pr, events = [], options = {}) {
   // The Copilot ask (mpaulosky/dotfiles#360): the record comments GITHUB_TOKEN
   // posted, the PAT's review requests, and every ask-related step in order.
   const asked = [];
+  // When each record in asked was written.
+  const askedAt = [];
   const requests = [];
   const order = [];
   let readsSinceRequest = 0;
   let requested = false;
+  let reReads = 0;
   // What a read shows once this run has acted: its own record comment, and
   // Copilot's request if it registered.
   const withRunsOwnWrites = (snapshot) => {
@@ -329,8 +354,17 @@ async function evaluate(pr, events = [], options = {}) {
     }
     let shown = snapshot;
     if (asked.length > 0 && snapshot.comments) {
-      const nodes = [...snapshot.comments.nodes, ...asked.map((comment) => ({ author: { login: ACTIONS }, body: comment.body, createdAt: new Date().toISOString() }))];
-      shown = { ...shown, comments: { totalCount: snapshot.comments.totalCount + asked.length, nodes } };
+      const own = reReads <= ownRecordHiddenReads && !requested ? [] : asked.map((comment, index) => ({ author: { login: ACTIONS }, body: comment.body, createdAt: new Date(askedAt[index]).toISOString() }));
+      const rival = rivalOffsetMs === undefined ? [] : [{
+        author: { login: rivalLogin },
+        body: "PR Auto-Merge asked Copilot to review this PR.\n\n<!-- pr-automerge:copilot-asked -->",
+        createdAt: new Date(askedAt[0] + rivalOffsetMs).toISOString()
+      }];
+      const rivalListedFirst = rivalFirst ?? (rivalOffsetMs !== undefined && rivalOffsetMs < 0);
+      const nodes = rivalListedFirst
+        ? [...snapshot.comments.nodes, ...rival, ...own]
+        : [...snapshot.comments.nodes, ...own, ...rival];
+      shown = { ...shown, comments: { totalCount: snapshot.comments.totalCount + own.length + rival.length, nodes } };
     }
     if (requested && copilotRequest === "registers" && readsSinceRequest > registersAfterReads) {
       const present = shown.reviewRequests ?? { totalCount: 0, nodes: [] };
@@ -367,6 +401,7 @@ async function evaluate(pr, events = [], options = {}) {
           throw askCommentError;
         }
         asked.push(params);
+        askedAt.push(Date.now());
       }),
       // GITHUB_TOKEN: a removal that starts no workflow is what's wanted.
       removeLabel: viaToken("issues.removeLabel", async (params) => {
@@ -435,6 +470,13 @@ async function evaluate(pr, events = [], options = {}) {
       if (requested) {
         readsSinceRequest++;
         order.push("read-back");
+      } else if (asked.length > 0) {
+        // A read of the PR after the record was posted and before the request.
+        order.push("re-read");
+        reReads++;
+        if (reReads <= reReadErrors) {
+          throw reReadError;
+        }
       }
       const number = variables.number;
       if (readErrors.includes(number)) {
@@ -601,11 +643,12 @@ async function evaluate(pr, events = [], options = {}) {
   process.env.MERGE_STATE_RETRY_MS = "0";
   process.env.COPILOT_ASK_WAIT_MS = String(askWaitMs);
   process.env.COPILOT_ASK_POLL_MS = String(askPollMs);
+  process.env.COPILOT_ASK_REREAD_MS = String(askRereadMs);
   try {
     await run(github, context, core, getOctokit);
   } catch (error) {
     // What the run did before it threw, for tests of a run that ends early.
-    error.observed = { updates, reads, logs };
+    error.observed = { updates, reads, logs, order, requests };
     throw error;
   }
   return {
@@ -1507,6 +1550,145 @@ test("the settle time is 30 seconds, and the 5-minute grace and its timeline que
   assert.ok(!/\bgraceState\b/.test(source), "graceState is gone");
   assert.ok(!/reviewableEvents|READY_FOR_REVIEW_EVENT/.test(source), "the reviewable-events query is gone");
   assert.ok(!/5-minute grace/.test(source), "the 5-minute grace wording is gone");
+});
+
+// Many events start a run for one PR within seconds, and the workflow has no
+// concurrency group, so two runs can both read "no record", both post one and
+// both request. Each run re-reads the comments after posting its record and
+// only the run whose record is listed first makes the request (mpaulosky/dotfiles#369).
+test("doesn't request Copilot's review when a second run's record is earlier than its own (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, addedLabels, merges, order } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50 });
+
+  assert.equal(asked.length, 1, "it still posts its record: the read before it showed none");
+  assert.deepEqual(requests, [], "the earlier run makes the request");
+  assert.deepEqual(addedLabels, [], "the earlier run reads the request back and calls in Claude");
+  assert.deepEqual(merges, []);
+  assert.ok(!order.includes("request"), order.join(","));
+});
+
+test("requests Copilot's review once when a second run's record is later than its own (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, addedLabels } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: 50 });
+
+  assert.equal(asked.length, 1);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("re-reads the PR after posting its record and before it requests (mpaulosky/dotfiles#369)", async () => {
+  const { order } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: 50 });
+  const record = order.indexOf("record");
+  const request = order.indexOf("request");
+  const reRead = order.indexOf("re-read");
+
+  assert.ok(record !== -1 && request !== -1, order.join(","));
+  assert.ok(reRead > record && reRead < request, order.join(","));
+});
+
+test("an earlier record from someone else doesn't make the run stand down: only github-actions' and the owner's records count (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50, rivalLogin: "stranger" });
+
+  assert.equal(asked.length, 1);
+  assert.equal(requests.length, 1);
+});
+
+test("an earlier record from the owner makes the run stand down too (mpaulosky/dotfiles#369)", async () => {
+  const { requests, addedLabels } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50, rivalLogin: OWNER });
+
+  assert.deepEqual(requests, []);
+  assert.deepEqual(addedLabels, []);
+});
+
+test("the losing run in a sweep asks nothing more of Copilot and its second pass over the PR adds no request (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests } = await evaluate(readyPr(unreviewed), [], { push: true, openPrs: [7, 7], rivalOffsetMs: -50 });
+
+  assert.equal(asked.length, 1);
+  assert.deepEqual(requests, []);
+});
+
+test("retries the re-read when its own record doesn't show yet and requests once it does (mpaulosky/dotfiles#369)", async () => {
+  const { requests, order } = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 1 });
+
+  assert.equal(requests.length, 1);
+  assert.equal(order.filter((step) => step === "re-read").length, 2, order.join(","));
+});
+
+test("retries the re-read when it throws and requests once a read works (mpaulosky/dotfiles#369)", async () => {
+  const { requests, order } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 1 });
+
+  assert.equal(requests.length, 1);
+  assert.equal(order.filter((step) => step === "re-read").length, 2, order.join(","));
+});
+
+test("makes no request when its own record never shows in the re-reads, and says so (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, order, logs } = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3 });
+
+  assert.equal(asked.length, 1, "the record stays");
+  assert.deepEqual(requests, []);
+  assert.equal(order.filter((step) => step === "re-read").length, 3, order.join(","));
+  assert.ok(logs.some((line) => /Couldn't find this run's record of the ask/.test(line)), logs.join("\n"));
+});
+
+test("makes no request when every re-read throws, and says so (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, logs } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3 });
+
+  assert.equal(asked.length, 1, "the record stays");
+  assert.deepEqual(requests, []);
+  assert.ok(logs.some((line) => /Couldn't re-read PR #7 after recording the ask/.test(line)), logs.join("\n"));
+});
+
+// An error that ends a run: a 429 (rate limit) or a 401 (bad token).
+const endsRunWith = (status) => Object.assign(new Error(status === 429 ? "Rate limited" : "Bad credentials"), { status });
+
+for (const status of [429, 401]) {
+  test(`a sweep whose re-read fails with a ${status} ends the run at once: no retry and no request (mpaulosky/dotfiles#369)`, async () => {
+    await assert.rejects(
+      () => evaluate(readyPr(unreviewed), [], { push: true, reReadErrors: 3, reReadError: endsRunWith(status) }),
+      (error) => {
+        assert.equal(error.status, status);
+        assert.deepEqual(error.observed.requests, []);
+        assert.equal(error.observed.order.filter((step) => step === "re-read").length, 1, error.observed.order.join(","));
+        return true;
+      }
+    );
+  });
+
+  test(`a PR event whose re-read fails with a ${status} doesn't retry it, makes no request and warns (mpaulosky/dotfiles#369)`, async () => {
+    const { asked, requests, order, logs } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3, reReadError: endsRunWith(status) });
+
+    assert.equal(asked.length, 1, "the record stays");
+    assert.deepEqual(requests, []);
+    assert.equal(order.filter((step) => step === "re-read").length, 1, order.join(","));
+    assert.ok(logs.some((line) => /Couldn't re-read PR #7 after recording the ask/.test(line)), logs.join("\n"));
+  });
+}
+
+test("finds its own record by its id: another run's visible record doesn't stand in for a hidden one (mpaulosky/dotfiles#369)", async () => {
+  const hidden = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3, rivalOffsetMs: 50 });
+
+  assert.deepEqual(hidden.requests, []);
+  assert.equal(hidden.order.filter((step) => step === "re-read").length, 3, hidden.order.join(","));
+  assert.ok(hidden.logs.some((line) => /Couldn't find this run's record of the ask/.test(line)), hidden.logs.join("\n"));
+
+  const lagging = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 1, rivalOffsetMs: 50 });
+
+  assert.equal(lagging.requests.length, 1, "its own record shows on the second read and is listed first");
+});
+
+test("the record listed first wins whatever the createdAt says, and a tie goes to the one listed first (mpaulosky/dotfiles#369)", async () => {
+  const tieRivalFirst = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: 0, rivalFirst: true });
+  const tieOwnFirst = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: 0, rivalFirst: false });
+  const rivalListedFirstButStamped = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: 50, rivalFirst: true });
+
+  assert.deepEqual(tieRivalFirst.requests, []);
+  assert.equal(tieOwnFirst.requests.length, 1);
+  assert.deepEqual(rivalListedFirstButStamped.requests, [], "listed first, stamped later: GitHub's order decides, as it does for every run");
+});
+
+test("pauses between the re-reads (mpaulosky/dotfiles#369)", async () => {
+  const started = Date.now();
+  await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3, askRereadMs: 40 });
+
+  assert.ok(Date.now() - started >= 70, "two pauses of 40 ms");
 });
 
 test("asks for the PR's last 100 comments with their author, body and time, and not the reviewable events (mpaulosky/dotfiles#360)", async () => {

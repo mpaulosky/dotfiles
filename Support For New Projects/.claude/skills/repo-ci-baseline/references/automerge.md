@@ -96,7 +96,10 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   covering it and no record of an ask, and the PR is below the cap, the run asks Copilot for its review of the PR once.
   It posts a comment holding `<!-- pr-automerge:copilot-asked -->` (the record, `COPILOT_ASKED_MARKER`; written before the request, with `GITHUB_TOKEN`),
   requests the review with the PAT (GraphQL `requestReviewsByLogin`, as Sandcastle does), and reads the request back for up to `COPILOT_ASK_WAIT_MS` (30 seconds, polling every 5).
-  Only a record by `github-actions` or the repository owner counts, and the first one decides. A comment that fails to post means no request, and a request that fails
+  Two runs can both post one, so the run then reads the PR's comments again (up to three times, `COPILOT_ASK_REREADS`, `COPILOT_ASK_REREAD_MS` apart, if its own record doesn't show or the read fails;
+  a rate limit or a bad token ends the retries, and a sweep's run) and requests only if its own record is listed first (#369);
+  a run whose record isn't first stands down, and one that never finds its own record leaves the request unmade.
+  Only a record by `github-actions` or the repository owner counts, and the first one listed decides. A comment that fails to post means no request, and a request that fails
   counts as dropped at once. A record that can't be read (the comments query is the last 100 comments; more than that with no record among them) counts as asked but not settled:
   nothing asks, and nothing is called dropped. Copilot is never asked again for the PR: a later head with no pending request goes straight to the next bullet,
   because the record is long settled. A request that registers (the ruleset's own per push, or a budget that came back) is waited for, and a real Copilot review of the head

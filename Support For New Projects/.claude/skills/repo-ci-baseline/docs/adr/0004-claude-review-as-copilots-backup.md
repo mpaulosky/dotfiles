@@ -49,9 +49,12 @@ This update replaces the grace (mpaulosky/dotfiles#360). PR Auto-Merge and `land
    no pending Copilot request and no record of an ask, the tool writes the record, requests Copilot's review and reads the request back.
    Nothing asks Copilot for that PR again: not for a later head, and not after `update-branch`.
 2. **The record is a PR comment** holding `<!-- pr-automerge:copilot-asked -->`, written before the request so a crash between them can't make a second ask.
+   Two PR Auto-Merge runs can both post one, so the workflow's run reads the PR's comments again and only the run whose record is listed first (oldest first, the order
+   every run reads) makes the request (mpaulosky/dotfiles#369). GraphQL can lag behind the REST write, so a read that fails or doesn't show the run's own record is tried up to three times
+   (not after a rate limit or a bad token) before the request is left unmade. `land.sh` doesn't re-read.
    Only a comment by `github-actions` (the workflow's `GITHUB_TOKEN`) or by the repository owner (`land.sh`, through the owner's `gh` login) counts:
    anyone can comment the marker, which would otherwise switch the fallback on, the same stance as the Dependabot rebase marker.
-   The first record decides. The request itself is made with the PAT (`RELEASE_PR_PAT`), which GitHub should treat as a person's.
+   The record listed first decides. The request itself is made with the PAT (`RELEASE_PR_PAT`), which GitHub should treat as a person's.
 3. **Copilot can't review the head** when its quota note is on it, or when the record exists and has settled (30 seconds old, or written by this very run, which read the request back)
    and the head has neither a real Copilot review nor a pending Copilot request. A request that threw counts as dropped at once.
    A pending request always means keep waiting, and a request list the run can't read counts as pending.
@@ -73,7 +76,9 @@ Accepted costs:
 
 - A push after the record exists can be evaluated before the ruleset's own request for it registers, so Copilot is briefly gone. That matters only when the head's required checks are already green,
   and then costs one Claude review; a pending request still blocks the gate, and a real Copilot review still takes the label off.
-- Two askers at once (two events, or `land.sh` and the workflow) can post two records and send two requests. GitHub ignores a repeat request and the first record decides.
+- Two PR Auto-Merge runs at once post two records but only one sends the request. Two requests remain possible when `land.sh` and the workflow ask at once (`land.sh` doesn't re-read),
+  or when a rival's record isn't visible yet to the run that re-reads. GitHub ignores a repeat request, and the record listed first decides. A run whose own record never shows
+  in the re-reads makes no request and leaves its record, so about 30 seconds later Claude is called in although Copilot wasn't asked; the loser of a race also leaves a record behind.
 - `reapply.sh` still asks per head and writes no record, and Sandcastle's own re-request sweep and the ruleset's `review_on_push` are unchanged.
   Turning `review_on_push` off where there is no budget is the owner's call, not made here.
 

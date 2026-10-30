@@ -49,8 +49,9 @@ name: PR Auto-Merge
 # Copilot's review of a PR's first reviewable head itself, once: it posts a
 # comment holding COPILOT_ASKED_MARKER (the record of the ask), reads the PR's
 # comments again, up to three times if its own record doesn't show (two runs can
-# both post one; only the run whose record is listed first goes on,
-# mpaulosky/dotfiles#369), requests the
+# both post one; a run whose record is listed after another's stands down,
+# mpaulosky/dotfiles#369; one whose record never shows requests anyway, since a
+# repeat request is idempotent, mpaulosky/dotfiles#374), requests the
 # review with the PAT, and reads the request back for up to COPILOT_ASK_WAIT_MS.
 # A request that fails or doesn't register counts as dropped at once, and a
 # record COPILOT_ASK_SETTLE_MS old with no review of the head and no request
@@ -1398,10 +1399,12 @@ jobs:
             // request (the PAT) and reads the request back, so the caller can
             // act on the outcome at once instead of waiting for an event: a
             // dropped request brings none. In between it reads the comments
-            // again and goes on only when its own record is listed first.
-            // Returns whether it asked, in which case the caller reads the PR
-            // again; false also when it stood down or never found its own
-            // record, with the record left behind. Never asked again for a
+            // again and stands down when another run's record is listed first;
+            // when its own record never shows it makes the request anyway
+            // (mpaulosky/dotfiles#374). Returns whether it asked, in which
+            // case the caller reads the PR again; false also when it stood
+            // down or a rate limit or bad token ended the re-reads, with the
+            // record left behind. Never asked again for a
             // later head: the record stays on the PR (mpaulosky/dotfiles#360).
             async function askCopilotOnce(pullNumber, pr) {
               if (copilotAsk(pr).state !== "none" || copilotAnsweredHead(pr) || copilotPending(pr) || !pr.id) {
@@ -1431,14 +1434,20 @@ jobs:
               // listed first makes the request (mpaulosky/dotfiles#369). GraphQL
               // can lag behind the REST write, so a read that fails or doesn't
               // show this run's record is tried again, up to COPILOT_ASK_REREADS
-              // times; if none shows it, the request is left unmade: the record
-              // stays, so nothing asks later. A rival's record that GraphQL
-              // doesn't show yet isn't retried: it can't be told from there
-              // being none, so a lag that long can still let both runs request,
-              // which GitHub treats as one request. A run that stands down
-              // leaves its own record behind, so the PR can hold two.
+              // times; if none shows it, the request is made anyway
+              // (mpaulosky/dotfiles#374): a repeat request with union: true is
+              // idempotent, so the worst case is a second request, never a
+              // second review, and it costs less than leaving the ask unmade and
+              // calling in Claude for a PR Copilot was never asked to review. A
+              // rate limit or a bad token that ends the run makes no request. A
+              // rival's record that GraphQL doesn't show yet isn't retried: it
+              // can't be told from there being none, so a lag that long can
+              // still let both runs request, which GitHub treats as one request.
+              // A run that stands down leaves its own record behind, so the PR
+              // can hold two.
               let ownPosition = -1;
               let lastFailure = "";
+              let runEnded = false;
               for (let attempt = 1; attempt <= COPILOT_ASK_REREADS && ownPosition === -1; attempt++) {
                 if (attempt > 1) {
                   await new Promise((resolve) => setTimeout(resolve, COPILOT_ASK_REREAD_MS));
@@ -1455,15 +1464,19 @@ jobs:
                   lastFailure = error.message;
                   // A rate limit or a bad token holds for the whole run: reading again can't help.
                   if (endsRun(error)) {
+                    runEnded = true;
                     break;
                   }
                 }
               }
+              if (runEnded) {
+                core.warning(`Couldn't re-read PR #${pullNumber} after recording the ask for Copilot's review, so it wasn't made: ${lastFailure}`);
+                return false;
+              }
               if (ownPosition === -1) {
                 core.warning(lastFailure
-                  ? `Couldn't re-read PR #${pullNumber} after recording the ask for Copilot's review, so it wasn't made: ${lastFailure}`
-                  : `Couldn't find this run's record of the ask for Copilot's review of PR #${pullNumber}, so it wasn't made.`);
-                return false;
+                  ? `Couldn't re-read PR #${pullNumber} after recording the ask for Copilot's review, so the request is made anyway: ${lastFailure}`
+                  : `Couldn't find this run's record of the ask for Copilot's review of PR #${pullNumber}, so the request is made anyway.`);
               }
               if (ownPosition > 0) {
                 core.info(`Another run recorded the ask for Copilot's review of PR #${pullNumber} first, so that run makes the request.`);
@@ -1487,17 +1500,28 @@ jobs:
                 return true;
               }
               // Read the request back: GitHub accepts the call and registers
-              // nothing once the Copilot code review budget is used up.
+              // nothing once the Copilot code review budget is used up. The
+              // request is made by now, so a read that fails (the re-reads may
+              // have failed too) doesn't undo it: the caller still reads the PR
+              // again, and only a sweep ends on an error that ends the run.
               const deadline = Date.now() + COPILOT_ASK_WAIT_MS;
               let registered = false;
-              do {
-                await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(COPILOT_ASK_POLL_MS, deadline - Date.now()))));
-                const seen = await getPullRequestStatus(pullNumber);
-                if (!seen || seen.headRefOid !== pr.headRefOid) {
-                  break;
+              try {
+                do {
+                  await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(COPILOT_ASK_POLL_MS, deadline - Date.now()))));
+                  const seen = await getPullRequestStatus(pullNumber);
+                  if (!seen || seen.headRefOid !== pr.headRefOid) {
+                    break;
+                  }
+                  registered = copilotPending(seen) || copilotAnsweredHead(seen);
+                } while (!registered && Date.now() < deadline);
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
                 }
-                registered = copilotPending(seen) || copilotAnsweredHead(seen);
-              } while (!registered && Date.now() < deadline);
+                core.warning(`Couldn't read PR #${pullNumber} back after requesting Copilot's review, so the request is taken as made: ${error.message}`);
+                return true;
+              }
               core.info(registered
                 ? `Copilot's review request for PR #${pullNumber} registered.`
                 : `Copilot's review request for PR #${pullNumber} didn't register (GitHub drops it once the Copilot code review budget is used up).`);

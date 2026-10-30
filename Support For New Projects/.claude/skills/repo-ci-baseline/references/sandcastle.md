@@ -304,6 +304,10 @@ Apply writes `.sandcastle/check.sh` only where a repo has none, as it does for e
 doesn't run `check:sandcastle` for an edit that touches only `.claude/skills/hardening-review/`: an existing repo copies the new pathspec by hand from the Seed's `check.sh`
 (`.claude/skills/pre-push-review`, `.claude/skills/hardening-review`, `.claude/agents/pre-push-reviewer.md` and `.github/workflows/claude-review.yml`).
 
+`check.sh` unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` itself. `scripts/gate.sh` already unsets `git rev-parse --local-env-vars` before every check,
+so a run through `gate-checks.sh` is covered, but a `GATE_COMMAND` that names `check.sh` runs it without `gate.sh`, possibly under a git hook. An old copy lacks the line:
+an existing repo copies it by hand from the Seed's `check.sh`.
+
 Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES
 list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and
 `lib/config.test.mts` fails while the repo has the `ui` entry but lacks the bullet or the `{{UI_DEVELOPER}}` line.

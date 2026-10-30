@@ -6,6 +6,9 @@
 #
 #   .sandcastle/check.sh <merge-base>
 set -euo pipefail
+# Under a git hook git sets these, and a GATE_COMMAND naming this script runs it without scripts/gate.sh,
+# which unsets them before every check: the tests' scratch repos and the diff below would act on the wrong repo.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
 base="${1-}"
 if [[ -n "$base" ]] && git diff --quiet --no-renames "$base" HEAD -- .sandcastle package.json ':(glob)pnpm-*.yaml' \
   scripts/review.sh .claude/skills/pre-push-review .claude/skills/hardening-review .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml; then

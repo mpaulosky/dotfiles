@@ -11,7 +11,8 @@ and the landing decision's next action (github/landing.py), then a
 `notice:` naming the resolved Copilot or Claude Review threads nobody replied to. One GraphQL query
 per repo, plus one for each PR whose threads are all resolved and that Copilot or Claude Review reviewed (it reads the
 thread comments the notice needs; they would cost far more in the repo query), and one for each open, ready PR whose head
-Copilot hasn't reviewed and isn't asked for (the last 100 comments, for the record that Copilot was asked), read-only. Prints nothing else, apart from one line when no PR is
+Copilot hasn't reviewed and isn't asked for, or whose review loop could be exhausted (the last 100 comments, for the
+record that Copilot was asked and PR Auto-Merge's exhaustion comment), read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
 
 Every listed repo requires checks and runs PR Auto-Merge, which merges a
@@ -24,10 +25,11 @@ import json
 import subprocess
 import sys
 import time
+from datetime import datetime
 
-from landing import (COPILOT, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check, PrState, Thread, claude_off_diff, claude_reviews,
-                     copilot_ask, copilot_declined, copilot_reviews, decide, is_claude_review, summarize_checks,
-                     unreplied_notice, unreplied_threads)
+from landing import (COPILOT, EXHAUSTED_MARKER, GITHUB_ACTIONS, MAX_CLAUDE_ROUNDS, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check,
+                     PrState, Thread, claude_off_diff, claude_reviews, copilot_ask, copilot_declined, copilot_reviews, decide,
+                     is_claude_review, review_rounds, summarize_checks, trailing_dirty, unreplied_notice, unreplied_threads)
 from settings import read_repo_list
 
 QUERY = """
@@ -38,12 +40,13 @@ query($owner: String!, $name: String!) {
         id number title state isDraft headRefName headRefOid mergeStateStatus
         autoMergeRequest { enabledAt }
         labels(first: 20) { nodes { name } }
+        timelineItems(last: 30, itemTypes: [LABELED_EVENT]) { nodes { ... on LabeledEvent { createdAt label { name } } } }
         reviewRequests(first: 20) { nodes { requestedReviewer {
           ... on Bot { login }
           ... on User { login }
           ... on Team { name }
         } } }
-        reviews(last: 100) { nodes { author { login } commit { oid parents { totalCount } } body } }
+        reviews(last: 100) { nodes { author { login } commit { oid parents { totalCount } } body submittedAt comments { totalCount } } }
         reviewThreads(first: 100) { nodes { isResolved } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
@@ -56,7 +59,8 @@ query($owner: String!, $name: String!) {
 }
 """
 
-# The last 100 comments of one PR, for the record that Copilot was asked (mpaulosky/dotfiles#360).
+# The last 100 comments of one PR, for the record that Copilot was asked (mpaulosky/dotfiles#360) and PR Auto-Merge's
+# comment on an exhausted review loop (mpaulosky/dotfiles#375).
 COMMENTS_QUERY = """
 query($id: ID!) {
   node(id: $id) {
@@ -123,6 +127,25 @@ def needs_record(node):
     return node["headRefOid"] not in copilot_reviews(reviews)
 
 
+def could_be_exhausted(node):
+    """Whether the PR's review loop could be exhausted: MAX_CLAUDE_ROUNDS dirty rounds in a row, before any restart.
+
+    Claude's reviews count here as if Copilot were gone unless a request is pending, since only the comments say
+    whether it is; the exact answer is to_state()'s.
+    """
+    requested = any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested_reviewers(node))
+    declined = copilot_declined([((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"))
+                                 for review in node["reviews"]["nodes"]])
+    return trailing_dirty(review_rounds(review_records(node), declined, not requested or node["headRefOid"] in declined)) >= MAX_CLAUDE_ROUNDS
+
+
+def needs_comments(node):
+    """Whether the PR's comments are read: for the record of Copilot's ask (needs_record) or for its review loop's exhaustion comment."""
+    if node.get("state") != "OPEN":
+        return False
+    return needs_record(node) or (not node.get("isDraft") and could_be_exhausted(node))
+
+
 def gh_graphql(owner, name):
     """The query's data for one repo, through `gh api graphql`.
 
@@ -135,20 +158,23 @@ def gh_graphql(owner, name):
     failure for a PR is reported on stderr.
 
     QUERY reads no comments either. A PR that needs the record that Copilot was
-    asked (needs_record) gets COMMENTS_QUERY (1 point) and its node a "comments"
-    key; a failed query sets it to None, which to_state reads as a record nobody
-    can see: neither asked nor called dropped. The first failure is reported.
+    asked (needs_record), or whose review loop could be exhausted
+    (could_be_exhausted: PR Auto-Merge's exhaustion comment decides), gets
+    COMMENTS_QUERY (1 point) and its node a "comments" key; a failed query sets
+    it to None, which to_state reads as a record nobody can see: neither asked
+    nor called dropped, and the loop never exhausted. The first failure is reported.
     """
     data = graphql(QUERY, f"owner={owner}", f"name={name}")
     for node in data["repository"]["pullRequests"]["nodes"]:
-        if needs_record(node):
+        if needs_comments(node):
             try:
                 node["comments"] = graphql(COMMENTS_QUERY, id=node["id"])["node"]["comments"]
             except Exception as error:  # noqa: BLE001 - an unread record fails closed, it mustn't make the repo unreadable
                 node["comments"] = None
                 if ("record", node["id"]) not in COMMENTS_FAILED:
                     COMMENTS_FAILED.add(("record", node["id"]))
-                    sys.stderr.write(f"{owner}/{name}#{node.get('number')}: comments unreadable, Copilot neither asked nor called gone: {error!r}\n")
+                    sys.stderr.write(f"{owner}/{name}#{node.get('number')}: comments unreadable, Copilot neither asked nor called gone, "
+                                     f"its review loop not called exhausted: {error!r}\n")
         threads = node["reviewThreads"]["nodes"]
         if threads and all(thread["isResolved"] for thread in threads) and bot_reviewed(node):
             try:
@@ -225,6 +251,54 @@ def asked_copilot(node, owner, now):
     return found
 
 
+def review_records(node):
+    """The reviews of QUERY's node as review_rounds() reads them: (login, oid, body, submittedAt, inline thread count, is a merge)."""
+    return [((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"),
+             review.get("submittedAt"), (review.get("comments") or {}).get("totalCount", 0),
+             ((review.get("commit") or {}).get("parents") or {}).get("totalCount", 1) > 1)
+            for review in node["reviews"]["nodes"]]
+
+
+def instant(text):
+    """An ISO-8601 time as epoch seconds; -inf when it is missing or unreadable, which sorts before every time."""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return float("-inf")
+
+
+def review_loop(node, rounds):
+    """(rounds, exhaustion_marker_newest, loop_unread) for a node's review rounds, cut at the owner's re-add of review:claude.
+
+    PR Auto-Merge's exhaustion comment (github-actions, EXHAUSTED_MARKER) is read from the node's "comments"; the newest
+    one decides. The loop restarts at the first review:claude added after it, which is the owner's re-add (PR Auto-Merge's
+    own later adds mustn't restart it): only rounds submitted after that count. Comments or label events that can't be
+    read make the loop unread when it could be exhausted, so it never is (reviewLoopState does the same).
+    """
+    could_be = trailing_dirty(rounds) >= MAX_CLAUDE_ROUNDS
+    comments = node.get("comments")
+    events = (node.get("timelineItems") or {}).get("nodes")
+    if comments is None:
+        return rounds, False, could_be
+    nodes = [comment or {} for comment in comments.get("nodes") or []]
+    markers = [comment for comment in nodes
+               if ((comment.get("author") or {}).get("login") or "").removesuffix("[bot]") == GITHUB_ACTIONS
+               and EXHAUSTED_MARKER in (comment.get("body") or "")]
+    if not markers:
+        # More comments than were read and no record among them: it may be on a page that wasn't read.
+        return rounds, False, could_be and comments.get("totalCount", len(nodes)) > len(nodes)
+    if events is None:
+        return rounds, False, could_be
+    marker_at = instant(markers[-1].get("createdAt"))
+    restart = next((event for event in events
+                    if ((event or {}).get("label") or {}).get("name") == REVIEW_CLAUDE and instant(event.get("createdAt")) > marker_at),
+                   None)
+    if restart is None:
+        return rounds, True, False
+    restart_at = instant(restart.get("createdAt"))
+    return tuple(item for item in rounds if instant(item.at) > restart_at), False, False
+
+
 def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, copilot_dropped=False, owner="",
              now=None):
     """A PrState from one pullRequests node of QUERY.
@@ -242,19 +316,24 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
                for review in node["reviews"]["nodes"]]
     # Copilot is requested as a Bot; a login or a team name, like reapply.sh's copilot_jq.
     requested = requested_reviewers(node)
+    copilot_is_requested = any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested)
     labels = {label["name"] for label in (node.get("labels") or {}).get("nodes", []) if label}
+    declined = copilot_declined(reviews)
+    # Copilot can't review the PR (landing.PrState.claude_backed): Claude's review of any commit then counts as a round.
+    gone = copilot_dropped or (asked and settled and not copilot_is_requested) or node["headRefOid"] in declined
+    rounds, marker_newest, unread = review_loop(node, review_rounds(review_records(node), declined, gone))
     return PrState(
         state=node["state"],
         draft=node["isDraft"],
         head=node["headRefOid"],
         copilot_reviewed=copilot_reviews(reviews),
-        copilot_declined=copilot_declined(reviews),
-        # Merge commits don't count toward PR Auto-Merge's cap.
-        merge_commits=frozenset(review["commit"]["oid"] for review in node["reviews"]["nodes"]
-                                if ((review.get("commit") or {}).get("parents") or {}).get("totalCount", 1) > 1),
+        copilot_declined=declined,
+        rounds=rounds,
+        exhaustion_marker_newest=marker_newest,
+        loop_unread=unread,
         claude_reviewed=claude_reviews(reviews),
         claude_off_diff=claude_off_diff(reviews),
-        copilot_requested=any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested),
+        copilot_requested=copilot_is_requested,
         claude_requested=REVIEW_CLAUDE in labels,
         copilot_dropped=copilot_dropped,
         copilot_asked=asked,

@@ -24,12 +24,17 @@ skill lands PRs by (references/automerge.md):
   enough to take it to Claude (mpaulosky/dotfiles#360).
   Only then is review:claude added, and only once the head has at least one check other than Claude
   Review's own and every such check is green: a Claude review costs money,
-  and one of a head that fails CI is wasted. Never past MAX_CLAUDE_ROUNDS
-  commits Claude reviewed on the PR: after those the owner decides;
-- past PR Auto-Merge's review cap (REVIEW_CAP distinct reviewed commits, in a
-  repo whose workflow merges; re-Apply PRs included, since #174) neither
-  reviewer is asked for: the workflow no longer waits for a review of the
-  head, so the PR goes on to its threads and checks like a reviewed one;
+  and one of a head that fails CI is wasted. Never while PR Auto-Merge's
+  exhaustion comment is the newest word on the PR (exhaustion_marker_newest):
+  the owner adds the label again to start a new loop;
+- the review loop (mpaulosky/dotfiles#375) is exhausted after MAX_CLAUDE_ROUNDS
+  dirty rounds in a row, in a repo whose workflow merges (re-Apply PRs
+  included, since #174). A round is a review of a non-merge commit (a merge of
+  main is never one), dirty when it raised a thread or an off-diff finding.
+  Neither reviewer is asked for then, and the workflow documents the loop in
+  one comment and lets the PR merge: it no longer waits for a review of the
+  head, nor holds on the threads and off-diff findings still open, so the PR
+  goes on to its checks and is left to the workflow;
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note,
@@ -40,7 +45,7 @@ skill lands PRs by (references/automerge.md):
 - where the repo requires no checks (dotfiles), auto-merge wouldn't wait for
   CI, so the checks must finish green first;
 - in a Baseline repo, its own PR Auto-Merge workflow merges a reviewed PR
-  through the API once its checks pass (and past the review cap), and it
+  through the API once its checks pass (and at an exhausted review loop), and it
   never arms native auto-merge: so the PR is left to it, never armed around it;
 - a release-blog PR (release.yml's or backfill-blog-posts.yml's branch) is
   armed as soon as it is open and not blocked, without Copilot's review, as
@@ -91,21 +96,18 @@ COPILOT_ASKED_COMMENT = ("Copilot's review was requested for this PR. It is aske
 # label cancels a run in progress and its next add starts a fresh one, so a
 # cancelled run of these needs no rerun, and they don't gate calling it in.
 CLAUDE_CHECKS = frozenset({"Check for a merge from main", "Review with Claude", "Post Claude's review"})
-# The owner's cost rule: at most this many Claude review rounds on one PR. The
-# review cap's 3, so a fix for a second round's findings is reviewed too (#193):
-# Claude reviews every push while review:claude is on, until a review comes
-# back clean. PR Auto-Merge calls in Claude too, when Copilot's quota note is
-# the head's only review (#190) or Copilot was asked and its request didn't
-# register within 30 seconds (mpaulosky/dotfiles#360), and takes review:claude off once Claude has
-# reviewed this many commits: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must
-# match these.
+# The owner's cost rule: the dirty rounds in a row, Copilot's and Claude's
+# together, after which the PR's review loop is exhausted (mpaulosky/dotfiles#375).
+# 3, so a fix for a second round's findings is reviewed too (#193): Claude
+# reviews every push while review:claude is on, until a review comes back clean.
+# PR Auto-Merge calls in Claude too, when Copilot's quota note is the head's only
+# review (#190) or Copilot was asked and its request didn't register within 30
+# seconds (mpaulosky/dotfiles#360), and takes review:claude off at an exhausted
+# loop: its MAX_CLAUDE_ROUNDS and CLAUDE_CHECKS must match these.
 MAX_CLAUDE_ROUNDS = 3
-# PR Auto-Merge's shared review cap: must match COPILOT_REVIEW_CAP in the
-# Template's pr-automerge.yml. Past it, the workflow stops waiting for a review
-# of the head (it still holds on open threads). It counts distinct non-merge
-# commits Copilot and Claude reviewed, and so does past_review_cap: with
-# MAX_CLAUDE_ROUNDS equal to it, counting merges too would report the cap for a
-# PR the workflow leaves to the owner (mpaulosky/dotfiles#193).
+# The Template's pr-automerge.yml keeps this under its old name, COPILOT_REVIEW_CAP,
+# because github-settings.sh reads it, and must match it. It equals
+# MAX_CLAUDE_ROUNDS and bounds nothing here: loop_exhausted uses that.
 REVIEW_CAP = 3
 
 # The head branches release.yml and backfill-blog-posts.yml open their blog PRs from.
@@ -210,7 +212,11 @@ def unreplied_notice(pr):
 
 @dataclass(frozen=True)
 class Round:
-    """One review round: a counted review of a non-merge commit (see review_rounds())."""
+    """One review round: a counted review of a non-merge commit (see review_rounds()).
+
+    at is the submission time of the commit's latest counted review, as GitHub
+    reports it (an ISO-8601 timestamp).
+    """
 
     oid: str
     dirty: bool
@@ -218,11 +224,47 @@ class Round:
 
 
 def review_rounds(records, declined, gone):
-    raise NotImplementedError("Not implemented")
+    """The PR's review rounds, oldest first, as a tuple of Round.
+
+    records are (author login, commit oid, body, submittedAt, inline thread
+    count, is a merge) tuples, in the order GitHub lists reviews (oldest first).
+    A review counts when it is Copilot's own (not its quota note), or Claude
+    Review's as Copilot's backup: Claude's review counts when Copilot answered
+    that commit with its quota note (declined holds its oid) or Copilot can't
+    review the PR now (gone: its quota note is on the head, or its request
+    didn't register). A round is one non-merge commit; a review of a merge
+    commit, a merge of main included, is never a round. A round is dirty when
+    any of its counted reviews raised an inline thread or, for Claude, findings
+    outside the diff, and sits where its latest counted review does. PR
+    Auto-Merge's reviewRounds() does the same.
+    """
+    by_commit = {}
+    for login, oid, body, at, comments, merge in records:
+        if not login or not oid or merge:
+            continue
+        if COPILOT.search(login):
+            if COPILOT_NO_REVIEW.match(body or ""):
+                continue
+            off_diff = False
+        elif is_claude_review(login, oid, body):
+            if not (gone or oid in declined):
+                continue
+            off_diff = (body or "").split("\n")[1:2] == [OFF_DIFF_MARKER]
+        else:
+            continue
+        earlier = by_commit.pop(oid, None)
+        by_commit[oid] = Round(oid, bool(comments) or off_diff or bool(earlier and earlier.dirty), at or "")
+    return tuple(by_commit.values())
 
 
 def trailing_dirty(rounds):
-    raise NotImplementedError("Not implemented")
+    """How many of the newest rounds in a row were dirty."""
+    count = 0
+    for round_ in reversed(rounds):
+        if not round_.dirty:
+            break
+        count += 1
+    return count
 
 
 @dataclass(frozen=True)
@@ -250,10 +292,15 @@ class PrState:
     notice, not a hold: decide() ignores it.
     copilot_declined: the commit oids Copilot answered with its quota note
     (see copilot_declined()); on the head it calls in Claude. Claude's review
-    of a commit counts when that commit is in copilot_declined, or is the head
-    and copilot_gone (see copilot_blocked).
-    merge_commits: the reviewed commit oids that are merge commits, which don't
-    count toward the review cap.
+    of a commit counts when that commit is in copilot_declined, or Copilot is
+    gone (see claude_backed).
+    rounds: the PR's review rounds since its loop began, oldest first (see
+    review_rounds()); status.py cuts them at the owner's re-add of review:claude
+    after an exhaustion comment.
+    exhaustion_marker_newest: PR Auto-Merge's exhaustion comment is on the PR
+    and review:claude hasn't been added since: no review is asked for.
+    loop_unread: the comments or label events that tell the loop's state
+    couldn't be read, so it is never called exhausted.
     want_ready: the caller's say that a draft should be marked ready.
     merged_by_workflow: the repo's own PR Auto-Merge workflow merges it (a
     Baseline repo), so it is left to that workflow rather than armed.
@@ -272,7 +319,6 @@ class PrState:
     copilot_asked: bool = False
     copilot_ask_settled: bool = False
     copilot_declined: frozenset[str] = field(default_factory=frozenset)
-    merge_commits: frozenset[str] = field(default_factory=frozenset)
     rounds: tuple[Round, ...] = ()
     exhaustion_marker_newest: bool = False
     loop_unread: bool = False
@@ -299,13 +345,16 @@ class PrState:
 
     @property
     def claude_backed(self):
-        """The commit oids whose Claude review counts: Copilot couldn't review the same commit."""
-        return self.claude_reviewed & self.copilot_blocked
+        """The commit oids whose Claude review counts: Copilot couldn't review that commit.
 
-    @property
-    def copilot_blocked(self):
-        """The commit oids Copilot can't review: it posted its quota note, or it is gone from the head (see copilot_gone)."""
-        return self.copilot_declined | ({self.head} if self.copilot_gone and self.head else frozenset())
+        It posted its quota note on it, or Copilot can't review the PR now: its
+        quota note is on the head, or it is gone from it (see copilot_gone).
+        Then Claude's review of any commit counts: the head moves on (a merge
+        of main, a fix) and its earlier reviews stay rounds.
+        """
+        if self.copilot_gone or (self.head and self.head in self.copilot_declined):
+            return self.claude_reviewed
+        return self.claude_reviewed & self.copilot_declined
 
     @property
     def copilot_gone(self):
@@ -323,12 +372,14 @@ class PrState:
 
     @property
     def loop_exhausted(self):
-        raise NotImplementedError("Not implemented")
+        """The review loop is exhausted: MAX_CLAUDE_ROUNDS dirty rounds in a row.
 
-    @property
-    def past_review_cap(self):
-        """PR Auto-Merge no longer waits for a review of the head (see REVIEW_CAP)."""
-        return self.merged_by_workflow and len((self.copilot_reviewed | self.claude_backed) - self.merge_commits) >= REVIEW_CAP
+        PR Auto-Merge then documents the loop in a comment and merges the PR
+        without a review of the head and with threads open. Only a repo whose
+        workflow merges has one, and a loop whose comments or label events
+        couldn't be read is never called exhausted.
+        """
+        return self.merged_by_workflow and not self.loop_unread and trailing_dirty(self.rounds) >= MAX_CLAUDE_ROUNDS
 
 
 @dataclass(frozen=True)
@@ -449,17 +500,24 @@ def decide(pr):
         return Decision(ARM_AUTO_MERGE, "release-blog PR, not armed by its workflow")
     if pr.merge_state == "BEHIND":
         return Decision(UPDATE_BRANCH, "behind main")
-    if not pr.reviewer_on_head and not pr.past_review_cap:
+    exhausted = pr.loop_exhausted
+    if not pr.reviewer_on_head and not exhausted:
         return review_needed(pr, checks)
-    if pr.open_threads:
-        return Decision(WAIT, f"{pr.open_threads} open thread(s)")
-    if pr.head in pr.claude_off_diff:
-        return Decision(WAIT, f"Claude's review of {pr.head[:7]} has findings outside the diff")
+    # An exhausted loop is documented in a comment and merges with its threads
+    # and off-diff findings open: neither holds it (mpaulosky/dotfiles#375).
+    if not exhausted:
+        if pr.open_threads:
+            return Decision(WAIT, f"{pr.open_threads} open thread(s)")
+        if pr.head in pr.claude_off_diff:
+            return Decision(WAIT, f"Claude's review of {pr.head[:7]} has findings outside the diff")
     if checks.running and not pr.checks_required:
         return Decision(WAIT, "no required checks; waiting for: " + ", ".join(checks.running))
-    reviewed = (f"{pr.head_reviewer.capitalize()} reviewed the head" if pr.reviewer_on_head
-                else f"review cap ({REVIEW_CAP}) reached")
-    reason = f"{reviewed}, no open threads" + ("" if checks.green else ", required checks running")
+    if exhausted:
+        reviewed = (f"review loop exhausted ({MAX_CLAUDE_ROUNDS} rounds with findings in a row), ready to merge, "
+                    f"{pr.open_threads} thread(s) left open")
+    else:
+        reviewed = f"{pr.head_reviewer.capitalize()} reviewed the head, no open threads"
+    reason = reviewed + ("" if checks.green else ", required checks running")
     if pr.merged_by_workflow:
         return Decision(HAND_OFF, reason)
     return Decision(ARM_AUTO_MERGE, reason)
@@ -481,8 +539,10 @@ def review_needed(pr, checks):
         if pr.copilot_asked:
             return Decision(WAIT, waiting + "; Copilot was asked, waiting for the request to show")
         return Decision(REQUEST_COPILOT, waiting + "; Copilot not asked yet")
-    if len(pr.claude_reviewed) >= MAX_CLAUDE_ROUNDS:
-        return Decision(WAIT, waiting + f"; Claude's {MAX_CLAUDE_ROUNDS} review rounds are used, the owner decides")
+    # PR Auto-Merge documented an exhausted loop and nobody has added the label
+    # since: automation never adds it then (mpaulosky/dotfiles#375).
+    if pr.exhaustion_marker_newest:
+        return Decision(WAIT, waiting + f"; the review loop was exhausted and documented, add {REVIEW_CLAUDE} to start a new loop")
     running = [name for name in checks.running if name not in CLAUDE_CHECKS]
     if running:
         return Decision(WAIT, waiting + "; waiting for checks before calling in Claude: " + ", ".join(running))

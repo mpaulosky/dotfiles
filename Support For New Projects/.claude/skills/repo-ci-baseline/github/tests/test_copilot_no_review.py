@@ -102,7 +102,7 @@ def reviewed_by_filter(reviews, head="head"):
     return set(run.stdout.split("\n")) - {""}
 
 
-def test_claude_review_counts_in_the_jq_filter_for_a_noted_commit_and_the_head():
+def test_claude_review_counts_in_the_jq_filter_for_every_commit_it_reviewed():
     claude = "<!-- claude-review -->\nNo findings."
     reviews = [
         {"user": {"login": "github-actions[bot]"}, "body": claude, "commit_id": "noted"},
@@ -111,6 +111,6 @@ def test_claude_review_counts_in_the_jq_filter_for_a_noted_commit_and_the_head()
         {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "noted"},
         {"user": {"login": LOGIN}, "body": NOTE, "commit_id": "elsewhere"},
     ]
-    # PR Auto-Merge counts Claude's review of a commit with Copilot's note, and of the head once the grace is over
-    # (mpaulosky/dotfiles#318). An earlier commit without a note isn't listed, so a clean merge of main into it still gets its own review.
-    assert reviewed_by_filter(reviews) == {"noted", "head"}
+    # Every Claude review is listed, whatever its commit (mpaulosky/dotfiles#375): a clean merge of main into any commit
+    # a reviewer reviewed needs no paid review and is no round. Copilot's note itself covers nothing.
+    assert reviewed_by_filter(reviews) == {"noted", "earlier", "head"}

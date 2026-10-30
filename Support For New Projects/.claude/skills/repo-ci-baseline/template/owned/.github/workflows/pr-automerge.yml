@@ -71,8 +71,8 @@ name: PR Auto-Merge
 # comes back clean: no threads and no findings outside the diff, which covers
 # the head and lets the PR merge (mpaulosky/dotfiles#193). A Claude review is a
 # round, and covers a commit, where Copilot can't review: on a commit carrying
-# its quota note, or on any commit once the ask has settled and Copilot has no
-# request pending (copilotGone).
+# its quota note, or on any commit while its note is on the head or the ask has
+# settled and Copilot has no request pending (copilotGone).
 # The run takes review:claude off a PR once Copilot has really reviewed its head
 # (mpaulosky/dotfiles#270): Copilot has budget, and Claude's review would cover
 # nothing. It takes it off at exhaustion too (mpaulosky/dotfiles#170, and
@@ -1044,10 +1044,11 @@ jobs:
             // counts when it is Copilot's own (not its quota note) or Claude's
             // as Copilot's backup: Claude is Copilot's backup only where
             // Copilot can't review, so its review qualifies when Copilot's
-            // quota note is on that same commit, or when Copilot is gone
+            // quota note is on that same commit, or when Copilot can't review
+            // the PR now: its quota note is on the head, or it is gone
             // (copilotGone: asked, the ask settled and no request pending, so
-            // the request didn't register, mpaulosky/dotfiles#360). Gone is a
-            // fact about the PR, not the head: the head moves on (a merge of
+            // the request didn't register, mpaulosky/dotfiles#360). That is a
+            // fact about the PR, not one commit: the head moves on (a merge of
             // main, a fix) and Claude's review of an earlier commit keeps
             // counting as a round and as cover for the merge chain above it.
             // A request list that can't be read, or a request with no reviewer,
@@ -1061,15 +1062,16 @@ jobs:
                 return review.body?.startsWith(CLAUDE_MARKER);
               });
               const copilotReviews = pr.copilotReviews.nodes.filter((review) => !COPILOT_NO_REVIEW.test(review.body ?? ""));
-              const copilotIsGone = copilotGone(pr);
+              // Copilot can't review the PR now: gone, or its quota note is on the head.
               const declinedCommits = new Set(
                 pr.copilotReviews.nodes
                   .filter((review) => COPILOT_NO_REVIEW.test(review.body ?? ""))
                   .map((review) => review.commit?.oid)
                   .filter(Boolean)
               );
+              const copilotCannotReview = copilotGone(pr) || declinedCommits.has(pr.headRefOid);
               const backupReviews = claudeReviews.filter((review) => {
-                return declinedCommits.has(review.commit?.oid) || copilotIsGone;
+                return declinedCommits.has(review.commit?.oid) || copilotCannotReview;
               });
               const counted = [...copilotReviews, ...backupReviews]
                 .filter((review) => review.commit)

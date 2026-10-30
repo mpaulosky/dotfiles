@@ -13,10 +13,11 @@ name: Sandcastle
 #
 # Every trigger of the sandcastle job runs the host code checked out from main,
 # never the event's ref. Its pull request triggers are pull_request_target, so the
-# workflow is main's copy too and a PR with merge conflicts still starts a run. Events can't filter by label name, branch or reviewer,
-# so each job's if: does, and anything else ends as a skipped job. The
-# concurrency group is on the sandcastle job, not the workflow, so a skipped
-# event never takes the pending slot.
+# workflow is main's copy too and a PR with merge conflicts still starts a run.
+# Events can't filter by label name, branch or reviewer, so each job's if: does,
+# and anything else ends as a skipped job. The concurrency group is on the
+# sandcastle job, not the workflow, so a skipped event never takes the pending
+# slot.
 #
 # GITHUB_TOKEN is read-only. Every write goes through SANDCASTLE_GH_TOKEN, the
 # owner's PAT, whose pushes start CI. It has no Workflows permission, so
@@ -64,8 +65,9 @@ jobs:
     # Label events start a run only when the owner adds Sandcastle or removes a
     # hand-back label (from a PR, only one into main), so the labels the host
     # applies itself (sandcastle:ready, bug) end here, and so does the owner's
-    # sandcastle:follow-up (record-head takes that one). A review or CI run counts only for a same-repo issue
-    # branch, so a fork never runs with the secrets.
+    # sandcastle:follow-up (record-head takes that one). A review or CI run
+    # counts only for a same-repo issue branch, so a fork never runs with the
+    # secrets.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || github.event_name == 'schedule'

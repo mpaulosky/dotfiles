@@ -745,7 +745,7 @@ def evaluate(expr, ctx):
         elif rp: py.append(")")
         elif comma: py.append(",")
         elif num: py.append(num)
-        elif name == "startsWith" or name in ("true", "false"):
+        elif name in ("startsWith", "true", "false"):
             py.append({"startsWith": "startsWith", "true": "True", "false": "False"}[name])
         else: py.append(f"ctx.get({name!r}, '')")
     return bool(eval("".join(py), {"__builtins__": {}}, {"ctx": ctx, "startsWith": lambda a, b: str(a).startswith(str(b))}))
@@ -797,8 +797,6 @@ if problems:
     print("\n".join(problems))
     sys.exit(1)
 PY
-grep -qF -- 'unlabeled' "$skill_dir/docs/adr/0009-sandcastle-workflow-is-owned.md" \
-  || fail "ADR 0009 must record why the PR unlabeled trigger is pull_request_target (mpaulosky/dotfiles#368)"
 adr_0009_decisions="$(sed -n '/^## Decisions/,/^## Consequences/p' "$skill_dir/docs/adr/0009-sandcastle-workflow-is-owned.md")"
 for needle in 'unlabeled' 'conflict' 'fork' 'mpaulosky/dotfiles#368'; do
   grep -qiF -- "$needle" <<<"$adr_0009_decisions" \

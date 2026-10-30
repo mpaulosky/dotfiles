@@ -251,6 +251,9 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
 - **A second job, `record-head`, runs on `pull_request_target` `labeled`.** It posts the approved-head comment for the owner's `sandcastle:follow-up` label
   (permissions `{}`, no checkout, no action, a no-op with a warning when the secret is unset), so a hand-off is followed up only in a repo that runs Sandcastle in Actions.
   `pull_request_target`, not `pull_request`, so the job is the one on `main`, not the pull request branch's. `test.sh` pins its guards.
+- **The owner's hand-back unlabel is `pull_request_target` `unlabeled`** (mpaulosky/dotfiles#368), so it re-queues a PR with merge conflicts and runs `main`'s workflow.
+  It starts the `sandcastle` job only for a PR into `main`, the owner as sender and `sandcastle:needs-info` or `sandcastle:needs-human`; it never starts `record-head`.
+  The workflow has no `pull_request` trigger. `test.sh` pins it.
 - **A repo opts in with the `SANDCASTLE_GH_TOKEN` secret** (a fine-grained PAT with Contents, Issues, Pull requests and Actions read and write, and no Workflows permission),
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
   locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
@@ -303,6 +306,10 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 Apply writes `.sandcastle/check.sh` only where a repo has none, as it does for every Seed file, so an existing repo keeps its old copy and Apply does not refresh it. An old copy
 doesn't run `check:sandcastle` for an edit that touches only `.claude/skills/hardening-review/`: an existing repo copies the new pathspec by hand from the Seed's `check.sh`
 (`.claude/skills/pre-push-review`, `.claude/skills/hardening-review`, `.claude/agents/pre-push-reviewer.md` and `.github/workflows/claude-review.yml`).
+
+`check.sh` unsets `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` itself. `scripts/gate.sh` already unsets `git rev-parse --local-env-vars` before every check,
+so a run through `gate-checks.sh` is covered, but a `GATE_COMMAND` that names `check.sh` runs it without `gate.sh`, possibly under a git hook. An old copy lacks the line:
+an existing repo copies it by hand from the Seed's `check.sh`.
 
 Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES
 list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and

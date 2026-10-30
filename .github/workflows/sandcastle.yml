@@ -12,10 +12,12 @@ name: Sandcastle
 # skills it mounts are listed in .github/ci/sandcastle-skills.txt.
 #
 # Every trigger of the sandcastle job runs the host code checked out from main,
-# never the event's ref. Events can't filter by label name, branch or reviewer,
-# so each job's if: does, and anything else ends as a skipped job. The
-# concurrency group is on the sandcastle job, not the workflow, so a skipped
-# event never takes the pending slot.
+# never the event's ref. Its pull request triggers are pull_request_target, so the
+# workflow is main's copy too and a PR with merge conflicts still starts a run.
+# Events can't filter by label name, branch or reviewer, so each job's if: does,
+# and anything else ends as a skipped job. The concurrency group is on the
+# sandcastle job, not the workflow, so a skipped event never takes the pending
+# slot.
 #
 # GITHUB_TOKEN is read-only. Every write goes through SANDCASTLE_GH_TOKEN, the
 # owner's PAT, whose pushes start CI. It has no Workflows permission, so
@@ -23,14 +25,14 @@ name: Sandcastle
 "on":  # zizmor: ignore[dangerous-triggers] workflow_run and pull_request_target run this file as it is on main, and no job checks out or runs PR code.
   issues:
     types: [labeled, unlabeled]
-  pull_request:
-    types: [unlabeled]
-  # The owner's sandcastle:follow-up label starts only the record-head job. pull_request_target, not pull_request, so the
-  # job comes from the PR's base branch, not its head: a pull_request run uses the workflow file of the PR's own branch, with
-  # the secrets, and that branch can be anyone's with push access. For a PR into main that is main's copy; the sweep follows
-  # up only PRs into main, so a record made for a PR into another branch is never read.
+  # labeled: the owner's sandcastle:follow-up label starts only the record-head job. unlabeled: the owner removing
+  # sandcastle:needs-info or sandcastle:needs-human from a PR into main starts only the sandcastle job. pull_request_target,
+  # not pull_request, so the job comes from the PR's base branch, not its head: a pull_request run uses the workflow file of
+  # the PR's own branch, with the secrets, that branch can be anyone's with push access, and GitHub starts no pull_request
+  # run on a PR with merge conflicts, so a hand-back would wait for the schedule. For a PR into main that is main's copy; the
+  # sweep follows up only PRs into main, so a record made for a PR into another branch is never read.
   pull_request_target:
-    types: [labeled]
+    types: [labeled, unlabeled]
   pull_request_review:
     types: [submitted]
   # The name: of ci.yml, of the workflow that tests the Template itself and of
@@ -61,17 +63,20 @@ jobs:
       group: sandcastle
       cancel-in-progress: false
     # Label events start a run only when the owner adds Sandcastle or removes a
-    # hand-back label, so the labels the host applies itself (sandcastle:ready,
-    # bug) end here, and so does the owner's sandcastle:follow-up (record-head
-    # takes that one). A review or CI run counts only for a same-repo issue
-    # branch, so a fork never runs with the secrets.
+    # hand-back label (from a PR, only one into main), so the labels the host
+    # applies itself (sandcastle:ready, bug) end here, and so does the owner's
+    # sandcastle:follow-up (record-head takes that one). A review or CI run
+    # counts only for a same-repo issue branch, so a fork never runs with the
+    # secrets.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || github.event_name == 'schedule'
       || (github.event_name == 'issues' && github.event.action == 'labeled'
         && github.event.label.name == 'Sandcastle'
         && github.event.sender.login == github.repository_owner)
-      || ((github.event_name == 'issues' || github.event_name == 'pull_request') && github.event.action == 'unlabeled'
+      || ((github.event_name == 'issues'
+          || (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'main'))
+        && github.event.action == 'unlabeled'
         && (github.event.label.name == 'sandcastle:needs-info' || github.event.label.name == 'sandcastle:needs-human')
         && github.event.sender.login == github.repository_owner)
       || (github.event_name == 'pull_request_review'

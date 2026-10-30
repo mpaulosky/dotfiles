@@ -52,3 +52,14 @@ The Template's files for a repo that runs Sandcastle: `.sandcastle/`, its workfl
 Apply adds them only to a repo that has a `.sandcastle/` folder or no commits yet.
 The files, and the model for handing a PR off, are in [references/sandcastle.md](references/sandcastle.md#hand-off-prs).
 _Avoid_: Sandcastle template, agent kit
+
+**Review round**:
+A review of a non-merge commit on a PR, by Copilot or by Claude Review where Copilot can't review. It is dirty when it raised an inline thread or an off-diff finding, and clean otherwise.
+A merge of `main` into the PR is never a round.
+_Avoid_: Review pass, review cycle
+
+**Exhausted loop**:
+A PR's review loop after `MAX_CLAUDE_ROUNDS` (3) dirty rounds in a row. PR Auto-Merge takes `review:claude` off, posts one comment listing the threads still open,
+and lets the PR merge once its required checks pass. The owner re-adding `review:claude` starts a new loop.
+The rule is in [references/automerge.md](references/automerge.md).
+_Avoid_: Review cap, round limit

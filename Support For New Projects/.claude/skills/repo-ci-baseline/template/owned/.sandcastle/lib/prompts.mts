@@ -29,6 +29,15 @@ export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, chec
   return { ...issuePromptArgs(issue, branch), CHECKPOINT: String(checkpoint), GATE_OUTPUT: gateOutput };
 }
 
+// The rules for the reviewer's PR description, filled in as {{PR_BODY_RULES}}
+// (see mpaulosky/dotfiles#320). Not written yet.
+export const PR_BODY_RULES = "";
+
+// The reviewer's prompt arguments: the issue's, plus PR_BODY_RULES.
+export function reviewerPromptArgs(_issue: SandcastleIssue, _branch: string): PromptArgs {
+  throw new Error("Not implemented");
+}
+
 // The follow-up role (lib/follow-up-pass.mts#runPass) needs the issue, the
 // PR number (its prompt can't reach GitHub to learn it), the open review
 // threads it must act on (already sorted and trimmed by

@@ -272,3 +272,15 @@ describe("the Template's Seed prompts", () => {
     assert.deepEqual(placeholders(readFileSync(seed, "utf8")), placeholders(read("roles/tester.md")));
   });
 });
+
+// The Seed prompt is never overwritten, so the reviewer's rules for its PR description are a placeholder the Template fills in
+// (lib/prompts.mts#reviewerPromptArgs), here and in the Seed.
+describe("review-prompt.md", () => {
+  it("has {{PR_BODY_RULES}}, and still names pr-body.md and the three headings", () => {
+    const prompt = read("review-prompt.md");
+
+    assert.match(prompt, /\{\{PR_BODY_RULES\}\}/);
+    assert.match(prompt, /pr-body\.md/);
+    for (const heading of ["## Why", "## What changed", "## Verification"]) assert.ok(prompt.includes(heading), heading);
+  });
+});

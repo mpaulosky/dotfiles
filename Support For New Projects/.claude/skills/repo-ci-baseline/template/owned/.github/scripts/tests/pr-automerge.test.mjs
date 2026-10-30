@@ -280,7 +280,11 @@ async function evaluate(pr, events = [], options = {}) {
     // it (negative: before it), by rivalLogin. The first read, before this
     // run posted, never shows it: that's the race, both runs read "none".
     rivalOffsetMs,
-    rivalLogin = ACTIONS
+    rivalLogin = ACTIONS,
+    // The re-reads after this run's record that don't show it yet (GraphQL
+    // lagging behind the REST write), and the ones that throw.
+    ownRecordHiddenReads = 0,
+    reReadErrors = 0
   } = options;
   const rulesRequests = [];
   const updates = [];
@@ -329,6 +333,7 @@ async function evaluate(pr, events = [], options = {}) {
   const order = [];
   let readsSinceRequest = 0;
   let requested = false;
+  let reReads = 0;
   // What a read shows once this run has acted: its own record comment, and
   // Copilot's request if it registered.
   const withRunsOwnWrites = (snapshot) => {
@@ -337,7 +342,7 @@ async function evaluate(pr, events = [], options = {}) {
     }
     let shown = snapshot;
     if (asked.length > 0 && snapshot.comments) {
-      const own = asked.map((comment, index) => ({ author: { login: ACTIONS }, body: comment.body, createdAt: new Date(askedAt[index]).toISOString() }));
+      const own = reReads <= ownRecordHiddenReads && !requested ? [] : asked.map((comment, index) => ({ author: { login: ACTIONS }, body: comment.body, createdAt: new Date(askedAt[index]).toISOString() }));
       const rival = rivalOffsetMs === undefined ? [] : [{
         author: { login: rivalLogin },
         body: "PR Auto-Merge asked Copilot to review this PR.\n\n<!-- pr-automerge:copilot-asked -->",
@@ -453,6 +458,10 @@ async function evaluate(pr, events = [], options = {}) {
       } else if (asked.length > 0) {
         // A read of the PR after the record was posted and before the request.
         order.push("re-read");
+        reReads++;
+        if (reReads <= reReadErrors) {
+          throw new Error("Server error on the re-read");
+        }
       }
       const number = variables.number;
       if (readErrors.includes(number)) {
@@ -619,6 +628,7 @@ async function evaluate(pr, events = [], options = {}) {
   process.env.MERGE_STATE_RETRY_MS = "0";
   process.env.COPILOT_ASK_WAIT_MS = String(askWaitMs);
   process.env.COPILOT_ASK_POLL_MS = String(askPollMs);
+  process.env.COPILOT_ASK_REREAD_MS = "0";
   try {
     await run(github, context, core, getOctokit);
   } catch (error) {
@@ -1578,6 +1588,37 @@ test("the losing run in a sweep asks nothing more of Copilot and its second pass
 
   assert.equal(asked.length, 1);
   assert.deepEqual(requests, []);
+});
+
+test("retries the re-read when its own record doesn't show yet and requests once it does (mpaulosky/dotfiles#369)", async () => {
+  const { requests, order } = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 1 });
+
+  assert.equal(requests.length, 1);
+  assert.equal(order.filter((step) => step === "re-read").length, 2, order.join(","));
+});
+
+test("retries the re-read when it throws and requests once a read works (mpaulosky/dotfiles#369)", async () => {
+  const { requests, order } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 1 });
+
+  assert.equal(requests.length, 1);
+  assert.equal(order.filter((step) => step === "re-read").length, 2, order.join(","));
+});
+
+test("makes no request when its own record never shows in the re-reads, and says so (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, order, logs } = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3 });
+
+  assert.equal(asked.length, 1, "the record stays");
+  assert.deepEqual(requests, []);
+  assert.equal(order.filter((step) => step === "re-read").length, 3, order.join(","));
+  assert.ok(logs.some((line) => /Couldn't find this run's record of the ask/.test(line)), logs.join("\n"));
+});
+
+test("makes no request when every re-read throws, and says so (mpaulosky/dotfiles#369)", async () => {
+  const { asked, requests, logs } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3 });
+
+  assert.equal(asked.length, 1, "the record stays");
+  assert.deepEqual(requests, []);
+  assert.ok(logs.some((line) => /Couldn't re-read PR #7 after recording the ask/.test(line)), logs.join("\n"));
 });
 
 test("asks for the PR's last 100 comments with their author, body and time, and not the reviewable events (mpaulosky/dotfiles#360)", async () => {

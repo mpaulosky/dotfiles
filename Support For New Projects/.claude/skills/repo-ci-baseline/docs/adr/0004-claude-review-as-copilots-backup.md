@@ -50,7 +50,8 @@ This update replaces the grace (mpaulosky/dotfiles#360). PR Auto-Merge and `land
    Nothing asks Copilot for that PR again: not for a later head, and not after `update-branch`.
 2. **The record is a PR comment** holding `<!-- pr-automerge:copilot-asked -->`, written before the request so a crash between them can't make a second ask.
    Two runs can both post one, so the run reads the PR's comments again and only the run whose record is the earliest makes the request
-   (mpaulosky/dotfiles#369).
+   (mpaulosky/dotfiles#369). GraphQL can lag behind the REST write, so a read that fails or doesn't show the run's own record is tried up to three times
+   before the request is left unmade.
    Only a comment by `github-actions` (the workflow's `GITHUB_TOKEN`) or by the repository owner (`land.sh`, through the owner's `gh` login) counts:
    anyone can comment the marker, which would otherwise switch the fallback on, the same stance as the Dependabot rebase marker.
    The first record decides. The request itself is made with the PAT (`RELEASE_PR_PAT`), which GitHub should treat as a person's.

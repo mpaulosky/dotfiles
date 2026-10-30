@@ -275,6 +275,9 @@ jobs:
             // between reads. Tests set both to 0.
             const COPILOT_ASK_WAIT_MS = Number(process.env.COPILOT_ASK_WAIT_MS ?? COPILOT_ASK_SETTLE_MS);
             const COPILOT_ASK_POLL_MS = Number(process.env.COPILOT_ASK_POLL_MS || 5000);
+            // How many times the ask re-reads the comments to find its own record, and the pause between reads.
+            const COPILOT_ASK_REREADS = 3;
+            const COPILOT_ASK_REREAD_MS = Number(process.env.COPILOT_ASK_REREAD_MS ?? 2000);
             // How many merges from main in a row a reviewed commit can sit
             // under and still count as reviewed: each one costs a few API
             // calls, and a PR that chased main further gets a fresh review.
@@ -1313,26 +1316,37 @@ jobs:
               }
               // Two runs can both have read "no record" and both posted one.
               // Read the comments again: only the run whose record is the
-              // earliest makes the request (mpaulosky/dotfiles#369). A re-read
-              // that fails or doesn't show this run's record leaves the
-              // request unmade: the record stays, so nothing asks later.
-              try {
-                const again = await getPullRequestStatus(pullNumber);
-                const records = Array.isArray(again?.comments?.nodes) ? askRecords(again.comments.nodes) : [];
-                const ownPosition = records.findIndex((record) => (record.body ?? "").includes(askId));
-                if (ownPosition === -1) {
-                  core.warning(`Couldn't find this run's record of the ask for Copilot's review of PR #${pullNumber}, so it wasn't made.`);
-                  return false;
+              // earliest makes the request (mpaulosky/dotfiles#369). GraphQL
+              // can lag behind the REST write, so a read that fails or doesn't
+              // show this run's record is tried again, up to COPILOT_ASK_REREADS
+              // times; if none shows it, the request is left unmade: the record
+              // stays, so nothing asks later.
+              let ownPosition = -1;
+              let lastFailure = "";
+              for (let attempt = 1; attempt <= COPILOT_ASK_REREADS && ownPosition === -1; attempt++) {
+                if (attempt > 1) {
+                  await new Promise((resolve) => setTimeout(resolve, COPILOT_ASK_REREAD_MS));
                 }
-                if (ownPosition > 0) {
-                  core.info(`Another run recorded the ask for Copilot's review of PR #${pullNumber} first, so that run makes the request.`);
-                  return false;
+                try {
+                  const again = await getPullRequestStatus(pullNumber);
+                  const records = Array.isArray(again?.comments?.nodes) ? askRecords(again.comments.nodes) : [];
+                  ownPosition = records.findIndex((record) => (record.body ?? "").includes(askId));
+                  lastFailure = "";
+                } catch (error) {
+                  if (sweeping && endsRun(error)) {
+                    throw error;
+                  }
+                  lastFailure = error.message;
                 }
-              } catch (error) {
-                if (sweeping && endsRun(error)) {
-                  throw error;
-                }
-                core.warning(`Couldn't re-read PR #${pullNumber} after recording the ask for Copilot's review, so it wasn't made: ${error.message}`);
+              }
+              if (ownPosition === -1) {
+                core.warning(lastFailure
+                  ? `Couldn't re-read PR #${pullNumber} after recording the ask for Copilot's review, so it wasn't made: ${lastFailure}`
+                  : `Couldn't find this run's record of the ask for Copilot's review of PR #${pullNumber}, so it wasn't made.`);
+                return false;
+              }
+              if (ownPosition > 0) {
+                core.info(`Another run recorded the ask for Copilot's review of PR #${pullNumber} first, so that run makes the request.`);
                 return false;
               }
               try {

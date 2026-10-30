@@ -31,8 +31,8 @@ would let a repo's own PRs change the rules that gate them.
 | Labels | `semver:minor`, `semver:major`, `docs-only`, `review:claude`, `sandcastle:needs-human`, `dependencies`, `github-actions`, `npm`, `nuget`, `dotnet-sdk`, with the colors and descriptions in `labels.json`. Dependabot drops a label that doesn't exist, `release.yml` releases a PR without its semver label as a patch, and `gh pr edit --add-label review:claude` fails without the label. |
 | Secrets | `RELEASE_PR_PAT` and `CLAUDE_CODE_OAUTH_TOKEN` (Claude Review's, from `claude setup-token`) must exist; the script reads secret names, never values, so a missing one is MANUAL. |
 
-**Review threads hold the merge for at most three review rounds** (Copilot's and Claude's together), in every repo. A ruleset can only require *every* thread resolved,
-with no cap, which blocks ADR 0002's cap (IssueTracker's did); so `main-rules` leaves it off and `pr-automerge.yml` enforces the cap.
+**Review threads hold the merge only until the review loop is exhausted** (three dirty rounds in a row, Copilot's and Claude's together; mpaulosky/dotfiles#375), in every repo.
+A ruleset can only require *every* thread resolved, with no exhaustion, which blocks ADR 0002's loop (IssueTracker's did); so `main-rules` leaves it off and `pr-automerge.yml` enforces the loop.
 The script checks each repo's `pr-automerge.yml` sets `COPILOT_REVIEW_CAP` to `review_cap` (3); without it, the finding is MANUAL until the re-Apply.
 Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
 
@@ -79,7 +79,7 @@ Repo features unrelated to PRs (wiki, projects, discussions) aren't managed.
 `github/tests/test_settings.py` runs the script against an in-memory GitHub that keeps state, so a case can run `--fix` and then show that a
 second run writes nothing. Cases cover each area's drift and fix, dotfiles' scoped Copilot review rule, a check-only run writing nothing, required checks limited to what workflows report,
 an old check kept while reported, a required check from another app, the suspend/restore cycle (keeping every rule), 403s,
-squad labels deleted, legacy rulesets deleted only on request (and classic protection only with `main-rules` active), the review cap,
+squad labels deleted, legacy rulesets deleted only on request (and classic protection only with `main-rules` active), the review loop,
 pinning only when all workflows are pinned, scope and per-repo additions, a per-repo file that tries to loosen the standard, and `--json`.
 The fake rejects a partial ruleset update, as GitHub may. Mutation-check the safety rules: breaking each one (kept checks, unreported checks,
 the app comparison, the active guard, the pinning guard, the legacy flag, the suspended check, the additive-only rule) must fail a test.

@@ -89,12 +89,13 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   thread is resolved. It asks Copilot for a review of the PR once; where Copilot can't review a head (a quota note, or a request that didn't
   register, which it reads back, or 30 seconds after the ask with no review or request showing), it adds `review:claude` itself and accepts Claude's review instead.
   Copilot isn't asked again for that PR.
-  After three review rounds it stops waiting for a review of the latest commit, so a PR can't chase
-  reviews forever, but every unresolved thread still holds it, Copilot's and Claude's included. At that point, once
-  Claude has reviewed since `review:claude` was last added, it also takes the label off, so Claude stops reviewing new
-  pushes. Re-Apply PRs are capped too. Adding the label again past the cap gets one more Claude review, but the merge
-  doesn't wait for it: if the PR is otherwise ready it can merge first. A review that arrives after a merge comes too
-  late, so answer its findings on the merged PR in a follow-up.
+  A round is a review of a commit of yours (a merge of `main` into the PR is never one), and it is dirty when it raised
+  a thread or a finding outside the diff. Every new commit nobody reviewed gets a review, until three dirty rounds in a
+  row exhaust the loop (a clean round starts the count over). Then PR Auto-Merge takes `review:claude` off, posts one
+  comment on the PR listing every thread and finding still open, and merges the PR once its required checks pass and it
+  has no conflict; the open threads don't hold it, so answer them on the merged PR in a follow-up. Re-Apply PRs are
+  bounded the same way. To start a new loop on a PR that is still open after that comment, add `review:claude` again
+  (mpaulosky/dotfiles#375); PR Auto-Merge never adds it while that comment is the newest word.
 - **A ready PR is kept up to date.** When `main` moves on, PR Auto-Merge merges `main` into a PR that is otherwise ready
   (Dependabot rebases its own on request). The merge from `main` needs no new review when it is exactly what merging
   `main` gives and no file was changed on both sides; otherwise (a conflict resolved, a file both sides changed, or a

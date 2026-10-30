@@ -7,7 +7,8 @@
 
 It polls every 60 s by default (--interval). Each poll costs one GraphQL query
 per repo (status.py's QUERY, about 3 points) and one more (1 point) for each PR whose threads are all resolved and
-that a bot reviewed, to read the comments for the notice, plus the action calls below and
+that a bot reviewed, to read the comments for the notice, and one for each PR that needs the record of Copilot's ask
+or whose review loop could be exhausted, plus the action calls below and
 a gh pr view for each watched PR that left the open list. They all run as the
 owner's gh login, so they are almost all GraphQL points, out of the account's
 5,000 an hour (the 5,000 REST requests an hour RELEASE_PR_PAT and Sandcastle
@@ -34,8 +35,9 @@ decision says, once per PR head:
                     pending, which a later --once run finds with nothing
                     remembered from the run that asked); the
                     decision makes it only once the head's checks are green,
-                    and never past Claude's review rounds
-                    (landing.MAX_CLAUDE_ROUNDS)
+                    and never while PR Auto-Merge's exhaustion comment is the
+                    newest word on the PR (the owner adds the label to start
+                    a new loop; landing.EXHAUSTED_MARKER)
 - arm auto-merge:   gh pr merge --auto --squash --match-head-commit <head>
 - leave to PR Auto-Merge, wait, report blocker, nothing: no call
 

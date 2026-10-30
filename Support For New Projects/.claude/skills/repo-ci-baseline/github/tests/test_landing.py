@@ -94,9 +94,9 @@ def test_a_dropped_request_calls_in_claude_like_a_quota_note_does():
     assert ld.decide(replace(dropped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
     # Without a drop remembered for this head, Claude's review of it covers nothing: Copilot is asked again.
     assert ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), claude_reviewed=frozenset({HEAD}))).action == ld.REQUEST_COPILOT
-    # Claude's rounds are capped as for a quota note.
+    # Claude's earlier reviews stall nothing: the loop's end is dirty rounds in a row, not a count of reviewed commits (#375).
     used = replace(dropped, claude_reviewed=frozenset({"c" * 40, "d" * 40, "e" * 40, OLD}))
-    assert ld.decide(used).action == ld.WAIT
+    assert ld.decide(used).action == ld.REQUEST_CLAUDE
 
 
 def test_a_registered_copilot_request_waits_even_after_an_earlier_drop():
@@ -109,28 +109,103 @@ def test_no_checks_is_not_green_even_where_checks_arent_required():
     assert ld.decide(dropped).action == ld.WAIT
 
 
-def test_past_pr_auto_merges_review_cap_neither_reviewer_is_asked_for():
-    capped = replace(READY, merged_by_workflow=True, copilot_reviewed=frozenset({OLD, "c" * 40}),
-                     claude_reviewed=frozenset({"d" * 40}), copilot_declined=frozenset({"d" * 40}))
-    decision = ld.decide(capped)
-    assert decision == ld.Decision(ld.HAND_OFF, "review cap (3) reached, no open threads")
-    # Past the cap the workflow still holds on threads and checks, and so does this.
-    assert ld.decide(replace(capped, open_threads=1)).action == ld.WAIT
-    assert ld.decide(replace(capped, checks=(failed("Test Suite"),))).action == ld.BLOCKER
-    # A commit both reviewed counts once: two distinct commits aren't the cap.
-    assert ld.decide(replace(capped, claude_reviewed=frozenset({OLD}), copilot_declined=frozenset({OLD}))).action \
-        == ld.REQUEST_COPILOT
-    # A Claude review with no quota note on its commit isn't a round of the cap.
-    assert ld.decide(replace(capped, copilot_declined=frozenset())).action == ld.REQUEST_COPILOT
-    # A repo whose workflow doesn't merge has no cap; a re-Apply PR has one (#174).
-    assert ld.decide(replace(capped, merged_by_workflow=False)).action == ld.REQUEST_COPILOT
-    assert ld.REVIEW_CAP == 3
+def rounds(pattern):
+    """Rounds, oldest first, one per token of the pattern: "d" a dirty round, "c" a clean one."""
+    return tuple(ld.Round(f"{index + 1:040x}", token == "d", f"2026-01-02T00:{index:02d}:00Z")
+                 for index, token in enumerate(pattern.split()))
+
+
+# A repo whose workflow merges, the head unreviewed, three dirty rounds behind it: the loop is exhausted (mpaulosky/dotfiles#375).
+EXHAUSTED = replace(READY, merged_by_workflow=True, copilot_reviewed=frozenset({OLD}), rounds=rounds("d d d"))
+
+
+def test_an_exhausted_loop_is_left_to_pr_auto_merge_ready_to_merge_with_the_threads_left_open():
+    decision = ld.decide(EXHAUSTED)
+    assert decision.action == ld.HAND_OFF
+    assert decision.reason.startswith("review loop exhausted")
+    assert "ready to merge" in decision.reason and "0 thread(s) left open" in decision.reason
+    # Neither reviewer is asked for, and the threads and off-diff findings that were open no longer hold it.
+    open_threads = ld.decide(replace(EXHAUSTED, open_threads=2))
+    assert open_threads.action == ld.HAND_OFF and "2 thread(s) left open" in open_threads.reason
+    off_diff = ld.decide(replace(EXHAUSTED, claude_off_diff=frozenset({HEAD}), claude_reviewed=frozenset({HEAD})))
+    assert off_diff.action == ld.HAND_OFF
+
+
+def test_an_exhausted_loop_still_waits_for_checks_and_conflicts_and_updates_a_behind_branch():
+    assert ld.decide(replace(EXHAUSTED, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+    assert ld.decide(replace(EXHAUSTED, merge_state="DIRTY")).action == ld.BLOCKER
+    assert ld.decide(replace(EXHAUSTED, merge_state="BEHIND")).action == ld.UPDATE_BRANCH
+    assert ld.decide(replace(EXHAUSTED, draft=True)).action == ld.WAIT
+    running_checks = ld.decide(replace(EXHAUSTED, checks=(passed("Build Solution"), running("Test Suite"))))
+    assert running_checks.action == ld.HAND_OFF and running_checks.reason.endswith(", required checks running")
+    assert ld.decide(replace(EXHAUSTED, auto_merge_armed=True)).action == ld.NOTHING
+
+
+def test_an_exhausted_loop_holds_a_repo_that_requires_no_checks_until_they_are_green():
+    waiting = ld.decide(replace(EXHAUSTED, checks_required=False, checks=(passed("Build Solution"), running("Test Suite"))))
+    assert waiting.action == ld.WAIT and "no required checks" in waiting.reason
+
+
+@pytest.mark.parametrize("pattern, exhausted", [
+    ("d d d", True), ("d d d d", True), ("c d d d", True),
+    ("d d c d", False), ("d d", False), ("d d d c", False), ("c d d", False), ("", False),
+])
+def test_the_loop_is_exhausted_after_max_claude_rounds_dirty_rounds_in_a_row(pattern, exhausted):
+    pr = replace(EXHAUSTED, rounds=rounds(pattern))
+    assert pr.loop_exhausted is exhausted
+    if exhausted:
+        assert ld.decide(pr).action == ld.HAND_OFF
+    else:
+        # The head is still reviewed before it merges.
+        assert ld.decide(pr).action == ld.REQUEST_COPILOT
+
+
+def test_a_loop_is_only_exhausted_in_a_repo_whose_workflow_merges_and_whose_loop_was_read():
+    assert not replace(EXHAUSTED, merged_by_workflow=False).loop_exhausted
+    assert ld.decide(replace(EXHAUSTED, merged_by_workflow=False)).action == ld.REQUEST_COPILOT
+    # Comments or label events that couldn't be read: never exhausted, so a thread still holds and a review is still wanted.
+    unread = replace(EXHAUSTED, loop_unread=True)
+    assert not unread.loop_exhausted
+    assert ld.decide(unread).action == ld.REQUEST_COPILOT
+    assert ld.decide(replace(READY, merged_by_workflow=True, rounds=rounds("d d d"), loop_unread=True, open_threads=1)).action == ld.WAIT
+
+
+def test_a_reviewed_head_below_exhaustion_still_waits_on_an_open_thread_and_off_diff_findings():
+    reviewed = replace(READY, merged_by_workflow=True, rounds=rounds("d d"))
+    assert ld.decide(reviewed).action == ld.HAND_OFF
+    assert ld.decide(replace(reviewed, open_threads=1)) == ld.Decision(ld.WAIT, "1 open thread(s)")
+    off_diff = ld.decide(replace(reviewed, claude_off_diff=frozenset({HEAD})))
+    assert off_diff.action == ld.WAIT and "findings outside the diff" in off_diff.reason
+    # The same head at three dirty rounds in a row is no longer held by either.
+    assert ld.decide(replace(reviewed, rounds=rounds("d d d"), open_threads=1)).action == ld.HAND_OFF
+    assert ld.decide(replace(reviewed, rounds=rounds("d d d"), claude_off_diff=frozenset({HEAD}))).action == ld.HAND_OFF
+
+
+def test_a_documented_exhausted_loop_is_not_a_reason_to_call_claude_in_until_the_owner_re_adds_the_label():
+    declined = replace(READY, merged_by_workflow=True, copilot_reviewed=frozenset({OLD}), copilot_declined=frozenset({HEAD}),
+                       rounds=rounds("d d c"))
+    assert ld.decide(declined).action == ld.REQUEST_CLAUDE
+    newest = ld.decide(replace(declined, exhaustion_marker_newest=True))
+    assert newest.action == ld.WAIT
+    assert "review:claude" in newest.reason and "exhaust" in newest.reason.lower()
+    # The same for a dropped request.
+    dropped = replace(declined, copilot_declined=frozenset(), copilot_dropped=True)
+    assert ld.decide(dropped).action == ld.REQUEST_CLAUDE
+    assert ld.decide(replace(dropped, exhaustion_marker_newest=True)).action == ld.WAIT
 
 
 def test_review_cap_matches_pr_auto_merges():
     workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
     text = workflow.read_text(encoding="utf-8")
     assert f"const COPILOT_REVIEW_CAP = {ld.REVIEW_CAP};" in text
+
+
+def test_the_exhaustion_marker_matches_pr_auto_merges():
+    workflow = (Path(__file__).resolve().parents[2] / "template" / "owned" / ".github" / "workflows" / "pr-automerge.yml")
+    text = workflow.read_text(encoding="utf-8")
+    assert ld.EXHAUSTED_MARKER == "<!-- pr-automerge:review-loop-exhausted"
+    assert f'const EXHAUSTED_MARKER = "{ld.EXHAUSTED_MARKER}";' in text
+    assert ld.MAX_CLAUDE_ROUNDS == ld.REVIEW_CAP == 3
 
 
 def test_pr_auto_merge_calls_in_claude_on_the_same_terms():
@@ -174,15 +249,15 @@ def test_claude_review_checks_dont_hold_calling_it_in():
     assert ld.decide(replace(unreviewed, checks=(cancelled("Build Solution"),))).action == ld.BLOCKER
 
 
-def test_claude_is_called_in_until_its_rounds_are_used():
-    # A fix for a second round's findings gets a third review (#193); past that the owner decides.
-    # Three reviewed commits are PR Auto-Merge's cap too, so this is a repo whose workflow doesn't merge.
+def test_claude_is_called_in_whatever_it_reviewed_before_so_long_as_the_loop_is_not_exhausted():
+    # A fix for the findings of any number of Claude's reviews is reviewed too: only dirty rounds in a row end the loop (#375).
+    # The old rule stopped at three reviewed commits and left it to the owner.
     three = replace(READY, copilot_reviewed=frozenset(), claude_reviewed=frozenset({OLD, "c" * 40, "d" * 40}),
                     copilot_declined=frozenset({HEAD}), merged_by_workflow=False)
-    decision = ld.decide(three)
-    assert decision.action == ld.WAIT
-    assert decision.reason.endswith("Claude's 3 review rounds are used, the owner decides")
-    assert ld.decide(replace(three, claude_reviewed=frozenset({OLD, "c" * 40}))).action == ld.REQUEST_CLAUDE
+    assert ld.decide(three).action == ld.REQUEST_CLAUDE
+    assert ld.decide(replace(three, merged_by_workflow=True, rounds=rounds("d d c"))).action == ld.REQUEST_CLAUDE
+    assert ld.decide(replace(three, merged_by_workflow=True, rounds=rounds("d d d"))).action == ld.HAND_OFF
+    assert "the owner decides" not in ld.decide(three).reason
 
 
 def test_a_claude_review_of_the_head_counts_only_with_copilots_quota_note_on_it():
@@ -217,11 +292,10 @@ def test_an_open_thread_waits():
     assert decision == ld.Decision(ld.WAIT, "2 open thread(s)")
 
 
-def test_there_is_no_review_cap_so_an_open_thread_waits_after_any_number_of_rounds():
-    # Past PR Auto-Merge's cap open threads still hold the merge, so the
-    # landing decision never arms past a thread either.
-    rounds = replace(READY, copilot_reviewed=frozenset({"c" * 40, "d" * 40, OLD, HEAD}), open_threads=1)
-    assert ld.decide(rounds) == ld.Decision(ld.WAIT, "1 open thread(s)")
+def test_below_exhaustion_an_open_thread_waits_after_any_number_of_clean_rounds():
+    # Until the loop is exhausted the landing decision never arms past a thread (#375).
+    rounds_so_far = replace(READY, copilot_reviewed=frozenset({"c" * 40, "d" * 40, OLD, HEAD}), open_threads=1)
+    assert ld.decide(rounds_so_far) == ld.Decision(ld.WAIT, "1 open thread(s)")
 
 
 def test_a_behind_branch_is_updated_and_nobody_is_asked():
@@ -591,9 +665,9 @@ def test_a_dropped_request_read_back_in_this_process_calls_in_claude_before_the_
     assert ld.decide(replace(ASKED, copilot_dropped=True)).action == ld.REQUEST_CLAUDE
 
 
-def test_claudes_rounds_are_capped_for_a_settled_record_too():
+def test_claudes_earlier_reviews_stall_nothing_for_a_settled_record_either():
     used = replace(SETTLED, claude_reviewed=frozenset({"c" * 40, "d" * 40, "e" * 40, OLD}))
-    assert ld.decide(used).action == ld.WAIT
+    assert ld.decide(used).action == ld.REQUEST_CLAUDE
 
 
 def test_the_label_waits_for_claude_whatever_the_record_says():
@@ -613,18 +687,92 @@ def test_claudes_review_of_the_head_counts_only_where_copilot_is_gone():
     assert replace(gone, copilot_reviewed=frozenset({HEAD})).head_reviewer == "copilot"
 
 
-def test_claudes_review_of_an_older_commit_isnt_backed_by_a_settled_record():
+def test_claudes_review_of_an_older_commit_is_backed_by_a_settled_record_but_covers_no_head():
     older = replace(SETTLED, claude_reviewed=frozenset({OLD}))
+    # It counts as a round (Copilot is gone from the PR), but it is not a review of the head.
+    assert older.claude_backed == frozenset({OLD})
     assert older.head_reviewer == ""
     assert ld.decide(older).action == ld.REQUEST_CLAUDE
+    # Still not backed while Copilot may review: the ask is unsettled, or a request is pending.
+    assert replace(ASKED, claude_reviewed=frozenset({OLD})).claude_backed == frozenset()
+    assert replace(SETTLED, claude_reviewed=frozenset({OLD}), copilot_requested=True).claude_backed == frozenset()
+    # A quota note on that commit backs it whatever the record says.
+    assert replace(UNASKED, claude_reviewed=frozenset({OLD}), copilot_declined=frozenset({OLD})).claude_backed == frozenset({OLD})
 
 
-def test_the_review_cap_counts_claudes_review_of_the_head_only_where_copilot_is_gone():
-    two_copilot = replace(READY, merged_by_workflow=True, copilot_reviewed=frozenset({OLD, "c" * 40}), claude_reviewed=frozenset({HEAD}))
-    assert not two_copilot.past_review_cap
-    assert not replace(two_copilot, copilot_asked=True).past_review_cap
-    assert replace(two_copilot, copilot_asked=True, copilot_ask_settled=True).past_review_cap
-    assert not replace(two_copilot, copilot_asked=True, copilot_ask_settled=True, copilot_requested=True).past_review_cap
-    # A Claude review of an earlier commit, with no note on it, never counts toward the cap.
-    earlier = replace(two_copilot, claude_reviewed=frozenset({"d" * 40}), copilot_asked=True, copilot_ask_settled=True)
-    assert not earlier.past_review_cap
+def record(login, oid, body, at, comments=0, merge=False):
+    """A review as review_rounds() reads it: (author login, commit oid, body, submittedAt, inline thread count, is a merge)."""
+    return (login, oid, body, at, comments, merge)
+
+
+CLAUDE_CLEAN = "<!-- claude-review -->\nNo findings."
+CLAUDE_OFF_DIFF = "<!-- claude-review -->\n<!-- claude-review:off-diff -->\n**Claude Review**"
+QUOTA_NOTE = "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit."
+
+
+def test_review_rounds_counts_copilots_reviews_of_non_merge_commits_oldest_first_and_marks_the_dirty_ones():
+    reviews = [
+        record("copilot-pull-request-reviewer", "c1", "", "2026-01-02T00:01:00Z", comments=2),
+        record("copilot-pull-request-reviewer", "c2", "", "2026-01-02T00:02:00Z"),
+        record("copilot-pull-request-reviewer", "m1", "", "2026-01-02T00:03:00Z", comments=1, merge=True),
+        record("copilot-pull-request-reviewer", "c3", QUOTA_NOTE, "2026-01-02T00:04:00Z"),
+    ]
+    rounds_found = ld.review_rounds(reviews, declined=frozenset(), gone=False)
+    assert [(item.oid, item.dirty) for item in rounds_found] == [("c1", True), ("c2", False)]
+    assert [item.at for item in rounds_found] == ["2026-01-02T00:01:00Z", "2026-01-02T00:02:00Z"]
+
+
+def test_review_rounds_makes_one_round_of_a_commit_reviewed_twice_dirty_if_either_review_was():
+    reviews = [
+        record("Copilot", "c1", "", "2026-01-02T00:01:00Z", comments=1),
+        record("Copilot", "c2", "", "2026-01-02T00:02:00Z"),
+        record("Copilot", "c1", "", "2026-01-02T00:03:00Z"),
+    ]
+    found = ld.review_rounds(reviews, frozenset(), False)
+    # Ordered by each commit's latest review.
+    assert [(item.oid, item.dirty) for item in found] == [("c2", False), ("c1", True)]
+    assert found[1].at == "2026-01-02T00:03:00Z"
+
+
+def test_review_rounds_counts_claudes_reviews_only_where_copilot_cant_review_that_commit():
+    reviews = [
+        record("github-actions", "c1", CLAUDE_CLEAN, "2026-01-02T00:01:00Z"),
+        record("github-actions", "c2", CLAUDE_OFF_DIFF, "2026-01-02T00:02:00Z"),
+        record("github-actions", "c3", "Some other workflow's review.", "2026-01-02T00:03:00Z", comments=3),
+        record("github-actions", "m1", CLAUDE_OFF_DIFF, "2026-01-02T00:04:00Z", merge=True),
+    ]
+    # Copilot may still review: none of Claude's reviews is a round.
+    assert ld.review_rounds(reviews, frozenset(), False) == ()
+    # Copilot answered c2 with its quota note: that review counts, and an off-diff review is dirty.
+    only_noted = ld.review_rounds(reviews, frozenset({"c2"}), False)
+    assert [(item.oid, item.dirty) for item in only_noted] == [("c2", True)]
+    # Copilot is gone: every marked Claude review of a non-merge commit counts, whatever its commit.
+    gone = ld.review_rounds(reviews, frozenset(), True)
+    assert [(item.oid, item.dirty) for item in gone] == [("c1", False), ("c2", True)]
+
+
+def test_review_rounds_makes_a_dirty_round_of_a_claude_review_with_inline_threads_too():
+    reviews = [record("github-actions", "c1", CLAUDE_CLEAN, "2026-01-02T00:01:00Z", comments=2)]
+    assert [(item.oid, item.dirty) for item in ld.review_rounds(reviews, frozenset({"c1"}), False)] == [("c1", True)]
+
+
+def test_a_merge_of_main_is_never_a_round():
+    reviews = [
+        record("Copilot", "c1", "", "2026-01-02T00:01:00Z", comments=1),
+        record("Copilot", "m1", "", "2026-01-02T00:02:00Z", comments=1, merge=True),
+        record("Copilot", "c2", "", "2026-01-02T00:03:00Z", comments=1),
+        record("github-actions", "m2", CLAUDE_OFF_DIFF, "2026-01-02T00:04:00Z", comments=1, merge=True),
+        record("Copilot", "c3", "", "2026-01-02T00:05:00Z", comments=1),
+    ]
+    found = ld.review_rounds(reviews, frozenset({"m2"}), True)
+    assert [item.oid for item in found] == ["c1", "c2", "c3"]
+    assert ld.trailing_dirty(found) == 3
+
+
+def test_trailing_dirty_counts_the_dirty_rounds_back_from_the_newest():
+    assert ld.trailing_dirty(()) == 0
+    assert ld.trailing_dirty(rounds("d")) == 1
+    assert ld.trailing_dirty(rounds("d d c d")) == 1
+    assert ld.trailing_dirty(rounds("d d d c")) == 0
+    assert ld.trailing_dirty(rounds("c d d d")) == 3
+    assert ld.trailing_dirty(rounds("d d d d d")) == 5

@@ -78,6 +78,9 @@ GITHUB_ACTIONS = "github-actions"
 CLAUDE_MARKER = "<!-- claude-review -->"
 OFF_DIFF_MARKER = "<!-- claude-review:off-diff -->"
 REVIEW_CLAUDE = "review:claude"
+# The hidden marker PR Auto-Merge's comment on an exhausted review loop ends with, followed by the head and " -->"
+# (mpaulosky/dotfiles#375). The Template's pr-automerge.yml has the same prefix (a test holds them equal).
+EXHAUSTED_MARKER = "<!-- pr-automerge:review-loop-exhausted"
 # The record that PR Auto-Merge or land.py asked Copilot to review the PR (mpaulosky/dotfiles#360): a comment
 # containing the marker. The Template's pr-automerge.yml has the same marker and settle time.
 COPILOT_ASKED_MARKER = "<!-- pr-automerge:copilot-asked -->"
@@ -206,6 +209,23 @@ def unreplied_notice(pr):
 
 
 @dataclass(frozen=True)
+class Round:
+    """One review round: a counted review of a non-merge commit (see review_rounds())."""
+
+    oid: str
+    dirty: bool
+    at: str
+
+
+def review_rounds(records, declined, gone):
+    raise NotImplementedError("Not implemented")
+
+
+def trailing_dirty(rounds):
+    raise NotImplementedError("Not implemented")
+
+
+@dataclass(frozen=True)
 class PrState:
     """What decide() reads about one PR.
 
@@ -253,6 +273,9 @@ class PrState:
     copilot_ask_settled: bool = False
     copilot_declined: frozenset[str] = field(default_factory=frozenset)
     merge_commits: frozenset[str] = field(default_factory=frozenset)
+    rounds: tuple[Round, ...] = ()
+    exhaustion_marker_newest: bool = False
+    loop_unread: bool = False
     open_threads: int = 0
     unreplied_threads: tuple[str, ...] = ()
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
@@ -297,6 +320,10 @@ class PrState:
     @property
     def reviewer_on_head(self):
         return bool(self.head_reviewer)
+
+    @property
+    def loop_exhausted(self):
+        raise NotImplementedError("Not implemented")
 
     @property
     def past_review_cap(self):

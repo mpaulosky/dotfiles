@@ -25,15 +25,30 @@ def comments_of(*nodes, total=None):
     return {"totalCount": len(nodes) if total is None else total, "nodes": list(nodes)}
 
 
+def review_node(review):
+    """A reviews node from (login, oid[, body[, extras]]); extras: at (submittedAt), threads (inline comments), merge."""
+    extras = review[3] if len(review) > 3 else {}
+    commit = {"oid": review[1]}
+    if "merge" in extras:
+        commit["parents"] = {"totalCount": 2 if extras["merge"] else 1}
+    node = {"author": {"login": review[0]}, "commit": commit, "body": review[2] if len(review) > 2 else ""}
+    if "at" in extras:
+        node["submittedAt"] = extras["at"]
+    if "threads" in extras:
+        node["comments"] = {"totalCount": extras["threads"]}
+    return node
+
+
 def pr_node(number=7, title="feat: Something", draft=False, merge_state="CLEAN", reviews=(), threads=(),
-            contexts=(), armed=False, comments=comments_of()):
+            contexts=(), armed=False, comments=comments_of(), events=()):
     return {
         "id": f"PR_{number}", "comments": comments,
+        # The last label events, as the timelineItems of QUERY report them: [{createdAt, label: {name}}].
+        "timelineItems": {"nodes": list(events)},
         "number": number, "title": title, "state": "OPEN", "isDraft": draft, "headRefOid": HEAD,
         "mergeStateStatus": merge_state,
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
-        "reviews": {"nodes": [{"author": {"login": review[0]}, "commit": {"oid": review[1]},
-                               "body": review[2] if len(review) > 2 else ""} for review in reviews]},
+        "reviews": {"nodes": [review_node(review) for review in reviews]},
         # A thread is True/False (resolved or not) or a full node from thread_node().
         "reviewThreads": {"nodes": [{"isResolved": thread} if isinstance(thread, bool) else thread
                                     for thread in threads]},
@@ -450,4 +465,200 @@ def test_a_failed_comments_query_keeps_the_repo_readable_and_makes_the_record_un
     # PR 1's record is unread: neither a Copilot request nor Claude is called for.
     assert "-> request Copilot" not in lines[0] and "-> add review:claude" not in lines[0] and "-> wait" in lines[0]
     assert "-> add review:claude" in lines[1]
+    assert "502 Bad Gateway" in capsys.readouterr().err
+
+
+# ── The review loop: dirty rounds in a row (mpaulosky/dotfiles#375) ─────────
+
+COPILOT_LOGIN = "copilot-pull-request-reviewer"
+COPILOT_REQUESTED = {"nodes": [{"requestedReviewer": {"login": "Copilot"}}]}
+
+
+def round_of(number, dirty=True, minute=None, merge=False, login=COPILOT_LOGIN, body=""):
+    """A review of a commit of its own at minute (default: number) of 2026-01-02T00, with an inline thread when dirty."""
+    extras = {"at": f"2026-01-02T00:{number if minute is None else minute:02d}:00Z", "threads": 1 if dirty else 0, "merge": merge}
+    return (login, f"{number:040x}", body, extras)
+
+
+DIRTY3 = [round_of(1), round_of(2), round_of(3)]
+EXHAUSTED_BODY = "**PR Auto-Merge: the review loop is exhausted.**\n\nNothing is left open.\n\n<!-- pr-automerge:review-loop-exhausted " + HEAD + " -->"
+
+
+def marker_comment(at="2026-01-02T01:00:00Z", login="github-actions", body=EXHAUSTED_BODY):
+    """PR Auto-Merge's comment on an exhausted loop, as COMMENTS_QUERY reports it."""
+    return {"author": {"login": login}, "body": body, "createdAt": at}
+
+
+def relabel(at="2026-01-02T02:00:00Z", label="review:claude"):
+    """A label event, as the timelineItems of QUERY report it."""
+    return {"createdAt": at, "label": {"name": label}}
+
+
+def state_of(node, **kwargs):
+    return st.to_state(node, **FLAGS, owner="o", now=NOW, **kwargs)
+
+
+def test_the_line_shows_an_exhausted_loop_as_ready_to_merge_with_the_threads_left_open():
+    node = pr_node(reviews=DIRTY3, threads=[False, False, True], contexts=GREEN)
+    _, out, _ = run(["owner/app"], {"owner/app": repo(node)})
+
+    assert "threads:2" in out
+    assert "-> leave to PR Auto-Merge (review loop exhausted" in out
+    assert "ready to merge" in out and "2 thread(s) left open" in out
+
+
+def test_the_line_asks_for_the_head_review_below_exhaustion():
+    for reviews in (DIRTY3[:2], [round_of(1), round_of(2), round_of(3, dirty=False), round_of(4)], [*DIRTY3, round_of(5, dirty=False)]):
+        node = pr_node(reviews=reviews, threads=[False], contexts=GREEN)
+        _, out, _ = run(["owner/app"], {"owner/app": repo(node)})
+
+        assert "review loop exhausted" not in out
+        assert "-> request Copilot" in out, reviews
+
+
+def test_a_merge_of_main_is_never_a_round_in_the_status_line_either():
+    merge = round_of(9, merge=True, minute=9)
+    two = pr_node(reviews=[round_of(1), round_of(2), merge], contexts=GREEN)
+    three = pr_node(reviews=[round_of(1), merge, round_of(2), round_of(3)], contexts=GREEN)
+    state = state_of(two)
+    assert [item.oid for item in state.rounds] == [f"{1:040x}", f"{2:040x}"]
+    assert not state.loop_exhausted
+    assert state_of(three).loop_exhausted
+    assert [item.dirty for item in state_of(three).rounds] == [True, True, True]
+
+
+def test_to_state_reads_the_rounds_with_their_time_and_whether_they_raised_threads():
+    state = state_of(pr_node(reviews=[round_of(1), round_of(2, dirty=False), (COPILOT_LOGIN, "f" * 40, "")]))
+
+    assert [(item.dirty, item.at) for item in state.rounds[:2]] == [(True, "2026-01-02T00:01:00Z"), (False, "2026-01-02T00:02:00Z")]
+    # A review with no submission time or thread count, as older fixtures give, is a clean round with no time.
+    assert (state.rounds[2].oid, state.rounds[2].dirty) == ("f" * 40, False)
+
+
+def test_claudes_dirty_reviews_are_rounds_where_copilot_is_gone_or_noted_and_not_otherwise():
+    claude = [round_of(n, login="github-actions", body="<!-- claude-review -->\nA finding.") for n in (1, 2, 3)]
+    off_diff = round_of(4, login="github-actions", body="<!-- claude-review -->\n<!-- claude-review:off-diff -->\n**Claude Review**",
+                        dirty=False)
+    # Copilot may still review: Claude's reviews are no rounds.
+    assert state_of(pr_node(reviews=claude)).rounds == ()
+    # The ask was recorded long ago and nothing is pending: Copilot is gone, so every Claude review counts.
+    gone = state_of(pr_node(reviews=claude, comments=comments_of(at(3600))))
+    assert [item.dirty for item in gone.rounds] == [True, True, True] and gone.loop_exhausted
+    # An off-diff finding makes a round dirty.
+    assert [item.dirty for item in state_of(pr_node(reviews=[off_diff], comments=comments_of(at(3600)))).rounds] == [True]
+    # A request still pending: Copilot isn't gone.
+    pending = dict(pr_node(reviews=claude, comments=comments_of(at(3600))), reviewRequests=COPILOT_REQUESTED)
+    assert state_of(pending).rounds == ()
+    # A quota note on those commits backs them whatever the record says.
+    notes = [(COPILOT_LOGIN, f"{n:040x}", "Copilot was unable to review this pull request because the quota is used up.") for n in (1, 2, 3)]
+    assert state_of(pr_node(reviews=[*notes, *claude])).loop_exhausted
+
+
+def test_an_exhaustion_comment_with_no_relabel_after_it_is_the_newest_word():
+    node = pr_node(reviews=DIRTY3, comments=comments_of(marker_comment()))
+    state = state_of(node)
+
+    assert state.exhaustion_marker_newest
+    # Nothing changes about the rounds or the merge: the loop is still exhausted.
+    assert state.loop_exhausted and len(state.rounds) == 3
+    assert not state_of(pr_node(reviews=DIRTY3)).exhaustion_marker_newest
+
+
+def test_the_owner_re_adding_review_claude_after_the_comment_starts_a_new_loop():
+    # Three dirty rounds before the label's event, and a fourth before it too: none of them counts any more.
+    before = pr_node(reviews=[*DIRTY3, round_of(4, minute=30)], comments=comments_of(marker_comment()), events=[relabel()])
+    state = state_of(before)
+    assert not state.exhaustion_marker_newest
+    assert state.rounds == () and not state.loop_exhausted
+    # A round after the event is the new loop's first.
+    fresh = (COPILOT_LOGIN, f"{5:040x}", "", {"at": "2026-01-02T03:00:00Z", "threads": 1, "merge": False})
+    after = state_of(pr_node(reviews=[*DIRTY3, fresh], comments=comments_of(marker_comment()), events=[relabel()]))
+    assert [item.oid for item in after.rounds] == [f"{5:040x}"] and not after.loop_exhausted
+
+
+def test_a_label_event_before_the_comment_or_for_another_label_is_no_restart():
+    for events in ([relabel(at="2026-01-02T00:30:00Z")], [relabel(label="enhancement")], []):
+        state = state_of(pr_node(reviews=DIRTY3, comments=comments_of(marker_comment()), events=events))
+        assert state.exhaustion_marker_newest and state.loop_exhausted, events
+
+
+def test_only_the_first_relabel_after_the_comment_restarts_the_loop():
+    # PR Auto-Merge's PAT adds the label as the owner, later in the loop: that must not discard the loop's rounds.
+    rounds = [(COPILOT_LOGIN, f"{n:040x}", "", {"at": f"2026-01-02T03:{n:02d}:00Z", "threads": 1}) for n in (1, 2, 3)]
+    node = pr_node(reviews=[*DIRTY3, *rounds], comments=comments_of(marker_comment()),
+                   events=[relabel("2026-01-02T02:00:00Z"), relabel("2026-01-02T03:30:00Z")])
+    state = state_of(node)
+
+    assert len(state.rounds) == 3 and state.loop_exhausted and not state.exhaustion_marker_newest
+
+
+def test_only_github_actions_comments_count_as_the_exhaustion_record():
+    for login in ("stranger", "o", None):
+        comment = marker_comment(login=login) if login else dict(marker_comment(), author=None)
+        assert not state_of(pr_node(reviews=DIRTY3, comments=comments_of(comment))).exhaustion_marker_newest, login
+    assert state_of(pr_node(reviews=DIRTY3, comments=comments_of(marker_comment(login="github-actions[bot]")))).exhaustion_marker_newest
+
+
+def test_the_latest_exhaustion_comment_decides_where_the_new_loop_starts():
+    first = marker_comment(at="2026-01-02T01:00:00Z")
+    second = marker_comment(at="2026-01-02T05:00:00Z")
+    node = pr_node(reviews=DIRTY3, comments=comments_of(first, second), events=[relabel("2026-01-02T02:00:00Z")])
+    # The relabel is before the newest comment, so that comment is the newest word again.
+    assert state_of(node).exhaustion_marker_newest
+
+
+def test_a_loop_whose_comments_or_label_events_cant_be_read_is_never_exhausted():
+    for comments in (None, comments_of(at(3600) | {"body": "LGTM"}, total=150)):
+        state = state_of(pr_node(reviews=DIRTY3, comments=comments))
+        assert state.loop_unread and not state.loop_exhausted, comments
+    # A comment is there but the label events are not: no telling where the new loop starts.
+    node = pr_node(reviews=DIRTY3, comments=comments_of(marker_comment()))
+    del node["timelineItems"]
+    assert state_of(node).loop_unread and not state_of(node).loop_exhausted
+    # The page is partial but holds the comment: read.
+    found = state_of(pr_node(reviews=DIRTY3, comments=comments_of(marker_comment(), total=150)))
+    assert not found.loop_unread and found.loop_exhausted
+    # Fewer than three dirty rounds can't be exhausted, so unread comments say nothing.
+    assert not state_of(pr_node(reviews=DIRTY3[:2], comments=None)).loop_unread
+
+
+def test_an_unread_loop_is_not_shown_as_ready_to_merge():
+    node = pr_node(reviews=DIRTY3, comments=None)
+    _, out, _ = run(["owner/app"], {"owner/app": repo(node)})
+
+    assert "review loop exhausted" not in out and "-> leave to PR Auto-Merge" not in out
+
+
+def test_the_repo_query_reads_each_reviews_time_and_thread_count_and_the_label_events():
+    reviews = st.QUERY[st.QUERY.index("reviews(last: 100)"):]
+    reviews = reviews[:reviews.index("reviewThreads")]
+    assert "submittedAt" in reviews and "comments { totalCount }" in reviews
+    # The existing fields stay.
+    assert "author { login } commit { oid parents { totalCount } } body" in st.QUERY
+    assert "timelineItems(" in st.QUERY and "LABELED_EVENT" in st.QUERY
+    assert "createdAt" in st.QUERY[st.QUERY.index("timelineItems("):] and "label { name }" in st.QUERY[st.QUERY.index("timelineItems("):]
+
+
+def test_a_pr_that_could_be_exhausted_gets_the_comments_query_even_when_copilot_is_requested(monkeypatch):
+    # The ask's record isn't needed (a request is pending), but the exhaustion comment and the new loop's start are.
+    exhausted = dict(pr_node(number=1, reviews=DIRTY3, comments=None), reviewRequests=COPILOT_REQUESTED)
+    two = dict(pr_node(number=2, reviews=DIRTY3[:2], comments=None), reviewRequests=COPILOT_REQUESTED)
+    clean_last = dict(pr_node(number=3, reviews=[*DIRTY3, round_of(4, dirty=False)], comments=None), reviewRequests=COPILOT_REQUESTED)
+    asked_ids = comments_graphql(monkeypatch, repo(exhausted, two, clean_last), {"PR_1": comments_of(marker_comment())})
+    data = st.gh_graphql("owner", "app")
+    by_number = {node["number"]: node for node in data["repository"]["pullRequests"]["nodes"]}
+
+    assert asked_ids == ["PR_1"]
+    assert by_number[1]["comments"]["totalCount"] == 1
+    assert by_number[2]["comments"] is None and by_number[3]["comments"] is None
+
+
+def test_a_failed_comments_query_for_a_pr_that_could_be_exhausted_makes_its_loop_unread(monkeypatch, capsys):
+    node = dict(pr_node(number=1, reviews=DIRTY3, comments=None, contexts=GREEN), reviewRequests=COPILOT_REQUESTED)
+    comments_graphql(monkeypatch, repo(node), {"PR_1": RuntimeError("502 Bad Gateway")})
+    monkeypatch.setattr(st, "COMMENTS_FAILED", set())
+    out, err = io.StringIO(), io.StringIO()
+
+    assert st.main(["owner/app"], out=out, err=err) == 0
+    assert "review loop exhausted" not in out.getvalue()
     assert "502 Bad Gateway" in capsys.readouterr().err

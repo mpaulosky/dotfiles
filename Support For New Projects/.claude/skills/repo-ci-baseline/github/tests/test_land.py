@@ -42,17 +42,22 @@ def record(age=3600, login="github-actions"):
 
 
 def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=False, merge_state="CLEAN",
-         reviews=(), threads=(), contexts=(), armed=False, labels=(), requested=(), comments=()):
+         reviews=(), threads=(), contexts=(), armed=False, labels=(), requested=(), comments=(), events=()):
     return {
         "number": number, "title": title, "state": "OPEN", "isDraft": draft, "headRefName": branch,
         "headRefOid": head, "mergeStateStatus": merge_state,
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
         "labels": {"nodes": [{"name": label} for label in labels]},
         "reviewRequests": {"nodes": [{"requestedReviewer": {"login": login}} for login in requested]},
-        # A review is (login, oid[, body[, "merge"]]); "merge" makes its commit a merge commit.
+        # A review is (login, oid[, body[, flags...]]); the flag "merge" makes its commit a merge commit and "dirty" gives the
+        # review an inline thread. Each is submitted a minute after the one before it.
         "reviews": {"nodes": [{"author": {"login": review[0]},
-                               "commit": {"oid": review[1], "parents": {"totalCount": 2 if review[3:] == ("merge",) else 1}},
-                               "body": review[2] if len(review) > 2 else ""} for review in reviews]},
+                               "commit": {"oid": review[1], "parents": {"totalCount": 2 if "merge" in review[3:] else 1}},
+                               "submittedAt": f"2026-01-02T00:{index:02d}:00Z",
+                               "comments": {"totalCount": 1 if "dirty" in review[3:] else 0},
+                               "body": review[2] if len(review) > 2 else ""} for index, review in enumerate(reviews)]},
+        # The PR's last label events as (createdAt, label name).
+        "timelineItems": {"nodes": [{"createdAt": created, "label": {"name": name}} for created, name in events]},
         # A thread is True/False (resolved or not) or a full reviewThreads node.
         "reviewThreads": {"nodes": [{"isResolved": thread} if isinstance(thread, bool) else thread for thread in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
@@ -253,18 +258,55 @@ def test_claude_is_called_in_for_a_third_round_to_review_a_fix():
     assert fake.calls == ["gh pr edit 7 -R o/app --add-label review:claude"]
 
 
-def test_claudes_rounds_used_on_a_merge_commit_leave_it_to_the_owner_not_the_cap():
-    # Claude reviewed two commits and a merge from main; the cap counts the two, so PR Auto-Merge
-    # still waits for a review, and Claude's 3 rounds are used: the owner decides (mpaulosky/dotfiles#193).
+def test_claudes_reviews_of_two_commits_and_a_merge_from_main_are_no_reason_to_stop_calling_it_in():
+    # Claude reviewed two commits and a merge from main: the merge is no round, and clean rounds never end the loop,
+    # so the head gets the label (mpaulosky/dotfiles#375, which replaces #193's "the owner decides").
     body = "<!-- claude-review -->\n**Claude Review**"
     rounds = [("github-actions", "1" * 40, body), ("github-actions", "2" * 40, body, "merge"), ("github-actions", "3" * 40, body)]
     fake = Fake({"o/app": [node(reviews=[NOTE, *rounds], contexts=GREEN)]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
-    lander.poll()
     text = printed(out)  # printed() empties the buffer, so read it once
-    assert "Claude's 3 review rounds are used, the owner decides" in text
-    assert "review cap" not in text
+    assert "the owner decides" not in text
+    assert fake.calls == [LABEL_CALL]
+
+
+def test_a_loop_of_three_dirty_rounds_is_left_to_pr_auto_merge_with_the_threads_left_open():
+    body = "<!-- claude-review -->\n**Claude Review**"
+    reviews = [NOTE, *[("github-actions", sha * 40, body, "dirty") for sha in "123"]]
+    fake = Fake({"o/app": [node(reviews=reviews, contexts=GREEN, threads=[False, False])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    text = printed(out)
+    assert "-> leave to PR Auto-Merge (review loop exhausted" in text and "2 thread(s) left open" in text
+    assert fake.calls == []
+
+
+def test_a_dirty_round_after_a_clean_one_doesnt_exhaust_the_loop_and_gets_the_label():
+    body = "<!-- claude-review -->\n**Claude Review**"
+    reviews = [NOTE, ("github-actions", "1" * 40, body, "dirty"), ("github-actions", "2" * 40, body, "dirty"),
+               ("github-actions", "3" * 40, body), ("github-actions", "4" * 40, body, "dirty")]
+    fake = Fake({"o/app": [node(reviews=reviews, contexts=GREEN)]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert "review loop exhausted" not in printed(out)
+    assert fake.calls == [LABEL_CALL]
+
+
+def test_claude_isnt_called_in_while_the_exhaustion_comment_is_the_newest_word_but_is_once_the_owner_re_adds_the_label():
+    marker = ("github-actions", "Review loop exhausted.\n\n" + landing.EXHAUSTED_MARKER + " " + HEAD + " -->", ago(3600))
+    # Copilot's quota note is on the head and the checks are green, but the label is the owner's to add after the comment.
+    clean_after = [NOTE, ("github-actions", "9" * 40, "<!-- claude-review -->\nNo findings.")]
+    fake = Fake({"o/app": [node(reviews=clean_after, contexts=GREEN, comments=[marker])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    text = printed(out)
+    assert "-> wait" in text and "review:claude" in text
+    assert fake.calls == []
+    # The owner adds review:claude after the comment (and the loop's rounds start over).
+    fake.open["o/app"] = [node(reviews=clean_after, contexts=GREEN, comments=[marker], events=[(ago(1800), "review:claude")])]
+    lander.poll()
+    assert fake.calls == [LABEL_CALL]
 
 
 def test_a_failed_review_claude_label_is_reported_as_failed():

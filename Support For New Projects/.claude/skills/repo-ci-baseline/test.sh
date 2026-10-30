@@ -623,6 +623,49 @@ grep -qF -- 'reviews H2 itself' "$automerge_doc" \
 if grep -qF -- 'skips it with a notice' "$automerge_doc" "$adr_0005"; then
   fail "references/automerge.md and ADR 0005 still say Claude Review skips a bot-pushed clean merge with a notice: it reviews H2 itself"
 fi
+# The review loop (mpaulosky/dotfiles#375): a round is a review of a non-merge commit, dirty when it raised a thread or an off-diff finding; the loop is
+# exhausted after MAX_CLAUDE_ROUNDS dirty rounds in a row. PR Auto-Merge then removes review:claude, documents the open threads in one comment and merges.
+adr_0002="$skill_dir/docs/adr/0002-copilot-review-cap-and-hand-back-hold.md"
+pr_process="$skill_dir/references/pr-process.md"
+for loop_doc in "$automerge_doc" "$pr_process" "$adr_0002" "$adr_0004" "$owned/docs/PROCESS.md"; do
+  grep -qiE 'exhaust' "$loop_doc" \
+    || fail "${loop_doc#"$skill_dir"/} must describe the exhausted review loop (MAX_CLAUDE_ROUNDS dirty rounds in a row), which mpaulosky/dotfiles#375 put in place of the review cap"
+  grep -qiE 'dirty|raised (at least one )?thread|drew threads' "$loop_doc" \
+    || fail "${loop_doc#"$skill_dir"/} must say what makes a round dirty (it raised a thread or an off-diff finding)"
+done
+grep -qF -- 'pr-automerge:review-loop-exhausted' "$automerge_doc" \
+  || fail "references/automerge.md must name the marker the exhaustion comment ends with (pr-automerge:review-loop-exhausted)"
+grep -qiE 'exhaustion comment|review-loop-exhausted' "$adr_0004" \
+  || fail "ADR 0004 must name the exhaustion comment PR Auto-Merge posts"
+grep -qiE 'supersede' "$adr_0002" \
+  || fail "ADR 0002 must say mpaulosky/dotfiles#375 supersedes its rule that every unresolved thread holds the merge, cap or not (the #146 decision)"
+grep -qF -- '#146' "$adr_0002" \
+  || fail "ADR 0002 must name the #146 decision it supersedes"
+for adr in "$adr_0002" "$adr_0004"; do
+  grep -qF -- 'mpaulosky/dotfiles#375' "$adr" || fail "${adr#"$skill_dir"/} must cite mpaulosky/dotfiles#375"
+done
+# Docs of today's behaviour no longer say a PR waits for the owner at the cap, or that threads hold past it.
+for current_doc in "$automerge_doc" "$pr_process" "$skill_dir/SKILL.md" "$skill_dir/references/gotchas.md" "$owned/docs/PROCESS.md"; do
+  if grep -qE 'the owner decides|cap or not|past the (review )?cap too|Adding the label again past the cap' "$current_doc"; then
+    fail "${current_doc#"$skill_dir"/} still says a PR waits for the owner at the cap or that unresolved threads hold past it: an exhausted review loop is documented in one comment and merges (mpaulosky/dotfiles#375)"
+  fi
+done
+if grep -qF -- 'hold the merge for at most three review rounds' "$skill_dir/references/github-settings.md"; then
+  fail "references/github-settings.md still says review threads hold the merge for at most three review rounds: an exhausted loop merges with its threads open, documented in one comment (mpaulosky/dotfiles#375)"
+fi
+# The Owned workflow's header and constants say the same, and the settings reader still finds the cap's 3.
+pr_automerge="$owned/.github/workflows/pr-automerge.yml"
+header="$(sed -n '1,/^"on":/p' "$pr_automerge")"
+grep -qiE 'exhaust' <<<"$header" || fail "pr-automerge.yml's header must describe the exhausted review loop"
+if grep -qF -- 'Past the cap every unresolved thread still holds' <<<"$header"; then
+  fail "pr-automerge.yml's header still says every unresolved thread holds the merge past the cap"
+fi
+grep -qE 'const COPILOT_REVIEW_CAP = 3;' "$pr_automerge" \
+  || fail "pr-automerge.yml must keep 'const COPILOT_REVIEW_CAP = 3;': github-settings.sh and settings.py read the cap by that line"
+grep -qE 'const MAX_CLAUDE_ROUNDS = 3;' "$pr_automerge" \
+  || fail "pr-automerge.yml must keep 'const MAX_CLAUDE_ROUNDS = 3;'"
+grep -qF -- 'const EXHAUSTED_MARKER = "<!-- pr-automerge:review-loop-exhausted";' "$pr_automerge" \
+  || fail "pr-automerge.yml must declare the exhaustion marker github/landing.py's EXHAUSTED_MARKER must equal"
 # The record-head job of the Owned sandcastle.yml posts the comment lib/follow-up.mts#approvedHeadOf reads, from the label event's head.
 sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
 head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"

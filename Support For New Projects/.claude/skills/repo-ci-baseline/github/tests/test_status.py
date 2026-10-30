@@ -508,7 +508,7 @@ def state_of(node, **kwargs):
 
 
 def test_the_line_shows_an_exhausted_loop_as_ready_to_merge_with_the_threads_left_open():
-    node = pr_node(reviews=DIRTY3, threads=[False, False, True], contexts=GREEN)
+    node = pr_node(reviews=DIRTY3, threads=[open_thread(), open_thread(), thread_node(resolved=True)], contexts=GREEN)
     _, out, _ = run(["owner/app"], {"owner/app": repo(node)})
 
     assert "threads:2" in out

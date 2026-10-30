@@ -33,8 +33,13 @@ skill lands PRs by (references/automerge.md):
   main is never one), dirty when it raised a thread or an off-diff finding.
   Neither reviewer is asked for then, and the workflow documents the loop in
   one comment and lets the PR merge: it no longer waits for a review of the
-  head, nor holds on the threads and off-diff findings still open, so the PR
-  goes on to its checks and is left to the workflow;
+  head, nor holds on the threads Copilot and Claude opened and the off-diff
+  findings still open, so the PR goes on to its checks and is left to the
+  workflow. A thread a person opened still holds the merge, and the
+  workflow's comment names it (open_person_threads). The loop restarts at the
+  first review:claude add by a login with write access after the round that
+  exhausted it (current_loop()), and the label is ignored while Copilot can
+  review: Claude reviews only where Copilot can't (mpaulosky/dotfiles#378);
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note,
@@ -282,14 +287,63 @@ class LoopWalk:
     restarted: bool = False
 
 
+def round_epoch(round_):
+    """The round's submission time in epoch seconds, or None when it is unknown."""
+    try:
+        return datetime.fromisoformat(round_.at.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
 def current_loop(rounds, adds):
-    """Walk the loop's generations (mpaulosky/dotfiles#378): Not implemented."""
-    raise NotImplementedError("Not implemented")
+    """Walk the loop's generations: the rounds that count after the restarts (mpaulosky/dotfiles#378).
+
+    rounds are the PR's Rounds, oldest first; adds are (epoch seconds, writer)
+    for each review:claude `labeled` event, oldest first, writer True (the actor
+    has write access to the repo), False, or None (the permission couldn't be
+    read). A loop that reached MAX_CLAUDE_ROUNDS dirty rounds in a row is
+    restarted by the first add after the round that got it there by a login with
+    write access: only the rounds after the add count. An add by anyone else is
+    ignored, and one whose permission can't be read leaves the loop unread
+    (fail closed: no restart, and the PR isn't called exhausted). Callers pass
+    no adds while Copilot can review, since the label is ignored then. PR
+    Auto-Merge's reviewLoopState() does the same.
+    """
+    start = float("-inf")
+    restarted = False
+    while True:
+        generation = tuple(item for item in rounds if start == float("-inf") or (round_epoch(item) or float("-inf")) > start)
+        hit = None
+        streak = 0
+        for item in generation:
+            streak = streak + 1 if item.dirty else 0
+            if streak == MAX_CLAUDE_ROUNDS:
+                hit = round_epoch(item)
+                break
+        if streak < MAX_CLAUDE_ROUNDS or hit is None:
+            return LoopWalk(generation, None, False, restarted)
+        restart = None
+        for added, writer in adds:
+            if added <= hit:
+                continue
+            if writer is None:
+                return LoopWalk(generation, hit, True, restarted)
+            if writer:
+                restart = added
+                break
+        if restart is None:
+            return LoopWalk(generation, hit, False, restarted)
+        start = restart
+        restarted = True
 
 
 def thread_opened_by_person(thread):
-    """Whether a thread holds the merge at an exhausted loop (mpaulosky/dotfiles#378): Not implemented."""
-    raise NotImplementedError("Not implemented")
+    """Whether a thread holds the merge at an exhausted loop (mpaulosky/dotfiles#378).
+
+    Every thread but Copilot's and Claude Review's does, one whose author can't
+    be read included.
+    """
+    return not bot_thread(thread)
 
 
 @dataclass(frozen=True)
@@ -529,8 +583,11 @@ def decide(pr):
     exhausted = pr.loop_exhausted
     if not pr.reviewer_on_head and not exhausted:
         return review_needed(pr, checks)
-    # An exhausted loop is documented in a comment and merges with its threads
-    # and off-diff findings open: neither holds it (mpaulosky/dotfiles#375).
+    # An exhausted loop is documented in a comment and merges with the threads Copilot
+    # and Claude opened and the off-diff findings open: neither holds it
+    # (mpaulosky/dotfiles#375). A thread a person opened still does (#378).
+    if exhausted and pr.open_person_threads:
+        return Decision(WAIT, f"review loop exhausted, but {pr.open_person_threads} thread(s) opened by a person hold the merge")
     if not exhausted:
         if pr.open_threads:
             return Decision(WAIT, f"{pr.open_threads} open thread(s)")
@@ -540,7 +597,7 @@ def decide(pr):
         return Decision(WAIT, "no required checks; waiting for: " + ", ".join(checks.running))
     if exhausted:
         reviewed = (f"review loop exhausted ({MAX_CLAUDE_ROUNDS} rounds with findings in a row), ready to merge, "
-                    f"{pr.open_threads} thread(s) left open")
+                    f"{pr.open_threads - pr.open_person_threads} thread(s) left open")
     else:
         reviewed = f"{pr.head_reviewer.capitalize()} reviewed the head, no open threads"
     reason = reviewed + ("" if checks.green else ", required checks running")
@@ -559,7 +616,8 @@ def review_needed(pr, checks):
         return Decision(WAIT, waiting + "; Copilot is requested")
     # The label means Claude is on its way only until it has reviewed the head: a review
     # of a head Copilot neither declined nor dropped covers nothing, and none further is coming.
-    if pr.claude_requested and pr.head not in pr.claude_reviewed:
+    # Claude reviews only where Copilot can't: with Copilot available the label is ignored (mpaulosky/dotfiles#378).
+    if pr.claude_requested and pr.head not in pr.claude_reviewed and (declined or pr.copilot_gone):
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
     if not (declined or pr.copilot_gone):
         if pr.copilot_asked:
@@ -569,6 +627,9 @@ def review_needed(pr, checks):
     # since: automation never adds it then (mpaulosky/dotfiles#375).
     if pr.exhaustion_marker_newest:
         return Decision(WAIT, waiting + f"; the review loop was exhausted and documented, add {REVIEW_CLAUDE} to start a new loop")
+    # A loop that could be exhausted and can't be read might be: a paid review of it could be wasted.
+    if pr.loop_unread:
+        return Decision(WAIT, waiting + "; the review loop's comments or label events couldn't be read, so Claude isn't called in")
     running = [name for name in checks.running if name not in CLAUDE_CHECKS]
     if running:
         return Decision(WAIT, waiting + "; waiting for checks before calling in Claude: " + ", ".join(running))

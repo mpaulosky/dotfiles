@@ -276,7 +276,9 @@ def test_claudes_reviews_of_two_commits_and_a_merge_from_main_are_no_reason_to_s
 def test_a_loop_of_three_dirty_rounds_is_left_to_pr_auto_merge_with_the_threads_left_open():
     body = "<!-- claude-review -->\n**Claude Review**"
     reviews = [NOTE, *[("github-actions", sha * 40, body, "dirty") for sha in "123"]]
-    fake = Fake({"o/app": [node(reviews=reviews, contexts=GREEN, threads=[False, False])]})
+    # Copilot's threads: a person's would hold the merge (mpaulosky/dotfiles#378).
+    threads = [thread_by("copilot-pull-request-reviewer", "Bot")] * 2
+    fake = Fake({"o/app": [node(reviews=reviews, contexts=GREEN, threads=threads)]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     text = printed(out)

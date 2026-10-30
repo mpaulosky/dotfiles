@@ -1619,21 +1619,45 @@ test("retries the re-read when it throws and requests once a read works (mpaulos
   assert.equal(order.filter((step) => step === "re-read").length, 2, order.join(","));
 });
 
-test("makes no request when its own record never shows in the re-reads, and says so (mpaulosky/dotfiles#369)", async () => {
+// mpaulosky/dotfiles#374: a record that never shows no longer leaves the request unmade. A repeat
+// request with union: true is idempotent, so the worst case is a second request, never a second review.
+test("requests anyway when its own record never shows in the re-reads, and warns that it does (mpaulosky/dotfiles#374)", async () => {
   const { asked, requests, order, logs } = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3 });
 
   assert.equal(asked.length, 1, "the record stays");
-  assert.deepEqual(requests, []);
+  assert.equal(requests.length, 1, "one request, made anyway");
   assert.equal(order.filter((step) => step === "re-read").length, 3, order.join(","));
-  assert.ok(logs.some((line) => /Couldn't find this run's record of the ask/.test(line)), logs.join("\n"));
+  assert.ok(
+    logs.some((line) => line.startsWith("warning: ") && /Couldn't find this run's record of the ask/.test(line) && /anyway/.test(line)),
+    logs.join("\n")
+  );
+  assert.ok(!logs.some((line) => /so it wasn't made/.test(line)), logs.join("\n"));
 });
 
-test("makes no request when every re-read throws, and says so (mpaulosky/dotfiles#369)", async () => {
-  const { asked, requests, logs } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3 });
+test("requests anyway when every re-read throws a plain error, and warns that it does (mpaulosky/dotfiles#374)", async () => {
+  const { asked, requests, order, logs } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3 });
 
   assert.equal(asked.length, 1, "the record stays");
-  assert.deepEqual(requests, []);
-  assert.ok(logs.some((line) => /Couldn't re-read PR #7 after recording the ask/.test(line)), logs.join("\n"));
+  assert.equal(requests.length, 1, "one request, made anyway");
+  assert.equal(order.filter((step) => step === "re-read").length, 3, order.join(","));
+  assert.ok(
+    logs.some((line) => line.startsWith("warning: ") && /Couldn't re-read PR #7 after recording the ask/.test(line) && /anyway/.test(line)),
+    logs.join("\n")
+  );
+  assert.ok(!logs.some((line) => /so it wasn't made/.test(line)), logs.join("\n"));
+});
+
+test("a run that requests anyway makes the request after its last re-read (mpaulosky/dotfiles#374)", async () => {
+  const { requests, order } = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3 });
+
+  assert.equal(requests.length, 1);
+  assert.ok(order.indexOf("request") > order.lastIndexOf("re-read"), order.join(","));
+});
+
+test("a sweep requests anyway when its own record never shows in the re-reads (mpaulosky/dotfiles#374)", async () => {
+  const { requests } = await evaluate(readyPr(unreviewed), [], { push: true, ownRecordHiddenReads: 3 });
+
+  assert.equal(requests.length, 1);
 });
 
 // An error that ends a run: a 429 (rate limit) or a 401 (bad token).
@@ -1662,16 +1686,24 @@ for (const status of [429, 401]) {
   });
 }
 
-test("finds its own record by its id: another run's visible record doesn't stand in for a hidden one (mpaulosky/dotfiles#369)", async () => {
+test("finds its own record by its id: another run's visible record doesn't stand in for a hidden one, so it requests anyway (mpaulosky/dotfiles#374)", async () => {
   const hidden = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3, rivalOffsetMs: 50 });
 
-  assert.deepEqual(hidden.requests, []);
+  assert.equal(hidden.requests.length, 1);
   assert.equal(hidden.order.filter((step) => step === "re-read").length, 3, hidden.order.join(","));
-  assert.ok(hidden.logs.some((line) => /Couldn't find this run's record of the ask/.test(line)), hidden.logs.join("\n"));
+  assert.ok(hidden.logs.some((line) => /Couldn't find this run's record of the ask/.test(line) && /anyway/.test(line)), hidden.logs.join("\n"));
 
   const lagging = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 1, rivalOffsetMs: 50 });
 
   assert.equal(lagging.requests.length, 1, "its own record shows on the second read and is listed first");
+  assert.ok(!lagging.logs.some((line) => /anyway/.test(line)), "no warning when the record shows");
+});
+
+test("a run whose own record shows listed after another run's still stands down, with no request and no warning (mpaulosky/dotfiles#374)", async () => {
+  const { requests, logs } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50 });
+
+  assert.deepEqual(requests, []);
+  assert.ok(!logs.some((line) => /anyway/.test(line)), logs.join("\n"));
 });
 
 test("the record listed first wins whatever the createdAt says, and a tie goes to the one listed first (mpaulosky/dotfiles#369)", async () => {

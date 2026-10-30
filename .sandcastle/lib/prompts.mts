@@ -46,7 +46,8 @@ export const PR_BODY_RULES = [
   "  letters. Only a person's local review writes that section, and the host reads your text as a reader sees it.",
   "- Don't name another issue with a closing keyword (`Closes`, `Fixes`, `Resolves` and their other forms before `#<n>`, `owner/repo#<n>` or an issue URL):",
   "  GitHub would close it when the PR merges. Refer to it without a keyword (\"see #<n>\"). The host adds the line that closes this issue itself.",
-  "- Don't @mention anyone outside a code span: GitHub would notify them.",
+  "- Don't write `@name` anywhere: GitHub would notify them. The one exception is an `@` placed directly after an opening backtick, as in `` `@copilot` ``.",
+  "  In a longer code span, such as `` `npm install @types/node` ``, the host still sees `@name` and refuses the body, so rephrase it.",
   "- Don't write `<!--`: the host's markers start with it. Add no marker or sign-off line of your own.",
 ].join("\n");
 

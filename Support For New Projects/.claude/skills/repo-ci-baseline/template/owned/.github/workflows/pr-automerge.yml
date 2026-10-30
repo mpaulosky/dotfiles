@@ -1320,7 +1320,7 @@ jobs:
                 return false;
               }
               // Two runs can both have read "no record" and both posted one.
-              // Read the comments again: only the run whose record is the
+              // Read the comments again: only the run whose record is
               // listed first makes the request (mpaulosky/dotfiles#369). GraphQL
               // can lag behind the REST write, so a read that fails or doesn't
               // show this run's record is tried again, up to COPILOT_ASK_REREADS

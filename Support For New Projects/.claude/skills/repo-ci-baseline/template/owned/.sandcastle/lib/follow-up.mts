@@ -18,6 +18,7 @@
 
 import { discardClosedWork, isHandOffBranch, isIssueBranch, type BranchRefs } from "./branches.mts";
 import {
+  APPROVAL_LAPSED_MARKER,
   APPROVED_HEAD_MARKER,
   BUILDING_LABEL,
   COPILOT_REREQUEST_AFTER_MS,
@@ -218,6 +219,14 @@ const sameLogin = (login: string | null, other: string) => login !== null && log
 // The comment that records `head` as a head of a hand-off PR the owner approved, or reached from one through merges of main (see handOffApproval).
 export function approvedHeadComment(head: string): string {
   return `${APPROVED_HEAD_MARKER} ${head} -->\nSandcastle follows this pull request up from ${head.slice(0, 7)}: the head the owner approved, or a merge of main made on top of it.`;
+}
+
+// The comment the sweep posts once on a hand-off PR skipped because `head` isn't one the host recorded as approved, so the owner sees why
+// it is no longer followed up and what to do.
+export function approvalLapsedComment(head: string): string {
+  void APPROVAL_LAPSED_MARKER;
+  void head;
+  throw new Error("Not implemented");
 }
 
 // The head a comment records as approved, or undefined when it doesn't open with the marker.
@@ -447,6 +456,8 @@ export type FollowUpGitHub = {
   mergeOfMain(commit: string): MainMerge;
   // Records a head that handOffApproval verified through merges of main, as the host. live: recordApprovedHead.
   recordApprovedHead(number: number, head: string): void;
+  // Posts a comment on a PR, as the host. live: commentOnPullRequest.
+  commentOnPullRequest(number: number, body: string): void;
 };
 
 // mainMergeOf for the signed-in host: the merge must be authored by that login. `host` and `merge` are injectable for the test.
@@ -475,6 +486,7 @@ export const liveFollowUpGitHub: FollowUpGitHub = {
   pullRequestComments: (number) => issueComments(number),
   mergeOfMain: (commit) => liveMergeOfMain(commit),
   recordApprovedHead: (number, head) => recordApprovedHead(number, head),
+  commentOnPullRequest: (number, body) => commentOnPullRequest(number, body),
 };
 
 // How a review thread stands with the follow-up pass (threadStanding): the

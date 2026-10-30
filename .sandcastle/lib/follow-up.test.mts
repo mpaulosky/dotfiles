@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { BranchRefs } from "./branches.mts";
 import {
+  APPROVAL_LAPSED_MARKER,
   APPROVED_HEAD_MARKER,
   COPILOT_REVIEWER,
   FOLLOW_UP_LABEL,
@@ -15,6 +16,7 @@ import {
 import type { ClosedPullRequest, ContentEdit, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent, MainMerge, TimestampedComment } from "./github.mts";
 import {
   admitToSweep,
+  approvalLapsedComment,
   closedPrHandBackComment,
   closedWithoutMerging,
   decide,
@@ -595,6 +597,7 @@ function stubGithub({
   pullRequestComments,
   mergeOfMain = () => ({ problem: "not stubbed" }),
   recordApprovedHead = () => {},
+  commentOnPullRequest,
 }: {
   prs?: SweepPullRequest[];
   closed?: ClosedPullRequest[];
@@ -616,6 +619,8 @@ function stubGithub({
   // Whether a commit is a merge of main GitHub made for the host; by default none is.
   mergeOfMain?: (commit: string) => MainMerge;
   recordApprovedHead?: (number: number, head: string) => void;
+  // Posts a comment as the host; by default it is recorded and goes nowhere else.
+  commentOnPullRequest?: (number: number, body: string) => void;
 } = {}) {
   const reviewThreadCalls: number[] = [];
   const requestedReviews: string[] = [];
@@ -623,6 +628,7 @@ function stubGithub({
   const handBacks: { issueNumber: number; reason: string; body: string }[] = [];
   const closedCalls: string[] = [];
   const addedPrLabels: { number: number; label: string }[] = [];
+  const postedComments: { number: number; body: string }[] = [];
   const github: FollowUpGitHub = {
     hostLogin: () => host,
     openPullRequests: () => prs,
@@ -646,6 +652,10 @@ function stubGithub({
       prs.filter((candidate) => candidate.number === number).map((candidate) => headRecord(candidate.headRefOid, host)),
     mergeOfMain,
     recordApprovedHead,
+    commentOnPullRequest: (number, body) => {
+      postedComments.push({ number, body });
+      commentOnPullRequest?.(number, body);
+    },
     reviewThreads: (number) => {
       reviewThreadCalls.push(number);
       if (reviewThreads !== undefined) return reviewThreads(number);
@@ -659,7 +669,7 @@ function stubGithub({
       }));
     },
   };
-  return { github, requestedReviews, updatedBranches, handBacks, closedCalls, addedPrLabels, reviewThreadCalls };
+  return { github, requestedReviews, updatedBranches, handBacks, closedCalls, addedPrLabels, reviewThreadCalls, postedComments };
 }
 
 // A thread of review comments, the first by `author`. `byBot` marks a bot's
@@ -891,6 +901,7 @@ describe("sweepPullRequests", () => {
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
       recordApprovedHead: () => {},
+      commentOnPullRequest: () => {},
     };
 
     sweepPullRequests(github, () => {}, NOW);
@@ -1201,6 +1212,7 @@ describe("sweepPullRequests", () => {
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
       recordApprovedHead: () => {},
+      commentOnPullRequest: () => {},
     };
     const lines: string[] = [];
 
@@ -1371,6 +1383,7 @@ describe("sweepPullRequests", () => {
       pullRequestComments: () => [],
       mergeOfMain: () => ({ problem: "not stubbed" }),
       recordApprovedHead: () => {},
+      commentOnPullRequest: () => {},
     };
     const outcomes = new OutcomeReport();
 
@@ -3086,6 +3099,269 @@ describe("admitToSweep", () => {
     };
 
     assert.deepEqual(admitToSweep(handOffPr(), context(), github, () => ownerLabelled, () => {}), { subject: { kind: "hand-off" } });
+  });
+});
+
+describe("approvalLapsedComment", () => {
+  const head = "0123456789abcdef0123456789abcdef01234567";
+
+  it("opens with the marker and the full head, so a later sweep can tell which head it was posted for", () => {
+    assert.ok(approvalLapsedComment(head).startsWith(`${APPROVAL_LAPSED_MARKER} ${head} -->`), approvalLapsedComment(head));
+  });
+
+  it("is not the comment that records a head as approved", () => {
+    assert.equal(approvedHeadOf(approvalLapsedComment(head)), undefined);
+    assert.ok(!approvalLapsedComment(head).includes(APPROVED_HEAD_MARKER));
+  });
+
+  it("tells the owner the PR is no longer followed up, from which head, and to remove and re-add the label once they have looked at the branch", () => {
+    const body = approvalLapsedComment(head);
+
+    assert.match(body, /no longer/i);
+    assert.ok(body.includes(head.slice(0, 7)), body);
+    assert.ok(body.includes(FOLLOW_UP_LABEL), body);
+    assert.match(body, /remove and re-add/i);
+  });
+
+  it("differs for another head", () => {
+    assert.notEqual(approvalLapsedComment(head), approvalLapsedComment("b".repeat(40)));
+  });
+});
+
+describe("sweepPullRequests comments on a hand-off PR whose follow-up approval lapsed", () => {
+  const behind = (overrides: Partial<SweepPullRequest> = {}) => handOffPr({ mergeStateStatus: "BEHIND", ...overrides });
+  const owned = (extra: Parameters<typeof stubGithub>[0] = {}): Parameters<typeof stubGithub>[0] => ({
+    isOwner: ownerIs(OWNER),
+    pullRequestEvents: () => ownerLabelled,
+    ...extra,
+  });
+  // The comments of a PR as GitHub keeps them: what the host posts is read back by the next sweep.
+  const thread201 = (initial: TimestampedComment[] = []) => {
+    const comments = [...initial];
+    return {
+      comments,
+      options: {
+        pullRequestComments: () => comments,
+        commentOnPullRequest: (_number: number, body: string) =>
+          void comments.push({ author: HOST, body, createdAt: "2026-10-10T11:00:00Z", updatedAt: "2026-10-10T11:00:00Z" }),
+      },
+    };
+  };
+
+  it("comments once on the PR when its head isn't one the host recorded", () => {
+    const { github, postedComments } = stubGithub(owned({ prs: [behind()], pullRequestComments: () => [] }));
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(postedComments, [{ number: 201, body: approvalLapsedComment(HEAD_SHA) }]);
+  });
+
+  it("comments only once across sweeps of the same head", () => {
+    const { comments, options } = thread201();
+    const { github, postedComments } = stubGithub(owned({ prs: [behind()], ...options }));
+
+    sweepPullRequests(github, () => {}, NOW);
+    sweepPullRequests(github, () => {}, NOW);
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.equal(postedComments.length, 1);
+    assert.equal(comments.length, 1);
+  });
+
+  it("still logs that the PR isn't swept on the sweeps after the comment", () => {
+    const { options } = thread201();
+    const { github } = stubGithub(owned({ prs: [behind()], ...options }));
+    const lines: string[] = [];
+
+    sweepPullRequests(github, () => {}, NOW);
+    sweepPullRequests(github, (line) => lines.push(line), NOW);
+
+    assert.ok(lines.some((line) => line.includes("PR #201 isn't swept") && line.includes("recorded as approved")), lines.join("\n"));
+  });
+
+  it("does not follow the PR up on the sweep that comments", () => {
+    const { github, updatedBranches } = stubGithub(owned({ prs: [behind()], pullRequestComments: () => [] }));
+
+    const result = sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(updatedBranches, []);
+    assert.deepEqual(result, { needsPass: [], passes: [] });
+  });
+
+  it("comments again when a later push leaves another unrecorded head", () => {
+    const { options } = thread201();
+    const first = stubGithub(owned({ prs: [behind()], ...options }));
+    const second = stubGithub(owned({ prs: [behind({ headRefOid: PUSHED_SHA })], ...options }));
+
+    sweepPullRequests(first.github, () => {}, NOW);
+    sweepPullRequests(second.github, () => {}, NOW);
+
+    assert.deepEqual(first.postedComments, [{ number: 201, body: approvalLapsedComment(HEAD_SHA) }]);
+    assert.deepEqual(second.postedComments, [{ number: 201, body: approvalLapsedComment(PUSHED_SHA) }]);
+  });
+
+  it("comments despite the same notice from someone who isn't the host, which anyone can post", () => {
+    const forged: TimestampedComment = { author: "a-stranger", body: approvalLapsedComment(HEAD_SHA), createdAt: RECORDED_AT, updatedAt: RECORDED_AT };
+    const { github, postedComments } = stubGithub(owned({ prs: [behind()], pullRequestComments: () => [forged] }));
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.equal(postedComments.length, 1);
+  });
+
+  it("comments on every such PR, each on its own head", () => {
+    const other = behind({ number: 202, id: "PR_202", headRefName: "chore/another-tidy", headRefOid: PUSHED_SHA });
+    const { github, postedComments } = stubGithub(owned({ prs: [behind(), other], pullRequestComments: () => [] }));
+
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.deepEqual(postedComments, [
+      { number: 201, body: approvalLapsedComment(HEAD_SHA) },
+      { number: 202, body: approvalLapsedComment(PUSHED_SHA) },
+    ]);
+  });
+
+  it("logs a comment that can't be posted, still sweeps the other PRs, and tries again on the next sweep", () => {
+    const other = behind({ number: 202, id: "PR_202", headRefName: "chore/another-tidy" });
+    let failing = true;
+    const { github, updatedBranches, postedComments } = stubGithub(
+      owned({
+        prs: [behind({ headRefOid: "b".repeat(40), reviews: [{ author: COPILOT_REVIEWER, commitOid: "b".repeat(40) }] }), other],
+        pullRequestComments: (number) => (number === 202 ? [headRecord(HEAD_SHA, HOST)] : []),
+        commentOnPullRequest: () => {
+          if (failing) throw new Error("gh pr comment failed: HTTP 502");
+        },
+      }),
+    );
+    const lines: string[] = [];
+
+    sweepPullRequests(github, (line) => lines.push(line), NOW);
+    failing = false;
+    sweepPullRequests(github, () => {}, NOW);
+
+    assert.ok(lines.some((line) => line.includes("PR #201") && line.includes("HTTP 502")), lines.join("\n"));
+    assert.deepEqual(updatedBranches, [{ number: 202, expectedHeadSha: HEAD_SHA }, { number: 202, expectedHeadSha: HEAD_SHA }]);
+    assert.deepEqual(postedComments.map((comment) => comment.number), [201, 201]);
+  });
+
+  describe("posts nothing", () => {
+    it("on a hand-off PR whose head is recorded", () => {
+      const { github, postedComments } = stubGithub(owned({ prs: [behind()] }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("on a hand-off PR whose head is reached through a merge of main from a recorded one", () => {
+      const head = "b".repeat(40);
+      const { github, postedComments } = stubGithub(
+        owned({
+          prs: [behind({ headRefOid: head, reviews: [{ author: COPILOT_REVIEWER, commitOid: head }] })],
+          mergeOfMain: (commit) => (commit === head ? { firstParent: HEAD_SHA } : { problem: "not a merge" }),
+        }),
+      );
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("when the label doesn't count because someone who isn't the owner added it", () => {
+      const { github, postedComments } = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [labelledBy("a-stranger")], pullRequestComments: () => [] }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("when a stranger edited the description after the owner's label", () => {
+      const { github, postedComments } = stubGithub(
+        owned({
+          prs: [behind()],
+          pullRequestBodyEdits: () => [{ editor: "a-stranger", editedAt: "2026-10-09T11:00:00Z" }],
+          pullRequestComments: () => [],
+        }),
+      );
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("when someone who is neither the owner nor the host opened the PR", () => {
+      const { github, postedComments } = stubGithub(owned({ prs: [behind({ author: "a-stranger" })], pullRequestComments: () => [] }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("when the read of the merge that would reach a recorded head fails, since the head isn't known to be unrecorded", () => {
+      const { github, postedComments } = stubGithub(
+        owned({
+          prs: [behind()],
+          pullRequestComments: () => [],
+          mergeOfMain: () => {
+            throw new Error("gh api failed: HTTP 502");
+          },
+        }),
+      );
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("on a draft hand-off PR with an unrecorded head, which the sweep skips before it reads the approval", () => {
+      const { github, postedComments } = stubGithub(owned({ prs: [behind({ isDraft: true })], pullRequestComments: () => [] }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("in a run without the default queue scope, which doesn't follow hand-off PRs", () => {
+      const { github, postedComments } = stubGithub(owned({ prs: [behind()], followsHandOffs: false, pullRequestComments: () => [] }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("on a PR without the hand-off label", () => {
+      const { github, postedComments } = stubGithub(owned({ prs: [behind({ labels: [] })], pullRequestComments: () => [] }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("on a Sandcastle issue's PR", () => {
+      const { github, postedComments } = stubGithub({ prs: [pr({ mergeStateStatus: "BEHIND" })], pullRequestComments: () => [] });
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+  });
+});
+
+describe("admitToSweep and the lapsed approval's comment", () => {
+  it("posts nothing itself, so the read-only status report that shares it never writes to a PR", () => {
+    const github: AdmissionGitHub = {
+      pullRequestBodyEdits: () => [],
+      pullRequestComments: () => [],
+      mergeOfMain: () => ({ problem: "not a merge" }),
+      recordApprovedHead: () => {},
+      isOwner: ownerIs(OWNER),
+      repositoryOwner: () => OWNER,
+    };
+    const context = { inScope: IN_SCOPE, host: HOST, building: new Set<number>(), followsHandOffs: true };
+
+    const result = admitToSweep(handOffPr(), context, github, () => ownerLabelled, () => {});
+
+    assert.match("skip" in result ? result.skip : "", /recorded as approved/);
   });
 });
 

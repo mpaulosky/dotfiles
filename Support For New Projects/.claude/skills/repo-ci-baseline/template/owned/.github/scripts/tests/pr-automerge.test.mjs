@@ -276,9 +276,11 @@ async function evaluate(pr, events = [], options = {}) {
     askWaitMs = 0,
     askPollMs = 0,
     // A second run's record of the same ask (mpaulosky/dotfiles#369): it shows
-    // on every read after this run posted its own, written rivalOffsetMs after
-    // it (negative: before it), by rivalLogin. The first read, before this
-    // run posted, never shows it: that's the race, both runs read "none".
+    // on every read after this run posted its own, by rivalLogin, with a
+    // createdAt rivalOffsetMs after this run's (negative: before it). Only its
+    // createdAt follows the offset; where it is listed follows rivalFirst. The
+    // first read, before this run posted, never shows it: that's the race,
+    // both runs read "none".
     rivalOffsetMs,
     rivalLogin = ACTIONS,
     // The re-reads after this run's record that don't show it yet (GraphQL
@@ -289,8 +291,9 @@ async function evaluate(pr, events = [], options = {}) {
     // or 429 ends a run).
     reReadError = new Error("Server error on the re-read"),
     // Whether the rival's record is listed before this run's own, whatever its
-    // createdAt: GitHub lists comments oldest first, so that is what decides.
-    // Defaults to the rival being earlier (a negative rivalOffsetMs).
+    // createdAt: GitHub lists comments oldest first, and the first record
+    // listed is the one that decides. Unset, the rival is listed first when its
+    // offset is negative, as it would be if its createdAt were true to the order.
     rivalFirst,
     // The pause between the re-reads, in ms (the workflow's COPILOT_ASK_REREAD_MS).
     askRereadMs = 0
@@ -1552,7 +1555,7 @@ test("the settle time is 30 seconds, and the 5-minute grace and its timeline que
 // Many events start a run for one PR within seconds, and the workflow has no
 // concurrency group, so two runs can both read "no record", both post one and
 // both request. Each run re-reads the comments after posting its record and
-// only the run whose record is the earliest makes the request (mpaulosky/dotfiles#369).
+// only the run whose record is listed first makes the request (mpaulosky/dotfiles#369).
 test("doesn't request Copilot's review when a second run's record is earlier than its own (mpaulosky/dotfiles#369)", async () => {
   const { asked, requests, addedLabels, merges, order } = await evaluate(readyPr(unreviewed), [], { rivalOffsetMs: -50 });
 
@@ -1633,28 +1636,31 @@ test("makes no request when every re-read throws, and says so (mpaulosky/dotfile
   assert.ok(logs.some((line) => /Couldn't re-read PR #7 after recording the ask/.test(line)), logs.join("\n"));
 });
 
-const rateLimited = (status) => Object.assign(new Error("Rate limited"), { status });
+// An error that ends a run: a 429 (rate limit) or a 401 (bad token).
+const endsRunWith = (status) => Object.assign(new Error(status === 429 ? "Rate limited" : "Bad credentials"), { status });
 
-test("a sweep whose re-read hits a rate limit ends the run at once: no retry and no request (mpaulosky/dotfiles#369)", async () => {
-  await assert.rejects(
-    () => evaluate(readyPr(unreviewed), [], { push: true, reReadErrors: 3, reReadError: rateLimited(429) }),
-    (error) => {
-      assert.equal(error.status, 429);
-      assert.deepEqual(error.observed.requests, []);
-      assert.equal(error.observed.order.filter((step) => step === "re-read").length, 1, error.observed.order.join(","));
-      return true;
-    }
-  );
-});
+for (const status of [429, 401]) {
+  test(`a sweep whose re-read fails with a ${status} ends the run at once: no retry and no request (mpaulosky/dotfiles#369)`, async () => {
+    await assert.rejects(
+      () => evaluate(readyPr(unreviewed), [], { push: true, reReadErrors: 3, reReadError: endsRunWith(status) }),
+      (error) => {
+        assert.equal(error.status, status);
+        assert.deepEqual(error.observed.requests, []);
+        assert.equal(error.observed.order.filter((step) => step === "re-read").length, 1, error.observed.order.join(","));
+        return true;
+      }
+    );
+  });
 
-test("a PR event whose re-read hits a rate limit doesn't retry it, makes no request and warns (mpaulosky/dotfiles#369)", async () => {
-  const { asked, requests, order, logs } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3, reReadError: rateLimited(401) });
+  test(`a PR event whose re-read fails with a ${status} doesn't retry it, makes no request and warns (mpaulosky/dotfiles#369)`, async () => {
+    const { asked, requests, order, logs } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3, reReadError: endsRunWith(status) });
 
-  assert.equal(asked.length, 1, "the record stays");
-  assert.deepEqual(requests, []);
-  assert.equal(order.filter((step) => step === "re-read").length, 1, order.join(","));
-  assert.ok(logs.some((line) => /Couldn't re-read PR #7 after recording the ask/.test(line)), logs.join("\n"));
-});
+    assert.equal(asked.length, 1, "the record stays");
+    assert.deepEqual(requests, []);
+    assert.equal(order.filter((step) => step === "re-read").length, 1, order.join(","));
+    assert.ok(logs.some((line) => /Couldn't re-read PR #7 after recording the ask/.test(line)), logs.join("\n"));
+  });
+}
 
 test("finds its own record by its id: another run's visible record doesn't stand in for a hidden one (mpaulosky/dotfiles#369)", async () => {
   const hidden = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 3, rivalOffsetMs: 50 });
@@ -1665,7 +1671,7 @@ test("finds its own record by its id: another run's visible record doesn't stand
 
   const lagging = await evaluate(readyPr(unreviewed), [], { ownRecordHiddenReads: 1, rivalOffsetMs: 50 });
 
-  assert.equal(lagging.requests.length, 1, "its own record shows on the second read and is the earliest listed");
+  assert.equal(lagging.requests.length, 1, "its own record shows on the second read and is listed first");
 });
 
 test("the record listed first wins whatever the createdAt says, and a tie goes to the one listed first (mpaulosky/dotfiles#369)", async () => {

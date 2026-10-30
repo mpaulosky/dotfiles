@@ -1238,7 +1238,7 @@ jobs:
 
             // The record that Copilot was asked to review this PR, read from
             // the PR's last 100 comments: { state, at } where state is "none"
-            // (no record), "asked" (the earliest record counts, at its time in
+            // (no record), "asked" (the record listed first counts, at its time in
             // ms; or this very run asked) or "unread" (the comments weren't
             // read, or more than a page exist and the record isn't among the
             // ones read). Only github-actions (this workflow) and the
@@ -1321,7 +1321,7 @@ jobs:
               }
               // Two runs can both have read "no record" and both posted one.
               // Read the comments again: only the run whose record is the
-              // earliest makes the request (mpaulosky/dotfiles#369). GraphQL
+              // listed first makes the request (mpaulosky/dotfiles#369). GraphQL
               // can lag behind the REST write, so a read that fails or doesn't
               // show this run's record is tried again, up to COPILOT_ASK_REREADS
               // times; if none shows it, the request is left unmade: the record

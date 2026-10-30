@@ -3282,7 +3282,9 @@ test("neither merges nor adds review:claude, and warns, when the label events ca
 test("reads the label events for the loop once its dirty streak has reached MAX_CLAUDE_ROUNDS, with or without a comment, and not before (mpaulosky/dotfiles#378)", async () => {
   const none = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }));
   const marked = await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), comments: documented() }));
-  const below = await evaluate(readyPr({ copilotReviews: copilotRounds("d d") }));
+  // Copilot's request is pending, so the run waits for it: an unreviewed head with no ask on record would be asked for
+  // (and called in for), and each of those passes reads the hand-back events again.
+  const below = await evaluate(readyPr({ copilotReviews: copilotRounds("d d"), reviewRequests: COPILOT_PENDING, comments: commentsOf(askedBy(ACTIONS, 3600)) }));
 
   // The two hand-back checks read them anyway.
   assert.equal(below.eventRequests.length, 2);

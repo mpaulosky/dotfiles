@@ -82,8 +82,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   - Until then every new non-merge head that nobody reviewed gets a review: Copilot's, or `review:claude` added where Copilot can't review it, even if an earlier removal
     took the label off. A clean review of the head, every thread resolved and the required checks green merges, as always.
   - **At exhaustion** the run takes `review:claude` off (`GITHUB_TOKEN`, #170; before the draft, hand-back and auto-merge checks, for any open same-repo PR into `main`),
-    posts **one comment** with `GITHUB_TOKEN` and then lets the PR merge once its required checks pass and it has no conflict. Exhaustion doesn't hold the merge,
-    and neither do the threads Copilot and Claude Review opened that are still unresolved then, nor Claude's findings outside the diff on the head: the comment is where they are kept,
+    posts **one comment** with `GITHUB_TOKEN` and then lets the PR merge once its required checks pass and it has no conflict. Exhaustion itself holds nothing,
+    and the threads Copilot and Claude Review opened that are still unresolved then hold nothing either, nor Claude's findings outside the diff on the head: the comment is where they are kept,
     so they can be resolved later. **A thread opened by a person still holds the merge** (an unreadable author counts as a person), and the log says so:
     `Waiting on PR #n: N unresolved review thread(s) opened by a person hold the merge`. This supersedes #146's rule that every unresolved thread held the merge, whatever the round,
     for the bots' threads only (mpaulosky/dotfiles#378). The comment names the head and says whether a review covers it (``The head `abc1234` was not reviewed.``, or that it is a clean merge of `main`

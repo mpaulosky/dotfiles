@@ -25,7 +25,7 @@ So one loop bounds both reviewers, counted in dirty rounds:
   a person's first, marked as holding the merge) and every finding outside the diff that Claude raised on the head and nobody answered,
   and ends with a hidden marker naming the head (`pr-automerge:review-loop-exhausted`), so it is posted once per exhaustion; a new dirty round after it gets a new comment.
   It is posted before the merge, so the record exists on the merged PR, and only once the PR is otherwise ready to merge (not BEHIND, no conflict, required checks green).
-  Exhaustion doesn't hold the merge, and neither do the threads Copilot and Claude Review opened that are still open then:
+  Exhaustion itself holds nothing, and the threads Copilot and Claude Review opened that are still open then hold nothing either:
   the comment is where they are kept, so they can be resolved later. **A thread a person opened still holds the merge**, and so does one whose author can't be read:
   a person's open thread is not the loop's to give up on. The fix for a third dirty round still merges without a review of its head.
 - The loop restarts at the first `review:claude` added after the round that exhausted it **by a login with write access to the repository** (the owner, or the PAT's account),

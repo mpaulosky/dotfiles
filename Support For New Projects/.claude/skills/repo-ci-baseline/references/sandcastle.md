@@ -199,7 +199,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   A commit anyone else pushes after the label, a force-push, or a record that couldn't be made (the job couldn't read the pull request's head, or its post failed three times) leaves the head unapproved,
   and the pull request is not followed up until the owner removes and re-adds the label.
   The sweep says so on the pull request: when the owner's label counts and only the head is unrecorded, it comments once for that head
-  (`approvalLapsedComment`, opening with `APPROVAL_LAPSED_MARKER`; a later unrecorded head gets its own comment).
+  (`approvalLapsedComment`, opening with `APPROVAL_LAPSED_MARKER`; a later unrecorded head gets its own comment),
+  but only once the label is `APPROVAL_LAPSED_GRACE_MS` (15 minutes) old, since a head just labelled may still be waiting for its record.
   The record needs the Sandcastle workflow in Actions with `SANDCASTLE_GH_TOKEN` set, and that token must belong to the account the sweep runs as (`signedInHostLogin`):
   a repo that runs Sandcastle only locally, or whose token is another account's, can't hand a pull request off.
   A pull request labelled before a repo got this job has no record and stops being followed up (the log says why): remove the label and add it again.

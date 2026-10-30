@@ -16,6 +16,7 @@ import {
 import type { ClosedPullRequest, ContentEdit, IssueEvent, PullRequestIdentity, ReviewThread, TimelineLabelEvent, MainMerge, TimestampedComment } from "./github.mts";
 import {
   admitToSweep,
+  APPROVAL_LAPSED_GRACE_MS,
   approvalLapsedComment,
   closedPrHandBackComment,
   closedWithoutMerging,
@@ -3263,6 +3264,47 @@ describe("sweepPullRequests comments on a hand-off PR whose follow-up approval l
       );
 
       sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("when the owner added the label moments ago, since the record may not be posted yet", () => {
+      const justNow = new Date(NOW - 60 * 1000).toISOString();
+      const { github, postedComments } = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => [labelledBy(OWNER, justNow)], pullRequestComments: () => [] }));
+
+      sweepPullRequests(github, () => {}, NOW);
+
+      assert.deepEqual(postedComments, []);
+    });
+
+    it("until the label is as old as the grace period, then comments once on a later sweep", () => {
+      const labelledAt = NOW - APPROVAL_LAPSED_GRACE_MS + 1000;
+      const events = [labelledBy(OWNER, new Date(labelledAt).toISOString())];
+      const { options } = thread201();
+      const { github, postedComments } = stubGithub(owned({ prs: [behind()], pullRequestEvents: () => events, ...options }));
+
+      sweepPullRequests(github, () => {}, NOW);
+      assert.deepEqual(postedComments, []);
+      sweepPullRequests(github, () => {}, NOW + 1000);
+      sweepPullRequests(github, () => {}, NOW + 2000);
+
+      assert.deepEqual(postedComments, [{ number: 201, body: approvalLapsedComment(HEAD_SHA) }]);
+    });
+
+    it("when the record arrives after a sweep inside the grace period", () => {
+      const justNow = new Date(NOW - 60 * 1000).toISOString();
+      let recorded = false;
+      const { github, postedComments } = stubGithub(
+        owned({
+          prs: [behind()],
+          pullRequestEvents: () => [labelledBy(OWNER, justNow)],
+          pullRequestComments: () => (recorded ? [headRecord(HEAD_SHA, HOST, new Date(NOW).toISOString())] : []),
+        }),
+      );
+
+      sweepPullRequests(github, () => {}, NOW);
+      recorded = true;
+      sweepPullRequests(github, () => {}, NOW + APPROVAL_LAPSED_GRACE_MS);
 
       assert.deepEqual(postedComments, []);
     });

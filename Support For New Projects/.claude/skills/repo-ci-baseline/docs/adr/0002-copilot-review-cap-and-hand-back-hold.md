@@ -33,7 +33,7 @@ So one loop bounds both reviewers, counted in dirty rounds:
   and the run waits (it fails closed). A PR with no comment yet gets the old loop's comment first, then counts the new loop.
   PR Auto-Merge never adds the label while the comment is the newest word on the PR.
 - **Claude reviews only where Copilot can't**, and a PR never gets both reviewers' reviews. Copilot can't review the PR when its quota note is on the head, or it is gone (asked,
-  the ask settled and no request pending). While Copilot can review, `review:claude` is ignored while Copilot can review it: PR Auto-Merge takes it off at once, whoever added it
+  the ask settled and no request pending). So `review:claude` is ignored while Copilot can review: PR Auto-Merge takes it off at once, whoever added it
   (the owner included: no exception), and `claude-review.yml` starts no paid review. The label's only job is to call Claude in where Copilot is out.
 
 A thread belongs to whoever wrote its first comment.

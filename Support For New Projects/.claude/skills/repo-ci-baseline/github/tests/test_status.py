@@ -292,7 +292,7 @@ def fake_graphql(monkeypatch, repo_data, threads_by_id):
     def graphql(query, *fields, **raw):
         if query == st.COMMENTS_QUERY:
             return {"node": {"comments": comments_of()}}
-        if query == st.EVENTS_QUERY and st.EVENTS_QUERY:
+        if query == st.EVENTS_QUERY:
             return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
         calls.append(raw.get("id"))
         if query == st.THREADS_QUERY:
@@ -426,7 +426,7 @@ def comments_graphql(monkeypatch, repo_data, comments_by_id):
     asked_ids = []
 
     def graphql(query, *fields, **raw):
-        if st.EVENTS_QUERY and query == st.EVENTS_QUERY:
+        if query == st.EVENTS_QUERY:
             return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
         if query == st.COMMENTS_QUERY:
             asked_ids.append(raw["id"])
@@ -803,7 +803,7 @@ def test_a_pr_that_could_be_exhausted_with_open_threads_gets_the_threads_query_f
     threads_asked = []
 
     def graphql(query, *fields, **raw):
-        if st.EVENTS_QUERY and query == st.EVENTS_QUERY:
+        if query == st.EVENTS_QUERY:
             return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
         if query == st.COMMENTS_QUERY:
             return {"node": {"comments": comments_of(marker_comment())}}
@@ -823,7 +823,7 @@ def test_a_failed_threads_read_leaves_every_open_thread_a_persons_acceptance_cri
     exhausted = dict(pr_node(number=1, reviews=DIRTY3, threads=[False], comments=comments_of(marker_comment())), id="PR_ex")
 
     def graphql(query, *fields, **raw):
-        if st.EVENTS_QUERY and query == st.EVENTS_QUERY:
+        if query == st.EVENTS_QUERY:
             return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
         if query == st.COMMENTS_QUERY:
             return {"node": {"comments": comments_of(marker_comment())}}
@@ -862,7 +862,7 @@ class Served:
     def graphql(self, query, *fields, **raw):
         args = "|".join([*map(str, fields), *map(str, raw.values()), *map(str, raw.keys())])
         for kind, constant, pages in (("comments", st.COMMENTS_QUERY, self.comments), ("events", st.EVENTS_QUERY, self.events)):
-            if constant and query == constant:
+            if query == constant:
                 key = (kind, raw.get("id") or next(f.split("=", 1)[1] for f in fields if f.startswith("id=")))
                 self.calls.append(key)
                 index = self.reads.get(key, 0)
@@ -892,7 +892,7 @@ class Served:
     def install(self, monkeypatch):
         monkeypatch.setattr(st, "graphql", self.graphql)
         monkeypatch.setattr(st, "rest", self.rest)
-        monkeypatch.setattr(st, "PERMISSIONS", {}, raising=False)
+        monkeypatch.setattr(st, "PERMISSIONS", {})
         monkeypatch.setattr(st, "COMMENTS_FAILED", set())
         return self
 

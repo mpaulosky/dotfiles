@@ -1314,9 +1314,11 @@ jobs:
                 core.warning(`Couldn't read PR #${pullNumber}'s label events, so its review loop's state is unknown: ${error.message}`);
                 return { ...state, unreadable: true };
               }
-              const adds = !copilotCannotReview(pr) ? [] : events
-                .filter((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL)
-                .map((event) => ({ at: Date.parse(event.created_at), actor: event.actor }));
+              const adds = copilotCannotReview(pr)
+                ? events
+                  .filter((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL)
+                  .map((event) => ({ at: Date.parse(event.created_at), actor: event.actor }))
+                : [];
               let start = -Infinity;
               let generation;
               let hit;
@@ -1867,12 +1869,13 @@ jobs:
 
             // Documents an exhausted review loop on the PR, once: a loop whose
             // exhaustion has a comment already (loop.documented) posts nothing.
-            // details: the comment's reviewedHead, labelOff and restarted
-            // (see exhaustionComment). Posts with GITHUB_TOKEN, before any merge call, so the record
-            // exists on the merged PR. Two runs can both have read "no
-            // comment" (many events start runs for one PR), so it reads the
-            // comments again and, when another run's comment for this
-            // exhaustion is listed ahead of its own, deletes its own: the
+            // Posts with GITHUB_TOKEN, before any merge call, so the record
+            // exists on the merged PR. details: the comment's reviewedHead,
+            // labelOff and restarted (see exhaustionComment). Two runs can
+            // both have read "no comment" (many events start runs for one
+            // PR), so it reads the comments again and, when another run's
+            // comment for this exhaustion is listed ahead of its own, deletes
+            // its own: the
             // first one listed is the record. Returns whether the PR may
             // merge: false when the comments weren't read in full, so a
             // comment may exist already, or the post failed. A re-read that
@@ -2194,17 +2197,24 @@ jobs:
                   : null;
                 return { claudeHead, review: claudeHead ? claudeReviews.findLast((review) => review.commit?.oid === claudeHead) : undefined };
               };
+              // claudeReviewOfHead, or null when the merge check fails: the
+              // run then waits, and the next event re-checks.
+              const claudeReviewOrWait = async () => {
+                try {
+                  return await claudeReviewOfHead();
+                } catch (error) {
+                  core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
+                  core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
+                  return null;
+                }
+              };
 
               // A loop that an add of review:claude has replaced and no comment
               // documents is documented now, before any round of the new loop
               // counts or anything of it is acted on (mpaulosky/dotfiles#378).
               if (loop.undocumentedRestart) {
-                let found;
-                try {
-                  found = await claudeReviewOfHead();
-                } catch (error) {
-                  core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
-                  core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
+                const found = await claudeReviewOrWait();
+                if (!found) {
                   return;
                 }
                 const documentedOld = await documentExhaustion(
@@ -2267,12 +2277,8 @@ jobs:
               // loop. Unlike a thread they can't be resolved, so only a push
               // (or a merge by hand) clears them.
               if (!loop.exhausted) {
-                let found;
-                try {
-                  found = await claudeReviewOfHead();
-                } catch (error) {
-                  core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
-                  core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
+                const found = await claudeReviewOrWait();
+                if (!found) {
                   return;
                 }
                 if (found.review?.body?.split("\n")[1] === OFF_DIFF_MARKER) {
@@ -2310,12 +2316,8 @@ jobs:
                 // exists on the merged PR. Neither the bots' threads still open
                 // nor Claude's findings outside the diff hold the merge now:
                 // the comment is where they are kept.
-                let found;
-                try {
-                  found = await claudeReviewOfHead();
-                } catch (error) {
-                  core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
-                  core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
+                const found = await claudeReviewOrWait();
+                if (!found) {
                   return;
                 }
                 const labelOff = labelRemoved ?? !pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL);

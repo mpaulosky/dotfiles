@@ -14,6 +14,7 @@ trap 'rm -rf "$WORK"' EXIT
 REPO="$WORK/repo"
 STUBS="$WORK/bin"
 LOG="$WORK/calls.log"
+ENVLOG="$WORK/env.log"
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
@@ -23,6 +24,7 @@ mkdir -p "$STUBS"
 cat > "$STUBS/pnpm" <<STUB
 #!/usr/bin/env bash
 echo "pnpm \$*" >> "$LOG"
+echo "GIT_DIR=\${GIT_DIR-unset} GIT_WORK_TREE=\${GIT_WORK_TREE-unset} GIT_INDEX_FILE=\${GIT_INDEX_FILE-unset} GIT_PREFIX=\${GIT_PREFIX-unset}" >> "$ENVLOG"
 STUB
 chmod +x "$STUBS/pnpm"
 
@@ -89,6 +91,40 @@ for path in "${PATHS[@]}"; do
   check "a change to $path runs the Sandcastle check" ran_check
   git -C "$REPO" switch -q main
 done
+
+# Under a git hook, git sets GIT_DIR (and GIT_INDEX_FILE in a linked worktree). check.sh can run
+# outside scripts/gate.sh (a repo's GATE_COMMAND may name it), which unsets them before every check,
+# so check.sh unsets them itself: a test that builds a scratch repo would otherwise act on the real
+# one, and so would the script's own git diff.
+DECOY="$WORK/decoy"
+git init -q -b main "$DECOY"
+git -C "$DECOY" commit -q --allow-empty -m decoy
+
+run_check_in_hook() { # run_check_in_hook [<merge-base>]: the four variables set, as under a hook
+  : > "$LOG"; : > "$ENVLOG"
+  OUTPUT="$(cd "$REPO" && PATH="$STUBS:$PATH" GIT_DIR="$DECOY/.git" GIT_WORK_TREE="$DECOY" \
+    GIT_INDEX_FILE="$DECOY/.git/index" GIT_PREFIX="decoy/" bash .sandcastle/check.sh "$@" 2>&1)"
+  STATUS=$?
+}
+pnpm_saw_no_git_variables() {
+  [[ -s "$ENVLOG" ]] && [[ "$(cat "$ENVLOG")" == "GIT_DIR=unset GIT_WORK_TREE=unset GIT_INDEX_FILE=unset GIT_PREFIX=unset" ]]
+}
+
+run_check_in_hook
+check "with GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and GIT_PREFIX set the check still runs" ran_check
+check "pnpm run check:sandcastle doesn't inherit GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE or GIT_PREFIX" pnpm_saw_no_git_variables
+
+run_check_in_hook "$BASE"
+check "with the variables set and nothing changed it exits 0" test $STATUS -eq 0
+check "with the variables set, the changed-files diff reads the repo it runs in, not GIT_DIR's" not ran_check
+
+git -C "$REPO" switch -q -c hook-touch main
+echo more >> "$REPO/package.json"
+git -C "$REPO" commit -qam "touch package.json"
+run_check_in_hook "$BASE"
+check "with the variables set, a change to package.json runs the Sandcastle check" ran_check
+check "with the variables set, a change to package.json leaves pnpm none of them" pnpm_saw_no_git_variables
+git -C "$REPO" switch -q main
 
 echo
 echo "seed-check.test.sh: $PASSED passed, $FAILED failed"

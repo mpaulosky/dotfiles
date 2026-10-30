@@ -85,6 +85,18 @@ query($id: ID!) {
 }
 """
 
+# The PR's review:claude label events, oldest first, a page at a time (mpaulosky/dotfiles#378): Not implemented.
+EVENTS_QUERY = ""
+
+# {(owner/name, login): True | False | None} for the collaborator permission lookups: whether the login has write access.
+PERMISSIONS = {}
+
+
+def rest(path):
+    """The parsed JSON of one `gh api <path>` call (mpaulosky/dotfiles#378): Not implemented."""
+    raise NotImplementedError("Not implemented")
+
+
 TITLE_WIDTH = 40
 
 # PR ids (and ("record", id) for COMMENTS_QUERY) whose failure was already reported, so a polling land.py says it once.

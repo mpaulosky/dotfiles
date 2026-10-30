@@ -123,6 +123,18 @@ def test_documents_the_exhaustion_comment_and_the_deletion_of_a_duplicate_with_g
     assert deleted and deleted[0][3], "tokens.md has no GITHUB_TOKEN row, with a reason, for deleting a duplicate exhaustion comment"
 
 
+def test_documents_the_collaborator_permission_read_that_decides_who_restarts_a_loop_with_github_token():
+    # mpaulosky/dotfiles#378: only a login with write access restarts a review loop, so PR Auto-Merge reads the permission
+    # of each login that added review:claude after the loop's exhausting round (GITHUB_TOKEN, a read).
+    calls = automerge_calls()
+
+    assert ("repos.getCollaboratorPermissionLevel", "token") in calls
+    assert ("repos.getCollaboratorPermissionLevel", "pat") not in calls
+    rows = table_rows(page())
+    listed = [row for row in rows if len(row) >= 4 and "getCollaboratorPermissionLevel" in row[1] and "GITHUB_TOKEN" in row[2]]
+    assert listed and listed[0][3], "tokens.md has no GITHUB_TOKEN row, with a reason, for repos.getCollaboratorPermissionLevel"
+
+
 def test_tokens_md_no_longer_says_the_label_comes_off_at_the_review_cap():
     # The label comes off when the review loop is exhausted (mpaulosky/dotfiles#375), not at a cap of reviewed commits.
     text = page()

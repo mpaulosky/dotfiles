@@ -268,6 +268,31 @@ def trailing_dirty(rounds):
 
 
 @dataclass(frozen=True)
+class LoopWalk:
+    """Where a PR's review loop stands after the walk over its restarts (see current_loop()).
+
+    rounds: the final generation's rounds, oldest first; hit: the submission time (epoch seconds) of the round that
+    brought that generation to MAX_CLAUDE_ROUNDS dirty rounds in a row, None when it never got there; unread: the
+    permission of a candidate add couldn't be read; restarted: at least one add started a new loop.
+    """
+
+    rounds: tuple[Round, ...] = ()
+    hit: float | None = None
+    unread: bool = False
+    restarted: bool = False
+
+
+def current_loop(rounds, adds):
+    """Walk the loop's generations (mpaulosky/dotfiles#378): Not implemented."""
+    raise NotImplementedError("Not implemented")
+
+
+def thread_opened_by_person(thread):
+    """Whether a thread holds the merge at an exhausted loop (mpaulosky/dotfiles#378): Not implemented."""
+    raise NotImplementedError("Not implemented")
+
+
+@dataclass(frozen=True)
 class PrState:
     """What decide() reads about one PR.
 
@@ -323,6 +348,7 @@ class PrState:
     exhaustion_marker_newest: bool = False
     loop_unread: bool = False
     open_threads: int = 0
+    open_person_threads: int = 0
     unreplied_threads: tuple[str, ...] = ()
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()

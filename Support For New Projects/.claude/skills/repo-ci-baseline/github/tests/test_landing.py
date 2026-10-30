@@ -53,7 +53,8 @@ def test_a_head_copilot_has_not_reviewed_waits_while_copilot_is_requested():
 
 
 def test_an_unreviewed_head_waits_while_review_claude_is_on():
-    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), claude_requested=True))
+    # Copilot answered the head with its quota note, so the label stands (with Copilot available it is ignored, #378).
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), copilot_declined=frozenset({HEAD}), claude_requested=True))
     assert decision == ld.Decision(ld.WAIT, "no Copilot or Claude review of aaaaaaa yet; review:claude is on")
 
 
@@ -776,3 +777,173 @@ def test_trailing_dirty_counts_the_dirty_rounds_back_from_the_newest():
     assert ld.trailing_dirty(rounds("d d d c")) == 0
     assert ld.trailing_dirty(rounds("c d d d")) == 3
     assert ld.trailing_dirty(rounds("d d d d d")) == 5
+
+
+# ── Claude reviews only where Copilot can't; a person's threads still hold (mpaulosky/dotfiles#378) ──
+
+
+def epoch(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def at_minute(minute, second=0):
+    """The epoch seconds of minute:second past 2026-01-02T00, which is when rounds("...") puts its Nth round at minute N-1."""
+    return epoch(f"2026-01-02T00:{minute:02d}:{second:02d}Z")
+
+
+def test_the_label_is_ignored_while_copilot_can_review_it_acceptance_criterion_2():
+    labelled_head = replace(UNASKED, claude_requested=True)
+    # Never asked: Copilot is asked, whatever the label says.
+    assert ld.decide(labelled_head).action == ld.REQUEST_COPILOT
+    # Asked, the request not shown yet: wait for the request, not for Claude.
+    asked = ld.decide(replace(labelled_head, copilot_asked=True))
+    assert asked.action == ld.WAIT and "review:claude is on" not in asked.reason and "Copilot was asked" in asked.reason
+    # Settled with a request pending: Copilot is waited for.
+    pending = ld.decide(replace(labelled_head, copilot_asked=True, copilot_ask_settled=True, copilot_requested=True))
+    assert pending.action == ld.WAIT and pending.reason.endswith("Copilot is requested")
+
+
+def test_the_label_stands_where_copilot_cant_review_acceptance_criterion_2():
+    for gone in (dict(copilot_declined=frozenset({HEAD})), dict(copilot_dropped=True), dict(copilot_asked=True, copilot_ask_settled=True)):
+        pr = replace(UNASKED, claude_requested=True, **gone)
+        decision = ld.decide(pr)
+        assert decision.action == ld.WAIT and decision.reason.endswith("review:claude is on"), gone
+
+
+def thread_of(opener, kind="User", review=""):
+    return thread(resolved=False, opener=opener, opener_kind=kind, opener_review=review)
+
+
+def test_a_thread_opened_by_a_person_is_not_a_bot_thread_acceptance_criterion_3():
+    assert ld.thread_opened_by_person(thread_of("octo"))
+    # A user named like Copilot, github-actions without the Claude marker, and another bot are not Copilot's or Claude's.
+    assert ld.thread_opened_by_person(thread_of(ld.COPILOT_REVIEWER, kind="User"))
+    assert ld.thread_opened_by_person(thread_of(ld.GITHUB_ACTIONS, kind="Bot", review="Another workflow's review"))
+    assert ld.thread_opened_by_person(thread_of("dependabot", kind="Bot"))
+
+
+def test_a_thread_whose_author_cant_be_read_is_a_persons_acceptance_criterion_3():
+    assert ld.thread_opened_by_person(thread_of("", kind=""))
+
+
+def test_copilots_and_claudes_threads_are_not_a_persons_acceptance_criterion_3():
+    assert not ld.thread_opened_by_person(thread_of(ld.COPILOT_REVIEWER, kind="Bot"))
+    assert not ld.thread_opened_by_person(thread_of("copilot-pull-request-reviewer[bot]", kind="Bot"))
+    assert not ld.thread_opened_by_person(thread_of(ld.GITHUB_ACTIONS, kind="Bot", review=ld.CLAUDE_MARKER + "\n**Claude Review**"))
+
+
+def test_an_exhausted_loop_waits_on_a_thread_opened_by_a_person_acceptance_criterion_3():
+    held = ld.decide(replace(EXHAUSTED, open_threads=2, open_person_threads=1))
+    assert held.action == ld.WAIT
+    assert "exhausted" in held.reason and "person" in held.reason and "1" in held.reason
+    # Only the person's thread holds; the same count of bot threads alone does not.
+    assert ld.decide(replace(EXHAUSTED, open_threads=2, open_person_threads=0)).action == ld.HAND_OFF
+    # Both: the person's thread holds.
+    assert ld.decide(replace(EXHAUSTED, open_threads=3, open_person_threads=2)).action == ld.WAIT
+
+
+def test_an_exhausted_loop_with_only_bot_threads_left_open_counts_just_those_acceptance_criterion_3():
+    decision = ld.decide(replace(EXHAUSTED, open_threads=3, open_person_threads=0))
+    assert decision.action == ld.HAND_OFF and "3 thread(s) left open" in decision.reason
+
+
+def test_an_exhausted_loop_still_updates_a_behind_branch_and_reports_blockers_before_a_persons_thread_acceptance_criterion_3():
+    held = replace(EXHAUSTED, open_threads=1, open_person_threads=1)
+    assert ld.decide(replace(held, merge_state="BEHIND")).action == ld.UPDATE_BRANCH
+    assert ld.decide(replace(held, merge_state="DIRTY")).action == ld.BLOCKER
+    assert ld.decide(replace(held, checks=(failed("Test Suite"),))).action == ld.BLOCKER
+
+
+def test_review_rounds_counts_a_copilot_review_with_only_a_body_as_a_clean_round_acceptance_criterion_6():
+    reviews = [
+        record("Copilot", "c1", "", "2026-01-02T00:01:00Z", comments=1),
+        record("Copilot", "c2", "", "2026-01-02T00:02:00Z", comments=1),
+        record("Copilot", "c3", "Copilot reviewed 4 out of 4 changed files and generated no comments.", "2026-01-02T00:03:00Z"),
+        record("Copilot", "c4", "", "2026-01-02T00:04:00Z", comments=1),
+    ]
+    found = ld.review_rounds(reviews, frozenset(), False)
+    assert [(item.oid, item.dirty) for item in found] == [("c1", True), ("c2", True), ("c3", False), ("c4", True)]
+    assert ld.trailing_dirty(found) == 1
+    assert not replace(EXHAUSTED, rounds=found).loop_exhausted
+
+
+# current_loop(rounds, adds): adds are (epoch seconds, writer) for each review:claude `labeled` event, oldest first,
+# writer True (write access), False, or None (the permission couldn't be read).
+# rounds("d d d d d d") puts its Nth round at minute N-1 of 2026-01-02T00, so three dirty rounds hit at minute 2.
+
+
+def test_with_no_add_the_loop_is_what_the_rounds_say_acceptance_criterion_4():
+    walk = ld.current_loop(rounds("d d d"), [])
+    assert walk.rounds == rounds("d d d")
+    assert walk.hit == at_minute(2)
+    assert not walk.restarted and not walk.unread
+    short = ld.current_loop(rounds("d d"), [])
+    assert short.rounds == rounds("d d") and short.hit is None
+
+
+def test_an_add_by_a_writer_after_the_exhausting_round_starts_a_new_loop_acceptance_criterion_4():
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(2, 30), True)])
+    assert walk.restarted and not walk.unread
+    assert walk.rounds == () and walk.hit is None
+
+
+def test_rounds_before_the_add_dont_count_in_the_new_loop_acceptance_criterion_4():
+    # A fourth round came before the add and the fifth and sixth after it.
+    walk = ld.current_loop(rounds("d d d d d d"), [(at_minute(3, 30), True)])
+    assert [item.oid for item in walk.rounds] == [item.oid for item in rounds("d d d d d d")[4:]]
+    assert walk.restarted and walk.hit is None
+
+
+def test_an_add_before_the_exhausting_round_is_no_restart_acceptance_criterion_4():
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(1, 30), True), (at_minute(0, 30), True)])
+    assert not walk.restarted and walk.rounds == rounds("d d d") and walk.hit == at_minute(2)
+    # At the very moment of the round is not after it either.
+    assert not ld.current_loop(rounds("d d d"), [(at_minute(2), True)]).restarted
+
+
+def test_an_add_while_the_loop_is_not_exhausted_never_restarts_it_acceptance_criterion_4():
+    # PR Auto-Merge's own PAT adds the label for a later head in the loop: it mustn't discard the loop's rounds.
+    walk = ld.current_loop(rounds("d d c d"), [(at_minute(1, 30), True), (at_minute(3, 30), True)])
+    assert not walk.restarted and walk.rounds == rounds("d d c d")
+
+
+def test_a_second_exhaustion_is_restarted_by_the_next_add_after_it_acceptance_criterion_4():
+    pattern = rounds("d d d d d d")
+    walk = ld.current_loop(pattern, [(at_minute(2, 30), True), (at_minute(5, 30), True)])
+    assert walk.restarted and walk.rounds == () and walk.hit is None
+    # An add in the middle of the second loop (before its third dirty round) doesn't restart it.
+    middle = ld.current_loop(pattern, [(at_minute(2, 30), True), (at_minute(4, 30), True)])
+    assert middle.restarted and middle.rounds == pattern[3:] and middle.hit == at_minute(5)
+
+
+def test_only_a_login_with_write_access_restarts_a_loop_acceptance_criterion_11():
+    assert not ld.current_loop(rounds("d d d"), [(at_minute(3), False)]).restarted
+    assert ld.current_loop(rounds("d d d"), [(at_minute(3), False)]).rounds == rounds("d d d")
+    # The first add by a writer counts, after any number by readers.
+    walk = ld.current_loop(rounds("d d d d d"), [(at_minute(2, 10), False), (at_minute(2, 20), False), (at_minute(2, 30), True)])
+    assert walk.restarted and [item.oid for item in walk.rounds] == [item.oid for item in rounds("d d d d d")[3:]]
+
+
+def test_an_add_whose_permission_cant_be_read_starts_no_loop_and_leaves_the_loop_unread_acceptance_criterion_11():
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(3), None)])
+    assert walk.unread and not walk.restarted
+    # A reader's add before it is skipped, and the unreadable one still decides nothing.
+    assert ld.current_loop(rounds("d d d"), [(at_minute(3), False), (at_minute(4), None)]).unread
+
+
+def test_a_writers_add_before_an_unreadable_one_is_the_restart_acceptance_criterion_11():
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(3), True), (at_minute(4), None)])
+    assert walk.restarted and not walk.unread
+
+
+def test_a_round_with_no_known_time_ends_the_walk_without_a_restart_acceptance_criterion_4():
+    unknown = tuple(ld.Round(f"{index:040x}", True, "") for index in range(1, 4))
+    walk = ld.current_loop(unknown, [(at_minute(3), True)])
+    assert not walk.restarted and walk.rounds == unknown
+
+
+def test_a_loop_restarted_by_a_writer_is_not_exhausted_and_asks_for_a_review_acceptance_criterion_4():
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(3), True)])
+    pr = replace(EXHAUSTED, rounds=walk.rounds)
+    assert not pr.loop_exhausted
+    assert ld.decide(pr).action == ld.REQUEST_COPILOT

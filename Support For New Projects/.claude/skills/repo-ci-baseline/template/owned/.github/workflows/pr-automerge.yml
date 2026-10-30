@@ -1393,17 +1393,28 @@ jobs:
                 return true;
               }
               // Read the request back: GitHub accepts the call and registers
-              // nothing once the Copilot code review budget is used up.
+              // nothing once the Copilot code review budget is used up. The
+              // request is made by now, so a read that fails (the re-reads may
+              // have failed too) doesn't undo it: the caller still reads the PR
+              // again, and only a sweep ends on an error that ends the run.
               const deadline = Date.now() + COPILOT_ASK_WAIT_MS;
               let registered = false;
-              do {
-                await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(COPILOT_ASK_POLL_MS, deadline - Date.now()))));
-                const seen = await getPullRequestStatus(pullNumber);
-                if (!seen || seen.headRefOid !== pr.headRefOid) {
-                  break;
+              try {
+                do {
+                  await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(COPILOT_ASK_POLL_MS, deadline - Date.now()))));
+                  const seen = await getPullRequestStatus(pullNumber);
+                  if (!seen || seen.headRefOid !== pr.headRefOid) {
+                    break;
+                  }
+                  registered = copilotPending(seen) || copilotAnsweredHead(seen);
+                } while (!registered && Date.now() < deadline);
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
                 }
-                registered = copilotPending(seen) || copilotAnsweredHead(seen);
-              } while (!registered && Date.now() < deadline);
+                core.warning(`Couldn't read PR #${pullNumber} back after requesting Copilot's review, so the request is taken as made: ${error.message}`);
+                return true;
+              }
               core.info(registered
                 ? `Copilot's review request for PR #${pullNumber} registered.`
                 : `Copilot's review request for PR #${pullNumber} didn't register (GitHub drops it once the Copilot code review budget is used up).`);

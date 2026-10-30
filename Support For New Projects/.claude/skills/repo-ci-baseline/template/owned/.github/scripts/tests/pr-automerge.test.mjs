@@ -290,6 +290,9 @@ async function evaluate(pr, events = [], options = {}) {
     // What those throw: a plain server error, or one carrying a status (a 401
     // or 429 ends a run).
     reReadError = new Error("Server error on the re-read"),
+    // The reads after the request that throw (the read-back), and what they throw.
+    readBackErrors = 0,
+    readBackError = new Error("Server error on the read-back"),
     // Whether the rival's record is listed before this run's own, whatever its
     // createdAt: GitHub lists comments oldest first, and the first record
     // listed is the one that decides. Unset, the rival is listed first when its
@@ -470,6 +473,9 @@ async function evaluate(pr, events = [], options = {}) {
       if (requested) {
         readsSinceRequest++;
         order.push("read-back");
+        if (readsSinceRequest <= readBackErrors) {
+          throw readBackError;
+        }
       } else if (asked.length > 0) {
         // A read of the PR after the record was posted and before the request.
         order.push("re-read");
@@ -1645,6 +1651,27 @@ test("requests anyway when every re-read throws a plain error, and warns that it
     logs.join("\n")
   );
   assert.ok(!logs.some((line) => /so it wasn't made/.test(line)), logs.join("\n"));
+});
+
+test("a read-back that throws after the request doesn't fail the run: the request is taken as made and Claude is called in (mpaulosky/dotfiles#374)", async () => {
+  const { requests, addedLabels, logs, order } = await evaluate(readyPr(unreviewed), [], { reReadErrors: 3, readBackErrors: 1 });
+
+  assert.equal(requests.length, 1);
+  assert.equal(order.filter((step) => step === "re-read").length, 3, order.join(","));
+  assert.ok(order.includes("read-back"), order.join(","));
+  assert.ok(logs.some((line) => line.startsWith("warning: ") && /back after requesting Copilot's review/.test(line)), logs.join("\n"));
+  assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
+});
+
+test("a sweep whose read-back fails with an error that ends the run rethrows it (mpaulosky/dotfiles#374)", async () => {
+  await assert.rejects(
+    () => evaluate(readyPr(unreviewed), [], { push: true, readBackErrors: 1, readBackError: Object.assign(new Error("Rate limited"), { status: 429 }) }),
+    (error) => {
+      assert.equal(error.status, 429);
+      assert.equal(error.observed.requests.length, 1);
+      return true;
+    }
+  );
 });
 
 test("a run that requests anyway makes the request after its last re-read (mpaulosky/dotfiles#374)", async () => {

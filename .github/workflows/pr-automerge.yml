@@ -1319,12 +1319,13 @@ jobs:
               try {
                 const again = await getPullRequestStatus(pullNumber);
                 const records = Array.isArray(again?.comments?.nodes) ? askRecords(again.comments.nodes) : [];
-                if (!records.some((record) => (record.body ?? "").includes(askId))) {
+                const ownPosition = records.findIndex((record) => (record.body ?? "").includes(askId));
+                if (ownPosition === -1) {
                   core.warning(`Couldn't find this run's record of the ask for Copilot's review of PR #${pullNumber}, so it wasn't made.`);
                   return false;
                 }
-                if (!records[0].body.includes(askId)) {
-                  core.info(`Another run recorded the ask for Copilot's review of PR #${pullNumber} first, so it makes the request.`);
+                if (ownPosition > 0) {
+                  core.info(`Another run recorded the ask for Copilot's review of PR #${pullNumber} first, so that run makes the request.`);
                   return false;
                 }
               } catch (error) {

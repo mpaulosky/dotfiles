@@ -728,7 +728,9 @@ export function sweepPullRequests(
       let events: IssueEvent[] | undefined;
       const eventsOfPr = () => (events ??= github.pullRequestEvents(pr.number));
       let lapsedHead: string | undefined;
-      const swept = admitToSweep(pr, context, github, eventsOfPr, log, (head) => void (lapsedHead = head));
+      const swept = admitToSweep(pr, context, github, eventsOfPr, log, (head) => {
+        lapsedHead = head;
+      });
       if ("skip" in swept) {
         log(`  · PR #${pr.number} isn't swept: ${swept.skip}.`);
         if (lapsedHead !== undefined) commentApprovalLapsed(pr.number, lapsedHead, github, host, log);

@@ -91,9 +91,10 @@ name: PR Auto-Merge
 #
 # main-rules requires a branch to be up to date before it merges, and every
 # merge to main (a release-blog PR's included) leaves the other open PRs
-# BEHIND. A PR that is otherwise ready (checks green, its head reviewed or the
-# loop exhausted, threads resolved or the loop exhausted, no hand-back label), or that has native
-# auto-merge armed and green checks, is brought up to date here: update-branch
+# BEHIND. A PR that is otherwise ready (checks green, no hand-back label, and
+# either its head reviewed and its threads resolved or the review loop
+# exhausted), or that has native auto-merge armed and green checks, is
+# brought up to date here: update-branch
 # pinned to its head, with RELEASE_PR_PAT, since a GITHUB_TOKEN push starts no
 # CI. Only ready PRs: an update reruns all of CI, and a PR still waiting on a
 # review or a fix gets nothing from being current; it is updated once it is
@@ -183,11 +184,10 @@ jobs:
         with:
           # github's token, scoped by the permissions above. GITHUB_TOKEN makes
           # every read, takes review:claude off at an exhausted review loop
-          # (MAX_CLAUDE_ROUNDS dirty rounds in a row),
-          # posts the comment that documents the exhaustion (and the ask record
-          # of Copilot's review) and deletes its own duplicate of it
-          # (mpaulosky/dotfiles#375). Its rate
-          # limit is this repo's own, while the PAT's is shared by everything
+          # (MAX_CLAUDE_ROUNDS dirty rounds in a row), posts the comment that
+          # documents the exhaustion (and the ask record of Copilot's review)
+          # and deletes its own duplicate of it (mpaulosky/dotfiles#375). Its
+          # rate limit is this repo's own, while the PAT's is shared by everything
           # acting as its owner (mpaulosky/dotfiles#231). It's smaller, though:
           # 1,000 REST requests and 1,000 GraphQL points an hour, shared with
           # Claude Review's and CI's calls in this repo. Running out fails this
@@ -1139,7 +1139,7 @@ jobs:
             }
 
             // Where the PR's review loop stands (mpaulosky/dotfiles#375):
-            // { rounds, exhausted, markers, markerNewest, documented, unread,
+            // { rounds, exhausted, markerNewest, documented, unread,
             // unreadable }. With an exhaustion comment on the PR the label
             // events are read (GITHUB_TOKEN) to find where a new loop began:
             // the first review:claude added after the newest comment, which is
@@ -1156,7 +1156,7 @@ jobs:
             async function reviewLoopState(pullNumber, pr) {
               let rounds = reviewRounds(reviewState(pr).counted);
               const { markers, unread } = exhaustionMarkers(pr);
-              const state = { markers, unread, markerNewest: false, documented: false, unreadable: false };
+              const state = { unread, markerNewest: false, documented: false, unreadable: false };
               if (markers.length > 0) {
                 const markerAt = Date.parse(markers.at(-1).createdAt);
                 let events;

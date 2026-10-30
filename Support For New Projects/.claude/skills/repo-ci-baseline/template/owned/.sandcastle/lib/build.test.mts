@@ -3134,7 +3134,7 @@ describe("PR_BODY_RULES against what the host refuses in the reviewer's PR body"
     { group: 4, refusal: "a secret or token", body: `${validPrBody}\n\nUses the token ghp_abc.`, mentioned: [/secret|token/i] },
     { group: 5, refusal: "the words Review notes", body: `${validPrBody}\n\n## Review notes\n\nAll findings were accepted.`, mentioned: [/Review notes/] },
     { group: 6, refusal: "a closing keyword", body: `${validPrBody}\n\nFixes #12.`, mentioned: [/closing keyword|Closes|Fixes/] },
-    { group: 6, refusal: "an @mention", body: `${validPrBody}\n\ncc @someone`, mentioned: [/@mention|@/] },
+    { group: 6, refusal: "an @mention", body: `${validPrBody}\n\ncc @someone`, mentioned: [/@mention/] },
     { group: 6, refusal: "an HTML comment", body: `${validPrBody}\n\n<!-- sandcastle:pr -->`, mentioned: [/<!--/] },
   ];
 

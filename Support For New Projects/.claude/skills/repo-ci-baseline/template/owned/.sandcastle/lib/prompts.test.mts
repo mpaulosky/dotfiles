@@ -203,18 +203,11 @@ describe("reviewerPromptArgs", () => {
     assert.notEqual(PR_BODY_RULES.trim(), "");
   });
 
-  it("keeps the issue's prompt arguments alongside PR_BODY_RULES", () => {
+  it("is the issue's prompt arguments plus PR_BODY_RULES, and no other role's", () => {
     const args = reviewerPromptArgs(issue, "feature/3-add-a-thing");
 
-    assert.deepEqual({ ...args, PR_BODY_RULES: undefined }, { ...issuePromptArgs(issue, "feature/3-add-a-thing"), PR_BODY_RULES: undefined });
+    assert.deepEqual(args, { ...issuePromptArgs(issue, "feature/3-add-a-thing"), PR_BODY_RULES });
     assert.equal(args.TASK_ID, "3");
     assert.equal(args.BRANCH, "feature/3-add-a-thing");
-  });
-
-  it("carries no other role's arguments", () => {
-    assert.deepEqual(
-      Object.keys(reviewerPromptArgs(issue, "feature/3-add-a-thing")).sort(),
-      [...Object.keys(issuePromptArgs(issue, "feature/3-add-a-thing")), "PR_BODY_RULES"].sort(),
-    );
   });
 });

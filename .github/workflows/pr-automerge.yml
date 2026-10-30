@@ -35,8 +35,9 @@ name: PR Auto-Merge
 # drops the request, and a dropped request brings no event. So the run asks for
 # Copilot's review of a PR's first reviewable head itself, once: it posts a
 # comment holding COPILOT_ASKED_MARKER (the record of the ask), reads the PR's
-# comments again (two runs can both post one; only the run whose record is the
-# earliest goes on, mpaulosky/dotfiles#369), requests the
+# comments again, up to three times if its own record doesn't show (two runs can
+# both post one; only the run whose record is listed first goes on,
+# mpaulosky/dotfiles#369), requests the
 # review with the PAT, and reads the request back for up to COPILOT_ASK_WAIT_MS.
 # A request that fails or doesn't register counts as dropped at once, and a
 # record COPILOT_ASK_SETTLE_MS old with no review of the head and no request
@@ -1222,16 +1223,17 @@ jobs:
               });
             }
 
-            // The ask records among these comments, earliest first: the ones
-            // github-actions (this workflow) or the repository owner (land.sh)
-            // wrote, which hold COPILOT_ASKED_MARKER.
+            // The ask records among these comments, in the order GitHub lists
+            // them (oldest first, by comment id): the ones github-actions (this
+            // workflow) or the repository owner (land.sh) wrote, which hold
+            // COPILOT_ASKED_MARKER. Not sorted by createdAt, which has a
+            // resolution of a second: every run reads the same order, so every
+            // run ranks two records the same way (mpaulosky/dotfiles#369).
             function askRecords(nodes) {
-              return nodes
-                .filter((comment) => {
-                  const login = comment?.author?.login?.replace(/\[bot\]$/, "");
-                  return (login === "github-actions" || login === owner) && (comment.body ?? "").includes(COPILOT_ASKED_MARKER);
-                })
-                .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+              return nodes.filter((comment) => {
+                const login = comment?.author?.login?.replace(/\[bot\]$/, "");
+                return (login === "github-actions" || login === owner) && (comment.body ?? "").includes(COPILOT_ASKED_MARKER);
+              });
             }
 
             // The record that Copilot was asked to review this PR, read from
@@ -1288,9 +1290,12 @@ jobs:
             // request pending. Posts the record (GITHUB_TOKEN) before the
             // request (the PAT) and reads the request back, so the caller can
             // act on the outcome at once instead of waiting for an event: a
-            // dropped request brings none. Returns whether it asked, in which
-            // case the caller reads the PR again. Never asked again for a later
-            // head: the record stays on the PR (mpaulosky/dotfiles#360).
+            // dropped request brings none. In between it reads the comments
+            // again and goes on only when its own record is listed first.
+            // Returns whether it asked, in which case the caller reads the PR
+            // again; false also when it stood down or never found its own
+            // record, with the record left behind. Never asked again for a
+            // later head: the record stays on the PR (mpaulosky/dotfiles#360).
             async function askCopilotOnce(pullNumber, pr) {
               if (copilotAsk(pr).state !== "none" || copilotAnsweredHead(pr) || copilotPending(pr) || !pr.id) {
                 return false;
@@ -1320,7 +1325,11 @@ jobs:
               // can lag behind the REST write, so a read that fails or doesn't
               // show this run's record is tried again, up to COPILOT_ASK_REREADS
               // times; if none shows it, the request is left unmade: the record
-              // stays, so nothing asks later.
+              // stays, so nothing asks later. A rival's record that GraphQL
+              // doesn't show yet isn't retried: it can't be told from there
+              // being none, so a lag that long can still let both runs request,
+              // which GitHub treats as one request. A run that stands down
+              // leaves its own record behind, so the PR can hold two.
               let ownPosition = -1;
               let lastFailure = "";
               for (let attempt = 1; attempt <= COPILOT_ASK_REREADS && ownPosition === -1; attempt++) {
@@ -1337,6 +1346,10 @@ jobs:
                     throw error;
                   }
                   lastFailure = error.message;
+                  // A rate limit or a bad token holds for the whole run: reading again can't help.
+                  if (endsRun(error)) {
+                    break;
+                  }
                 }
               }
               if (ownPosition === -1) {

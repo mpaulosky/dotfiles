@@ -71,6 +71,8 @@ A Seed file is written once, so an existing repo keeps its own Dockerfile and ad
 `lib/agents.mts#uiEnabled` is false, and the planner's `ui` pick and the fallback "every optional role" both leave it out.
 With it, the role runs after the backend developer,
 and `backend.md`'s `{{UI_DEVELOPER}}` tells the backend developer to leave the Blazor components and pages to it.
+`review-prompt.md` holds `{{PR_BODY_RULES}}`, which `lib/prompts.mts` fills in with what the host refuses in the reviewer's PR description;
+`lib/config.test.mts` fails without it, so an existing repo adds it where it wrote those rules by hand.
 
 **Skills.** `SANDBOX_SKILLS` in `lib/repo-config.mts` names the host skills the sandbox mounts read-only from `~/.claude/skills` (a name the host lacks is logged and skipped).
 It is empty in the Seed: a Seed prompt can't promise a skill a host may lack, and not every repo is .NET. A .NET repo opts in by listing the skills there:

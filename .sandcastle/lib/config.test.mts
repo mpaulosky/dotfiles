@@ -55,6 +55,20 @@ describe("ROLE_AGENTS", () => {
   });
 });
 
+// The Seed review-prompt.md is never overwritten, so a repo whose copy lacks the placeholder never tells its reviewer
+// what the host refuses in a PR description.
+describe("review-prompt.md", () => {
+  it("has {{PR_BODY_RULES}} where the PR description's rules go", () => {
+    const prompt = readFileSync(new URL("../review-prompt.md", import.meta.url), "utf8");
+
+    assert.match(
+      prompt,
+      /\{\{PR_BODY_RULES\}\}/,
+      "add `{{PR_BODY_RULES}}` where the PR description's rules go; the Template's Seed review-prompt.md shows where",
+    );
+  });
+});
+
 describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   // A startup clears a sandcastle:building label older than this as a crashed
   // run's, so it must outlast the longest build a live run can make, or a

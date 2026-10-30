@@ -12,6 +12,8 @@ import {
   intakePromptArgs,
   issuePromptArgs,
   plannerPromptArgs,
+  PR_BODY_RULES,
+  reviewerPromptArgs,
 } from "./prompts.mts";
 
 // What ownerApproved (see github.test.mts) leaves of an issue: only the
@@ -188,5 +190,24 @@ describe("critiquePromptArgs", () => {
     const args = critiquePromptArgs([issue], [inFlight], [issue]);
 
     assert.ok(!Object.values(args).some((value) => value.includes("delete the tests")));
+  });
+});
+
+// The Seed review-prompt.md is never overwritten, so the rules for the
+// reviewer's PR description travel as a prompt argument the Template owns.
+describe("reviewerPromptArgs", () => {
+  it("gives the reviewer PR_BODY_RULES, the Template's fragment, and not an empty one, since Sandcastle refuses an empty value", () => {
+    const args = reviewerPromptArgs(issue, "feature/3-add-a-thing");
+
+    assert.equal(args.PR_BODY_RULES, PR_BODY_RULES);
+    assert.notEqual(PR_BODY_RULES.trim(), "");
+  });
+
+  it("is the issue's prompt arguments plus PR_BODY_RULES, and no other role's", () => {
+    const args = reviewerPromptArgs(issue, "feature/3-add-a-thing");
+
+    assert.deepEqual(args, { ...issuePromptArgs(issue, "feature/3-add-a-thing"), PR_BODY_RULES });
+    assert.equal(args.TASK_ID, "3");
+    assert.equal(args.BRANCH, "feature/3-add-a-thing");
   });
 });

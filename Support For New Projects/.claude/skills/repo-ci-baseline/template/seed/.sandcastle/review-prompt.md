@@ -98,11 +98,7 @@ sentences. Use exactly these three headings, in this order, and no others at tha
 - **Verification**: the tests added or changed, by file and what they pin, and the gate checkpoints the branch passed. Claim only checks this run made or the commits record:
   never a manual test, a real-sandbox run or a CI result nobody ran.
 
-Don't name another issue with a closing keyword (`Fixes #12`), @mention anyone, or write `<!--`: GitHub would close the issue or notify the person when the PR merges, and
-the host would read a marker. A body with any of them isn't published, and the PR gets a generic one instead. Refer to another issue without a keyword ("see #12").
-
-Don't add `Closes`, `Fixes`, a marker or a sign-off line: the host adds what it needs. Never put a secret, a token or a credential in it. When the file is missing, lacks a heading
-or looks like it holds a secret, the host publishes a generic body instead.
+{{PR_BODY_RULES}}
 
 Once the description is written, output <promise>COMPLETE</promise>.
 

@@ -26,7 +26,7 @@ import { commentOnIssue, markerComments, openPullRequest, repoName, type Sandcas
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
-import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs } from "./prompts.mts";
+import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs, reviewerPromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
@@ -824,6 +824,8 @@ async function buildMarkedIssue(
   // commit, the Release's notes, the release blog), so anything it can't be
   // trusted with as it is returns undefined, for publish()'s generic body,
   // and the log says why: a missing description never blocks publishing.
+  // Keep PR_BODY_RULES in lib/prompts.mts in step: it tells the reviewer each
+  // of these refusals.
   async function reviewerPrBody(): Promise<string | undefined> {
     let read: { stdout: string; exitCode: number };
     try {
@@ -1139,7 +1141,7 @@ async function buildMarkedIssue(
         "reviewer",
         {
           promptFile: "./.sandcastle/review-prompt.md",
-          promptArgs,
+          promptArgs: reviewerPromptArgs(issue, branch),
         },
         host.limits,
       );

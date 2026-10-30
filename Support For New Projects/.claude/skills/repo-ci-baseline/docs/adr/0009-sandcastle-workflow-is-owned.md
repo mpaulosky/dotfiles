@@ -34,6 +34,13 @@ feature had to be landed by hand in each. A Template file reaches every repo by 
 - **A second job, `record-head`, records the head a hand-off label approves** (mpaulosky/dotfiles#334). It runs on `pull_request_target` `labeled`, so the
   job that holds the host's token runs the file as it is on `main`, not the PR branch's copy. It uses no action, checks nothing out, takes event data through
   `env`, and records only the repository owner's own label, on its first run, for the event's head ([sandcastle.md](../../references/sandcastle.md#the-workflow) lists the guards).
+- **The PR `unlabeled` trigger is `pull_request_target`, with `labeled`** (mpaulosky/dotfiles#368). The owner removing `sandcastle:needs-info` or
+  `sandcastle:needs-human` from a PR re-queues it. As a `pull_request` trigger that run would use the PR branch's own copy of the workflow, with the
+  secrets for a same-repo PR, and GitHub starts no `pull_request` run on a PR with a merge conflict, so the re-queue would wait for the schedule.
+  `pull_request_target` starts at once on a conflicting PR and runs `main`'s copy of the workflow, and the job already checks out the host code from `main`.
+  A fork PR never had the secrets under `pull_request`, and the base-ref check stands in for a head-repository check: the job's `if:` takes a PR
+  `unlabeled` event only when the PR's base is `main` (hardcoded, as `refs/heads/main` is in the same `if:`), the sender is the owner and the label is
+  one of the two hand-back labels. `test.sh` pins that, and that `unlabeled` never starts `record-head`.
 
 ## Consequences
 

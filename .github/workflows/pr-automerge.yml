@@ -21,27 +21,49 @@ name: PR Auto-Merge
 # a merge of main into the PR (PR Auto-Merge's own update-branch makes them) is
 # never a round, and Claude Review starts no paid review for a clean one. A round
 # is dirty when its review raised a thread or, for Claude, a finding outside the
-# diff, and clean otherwise. The loop is exhausted after MAX_CLAUDE_ROUNDS dirty
-# rounds in a row, counted back from the newest reviewed commit; a clean round
-# ends the count. Until then every new non-merge head nobody reviewed gets a
-# review (Copilot's, or Claude's: see below), and a clean review of the head
-# with every thread resolved and the required checks green merges. At
-# exhaustion the run takes review:claude off, posts one comment listing every
-# thread still unresolved and every off-diff finding of Claude's on the head
-# (it ends with EXHAUSTED_MARKER and the head, so it is posted once per
-# exhaustion), and then lets the PR merge once its required checks pass and it
-# has no conflict. Exhaustion doesn't hold the merge, and neither do the threads
-# still open then: the comment is where they are kept, so they can be resolved
-# later. That supersedes the rule of mpaulosky/dotfiles#146, under which every
-# thread held the merge past the cap. The owner re-adding review:claude to a
-# PR still open after the comment starts a new loop: only rounds after that
-# add count, and this run never adds the label while the comment is the newest
-# word on the PR. A re-Apply PR (chore/reapply-baseline) is bounded like any
-# other (mpaulosky/dotfiles#174), though it changes this gate itself: with
-# Claude reviewing every re-Apply commit in every repo, the exemption let a
-# round chase reviews without end, and a finding on one is fixed in the
-# Template, where its own PR is reviewed, then arrives with the next round
-# (ADR 0002).
+# diff, and clean otherwise (a Copilot review with only a body is clean). The
+# loop is exhausted after MAX_CLAUDE_ROUNDS dirty rounds in a row, counted back
+# from the newest reviewed commit; a clean round ends the count. Until then
+# every new non-merge head nobody reviewed gets a review (Copilot's, or
+# Claude's: see below), and a clean review of the head with every thread
+# resolved and the required checks green merges. At exhaustion the run takes
+# review:claude off and, once the PR is otherwise ready (not BEHIND, no
+# conflict, its required checks green), posts one comment. The comment names the
+# head and says whether a review covers it ("The head `abc1234` was not
+# reviewed."), says whether review:claude is off, and lists every thread still
+# unresolved and every off-diff finding of Claude's on the head (it ends with
+# EXHAUSTED_MARKER and the head, so it is posted once per exhaustion; a new
+# dirty round after it gets a new comment). The threads Copilot and Claude
+# Review opened no longer hold the merge: the comment is where they are kept,
+# so they can be resolved later. A thread opened by a person, or whose author
+# can't be read, still holds it (the comment marks it): a person's open thread
+# is not the loop's to give up on. Once the comment is posted and no
+# such thread is open, the PR merges when its required checks pass and it has no
+# conflict, though its head was not reviewed. That supersedes the rule of
+# mpaulosky/dotfiles#146, under which every thread held the merge past the cap,
+# for the bots' threads only (mpaulosky/dotfiles#378). The comment is read in
+# full: when it isn't among the last 100 comments the run pages through all of
+# them, and when it still can't read them it posts a notice naming the PR. The
+# loop restarts at the first review:claude added after the round that exhausted
+# it by a login with write access to the repository (the owner, or the PAT's
+# account, found with GITHUB_TOKEN's getCollaboratorPermissionLevel): only
+# rounds after the add count, with or without a comment (a PR with none gets
+# the old loop's comment first). An add by anyone else is ignored, and one whose
+# permission can't be read leaves the loop unread, so the run waits. This run
+# never adds the label while the comment is the newest word on the PR. A
+# re-Apply PR (chore/reapply-baseline) is bounded like any other
+# (mpaulosky/dotfiles#174), though it changes this gate itself: with Claude
+# reviewing every re-Apply commit in every repo, the exemption let a round chase
+# reviews without end, and a finding on one is fixed in the Template, where its
+# own PR is reviewed, then arrives with the next round (ADR 0002).
+#
+# Claude reviews only where Copilot can't, and a PR never gets both reviewers'
+# reviews (mpaulosky/dotfiles#378). Copilot can't review the PR when its quota
+# note is on the head, or it is gone (copilotGone: asked, the ask settled and no
+# request pending); otherwise review:claude is ignored while Copilot can review.
+# The run takes it off at once, whoever added it, the owner included (this
+# workflow starts on its labeled event for that), and claude-review.yml starts
+# no paid review. The label's only job is to call Claude in where Copilot is out.
 #
 # When Copilot's quota is used up it answers a head with a note instead of a
 # review, and no review of that head is coming. Often it answers nothing: GitHub
@@ -75,10 +97,11 @@ name: PR Auto-Merge
 # its quota note, or on any commit while its note is on the head or the ask has
 # settled and Copilot has no request pending (copilotGone).
 # The run takes review:claude off a PR once Copilot has really reviewed its head
-# (mpaulosky/dotfiles#270): Copilot has budget, and Claude's review would cover
-# nothing. It takes it off at exhaustion too (mpaulosky/dotfiles#170, and
-# mpaulosky/dotfiles#375), whoever added it: Claude Review reviews every push
-# while it's on, and the loop is done.
+# (mpaulosky/dotfiles#270), and while Copilot can review at all (see above):
+# Copilot has budget, and Claude's review would cover nothing. It takes it off
+# at exhaustion too (mpaulosky/dotfiles#170, and mpaulosky/dotfiles#375),
+# whoever added it: Claude Review reviews every push while it's on, and the
+# loop is done.
 #
 # A merge of main into a reviewed commit needs no new review: the head counts
 # as reviewed when it is a clean merge of main into a commit a reviewer
@@ -121,7 +144,9 @@ name: PR Auto-Merge
   # reach the PAT. The job never checks out PR code.
   pull_request_target:
     # unlabeled: the owner removing sandcastle:needs-human can make a PR ready.
-    types: [opened, ready_for_review, reopened, edited, synchronize, unlabeled]
+    # labeled: review:claude is ignored while Copilot can review, so a label
+    # added then is taken off at once (the job's if: lets no other label in).
+    types: [opened, ready_for_review, reopened, edited, synchronize, unlabeled, labeled]
     branches: [main]
   # GitHub sends no check_suite events for suites created by Actions, and
   # every required check comes from one of these workflows, so their
@@ -164,8 +189,11 @@ permissions:
 jobs:
   merge-when-ready:
     name: Merge same-repo PRs when ready
-    # A manual sweep can merge every ready PR, so it runs only from main.
-    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    # A manual sweep can merge every ready PR, so it runs only from main. Of
+    # the labels, only review:claude is worth a run (see the trigger).
+    if: >-
+      ${{ (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'review:claude') }}
     runs-on: ubuntu-latest
     steps:
       - name: Squash-merge when ready
@@ -451,8 +479,10 @@ jobs:
                            }
                          }
                        }
-                       # Every unresolved thread holds the merge, whoever opened it.
-                       # Resolved ones are read for the notice of a bot thread nobody replied to.
+                       # Every unresolved thread holds the merge below an exhausted
+                       # loop, whoever opened it; at one, a person's still does
+                       # (mpaulosky/dotfiles#378). Resolved ones are read for the
+                       # notice of a bot thread nobody replied to.
                        reviewThreads(first: 100) {
                          totalCount
                          nodes {
@@ -550,22 +580,32 @@ jobs:
               }).join("");
             }
 
+            // Whether a thread was opened by Copilot or Claude Review, by the
+            // rule claude-review.yml reads threads by: the opening comment is a
+            // Bot named copilot-pull-request-reviewer, or github-actions in a
+            // review whose body starts with CLAUDE_MARKER. A node without an
+            // opening comment or author isn't a bot thread.
+            function isBotThread(opening) {
+              if (opening?.author?.__typename !== "Bot") return false;
+              const login = (opening.author.login ?? "").replace(/\[bot\]$/, "");
+              if (login === COPILOT_REVIEWER) return true;
+              return login === "github-actions" && (opening.pullRequestReview?.body ?? "").startsWith(CLAUDE_MARKER);
+            }
+
+            // The unresolved threads a person opened, or whose author can't be
+            // read: the ones that still hold the merge at an exhausted loop
+            // (mpaulosky/dotfiles#378).
+            function personThreads(pr) {
+              return pr.reviewThreads.nodes.filter((thread) => !thread.isResolved && !isBotThread(thread.comments?.nodes?.[0]));
+            }
+
             // The resolved Copilot and Claude Review threads nobody replied to
-            // (mpaulosky/dotfiles#328), by the rule claude-review.yml reads
-            // threads by: the opening comment is a Bot named
-            // copilot-pull-request-reviewer, or github-actions in a review whose
-            // body starts with CLAUDE_MARKER. A reply is any later comment by
-            // another login; its text isn't read, so Sandcastle's and a
-            // session's replies count. A thread with more comments than were
-            // read counts as replied, and a node without comments isn't a bot
-            // thread. Names the thread as path:line with the opening comment's url.
+            // (mpaulosky/dotfiles#328), by the rule above (isBotThread). A reply
+            // is any later comment by another login; its text isn't read, so
+            // Sandcastle's and a session's replies count. A thread with more
+            // comments than were read counts as replied. Names the thread as
+            // path:line with the opening comment's url.
             function unrepliedBotThreads(threads) {
-              const isBotThread = (opening) => {
-                if (opening?.author?.__typename !== "Bot") return false;
-                const login = (opening.author.login ?? "").replace(/\[bot\]$/, "");
-                if (login === COPILOT_REVIEWER) return true;
-                return login === "github-actions" && (opening.pullRequestReview?.body ?? "").startsWith(CLAUDE_MARKER);
-              };
               const nameOf = (thread) => {
                 if (!thread.path) return "thread";
                 const place = thread.line ?? thread.originalLine;
@@ -1130,6 +1170,7 @@ jobs:
             // first, and whether the comments couldn't be read in full: they
             // weren't read, or more exist than were read and no comment of
             // that kind is among them. Fails closed, as copilotAsk does.
+            // reviewLoopState reads all the comments when it matters.
             function exhaustionMarkers(pr) {
               const comments = pr.comments;
               if (!comments || !Array.isArray(comments.nodes)) {
@@ -1139,72 +1180,212 @@ jobs:
               return { markers, unread: markers.length === 0 && comments.totalCount > comments.nodes.length };
             }
 
-            // Where the PR's review loop stands (mpaulosky/dotfiles#375):
-            // { rounds, exhausted, markerNewest, documented, unread,
-            // unreadable }. With an exhaustion comment on the PR the label
-            // events are read (GITHUB_TOKEN) to find where a new loop began:
-            // the first review:claude added after the newest comment, which is
-            // the owner's re-add; only rounds submitted after it count. First,
-            // not last: PR Auto-Merge's own PAT adds the label for a later
-            // head in the new loop, and a restart at that add would discard
-            // the loop's rounds and make it endless. markerNewest: a comment
-            // exists and nobody has added the label since, so this run never
-            // adds it. documented: the newest comment is no older than the
-            // newest round, so this exhaustion is on record (the comment names
-            // a head, but a head changed by update-branch while exhausted must
-            // not make a second one). unreadable: the label events couldn't be
-            // read, so the loop's state is unknown; the caller waits.
-            async function reviewLoopState(pullNumber, pr) {
-              let rounds = reviewRounds(reviewState(pr).counted);
-              const { markers, unread } = exhaustionMarkers(pr);
-              const state = { unread, markerNewest: false, documented: false, unreadable: false };
-              if (markers.length > 0) {
-                const markerAt = Date.parse(markers.at(-1).createdAt);
-                let events;
+            // All of a PR's comments, REST's pages (GITHUB_TOKEN), in the
+            // shape the query reports the last 100 in. For an exhausted loop
+            // whose comment may have scrolled off them (mpaulosky/dotfiles#378).
+            async function readAllComments(pullNumber, expected) {
+              const all = await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: pullNumber,
+                per_page: 100
+              });
+              // Fewer than the query counted: a comment was deleted since, or a
+              // page was cut short. Either way the read can't be trusted to
+              // hold the exhaustion comment, so it counts as unread.
+              if (all.length < expected) {
+                throw new Error(`read ${all.length} of ${expected} comments`);
+              }
+              return all.map((comment) => ({
+                databaseId: comment.id,
+                author: { login: comment.user?.login },
+                body: comment.body,
+                createdAt: comment.created_at
+              }));
+            }
+
+            // Thrown when a login's permission can't be read (a plain error
+            // from the API: one that ends the run is thrown as it is).
+            class PermissionUnreadable extends Error {}
+
+            // Whether a login has write access to the repository, for the one
+            // thing it decides: only such a login restarts a review loop
+            // (mpaulosky/dotfiles#378). The repository's owner has it, and a
+            // bot or an actor that is gone (null) never does, with no call.
+            // Anyone else is asked once a run, with GITHUB_TOKEN. Fails closed:
+            // a lookup that fails throws PermissionUnreadable, and the loop is
+            // then unread, not restarted.
+            const writeAccessOf = new Map();
+            async function hasWriteAccess(actor) {
+              const login = actor?.login;
+              if (!login || actor.type === "Bot" || login.endsWith("[bot]")) {
+                return false;
+              }
+              if (login.toLowerCase() === owner.toLowerCase()) {
+                return true;
+              }
+              if (!writeAccessOf.has(login)) {
                 try {
-                  events = await github.paginate(github.rest.issues.listEvents, {
-                    owner,
-                    repo,
-                    issue_number: pullNumber,
-                    per_page: 100
-                  });
+                  const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
+                  writeAccessOf.set(login, ["admin", "maintain", "write"].includes(data.permission));
                 } catch (error) {
                   if (sweeping && endsRun(error)) {
                     throw error;
                   }
-                  core.warning(`Couldn't read PR #${pullNumber}'s label events, so its review loop's state is unknown: ${error.message}`);
-                  return { ...state, rounds, exhausted: false, unreadable: true };
+                  throw new PermissionUnreadable(`${login}'s permission couldn't be read: ${error.message}`);
                 }
-                const restart = events.find((event) => {
-                  return event.event === "labeled" && event.label?.name === CLAUDE_LABEL && Date.parse(event.created_at) > markerAt;
-                });
-                state.markerNewest = !restart;
-                if (restart) {
-                  const restartAt = Date.parse(restart.created_at);
-                  rounds = rounds.filter((round) => round.at > restartAt);
-                }
-                const newest = rounds.at(-1);
-                state.documented = !newest || markerAt >= newest.at;
               }
-              return { ...state, rounds, exhausted: dirtyStreak(rounds) >= MAX_CLAUDE_ROUNDS };
+              return writeAccessOf.get(login);
+            }
+
+            // The longest run of dirty rounds in a row, anywhere in the rounds.
+            function longestDirtyRun(rounds) {
+              let longest = 0;
+              let run = 0;
+              for (const round of rounds) {
+                run = round.dirty ? run + 1 : 0;
+                longest = Math.max(longest, run);
+              }
+              return longest;
+            }
+
+            // Where the PR's review loop stands (mpaulosky/dotfiles#375,
+            // mpaulosky/dotfiles#378): { rounds, exhausted, markerNewest,
+            // documented, unread, unreadable, restarted, undocumentedRestart,
+            // oldRounds }. Once the dirty rounds have reached MAX_CLAUDE_ROUNDS
+            // in a row anywhere, the loop is walked through its restarts.
+            // The restart is the first review:claude added after the round that
+            // got a generation of rounds there, by a login with write access
+            // (hasWriteAccess); only rounds submitted after it count, whether
+            // an exhaustion comment exists or not. First, not last: PR
+            // Auto-Merge's own PAT adds the label for a later head in the new
+            // loop, and a restart at that add would discard the loop's rounds
+            // and make it endless. An add by anyone else is ignored; one whose
+            // permission can't be read makes the state unreadable, and the
+            // caller waits. No add counts while Copilot can review, since the
+            // label is ignored then. The label events are read (GITHUB_TOKEN)
+            // only once the streak has reached the cap, and the comments in
+            // full (REST's pages) only if the last 100 hold no exhaustion
+            // comment. markerNewest: the final generation's exhaustion has a
+            // comment and nobody has added the label since, so this run never
+            // adds it. documented: the newest comment is no older than the
+            // newest round, so this exhaustion is on record (the comment names
+            // a head, but a head changed by update-branch while exhausted must
+            // not make a second one). undocumentedRestart: a restart replaced a
+            // loop no comment documents; the caller documents it first, before
+            // any round of the new loop counts. unread: the comments couldn't
+            // be read in full. unreadable: the label events or a permission
+            // couldn't be read, so the loop's state is unknown.
+            async function reviewLoopState(pullNumber, pr) {
+              const allRounds = reviewRounds(reviewState(pr).counted);
+              let { markers, unread } = exhaustionMarkers(pr);
+              const state = {
+                rounds: allRounds, exhausted: false, markerNewest: false, documented: false, unread,
+                unreadable: false, restarted: false, undocumentedRestart: false, oldRounds: []
+              };
+              if (longestDirtyRun(allRounds) < MAX_CLAUDE_ROUNDS) {
+                return state;
+              }
+              // Only the case of more comments than the page: a comments read that
+              // failed outright stays unread.
+              if (unread && pr.comments && pr.comments.totalCount > pr.comments.nodes.length) {
+                try {
+                  markers = (await readAllComments(pullNumber, pr.comments.totalCount)).filter(isExhaustionRecord);
+                  state.unread = false;
+                } catch (error) {
+                  if (sweeping && endsRun(error)) {
+                    throw error;
+                  }
+                  core.warning(`Couldn't read all the comments of PR #${pullNumber}: ${error.message}`);
+                }
+              }
+              let events;
+              try {
+                events = await github.paginate(github.rest.issues.listEvents, {
+                  owner,
+                  repo,
+                  issue_number: pullNumber,
+                  per_page: 100
+                });
+              } catch (error) {
+                if (sweeping && endsRun(error)) {
+                  throw error;
+                }
+                core.warning(`Couldn't read PR #${pullNumber}'s label events, so its review loop's state is unknown: ${error.message}`);
+                return { ...state, unreadable: true };
+              }
+              const adds = !copilotCannotReview(pr) ? [] : events
+                .filter((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL)
+                .map((event) => ({ at: Date.parse(event.created_at), actor: event.actor }));
+              let start = -Infinity;
+              let generation;
+              let hit;
+              for (;;) {
+                generation = allRounds.filter((round) => start === -Infinity || round.at > start);
+                hit = null;
+                for (let i = 0, run = 0; i < generation.length && hit === null; i++) {
+                  run = generation[i].dirty ? run + 1 : 0;
+                  hit = run === MAX_CLAUDE_ROUNDS ? generation[i].at : null;
+                }
+                // Short of the cap, or a round with no known time: no restart can be recognised.
+                if (hit === null || hit === -Infinity) {
+                  break;
+                }
+                let restart = null;
+                for (const add of adds.filter((candidate) => candidate.at > hit)) {
+                  try {
+                    if (await hasWriteAccess(add.actor)) {
+                      restart = add;
+                      break;
+                    }
+                  } catch (error) {
+                    if (!(error instanceof PermissionUnreadable)) {
+                      throw error;
+                    }
+                    core.warning(`Couldn't read the permission of a login that added ${CLAUDE_LABEL} to PR #${pullNumber}, so its review loop's state is unknown: ${error.message}`);
+                    return { ...state, rounds: generation, unreadable: true };
+                  }
+                }
+                if (!restart) {
+                  break;
+                }
+                state.oldRounds = generation.filter((round) => round.at <= restart.at);
+                state.restarted = true;
+                start = restart.at;
+              }
+              const markerTimes = markers.map((marker) => Date.parse(marker.createdAt));
+              const oldNewest = state.oldRounds.at(-1)?.at ?? -Infinity;
+              const newest = generation.at(-1);
+              return {
+                ...state,
+                rounds: generation,
+                exhausted: dirtyStreak(generation) >= MAX_CLAUDE_ROUNDS,
+                markerNewest: hit !== null && markerTimes.some((at) => at >= hit),
+                documented: markers.length > 0 && (!newest || markerTimes.at(-1) >= newest.at),
+                undocumentedRestart: state.restarted && !markerTimes.some((at) => at >= oldNewest)
+              };
             }
 
             // A review loop that is exhausted stops Claude Review: it would
             // still review every push while review:claude is on, and each
             // review can open threads, so the PR would go on chasing them.
-            // Taking the label off stops that. Removed with GITHUB_TOKEN (its
-            // pull-requests: write covers a PR's labels), so the removal
-            // starts no workflow. A failure is a warning: the next run tries
-            // again.
-            async function removeClaudeLabel(pullNumber, why) {
+            // Taking the label off stops that, as it does while Copilot can
+            // review (the label is ignored then, mpaulosky/dotfiles#378).
+            // Removed with GITHUB_TOKEN (its pull-requests: write covers a PR's
+            // labels), so the removal starts no workflow. Returns whether the
+            // label is off afterwards: removed, or already gone. A failure is
+            // a warning and false: the next run tries again.
+            async function removeClaudeLabel(pullNumber, why, because = "so Claude Review stops reviewing new pushes") {
               try {
                 await github.rest.issues.removeLabel({ owner, repo, issue_number: pullNumber, name: CLAUDE_LABEL });
-                core.info(`${why} on PR #${pullNumber}: removed ${CLAUDE_LABEL}, so Claude Review stops reviewing new pushes.`);
+                core.info(`${why} on PR #${pullNumber}: removed ${CLAUDE_LABEL}, ${because}.`);
+                return true;
               } catch (error) {
                 if (error.status === 404) {
-                  return;
+                  return true;
                 }
                 core.warning(`Couldn't remove ${CLAUDE_LABEL} from PR #${pullNumber}: ${error.message}`);
+                return false;
               }
             }
 
@@ -1393,6 +1574,53 @@ jobs:
               return pr.copilotReviews.nodes.some((review) => review.commit?.oid === pr.headRefOid);
             }
 
+            // Whether Copilot has really reviewed the head (not its quota note).
+            function copilotReviewedHead(pr) {
+              return pr.copilotReviews.nodes.some((review) => {
+                return review.commit?.oid === pr.headRefOid && !COPILOT_NO_REVIEW.test(review.body ?? "");
+              });
+            }
+
+            // Whether Copilot's quota note is on the head.
+            function copilotNoteOnHead(pr) {
+              return pr.copilotReviews.nodes.some((review) => {
+                return review.commit?.oid === pr.headRefOid && COPILOT_NO_REVIEW.test(review.body ?? "");
+              });
+            }
+
+            // Copilot can't review the PR (mpaulosky/dotfiles#378): its quota
+            // note is on the head, or it is gone (copilotGone) and has not
+            // really reviewed the head: a settled ask with no request pending
+            // is also what a finished Copilot review leaves behind
+            // (mpaulosky/dotfiles#270). Only then does review:claude stand,
+            // and a Claude review stand in for Copilot's. claude-review.yml's
+            // first step applies the same rule.
+            function copilotCannotReview(pr) {
+              return copilotNoteOnHead(pr) || (copilotGone(pr) && !copilotReviewedHead(pr));
+            }
+
+            // Why Copilot can still review the PR, for the log, or null when it
+            // can't (copilotCannotReview).
+            function copilotAvailableWhy(pr) {
+              if (copilotCannotReview(pr)) {
+                return null;
+              }
+              if (copilotReviewedHead(pr)) {
+                return "Copilot has reviewed the head";
+              }
+              if (copilotPending(pr)) {
+                return "Copilot's review is requested";
+              }
+              switch (copilotAsk(pr).state) {
+                case "none":
+                  return "Copilot has not been asked yet";
+                case "unread":
+                  return "The record of whether Copilot was asked couldn't be read";
+                default:
+                  return `Copilot was asked less than ${COPILOT_ASK_SETTLE_MS / 1000} seconds ago`;
+              }
+            }
+
             // Asks for Copilot's review of the PR, once: a PR with no record
             // of an ask, whose head has no Copilot review or note and no
             // request pending. Posts the record (GITHUB_TOKEN) before the
@@ -1560,21 +1788,44 @@ jobs:
               return header === -1 ? [] : lines.slice(header + 1).filter((line) => line.startsWith("- "));
             }
 
-            // The comment that documents an exhausted review loop: the
-            // threads still unresolved (path and line, the first line of the
-            // first comment, a link) and the off-diff findings of Claude's
-            // review of the head that nobody answered (their first line), at
-            // most EXHAUSTION_BULLETS in all. It ends with the hidden marker
-            // naming the head, after this run's own id, which tells two runs'
-            // comments apart (see documentExhaustion).
-            function exhaustionComment(pr, findings, claudeHead, runId) {
-              const threads = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved).map((thread) => {
-                const opening = thread.comments?.nodes?.[0];
+            // The comment that documents an exhausted review loop: the head
+            // and whether a review covers it, the threads still unresolved
+            // (path and line, the first line of the first comment, a link;
+            // a person's first, marked as holding the merge) and the off-diff
+            // findings of Claude's review of the head that nobody answered
+            // (their first line), at most EXHAUSTION_BULLETS in all. It ends
+            // with the hidden marker naming the head, after this run's own id,
+            // which tells two runs' comments apart (see documentExhaustion).
+            // reviewedHead: the commit whose review covers the head (the head
+            // itself, or the one under a chain of clean merges from main), or
+            // null. labelOff: review:claude is off (the removal succeeded, or
+            // it was never on); false says it is being removed. restarted: the
+            // comment documents a loop an add of the label has just replaced,
+            // so the label is on again for the new loop
+            // (mpaulosky/dotfiles#378).
+            function exhaustionComment(pr, findings, claudeHead, runId, { reviewedHead = null, labelOff = true, restarted = false } = {}) {
+              const shortHead = String(pr.headRefOid).slice(0, 7);
+              const headSentence = reviewedHead === pr.headRefOid
+                ? `The head \`${shortHead}\` was reviewed.`
+                : reviewedHead
+                  ? `The head \`${shortHead}\` was not itself reviewed: it is a clean merge of main onto \`${String(reviewedHead).slice(0, 7)}\`, which was.`
+                  : `The head \`${shortHead}\` was not reviewed.`;
+              const opened = (thread) => thread.comments?.nodes?.[0];
+              const bullet = (thread) => {
+                const opening = opened(thread);
                 const place = thread.line ?? thread.originalLine;
                 const name = !thread.path ? "thread" : place ? `${thread.path}:${place}` : thread.path;
                 const url = typeof opening?.url === "string" && /^https:\/\/[^\s()<>]+$/.test(opening.url) ? opening.url : null;
-                return `- \`${quoted(name.replace(/`/g, "'"))}\` ${quoted(opening?.body ?? "")}`.trimEnd() + (url ? ` ([thread](${url}))` : "");
-              });
+                const holds = isBotThread(opening) ? "" : " (holds the merge)";
+                return `- \`${quoted(name.replace(/`/g, "'"))}\` ${quoted(opening?.body ?? "")}`.trimEnd() + (url ? ` ([thread](${url}))` : "") + holds;
+              };
+              const open = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved);
+              // In the order GitHub lists them, but a cut at EXHAUSTION_BULLETS
+              // never drops a person's thread: past it, theirs come first.
+              const persons = open.filter((thread) => !isBotThread(opened(thread)));
+              const threads = (open.length > EXHAUSTION_BULLETS
+                ? [...persons, ...open.filter((thread) => isBotThread(opened(thread)))]
+                : open).map(bullet);
               const findingBullets = findings.map((finding) => `- ${quoted(finding.slice(2))}`);
               const shownThreads = threads.slice(0, EXHAUSTION_BULLETS);
               const shownFindings = findingBullets.slice(0, EXHAUSTION_BULLETS - shownThreads.length);
@@ -1582,7 +1833,10 @@ jobs:
               const unread = pr.reviewThreads.totalCount - pr.reviewThreads.nodes.length;
               const sections = [];
               if (shownThreads.length > 0) {
-                sections.push(["Unresolved threads:", ...shownThreads].join("\n"));
+                sections.push([
+                  "Unresolved threads (those opened by Copilot or Claude Review no longer hold the merge; one opened by a person does):",
+                  ...shownThreads
+                ].join("\n"));
               }
               if (shownFindings.length > 0) {
                 sections.push([`Findings outside the diff (Claude's review of \`${String(claudeHead).slice(0, 7)}\`):`, ...shownFindings].join("\n"));
@@ -1596,12 +1850,16 @@ jobs:
               if (sections.length === 0) {
                 sections.push("Nothing is left open.");
               }
+              const lead = `The last ${MAX_CLAUDE_ROUNDS} reviewed commits (MAX_CLAUDE_ROUNDS) each drew threads or findings` +
+                (restarted ? ". " : ", so no further review is requested for this PR. ");
+              const rest = restarted
+                ? `A new review loop has started: \`${CLAUDE_LABEL}\` was added after this one's last round, so the earlier rounds no longer count.`
+                : `\`${CLAUDE_LABEL}\` ${labelOff ? "is off" : "is being removed"}, and the PR merges once its required checks pass, it has ` +
+                  "no conflict and no thread opened by a person is unresolved. To start a new loop while the PR is open, add " +
+                  `\`${CLAUDE_LABEL}\` again.`;
               return [
                 "**PR Auto-Merge: the review loop is exhausted.**",
-                `The last ${MAX_CLAUDE_ROUNDS} reviewed commits (MAX_CLAUDE_ROUNDS) each drew threads or findings, so no further ` +
-                  `review is requested for this PR. \`${CLAUDE_LABEL}\` was removed, and the PR merges once its required checks pass ` +
-                  `and it has no conflict. To start a new loop while the PR is open, add \`${CLAUDE_LABEL}\` again. ` +
-                  "mpaulosky/dotfiles#375",
+                `${lead}${headSentence} ${rest} mpaulosky/dotfiles#375`,
                 ...sections,
                 `<!-- pr-automerge:exhausted-id ${runId} -->\n${exhaustedMarker(pr.headRefOid)}`
               ].join("\n\n");
@@ -1609,7 +1867,8 @@ jobs:
 
             // Documents an exhausted review loop on the PR, once: a loop whose
             // exhaustion has a comment already (loop.documented) posts nothing.
-            // Posts with GITHUB_TOKEN, before any merge call, so the record
+            // details: the comment's reviewedHead, labelOff and restarted
+            // (see exhaustionComment). Posts with GITHUB_TOKEN, before any merge call, so the record
             // exists on the merged PR. Two runs can both have read "no
             // comment" (many events start runs for one PR), so it reads the
             // comments again and, when another run's comment for this
@@ -1618,12 +1877,18 @@ jobs:
             // merge: false when the comments weren't read in full, so a
             // comment may exist already, or the post failed. A re-read that
             // fails or never shows the comment keeps it and carries on.
-            async function documentExhaustion(pullNumber, pr, loop, findings, claudeHead) {
+            async function documentExhaustion(pullNumber, pr, loop, findings, claudeHead, details = {}) {
               if (loop.documented) {
                 return true;
               }
               if (loop.unread) {
                 core.warning(`Couldn't tell whether the exhausted review loop of PR #${pullNumber} is documented: its comments weren't read in full.`);
+                // A notice, not only a log line, so the owner sees a PR that waits on every run (mpaulosky/dotfiles#378).
+                core.notice(
+                  `PR #${pullNumber}: its review loop is exhausted, but its comments couldn't be read in full, so it isn't known ` +
+                  "whether the exhaustion is documented, and the PR isn't merged. It is tried again on the next event; " +
+                  "merge it by hand if that doesn't help."
+                );
                 return false;
               }
               const runId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1633,7 +1898,7 @@ jobs:
                   owner,
                   repo,
                   issue_number: pullNumber,
-                  body: exhaustionComment(pr, findings, claudeHead, runId)
+                  body: exhaustionComment(pr, findings, claudeHead, runId, details)
                 });
               } catch (error) {
                 if (sweeping && endsRun(error)) {
@@ -1837,19 +2102,23 @@ jobs:
                 return status && askedCopilot ? { ...status, copilotAskedHere: true } : status;
               };
               let pr = await snapshot();
+              // Whether review:claude is off, when this run tried to take it
+              // off; null when it didn't (the exhaustion comment says so).
+              let labelRemoved = null;
               // Before any check that can end this run: a draft, a handed-back
               // PR or a red one is still reviewed on every push while the
               // label is on.
               if (isOpenSameRepoPrIntoMain(pr) && pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL)) {
-                // Copilot has really reviewed the head, so it has budget and
-                // Claude's review would cover nothing: the label only costs money.
-                const copilotReviewedHead = pr.copilotReviews.nodes.some((review) => {
-                  return review.commit?.oid === pr.headRefOid && !COPILOT_NO_REVIEW.test(review.body ?? "");
-                });
-                if (copilotReviewedHead) {
-                  await removeClaudeLabel(pullNumber, "Copilot has reviewed the head");
+                // The label is ignored while Copilot can review, whoever added
+                // it (mpaulosky/dotfiles#378): Claude reviews only where
+                // Copilot can't, and a review of both would be paid for in
+                // vain. That includes a head Copilot has really reviewed
+                // (mpaulosky/dotfiles#270), whose budget is back.
+                const available = copilotAvailableWhy(pr);
+                if (available) {
+                  labelRemoved = await removeClaudeLabel(pullNumber, available, "which is ignored while Copilot can review");
                 } else if ((await reviewLoopState(pullNumber, pr)).exhausted) {
-                  await removeClaudeLabel(pullNumber, `Review loop exhausted (${MAX_CLAUDE_ROUNDS} dirty rounds in a row)`);
+                  labelRemoved = await removeClaudeLabel(pullNumber, `Review loop exhausted (${MAX_CLAUDE_ROUNDS} dirty rounds in a row)`);
                 }
               }
               if (!isOpenSameRepoPr(pullNumber, pr) || !(await isHandBackReadyToMerge(pullNumber, pr))) {
@@ -1907,22 +2176,6 @@ jobs:
                   core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
                   return;
                 }
-                if (!reviewedHead && !loop.exhausted) {
-                  // Ask Copilot for its review of the PR, once, and judge the
-                  // head again on what came of it (mpaulosky/dotfiles#360).
-                  if (!askedCopilot && (await askCopilotOnce(pullNumber, pr))) {
-                    return mergeIfReady(pullNumber, { askedCopilot: true });
-                  }
-                  await callInClaude(pullNumber, pr, loop);
-                  core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);
-                  return;
-                }
-              }
-              if (reviewedHead && reviewedHead !== pr.headRefOid) {
-                core.info(
-                  `PR #${pullNumber}: ${pr.headRefOid} is a clean merge from main onto ${reviewedHead}, ` +
-                  "so the review of that commit covers it."
-                );
               }
 
               // Claude's latest review of the commit that covers the head: the
@@ -1942,12 +2195,10 @@ jobs:
                 return { claudeHead, review: claudeHead ? claudeReviews.findLast((review) => review.commit?.oid === claudeHead) : undefined };
               };
 
-              const unresolved = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
-              if (loop.exhausted) {
-                // Neither the threads still open nor Claude's findings outside
-                // the diff hold the merge now: the comment is where they are
-                // kept, and it is posted before the merge so the record exists
-                // on the merged PR.
+              // A loop that an add of review:claude has replaced and no comment
+              // documents is documented now, before any round of the new loop
+              // counts or anything of it is acted on (mpaulosky/dotfiles#378).
+              if (loop.undocumentedRestart) {
                 let found;
                 try {
                   found = await claudeReviewOfHead();
@@ -1956,11 +2207,35 @@ jobs:
                   core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
                   return;
                 }
-                if (!(await documentExhaustion(pullNumber, pr, loop, offDiffFindings(found.review), found.claudeHead))) {
-                  core.info(`Waiting on PR #${pullNumber}: the exhausted review loop isn't documented yet.`);
+                const documentedOld = await documentExhaustion(
+                  pullNumber, pr, { ...loop, documented: false, rounds: loop.oldRounds },
+                  offDiffFindings(found.review), found.claudeHead, { reviewedHead, restarted: true }
+                );
+                if (!documentedOld) {
+                  core.info(`Waiting on PR #${pullNumber}: the review loop that ${CLAUDE_LABEL} replaced isn't documented yet.`);
                   return;
                 }
-              } else {
+              }
+
+              if (!reviewedHead && !loop.exhausted) {
+                // Ask Copilot for its review of the PR, once, and judge the
+                // head again on what came of it (mpaulosky/dotfiles#360).
+                if (!askedCopilot && (await askCopilotOnce(pullNumber, pr))) {
+                  return mergeIfReady(pullNumber, { askedCopilot: true });
+                }
+                await callInClaude(pullNumber, pr, loop);
+                core.info(`Waiting on PR #${pullNumber}: no Copilot or Claude review of ${pr.headRefOid} yet.`);
+                return;
+              }
+              if (reviewedHead && reviewedHead !== pr.headRefOid) {
+                core.info(
+                  `PR #${pullNumber}: ${pr.headRefOid} is a clean merge from main onto ${reviewedHead}, ` +
+                  "so the review of that commit covers it."
+                );
+              }
+
+              const unresolved = pr.reviewThreads.nodes.filter((thread) => !thread.isResolved).length;
+              if (!loop.exhausted) {
                 // Only the first 100 threads are fetched; past that, leave the
                 // merge to a person rather than miss an unresolved one.
                 if (pr.reviewThreads.totalCount > pr.reviewThreads.nodes.length) {
@@ -2028,14 +2303,52 @@ jobs:
                 return;
               }
 
-              // Log only when the exhausted loop changed the outcome: without
-              // it, this PR would still be waiting on a reviewer or on its
-              // threads.
-              if (loop.exhausted && (!reviewedHead || unresolved > 0)) {
-                core.info(
-                  `Review loop exhausted on PR #${pullNumber}: merging with ${unresolved} unresolved thread(s)` +
-                  (reviewedHead ? "." : ` and without a review of ${pr.headRefOid}.`)
-                );
+              if (loop.exhausted) {
+                // The PR is ready but for its review: BEHIND, a conflict and
+                // the required checks are settled (mpaulosky/dotfiles#378).
+                // Document the exhaustion, before the merge so the record
+                // exists on the merged PR. Neither the bots' threads still open
+                // nor Claude's findings outside the diff hold the merge now:
+                // the comment is where they are kept.
+                let found;
+                try {
+                  found = await claudeReviewOfHead();
+                } catch (error) {
+                  core.warning(`Couldn't tell whether ${pr.headRefOid} is a clean merge from main: ${error.message}`);
+                  core.info(`Waiting on PR #${pullNumber}: the merge check on ${pr.headRefOid} failed.`);
+                  return;
+                }
+                const labelOff = labelRemoved ?? !pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL);
+                if (!(await documentExhaustion(pullNumber, pr, loop, offDiffFindings(found.review), found.claudeHead, { reviewedHead, labelOff }))) {
+                  core.info(`Waiting on PR #${pullNumber}: the exhausted review loop isn't documented yet.`);
+                  return;
+                }
+                // A thread a person opened still holds the merge, and so does
+                // one that may be: past the first 100 threads it can't be told.
+                if (pr.reviewThreads.totalCount > pr.reviewThreads.nodes.length) {
+                  core.notice(
+                    `PR #${pullNumber}: its review loop is exhausted, but it has more review threads than one page, ` +
+                    "so a thread a person opened can't be ruled out; merge it by hand."
+                  );
+                  return;
+                }
+                const persons = personThreads(pr);
+                if (persons.length > 0) {
+                  core.info(
+                    `Waiting on PR #${pullNumber}: ${persons.length} unresolved review thread(s) opened by a person hold the merge, ` +
+                    "though its review loop is exhausted."
+                  );
+                  return;
+                }
+                // Log only when the exhausted loop changed the outcome: without
+                // it, this PR would still be waiting on a reviewer or on its
+                // threads.
+                if (!reviewedHead || unresolved > 0) {
+                  core.info(
+                    `Review loop exhausted on PR #${pullNumber}: merging with ${unresolved} unresolved thread(s) of Copilot's or Claude's` +
+                    (reviewedHead ? "." : ` and without a review of ${pr.headRefOid}.`)
+                  );
+                }
               }
 
               if (process.env.HAS_RELEASE_PR_PAT !== "true") {

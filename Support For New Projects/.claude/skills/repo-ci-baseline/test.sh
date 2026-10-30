@@ -713,10 +713,97 @@ run_record "$host_token" "$sha_a" "$sha_a" 2
   || fail "record-head: it must read the pull request's head once and retry only the post, every try as the host (calls: $(tr '\n' '|' < "$record_calls"))"
 run_record "$host_token" "$sha_a" "$sha_a" 3
 [[ $record_rc -ne 0 && $record_count -eq 3 ]] || fail "record-head: three failed posts must exit non-zero after three tries (exit $record_rc, posts $record_count)"
-grep -A1 '^  pull_request_target:$' "$sandcastle_yml" | grep -qF 'types: [labeled]' \
-  || fail "sandcastle.yml's pull_request_target trigger must be types: [labeled] only"
-grep -A1 '^  pull_request:$' "$sandcastle_yml" | grep -qF 'types: [unlabeled]' \
-  || fail "sandcastle.yml's pull_request trigger must stay unlabeled only: the owner's label is recorded on pull_request_target"
+# mpaulosky/dotfiles#368: the owner's hand-back unlabel is a pull_request_target event too, so it re-queues a PR with merge conflicts (GitHub
+# starts no pull_request run on one) and runs main's copy of the workflow, never the PR branch's, with the secrets.
+grep -A1 '^  pull_request_target:$' "$sandcastle_yml" | grep -qF 'types: [labeled, unlabeled]' \
+  || fail "sandcastle.yml's pull_request_target trigger must be types: [labeled, unlabeled]: labeled records the hand-off head, unlabeled re-queues a PR the owner hands back"
+if grep -qE '^  pull_request:' "$sandcastle_yml"; then
+  fail "sandcastle.yml must have no pull_request: trigger: a pull_request run uses the PR branch's workflow with the secrets and doesn't start on a PR with merge conflicts"
+fi
+# The two jobs' if: expressions, evaluated for the events an unlabeled pull_request_target can carry.
+"${yaml_py[@]}" - "$sandcastle_yml" <<'PY' || fail "sandcastle.yml: an unlabeled pull_request_target event must start the sandcastle job only for the owner removing sandcastle:needs-info or sandcastle:needs-human on a PR into main, and never record-head"
+import re, sys, yaml
+
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"]
+TOKEN = re.compile(r"\s*(?:('[^']*')|(&&)|(\|\|)|(==)|(!=)|(\()|(\))|(,)|(\d+)|([A-Za-z_][\w.]*))")
+
+def evaluate(expr, ctx):
+    """Evaluate the subset of GitHub's expression language the workflow's if: uses; a missing context value is ''."""
+    py, pos = [], 0
+    expr = expr.strip()
+    while pos < len(expr):
+        m = TOKEN.match(expr, pos)
+        assert m, f"can't read the expression at: {expr[pos:pos + 30]!r}"
+        pos = m.end()
+        text, and_, or_, eq, ne, lp, rp, comma, num, name = m.groups()
+        if text is not None: py.append(text)
+        elif and_: py.append(" and ")
+        elif or_: py.append(" or ")
+        elif eq: py.append("==")
+        elif ne: py.append("!=")
+        elif lp: py.append("(")
+        elif rp: py.append(")")
+        elif comma: py.append(",")
+        elif num: py.append(num)
+        elif name == "startsWith" or name in ("true", "false"):
+            py.append({"startsWith": "startsWith", "true": "True", "false": "False"}[name])
+        else: py.append(f"ctx.get({name!r}, '')")
+    return bool(eval("".join(py), {"__builtins__": {}}, {"ctx": ctx, "startsWith": lambda a, b: str(a).startswith(str(b))}))
+
+def starts(job, ctx):
+    return evaluate(jobs[job]["if"], ctx)
+
+def unlabeled(event="pull_request_target", sender="owner", label="sandcastle:needs-info", base="main", **extra):
+    ctx = {
+        "github.event_name": event, "github.event.action": "unlabeled", "github.event.sender.login": sender,
+        "github.event.label.name": label, "github.repository_owner": "owner", "github.repository": "owner/repo",
+        "github.event.pull_request.base.ref": base, "github.event.pull_request.head.repo.full_name": "owner/repo",
+        "github.event.pull_request.head.ref": "fix/1-x", "github.ref": "refs/heads/main", "github.run_attempt": 1,
+    }
+    ctx.update(extra)
+    return ctx
+
+problems = []
+def expect(what, got, want):
+    if got != want:
+        problems.append(f"{what}: sandcastle job {'starts' if got else 'does not start'}, want {'a start' if want else 'no start'}")
+
+for label in ("sandcastle:needs-info", "sandcastle:needs-human"):
+    expect(f"owner removes {label} from a PR into main", starts("sandcastle", unlabeled(label=label)), True)
+    expect(f"owner removes {label} from a PR into a branch other than main", starts("sandcastle", unlabeled(label=label, base="release")), False)
+    expect(f"owner removes {label}, base ref missing", starts("sandcastle", {k: v for k, v in unlabeled(label=label).items() if k != "github.event.pull_request.base.ref"}), False)
+    expect(f"someone else removes {label} from a PR into main", starts("sandcastle", unlabeled(label=label, sender="stranger")), False)
+    expect(f"the host's bot removes {label} from a PR into main", starts("sandcastle", unlabeled(label=label, sender="github-actions[bot]")), False)
+    expect(f"a pull_request run (no longer a trigger) of owner removing {label} from a PR into main", starts("sandcastle", unlabeled(event="pull_request", label=label)), False)
+for label in ("sandcastle:follow-up", "sandcastle:ready", "Sandcastle", "bug", "review:claude", "sandcastle:needs-info-x"):
+    expect(f"owner removes {label} from a PR into main", starts("sandcastle", unlabeled(label=label)), False)
+# A fork PR's pull_request_target run is main's workflow, so the base-ref check, not the head's repo, is what the job needs; the owner's label removal still counts.
+expect("owner removes sandcastle:needs-info from a fork PR into main", starts("sandcastle", unlabeled(**{"github.event.pull_request.head.repo.full_name": "fork/repo"})), True)
+# The same hand-back on an issue is unchanged: an issue event has no base ref.
+issue = {k: v for k, v in unlabeled(event="issues").items() if not k.startswith("github.event.pull_request")}
+expect("owner removes sandcastle:needs-info from an issue", starts("sandcastle", issue), True)
+expect("someone else removes sandcastle:needs-info from an issue", starts("sandcastle", {**issue, "github.event.sender.login": "stranger"}), False)
+
+for label in ("sandcastle:needs-info", "sandcastle:needs-human", "sandcastle:follow-up"):
+    for base in ("main", "release"):
+        for sender in ("owner", "stranger"):
+            expect(f"record-head on unlabeled {label} by {sender}, base {base}", starts("record-head", unlabeled(label=label, sender=sender, base=base)), False)
+# The labeled event still starts record-head, and not the sandcastle job, for the owner's hand-off label.
+labeled = unlabeled(label="sandcastle:follow-up", **{"github.event.action": "labeled"})
+expect("record-head on the owner's labeled sandcastle:follow-up", starts("record-head", labeled), True)
+expect("the sandcastle job on the owner's labeled sandcastle:follow-up", starts("sandcastle", labeled), False)
+
+if problems:
+    print("\n".join(problems))
+    sys.exit(1)
+PY
+grep -qF -- 'unlabeled' "$skill_dir/docs/adr/0009-sandcastle-workflow-is-owned.md" \
+  || fail "ADR 0009 must record why the PR unlabeled trigger is pull_request_target (mpaulosky/dotfiles#368)"
+adr_0009_decisions="$(sed -n '/^## Decisions/,/^## Consequences/p' "$skill_dir/docs/adr/0009-sandcastle-workflow-is-owned.md")"
+for needle in 'unlabeled' 'conflict' 'fork' 'mpaulosky/dotfiles#368'; do
+  grep -qiF -- "$needle" <<<"$adr_0009_decisions" \
+    || fail "ADR 0009's Decisions must say why unlabeled runs on pull_request_target: it lacks '$needle' (conflicting PRs, main's copy of the workflow, fork PRs never had the secrets)"
+done
 if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then
   fail "the Seed .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
 fi

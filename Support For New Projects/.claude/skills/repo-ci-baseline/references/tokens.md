@@ -37,7 +37,8 @@ Two buckets matter, and the GraphQL one is the likelier to run out:
 - **GraphQL (1,000 points an hour):** `MergeReadiness` is most of PR Auto-Merge's load. It has seven connections (the head's checks, two review lists,
   threads and labels, and the review commits' parents), so it costs about 1 point, and at most a few when both review lists are full.
   A run evaluating a PR makes at least two queries (the first snapshot and a fresh one), up to four more retries while GitHub reports `UNKNOWN`,
-  and one more in `noRequiredCheckState`: 2 to 7 queries, so about 2 to 7 points. The run that asks Copilot for its review (once per PR) reads the request
+  and one more in `noRequiredCheckState`: 2 to 7 queries, so about 2 to 7 points. The run that asks Copilot for its review (once per PR) first reads the PR again
+  (up to three times if GitHub lags or the read fails), then reads the request
   back every 5 seconds for up to 30, which adds up to six reads, and then evaluates the PR again.
   A push starts about ten runs, so it costs roughly 20 to 30 points, and a sweep costs 2 to 7 points per open PR.
   Between 30 and 50 pushes an hour, or a sweep over a few dozen open PRs, would use up the 1,000, so a repo with many open PRs and frequent pushes is the one to watch.

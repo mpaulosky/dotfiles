@@ -14,7 +14,7 @@ Why: [ADR 0008](../docs/adr/0008-review-before-the-push.md). The process a devel
 | The repeat-until-quiet loop for a large or risky branch, with its mutation runner and known-open list | `.claude/skills/hardening-review/` (`SKILL.md`, `references/`, `scripts/mutate.py`, `scripts/known_open.py`) | Owned |
 | The read-only reviewer agent (Read, Grep and Glob only) | `.claude/agents/pre-push-reviewer.md` | Owned |
 | The ledger: what the review found and what became of it, keyed by the branch's own hunks | `.sandcastle/lib/review-ledger.mts` (run as `scripts/review.sh`) | Owned |
-| The security record: a local, git-ignored file per security finding, written by `record` and read by both reviews | `.security/` in the main checkout (`.sandcastle/lib/security-record.mts`) | Owned code; Seed `.security/README.md`; Owned `.gitignore` lines |
+| The security record: a local, git-ignored file per security finding, written by `record` and read by both reviews | `.security/` in the main checkout (`.sandcastle/lib/security-record.mts`) | Owned code; Owned `.security/README.md`; Owned `.gitignore` lines |
 | The gate's check | `scripts/gate.sh`, step "Local review" | Owned |
 | The repo's name for `GH_REPO` (`scripts/review.sh repo`) and its own non-Template files under Owned patterns | `REPO_SLUG`, `NOT_OWNED_BASELINE_PATHS` in `.sandcastle/lib/repo-config.mts` | Seed |
 | The repo's own lenses, and the guidance reviewers read | `.claude/skills/code-review/SKILL.md`, `CLAUDE.md`, `docs/CODING_STANDARDS.md`, `.claude/rules/` | the repo's |

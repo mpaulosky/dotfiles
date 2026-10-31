@@ -301,13 +301,14 @@ while IFS= read -r rel; do
     || fail "dotfiles' .claude/skills/hardening-review/$rel differs from the Template's; copy it over"
 done < <(cd "$owned/.claude/skills/hardening-review" && find . -type f -printf '%P\n' | sort)
 
-step "The security record: its README is a Seed file, and the .gitignore keeps its entries out"
+step "The security record: its README is Owned, and the .gitignore keeps its entries out"
 # The review writes .security/NNNN-<slug>.md in the main checkout, one per security finding. The entries are local and never
-# published, so the Owned .gitignore ignores them (the README excepted, so it can be committed); the README comes from the Seed
-# once, and a repo keeps its own edits and entries across a re-Apply.
-[[ -f "$seed/.security/README.md" ]] || fail "the Seed must carry .security/README.md"
-[[ ! -e "$owned/.security" ]] || fail "the Template's .security/ must be Seed only: an Owned copy would be overwritten on every Apply"
-[[ -f "$dotfiles/.security/README.md" ]] || fail "dotfiles must carry its own .security/README.md, written from the Seed"
+# published, so the Owned .gitignore ignores them (the README excepted, so it can be committed); the README is Owned, so Apply
+# keeps it current, and a re-Apply leaves the entries alone.
+[[ -f "$owned/.security/README.md" ]] || fail "the Template must carry .security/README.md as an Owned file"
+[[ ! -e "$seed/.security" ]] || fail "the Template's .security/README.md is Owned: the Seed must not carry a copy"
+[[ -f "$dotfiles/.security/README.md" ]] || fail "dotfiles must carry its own .security/README.md, a copy of the Template's"
+cmp -s "$owned/.security/README.md" "$dotfiles/.security/README.md" || fail "dotfiles' .security/README.md differs from the Template's; copy it over"
 for ignore_file in "$owned/.gitignore" "$dotfiles/.gitignore"; do
   grep -qxF '.security/*' "$ignore_file" || fail "$ignore_file must ignore .security/*"
   grep -qxF '!.security/README.md' "$ignore_file" || fail "$ignore_file must keep .security/README.md"
@@ -320,12 +321,12 @@ for ignore_file in "$owned/.gitignore" "$dotfiles/.gitignore"; do
     fail "$ignore_file must not ignore .security/README.md"
   fi
 done
-# A re-Apply of the real Template leaves the README's edits and the entries alone, and --dry-run lists neither as overwritten.
+# A re-Apply of the real Template restores the README, leaves the entries alone, and --dry-run lists no entry as overwritten.
 security_repo="$md_tmp/security-repo"
 git init -q -b main "$security_repo"
 git -C "$security_repo" remote add origin "https://github.com/acme/Widget.git"
 "$skill_dir/apply.sh" "$security_repo" > /dev/null || fail "apply.sh failed on an empty repo"
-[[ -f "$security_repo/.security/README.md" ]] || fail "apply.sh must write .security/README.md from the Seed"
+[[ -f "$security_repo/.security/README.md" ]] || fail "apply.sh must write .security/README.md from the Template"
 mkdir -p "$security_repo/.security"
 printf '\nOur own note on the record.\n' >> "$security_repo/.security/README.md"
 printf '# 0001: An entry\n\n- Status: fixed\n' > "$security_repo/.security/0001-an-entry.md"
@@ -334,16 +335,17 @@ printf '# 0001: An entry\n\n- Status: fixed\n' > "$security_repo/.security/0001-
 git -C "$security_repo" -c core.hooksPath=/dev/null add -A
 git -C "$security_repo" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.com commit -q -m "apply"
 git -C "$security_repo" switch -q -c chore/standardize-baseline
-security_before="$(cat "$security_repo/.security/README.md" "$security_repo/.security/0001-an-entry.md")"
 security_dry="$("$skill_dir/apply.sh" --dry-run "$security_repo")"
-if awk '/^Owned files that would be (added|overwritten)/ {on = 1; next} /^$/ {on = 0} on' <<< "$security_dry" | grep -q '\.security/'; then
-  fail "apply.sh --dry-run must not list .security/ files as added or overwritten"
+if awk '/^Owned files that would be (added|overwritten)/ {on = 1; next} /^$/ {on = 0} on' <<< "$security_dry" | grep -q '\.security/0001'; then
+  fail "apply.sh --dry-run must not list a .security entry as added or overwritten"
 fi
-grep -A40 '^Seed files skipped' <<< "$security_dry" | grep -qF '.security/README.md' \
-  || fail "apply.sh --dry-run must list .security/README.md as a Seed file skipped"
+grep -A40 '^Owned files that would be overwritten' <<< "$security_dry" | grep -qF '.security/README.md' \
+  || fail "apply.sh --dry-run must list an edited .security/README.md as an Owned file it would overwrite"
 "$skill_dir/apply.sh" "$security_repo" > /dev/null || fail "a re-Apply failed"
-[[ "$(cat "$security_repo/.security/README.md" "$security_repo/.security/0001-an-entry.md")" == "$security_before" ]] \
-  || fail "a re-Apply must leave .security/README.md and its entries alone"
+cmp -s "$owned/.security/README.md" "$security_repo/.security/README.md" || fail "a re-Apply must restore .security/README.md"
+[[ "$(cat "$security_repo/.security/0001-an-entry.md")" == "# 0001: An entry
+
+- Status: fixed" ]] || fail "a re-Apply must leave the .security entries alone"
 
 step "Sandcastle workflow"
 # A repo without the SANDCASTLE_GH_TOKEN secret doesn't run Sandcastle in Actions, and its cron would fail every two hours if the workflow
@@ -554,18 +556,18 @@ channel="$(sed -nE 's/^ARG DOTNET_CHANNEL=([^ ]+).*/\1/p' "$seed/.sandcastle/Doc
   || fail "the Seed .sandcastle/Dockerfile's DOTNET_CHANNEL is '$channel'; global.json's SDK is $sdk"
 
 step "Hand-off PRs (the sandcastle:follow-up label)"
-# The session guidance is a Seed rules file, so a repo can keep or change it and Apply never overwrites it. It loads in every
+# The session guidance is an Owned rules file, so Apply keeps it current in a Sandcastle repo. It loads in every
 # session (no paths: frontmatter), says what the label does, who may add it, and the marker a session ends its replies with.
-hand_off="$seed/.claude/rules/sandcastle-hand-off.md"
-[[ -f "$hand_off" ]] || fail "the Seed must carry .claude/rules/sandcastle-hand-off.md, the session guidance for handing a PR off with sandcastle:follow-up"
+hand_off="$owned/.claude/rules/sandcastle-hand-off.md"
+[[ -f "$hand_off" ]] || fail "the Template must carry .claude/rules/sandcastle-hand-off.md as an Owned file, the session guidance for handing a PR off with sandcastle:follow-up"
 if grep -q '^paths:' "$hand_off"; then
-  fail "the Seed .claude/rules/sandcastle-hand-off.md must load in every session: it takes no paths: frontmatter"
+  fail "the Owned .claude/rules/sandcastle-hand-off.md must load in every session: it takes no paths: frontmatter"
 fi
 session_marker="$(sed -nE 's/^export const SESSION_REPLY_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
 [[ -n "$session_marker" ]] || fail "lib/config.mts must export SESSION_REPLY_MARKER as a one-line string"
 for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' 'opened by the repository' "$session_marker"; do
   if [[ -z "$needle" ]] || ! grep -qF -- "$needle" "$hand_off"; then
-    fail "the Seed .claude/rules/sandcastle-hand-off.md must mention '$needle'"
+    fail "the Owned .claude/rules/sandcastle-hand-off.md must mention '$needle'"
   fi
 done
 grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
@@ -894,13 +896,13 @@ for needle in 'unlabeled' 'conflict' 'fork' 'mpaulosky/dotfiles#368'; do
     || fail "ADR 0009's Decisions must say why unlabeled runs on pull_request_target: it lacks '$needle' (conflicting PRs, main's copy of the workflow, fork PRs never had the secrets)"
 done
 if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then
-  fail "the Seed .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
+  fail "the Owned .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
 fi
 for needle in 'sandcastle:follow-up' '.claude/rules/sandcastle-hand-off.md' 'SANDCASTLE_LABELS' 'claude-session'; do
   grep -qF -- "$needle" "$skill_dir/references/sandcastle.md" || fail "references/sandcastle.md must document the hand-off PRs: it doesn't mention '$needle'"
 done
 grep -qF -- '.claude/rules/sandcastle-hand-off.md' "$skill_dir/CONTEXT.md" \
-  || fail "CONTEXT.md's Sandcastle section must list the Seed .claude/rules/sandcastle-hand-off.md"
+  || fail "CONTEXT.md's Sandcastle section must list the Owned .claude/rules/sandcastle-hand-off.md"
 
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"

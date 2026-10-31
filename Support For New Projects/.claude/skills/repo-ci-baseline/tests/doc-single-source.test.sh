@@ -22,7 +22,7 @@ skill = Path(sys.argv[1])
 owned = skill / "template" / "owned"
 lib = owned / ".sandcastle" / "lib"
 
-seed_rule = (skill / "template/seed/.claude/rules/sandcastle-hand-off.md").read_text()
+seed_rule = (skill / "template/owned/.claude/rules/sandcastle-hand-off.md").read_text()
 reference = (skill / "references/sandcastle.md").read_text()
 skill_md = (skill / "SKILL.md").read_text()
 context = (skill / "CONTEXT.md").read_text()

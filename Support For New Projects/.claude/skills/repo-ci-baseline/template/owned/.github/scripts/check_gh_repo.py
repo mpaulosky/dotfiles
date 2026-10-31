@@ -477,6 +477,7 @@ OWNED = (
     "scripts/tests/check-git-hooks.test.sh",
     "scripts/tests/sync-copilot-review.test.sh",
     "scripts/tests/watch-pr.test.sh",
+    ".claude/skills/README.md",
     ".claude/skills/pre-push-review/",
     ".claude/skills/hardening-review/",
 )

@@ -13,7 +13,7 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
   so run `github-settings.sh --fix`.
 - **Seed files skipped.** Diff each against `template/seed/` and bring over what the repo lacks.
   The repo's version wins on content.
-- **Seed files written.** Check each against what the repo had before: `.github/ci/coverage-threshold` defaults to 80, so set it to the gate the old `ci.yml` enforced (IssueTracker's was 60).
+- **Seed files written.** Check each against what the repo had before.
   A repo that deleted a Seed on purpose gets it back from Apply: IssueManager's #237 had removed a security policy that
   described another project, and the Seed `docs/SECURITY.md` was that same policy until it was made generic.
 - **Ignores only this repo needs**, such as atelier-store's generated `wwwroot/app.css`, go in a `.gitignore` beside them (`src/AtelierStore.Web/.gitignore`).

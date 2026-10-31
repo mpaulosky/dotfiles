@@ -614,7 +614,9 @@ jobs:
       # Template's file (it drifted), or whose Template file isn't in the PR,
       # is read like any file, so the drift reaches the review. The mapping
       # comes from the Template's layout (TEMPLATE_COPY), not a list, and a repo
-      # with no template/owned/ path in the diff is unchanged. A PR too big to
+      # with no template/owned/ path in the diff is unchanged. The Template's
+      # file is classed by the root path it copies (kind_of), so a changed
+      # Template workflow still reads first and has its pins followed. A PR too big to
       # read after the copies are left out still gets the not-read finding
       # (mpaulosky/dotfiles#380).
       #
@@ -920,6 +922,11 @@ jobs:
 
           def kind_of(header, path):
               bare = path.strip('"').lower()
+              # A Template file is classed by the root path it is the copy of: its workflows are workflows (their
+              # pins are followed, they read first) though the PR's root copy of them is left out.
+              template = TEMPLATE_COPY.fullmatch(bare)
+              if template:
+                  bare = template[1]
               if any(line.startswith(b"deleted file mode") for line in header):
                   return "deleted"
               for kind, pattern in (("workflow", WORKFLOW), ("test", TEST), ("docs", DOCS), ("script", SCRIPT)):

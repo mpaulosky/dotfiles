@@ -1576,3 +1576,24 @@ def test_ac3_a_drifting_copy_is_in_the_context_too(repo, tmp_path):
     head = pair_repo(repo, copy_after=lines_of("new") + "# drift\n")
     repo.split(repo.base, head, tmp_path)
     assert sorted(headers(repo)) == sorted([f"{COPY} (changed in this PR)", f"{COPY_TEMPLATE} (changed in this PR)"])
+
+
+def test_ac3_a_template_workflow_still_has_its_pins_followed_when_its_copy_is_left_out(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    template = TEMPLATE + OTHER
+    head = pair_repo(repo, copy=OTHER, before=steps + "      - run: echo old\n", after=steps + "      - run: echo new\n")
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    pins = f"source of anthropics/act, which {template} pins"
+    assert headers(repo) == [f"{template} (changed in this PR)",
+                             f"_actions/anthropics/act/v1/src/actor.ts ({pins})",
+                             f"_actions/anthropics/act/v1/action.yml ({pins})"]
+    assert copies_of(folder) == {OTHER: template}
+
+
+def test_ac3_a_changed_template_workflow_reads_before_the_other_files(repo, tmp_path):
+    template = TEMPLATE + OTHER
+    head = pair_repo(repo, copy=OTHER, **{"Aaa/app.py": "x = 1\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    paths = list(files_of(folder))
+    assert paths.index(template) < paths.index("Aaa/app.py"), paths

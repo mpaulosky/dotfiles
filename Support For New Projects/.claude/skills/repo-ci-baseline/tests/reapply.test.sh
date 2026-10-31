@@ -552,16 +552,23 @@ out="$("$reapply" --brings '#89' "$repo" 2>&1)" && rc=0 || rc=$?
 check "a merged head behind the tip: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
 check "a merged head behind the tip: branch kept" '[[ "$(git -C "$repo" rev-parse refs/heads/chore/reapply-baseline)" == "$cur_tip" ]]'
 
-# A git failure that is neither "ancestor" nor "not" ends the run. A commit whose parent this clone lacks
-# makes the walk fail (status 128) while both commits exist.
+# A git failure that is neither "ancestor" nor "not" ends the run. How a given git reports a commit whose
+# parent it lacks varies by version, so a git wrapper (on PATH for this run only) fails the ancestor walk of
+# one real commit with status 128, the way a corrupt object store does; every other git call passes through.
 reset_gh
-missing_parent="$(printf 'b%.0s' {1..40})"
-broken="$(printf 'tree %s\nparent %s\nauthor T <t@example.com> 1 +0000\ncommitter T <t@example.com> 1 +0000\n\nbroken\n' \
-  "$(git -C "$repo" rev-parse 'origin/main^{tree}')" "$missing_parent" | git -C "$repo" hash-object -t commit -w --literally --stdin)"
+broken="$(git -C "$repo" commit-tree -m "its walk fails" "$(git -C "$repo" rev-parse 'origin/main^{tree}')")"
+real_git="$(command -v git)"
+mkdir -p "$work/gitfail"
+cat > "$work/gitfail/git" <<WRAP
+#!/usr/bin/env bash
+if [[ "\$*" == *"merge-base --is-ancestor"* && "\$*" == *"$broken"* ]]; then echo "fatal: bad object" >&2; exit 128; fi
+exec "$real_git" "\$@"
+WRAP
+chmod +x "$work/gitfail/git"
 echo "$broken" > "$stub/merged"
-out="$("$reapply" --brings '#89' "$repo" 2>&1)" && rc=0 || rc=$?
+out="$(PATH="$work/gitfail:$PATH" "$reapply" --brings '#89' "$repo" 2>&1)" && rc=0 || rc=$?
 check "a git failure in the ancestor test: the run ends" \
-  '[[ $rc -ne 0 ]] && grep -q "is-ancestor failed (status" <<< "$out" && ! grep -q "carrying it on\|replacing" <<< "$out"'
+  '[[ $rc -ne 0 ]] && grep -q "is-ancestor failed (status 128)" <<< "$out" && ! grep -q "carrying it on\|replacing" <<< "$out"'
 check "a git failure in the ancestor test: branch kept" '[[ "$(git -C "$repo" rev-parse refs/heads/chore/reapply-baseline)" == "$cur_tip" ]]'
 
 # A merged head strictly ahead of the tip (the PR got more commits after the tip) carries it: replaced.

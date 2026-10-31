@@ -132,6 +132,12 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   nothing asks, and nothing is called dropped. Copilot is never asked again for the PR: a later head with no pending request goes straight to the next bullet,
   because the record is long settled. A request that registers (the ruleset's own per push, or a budget that came back) is waited for, and a real Copilot review of the head
   takes the label off (#270). `land.sh` writes the same record (a comment as the owner) and makes the same request, so the two agree.
+  A PR runs its **base branch's** workflows, so a repo's first re-Apply PR has the previous PR Auto-Merge, which never posts the record, and Claude Review skips `review:claude`
+  until the PR carries it ("Copilot hasn't been asked to review yet"). `reapply.sh` posts the ask record (a comment as the owner, the same `landing.COPILOT_ASKED_COMMENT`) when its
+  `--add-reviewer @copilot` request doesn't register, unless the PR already has one by `github-actions` or the owner; a request that registers needs none, and a re-run finds the record, so
+  it is posted once (mpaulosky/dotfiles#384). `land.sh` then adds `review:claude` as usual. Every later PR gets the record from PR Auto-Merge.
+  Claude Review matches Copilot by its exact login, as this workflow counts its reviews: a review or quota note by `copilot-pull-request-reviewer[bot]`, a pending request for that login
+  or for the Bot user `Copilot`. A login that merely contains "copilot" (anyone can register `copilot-x`) is not Copilot's, and neither is a team named so.
 - **Calling in Claude (#190, #318, #360).** When Copilot's quota note is the only review of the head, or Copilot was asked and the ask has settled
   (30 seconds after the record, `COPILOT_ASK_SETTLE_MS`, or in the run that asked and read the request back) and it has no review of the head and no request
   pending, and no review covers it while the loop isn't exhausted,
@@ -292,6 +298,9 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   `land.sh` asks Copilot once per PR (a record comment, then the request, read back) and adds the label once the request didn't register and the head's checks are green,
   whether it read the drop back itself or finds the record 30 seconds old with no request pending in a later run, even a `--once` run
   (see [Landing a round](#landing-a-round)); `reapply.sh` prints that `land.sh` command.
+  When the request didn't register, `reapply.sh` posts the ask record too, unless the PR has one (mpaulosky/dotfiles#384),
+  since the base's PR Auto-Merge on a first re-Apply PR is the previous one and never posts it.
+  A record that fails to post, or a comment list it can't read, only warns.
   A request GitHub refuses outright (`Could not add requested reviewers`, TicketManager#141) is handled the same way: it warns with gh's message and reads back (#118).
 - **GitHub drops the request once the account's Copilot code review budget is used up.** Nothing in the API says so:
   `gh pr edit` and GraphQL `requestReviewsByLogin` return success with no request, and REST `requested_reviewers` returns 422 "not a collaborator".
@@ -342,6 +351,7 @@ nothing for a merged, closed or already-armed PR; **report blocker** for a faile
 backing a quota note or a request that didn't register on the same head), reviewed the current head and no thread is open.
 A head with neither review waits while Copilot is requested or `review:claude` is on; otherwise, for a PR with no record of an ask, **request Copilot**:
 a comment holding the marker (`landing.COPILOT_ASKED_COMMENT`), then the request, read back. With a record that hasn't settled (under 30 seconds) it **waits**.
+On a repo's first re-Apply PR the record is usually there already: `reapply.sh` posts the ask record when its request didn't register.
 Only once Copilot can't review the head (`PrState.copilot_gone`), because it answered with its quota note (`copilot_declined`), its request didn't register
 (`copilot_dropped`: `land.sh` remembers it per head within a watching process), or it was asked (`copilot_asked`, from the record that `landing.copilot_ask` reads
 from the PR's last 100 comments; unreadable counts as asked) and the record is 30 seconds old (`copilot_ask_settled`) with no request pending,

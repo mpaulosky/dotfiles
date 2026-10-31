@@ -790,7 +790,7 @@ describe("checkReview", () => {
   });
 
   it("reviews a re-Apply that changes the coverage gate or the hand-off rules, though both are Owned: they carry behaviour a path alone can't vouch for", () => {
-    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md"]) {
+    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md"]) {
       run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
       mkdirSync(join(repo, dirname(path)), { recursive: true });
       commit(repo, "global.json", "{}\n", "re-Apply");
@@ -799,6 +799,20 @@ describe("checkReview", () => {
       assert.equal(isOwnedPath(path), true, `${path} is still Owned`);
       assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false, path);
     }
+  });
+
+  it("says which Owned files a re-Apply's review was withheld for, so the person knows why a re-Apply asks for one", () => {
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    mkdirSync(join(repo, ".github/ci"), { recursive: true });
+    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".github/ci/coverage-threshold", "80\n", "re-Apply");
+
+    const result = checkReview(repo, mergeBase(repo), {});
+
+    assert.equal(result.ok, false);
+    assert.match(result.message, /No review is recorded for this diff/);
+    assert.match(result.message, /\.github\/ci\/coverage-threshold/);
+    assert.doesNotMatch(result.message, /global\.json/);
   });
 
   it("reviews a re-Apply branch that changes anything not Owned", () => {

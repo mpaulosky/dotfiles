@@ -36,8 +36,11 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   resolution or a `main` change inside one of the branch's hunks needs a new one. A re-Apply on `chore/reapply-baseline` passes without one only when every
   change is a regular Owned file added or modified, as Apply writes them (`OWNED_PATHS` in the ledger lists them, and a dotfiles test keeps it equal to
   `template/owned/`). A deleted Owned file, a symlink, a submodule, a file of the repo's own, a Seed file the re-Apply writes because the repo lacked it, or one of
-  the two Owned files that carry behaviour (`REVIEWED_ON_REAPPLY`: `.github/ci/coverage-threshold`, which ci.yml enforces at any value, and
-  `.claude/rules/sandcastle-hand-off.md`, which loads into every session) needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare.
+  the Owned files that carry behaviour (`REVIEWED_ON_REAPPLY`: `.github/ci/coverage-threshold`, which ci.yml enforces at any value,
+  `.claude/rules/sandcastle-hand-off.md`, which loads into every session, and the three `.github/ISSUE_TEMPLATE/` files, whose front matter sets labels and assignees)
+  needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files. A re-Apply
+  that writes one (every repo's first one writes the threshold) is reviewed in its `chore/reapply-baseline` worktree with `/pre-push-review` before `reapply.sh`
+  pushes; a finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.
 - `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
   Sandcastle's own reviewer role stands in there, and running this review in a sandbox is not designed yet.
 - Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub

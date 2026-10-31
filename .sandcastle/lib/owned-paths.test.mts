@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import { isOwnedPath, OWNED_PATHS, underOwnedPattern } from "./review-ledger.mts";
 import { NOT_OWNED_BASELINE_PATHS, TEMPLATE_OWNED_DIR } from "./repo-config.mts";
 
-// The local review lets a Baseline re-Apply through when it changes only Owned files (lib/review-ledger.mts#checkReview), by the
+// The local review lets a Baseline re-Apply through when it changes only Owned files (lib/review-ledger.mts#checkReview, REVIEWED_ON_REAPPLY apart), by the
 // patterns in OWNED_PATHS. They are written by hand, so they are held to the Template's template/owned/ folder here. This file is
 // dotfiles', not the Template's.
 

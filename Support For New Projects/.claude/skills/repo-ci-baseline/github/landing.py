@@ -18,8 +18,9 @@ skill lands PRs by (references/automerge.md):
   ask (COPILOT_ASKED_MARKER) and the request follows. Claude backs Copilot up
   only where Copilot can't review that head (copilot_gone): it answered with its
   quota note (copilot_declined), or it was asked, the ask settled (30 seconds)
-  and no request is pending, or the caller read this head's request back and it
-  didn't register (copilot_dropped). A Claude review of any other head covers
+  and no request is pending. A request read back as dropped waits out the 30
+  seconds too: PR Auto-Merge takes review:claude off an ask younger than that,
+  and land.py would not add it again (mpaulosky/dotfiles#378). A Claude review of any other head covers
   nothing. Copilot isn't asked again for a later head: a settled record is
   enough to take it to Claude (mpaulosky/dotfiles#360).
   Only then is review:claude added, and only once the head has at least one check other than Claude
@@ -33,12 +34,17 @@ skill lands PRs by (references/automerge.md):
   main is never one), dirty when it raised a thread or an off-diff finding.
   Neither reviewer is asked for then, and the workflow documents the loop in
   one comment and lets the PR merge: it no longer waits for a review of the
-  head, nor holds on the threads and off-diff findings still open, so the PR
-  goes on to its checks and is left to the workflow;
+  head, nor holds on the threads Copilot and Claude opened and the off-diff
+  findings still open, so the PR goes on to its checks and is left to the
+  workflow. A thread a person opened still holds the merge, and the
+  workflow's comment names it (open_person_threads). The loop restarts at the
+  first review:claude add by a login with write access after the round that
+  exhausted it (current_loop()), and the label is ignored while Copilot can
+  review: Claude reviews only where Copilot can't (mpaulosky/dotfiles#378);
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note,
-  or a dropped request): Claude Review posts as
+  or a request that didn't register): Claude Review posts as
   github-actions[bot] with CLAUDE_MARKER first in the body. When Claude's
   latest review of the head has findings outside the diff (OFF_DIFF_MARKER
   on its second line), they open no thread, so the PR waits for a new head;
@@ -267,6 +273,89 @@ def trailing_dirty(rounds):
     return count
 
 
+def longest_dirty(rounds):
+    """The longest run of dirty rounds in a row anywhere in the rounds (a loop that reached the cap may have been restarted since)."""
+    longest = streak = 0
+    for round_ in rounds:
+        streak = streak + 1 if round_.dirty else 0
+        longest = max(longest, streak)
+    return longest
+
+
+@dataclass(frozen=True)
+class LoopWalk:
+    """Where a PR's review loop stands after the walk over its restarts (see current_loop()).
+
+    rounds: the final generation's rounds, oldest first; hit: the submission time (epoch seconds) of the round that
+    brought that generation to MAX_CLAUDE_ROUNDS dirty rounds in a row, None when it never got there; unread: the
+    permission of a candidate add couldn't be read; restarted: at least one add started a new loop.
+    """
+
+    rounds: tuple[Round, ...] = ()
+    hit: float | None = None
+    unread: bool = False
+    restarted: bool = False
+
+
+def round_epoch(round_):
+    """The round's submission time in epoch seconds, or None when it is unknown."""
+    try:
+        return datetime.fromisoformat(round_.at.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def current_loop(rounds, adds):
+    """Walk the loop's generations: the rounds that count after the restarts (mpaulosky/dotfiles#378).
+
+    rounds are the PR's Rounds, oldest first; adds are (epoch seconds, writer)
+    for each review:claude `labeled` event, oldest first, writer True (the actor
+    has write access to the repo), False, or None (the permission couldn't be
+    read). A loop that reached MAX_CLAUDE_ROUNDS dirty rounds in a row is
+    restarted by the first add after the round that got it there by a login with
+    write access: only the rounds after the add count. An add by anyone else is
+    ignored, and one whose permission can't be read leaves the loop unread
+    (fail closed: no restart, and the PR isn't called exhausted). Callers pass
+    no adds while Copilot can review, since the label is ignored then. PR
+    Auto-Merge's reviewLoopState() does the same.
+    """
+    start = float("-inf")
+    restarted = False
+    while True:
+        generation = tuple(item for item in rounds if start == float("-inf") or (round_epoch(item) or float("-inf")) > start)
+        hit = None
+        streak = 0
+        for item in generation:
+            streak = streak + 1 if item.dirty else 0
+            if streak == MAX_CLAUDE_ROUNDS:
+                hit = round_epoch(item)
+                break
+        if streak < MAX_CLAUDE_ROUNDS or hit is None:
+            return LoopWalk(generation, None, False, restarted)
+        restart = None
+        for added, writer in adds:
+            if added <= hit:
+                continue
+            if writer is None:
+                return LoopWalk(generation, hit, True, restarted)
+            if writer:
+                restart = added
+                break
+        if restart is None:
+            return LoopWalk(generation, hit, False, restarted)
+        start = restart
+        restarted = True
+
+
+def thread_opened_by_person(thread):
+    """Whether a thread holds the merge at an exhausted loop (mpaulosky/dotfiles#378).
+
+    Every thread but Copilot's and Claude Review's does, one whose author can't
+    be read included.
+    """
+    return not bot_thread(thread)
+
+
 @dataclass(frozen=True)
 class PrState:
     """What decide() reads about one PR.
@@ -279,10 +368,6 @@ class PrState:
     them native auto-merge merges at once, so green checks must come first.
     copilot_requested: Copilot is among the PR's pending review requests.
     claude_requested: the PR carries review:claude.
-    copilot_dropped: Copilot's review was requested for this head and the
-    request didn't register (dropped or refused). Only a caller that asked
-    and read it back knows this (land.py); a one-shot read (status.py) never
-    sets it.
     copilot_asked: the PR carries the record that Copilot was asked (see
     copilot_ask()), or the record couldn't be read, which counts as asked so
     nothing asks twice.
@@ -315,7 +400,6 @@ class PrState:
     claude_off_diff: frozenset[str] = field(default_factory=frozenset)
     copilot_requested: bool = False
     claude_requested: bool = False
-    copilot_dropped: bool = False
     copilot_asked: bool = False
     copilot_ask_settled: bool = False
     copilot_declined: frozenset[str] = field(default_factory=frozenset)
@@ -323,6 +407,7 @@ class PrState:
     exhaustion_marker_newest: bool = False
     loop_unread: bool = False
     open_threads: int = 0
+    open_person_threads: int = 0
     unreplied_threads: tuple[str, ...] = ()
     merge_state: str = "UNKNOWN"  # GitHub's mergeStateStatus
     checks: tuple[Check, ...] = ()
@@ -360,11 +445,12 @@ class PrState:
     def copilot_gone(self):
         """Copilot won't review the head: its request didn't register.
 
-        Either the caller read the request back and it was dropped, or Copilot
-        was asked for the PR, the ask settled and no request is pending (a
-        pending one is waited for, as a request GitHub keeps is not a drop).
+        Copilot was asked for the PR, the ask settled and no request is pending
+        (a pending one is waited for, as a request GitHub keeps is not a drop).
+        A drop read back at once is not enough: the workflows count Copilot as
+        gone only after the settle, so the label would be taken off again.
         """
-        return self.copilot_dropped or (self.copilot_asked and self.copilot_ask_settled and not self.copilot_requested)
+        return self.copilot_asked and self.copilot_ask_settled and not self.copilot_requested
 
     @property
     def reviewer_on_head(self):
@@ -503,8 +589,11 @@ def decide(pr):
     exhausted = pr.loop_exhausted
     if not pr.reviewer_on_head and not exhausted:
         return review_needed(pr, checks)
-    # An exhausted loop is documented in a comment and merges with its threads
-    # and off-diff findings open: neither holds it (mpaulosky/dotfiles#375).
+    # An exhausted loop is documented in a comment and merges with the threads Copilot
+    # and Claude opened and the off-diff findings open: neither holds it
+    # (mpaulosky/dotfiles#375). A thread a person opened still does (#378).
+    if exhausted and pr.open_person_threads:
+        return Decision(WAIT, f"review loop exhausted, but {pr.open_person_threads} thread(s) opened by a person hold the merge")
     if not exhausted:
         if pr.open_threads:
             return Decision(WAIT, f"{pr.open_threads} open thread(s)")
@@ -514,7 +603,7 @@ def decide(pr):
         return Decision(WAIT, "no required checks; waiting for: " + ", ".join(checks.running))
     if exhausted:
         reviewed = (f"review loop exhausted ({MAX_CLAUDE_ROUNDS} rounds with findings in a row), ready to merge, "
-                    f"{pr.open_threads} thread(s) left open")
+                    f"{pr.open_threads - pr.open_person_threads} thread(s) left open")
     else:
         reviewed = f"{pr.head_reviewer.capitalize()} reviewed the head, no open threads"
     reason = reviewed + ("" if checks.green else ", required checks running")
@@ -532,8 +621,9 @@ def review_needed(pr, checks):
     if pr.copilot_requested and not declined:
         return Decision(WAIT, waiting + "; Copilot is requested")
     # The label means Claude is on its way only until it has reviewed the head: a review
-    # of a head Copilot neither declined nor dropped covers nothing, and none further is coming.
-    if pr.claude_requested and pr.head not in pr.claude_reviewed:
+    # of a head Copilot neither declined nor is gone from covers nothing, and none further is coming.
+    # Claude reviews only where Copilot can't: with Copilot available the label is ignored (mpaulosky/dotfiles#378).
+    if pr.claude_requested and pr.head not in pr.claude_reviewed and (declined or pr.copilot_gone):
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")
     if not (declined or pr.copilot_gone):
         if pr.copilot_asked:
@@ -543,6 +633,9 @@ def review_needed(pr, checks):
     # since: automation never adds it then (mpaulosky/dotfiles#375).
     if pr.exhaustion_marker_newest:
         return Decision(WAIT, waiting + f"; the review loop was exhausted and documented, add {REVIEW_CLAUDE} to start a new loop")
+    # A loop that could be exhausted and can't be read might be: a paid review of it could be wasted.
+    if pr.loop_unread:
+        return Decision(WAIT, waiting + "; the review loop's comments or label events couldn't be read, so Claude isn't called in")
     running = [name for name in checks.running if name not in CLAUDE_CHECKS]
     if running:
         return Decision(WAIT, waiting + "; waiting for checks before calling in Claude: " + ", ".join(running))

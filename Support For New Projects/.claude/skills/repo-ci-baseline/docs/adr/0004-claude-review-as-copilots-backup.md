@@ -72,7 +72,7 @@ This update replaces the grace (mpaulosky/dotfiles#360). PR Auto-Merge and `land
 The run reads its own request back for up to 30 seconds (`COPILOT_ASK_WAIT_MS`, polling every 5 seconds), so a dropped request gets `review:claude` in the same run.
 `land.sh --once` needs no memory between runs: the first run asks and records, and a later run finds the record, no pending request and 30 seconds, and adds the label.
 A run under 30 seconds after the record prints why it waits and acts on the next one.
-`land.py` still keeps the read-back result for the head in a watching process, so it adds the label without waiting out the 30 seconds.
+`land.py` warns about a request it read back as dropped but remembers nothing: it adds the label after the 30 seconds too, since PR Auto-Merge takes the label off an ask younger than that (mpaulosky/dotfiles#378).
 A head with no CI check keeps the notice to review and merge it by hand; the notice for a labelled head that Claude already reviewed went with the grace it measured.
 
 Accepted costs:
@@ -104,6 +104,23 @@ had spent a paid review on each merge head. Once the rounds were used, `review:c
    `land.sh` and `status.sh` apply the same rule from `landing.py`, show an exhausted loop as ready to merge with the count of threads left open,
    and ask for no review while the comment is the newest word.
 
+## Update (#378): Claude reviews only where Copilot can't
+
+A PR never gets both reviewers' reviews. This update (mpaulosky/dotfiles#378) changes:
+
+1. **Claude never reviews while Copilot can review.** Copilot can't review the PR when its quota note is on the head, or it is gone (`copilotGone`: asked, the ask settled and no request pending,
+   and it has not really reviewed the head). Otherwise `review:claude` is ignored while Copilot can review: PR Auto-Merge takes it off at once, whoever added it, and logs why, and `claude-review.yml`
+   starts no paid review. There is no exception for the owner's add. The label's only job is to call Claude in where Copilot is out. PR Auto-Merge starts on the label's `labeled` event for this
+   (the job's `if:` lets in no other label), and `claude-review.yml` has a first step that applies the same rule to the same reads, `Skip while Copilot can review`, and skips when it can't tell
+   (a warning names the PR and says to push or add the label again once the API works).
+2. **A person's open threads still hold the merge at an exhausted loop.** Only threads opened by Copilot or Claude Review are documented in the exhaustion comment and stop holding.
+   The comment lists a person's thread too and says it holds the merge (ADR 0002).
+3. **An owner's add of `review:claude` on an exhausted PR starts a new loop**, with or without an exhaustion comment, when rule 1 lets the label stand: the first add by a login with write
+   access to the repository after the exhausting round restarts the loop, and a PR with no comment yet gets the old loop's comment first.
+4. **The exhaustion comment says when the head was not reviewed** (``The head `abc1234` was not reviewed.``). Nothing else about merging changes: the fix for a third dirty round still merges unreviewed.
+5. **No change** for a clean merge of `main` onto a Claude-reviewed commit while Copilot is available: the gate asks Copilot and waits. With rule 1 this case only arises through a past
+   Claude review, which is now rare.
+
 ## Considered Options
 
 - **Keep the grace and shorten it**: rejected (mpaulosky/dotfiles#360) because a dropped request still brings no event, so a shorter grace still waits for the sweep.
@@ -118,6 +135,9 @@ had spent a paid review on each merge head. Once the rounds were used, `review:c
 - **Limit the dropped-request path to repos whose ruleset requests Copilot**: rejected (mpaulosky/dotfiles#331) because the ruleset check adds an API read and a failure mode,
   and a repo without Copilot would otherwise never get a review.
 - **Count Copilot's and Claude's rounds separately**: rejected because switching reviewer would reset the loop.
+- **Let the owner's add of `review:claude` stand while Copilot can review** (mpaulosky/dotfiles#378): rejected because both reviewers would then review the PR,
+  and PR Auto-Merge took the label off only after Copilot had reviewed the head, by which time both might have. No exception: the owner who wants Claude on a PR
+  Copilot can still review reviews it by hand.
 
 ## Consequences
 

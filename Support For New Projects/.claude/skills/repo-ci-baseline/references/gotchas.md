@@ -39,7 +39,7 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
   while another PR merged sits at `mergeStateStatus: BEHIND`. PR Auto-Merge brings it up to date once it is otherwise
   ready (#142, [ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md)), but only with
   `RELEASE_PR_PAT`: without it, run `gh pr update-branch <n>` by hand. A clean merge from main (no file changed on
-  both sides) needs no new review; otherwise request one (`gh pr edit <n> --add-reviewer @copilot`, or `review:claude`).
+  both sides) needs no new review; otherwise request one (`gh pr edit <n> --add-reviewer @copilot`, or `review:claude` where Copilot can't review: it is ignored while Copilot can).
 - **A cancelled run's "Test Suite" reads as a failure.** It runs `if: always()`, so a run cancelled by a newer one on
   the same head (`cancel-in-progress`) leaves a failed check beside the newer run's result; the newer one is what
   counts. `ci.yml` doesn't run on `ready_for_review`, since drafts already run CI, so marking a PR ready no longer

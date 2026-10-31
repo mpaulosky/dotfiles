@@ -92,15 +92,20 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   A round is a review of a commit of yours (a merge of `main` into the PR is never one), and it is dirty when it raised
   a thread or a finding outside the diff. Every new commit nobody reviewed gets a review, until three dirty rounds in a
   row exhaust the loop (a clean round starts the count over). Then PR Auto-Merge takes `review:claude` off, posts one
-  comment on the PR listing every thread and finding still open, and merges the PR once its required checks pass and it
-  has no conflict; the open threads don't hold it, so answer them on the merged PR in a follow-up. Re-Apply PRs are
-  bounded the same way. To start a new loop on a PR that is still open after that comment, add `review:claude` again
-  (mpaulosky/dotfiles#375); PR Auto-Merge never adds it while that comment is the newest word.
+  comment on the PR (once it is ready) saying whether its head was reviewed and listing every thread and finding still
+  open, and merges the PR once its required checks pass and it has no conflict. The threads Copilot and Claude Review
+  opened don't hold it, so answer them on the merged PR in a follow-up; a thread opened by a person still does, and the
+  comment says which. Re-Apply PRs are bounded the same way. To start a new loop on a PR that is still open and where
+  Copilot can't review the head, add `review:claude` again, as a login with write access to the repository
+  (mpaulosky/dotfiles#375, mpaulosky/dotfiles#378); PR Auto-Merge never adds it while that comment is the newest word.
+  `review:claude` is ignored while Copilot can review: it calls Claude in only where Copilot can't (its quota note
+  is on the head, or its request didn't register), and PR Auto-Merge takes the label off at once otherwise, whoever
+  added it.
 - **A ready PR is kept up to date.** When `main` moves on, PR Auto-Merge merges `main` into a PR that is otherwise ready
   (Dependabot rebases its own on request). The merge from `main` needs no new review when it is exactly what merging
   `main` gives and no file was changed on both sides; otherwise (a conflict resolved, a file both sides changed, or a
-  change of its own) it waits for a new review: add `review:claude` if Copilot doesn't review it. If the label is already
-  on, Claude reviews the push itself, unless a bot or app pushed it; then remove and re-add the label.
+  change of its own) it waits for a new review: Copilot's, or `review:claude` where Copilot can't review it. If the label
+  is already on, Claude reviews the push itself, unless a bot or app pushed it; then remove and re-add the label.
 - **A draft is never merged.** Open a PR as a draft to hold it back, and mark it ready when it is.
 - **Merging is squash only.** Nobody merges by hand except a fork's PR, which the maintainer merges, and a Baseline
   Standardize PR.

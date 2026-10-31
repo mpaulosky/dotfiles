@@ -59,7 +59,8 @@ A merge of `main` into the PR is never a round.
 _Avoid_: Review pass, review cycle
 
 **Exhausted loop**:
-A PR's review loop after `MAX_CLAUDE_ROUNDS` (3) dirty rounds in a row. PR Auto-Merge takes `review:claude` off, posts one comment listing the threads still open,
-and lets the PR merge once its required checks pass. The owner re-adding `review:claude` starts a new loop.
+A PR's review loop after `MAX_CLAUDE_ROUNDS` (3) dirty rounds in a row. PR Auto-Merge takes `review:claude` off, posts one comment listing the threads still open
+(and whether the head was reviewed), and lets the PR merge once its required checks pass, unless a thread a person opened is still open.
+A login with write access re-adding `review:claude` starts a new loop; the label is ignored while Copilot can review.
 The rule is in [references/automerge.md](references/automerge.md).
 _Avoid_: Review cap, round limit

@@ -5,14 +5,25 @@ name: Claude Review
 # only where Copilot can't review the head: it answered with its quota note
 # (the account's Copilot code review budget is used up), or its one request for
 # the PR didn't register: PR Auto-Merge asks once and reads the request back
-# (mpaulosky/dotfiles#360). It runs only on request: while the PR
+# (mpaulosky/dotfiles#360). A PR never gets both reviewers' reviews
+# (mpaulosky/dotfiles#378): review:claude is ignored while Copilot can review,
+# whoever added it, the owner included (no exception), PR Auto-Merge takes it
+# off at once, and this workflow starts no paid review. Its first step reads
+# whether Copilot can review, by PR Auto-Merge's rule (copilotCannotReview),
+# and when it can't tell, no review starts either. The label's only job is to
+# call Claude in where Copilot is out. It runs only on request: while the PR
 # carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) in
 # either case, as the repo-ci-baseline skill's land.sh (in
-# mpaulosky/dotfiles, not this repo) does, and a person can add at any time;
-# a review of a head Copilot reviewed covers nothing. PR Auto-Merge also takes
-# it off when the PR's review loop is exhausted (MAX_CLAUDE_ROUNDS dirty rounds in
-# a row, mpaulosky/dotfiles#375). It reviews every new head while the label is
-# on, except a clean merge of main into a reviewed commit (see below).
+# mpaulosky/dotfiles, not this repo) does, and a person can add at any time
+# (it counts where Copilot is out); a review of a head Copilot reviewed covers
+# nothing. PR Auto-Merge also takes it off when the PR's review loop is
+# exhausted (MAX_CLAUDE_ROUNDS dirty rounds in a row, mpaulosky/dotfiles#375). At
+# an exhausted loop it documents the open threads in one comment: those a person
+# opened still hold the merge, those of Copilot and Claude Review don't, and the
+# comment says whether the head was reviewed. A login with write access adding
+# review:claude after the exhausting round starts a new loop. It reviews every
+# new head while the label is on, except a clean merge of main into a reviewed
+# commit (see below).
 #
 # Claude never holds a write token. The review job checks the PR out with a
 # read-only token, gives Claude the diff against the base and read-only tools,
@@ -131,7 +142,8 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      skip: ${{ steps.check.outputs.skip == 'true' }}
+      # Also skipped while Copilot can review, or when that can't be read.
+      skip: ${{ steps.copilot.outputs.can_review != 'false' || steps.check.outputs.skip == 'true' }}
       # Whether this run reviews a head the PR has moved on from; its review
       # and post jobs then take concurrency groups of their own.
       stale: ${{ steps.check.outputs.stale == 'true' }}
@@ -142,11 +154,113 @@ jobs:
       sha: ${{ steps.check.outputs.sha }}
       base: ${{ steps.check.outputs.base }}
     steps:
+      # Claude reviews only where Copilot can't (mpaulosky/dotfiles#378), so
+      # review:claude is ignored while Copilot can review, whoever added it. This
+      # is PR Auto-Merge's copilotCannotReview on the same reads: Copilot's quota
+      # note is on the head (or on the event's head), or the PR carries the record
+      # that Copilot was asked (a comment with the marker by github-actions or the
+      # repository owner, the first one counting), it is at least 30 seconds old
+      # (PR Auto-Merge's settle time), no Copilot review request is pending and
+      # Copilot hasn't really reviewed the head (a settled ask with no request is
+      # also what a finished review leaves behind). Then can_review is false and
+      # the rest of the job runs. When a read fails it is unknown, which skips
+      # like true: PR Auto-Merge's gate wouldn't count a Claude review while
+      # Copilot may review, so a paid review would buy nothing, and the warning
+      # says to push or add the label again once the API works. The step carries
+      # on past an error or a timeout, which skips too.
+      - name: Skip while Copilot can review
+        id: copilot
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, re, subprocess, sys
+          from datetime import datetime, timezone
+
+          REPOSITORY = os.environ["REPOSITORY"]
+          PR = os.environ["PR_NUMBER"]
+          HEAD_SHA = os.environ["HEAD_SHA"]
+          # PR Auto-Merge's COPILOT_ASKED_MARKER, COPILOT_NO_REVIEW and COPILOT_ASK_SETTLE_MS.
+          ASKED_MARKER = "<!-- pr-automerge:copilot-asked -->"
+          NO_REVIEW = re.compile(r"[ \t\r\n]*Copilot was unable to review")
+          SETTLE_SECONDS = 30
+          COPILOT = re.compile("copilot", re.IGNORECASE)
+
+
+          class Unreadable(Exception):
+              pass
+
+
+          def read(path, pages):
+              argv = ["gh", "api", f"repos/{REPOSITORY}/{path}", *(["--paginate", "--slurp"] if pages else [])]
+              done = subprocess.run(argv, capture_output=True, text=True)
+              if done.returncode != 0:
+                  raise Unreadable(f"{path}: {done.stderr.strip() or done.stdout.strip()}")
+              try:
+                  data = json.loads(done.stdout)
+              except ValueError as error:
+                  raise Unreadable(f"{path}: {error}") from error
+              return [item for page in data for item in page] if pages else data
+
+
+          def decide():
+              """(whether Copilot can review the PR, why)."""
+              current = ((read(f"pulls/{PR}", False).get("head") or {}).get("sha")) or HEAD_SHA
+              reviews = read(f"pulls/{PR}/reviews", True)
+              pending = read(f"pulls/{PR}/requested_reviewers", False)
+              comments = read(f"issues/{PR}/comments", True)
+              copilot = [r for r in reviews if COPILOT.search((r.get("user") or {}).get("login") or "")]
+              noted = {r.get("commit_id") for r in copilot if NO_REVIEW.match(r.get("body") or "")}
+              if noted & {current, HEAD_SHA}:
+                  return False, "Copilot answered with its quota note"
+              if any(r.get("commit_id") == current and not NO_REVIEW.match(r.get("body") or "") for r in copilot):
+                  return True, "Copilot has reviewed the head"
+              requested = [*(pending.get("users") or []), *(pending.get("teams") or [])]
+              if any(COPILOT.search(who.get("login") or who.get("name") or "") for who in requested):
+                  return True, "Copilot's review is requested"
+              owner = REPOSITORY.split("/")[0].lower()
+              asks = [c for c in comments
+                      if ASKED_MARKER in (c.get("body") or "")
+                      and ((c.get("user") or {}).get("login") or "").lower().removesuffix("[bot]") in ("github-actions", owner)]
+              if not asks:
+                  return True, "Copilot hasn't been asked to review yet"
+              try:
+                  written = datetime.fromisoformat(asks[0]["created_at"].replace("Z", "+00:00"))
+                  age = (datetime.now(timezone.utc) - written).total_seconds()
+              except (KeyError, AttributeError, ValueError):
+                  return True, "the time of the record that Copilot was asked can't be read"
+              if age < SETTLE_SECONDS:
+                  return True, f"Copilot was asked less than {SETTLE_SECONDS} seconds ago"
+              return False, "Copilot was asked and no review request is pending"
+
+
+          try:
+              can_review, why = decide()
+          except Unreadable as error:
+              print(f"::warning::Couldn't read whether Copilot can review PR #{PR} ({error}), so Claude starts no review. "
+                    "Push a commit, or remove and add review:claude again, once the API works.")
+              result = "unknown"
+          else:
+              result = "true" if can_review else "false"
+              if can_review:
+                  print(f"::notice::review:claude is ignored on PR #{PR}: {why}, and Claude reviews only where Copilot can't.")
+              else:
+                  print(f"::notice::Copilot can't review PR #{PR} ({why}), so review:claude stands.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"can_review={result}\n")
+          PY
+
       # Only a push can be a merge from main; a label or a reopen asks for a
       # review, unless the PR has moved on to a newer head (see the check).
       # Both steps carry on past an error or a timeout, which then reviews: a
       # failed job would be a failed check.
       - name: Checkout the PR head
+        if: steps.copilot.outputs.can_review == 'false'
         continue-on-error: true
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,6 +291,7 @@ jobs:
       # whose CANCELLED check would hold the PR.
       - name: Skip a stale head, or a clean merge of main into a reviewed commit
         id: check
+        if: steps.copilot.outputs.can_review == 'false'
         continue-on-error: true
         timeout-minutes: 5
         env:

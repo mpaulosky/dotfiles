@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -787,6 +787,18 @@ describe("checkReview", () => {
     commit(repo, "scripts/check-branch-name.sh", "#!/bin/sh\n", "re-Apply");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
+  });
+
+  it("reviews a re-Apply that changes the coverage gate or the hand-off rules, though both are Owned: they carry behaviour a path alone can't vouch for", () => {
+    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md"]) {
+      run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+      mkdirSync(join(repo, dirname(path)), { recursive: true });
+      commit(repo, "global.json", "{}\n", "re-Apply");
+      commit(repo, path, "0\n", "re-Apply");
+
+      assert.equal(isOwnedPath(path), true, `${path} is still Owned`);
+      assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false, path);
+    }
   });
 
   it("reviews a re-Apply branch that changes anything not Owned", () => {

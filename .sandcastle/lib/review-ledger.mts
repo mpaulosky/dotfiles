@@ -105,6 +105,14 @@ export const OWNED_PATHS = [
   "global.json",
 ] as const;
 
+// The Owned files whose content is behaviour, not text: the coverage gate
+// ci.yml enforces (any whole percentage passes it, 0 included) and the rules
+// file that loads into every Claude session in the repository. A re-Apply
+// overwrites them like any Owned file, but checkReview does not let a
+// re-Apply branch skip the review for them: the exemption below judges a path,
+// never the bytes, and a repository has no copy of the Template to compare with.
+export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md"]);
+
 // The files under an Owned pattern that the Template doesn't supply: its Seed
 // repo-config.mts, and the files the repository lists in repo-config.mts's
 // NOT_OWNED_BASELINE_PATHS (its own workflows, scripts and Sandcastle tests).
@@ -729,7 +737,7 @@ export type ReviewCheck = { ok: boolean; message: string };
 // The gate's review check: HEAD's diff has a recorded review with no open
 // Critical or Warning finding. Three things pass without one: `GATE_SKIP_REVIEW=1` (that value
 // only), a branch with no changes against the base, and a Baseline re-Apply
-// on REAPPLY_BRANCH that changes only Owned files.
+// on REAPPLY_BRANCH that changes only Owned files, REVIEWED_ON_REAPPLY apart.
 export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = process.env): ReviewCheck {
   if (env[SKIP_REVIEW_ENV] === "1") {
     return { ok: true, message: `Review check skipped (${SKIP_REVIEW_ENV}=1).` };
@@ -754,7 +762,7 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
       changes.push({ status, mode, path: raw[index + 1]! });
     }
     const writtenByApply = (change: { status: string; mode: string; path: string }) =>
-      (change.status === "A" || change.status === "M") && (change.mode === "100644" || change.mode === "100755") && isOwnedPath(change.path);
+      (change.status === "A" || change.status === "M") && (change.mode === "100644" || change.mode === "100755") && isOwnedPath(change.path) && !REVIEWED_ON_REAPPLY.has(change.path);
     if (changes.length > 0 && changes.every(writtenByApply)) {
       return { ok: true, message: "A Baseline re-Apply that changes only Owned files: the Template's own review covers them." };
     }

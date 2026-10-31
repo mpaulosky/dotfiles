@@ -52,6 +52,17 @@ describe("runCheckpoint", () => {
     assert.deepEqual(s.calls, ["gate", "fix 2: first failure", "gate"]);
   });
 
+  it("runs checkpoint 3 like the others, naming it in its log lines and giving the fixer its number", async () => {
+    const s = steps([red("after the review's fixes"), green]);
+    const logs: string[] = [];
+
+    const result = await runCheckpoint(3, s, (line) => void logs.push(line));
+
+    assert.equal(result.passed, true);
+    assert.deepEqual(s.calls, ["gate", "fix 3: after the review's fixes", "gate"]);
+    assert.ok(logs.every((line) => line.startsWith("checkpoint 3:")), logs.join("\n"));
+  });
+
   it("stops after two fixer attempts and returns the final gate result", async () => {
     const s = steps([red("one"), red("two"), red("three")]);
 
@@ -291,6 +302,13 @@ describe("gateFailureComment", () => {
     assert.match(comment, /checkpoint 2/);
     assert.match(comment, /`feature\/69-run-the-gate`/);
     assert.match(comment, /2 gate-fixer attempts/);
+    assert.match(comment, /wasn't pushed/);
+  });
+
+  it("names checkpoint 3, the gate after the host-side review's fixes", () => {
+    const comment = gateFailureComment(3, "feature/387-x", output);
+
+    assert.match(comment, /checkpoint 3/);
     assert.match(comment, /wasn't pushed/);
   });
 

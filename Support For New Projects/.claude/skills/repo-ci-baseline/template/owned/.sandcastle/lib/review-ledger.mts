@@ -610,6 +610,19 @@ export function takenIds(cwd: string, base: string, head: string = headCommit(cw
   return Math.max(highestId(replaced), ...branchLedgers(cwd, base, head).map(({ ledger }) => highestId(ledger)));
 }
 
+// What one review round reads: the whole diff, the fixes since the round before (a later round only), the key the diff
+// has and the commits it was made between. Both the CLI's `prepare` and the host's review (lib/host-review.mts) call
+// prepareRound, so they cannot diverge.
+export type PreparedRound = { patch: Buffer; fixes: Buffer | undefined; key: string; head: string; base: string };
+
+// The body of `prepare` without its file I/O. Not implemented yet.
+export function prepareRound(
+  _cwd: string,
+  _opts: { main?: string; head?: string; since?: { commit: string; preparedHead: string | undefined } },
+): PreparedRound {
+  throw new Error("Not implemented");
+}
+
 // Record a review of HEAD's diff, replacing any ledger at the same diff.
 // Refuses a dirty worktree, and a HEAD that isn't the code the last round
 // reviewed: the review would vouch for code it never read. Also refuses any id
@@ -630,7 +643,7 @@ export function recordReview(
   input: ReviewInput,
   now: Date = new Date(),
   taken: typeof takenIds = takenIds,
-  { slug = REPO_SLUG, onSecurity }: { slug?: string; onSecurity?: (outcome: SecurityOutcome) => void } = {},
+  { slug = REPO_SLUG, onSecurity }: { slug?: string; onSecurity?: (outcome: SecurityOutcome) => void; at?: { head: string; branch: string } } = {},
 ): Ledger {
   const parsed = reviewInputSchema.parse(input);
   // The security record is local and not code (see security-record.mts): an untracked README, or a symlink put in its

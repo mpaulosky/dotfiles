@@ -11,7 +11,7 @@ import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMENT_LINES, GATE_FIXER_ATTEMPTS } from "./config.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 
-export type Checkpoint = 1 | 2;
+export type Checkpoint = 1 | 2 | 3;
 
 // A gate run, and on a pass the commit it passed on: the one the host pushes.
 export type GateRun = { passed: boolean; output: string; head?: string };

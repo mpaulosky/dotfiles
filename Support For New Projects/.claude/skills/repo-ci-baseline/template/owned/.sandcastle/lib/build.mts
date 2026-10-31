@@ -23,6 +23,7 @@ import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
+import type { HostReviewResult } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
@@ -108,6 +109,7 @@ export async function publish(
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
   createPullRequest: (branch: string, title: string, body: string) => string = openPullRequest,
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
+  _reviewNote = "",
 ): Promise<string> {
   await retryOnServerError(() => push(branch, commit), wait);
   const reviewFailedNote = "⚠️ The review step failed, so no agent has reviewed this PR.";
@@ -381,6 +383,18 @@ export type BuildHost = {
   // createBranchAt left when the push of the build's commits was then
   // refused. A branch that moved is left alone.
   deleteBranchAt(branch: string, commit: string): void;
+  // Runs the pre-push review's rounds on the host (lib/host-review.mts) once checkpoint 2's gate has passed on `startHead`, against
+  // `main`. Rejects with UncountedStopError for a usage or time stop. Not implemented yet.
+  localReview(args: LocalReviewArgs): Promise<HostReviewResult>;
+};
+
+// What localReview is given: the build's sandbox and the commit and main to review.
+export type LocalReviewArgs = {
+  sandbox: sandcastle.Sandbox;
+  issue: Pick<SandcastleIssue, "number" | "title" | "body">;
+  branch: string;
+  main: string;
+  startHead: string;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no
@@ -577,6 +591,9 @@ const liveHost: BuildHost = {
     moveToLocalQueue(issueNumber, branch, detail, change, createdAtBase),
   deleteBranchAt: (branch, commit) =>
     void git("push", "--quiet", `--force-with-lease=refs/heads/${branch}:${commit}`, "origin", `:refs/heads/${branch}`),
+  localReview: async () => {
+    throw new Error("Not implemented");
+  },
 };
 
 // `value` as one single-quoted shell word, for the commit and branch names

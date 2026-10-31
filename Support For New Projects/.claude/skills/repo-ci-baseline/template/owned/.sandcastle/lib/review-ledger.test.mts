@@ -16,6 +16,7 @@ import {
   main,
   mergeBase,
   OWNED_PATHS,
+  prepareRound,
   latestLedger,
   readLedger,
   recordReview,
@@ -2970,5 +2971,167 @@ describe("the security record", () => {
 
   it("is a command the usage lists", () => {
     assert.match(cli(["nonsense"]).err, /^ {2}security {3,}/m);
+  });
+});
+
+// The host-side review (lib/host-review.mts) calls the ledger's functions in-process, in the main checkout, for a commit the sandbox
+// holds: it never runs the worktree's scripts/review.sh.
+describe("prepareRound", () => {
+  // What `prepare` printed and wrote for HEAD now.
+  function prepared() {
+    const dir = join(root, "run");
+    const [key, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    return { dir, key, head, patch: readFileSync(join(dir, "diff.patch")) };
+  }
+
+  it("gives the patch, key, head and base that prepare gives for the same HEAD", () => {
+    const expected = prepared();
+
+    const round = prepareRound(repo, {});
+
+    assert.equal(round.key, expected.key);
+    assert.equal(round.head, expected.head);
+    assert.equal(round.base, mergeBase(repo));
+    assert.ok(round.patch.equals(expected.patch));
+    assert.equal(round.fixes, undefined);
+  });
+
+  it("reads the commit it is given, not the checkout's HEAD, which the sandbox may have moved on", () => {
+    const expected = prepared();
+    commit(repo, "other.cs", "later\n", "a later commit");
+
+    const round = prepareRound(repo, { head: expected.head, main: "origin/main" });
+
+    assert.equal(round.head, expected.head);
+    assert.equal(round.key, expected.key);
+    assert.ok(round.patch.equals(expected.patch));
+    assert.doesNotMatch(round.patch.toString("utf8"), /later/);
+  });
+
+  it("takes the merge base against the main it is given", () => {
+    const expected = prepared();
+    const mainCommit = run(repo, "rev-parse", "origin/main");
+
+    const round = prepareRound(repo, { main: mainCommit });
+
+    assert.equal(round.base, mergeBase(repo));
+    assert.equal(round.key, expected.key);
+  });
+
+  it("gives the fixes since the commit the round before read, beside the whole diff", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "fixed\n", "fix");
+
+    const round = prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } });
+
+    assert.match(round.fixes?.toString("utf8") ?? "", /^\+fixed$/m);
+    assert.doesNotMatch(round.fixes?.toString("utf8") ?? "", /^\+changed$/m);
+    assert.match(round.patch.toString("utf8"), /^\+changed$/m);
+    assert.equal(round.head, run(repo, "rev-parse", "HEAD"));
+  });
+
+  it("gives the fixes of a given head, not of the checkout's", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "fixed\n", "fix");
+    const fixed = run(repo, "rev-parse", "HEAD");
+    commit(repo, "other.cs", "fixed again\n", "another");
+
+    const round = prepareRound(repo, { head: fixed, since: { commit: first.head, preparedHead: first.head } });
+
+    assert.match(round.fixes?.toString("utf8") ?? "", /^\+fixed$/m);
+    assert.doesNotMatch(round.fixes?.toString("utf8") ?? "", /fixed again/);
+  });
+
+  it("refuses a since that isn't one of the head's commits, with prepare's message", () => {
+    const first = prepared();
+    run(repo, "commit", "--quiet", "--amend", "-m", "amended", "--allow-empty");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } }), /isn't one of HEAD's commits/);
+  });
+
+  it("refuses a since later than the head the round before printed, so no fix goes unread", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "one\n", "one");
+    const second = run(repo, "rev-parse", "HEAD");
+    commit(repo, "other.cs", "two\n", "two");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: second, preparedHead: first.head } }), /later than the HEAD prepare printed/);
+  });
+
+  it("refuses a since when no round was prepared before", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "one\n", "one");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: undefined } }), /later than the HEAD prepare printed/);
+  });
+
+  it("refuses a round with no fixes since", () => {
+    const first = prepared();
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } }), /no fixes since/);
+  });
+
+  it("writes nothing under the checkout: the host decides where the patches go", () => {
+    const before = readdirSync(repo).sort();
+
+    prepareRound(repo, {});
+
+    assert.deepEqual(readdirSync(repo).sort(), before);
+    assert.equal(run(repo, "status", "--porcelain"), "");
+  });
+});
+
+describe("recordReview at a commit", () => {
+  it("records the review for the commit it is given, not the checkout's HEAD", () => {
+    const first = reviewed();
+    commit(repo, "other.cs", "later\n", "a later commit");
+
+    const ledger = recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+      at: { head: first.reviewedHead, branch: "feature/387-the-host-review" },
+    });
+
+    assert.equal(ledger.head, first.reviewedHead);
+    assert.equal(ledger.branch, "feature/387-the-host-review");
+    assert.equal(ledger.key, first.reviewedKey);
+    assert.equal(readLedger(repo, first.reviewedKey)?.head, first.reviewedHead);
+  });
+
+  it("doesn't look at the checkout's worktree, which the caller has checked is clean at the commit", () => {
+    const first = reviewed();
+    writeFileSync(join(repo, "app.cs"), "edited by hand\n");
+
+    assert.throws(() => recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }), /uncommitted changes/);
+    const ledger = recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+      at: { head: first.reviewedHead, branch: "feature/1-thing" },
+    });
+
+    assert.equal(ledger.head, first.reviewedHead);
+  });
+
+  it("still refuses a key that isn't the diff of the commit it is given", () => {
+    const first = reviewed();
+    commit(repo, "app.cs", lines(50, (index) => (index === 2 ? "changed again" : undefined)), "another change");
+    const later = run(repo, "rev-parse", "HEAD");
+
+    assert.throws(
+      () =>
+        recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+          at: { head: later, branch: "feature/1-thing" },
+        }),
+      /Review again/,
+    );
+  });
+
+  it("still refuses ids an earlier review of the branch took", () => {
+    const first = reviewed();
+    record([finding({ id: "R3" })]);
+
+    assert.throws(
+      () =>
+        recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [finding({ id: "R2" })] }, undefined, undefined, {
+          at: { head: first.reviewedHead, branch: "feature/1-thing" },
+        }),
+      /taken by earlier reviews/,
+    );
   });
 });

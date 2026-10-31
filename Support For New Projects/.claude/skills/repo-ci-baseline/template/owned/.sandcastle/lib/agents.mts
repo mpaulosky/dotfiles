@@ -36,7 +36,26 @@ export function roleAgent(role: AnyRole): RoleAgent {
 // The options a role fixes; callers supply everything else.
 type RoleFixed = "name" | "agent" | "maxIterations" | "signal";
 
-export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout) {
+// The tools a pre-push reviewer gets: it only reads.
+export const REVIEWER_TOOLS = ["Read", "Grep", "Glob"] as const;
+
+// Rules that keep an agent from reading, writing or running the local review's ledger.
+export const LEDGER_DENIED_TOOLS: readonly string[] = [];
+
+// What a role's agent is held to besides its model and effort.
+export type AgentRestrictions = { tools?: readonly string[]; denied?: readonly string[]; strictMcp?: boolean };
+
+// `sandcastle.claudeCode` with `restrictions` applied to its command. Not implemented yet.
+export function restrictedClaudeCode(
+  _model: string,
+  _effort: RoleAgent["effort"],
+  _restrictions: AgentRestrictions,
+  _build: typeof sandcastle.claudeCode = sandcastle.claudeCode,
+): sandcastle.AgentProvider {
+  throw new Error("Not implemented");
+}
+
+export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout, _restrictions?: AgentRestrictions) {
   const { model, effort, maxIterations, timeoutMinutes } = roleAgent(role);
   return {
     name: role,
@@ -88,6 +107,7 @@ export async function runRoleInSandbox(
   role: AnyRole,
   options: Omit<sandcastle.SandboxRunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
+  _restrictions?: AgentRestrictions,
 ): Promise<sandcastle.SandboxRunResult> {
   usageReport.record(role, []);
   const result = await runWithinLimits(

@@ -144,7 +144,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
 - A round that fixed something is followed by checkpoint 3 (the gate) and a round reviewing `fixes.patch`. After 3 such rounds one more round only reviews.
 - Only the host records, in the main checkout, with `prepareRound` and `recordReview` called in-process: it never runs the worktree's `scripts/review.sh`.
 - A usage or time stop leaves the branch for a later round. A reviewer that fails, or a record the ledger refuses, publishes the branch with a PR note and no record.
-  Open non-security findings go in the PR as a note of at most 20 findings with each field cut to 300 characters; the rest, and any security finding, are only counted.
+  Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
+  The rest, and any security finding, are only counted.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed.
   The reviewers run in parallel on one sandbox. It needs a run against a real sandbox before merging, since the tests
   stub Docker and see `--tools`, `--strict-mcp-config`, `--setting-sources` and `--disallowedTools` only as text.

@@ -152,9 +152,9 @@ export class ReviewerAnswerError extends Error {}
 
 // The findings in a reviewer's output: the span from the earliest opening tag to the latest closing tag that parses as a JSON
 // array. A reviewer may quote the format, or text it read, before its answer, and prose after it may mention a lone tag; neither
-// counts. The last block wins, as the prompt says to write nothing after the answer; a quote of the format after it can't be told from the
-// answer. It fails closed on an opening tag followed by `[` after the closing tag it reads (a later answer that is malformed or cut
-// short, or prose after the answer that quotes the format with an opening tag), and the reviewer is asked again.
+// counts. It fails closed, and the reviewer is asked again, on two blocks of valid findings (the quote of an answer can't be told from a second
+// answer) and on an opening tag followed by `[` after the closing tag it reads (a later answer that is malformed or cut
+// short, or prose after the answer that quotes the format with an opening tag).
 export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   const starts = [...stdout.matchAll(/<findings>/g)].map((match) => match.index! + "<findings>".length);
   const ends = [...stdout.matchAll(/<\/findings>/g)].map((match) => match.index!);
@@ -190,6 +190,11 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
     if (value === undefined) throw new ReviewerAnswerError(`the findings block is not valid JSON: ${(jsonError as Error).message}`);
     throw new ReviewerAnswerError("the findings block must hold a JSON array of findings");
   }
+  // Two answers: a block of valid findings before the one read. A quote of the format that an answer follows is `[]` or isn't valid
+  // findings, so it never counts. A second block of valid findings does, whether it is a second answer or a quote of the format after
+  // the answer (which is the one read, being last): taking either silently could record a review as clean, so the reviewer is asked again.
+  const earlier = spans.find((span) => span.end < chosen.start && span.items.length > 0 && span.items.every((item) => reviewerFindingSchema.safeParse(item).success));
+  if (earlier !== undefined) throw new ReviewerAnswerError("the answer holds two blocks of findings: end with one block, and write nothing after it");
   return chosen.items.map((item, index) => {
     const parsed = reviewerFindingSchema.safeParse(item);
     if (parsed.success) return parsed.data;
@@ -525,28 +530,23 @@ function record(host: HostReviewHost, input: { branch: string }, last: PreparedR
   }
 }
 
-// The most findings the PR note lists, and the most characters of each field of one: the note is appended to a description that may
-// already be near GitHub's limit, and its text is a reviewer's, so its size is bounded here.
+// The most findings the PR note lists: the note is appended to a description that may already be near GitHub's limit.
 const NOTE_FINDINGS = 20;
-const NOTE_FIELD_LIMIT = 300;
-const cut = (text: string) => (text.length <= NOTE_FIELD_LIMIT ? text : `${[...text].slice(0, NOTE_FIELD_LIMIT).join("")}…`);
 
-// The PR note listing the findings the review left open: each non-security one with its place, summary and suggested fix, as
-// plain text. A security finding (isSecurity: a Warning, a lens that names security, or one not marked otherwise) is only
-// counted, since nothing security is published. Empty when nothing is open.
+// The PR note listing the findings the review left open: each non-security one by its id, severity and place only. A reviewer's own
+// words (summary, suggested fix) stay in the local review record and are never published, since they are written by an agent that
+// read text anyone could edit. A security finding (isSecurity: a Warning, a lens that names security, or one not marked otherwise)
+// is only counted. Empty when nothing is open.
 export function openFindingsNote(ledger: Ledger): string {
   const open = ledger.findings.filter((finding) => finding.status === "open");
   if (open.length === 0) return "";
   const listed = open.filter((finding) => !isSecurity(finding));
   const hidden = open.length - listed.length;
   const shown = listed.slice(0, NOTE_FINDINGS);
-  const lines = shown.map((finding) => {
-    const fix = finding.fix == null ? "" : ` Suggested fix: ${cut(plainText(finding.fix))}`;
-    return `- ${finding.id} ${cut(plainText(`${finding.path}:${finding.line}`))}: ${cut(plainText(finding.summary))}${fix}`;
-  });
+  const lines = shown.map((finding) => `- ${finding.id} ${finding.severity} ${plainText(`${finding.path}:${finding.line}`)}`);
   const more = listed.length - shown.length;
   return [
-    "The local review left these findings open:",
+    "The local review left these findings open (their details are in the local review record):",
     "",
     ...lines,
     ...(more > 0 ? [...(lines.length > 0 ? [""] : []), `${more} more open finding${more === 1 ? " is" : "s are"} in the local review record and aren't listed here.`] : []),

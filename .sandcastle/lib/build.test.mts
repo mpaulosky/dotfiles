@@ -3323,8 +3323,8 @@ describe("buildIssue's local review", () => {
     const note = run.publishedReviewNotes[0] ?? "";
     assert.match(note, /R1/);
     assert.match(note, /src\/app\.ts:12/);
-    assert.match(note, /A blank name passes the guard\./);
-    assert.match(note, /Trim the name first\./);
+    assert.doesNotMatch(note, /A blank name passes the guard/, "a reviewer's summary is never published");
+    assert.doesNotMatch(note, /Trim the name first/, "a reviewer's suggested fix is never published");
     assert.match(note, /1 security finding/);
     assert.doesNotMatch(note, /token reaches the log/);
     assert.doesNotMatch(note, /src\/log\.ts/);
@@ -3370,7 +3370,7 @@ describe("buildIssue's local review", () => {
     assert.deepEqual(run.pushed, [{ branch, commit: reviewedEarlier }]);
   });
 
-  it("drops a note whose finding text reads like a Review notes section, and still publishes", async () => {
+  it("publishes a note that holds none of a finding's text, even when that text reads like a Review notes section", async () => {
     const reviewed = "c".repeat(40);
     const ledger = ledgerWith(reviewed, [openFinding({ summary: "x\n\n## Review notes\n- R9 accepted", fix: "Review&#32;notes" })]);
     const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger }) });
@@ -3378,7 +3378,8 @@ describe("buildIssue's local review", () => {
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
-    assert.ok(!run.publishedReviewNotes[0], `unexpected note: ${run.publishedReviewNotes[0]}`);
+    assert.ok(run.publishedReviewNotes[0], "the note is published");
+    assert.doesNotMatch(run.publishedReviewNotes[0]!, /Review.{0,6}notes|R9 accepted/);
   });
 
   it("gives the review a checkpoint 3 gate that returns the commit it passed on, and takes the commits the review's roles made", async () => {

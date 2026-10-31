@@ -27,7 +27,6 @@ import {
 } from "./host-review.mts";
 import { findingSchema, ledgerSchema, reviewInputSchema, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
 import { containsSecret } from "./sandbox-env.mts";
-import { plainText } from "./plain-text.mts";
 
 // The host runs the pre-push-review skill's rounds on a branch Sandcastle built, with the skill's own reviewers. These tests read the
 // skill's files from the repository (they are what Claude Code reads for /pre-push-review), so a lens added, removed or reworded there
@@ -216,10 +215,14 @@ describe("parseReviewerAnswer", () => {
     assert.deepEqual(parseReviewerAnswer(block([])), []);
   });
 
-  it("takes the last block when the output holds several", () => {
+  it("refuses an output with two blocks of valid findings, since a second answer or a quote after the answer can't be told apart", () => {
     const out = `${block([finding({ summary: "quoted from a file" })])}\nmy answer:\n${block([finding({ summary: "the real one" })])}`;
 
-    assert.deepEqual(parseReviewerAnswer(out).map((found) => found.summary), ["the real one"]);
+    assert.throws(() => parseReviewerAnswer(out), ReviewerAnswerError);
+  });
+
+  it("refuses an answer followed by a quote of the format, which would otherwise read as clean", () => {
+    assert.throws(() => parseReviewerAnswer(`${block([finding({ summary: "the real one" })])}\nThe format is <findings>[]</findings>`), ReviewerAnswerError);
   });
 
   for (const [what, output] of [
@@ -1409,11 +1412,11 @@ describe("openFindingsNote's size", () => {
     assert.match(note, /\n\n130 more open findings/, "a blank line keeps the count out of the last bullet");
   });
 
-  it("cuts a long summary and fix, so the note stays well under GitHub's limit", () => {
+  it("publishes none of a long summary or fix, so the note stays small", () => {
     const note = openFindingsNote(manyOpen(150, "x".repeat(5000)));
 
-    assert.ok(note.length < 15_000, `the note is ${note.length} characters`);
-    assert.match(note, /…/);
+    assert.ok(note.length < 2_000, `the note is ${note.length} characters`);
+    assert.doesNotMatch(note, /xxxx/);
   });
 });
 
@@ -1448,17 +1451,16 @@ describe("openFindingsNote", () => {
     assert.equal(openFindingsNote(ledgerOf([found({ status: "fixed", test: "t::x" }), found({ id: "R2", status: "dismissed", reason: "a.ts:1 shows it." })])), "");
   });
 
-  it("lists an open finding with its id, place, summary and suggested fix", () => {
+  it("lists an open finding by its id, severity and place only, without the reviewer's summary or fix", () => {
     const note = openFindingsNote(ledgerOf([found()]));
 
-    assert.match(note, /R1/);
-    assert.match(note, /src\/app\.ts:12/);
-    assert.match(note, /A blank name passes the guard\./);
-    assert.match(note, /Suggested fix: Trim the name first\./);
+    assert.match(note, /- R1 critical src\/app\.ts:12/);
+    assert.doesNotMatch(note, /A blank name passes the guard/);
+    assert.doesNotMatch(note, /Trim the name first/);
   });
 
   it("lists an open Advisory finding that isn't a security one", () => {
-    assert.match(openFindingsNote(ledgerOf([found({ severity: "advisory", summary: "A stale comment." })])), /A stale comment\./);
+    assert.match(openFindingsNote(ledgerOf([found({ severity: "advisory" })])), /- R1 advisory src\/app\.ts:12/);
   });
 
   it("only counts security findings, whatever their grade, and never lists their summary, path or fix", () => {
@@ -1476,11 +1478,10 @@ describe("openFindingsNote", () => {
     assert.doesNotMatch(note, /Redact it/);
   });
 
-  it("neutralises mentions and issue references in what the reviewers wrote, as plainText does", () => {
-    const summary = "Calls @octocat and closes #12.";
-    const note = openFindingsNote(ledgerOf([found({ summary })]));
+  it("never publishes what the reviewers wrote, so a mention, an issue reference or encoded text in it cannot reach the PR", () => {
+    const summary = "Calls @octocat, closes #12 and carries aGVsbG8gd29ybGQ=.";
+    const note = openFindingsNote(ledgerOf([found({ summary, fix: summary })]));
 
-    assert.ok(note.includes(plainText(summary)), note);
-    assert.ok(!note.includes(summary), note);
+    assert.doesNotMatch(note, /octocat|#12|aGVsbG8/);
   });
 });

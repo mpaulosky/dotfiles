@@ -49,8 +49,15 @@ name: PR Auto-Merge
 # account, found with GITHUB_TOKEN's getCollaboratorPermissionLevel): only
 # rounds after the add count, with or without a comment (a PR with none gets
 # the old loop's comment first). An add by anyone else is ignored, and one whose
-# permission can't be read leaves the loop unread, so the run waits. This run
-# never adds the label while the comment is the newest word on the PR. A
+# permission can't be read leaves the loop unread, so the run waits. A 404 from
+# that lookup (a login that doesn't exist any more) is no write access, kept
+# for the run like a found permission; a network error, a 5xx and a rate limit
+# still leave the loop unread. A restart stays recognised
+# (mpaulosky/dotfiles#381): an add counts unless PR Auto-Merge (github-actions)
+# removed the label after it and before the next round, which is what an add
+# made while Copilot can review leaves behind. Whether Copilot can review now
+# doesn't decide it, so Copilot reviewing a later head doesn't undo a restart.
+# This run never adds the label while the comment is the newest word on the PR. A
 # re-Apply PR (chore/reapply-baseline) is bounded like any other
 # (mpaulosky/dotfiles#174), though it changes this gate itself: with Claude
 # reviewing every re-Apply commit in every repo, the exemption let a round chase
@@ -1212,9 +1219,13 @@ jobs:
             // thing it decides: only such a login restarts a review loop
             // (mpaulosky/dotfiles#378). The repository's owner has it, and a
             // bot or an actor that is gone (null) never does, with no call.
-            // Anyone else is asked once a run, with GITHUB_TOKEN. Fails closed:
-            // a lookup that fails throws PermissionUnreadable, and the loop is
-            // then unread, not restarted.
+            // Anyone else is asked once a run, with GITHUB_TOKEN. A 404 means
+            // the login isn't a collaborator (or doesn't exist any more): no
+            // write access, kept like a found permission
+            // (mpaulosky/dotfiles#381). Fails closed otherwise: a lookup that
+            // fails any other way (a network error, a 5xx, a rate limit)
+            // throws PermissionUnreadable, and the loop is then unread, not
+            // restarted.
             const writeAccessOf = new Map();
             async function hasWriteAccess(actor) {
               const login = actor?.login;
@@ -1229,6 +1240,10 @@ jobs:
                   const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
                   writeAccessOf.set(login, ["admin", "maintain", "write"].includes(data.permission));
                 } catch (error) {
+                  if (error.status === 404) {
+                    writeAccessOf.set(login, false);
+                    return false;
+                  }
                   if (sweeping && endsRun(error)) {
                     throw error;
                   }
@@ -1262,8 +1277,12 @@ jobs:
             // loop, and a restart at that add would discard the loop's rounds
             // and make it endless. An add by anyone else is ignored; one whose
             // permission can't be read makes the state unreadable, and the
-            // caller waits. No add counts while Copilot can review, since the
-            // label is ignored then. The label events are read (GITHUB_TOKEN)
+            // caller waits. An add made while Copilot can review is ignored,
+            // and PR Auto-Merge removes the label at once: an add counts
+            // unless a removal by github-actions follows it before the next
+            // round, so whether Copilot can review now doesn't decide it and
+            // a recognised restart can't flip back when Copilot reviews a
+            // later head (mpaulosky/dotfiles#381). The label events are read (GITHUB_TOKEN)
             // only once the streak has reached the cap, and the comments in
             // full (REST's pages) only if the last 100 hold no exhaustion
             // comment. markerNewest: the final generation's exhaustion has a
@@ -1314,11 +1333,18 @@ jobs:
                 core.warning(`Couldn't read PR #${pullNumber}'s label events, so its review loop's state is unknown: ${error.message}`);
                 return { ...state, unreadable: true };
               }
-              const adds = copilotCannotReview(pr)
-                ? events
-                  .filter((event) => event.event === "labeled" && event.label?.name === CLAUDE_LABEL)
-                  .map((event) => ({ at: Date.parse(event.created_at), actor: event.actor }))
-                : [];
+              const claudeEvents = events.filter((event) => event.label?.name === CLAUDE_LABEL);
+              const removals = claudeEvents
+                .filter((event) => event.event === "unlabeled" && event.actor?.login?.toLowerCase().replace(/\[bot\]$/, "") === "github-actions")
+                .map((event) => Date.parse(event.created_at));
+              const roundTimes = allRounds.map((round) => round.at).filter((at) => at > -Infinity);
+              const adds = claudeEvents
+                .filter((event) => event.event === "labeled")
+                .map((event) => ({ at: Date.parse(event.created_at), actor: event.actor }))
+                .filter((add) => {
+                  const next = Math.min(Infinity, ...roundTimes.filter((at) => at > add.at));
+                  return !removals.some((removal) => removal >= add.at && removal < next);
+                });
               let start = -Infinity;
               let generation;
               let hit;

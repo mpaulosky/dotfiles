@@ -101,6 +101,11 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   - **A new loop.** The first `review:claude` added after the round that exhausted the loop **by a login with write access to the repository** (the owner, or the PAT's account, read with
     `repos.getCollaboratorPermissionLevel`, `GITHUB_TOKEN`) starts one: only rounds submitted after it count, whether or not the exhaustion comment exists yet
     (a PR with none gets the old loop's comment first). An add by anyone else is ignored, and a permission that can't be read leaves the loop unread (no merge, no label, a warning): it fails closed.
+    A **404** from the permission lookup (a login that no longer exists) is no write access, cached for the run like a found permission;
+    a network error, a 5xx and a rate limit still leave the loop unread (mpaulosky/dotfiles#381).
+    **A recognised restart stays recognised** (mpaulosky/dotfiles#381): an add counts unless PR Auto-Merge (`github-actions`) removed the label after it
+    and before the next round, which is what an add made while Copilot can review leaves behind. Whether Copilot can review now doesn't decide it,
+    so Copilot reviewing a later head, or a request going pending, doesn't undo a restart. `landing.py` and `status.py` read the label's `unlabeled` events the same way.
     The first add, not the latest: PR Auto-Merge's PAT adds the label for later heads in the new loop, and a restart at that add would make it endless.
     Reading the label events fails closed too. PR Auto-Merge never adds `review:claude` while the comment is the newest word on the PR.
   - **Claude reviews only where Copilot can't** (mpaulosky/dotfiles#378). Copilot can't review the PR when its quota note is on the head, or it is gone (asked, the ask settled, no request pending,

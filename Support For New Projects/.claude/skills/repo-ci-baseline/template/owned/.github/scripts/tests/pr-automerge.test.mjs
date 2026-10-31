@@ -3261,7 +3261,9 @@ test("never adds review:claude while the exhaustion comment is the newest word o
 });
 
 test("adds review:claude again once a person has added it after the comment (mpaulosky/dotfiles#375)", async () => {
-  const events = readded([labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T02:30:00Z", "github-actions[bot]")]);
+  // PR Auto-Merge took the label off at exhaustion, before the person's re-add (mpaulosky/dotfiles#381: a removal after an add
+  // and before the next round would make the add an ignored one).
+  const events = [labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T01:45:00Z", "github-actions[bot]"), ...readded()];
   const { addedLabels } = await evaluate(readyPr({ copilotReviews: CLEAN_AFTER_COMMENT(), comments: documented() }), events);
 
   assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);

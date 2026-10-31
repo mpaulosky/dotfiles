@@ -947,3 +947,45 @@ def test_a_loop_restarted_by_a_writer_is_not_exhausted_and_asks_for_a_review_acc
     pr = replace(EXHAUSTED, rounds=walk.rounds)
     assert not pr.loop_exhausted
     assert ld.decide(pr).action == ld.REQUEST_COPILOT
+
+
+# current_loop(rounds, adds, removals) (mpaulosky/dotfiles#381): removals are the epoch seconds of PR Auto-Merge's (github-actions)
+# removals of review:claude. An add counts unless one of them follows it before the next round submitted after it; the
+# add is then the one PR Auto-Merge took off at once because Copilot could review. Whether Copilot can review now no
+# longer decides it, so callers pass every add.
+
+
+def test_an_add_that_pr_auto_merge_removed_before_the_next_round_is_no_restart_acceptance_criterion_2():
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(2, 30), True)], removals=[at_minute(2, 31)])
+    assert not walk.restarted and walk.rounds == rounds("d d d") and walk.hit == at_minute(2)
+
+
+def test_an_add_stays_a_restart_when_the_removal_comes_after_the_next_round_acceptance_criterion_1():
+    walk = ld.current_loop(rounds("d d d d"), [(at_minute(2, 30), True)], removals=[at_minute(3, 30)])
+    assert walk.restarted and [item.oid for item in walk.rounds] == [item.oid for item in rounds("d d d d")[3:]]
+
+
+def test_a_removal_before_the_add_does_not_cancel_it_acceptance_criterion_1():
+    # PR Auto-Merge takes the label off at exhaustion, before the writer's add that restarts the loop.
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(2, 30), True)], removals=[at_minute(2, 10)])
+    assert walk.restarted and walk.rounds == ()
+
+
+def test_a_removal_cancels_only_the_add_it_follows_acceptance_criterion_2():
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(2, 30), True), (at_minute(2, 40), True)], removals=[at_minute(2, 31)])
+    assert walk.restarted and walk.rounds == ()
+    # The second add is the restart: the rounds after it count, those between the two adds don't exist here.
+    later = ld.current_loop(rounds("d d d d d"), [(at_minute(2, 30), True), (at_minute(3, 30), True)], removals=[at_minute(2, 31)])
+    assert later.restarted and [item.oid for item in later.rounds] == [item.oid for item in rounds("d d d d d")[4:]]
+
+
+def test_a_restarted_loop_is_not_exhausted_again_by_the_old_streak_plus_one_dirty_round_acceptance_criterion_1():
+    # d d d, a writer's add, Copilot reviews the new head and raises a thread: the streak is 1, not 4.
+    walk = ld.current_loop(rounds("d d d d"), [(at_minute(2, 30), True)])
+    pr = replace(EXHAUSTED, rounds=walk.rounds)
+    assert len(walk.rounds) == 1 and ld.trailing_dirty(walk.rounds) == 1 and not pr.loop_exhausted
+
+
+def test_an_add_by_a_login_without_write_access_is_still_no_restart_when_nothing_removed_it_acceptance_criterion_2():
+    walk = ld.current_loop(rounds("d d d d"), [(at_minute(2, 30), False)], removals=[])
+    assert not walk.restarted and walk.rounds == rounds("d d d d")

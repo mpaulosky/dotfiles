@@ -305,7 +305,7 @@ def round_epoch(round_):
         return None
 
 
-def current_loop(rounds, adds):
+def current_loop(rounds, adds, removals=()):
     """Walk the loop's generations: the rounds that count after the restarts (mpaulosky/dotfiles#378).
 
     rounds are the PR's Rounds, oldest first; adds are (epoch seconds, writer)

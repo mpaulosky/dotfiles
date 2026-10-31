@@ -815,6 +815,24 @@ describe("checkReview", () => {
     assert.doesNotMatch(result.message, /global\.json/);
   });
 
+  it("gives the plain message, with no note about withheld files, on a branch that isn't a re-Apply", () => {
+    const result = checkReview(repo, mergeBase(repo), {});
+
+    assert.equal(result.ok, false);
+    assert.equal(result.message, "No review is recorded for this diff. Run /pre-push-review, which reviews, fixes and records it.");
+  });
+
+  it("names no withheld file when a re-Apply is refused for a change that isn't Owned", () => {
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, "app.cs", "sneaked in\n", "not Owned");
+
+    const result = checkReview(repo, mergeBase(repo), {});
+
+    assert.equal(result.ok, false);
+    assert.doesNotMatch(result.message, /withheld/);
+  });
+
   it("reviews a re-Apply branch that changes anything not Owned", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     commit(repo, "global.json", "{}\n", "re-Apply");

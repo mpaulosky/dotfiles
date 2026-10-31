@@ -392,8 +392,9 @@ export async function runHostReview(
         return { status: "failed", head: prepared.head, reason: `the backend role's run fixing round ${round}'s findings ${failureText(error)}` };
       }
       const after = await host.head();
-      advanced = after !== undefined && after !== prepared.head;
-      const changed = advanced && after !== undefined ? host.changedFiles(prepared.head, after) : [];
+      const moved = after !== undefined && after !== prepared.head ? after : undefined;
+      advanced = moved !== undefined;
+      const changed = moved === undefined ? [] : host.changedFiles(prepared.head, moved);
       final = applyOutcomes(triaged, parseOutcomes(await host.readOutcomes(), host.log), changed, advanced);
     }
     recorded.push(...final);

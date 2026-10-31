@@ -18,8 +18,9 @@ skill lands PRs by (references/automerge.md):
   ask (COPILOT_ASKED_MARKER) and the request follows. Claude backs Copilot up
   only where Copilot can't review that head (copilot_gone): it answered with its
   quota note (copilot_declined), or it was asked, the ask settled (30 seconds)
-  and no request is pending, or the caller read this head's request back and it
-  didn't register (copilot_dropped). A Claude review of any other head covers
+  and no request is pending. A request read back as dropped waits out the 30
+  seconds too: PR Auto-Merge takes review:claude off an ask younger than that,
+  and land.py would not add it again (mpaulosky/dotfiles#378). A Claude review of any other head covers
   nothing. Copilot isn't asked again for a later head: a settled record is
   enough to take it to Claude (mpaulosky/dotfiles#360).
   Only then is review:claude added, and only once the head has at least one check other than Claude
@@ -43,7 +44,7 @@ skill lands PRs by (references/automerge.md):
 - auto-merge is armed only once a reviewer has reviewed the current head and
   no review thread is unresolved. The reviewer is Copilot (an author matching
   /copilot/i), or Claude as its backup on a head Copilot can't review (its quota note,
-  or a dropped request): Claude Review posts as
+  or a request that didn't register): Claude Review posts as
   github-actions[bot] with CLAUDE_MARKER first in the body. When Claude's
   latest review of the head has findings outside the diff (OFF_DIFF_MARKER
   on its second line), they open no thread, so the PR waits for a new head;
@@ -358,10 +359,6 @@ class PrState:
     them native auto-merge merges at once, so green checks must come first.
     copilot_requested: Copilot is among the PR's pending review requests.
     claude_requested: the PR carries review:claude.
-    copilot_dropped: Copilot's review was requested for this head and the
-    request didn't register (dropped or refused). Only a caller that asked
-    and read it back knows this (land.py); a one-shot read (status.py) never
-    sets it.
     copilot_asked: the PR carries the record that Copilot was asked (see
     copilot_ask()), or the record couldn't be read, which counts as asked so
     nothing asks twice.
@@ -394,7 +391,6 @@ class PrState:
     claude_off_diff: frozenset[str] = field(default_factory=frozenset)
     copilot_requested: bool = False
     claude_requested: bool = False
-    copilot_dropped: bool = False
     copilot_asked: bool = False
     copilot_ask_settled: bool = False
     copilot_declined: frozenset[str] = field(default_factory=frozenset)
@@ -440,11 +436,12 @@ class PrState:
     def copilot_gone(self):
         """Copilot won't review the head: its request didn't register.
 
-        Either the caller read the request back and it was dropped, or Copilot
-        was asked for the PR, the ask settled and no request is pending (a
-        pending one is waited for, as a request GitHub keeps is not a drop).
+        Copilot was asked for the PR, the ask settled and no request is pending
+        (a pending one is waited for, as a request GitHub keeps is not a drop).
+        A drop read back at once is not enough: the workflows count Copilot as
+        gone only after the settle, so the label would be taken off again.
         """
-        return self.copilot_dropped or (self.copilot_asked and self.copilot_ask_settled and not self.copilot_requested)
+        return self.copilot_asked and self.copilot_ask_settled and not self.copilot_requested
 
     @property
     def reviewer_on_head(self):
@@ -615,7 +612,7 @@ def review_needed(pr, checks):
     if pr.copilot_requested and not declined:
         return Decision(WAIT, waiting + "; Copilot is requested")
     # The label means Claude is on its way only until it has reviewed the head: a review
-    # of a head Copilot neither declined nor dropped covers nothing, and none further is coming.
+    # of a head Copilot neither declined nor is gone from covers nothing, and none further is coming.
     # Claude reviews only where Copilot can't: with Copilot available the label is ignored (mpaulosky/dotfiles#378).
     if pr.claude_requested and pr.head not in pr.claude_reviewed and (declined or pr.copilot_gone):
         return Decision(WAIT, waiting + f"; {REVIEW_CLAUDE} is on")

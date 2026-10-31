@@ -42,7 +42,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   The ask settles 30 seconds after its record, or at once for the run that asked and read the request back. A Claude review of an earlier commit with no note covers
   nothing, label or not (so `land.sh` and the workflow agree on that).
   A head with no check besides Claude's and the workflow's own gets no label from the run: it logs a notice to review and merge it by hand.
-  `land.sh` and the workflow use one rule (`landing.copilot_gone`), and `land.sh` also counts a request it read back as dropped in the same process before the 30 seconds are over.
+  `land.sh` and the workflow use one rule (`landing.copilot_gone`), and `land.sh` waits out the 30 seconds too, even for a request it read back as dropped:
+  PR Auto-Merge takes `review:claude` off an ask younger than that and `land.sh` would not add it again (mpaulosky/dotfiles#378).
   Neither counts Claude's review of a head Copilot's request is still pending for (unless the note is on it), since that review may be merely late and counting Claude's would let the PR merge before Copilot's
   findings arrive (`pr-automerge.test.mjs` pins each case).
   A Copilot review counts only when it reviewed something. Once the account's Copilot code review quota is used up, Copilot still posts a review

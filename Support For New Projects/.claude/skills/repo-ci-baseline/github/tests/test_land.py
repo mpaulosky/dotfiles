@@ -16,7 +16,7 @@ NEW = "abcdef0" + "0" * 33
 COPILOT = [("copilot-pull-request-reviewer", HEAD)]
 NOTE = ("copilot-pull-request-reviewer", HEAD, "Copilot was unable to review this pull request because the user who "
         "requested the review has reached their quota limit.")
-# Claude backs Copilot up on a head Copilot answered with its quota note, or whose request GitHub dropped.
+# Claude backs Copilot up on a head Copilot answered with its quota note, or whose request GitHub dropped (once the ask has settled).
 CLAUDE = [NOTE, ("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")]
 GREEN = [{"__typename": "CheckRun", "name": "Template tests", "status": "COMPLETED", "conclusion": "SUCCESS",
           "startedAt": "2026-10-07T10:00:00Z"}]
@@ -176,9 +176,12 @@ def test_a_copilot_request_github_dropped_is_warned_about_and_backed_up_by_claud
     assert "  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review budget " \
            "is used up); review:claude backs Copilot up for this PR" in text
     assert "  failed:" not in text
-    # The same run polls again: the record is on the PR now, 2 s old, and the drop it read back is remembered for this
-    # head, so review:claude is added as soon as the checks are green, without waiting out the 30 seconds.
+    # The same run polls again: the record is on the PR now, 2 s old. PR Auto-Merge takes review:claude off an ask that
+    # young, so land.py waits out the 30 seconds too instead of adding a label that is removed and never added again.
     fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, comments=[record(2)])]
+    lander.poll()
+    assert "-> add review:claude" not in printed(out) and fake.calls == [RECORD_CALL, REQUEST_CALL]
+    fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, comments=[record(31)])]
     lander.poll()
     assert "-> add review:claude" in printed(out) and fake.calls[2:] == [LABEL_CALL]
     # A later head: the record is old, so Copilot is not asked again and Claude is called in.

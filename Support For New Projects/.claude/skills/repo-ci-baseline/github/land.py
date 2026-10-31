@@ -32,10 +32,10 @@ decision says, once per PR head:
                     so no run asks twice, whoever ran before
 - add review:claude: gh pr edit --add-label review:claude, so Claude Review
                     reviews a head Copilot can't review (its quota note, or a
-                    request that didn't register: a request read back as dropped
-                    here, or an ask recorded 30 seconds ago with no request
-                    pending, which a later --once run finds with nothing
-                    remembered from the run that asked); the
+                    request that didn't register: an ask recorded 30 seconds ago
+                    with no request pending, which a request read back as dropped
+                    here becomes once the 30 seconds pass: PR Auto-Merge would
+                    take the label off sooner, mpaulosky/dotfiles#378); the
                     decision makes it only once the head's checks are green,
                     and never while PR Auto-Merge's exhaustion comment is the
                     newest word on the PR (the owner adds the label to start
@@ -161,7 +161,6 @@ class Lander:
     err: object = sys.stderr
     watched: dict = field(default_factory=dict)  # {(repo, number): Watched}
     acted: set = field(default_factory=set)  # {(repo, number, action, head)}
-    copilot_dropped: set = field(default_factory=set)  # {(repo, number, head)} whose Copilot request didn't register
     blog_due: dict = field(default_factory=dict)  # {repo: deadline} while its blog PR is awaited
     errors: dict = field(default_factory=dict)  # {repo: last error printed}
     started: set = field(default_factory=set)  # repos read at least once
@@ -220,8 +219,7 @@ class Lander:
         return True
 
     def update_open(self, repo, number, pr, node, flags):
-        state = to_state(node, **flags, want_ready=self.want_ready, owner=repo.split("/", 1)[0],
-                         copilot_dropped=(repo, number, node["headRefOid"]) in self.copilot_dropped)
+        state = to_state(node, **flags, want_ready=self.want_ready, owner=repo.split("/", 1)[0])
         decision = decide(state)
         pr.title = node["title"]
         seen = (state.state, state.head, state.draft, state.merge_state, state.head_reviewer,
@@ -249,21 +247,19 @@ class Lander:
                     self.say("  warning: " + " ".join(argv) + " failed" + (f" ({message})" if message else ""))
                 # A read-back that fails isn't retried by asking again: Copilot is asked once per PR, and
                 # the record now on it decides what the next poll does.
-                self.read_back_copilot(repo, number, state.head)
+                self.read_back_copilot(repo, number)
                 continue
             self.say(("  ran: " if ok else "  failed: ") + " ".join(argv) + (f" ({message})" if message and not ok else ""))
             if not ok:
                 break
 
-    def read_back_copilot(self, repo, number, head):
+    def read_back_copilot(self, repo, number):
         """Read Copilot's review request back, and warn when GitHub dropped it.
 
-        A dropped request for head is remembered for the next poll, so the
-        decision calls in Claude for it once the checks are green without
-        waiting out the record's 30 seconds, as it does after Copilot's quota
-        note. A later run remembers nothing and doesn't need to: the record on
-        the PR settles. A read-back that fails remembers nothing, and returns
-        False; otherwise True.
+        Nothing is remembered: the record on the PR settles after 30 seconds,
+        and the decision calls in Claude then, as PR Auto-Merge would take the
+        label off sooner (mpaulosky/dotfiles#378). A read-back that fails
+        returns False; otherwise True.
         """
         url = f"https://github.com/{repo}/pull/{number}"
         try:
@@ -272,10 +268,8 @@ class Lander:
         except Exception as error:  # noqa: BLE001 - reported like a failed call
             self.say(f"  failed: Copilot's review request couldn't be read back on #{number} ({error}); request it at {url}")
             return False
-        if head:
-            self.copilot_dropped.add((repo, number, head))
         self.say(f"  warning: Copilot's review request didn't register on #{number} (GitHub drops it once the Copilot "
-                 f"code review budget is used up); {REVIEW_CLAUDE} backs Copilot up for this PR once its checks are green")
+                 f"code review budget is used up); {REVIEW_CLAUDE} backs Copilot up for this PR once the request has been missing for 30 seconds and its checks are green")
         return True
 
     def update_gone(self, repo, number, pr, flags):

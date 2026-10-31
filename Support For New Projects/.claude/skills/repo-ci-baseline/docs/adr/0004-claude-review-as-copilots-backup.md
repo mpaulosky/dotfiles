@@ -72,7 +72,7 @@ This update replaces the grace (mpaulosky/dotfiles#360). PR Auto-Merge and `land
 The run reads its own request back for up to 30 seconds (`COPILOT_ASK_WAIT_MS`, polling every 5 seconds), so a dropped request gets `review:claude` in the same run.
 `land.sh --once` needs no memory between runs: the first run asks and records, and a later run finds the record, no pending request and 30 seconds, and adds the label.
 A run under 30 seconds after the record prints why it waits and acts on the next one.
-`land.py` still keeps the read-back result for the head in a watching process, so it adds the label without waiting out the 30 seconds.
+`land.py` warns about a request it read back as dropped but remembers nothing: it adds the label after the 30 seconds too, since PR Auto-Merge takes the label off an ask younger than that (mpaulosky/dotfiles#378).
 A head with no CI check keeps the notice to review and merge it by hand; the notice for a labelled head that Claude already reviewed went with the grace it measured.
 
 Accepted costs:

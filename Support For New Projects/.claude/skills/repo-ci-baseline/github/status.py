@@ -421,12 +421,11 @@ def review_loop(node, rounds, copilot_cant_review):
     return walk.rounds, walk.hit is not None and any(marker >= walk.hit for marker in markers), False
 
 
-def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, copilot_dropped=False, owner="",
+def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, owner="",
              now=None):
     """A PrState from one pullRequests node of QUERY.
 
-    copilot_dropped is the caller's memory that Copilot's request for this
-    head didn't register. owner is the repository's owner, who with
+    owner is the repository's owner, who with
     github-actions may write the record that Copilot was asked; now is epoch
     seconds (default: the clock), which the record's 30 seconds are counted to.
     """
@@ -442,7 +441,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
     labels = {label["name"] for label in (node.get("labels") or {}).get("nodes", []) if label}
     declined = copilot_declined(reviews)
     # Copilot can't review the PR (landing.PrState.claude_backed): Claude's review of any commit then counts as a round.
-    gone = copilot_dropped or (asked and settled and not copilot_is_requested) or node["headRefOid"] in declined
+    gone = (asked and settled and not copilot_is_requested) or node["headRefOid"] in declined
     # Claude reviews only where Copilot can't (mpaulosky/dotfiles#378): its quota note is on the head, or it is gone and
     # hasn't really reviewed the head. Otherwise a review:claude add means nothing, and starts no new loop.
     cant_review = node["headRefOid"] in declined or (gone and node["headRefOid"] not in copilot_reviews(reviews))
@@ -461,7 +460,6 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         claude_off_diff=claude_off_diff(reviews),
         copilot_requested=copilot_is_requested,
         claude_requested=REVIEW_CLAUDE in labels,
-        copilot_dropped=copilot_dropped,
         copilot_asked=asked,
         copilot_ask_settled=settled,
         open_threads=sum(1 for resolved, _ in threads if not resolved),

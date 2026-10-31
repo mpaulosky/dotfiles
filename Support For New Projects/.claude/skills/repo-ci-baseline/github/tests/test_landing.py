@@ -63,8 +63,8 @@ def test_a_claude_review_without_a_quota_note_doesnt_keep_the_label_waiting():
     labelled = replace(READY, copilot_reviewed=frozenset({OLD}), claude_requested=True,
                        claude_reviewed=frozenset({HEAD}))
     assert ld.decide(labelled).action == ld.REQUEST_COPILOT
-    # Unless the request was dropped (#318): then Copilot can't review this head, so Claude's review counts.
-    assert ld.decide(replace(labelled, copilot_dropped=True)).action == ld.ARM_AUTO_MERGE
+    # Unless the request was dropped (#318): the ask settled with no request pending, so Copilot can't review this head and Claude's review counts.
+    assert ld.decide(replace(labelled, copilot_asked=True, copilot_ask_settled=True)).action == ld.ARM_AUTO_MERGE
 
 
 def test_copilot_is_asked_first_for_a_head_copilot_reviewed_before():
@@ -86,7 +86,7 @@ def test_claude_is_called_in_once_copilot_answered_the_head_with_its_quota_note_
 
 def test_a_dropped_request_calls_in_claude_like_a_quota_note_does():
     # Copilot can't review a head whose request GitHub dropped, so Claude backs it up (#318).
-    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_dropped=True)
+    dropped = replace(READY, copilot_reviewed=frozenset({OLD}), copilot_asked=True, copilot_ask_settled=True)
     decision = ld.decide(dropped)
     assert decision.action == ld.REQUEST_CLAUDE
     assert decision.reason.endswith("Copilot couldn't review (its request was dropped or its quota is used up), checks green")
@@ -101,7 +101,7 @@ def test_a_dropped_request_calls_in_claude_like_a_quota_note_does():
 
 
 def test_a_registered_copilot_request_waits_even_after_an_earlier_drop():
-    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), copilot_requested=True, copilot_dropped=True))
+    decision = ld.decide(replace(READY, copilot_reviewed=frozenset({OLD}), copilot_requested=True, copilot_asked=True, copilot_ask_settled=True))
     assert decision.action == ld.WAIT and decision.reason.endswith("Copilot is requested")
 
 
@@ -190,7 +190,7 @@ def test_a_documented_exhausted_loop_is_not_a_reason_to_call_claude_in_until_the
     assert newest.action == ld.WAIT
     assert "review:claude" in newest.reason and "exhaust" in newest.reason.lower()
     # The same for a dropped request.
-    dropped = replace(declined, copilot_declined=frozenset(), copilot_dropped=True)
+    dropped = replace(declined, copilot_declined=frozenset(), copilot_asked=True, copilot_ask_settled=True)
     assert ld.decide(dropped).action == ld.REQUEST_CLAUDE
     assert ld.decide(replace(dropped, exhaustion_marker_newest=True)).action == ld.WAIT
 
@@ -632,8 +632,6 @@ def test_copilot_is_gone_when_asked_and_settled_with_nothing_pending_or_dropped_
     assert not ASKED.copilot_gone
     assert SETTLED.copilot_gone
     assert not replace(SETTLED, copilot_requested=True).copilot_gone
-    assert replace(UNASKED, copilot_dropped=True).copilot_gone
-    assert replace(ASKED, copilot_dropped=True).copilot_gone
     assert not replace(UNASKED, copilot_ask_settled=True).copilot_gone
 
 
@@ -662,8 +660,10 @@ def test_a_settled_record_with_a_pending_request_waits():
     assert decision.action == ld.WAIT and decision.reason.endswith("Copilot is requested")
 
 
-def test_a_dropped_request_read_back_in_this_process_calls_in_claude_before_the_record_settles():
-    assert ld.decide(replace(ASKED, copilot_dropped=True)).action == ld.REQUEST_CLAUDE
+def test_claude_is_not_called_in_before_the_record_settles_even_for_a_request_read_back_as_dropped():
+    # PR Auto-Merge takes review:claude off an ask younger than 30 seconds, so land.py waits it out too (mpaulosky/dotfiles#378).
+    decision = ld.decide(ASKED)
+    assert decision.action == ld.WAIT and "Copilot was asked" in decision.reason
 
 
 def test_claudes_earlier_reviews_stall_nothing_for_a_settled_record_either():
@@ -804,7 +804,7 @@ def test_the_label_is_ignored_while_copilot_can_review_it_acceptance_criterion_2
 
 
 def test_the_label_stands_where_copilot_cant_review_acceptance_criterion_2():
-    for gone in (dict(copilot_declined=frozenset({HEAD})), dict(copilot_dropped=True), dict(copilot_asked=True, copilot_ask_settled=True)):
+    for gone in (dict(copilot_declined=frozenset({HEAD})), dict(copilot_asked=True, copilot_ask_settled=True)):
         pr = replace(UNASKED, claude_requested=True, **gone)
         decision = ld.decide(pr)
         assert decision.action == ld.WAIT and decision.reason.endswith("review:claude is on"), gone

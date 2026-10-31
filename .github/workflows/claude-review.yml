@@ -602,6 +602,24 @@ jobs:
       # own path: a rename into a data path or out of an excluded one hides
       # nothing.
       #
+      # The same change often shows twice: a repo that carries copies of its
+      # Template's Owned files (dotfiles does) changes the Template's file
+      # (template/owned/<path>) and its root copy (<path>) to the same bytes,
+      # and reading both adds nothing. A root copy of a changed Template file
+      # goes in no piece and doesn't count toward what's read or what holds the
+      # merge; INDEX lists it as "identical to <Template path>", and the
+      # Template's file is read. The check is by content, never by name: both
+      # must have the same mode and blob at HEAD_SHA (git ls-tree), and neither
+      # may be a file nobody reads here. A copy that differs from the
+      # Template's file (it drifted), or whose Template file isn't in the PR,
+      # is read like any file, so the drift reaches the review. The mapping
+      # comes from the Template's layout (TEMPLATE_COPY), not a list, and a repo
+      # with no template/owned/ path in the diff is unchanged. The Template's
+      # file is classed by the root path it copies (kind_of), so a changed
+      # Template workflow still reads first and has its pins followed. A PR too big to
+      # read after the copies are left out still gets the not-read finding
+      # (mpaulosky/dotfiles#380).
+      #
       # Context pieces (context/001.txt and on) hold whole files at the head,
       # so the one turn of reads takes in the code around the change without
       # Claude having to name it first: on the bench it read 5 to 7 files when
@@ -722,6 +740,7 @@ jobs:
               "woff", "woff2", "ttf", "otf", "eot", "mp3", "wav", "ogg", "flac", "m4a", "mp4", "webm", "mov", "pdf",
           ))
           WORKFLOW = re.compile(r"^\.github/(workflows|actions)/|(^|/)action\.ya?ml$")
+          TEMPLATE_COPY = re.compile(r"(?:.*?/)?template/owned/(.+)\Z")  # the Template's file for the root path (.+)
           TEST = re.compile(r"(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*$|[._-](test|spec)\.[^/]+$|tests?\.cs$")
           DOCS = re.compile(r"(^|/)docs?/|\.(md|mdx|markdown|rst|txt|adoc)$|(^|/)(license|notice|changelog)[^/]*$")
           SCRIPT = re.compile(r"^\.github/|(^|/)\.?(git)?hooks/|(^|/)\.husky/|\.(sh|bash|ps1|psm1)$|(^|/)(makefile|dockerfile)$")
@@ -903,6 +922,11 @@ jobs:
 
           def kind_of(header, path):
               bare = path.strip('"').lower()
+              # A Template file is classed by the root path it is the copy of: its workflows are workflows (their
+              # pins are followed, they read first) though the PR's root copy of them is left out.
+              template = TEMPLATE_COPY.fullmatch(bare)
+              if template:
+                  bare = template[1]
               if any(line.startswith(b"deleted file mode") for line in header):
                   return "deleted"
               for kind, pattern in (("workflow", WORKFLOW), ("test", TEST), ("docs", DOCS), ("script", SCRIPT)):
@@ -911,15 +935,51 @@ jobs:
               return "source"
 
 
+          def identical_copies(files):
+              """{root path: Template path} for each changed file that is the root copy of a changed Template file
+              (template/owned/<path> is the Template's file for <path>) with the same mode and blob at the head, and
+              that the review reads either way: see the comment above."""
+              changed = {}
+              for header, body in files:
+                  path = path_of(header)
+                  if not path.startswith('"'):  # one git quotes can't be looked up reliably, so it's read as before
+                      changed[path] = (header, body)
+              pairs = {}
+              for template in changed:
+                  match = TEMPLATE_COPY.fullmatch(template)
+                  if match and match[1] in changed:
+                      pairs[match[1]] = template
+              if not pairs:
+                  return {}
+              done = subprocess.run(["git", "-c", "core.quotePath=false", "ls-tree", "-r", "-z", os.environ["HEAD_SHA"]],
+                                    capture_output=True)
+              if done.returncode != 0:
+                  return {}
+              tree = {}
+              for entry in done.stdout.split(b"\0"):
+                  meta, _, name = entry.partition(b"\t")
+                  fields = meta.split()
+                  if len(fields) == 3:
+                      tree[name.decode("utf-8", "replace")] = (fields[0], fields[2])
+              copies = {}
+              for copy, template in pairs.items():
+                  if (copy in tree and tree.get(copy) == tree.get(template)
+                          and not any(copilot_excludes(path) or held(*changed[path], path, False) for path in (copy, template))):
+                      copies[copy] = template
+              return copies
+
+
           temp = os.path.join(os.environ["RUNNER_TEMP"], "claude-review")
           folder = os.path.join(temp, "diff")
           os.makedirs(folder, exist_ok=True)
           with open(os.path.join(temp, "pr.diff"), "rb") as file:
               files = files_in(file.read())
+          copies = identical_copies(files)
           # Each reviewed file's parts, in read order: by kind, then in diff order.
           # Files Copilot excludes go in no piece.
+          # A root copy identical to the Template's file goes in none either: that file is read.
           # Files no one reads here hold the merge.
-          parts, excluded, holding = [], [], []
+          parts, excluded, copied, holding = [], [], [], []
           for number, (header, body) in sorted(enumerate(files), key=lambda item: (
                   KINDS.index(kind_of(item[1][0], path_of(item[1][0]))), item[0])):
               path = path_of(header)
@@ -928,6 +988,9 @@ jobs:
                   holding.append((reason, path))
               if copilot_excludes(path):
                   excluded.append(path)
+                  continue
+              if path in copies:
+                  copied.append((path, copies[path]))
                   continue
               split = parts_of(header, body)
               for part_number, content in enumerate(split, 1):
@@ -962,7 +1025,8 @@ jobs:
                   file.write(f"The PR's diff of {len(files)} file(s) in {len(pieces)} piece(s). For each piece: its name, lines, "
                              "and whether the prompt asks you to read it; then, indented, each file's diff it holds, by kind "
                              "and path as git prints it (quoted when unusual). Files Copilot code review excludes come next, "
-                             "in no piece; last, under held, the files that hold the merge for a person.\n")
+                             "in no piece, then root copies identical to a Template file, also in no piece; last, "
+                             "under held, the files that hold the merge for a person.\n")
               for index, piece in enumerate(pieces):
                   file.write(f"{piece['name']}\t{piece['lines']} lines\t{'read' if index in read else 'not read'}\n")
                   for part in piece["parts"]:
@@ -971,6 +1035,10 @@ jobs:
                   file.write("excluded (Copilot doesn't review these)\n")
                   for path in excluded:
                       file.write(f"\texcluded\t{path}\n")
+              if copied:
+                  file.write("identical copies (the Template's file is read; these are in no piece)\n")
+                  for path, template in copied:
+                      file.write(f"\tidentical to {template}\t{path}\n")
               if holding:
                   file.write("held\t(nobody reads these here, so they hold the merge for a person)\n")
                   for reason, path in holding:
@@ -983,7 +1051,7 @@ jobs:
               return done.stdout if done.returncode == 0 else None
 
 
-          def context_files(base, head):
+          def context_files(base, head, copies=()):
               """The files worth reading whole at the head, in order, as (path, why): the changed ones by kind, with
               the pinned actions' gatekeeping source between the changed code and the changed docs, then unchanged
               ones a changed file names, then unchanged ones that name a changed file. Only regular text
@@ -997,7 +1065,7 @@ jobs:
                   meta, _, name = entry.partition(b"\t")
                   fields = meta.split()
                   path = name.decode("utf-8", "replace")
-                  if len(fields) == 4 and fields[0] in (b"100644", b"100755") and not copilot_excludes(path):
+                  if len(fields) == 4 and fields[0] in (b"100644", b"100755") and not copilot_excludes(path) and path not in copies:
                       blobs[path] = int(fields[3])
               by_name = {}
               for path in blobs:
@@ -1268,7 +1336,7 @@ jobs:
           os.makedirs(context_folder, exist_ok=True)
           context, context_size, left_out = [], 0, 0
           budget = min(MAX_CONTEXT_BYTES, MAX_TOTAL_BYTES - size)
-          candidates = context_files(os.environ.get("BASE_SHA", ""), os.environ.get("HEAD_SHA", "")) if files else []
+          candidates = context_files(os.environ.get("BASE_SHA", ""), os.environ.get("HEAD_SHA", ""), copies) if files else []
           for path, why, load in candidates:
               try:
                   content = load()
@@ -1321,7 +1389,7 @@ jobs:
           # holds the merge.
           skipped = " ".join(piece["name"] for index, piece in enumerate(pieces) if index not in read)
           print(f"Split the diff of {len(files)} file(s) into {len(pieces)} piece(s), leaving out {len(excluded)} file(s) "
-                f"Copilot code review excludes; the prompt asks for {len(read)} ({size} bytes).")
+                f"Copilot code review excludes and {len(copied)} identical to the Template's file; the prompt asks for {len(read)} ({size} bytes).")
           if holding:
               print(f"::warning::{len(holding)} changed file(s) are excluded code, binaries, submodule bumps, symlinks or LFS "
                     "pointers, so nobody reads them here and the review holds the merge for a person (the answer "
@@ -1792,7 +1860,9 @@ jobs:
             stands in for Copilot code review, so it covers the files Copilot does: the files
             Copilot excludes (dependency manifests and lockfiles, logs, SVGs, minified, map
             and declaration files, and dist, vendor, generated, coverage, out and bin
-            folders) are in no piece, INDEX lists them as excluded, and you skip them too.
+            folders) are in no piece, INDEX lists them as excluded, and you skip them too. A changed
+            file INDEX lists as an identical copy of a Template file is in no piece either: the
+            Template's file, which has the same bytes, is in a piece, so review that.
 
             The code around the change is already gathered for you in context pieces: whole
             files at the PR's head, each under a "==> path (why) <==" line, every line after
@@ -1811,7 +1881,7 @@ jobs:
             above, every context piece listed above, and AGENTS.md or CLAUDE.md where present.
             With any reads left, add what the context pieces don't hold and the change relies
             on, such as the source of a pinned action (its action.yml and the file it runs).
-            Don't read the files INDEX lists as excluded. Then answer from what you have read;
+            Don't read the files INDEX lists as excluded or as identical copies. Then answer from what you have read;
             don't read again. If a diff piece wasn't read (one listed as not asked for, or one
             whose Read failed or came back cut short), name it and the files in it in your
             summary, as not reviewed.

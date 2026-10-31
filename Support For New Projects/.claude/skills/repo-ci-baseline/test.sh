@@ -644,6 +644,15 @@ grep -qF -- '#146' "$adr_0002" \
 for adr in "$adr_0002" "$adr_0004"; do
   grep -qF -- 'mpaulosky/dotfiles#375' "$adr" || fail "${adr#"$skill_dir"/} must cite mpaulosky/dotfiles#375"
 done
+# mpaulosky/dotfiles#380: Claude Review reads the Template's file, not an identical root copy; a drifting copy is still read.
+claude_review_wf="$owned/.github/workflows/claude-review.yml"
+for copy_doc in "$adr_0004" "$automerge_doc" "$claude_review_wf"; do
+  grep -qiE 'identical cop' "$copy_doc" \
+    || fail "${copy_doc#"$skill_dir"/} must say Claude Review leaves out a root copy that is identical to the Template's file (mpaulosky/dotfiles#380)"
+  grep -qiE 'differs?|drift' "$copy_doc" \
+    || fail "${copy_doc#"$skill_dir"/} must say a copy that differs from the Template's file is still read (mpaulosky/dotfiles#380)"
+done
+grep -qF -- 'mpaulosky/dotfiles#380' "$adr_0004" || fail "ADR 0004 must cite mpaulosky/dotfiles#380"
 # Docs of today's behaviour no longer say a PR waits for the owner at the cap, or that threads hold past it.
 for current_doc in "$automerge_doc" "$pr_process" "$skill_dir/SKILL.md" "$skill_dir/references/gotchas.md" "$owned/docs/PROCESS.md"; do
   if grep -qE 'the owner decides|cap or not|past the (review )?cap too|Adding the label again past the cap' "$current_doc"; then

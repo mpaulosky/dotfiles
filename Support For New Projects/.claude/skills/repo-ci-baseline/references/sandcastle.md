@@ -35,7 +35,9 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 The Owned modules read only the names `lib/repo-config.mts` exports (below), and `config.mts` imports nothing from it.
 A change to an Owned module that reads a new name breaks every repo until it adds that name, and `tsc --noEmit` reports it in the repo's own check.
 
-Outside `.sandcastle/`, the Owned Sandcastle section also has `.github/workflows/sandcastle.yml` ([The workflow](#the-workflow)), a root copy in dotfiles like the rest.
+Outside `.sandcastle/`, the Owned Sandcastle section also has `.github/workflows/sandcastle.yml` ([The workflow](#the-workflow)), a root copy in dotfiles like the rest,
+and `.claude/rules/sandcastle-hand-off.md`, the session guidance for handing a pull request off to Sandcastle with `sandcastle:follow-up` ([Hand-off PRs](#hand-off-prs)).
+It loads in every session and holds no per-repo value, so Apply keeps it current.
 
 Under `.sandcastle/`, the no-placeholders check refuses only Apply's `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}`:
 Sandcastle fills its own `{{NAME}}`s (`{{ISSUES_JSON}}`, `{{SHARED_RULES}}` and the rest) when it runs a prompt.
@@ -53,7 +55,6 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`), and optional Chromium libraries for Playwright (`INSTALL_PLAYWRIGHT_DEPS`, `PLAYWRIGHT_VERSION`) |
 | `.sandcastle/check.sh` | Sandcastle's check, which the Seed `.github/ci/gate-checks.sh` runs when it's there |
 | `package.json`, `pnpm-workspace.yaml` | Sandcastle's packages and scripts; a repo with its own Node tooling merges them |
-| `.claude/rules/sandcastle-hand-off.md` | The session guidance for handing a pull request off to Sandcastle with `sandcastle:follow-up` ([Hand-off PRs](#hand-off-prs)); it loads in every session, and a repo can keep or reword it |
 | `.github/ci/sandcastle-skills.txt` | The skills the Sandcastle workflow installs on the runner for the run (a pinned dotfiles commit and skill names, read as data); empty until filled ([The workflow](#the-workflow)) |
 | `.sandcastle/lib/repo-config.mts` | `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` for the local review ([pre-push-review.md](pre-push-review.md)), `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
 
@@ -212,7 +213,7 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   Two behaviours of GitHub are assumed and not checked here. One: `update-branch` makes a two-parent commit that web-flow signs and the calling account authors,
   and no API lets another account produce one with the host as author. Two: a fresh comment's `updated_at` equals its `created_at`
   (`handOffApproval` counts a record only then, so a change in GitHub would stop every hand-off, and the log would say the head isn't recorded).
-  The Seed `.claude/rules/sandcastle-hand-off.md` is never overwritten, so a repo that has it keeps the older text (which says a push after the label isn't checked) until it deletes the file and re-Applies.
+  The Owned `.claude/rules/sandcastle-hand-off.md` is rewritten on every Apply, so a repo's copy never keeps older text (which said a push after the label isn't checked).
   A repository an organisation owns, which has no owner login to match, follows no hand-off.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
   When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
@@ -223,8 +224,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   [PROCESS.md](../template/owned/docs/PROCESS.md)). A thread whose last bot, host or owner comment carries it, posted under the host's login or another owner's, counts as answered,
   and the follow-up role is not shown it. The marker counts anywhere in the comment's body, so a host or owner comment that quotes it is taken for a session's reply too.
 - **The prompt.** The follow-up role gets the pull request's number, title and description in the place of an issue's, under a note saying it is not an issue.
-- **The session guidance** is the Seed `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
-  which Apply can't edit. It is the repo's once written, so Apply never overwrites it.
+- **The session guidance** is the Owned `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
+  which Apply can't edit. Apply overwrites it, so a repo adds its own guidance in a separate rules file or its `CLAUDE.md`.
 
 The workflow's `pull_request_target` `labeled` trigger starts only the `record-head` job, never a Sandcastle run: the schedule and the existing triggers pick a labelled pull request up,
 and `chore/` branches are not in the `workflow_run` and review lists.

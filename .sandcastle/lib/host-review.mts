@@ -10,7 +10,7 @@ import { REVIEW_FIX_ROUNDS, REVIEWER_ATTEMPTS } from "./config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
-import { isSecurity, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
+import { FINDING_PATH_SHAPE, isSecurity, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
 
 // One row of lenses.md's table (or of a repo's own lenses table).
 export type Lens = { name: string; appliesTo: string; row: string };
@@ -124,16 +124,12 @@ export function reviewersFor(files: readonly string[], lenses: readonly Lens[]):
   return [{ lens: BAR_LENS, row: "" }, ...matching.map((lens) => ({ lens: lens.name, row: lens.row }))];
 }
 
-// What the ledger takes as a repository path (review-ledger.mts's findingFields): a reviewer's answer is checked against it now, so a
-// path the ledger would refuse is asked for again with the reason, not found out when the review is recorded.
-const PATH_SHAPE = /^[^\s<>`]+( [^\s<>`]+)*$/;
-
 // A finding as a reviewer answers it, in the strict shape the ledger will take: anything else is refused, and the reviewer asked again.
 // `security` is the reviewer's own call: true for a weakness, or when unsure; only an explicit false lets the PR note list the finding.
 export const reviewerFindingSchema = z
   .object({
     lens: z.string().trim().min(1),
-    path: z.string().trim().min(1).regex(PATH_SHAPE, "a path has no whitespace but single spaces, and no <, > or backtick"),
+    path: z.string().trim().min(1).regex(FINDING_PATH_SHAPE, "a path has no whitespace but single spaces, and no <, > or backtick"),
     line: z.number().int().nonnegative(),
     severity: z.enum(["critical", "warning", "advisory"]),
     summary: z.string().trim().min(1),
@@ -151,22 +147,30 @@ export type ReviewerFinding = z.infer<typeof reviewerFindingSchema>;
 export class ReviewerAnswerError extends Error {}
 
 // The findings in the last `<findings>[...]</findings>` block of a reviewer's output. The last wins: a reviewer may quote
-// the format, or text it read, before its answer. A block ends at the first closing tag that leaves valid JSON.
+// the format, or text it read, before its answer. The block ends at the latest closing tag that leaves a JSON array, and starts at the earliest opening tag that does.
 export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
-  const start = stdout.lastIndexOf("<findings>");
-  if (start < 0 || !stdout.includes("</findings>", start)) throw new ReviewerAnswerError("the answer has no <findings>[...]</findings> block");
-  // The block ends at the closing tag that leaves valid JSON: a finding may quote the tag itself, so the first one isn't always the end.
-  const body = stdout.slice(start + "<findings>".length);
-  const ends = [...body.matchAll(/<\/findings>/g)].map((match) => match.index!);
+  const starts = [...stdout.matchAll(/<findings>/g)].map((match) => match.index! + "<findings>".length);
+  const ends = [...stdout.matchAll(/<\/findings>/g)].map((match) => match.index!);
+  if (starts.length === 0 || ends.length === 0 || starts[0]! > ends.at(-1)!) throw new ReviewerAnswerError("the answer has no <findings>[...]</findings> block");
+  // A finding may quote either tag, and prose may quote the format before or after the answer, so the first tag isn't always the
+  // block's. The block is the one that ends at the latest closing tag that leaves a JSON array, and starts at the earliest opening tag
+  // that does: a quoted `<findings>[]</findings>` inside a finding sits inside the real block and can't cut it short to read as clean,
+  // and an example before the answer, or prose after it, doesn't make the answer unreadable.
   let value: unknown;
   let jsonError: unknown;
-  for (const end of ends) {
-    try {
-      value = JSON.parse(body.slice(0, end));
-      jsonError = undefined;
-      break;
-    } catch (error) {
-      jsonError ??= error;
+  search: for (const end of [...ends].reverse()) {
+    for (const start of starts) {
+      if (start > end) break;
+      try {
+        const parsed: unknown = JSON.parse(stdout.slice(start, end));
+        if (Array.isArray(parsed)) {
+          value = parsed;
+          break search;
+        }
+        value ??= parsed;
+      } catch (error) {
+        jsonError ??= error;
+      }
     }
   }
   if (value === undefined) throw new ReviewerAnswerError(`the findings block is not valid JSON: ${(jsonError as Error).message}`);
@@ -220,7 +224,9 @@ export function triageRound({
     }
   }
   return [...merged.values()].map((found, index) => {
-    // A reviewer's own mark counts: a finding is non-security only when it said so, since the PR note publishes non-security ones.
+    // A reviewer's own mark counts: a finding is non-security only when it said so, since the PR note publishes non-security ones. A
+    // finding that is security, or not marked otherwise, is graded Warning whatever its reviewer graded it (the review bar: a security
+    // weakness is always a Warning, and a Warning when in doubt), so it never clears on a reason alone.
     const security = found.severity === "warning" || /security/i.test(found.lens) || found.security !== false;
     return {
       id: `R${firstId + index}`,
@@ -528,7 +534,7 @@ export function openFindingsNote(ledger: Ledger): string {
     "The local review left these findings open:",
     "",
     ...lines,
-    ...(more > 0 ? [`${more} more open finding${more === 1 ? " is" : "s are"} in the local review record and aren't listed here.`] : []),
+    ...(more > 0 ? [...(lines.length > 0 ? [""] : []), `${more} more open finding${more === 1 ? " is" : "s are"} in the local review record and aren't listed here.`] : []),
     ...(hidden > 0 ? [...(lines.length > 0 ? [""] : []), `${hidden} security finding${hidden === 1 ? " is" : "s are"} left open in the local review record and aren't listed here.`] : []),
   ].join("\n");
 }

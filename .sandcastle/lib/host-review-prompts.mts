@@ -80,23 +80,23 @@ export function reviewerPrompt({
     "End your answer with one block, a JSON array of findings (an empty array when there is nothing), exactly in this form:",
     "",
     "<findings>",
-    `[{ "lens": "${isBar ? "Bar" : lens.lens}", "path": "src/file.ts", "line": 12, "severity": "critical", "summary": "what goes wrong, and in which situation", "fix": "the suggested fix", "needsPerson": false, "security": false, "why": "what you read or relied on" }]`,
+    `[{ "lens": "${isBar ? "Bar" : lens.lens}", "path": "src/file.ts", "line": 12, "severity": "critical", "summary": "what goes wrong, and in which situation", "fix": "the suggested fix", "needsPerson": false, "security": true, "why": "what you read or relied on" }]`,
     "</findings>",
     "",
     "`severity` is `critical`, `warning` or `advisory`, from the Severities table, and every finding has one and a suggested `fix`. `path` is relative to the repository root,",
     "`line` is on the new side of that file, and `needsPerson` is true only when the finding conflicts with the issue's acceptance criteria or an ADR, lies outside the branch's scope,",
-    "is a trade-off no rule decides, or needs a change to an Owned Baseline file. `security` is true for a security weakness, or when you aren't sure: only `false`",
-    "lets the finding be listed in the PR's description. Don't write the literal text `</findings>` inside a finding. Write nothing after the block.",
+    "is a trade-off no rule decides, or needs a change to an Owned Baseline file. `security` is true for a security weakness, or when you aren't sure, and the example shows true on purpose: only `false`",
+    "lets the finding be listed in the PR's description. Don't write the literal text `<findings>` or `</findings>` inside a finding. Write nothing after the block.",
   ].join("\n");
 }
 
 type Decided = Pick<ReviewInput["findings"][number], "id" | "lens" | "path" | "line" | "summary" | "status" | "test" | "reason"> & { severity?: string; security?: boolean };
 
-// One earlier finding as a line of the decisions file. A security weakness that is still in the code is given by id, lens and
-// path only, never its summary, reason or outcome: only a fixed one keeps its summary.
 // One line of text: a newline in a reason or summary can't start a line of its own in the file.
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 
+// One earlier finding as a line of the decisions file. A security weakness that is still in the code is given by id, lens and
+// path only, never its summary, reason or outcome: only a fixed one keeps its summary.
 function decisionLine(finding: Decided): string {
   const where = `${finding.id} (${oneLine(finding.lens)}, ${oneLine(finding.path)})`;
   const raiseAgain = finding.status === "open" || finding.status === "accepted" ? " Raise again if still in the code." : "";

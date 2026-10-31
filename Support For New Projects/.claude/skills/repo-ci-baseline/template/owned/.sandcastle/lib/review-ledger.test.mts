@@ -603,7 +603,7 @@ describe("diffKey", () => {
 
 describe("ledgerGitEnv", () => {
   it("turns replace refs off and drops the variables a hook sets", () => {
-    const before = { ...process.env };
+    const saved = { common: process.env.GIT_COMMON_DIR, index: process.env.GIT_INDEX_FILE };
     process.env.GIT_COMMON_DIR = "/elsewhere/.git";
     process.env.GIT_INDEX_FILE = "/elsewhere/index";
     try {
@@ -613,7 +613,10 @@ describe("ledgerGitEnv", () => {
       assert.equal(env.GIT_COMMON_DIR, undefined);
       assert.equal(env.GIT_INDEX_FILE, undefined);
     } finally {
-      process.env = before;
+      for (const [name, value] of [["GIT_COMMON_DIR", saved.common], ["GIT_INDEX_FILE", saved.index]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 

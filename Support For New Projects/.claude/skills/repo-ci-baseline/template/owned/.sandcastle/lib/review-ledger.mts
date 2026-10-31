@@ -132,6 +132,10 @@ export type Severity = (typeof SEVERITIES)[number];
 // that the reviewer was wrong, read from the code; `accepted` needs the reason
 // a person accepted it; `open` waits for a person, or for the follow-up issue
 // when it's Advisory.
+// What a finding's path may look like. The host's reviewer schema (lib/host-review.mts) uses the same pattern, so a path the ledger would
+// refuse is asked for again with the reason, not found out when the review is recorded.
+export const FINDING_PATH_SHAPE = /^[^\s<>`]+( [^\s<>`]+)*$/;
+
 const findingFields = z.object({
   id: z.string().regex(/^R[1-9]\d{0,5}$/, "ids are R1, R2, ... up to R999999, with no leading zero"),
   lens: z.string().trim().min(1),
@@ -140,7 +144,7 @@ const findingFields = z.object({
   // New Projects/"), so it can't carry anything into the PR description that
   // plainText would have to undo: renderReport and the notes run it through
   // plainText, and a tab, newline or double space never gets that far.
-  path: z.string().trim().min(1).regex(/^[^\s<>`]+( [^\s<>`]+)*$/, "a path has no whitespace but single spaces between its parts, and no <, > or backtick"),
+  path: z.string().trim().min(1).regex(FINDING_PATH_SHAPE, "a path has no whitespace but single spaces between its parts, and no <, > or backtick"),
   line: z.number().int().nonnegative(),
   summary: z.string().trim().min(1),
   status: z.enum(["fixed", "dismissed", "accepted", "open"]),

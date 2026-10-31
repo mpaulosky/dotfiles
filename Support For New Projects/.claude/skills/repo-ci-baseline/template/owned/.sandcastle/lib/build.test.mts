@@ -44,7 +44,7 @@ import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import type { HostReviewResult } from "./host-review.mts";
 import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
-import type { Ledger } from "./review-ledger.mts";
+import { ledgerGitEnv, type Ledger } from "./review-ledger.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
@@ -3630,8 +3630,8 @@ describe("liveReviewHost", () => {
     }
   });
 
-  it("runs none of its sandbox commands through scripts/review.sh or .git/review", async () => {
-    const { args, execs } = recorder();
+  it("runs none of its sandbox commands or role runs through scripts/review.sh or .git/review", async () => {
+    const { args, execs, runs } = recorder();
     const dir = checkout();
     try {
       const live = liveReviewHost(args, dir);
@@ -3639,12 +3639,50 @@ describe("liveReviewHost", () => {
       await live.worktree();
       await live.writeRunFile(".sandcastle/work/387/review/diff.patch", "p");
       await live.runFixer("fix");
+      await live.runReviewer({ lens: "Bar", row: "" }, "review");
       await live.readOutcomes();
 
+      assert.equal(runs.length, 2);
+      // The deny rules name the ledger on purpose; nothing else in a role's command may.
+      const withoutDenyRules = (command: string) => command.replace(/'[^']*(?:scripts\/review\.sh|\.git\/review)[^']*'/g, "");
+      assert.ok(runs.every((found) => !/review\.sh|\.git\/review/.test(withoutDenyRules(commandOf(found)))), runs.map((found) => commandOf(found)).join("\n"));
       assert.ok(execs.length >= 4);
       assert.ok(execs.every((found) => !/review\.sh|\.git\/review/.test(found.command)), execs.map((found) => found.command).join("\n"));
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes a logged line safe for the operator's terminal and keeps its prefix", () => {
+    const { args } = recorder();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => void lines.push(parts.join(" "));
+    try {
+      liveReviewHost(args, process.cwd()).log("  ✗ the Bar reviewer's error: boom \u001b[2J\u0007 done");
+    } finally {
+      console.log = original;
+    }
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /^ {2}#387 /);
+    assert.doesNotMatch(lines[0]!, /[\u0000-\u0008\u000b-\u001f\u007f]/);
+  });
+
+  it("pins the ledger's git to the checkout's own .git, and refuses a checkout whose .git has a planted commondir", () => {
+    const repo = mkdtempSync(join(tmpdir(), "live-review-pin-"));
+    try {
+      spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+      const { args } = recorder();
+      const live = liveReviewHost(args, repo);
+
+      assert.throws(() => live.takenIds("0".repeat(40)), /left main|can't find|fetch/);
+      assert.equal(ledgerGitEnv(repo).GIT_COMMON_DIR, join(repo, ".git"));
+
+      writeFileSync(join(repo, ".git", "commondir"), "../elsewhere\n");
+      assert.throws(() => live.takenIds("0".repeat(40)), /commondir/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
     }
   });
 

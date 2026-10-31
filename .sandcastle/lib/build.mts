@@ -700,7 +700,7 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
         },
       }),
     // The reviewers' and the backend role's words can reach a log line: made safe for the operator's terminal.
-    log: (line) => console.log(terminalText(`  #${issue.number} ${line.trimStart()}`)),
+    log: (line) => console.log(`  #${issue.number} ${terminalText(line)}`),
   };
 }
 

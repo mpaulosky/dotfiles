@@ -133,16 +133,20 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
 - The host starts the same reviewers `/pre-push-review` does: the Bar and one per lens whose "Applies to" matches a changed file, read from the main checkout's
   `lenses.md`, `review-bar.md`, `SKILL.md` and `pre-push-reviewer.md` (never the worktree's, which the branch controls), plus a repo's own lenses. `LENS_APPLIES` holds a path rule per
   lens, and `host-review.test.mts` fails when `lenses.md` gains, loses or rewords a lens, or the model, effort, tools or round limit differ.
-- Reviewers run in the build's sandbox as `claude --print --tools Read,Grep,Glob`, with `--strict-mcp-config` and deny rules for `.git/review`. Their prompts name no shell, token or `scripts/review.sh`.
-- The host triages the findings in code (merging duplicates, grading security) and has the backend role fix each fixable one behind a failing test. It records a finding `fixed`
+- Reviewers run in the build's sandbox as `claude --print --tools Read,Grep,Glob`,
+  with `--strict-mcp-config`, `--setting-sources user` (the branch's `.claude/settings.json` hooks never run) and
+  deny rules for `.git/review`. Their prompts name no shell, token or `scripts/review.sh`.
+- The host triages the findings in code (merging duplicates, grading security:
+  a finding counts as non-security only when its reviewer set `security: false`) and has the backend role
+  fix each fixable one behind a failing test. It records a finding `fixed`
   only with a test whose file the round changed (a reason alone is enough only for a non-security finding), `dismissed` only with a `file:line` reason
   (never for a Warning or a security finding, which stays open), and everything else `open`.
 - A round that fixed something is followed by checkpoint 3 (the gate) and a round reviewing `fixes.patch`. After 3 such rounds one more round only reviews.
 - Only the host records, in the main checkout, with `prepareRound` and `recordReview` called in-process: it never runs the worktree's `scripts/review.sh`.
 - A usage or time stop leaves the branch for a later round. A reviewer that fails, or a record the ledger refuses, publishes the branch with a PR note and no record.
-  Open non-security findings go in the PR as a note; a security finding is only counted.
+  Open non-security findings go in the PR as a note of at most 20 findings with each field cut to 300 characters; the rest, and any security finding, are only counted.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed.
-  The reviewers run in parallel on one sandbox, and their `--setting-sources user` keeps the branch's hooks from running. It needs a run against a real sandbox before merging, since the tests
+  The reviewers run in parallel on one sandbox. It needs a run against a real sandbox before merging, since the tests
   stub Docker and see `--tools`, `--strict-mcp-config`, `--setting-sources` and `--disallowedTools` only as text.
 
 ## Not in it yet

@@ -414,9 +414,52 @@ describe("parseReviewerAnswer's edges", () => {
     assert.equal(got[0]?.summary, quoted.summary);
   });
 
+  it("reads a finding whose text quotes the opening tag, or a whole block, without reading the quote as the answer", () => {
+    const quoted = raw({ summary: "The format is <findings>[]</findings>, and the parser must not stop at it.", fix: "Quote <findings> safely." });
+    const second = raw({ line: 30, summary: "A second finding that must survive." });
+
+    const got = parseReviewerAnswer(block([quoted, second]));
+
+    assert.deepEqual(got.map((found) => found.summary), [quoted.summary, second.summary]);
+  });
+
+  it("ignores a quoted example block before the answer and prose that mentions the tags after it", () => {
+    const answer = [raw()];
+    const text = `The format is <findings>[{"lens":"x"}]</findings>. Here is my answer:\n${block(answer)}\nSee the <findings> block above, and the </findings> tag.`;
+
+    assert.deepEqual(parseReviewerAnswer(text).map((found) => found.summary), [answer[0]!.summary]);
+  });
+
+  it("still refuses an answer with no block, an unclosed one and one that isn't a JSON array", () => {
+    assert.throws(() => parseReviewerAnswer("no block"), ReviewerAnswerError);
+    assert.throws(() => parseReviewerAnswer("<findings>[]"), ReviewerAnswerError);
+    assert.throws(() => parseReviewerAnswer("</findings> then <findings>"), ReviewerAnswerError);
+    assert.throws(() => parseReviewerAnswer(block("{}")), ReviewerAnswerError);
+  });
+
   it("refuses a path the ledger would refuse, so the reviewer is asked again", () => {
     for (const path of ["`src/app.ts`", "src/a.ts (new)\tb", "<src/app.ts>", "src/a.ts\nsrc/b.ts"]) {
       assert.throws(() => parseReviewerAnswer(block([raw({ path })])), ReviewerAnswerError, path);
+    }
+  });
+
+  it("accepts and refuses the same paths as the ledger's finding", () => {
+    for (const path of ["src/app.ts", "Support For New Projects/a.md", "a b  c.ts", "`a.ts`", "a<b>.ts", "a\tb.ts", "a.ts "]) {
+      const reviewer = (() => {
+        try {
+          parseReviewerAnswer(block([raw({ path })]));
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      const ledger = reviewInputSchema.safeParse({
+        reviewedKey: "k",
+        reviewedHead: "a".repeat(40),
+        rounds: 1,
+        findings: [{ id: "R1", lens: "Edge cases", path, line: 1, summary: "s", severity: "critical", security: false, status: "open", test: null, reason: null, fix: "f" }],
+      }).success;
+      assert.equal(reviewer, ledger, JSON.stringify(path));
     }
   });
 
@@ -1017,7 +1060,6 @@ describe("runHostReview's rounds", () => {
   });
 });
 
-// Criterion: no agent can read, write or run scripts/review.sh or .git/review; only the host records.
 describe("runHostReview's decisions file", () => {
   const decisionsOf = (run: ReturnType<typeof fake>, round: number) => {
     const writes = run.files.filter((file) => file.path.endsWith("decisions.md"));
@@ -1045,6 +1087,8 @@ describe("runHostReview's decisions file", () => {
   });
 });
 
+// Criterion: no agent can read, write or run scripts/review.sh or .git/review; only the host records. (The sandbox-command half is checked
+// against liveReviewHost in build.test.mts.)
 describe("runHostReview's access", () => {
   const withoutAgentBody = (prompt: string) => prompt.replace(agentBody, "").replace(agentBody.trim(), "");
   const forbidden: [string, RegExp][] = [
@@ -1342,6 +1386,7 @@ describe("openFindingsNote's size", () => {
 
     assert.equal(note.split("\n").filter((line) => line.startsWith("- R")).length, 20);
     assert.match(note, /130 more open findings are in the local review record/);
+    assert.match(note, /\n\n130 more open findings/, "a blank line keeps the count out of the last bullet");
   });
 
   it("cuts a long summary and fix, so the note stays well under GitHub's limit", () => {

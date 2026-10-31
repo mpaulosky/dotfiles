@@ -607,10 +607,10 @@ const liveHost: BuildHost = {
 
 // The skill files the host-side review reads, from the main checkout and never the worktree: the worktree is the branch's, so a
 // branch could edit the Bar, a lens or the reviewer's instructions to go easy on itself.
-function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
+export function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
   const read = (path: string) => readFileSync(join(checkout, path), "utf8");
   const skill = ".claude/skills/pre-push-review";
-  const severities = /^## Severities\n[\s\S]*?(?=^## )/m.exec(read(`${skill}/SKILL.md`))?.[0];
+  const severities = /^## Severities\n[\s\S]*?(?=^## |(?![\s\S]))/m.exec(read(`${skill}/SKILL.md`))?.[0];
   if (severities === undefined) throw new Error(`${skill}/SKILL.md has no Severities section`);
   let repoLenses: string | undefined;
   try {
@@ -1294,6 +1294,8 @@ async function buildMarkedIssue(
     if (review.status === "gate failed") return unpublished("gate failed", "checkpoint 3");
     if (review.status === "failed") {
       console.error(`  ⚠ #${issue.number}: the local review failed (${terminalText(review.reason)}), publishing without a recorded review.`);
+      // The unfinished review's gated commit is published, not checkpoint 2's: earlier rounds' fixes passed checkpoint 3.
+      gated = review.head;
       reviewNote = `⚠️ The local review didn't finish (${review.reason}), so this branch has no recorded review.`;
     } else {
       gated = review.head;
@@ -1303,6 +1305,11 @@ async function buildMarkedIssue(
         log("the local review's open findings hold text that isn't safe to publish, so the PR gets no note on them");
         reviewNote = "";
       }
+    }
+    // Claude Review reads a "Review notes" section as the owner's accepted findings, so no note may pass for one, in any form.
+    if (visibleLetters(reviewNote).includes("reviewnotes")) {
+      log("the local review's note reads like a Review notes section, so the PR gets no note on it");
+      reviewNote = "";
     }
 
     // The push is public, and the sandbox holds the Claude token or API key.

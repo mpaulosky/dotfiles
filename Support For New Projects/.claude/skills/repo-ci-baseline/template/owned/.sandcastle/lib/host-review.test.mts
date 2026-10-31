@@ -412,6 +412,25 @@ describe("applyOutcomes", () => {
     assert.equal(got.test, "tests/app.test.ts::blank");
   });
 
+  it("keeps a Warning open when the backend dismisses it, whatever line the reason cites", () => {
+    const got = apply(triaged({ severity: "warning" }), [outcome({ status: "dismissed", test: null, reason: "x:1" })]);
+
+    assert.equal(got.status, "open");
+    assert.equal(got.fix, "Trim the name first.");
+  });
+
+  it("keeps a security finding open when the backend dismisses it", () => {
+    const got = apply(triaged({ security: true, severity: "warning", lens: "Security" }), [outcome({ status: "dismissed", test: null, reason: "src/app.ts:10 is guarded." })]);
+
+    assert.equal(got.status, "open");
+  });
+
+  it("still dismisses an ordinary finding whose reason cites file:line", () => {
+    const got = apply(triaged({ severity: "advisory" }), [outcome({ status: "dismissed", test: null, reason: "src/app.ts:10 is guarded." })]);
+
+    assert.equal(got.status, "dismissed");
+  });
+
   it("hands back findings the ledger takes, without the host's own fields", () => {
     const got = applyOutcomes([triaged(), triaged({ id: "R2", line: 11, summary: "Other." })], [outcome(), outcome({ id: "R2", status: "dismissed", test: null, reason: "src/app.ts:11 shows the guard." })], ["tests/app.test.ts"], true);
 
@@ -1133,6 +1152,67 @@ describe("runHostReview's stops and failures", () => {
 
     assert.equal(result.status, "failed");
     assert.equal((result as { head: string }).head, run.startHead);
+  });
+
+  // Every host call outside the reviewers and the fixer can throw (a missing file, a failed git, a sandbox exec): none may escape.
+  const throwing: { name: string; options?: Fake; wrap: (host: HostReviewHost) => void }[] = [
+    { name: "readSkillFiles", wrap: (host) => void (host.readSkillFiles = () => { throw new Error("no agent file"); }) },
+    { name: "worktree", wrap: (host) => void (host.worktree = async () => { throw new Error("rev-parse failed"); }) },
+    { name: "takenIds", wrap: (host) => void (host.takenIds = () => { throw new Error("no merge base"); }) },
+    { name: "writeRunFile", wrap: (host) => void (host.writeRunFile = async () => { throw new Error("exec failed"); }) },
+    {
+      name: "head",
+      options: { answers: only("Edge cases", [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }]) },
+      wrap: (host) => void (host.head = async () => { throw new Error("head failed"); }),
+    },
+    {
+      name: "changedFiles",
+      options: { answers: only("Edge cases", [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }]) },
+      wrap: (host) => void (host.changedFiles = () => { throw new Error("diff failed"); }),
+    },
+    {
+      name: "readOutcomes",
+      options: { answers: only("Edge cases", [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }]) },
+      wrap: (host) => void (host.readOutcomes = async () => { throw new Error("cat failed"); }),
+    },
+  ];
+  for (const { name, options, wrap } of throwing) {
+    it(`reports a ${name} that throws as a failed review with a host-written reason, not as a crash`, async () => {
+      const run = fake(options);
+      wrap(run.host);
+
+      const result = await runHostReview(run.host, input(run.startHead));
+
+      assert.equal(result.status, "failed");
+      assert.doesNotMatch((result as { reason: string }).reason, /failed:|no agent file|exec failed/);
+      assert.equal(run.records.length, 0);
+    });
+  }
+
+  it("fails with the last gated commit when a host call throws after an earlier round's fixes passed the gate", async () => {
+    const run = fake({
+      answers: (round, who) => (round === 1 && who.lens === "Edge cases" ? [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }] : []),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["tests/app.test.ts"] }),
+    });
+    const prepare = run.host.prepare;
+    run.host.prepare = (opts) => {
+      const result = prepare(opts);
+      if (run.prepared.length === 2) run.host.writeRunFile = async () => { throw new Error("exec failed"); };
+      return result;
+    };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal((result as { head: string }).head, hex(2));
+  });
+
+  it("still rethrows a usage or time stop from a host call", async () => {
+    const run = fake();
+    const stop = new UncountedStopError("usage limit");
+    run.host.worktree = async () => { throw stop; };
+
+    await assert.rejects(() => runHostReview(run.host, input(run.startHead)), (error: unknown) => error === stop);
   });
 
   it("puts nothing from the reviewer's failure text that is the agent's own in the reason: the reason is host-written", async () => {

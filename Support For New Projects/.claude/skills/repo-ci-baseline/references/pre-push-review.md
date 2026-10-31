@@ -135,7 +135,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   lens, and `host-review.test.mts` fails when `lenses.md` gains, loses or rewords a lens, or the model, effort, tools or round limit differ.
 - Reviewers run in the build's sandbox as `claude --print --tools Read,Grep,Glob`, with `--strict-mcp-config` and deny rules for `.git/review`. Their prompts name no shell, token or `scripts/review.sh`.
 - The host triages the findings in code (merging duplicates, grading security) and has the backend role fix each fixable one behind a failing test. It records a finding `fixed`
-  only with a test whose file the round changed (a reason alone is enough only for a non-security finding), `dismissed` only with a `file:line` reason, and everything else `open`.
+  only with a test whose file the round changed (a reason alone is enough only for a non-security finding), `dismissed` only with a `file:line` reason
+  (never for a Warning or a security finding, which stays open), and everything else `open`.
 - A round that fixed something is followed by checkpoint 3 (the gate) and a round reviewing `fixes.patch`. After 3 such rounds one more round only reviews.
 - Only the host records, in the main checkout, with `prepareRound` and `recordReview` called in-process: it never runs the worktree's `scripts/review.sh`.
 - A usage or time stop leaves the branch for a later round. A reviewer that fails, or a record the ledger refuses, publishes the branch with a PR note and no record.

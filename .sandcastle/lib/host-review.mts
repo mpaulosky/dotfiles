@@ -227,7 +227,7 @@ export type FixOutcome = { id: string; status: "fixed" | "dismissed" | "open"; t
 // Turn the backend's verdicts into final statuses, enforcing the skill's rules. The backend's word is self-reported, so each
 // claim needs what the host can check: `fixed` needs HEAD to have moved and a test whose file the round changed (a Warning, or
 // any security finding, needs the test; another finding may give a reason instead); `dismissed` needs a reason citing
-// `file:line`. Everything else, and every finding that waits for a person, stays open with its suggested fix. Nothing is
+// `file:line` and is never accepted for a Warning or a security finding. Everything else, and every finding that waits for a person, stays open with its suggested fix. Nothing is
 // ever `accepted`: only a person accepts.
 export function applyOutcomes(
   findings: readonly TriageFinding[],
@@ -241,6 +241,9 @@ export function applyOutcomes(
     if (!fixable || outcome === undefined) return open;
     const reason = outcome.reason?.trim() ? outcome.reason.trim() : null;
     if (outcome.status === "dismissed") {
+      // A Warning or a security finding is never cleared on the backend's word alone: the host can't check the line it cites, so the
+      // finding stays open, counted in the PR note, for a person.
+      if (open.security || open.severity === "warning") return open;
       return reason !== null && /\S+:\d+/.test(reason) ? { ...open, status: "dismissed", test: null, reason, fix: null } : open;
     }
     if (outcome.status !== "fixed" || !headAdvanced) return open;
@@ -312,6 +315,24 @@ type ReviewerFailure = { lens: string; what: string };
 export async function runHostReview(
   host: HostReviewHost,
   input: { issue: { number: number; title: string; body: string }; branch: string; main: string; startHead: string },
+): Promise<HostReviewResult> {
+  const progress = { head: input.startHead };
+  try {
+    return await runRounds(host, input, progress);
+  } catch (error) {
+    if (error instanceof UncountedStopError) throw error;
+    // Any host step (reading the skill files, the sandbox, git) that throws ends the review as failed, so the finished and gated work
+    // is still published with a note. The reason is host-written: the error's own text may hold an agent's words.
+    host.log(`  ✗ the local review failed: a host step threw: ${(error as Error).message}`);
+    return { status: "failed", head: progress.head, reason: "a step of the review on the host failed" };
+  }
+}
+
+// The rounds. `progress.head` is the last commit the gate passed on, for a failure that comes from outside them.
+async function runRounds(
+  host: HostReviewHost,
+  input: { issue: { number: number; title: string; body: string }; branch: string; main: string; startHead: string },
+  progress: { head: string },
 ): Promise<HostReviewResult> {
   const { issue, branch, main } = input;
   const skill = host.readSkillFiles();
@@ -409,6 +430,7 @@ export async function runHostReview(
     const gated = await host.gate();
     if (gated === undefined) return { status: "gate failed" };
     head = gated;
+    progress.head = gated;
   }
 }
 

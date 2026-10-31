@@ -64,6 +64,60 @@ describe("developer roles across stacks", () => {
   });
 });
 
+// The host's secret scan (lib/scan.mts) refuses a commit whose added lines match a secret's shape and cannot tell a fixture from a secret, so
+// the roles that write tests build such strings at run time (a tester's fake token stopped an issue from being published). The rule lives in
+// the shared rules, which every role reads, not in each role's prompt.
+describe("secret-shaped test fixtures", () => {
+  const seedRules = new URL(
+    "../../Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/.sandcastle/roles/shared-rules.md",
+    import.meta.url,
+  );
+  const ruleCopies = [
+    ["dotfiles' shared rules", () => read("roles/shared-rules.md")],
+    ["the Template's Seed shared rules", () => readFileSync(seedRules, "utf8")],
+  ] as const;
+
+  for (const [name, rules] of ruleCopies) {
+    it(`tells the roles in ${name} to build a secret-shaped test string at run time, with the example`, () => {
+      const text = rules();
+
+      assert.match(text, /secret/i);
+      assert.match(text, /at run time/);
+      assert.ok(text.includes('`${"gh"}p_${"A".repeat(36)}`'), "the run-time token example is missing");
+      assert.match(text, /GitHub token/);
+      assert.match(text, /API key/);
+    });
+
+    it(`tells the roles in ${name} never to write the whole shape in a source line, a fixture or a comment`, () => {
+      const text = rules();
+
+      assert.match(text, /never/i);
+      assert.match(text, /source line/);
+      assert.match(text, /fixture/);
+      assert.match(text, /comment/);
+    });
+
+    it(`says in ${name} that the host scans every commit's added lines, a match stops the issue and a later commit doesn't clear it`, () => {
+      const text = rules();
+
+      assert.match(text, /scans every commit/);
+      assert.match(text, /added lines/);
+      assert.match(text, /not (?:be )?published|from being published/);
+      assert.match(text, /later commit does not clear it|later commit doesn't clear it/);
+    });
+  }
+
+  it("reaches the tester and the backend through the shared rules, not a copy in each role's prompt", () => {
+    for (const role of ["tester", "backend"]) {
+      const prompt = read(`roles/${role}.md`);
+
+      assert.match(prompt, /\{\{SHARED_RULES\}\}/, role);
+      assert.ok(!prompt.includes('"A".repeat(36)'), `${role} carries its own copy of the rule`);
+      assert.doesNotMatch(prompt, /secret-shaped/, role);
+    }
+  });
+});
+
 // Issue #72: the optional roles the planner picks, and the design note the
 // architect passes to the roles after it.
 describe("optional role prompts", () => {

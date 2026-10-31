@@ -28,9 +28,10 @@
 // one decided. It is git-ignored and never published, like the ledgers, and
 // `security` lists it for the reviews, by id, status, lens and path only.
 //
-// Run as a script: `scripts/review.sh <command>` (see USAGE below). Sandcastle
-// doesn't run this review yet; the module lives in .sandcastle/lib/ for its
-// type-check and tests.
+// Run as a script: `scripts/review.sh <command>` (see USAGE below). For a branch
+// Sandcastle builds, the host runs the rounds itself (lib/host-review.mts) and
+// calls prepareRound and recordReview in-process, in the main checkout, never
+// the sandbox's scripts/review.sh; the module lives in .sandcastle/lib/ too.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -351,11 +352,12 @@ function isAncestor(cwd: string, ancestor: string, commit: string): boolean {
   }
 }
 
-// Where this branch left origin/main. Throws when there's no origin/main: the
-// review can't say what the branch changed, so the check fails closed.
-export function mergeBase(cwd: string): string {
+// Where `head` (HEAD by default) left `main` (origin/main by default). Throws
+// when there's no such main: the review can't say what the branch changed, so
+// the check fails closed.
+export function mergeBase(cwd: string, main: string = "origin/main", head: string = "HEAD"): string {
   try {
-    return git(cwd, "merge-base", "origin/main", "HEAD");
+    return git(cwd, "merge-base", main, head);
   } catch (error) {
     throw new Error("can't find where this branch left origin/main: run `git fetch origin main` first", { cause: error });
   }
@@ -645,6 +647,27 @@ export function takenIds(cwd: string, base: string, head: string = headCommit(cw
   return Math.max(highestId(replaced), ...branchLedgers(cwd, base, head).map(({ ledger }) => highestId(ledger)));
 }
 
+// What one review round reads: the whole diff, the fixes since the round before (a later round only), the key the diff
+// has and the commits it was made between. Both the CLI's `prepare` and the host's review (lib/host-review.mts) call
+// prepareRound, so they cannot diverge.
+export type PreparedRound = { patch: Buffer; fixes: Buffer | undefined; key: string; head: string; base: string };
+
+// The body of `prepare` without its file I/O: `head` (HEAD by default) against
+// where it left `main` (origin/main by default), plus, for a later round, the
+// fixes since `since.commit`. `since.preparedHead` is the HEAD the round before
+// read, which `fixesPatch` checks `since.commit` against. Throws an Error with
+// `prepare`'s message when the fixes can't be told.
+export function prepareRound(
+  cwd: string,
+  { main = "origin/main", head = headCommit(cwd), since }: { main?: string; head?: string; since?: { commit: string; preparedHead: string | undefined } },
+): PreparedRound {
+  const base = mergeBase(cwd, main, head);
+  const patch = reviewPatch(cwd, base, head);
+  const fixes = since === undefined ? undefined : fixesPatch(cwd, since.preparedHead, since.commit, base, head, main);
+  if (typeof fixes === "string") throw new Error(fixes);
+  return { patch, fixes, key: patchKey(patch), head, base };
+}
+
 // Record a review of HEAD's diff, replacing any ledger at the same diff.
 // Refuses a dirty worktree, and a HEAD that isn't the code the last round
 // reviewed: the review would vouch for code it never read. Also refuses any id
@@ -665,19 +688,23 @@ export function recordReview(
   input: ReviewInput,
   now: Date = new Date(),
   taken: typeof takenIds = takenIds,
-  { slug = REPO_SLUG, onSecurity }: { slug?: string; onSecurity?: (outcome: SecurityOutcome) => void } = {},
+  { slug = REPO_SLUG, onSecurity, at }: { slug?: string; onSecurity?: (outcome: SecurityOutcome) => void; at?: { head: string; branch: string } } = {},
 ): Ledger {
   const parsed = reviewInputSchema.parse(input);
   // The security record is local and not code (see security-record.mts): an untracked README, or a symlink put in its
   // place, isn't a change HEAD fails to vouch for. Tracked changes there still count.
-  const dirty = git(cwd, "status", "--porcelain", "--untracked-files=all")
-    .split("\n")
-    .filter((line) => !/^\?\? \.security(\/|$)/.test(line))
-    .join("\n");
-  if (dirty !== "") {
-    throw new Error(`the worktree has uncommitted changes, so the review can't vouch for HEAD:\n${dirty}`);
+  // With `at` the caller names the commit and branch (the host's review of a sandbox's worktree, which it has checked is clean at that
+  // commit), so this checkout's own worktree and HEAD are not what is vouched for.
+  if (at === undefined) {
+    const dirty = git(cwd, "status", "--porcelain", "--untracked-files=all")
+      .split("\n")
+      .filter((line) => !/^\?\? \.security(\/|$)/.test(line))
+      .join("\n");
+    if (dirty !== "") {
+      throw new Error(`the worktree has uncommitted changes, so the review can't vouch for HEAD:\n${dirty}`);
+    }
   }
-  const head = headCommit(cwd);
+  const head = at === undefined ? headCommit(cwd) : git(cwd, "rev-parse", "--verify", `${at.head}^{commit}`);
   const key = diffKey(cwd, base, head);
   if (key !== parsed.reviewedKey || !isReviewedCode(cwd, parsed.reviewedHead, base, head)) {
     throw new Error("HEAD isn't the code the last review round read: commits landed after it started. Review again before recording.");
@@ -685,7 +712,7 @@ export function recordReview(
   let ledger: Ledger = {
     version: 1,
     key,
-    branch: git(cwd, "branch", "--show-current"),
+    branch: at === undefined ? git(cwd, "branch", "--show-current") : at.branch,
     base,
     head,
     recordedAt: now.toISOString(),
@@ -996,16 +1023,17 @@ export function spliceReviewNotes(body: string, notes: string): string {
 // HEAD the last prepare in `dir` printed (it would leave fixes unread; an
 // earlier one only rereads more, as when a round is prepared twice), a merge
 // of main since (the patch would hold main's changes), or no fixes at all.
-function fixesPatch(cwd: string, dir: string, since: string, base: string, head: string): Buffer | string {
+// `preparedHead` is the HEAD that prepare printed (`dir`'s `head` file for the
+// CLI), and `main` what the branch is compared with.
+function fixesPatch(cwd: string, preparedHead: string | undefined, since: string, base: string, head: string, main: string): Buffer | string {
   if (!isAncestor(cwd, since, head)) {
     return `${since} isn't one of HEAD's commits: give the HEAD prepare printed in the round before. After an amend or a rebase there's none: start again at round 1 (prepare without <since>).`;
   }
-  const headFile = join(dir, "head");
-  const before = existsSync(headFile) ? readFileSync(headFile, "utf8").trim() : undefined;
+  const before = preparedHead;
   if (before === undefined || !isAncestor(cwd, since, before)) {
     return `${since} is later than the HEAD prepare printed in the round before (${before ?? "none in this folder"}): give that one, so no fix goes unread.`;
   }
-  if (git(cwd, "merge-base", "origin/main", since) !== base) {
+  if (git(cwd, "merge-base", main, since) !== base) {
     return "main was merged in since the round before, so the fixes can't be told from main's changes: start again at round 1.";
   }
   const fixes = reviewPatch(cwd, since, head);
@@ -1096,17 +1124,15 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
         // A fixes patch is only ever this prepare's: an earlier round's would
         // have the reviewers read old fixes.
         rmSync(join(rest[0], "fixes.patch"), { force: true });
-        const head = headCommit(cwd);
-        const base = mergeBase(cwd);
-        const patch = reviewPatch(cwd, base, head);
-        const fixes = rest[1] === undefined ? undefined : fixesPatch(cwd, rest[0], rest[1], base, head);
-        if (typeof fixes === "string") return fail(fixes);
+        const headFile = join(rest[0], "head");
+        const preparedHead = existsSync(headFile) ? readFileSync(headFile, "utf8").trim() : undefined;
+        const round = prepareRound(cwd, rest[1] === undefined ? {} : { since: { commit: rest[1], preparedHead } });
         mkdirSync(rest[0], { recursive: true });
-        writeFileSync(join(rest[0], "diff.patch"), patch);
-        if (fixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), fixes);
+        writeFileSync(join(rest[0], "diff.patch"), round.patch);
+        if (round.fixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), round.fixes);
         // The HEAD this round reads, for the next round's fixesPatch.
-        writeFileSync(join(rest[0], "head"), `${head}\n`);
-        out(`${patchKey(patch)}\n${head}`);
+        writeFileSync(join(rest[0], "head"), `${round.head}\n`);
+        out(`${round.key}\n${round.head}`);
         return 0;
       }
       case "check": {

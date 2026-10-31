@@ -86,6 +86,15 @@ describe("gateFixerPromptArgs", () => {
     assert.equal(args.CHECKPOINT, "2");
     assert.equal(args.GATE_OUTPUT, gateOutput);
   });
+
+  // The Seed gate-fixer prompt knows two checkpoints; the gate after the host-side review's fixes (checkpoint 3) is a repair-only one
+  // like the second, so the fixer is told it is at the second.
+  it("tells the gate-fixer a gate after the review's fixes is at checkpoint 2, the repair-only one it knows", () => {
+    const args = gateFixerPromptArgs(issue, "feature/3-add-a-thing", 3, "red");
+
+    assert.equal(args.CHECKPOINT, "2");
+    assert.equal(args.GATE_OUTPUT, "red");
+  });
 });
 
 // Covers "After an architect run, the issue has a comment with the design

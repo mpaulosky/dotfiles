@@ -3,10 +3,11 @@
 // Nothing is merged locally: every change reaches main through a reviewed PR.
 
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { isRoleTimeout, runRoleInSandbox, uiEnabled } from "./agents.mts";
+import { isRoleTimeout, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
 import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
 import {
@@ -23,11 +24,13 @@ import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
+import { openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs, reviewerPromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
+import { mergeBase, prepareRound, recordReview, takenIds } from "./review-ledger.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git } from "./shell.mts";
@@ -108,6 +111,7 @@ export async function publish(
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
   createPullRequest: (branch: string, title: string, body: string) => string = openPullRequest,
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
+  reviewNote = "",
 ): Promise<string> {
   await retryOnServerError(() => push(branch, commit), wait);
   const reviewFailedNote = "⚠️ The review step failed, so no agent has reviewed this PR.";
@@ -128,7 +132,9 @@ export async function publish(
         // File names are the agents' to choose, so they go in a fence that nothing in them can close.
         textBlock(checkChanges.join("\n"))
       : "";
-  const body = `${PR_MARKER}\nCloses #${issue.number}\n\n${description}${docsNote}${checkNote}`;
+  // The host-side review's note (lib/host-review.mts): what it left open, or that it didn't finish.
+  const reviewSection = reviewNote === "" ? "" : `\n\n${reviewNote}`;
+  const body = `${PR_MARKER}\nCloses #${issue.number}\n\n${description}${docsNote}${checkNote}${reviewSection}`;
   // A retry after a create that GitHub carried out but answered with an error
   // finds that PR rather than open a second one: openPullRequest looks for an
   // open PR from the branch first.
@@ -381,6 +387,25 @@ export type BuildHost = {
   // createBranchAt left when the push of the build's commits was then
   // refused. A branch that moved is left alone.
   deleteBranchAt(branch: string, commit: string): void;
+  // Runs the pre-push review's rounds on the host (lib/host-review.mts) once checkpoint 2's gate has passed on `startHead`, against
+  // `main`, and records them. Rejects with UncountedStopError for a usage or time stop. Only the host records: the sandbox's agents
+  // get no shell on the ledger, no token and no scripts/review.sh.
+  localReview(args: LocalReviewArgs): Promise<HostReviewResult>;
+};
+
+// What localReview is given: the build's sandbox and the commit and main to review, plus what the review needs of the build.
+export type LocalReviewArgs = {
+  sandbox: sandcastle.Sandbox;
+  issue: Pick<SandcastleIssue, "number" | "title" | "body">;
+  branch: string;
+  main: string;
+  startHead: string;
+  // Checkpoint 3: the gate, with the gate-fixer while it is red, after a round's fixes. The commit it passed on, or undefined when it
+  // stayed red (the build's failure is recorded by then).
+  gate(): Promise<string | undefined>;
+  // Hands the build the commits the review's roles made, for its report.
+  addCommits(commits: { sha: string }[]): void;
+  limits: RunLimits;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no
@@ -577,7 +602,97 @@ const liveHost: BuildHost = {
     moveToLocalQueue(issueNumber, branch, detail, change, createdAtBase),
   deleteBranchAt: (branch, commit) =>
     void git("push", "--quiet", `--force-with-lease=refs/heads/${branch}:${commit}`, "origin", `:refs/heads/${branch}`),
+  localReview: (args) => runLocalReview(args),
 };
+
+// The skill files the host-side review reads, from the main checkout and never the worktree: the worktree is the branch's, so a
+// branch could edit the Bar, a lens or the reviewer's instructions to go easy on itself.
+function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
+  const read = (path: string) => readFileSync(join(checkout, path), "utf8");
+  const skill = ".claude/skills/pre-push-review";
+  const severities = /^## Severities\n[\s\S]*?(?=^## )/m.exec(read(`${skill}/SKILL.md`))?.[0];
+  if (severities === undefined) throw new Error(`${skill}/SKILL.md has no Severities section`);
+  let repoLenses: string | undefined;
+  try {
+    const own = read(".claude/skills/code-review/SKILL.md");
+    // Only a file that holds a lens table of the skill's shape: the repository's code-review skill may hold nothing of the kind.
+    if (/^\|\s*Lens\s*\|\s*Applies to\s*\|/im.test(own)) repoLenses = own;
+  } catch {
+    // The repository has no code-review skill of its own, which is allowed.
+  }
+  return {
+    lenses: read(`${skill}/lenses.md`),
+    bar: read(`${skill}/review-bar.md`),
+    severities,
+    agentBody: read(".claude/agents/pre-push-reviewer.md").replace(/^---\n[\s\S]*?\n---\n/, ""),
+    ...(repoLenses === undefined ? {} : { repoLenses }),
+  };
+}
+
+// The host-side review's world for one build: the skill's files and the ledger from the main checkout, the reviewers and the backend
+// role in the build's sandbox. The host never runs the worktree's scripts/review.sh or its git: prepareRound and recordReview run in
+// the main checkout, on commits the sandbox made (the objects are shared), so no agent-written code runs on the host and no agent
+// reaches the ledger. The sandbox mounts an empty folder over .git/review and has no GitHub token.
+export function liveReviewHost(args: LocalReviewArgs, checkout: string = process.cwd()): HostReviewHost {
+  const { sandbox, issue, main, limits } = args;
+  const runRel = `.sandcastle/work/${issue.number}/review`;
+  const outcomesFile = `${runRel}/outcomes.json`;
+  const baseOf = (head: string) => mergeBase(checkout, main, head);
+  return {
+    readSkillFiles: () => readSkillFiles(checkout),
+    worktree: async () => {
+      const result = await sandbox.exec("git rev-parse --show-toplevel");
+      const path = result.stdout.trim();
+      if (result.exitCode !== 0 || !path.startsWith("/")) throw new Error("the sandbox's worktree path can't be read");
+      return path;
+    },
+    prepare: (opts) => prepareRound(checkout, opts),
+    takenIds: (head) => takenIds(checkout, baseOf(head), head),
+    writeRunFile: async (path, content) => {
+      // Only the run's own folder, which the sandbox git-ignores (.sandcastle/work/).
+      if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only write under ${runRel}/, not ${path}`);
+      const written = await sandbox.exec(`mkdir -p ${shellWord(runRel)} && cat > ${shellWord(path)}`, { stdin: content.toString("utf8") });
+      if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
+    },
+    runReviewer: async (_reviewer, prompt) => {
+      const run = await runRoleInSandbox(sandbox, "pre-push-reviewer", { prompt }, limits, {
+        tools: REVIEWER_TOOLS,
+        denied: LEDGER_DENIED_TOOLS,
+        strictMcp: true,
+      });
+      return run.stdout;
+    },
+    runFixer: async (prompt) => {
+      // An earlier round's outcomes must not be read as this one's.
+      await sandbox.exec(`rm -f ${shellWord(outcomesFile)}`);
+      const run = await runRoleInSandbox(sandbox, "backend", { prompt }, limits, { denied: LEDGER_DENIED_TOOLS });
+      args.addCommits(run.commits);
+    },
+    readOutcomes: async () => {
+      const read = await sandbox.exec(`cat ${shellWord(outcomesFile)} 2>/dev/null`);
+      return read.exitCode === 0 ? read.stdout : undefined;
+    },
+    head: () => headOf(sandbox),
+    changedFiles: (from, to) =>
+      git("diff", "--name-only", "-z", "--no-renames", from, to)
+        .split("\0")
+        .filter((file) => file !== ""),
+    gate: () => args.gate(),
+    record: (input, at) =>
+      recordReview(checkout, baseOf(at.head), input, undefined, undefined, {
+        at,
+        onSecurity: (outcome) => {
+          for (const warning of outcome.warnings) console.error(`  ⚠ .security: ${terminalText(warning)}`);
+        },
+      }),
+    log: (line) => console.log(`  #${issue.number} ${line.trimStart()}`),
+  };
+}
+
+// The live local review of a built branch: the pre-push-review skill's rounds, run by the host over the build's sandbox.
+export function runLocalReview(args: LocalReviewArgs): Promise<HostReviewResult> {
+  return runHostReview(liveReviewHost(args), { issue: args.issue, branch: args.branch, main: args.main, startHead: args.startHead });
+}
 
 // `value` as one single-quoted shell word, for the commit and branch names
 // buildIssue puts in a sandbox command and the git identity setGitIdentity
@@ -762,11 +877,11 @@ async function buildMarkedIssue(
   // attempts, nothing is published: the branch keeps its commits, and the
   // issue's failed build attempt is recorded with the tail of the gate output.
   // A gate-fixer run that stopped with UncountedStopError is rethrown.
-  async function gatePasses(checkpoint: Checkpoint): Promise<string | undefined> {
+  async function gatePasses(checkpoint: Checkpoint, mergedMain?: string): Promise<string | undefined> {
     const result = await runCheckpoint(
       checkpoint,
       {
-        gate: () => runGate(sandbox, { base }),
+        gate: () => runGate(sandbox, { base, ...(mergedMain === undefined ? {} : { mergedMain }) }),
         fix: async (at, gateOutput) => {
           const fixer = await runRoleInSandbox(
             sandbox,
@@ -1159,8 +1274,36 @@ async function buildMarkedIssue(
 
     const checkpoint2 = await checkpoint2Passes();
     if (checkpoint2 === undefined) return unpublished("gate failed", "checkpoint 2");
-    const { gated } = checkpoint2;
+    let gated = checkpoint2.gated;
     const mergedMain = trustedMergedMain(checkpoint2.mergedMain);
+
+    // The pre-push review's rounds, on the host (lib/host-review.mts), on the commit checkpoint 2 passed on. A round that fixes
+    // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage or
+    // time stop leaves the branch for a later round (UncountedStopError); a review that can't finish publishes with a note.
+    let reviewNote = "";
+    const review = await host.localReview({
+      sandbox,
+      issue: { number: issue.number, title: issue.title, body: issue.body },
+      branch,
+      main: checkpoint2.mergedMain ?? base,
+      startHead: gated,
+      gate: () => gatePasses(3, mergedMain),
+      addCommits: (made) => void commits.push(...made),
+      limits: host.limits,
+    });
+    if (review.status === "gate failed") return unpublished("gate failed", "checkpoint 3");
+    if (review.status === "failed") {
+      console.error(`  ⚠ #${issue.number}: the local review failed (${terminalText(review.reason)}), publishing without a recorded review.`);
+      reviewNote = `⚠️ The local review didn't finish (${review.reason}), so this branch has no recorded review.`;
+    } else {
+      gated = review.head;
+      reviewNote = openFindingsNote(review.ledger);
+      // The reviewers' words are an agent's: the note goes out only if the host's public-text check leaves it as it is.
+      if (reviewNote !== "" && host.publicError(reviewNote) !== reviewNote) {
+        log("the local review's open findings hold text that isn't safe to publish, so the PR gets no note on them");
+        reviewNote = "";
+      }
+    }
 
     // The push is public, and the sandbox holds the Claude token or API key.
     // The comment doesn't say where the secret is, since the issue is public
@@ -1194,7 +1337,19 @@ async function buildMarkedIssue(
     const checkChanges = await changedCheckFiles(gated, mergedMain);
     const branchAtBase = await triedCreatingBranchAtBase(gated);
     try {
-      const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody, checkChanges);
+      const prUrl = await host.publish(
+        issue,
+        branch,
+        gated,
+        reviewed,
+        docsFailed,
+        prBody,
+        checkChanges,
+        undefined,
+        undefined,
+        undefined,
+        reviewNote,
+      );
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
     } catch (error) {
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${terminalText(String(error))}`);

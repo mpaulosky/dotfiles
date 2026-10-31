@@ -45,7 +45,7 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   push, which leaves the Apply commit on `chore/reapply-baseline` unpushed. Review it in that worktree with `/pre-push-review`, then run `reapply.sh` again: step 1
   carries the never-pushed branch on. A finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.
 - `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
-  Sandcastle's own reviewer role stands in there, and running this review in a sandbox is not designed yet.
+  the host runs the review's rounds on a built branch itself, after checkpoint 2 ([below](#sandcastle-runs-the-review-on-the-host)), so the sandbox's gate need not.
 - Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
   token, only Read, Grep and Glob. Those still reach any file the person can read, so a reviewer's answer is data to check before anything of it is published.
 
@@ -133,9 +133,25 @@ A repo that already has Sandcastle:
    repo's `code-review` skill, not into the Owned `lenses.md` or `review-bar.md` (the next Apply reverts those): to change them, change the Template first.
 5. If the repo's CLAUDE.md or CONTRIBUTING repeats the thread-reply rules, replace them with a link to `docs/PROCESS.md`.
 
+## Sandcastle runs the review on the host
+
+A branch Sandcastle builds gets this review's rounds after the reviewer role and a passing checkpoint 2 (`lib/host-review.mts`, `lib/host-review-prompts.mts`):
+
+- The host starts the same reviewers `/pre-push-review` does: the Bar and one per lens whose "Applies to" matches a changed file, read from the main checkout's
+  `lenses.md`, `review-bar.md`, `SKILL.md` and `pre-push-reviewer.md` (never the worktree's, which the branch controls), plus a repo's own lenses. `LENS_APPLIES` holds a path rule per
+  lens, and `host-review.test.mts` fails when `lenses.md` gains, loses or rewords a lens, or the model, effort, tools or round limit differ.
+- Reviewers run in the build's sandbox as `claude --print --tools Read,Grep,Glob`, with `--strict-mcp-config` and deny rules for `.git/review`. Their prompts name no shell, token or `scripts/review.sh`.
+- The host triages the findings in code (merging duplicates, grading security) and has the backend role fix each fixable one behind a failing test. It records a finding `fixed`
+  only with a test whose file the round changed (a reason alone is enough only for a non-security finding), `dismissed` only with a `file:line` reason, and everything else `open`.
+- A round that fixed something is followed by checkpoint 3 (the gate) and a round reviewing `fixes.patch`. After 3 such rounds one more round only reviews.
+- Only the host records, in the main checkout, with `prepareRound` and `recordReview` called in-process: it never runs the worktree's `scripts/review.sh`.
+- A usage or time stop leaves the branch for a later round. A reviewer that fails, or a record the ledger refuses, publishes the branch with a PR note and no record.
+  Open non-security findings go in the PR as a note; a security finding is only counted.
+- Not in v1: the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed. It needs a run against a real sandbox before merging, since the tests
+  stub Docker and see `--tools`, `--strict-mcp-config` and `--disallowedTools` only as text.
+
 ## Not in it yet
 
-- **Sandcastle running the review.** Its builds skip the check and keep their own reviewer role.
 - **Claude Review reviewing only what a push changed.** Claude Review now opens findings only for what a local review can't check and reads the PR's
   `## Review notes` as accepted findings ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#claude-review-after-the-local-review)),
   but it still reads the PR's whole diff on every push. A delta needs the diff step's exclusion and holding rules applied to a second diff.

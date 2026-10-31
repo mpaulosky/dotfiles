@@ -22,8 +22,10 @@ That repo moved the heavy review onto the developer's machine, before the push, 
   were written by people who may not have write access.
 - **It is Owned.** The skill, agent, ledger and gate step carry no per-repo values; the repo's name (`REPO_SLUG`) and its own files under Owned patterns
   (`NOT_OWNED_BASELINE_PATHS`) are Seed values in `lib/repo-config.mts`. The ledger lives in `.sandcastle/lib/`, so Apply adds the review where it adds Sandcastle.
-- **Sandcastle's builds skip the check for now** (`GATE_SKIP_REVIEW=1` in every sandbox) and keep their own reviewer role. Its sandboxes see an empty folder over
-  `.git/review`, since ledgers hold accepted security findings that are never published.
+- **Sandcastle's builds get the same rounds, run by the host.** After the reviewer role and a passing checkpoint 2, the host runs this skill's rounds with the skill's
+  own reviewers, verifies and triages their findings, has the backend role fix each fixable one behind a failing test, and records the ledger itself
+  (`lib/host-review.mts`). Every sandbox still sets `GATE_SKIP_REVIEW=1` and sees an empty folder over `.git/review`, since ledgers hold accepted security findings that are
+  never published: no agent gets a shell, a token or the ledger, and the host never runs the worktree's `scripts/review.sh`.
 - **`.claude/settings.json` stays out of the Template.** The deny rules for `.git/review` and credential files are an adapting step instead.
 - **Claude Review (Copilot's backup, run while a PR carries `review:claude`) opens findings only for what a local review can't check, and reads the PR's Review notes**
   ([ADR 0004](0004-claude-review-as-copilots-backup.md#claude-review-after-the-local-review)). Reviewing only what a push changed is not done yet; that is a separate change to `claude-review.yml`.

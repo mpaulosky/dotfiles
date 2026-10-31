@@ -24,7 +24,11 @@ export type Role = (typeof ROLES)[number];
 export type OptInRole = "ui";
 
 // Every role the Owned modules can run: the ones every repo names, plus the opt-in one.
-export type AnyRole = Role | OptInRole;
+export type AnyRole = Role | OptInRole | FixedRole;
+
+// The role that runs the pre-push review's reviewers on the host (lib/host-review.mts). The skill fixes its model and
+// effort, so it is not in ROLES: a repo's ROLE_AGENTS names none.
+export type FixedRole = "pre-push-reviewer";
 
 // The agent and budget lib/repo-config.mts#ROLE_AGENTS gives one role.
 export type RoleAgent = {
@@ -238,6 +242,17 @@ export function describeQueueScope(scope: QueueScope): string {
   return scope.kind === "label" ? `issues labelled ${scope.label}` : `issue #${scope.number} and its PR`;
 }
 
+// The agent and budget of each FixedRole.
+export const FIXED_ROLE_AGENTS: Record<FixedRole, RoleAgent> = {
+  "pre-push-reviewer": { model: "sonnet", effort: "high", maxIterations: 1, timeoutMinutes: 20 },
+};
+
+// After this many review rounds that fixed something, one more round only reviews.
+export const REVIEW_FIX_ROUNDS = 3;
+
+// How many times a reviewer is asked for a valid answer before its review is reported failed.
+export const REVIEWER_ATTEMPTS = 2;
+
 // Marks an issue, or a hand-off pull request (lib/building.mts), while a
 // sandbox is working on it (see lib/build.mts#buildIssue and lib/gate.mts), so
 // a second Sandcastle run doesn't start on the same one too (a near-miss once).
@@ -246,10 +261,12 @@ export const BUILDING_LABEL = "sandcastle:building";
 // How old a sandcastle:building label must be before startup clears it as a
 // crashed run's (see lib/building.mts#clearStaleBuildingLabels). It outlasts
 // any real build: every role's timeoutMinutes, even with two gate-fixer
-// attempts at each of the two checkpoints, adds up to well under 6 hours.
+// attempts at each of the two checkpoints, plus the host-side review's rounds
+// (REVIEW_FIX_ROUNDS fixing rounds and one that only reviews, each fixing
+// round's backend run and the gate after it), adds up to well under 12 hours.
 // config.test.mts checks that sum (see BUILD_ROLES), with an hour to spare,
 // stays below it.
-export const BUILDING_LABEL_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+export const BUILDING_LABEL_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 // Every label from the Labels table that the host, not a human, is
 // responsible for creating. `Sandcastle` is a human's to add. `bug` is

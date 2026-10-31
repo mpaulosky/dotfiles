@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
-import { isRoleTimeout, roleOptions, uiEnabled, runRoleInSandbox, runWithinLimits, withSharedRules } from "./agents.mts";
+import type { AgentProvider } from "@ai-hero/sandcastle";
+import {
+  isRoleTimeout,
+  LEDGER_DENIED_TOOLS,
+  restrictedClaudeCode,
+  REVIEWER_TOOLS,
+  roleAgent,
+  roleOptions,
+  uiEnabled,
+  runRoleInSandbox,
+  runWithinLimits,
+  withSharedRules,
+} from "./agents.mts";
+import { FIXED_ROLE_AGENTS } from "./config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
@@ -193,5 +206,144 @@ describe("withSharedRules", () => {
 
   it("leaves an inline prompt alone, since Sandcastle rejects arguments for one", () => {
     assert.deepEqual(withSharedRules({ prompt: "Say hi" }), { prompt: "Say hi" });
+  });
+});
+
+// The host-side review (lib/host-review.mts) runs the pre-push-review skill's reviewers on text people without write access wrote, so
+// they get only Read, Grep and Glob, and no agent may reach the ledger the host alone records.
+describe("the pre-push reviewer role", () => {
+  const printed = (agent: AgentProvider, prompt = "the prompt") => agent.buildPrintCommand({ prompt, dangerouslySkipPermissions: true });
+
+  it("is read from FIXED_ROLE_AGENTS, which a repo's ROLE_AGENTS doesn't name", () => {
+    assert.deepEqual(roleAgent("pre-push-reviewer"), FIXED_ROLE_AGENTS["pre-push-reviewer"]);
+  });
+
+  it("runs sonnet at high effort for the time FIXED_ROLE_AGENTS gives it", () => {
+    const requested: number[] = [];
+    const options = roleOptions("pre-push-reviewer", (ms) => {
+      requested.push(ms);
+      return new AbortController().signal;
+    });
+    const { command } = printed(options.agent);
+
+    assert.equal(options.name, "pre-push-reviewer");
+    assert.equal(options.maxIterations, 1);
+    assert.deepEqual(requested, [FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes * 60_000]);
+    assert.match(command, /--model 'sonnet'/);
+    assert.match(command, /--effort high/);
+  });
+
+  it("gets exactly Read, Grep and Glob, the tools the agent file gives it", () => {
+    const agentFile = readFileSync(new URL("../../.claude/agents/pre-push-reviewer.md", import.meta.url), "utf8");
+    const tools = /^tools: (.+)$/m.exec(agentFile)?.[1];
+
+    assert.deepEqual([...REVIEWER_TOOLS], ["Read", "Grep", "Glob"]);
+    assert.equal(tools, REVIEWER_TOOLS.join(", "));
+  });
+});
+
+describe("restrictedClaudeCode", () => {
+  const reviewer = { tools: REVIEWER_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true };
+  const command = (restrictions: Parameters<typeof restrictedClaudeCode>[2]) =>
+    restrictedClaudeCode("sonnet", "high", restrictions).buildPrintCommand({ prompt: "the prompt", dangerouslySkipPermissions: true });
+  // The command with every single-quoted word removed: what the shell would see unquoted.
+  const unquoted = (text: string) => text.replace(/'[^']*'/g, "''");
+
+  it("names the reviewer's tools once as --tools Read,Grep,Glob, and no shell", () => {
+    const { command: text } = command(reviewer);
+
+    assert.equal(text.split("--tools").length - 1, 1, text);
+    assert.match(text, /--tools '?Read,Grep,Glob'?(?= |$)/);
+    // The ledger's deny rules name Bash(scripts/review.sh:*), which takes a shell tool away; what is granted holds no shell.
+    assert.doesNotMatch(text.replace(/--disallowedTools(?: '[^']*')+/, ""), /Bash/);
+    assert.match(text, /--model 'sonnet'/);
+    assert.match(text, /--effort high/);
+  });
+
+  it("starts the reviewer without any MCP server but the ones it names", () => {
+    assert.match(command(reviewer).command, /--strict-mcp-config/);
+  });
+
+  it("denies the ledger and scripts/review.sh to the reviewer", () => {
+    const { command: text } = command(reviewer);
+
+    assert.match(text, /--disallowedTools/);
+    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(text.includes(rule), `missing ${rule} in ${text}`);
+  });
+
+  it("keeps the prompt on stdin and the flags before -p -", () => {
+    const result = command(reviewer);
+
+    assert.equal(result.stdin, "the prompt");
+    assert.match(result.command, /^claude --print /);
+    assert.ok(result.command.endsWith(" -p -"), result.command);
+  });
+
+  it("quotes every rule, so a glob or a parenthesis reaches claude and not the shell", () => {
+    assert.doesNotMatch(unquoted(command(reviewer).command), /[()*]/);
+  });
+
+  it("gives the fixer the ledger's deny rules but no --tools list or MCP restriction", () => {
+    const { command: text } = command({ denied: LEDGER_DENIED_TOOLS });
+
+    assert.doesNotMatch(text, /--tools/);
+    assert.doesNotMatch(text, /--strict-mcp-config/);
+    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(text.includes(rule), `missing ${rule} in ${text}`);
+  });
+
+  it("changes nothing when it is given no restrictions", () => {
+    assert.equal(command({}).command, restrictedClaudeCode("sonnet", "high", {}).buildPrintCommand({ prompt: "x", dangerouslySkipPermissions: true }).command);
+    assert.doesNotMatch(command({}).command, /--tools|--disallowedTools|--strict-mcp-config/);
+  });
+
+  it("refuses a command Sandcastle builds in a shape it doesn't know, rather than run an agent without its restrictions", () => {
+    const strange = (_model: string) =>
+      ({ buildPrintCommand: () => ({ command: "node run-claude.js -p -", stdin: "x" }) }) as unknown as AgentProvider;
+
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", reviewer, strange as never), /claude --print/);
+  });
+
+  it("denies Read, Edit and Write on the ledger folder and its files, and running scripts/review.sh", () => {
+    for (const tool of ["Read", "Edit", "Write"]) {
+      assert.ok(LEDGER_DENIED_TOOLS.includes(`${tool}(//**/.git/review)`), `${tool} of the folder`);
+      assert.ok(LEDGER_DENIED_TOOLS.includes(`${tool}(//**/.git/review/**)`), `${tool} of its files`);
+    }
+    assert.ok(LEDGER_DENIED_TOOLS.includes("Bash(scripts/review.sh:*)"));
+  });
+});
+
+describe("runRoleInSandbox with restrictions", () => {
+  const sandboxRecording = (runs: SandboxRunOptions[]) =>
+    ({
+      run: async (options: SandboxRunOptions) => {
+        runs.push(options);
+        return { iterations: [], commits: [] };
+      },
+    }) as unknown as Sandbox;
+  const commandOf = (options: SandboxRunOptions) => options.agent.buildPrintCommand({ prompt: "p", dangerouslySkipPermissions: true }).command;
+
+  it("runs the role's agent with the restrictions it was given", async () => {
+    const runs: SandboxRunOptions[] = [];
+
+    await runRoleInSandbox(
+      sandboxRecording(runs),
+      "pre-push-reviewer",
+      { prompt: "review" },
+      new RunLimits(),
+      { tools: REVIEWER_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true },
+    );
+
+    const command = commandOf(runs[0]!);
+    assert.match(command, /--tools '?Read,Grep,Glob'?(?= |$)/);
+    assert.match(command, /--disallowedTools/);
+    assert.match(command, /--model 'sonnet'/);
+  });
+
+  it("runs a role given no restrictions as before, with no --tools or deny list", async () => {
+    const runs: SandboxRunOptions[] = [];
+
+    await runRoleInSandbox(sandboxRecording(runs), "backend", { prompt: "build" });
+
+    assert.doesNotMatch(commandOf(runs[0]!), /--tools|--disallowedTools|--strict-mcp-config/);
   });
 });

@@ -12,9 +12,10 @@
 # Steps, each stopping the run on failure:
 #   1. Fetch, then prepare the worktree ../<Repo>-worktrees/chore-reapply-baseline:
 #      reuse it while its branch has an open PR, or was never pushed (no
-#      origin/<branch>, no upstream of its own and no PR in any state, as after a
-#      refused first push: a branch pushed once keeps its upstream, and one that
-#      ever had a PR is not new, even when its remote branch is deleted);
+#      origin/<branch>, no upstream of its own and no PR of this repo whose head
+#      it carries, as after a refused first push: a branch pushed once keeps its
+#      upstream, and one a PR carries is not new, even when its remote branch is
+#      deleted; the earlier rounds' PRs, which share the name, don't count);
 #      replace it (worktree and local branch) once its work has merged: main
 #      carries its tip, or else a merged PR's head does, read from GitHub (a
 #      failed read ends the run); refuse it with uncommitted work, or with
@@ -169,17 +170,24 @@ if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && [[ -z "$open_
   # A branch that was never pushed (the gate refused the first push, before any PR existed) has no
   # origin/<branch>, no upstream of its own (push -u sets branch.<b>.merge to refs/heads/<b>; the
   # branch below is created with --no-track, and one made another way that tracks main doesn't
-  # count), and no PR in any state. A missing origin/<branch> alone doesn't say so, since fetch --prune
-  # drops it after a merge or a close deletes the remote branch, and a push without -u sets no upstream:
-  # a PR that was ever opened for the branch is what tells those apart. A never-pushed branch is kept and
-  # carried on: its commits are not lost, and the push below sends them. The PR lookup, like the merged
-  # one, ends the run when gh fails.
+  # count), and no PR that carries it. A missing origin/<branch> alone doesn't say so, since fetch
+  # --prune drops it after a merge or a close deletes the remote branch, and a push without -u sets no
+  # upstream. What tells those apart is a PR of this repo (not a fork's) whose head the branch carries
+  # and main doesn't. The branch name is the same every round, so a PR by name alone would match the
+  # earlier rounds' merged ones: heads that main has, or this branch was never built on, don't count.
+  # A never-pushed branch is kept and carried on: its commits are not lost, and the push below sends
+  # them. The PR lookup, like the merged one, ends the run when gh fails.
   never_pushed=false
   if ! $merged \
     && ! g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     && [[ "$(g config --get "branch.$branch.merge" || true)" != "refs/heads/$branch" ]]; then
-    any_pr="$(gh_ pr list --head "$branch" --state all --limit 1 --json number --jq '.[0].number // empty')"
-    [[ -n "$any_pr" ]] || never_pushed=true
+    pr_heads="$(gh_ pr list --head "$branch" --state all --limit 100 --json headRefOid,isCrossRepository --jq '.[] | select(.isCrossRepository == false) | .headRefOid')"
+    carried=false
+    while IFS= read -r oid; do
+      [[ -n "$oid" ]] || continue
+      if g merge-base --is-ancestor "$oid" "$tip" 2>/dev/null && ! g merge-base --is-ancestor "$oid" origin/main 2>/dev/null; then carried=true; break; fi
+    done <<< "$pr_heads"
+    $carried || never_pushed=true
   fi
   $merged || $never_pushed || die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
   if $merged; then

@@ -52,7 +52,9 @@ reapply="$skill/reapply.sh"
 # owner (acme) and keeps its body in $stub/comment-body, unless
 # $stub/comment-fails exists. While $stub/comments-fail exists, reading the
 # comments fails. While $stub/merged-fails exists, listing the merged PRs fails.
-# $stub/all-prs is the number of a PR in any state (a closed one) for the branch.
+# $stub/all-prs is the JSON list of the PRs in any state for the branch name, each
+# {headRefOid, isCrossRepository}; the real jq runs on the --jq argument. While
+# $stub/all-fails exists, listing them fails.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -68,7 +70,9 @@ case "$1 $2" in
       *"--state merged"*)
         if [[ -e "$stub/merged-fails" ]]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
         cat "$stub/merged" 2>/dev/null ;;
-      *"--state all"*) cat "$stub/all-prs" 2>/dev/null ;;
+      *"--state all"*)
+        if [[ -e "$stub/all-fails" ]]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
+        if [[ -s "$stub/all-prs" ]]; then jq -r "$(arg_after --jq "$@")" "$stub/all-prs"; fi ;;
     esac ;;
   "pr create") body_from "$@"; echo "https://github.com/acme/Widget/pull/7" ;;
   "pr view")
@@ -115,7 +119,7 @@ git_q() { git -c core.hooksPath=/dev/null "$@"; }
 reset_gh() {
   : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; : > "$stub/all-prs"; echo '[]' > "$stub/comments.json"
   command rm -f "$stub/already" "$stub/dropped" "$stub/request-fails" "$stub/requests" "$stub/reviews" \
-    "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body" "$stub/merged-fails"
+    "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body" "$stub/merged-fails" "$stub/all-fails"
 }
 
 # ── The repo: a bare origin, its primary checkout on main, and a helper clone
@@ -410,7 +414,7 @@ command rm -f "$stub/merged-fails"
 
 # ── A refused first push leaves a never-pushed branch and no PR: the rerun carries on ─
 # The gate refuses a re-Apply that writes a file it reviews, before any PR exists, so the branch has
-# no origin/<branch>, no upstream and no open PR: the documented recovery (review, then run this
+# no origin/<branch>, no upstream of its own and no PR whose head it carries: the documented recovery (review, then run this
 # again) must not stop at "commits no open or merged PR carries".
 out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
 check "never pushed: the rerun succeeds" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
@@ -434,17 +438,47 @@ check "never pushed, no worktree: the local branch is checked out, not recreated
 check "never pushed, no worktree: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
 
 # A branch pushed without -u has no upstream; once a PR for it closed unmerged and its remote branch
-# was deleted, it still isn't new: a PR in any state refuses it.
+# was deleted, it still isn't new: a PR whose head the branch carries (and main doesn't) refuses it.
 reset_gh
 git -C "$origin" branch -D chore/reapply-baseline >/dev/null
 git -C "$repo" config --unset branch.chore/reapply-baseline.merge
 git -C "$repo" config --unset branch.chore/reapply-baseline.remote
-echo 9 > "$stub/all-prs"
 closed_tip="$(git -C "$wt" rev-parse HEAD)"
+printf '[{"headRefOid":"%s","isCrossRepository":false}]\n' "$closed_tip" > "$stub/all-prs"
 out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
 check "closed PR, no upstream, remote branch deleted: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
 check "closed PR, no upstream, remote branch deleted: nothing pushed" \
   '! git -C "$origin" rev-parse --verify --quiet chore/reapply-baseline >/dev/null && [[ "$(git -C "$wt" rev-parse HEAD)" == "$closed_tip" ]]'
+
+# The branch name is the same every round, so the PRs of earlier rounds (merged, or with a head main
+# already has, or one this clone never saw) say nothing about a new branch: it is still carried on.
+reset_gh
+printf '[{"headRefOid":"%s","isCrossRepository":false},{"headRefOid":"%s","isCrossRepository":false}]\n' \
+  "$(git -C "$repo" rev-parse origin/main)" "$(printf 'a%.0s' {1..40})" > "$stub/all-prs"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "earlier rounds' PRs: the never-pushed branch is carried on" '[[ $rc -eq 0 ]] && grep -q "was never pushed; carrying it on" <<< "$out"'
+check "earlier rounds' PRs: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
+
+# A PR from a fork with this branch name is not this repo's: it can't refuse the carry-on.
+reset_gh
+git -C "$origin" branch -D chore/reapply-baseline >/dev/null
+git -C "$repo" config --unset branch.chore/reapply-baseline.merge
+git -C "$repo" config --unset branch.chore/reapply-baseline.remote
+fork_tip="$(git -C "$wt" rev-parse HEAD)"
+printf '[{"headRefOid":"%s","isCrossRepository":true}]\n' "$fork_tip" > "$stub/all-prs"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a fork's PR of the same name: ignored, the branch is carried on" '[[ $rc -eq 0 ]] && grep -q "was never pushed; carrying it on" <<< "$out"'
+
+# The PR lookup, like the merged one, ends the run when gh fails.
+reset_gh
+git -C "$origin" branch -D chore/reapply-baseline >/dev/null
+git -C "$repo" config --unset branch.chore/reapply-baseline.merge
+git -C "$repo" config --unset branch.chore/reapply-baseline.remote
+touch "$stub/all-fails"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "PR lookup fails: refused" \
+  '[[ $rc -ne 0 ]] && grep -q "HTTP 502" <<< "$out" && ! grep -q "carrying it on\|commits no open or merged PR carries" <<< "$out" && ! grep -q "^pr create" "$stub/gh.log"'
+check "PR lookup fails: nothing pushed" '! git -C "$origin" rev-parse --verify --quiet chore/reapply-baseline >/dev/null'
 
 # A branch that tracks main (made with `git checkout -b ... origin/main`) has an upstream, but not its own:
 # with no origin/<branch> and no PR it is still a never-pushed branch.

@@ -4700,6 +4700,15 @@ test("the exhaustion comment names the commit a clean merge of main sits on, and
   assert.ok(!body.includes("The head `merge1` was not reviewed."), body);
 });
 
+test("the exhaustion comment advises adding review:claude again only where Copilot can't review the head (mpaulosky/dotfiles#378)", async () => {
+  const gone = exhaustionBody(await evaluate(readyPr({ copilotReviews: exhaustedCopilot(), comments: commentsOf(askedBy(ACTIONS, 3600)) })));
+  const available = exhaustionBody(await evaluate(readyPr({ copilotReviews: exhaustedCopilot() })));
+
+  assert.ok(gone.includes(`add \`${CLAUDE_LABEL}\` again`), gone);
+  assert.ok(!available.includes(`add \`${CLAUDE_LABEL}\` again to`) && !available.includes("To start a new loop"), available);
+  assert.ok(available.includes("starts no new loop while Copilot can review the head"), available);
+});
+
 test("the unreviewed head is still merged at an exhausted loop: nothing else about merging changed (mpaulosky/dotfiles#378)", async () => {
   const { merges } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }));
 

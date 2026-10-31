@@ -31,7 +31,7 @@ from datetime import datetime
 
 from landing import (COPILOT, EXHAUSTED_MARKER, GITHUB_ACTIONS, MAX_CLAUDE_ROUNDS, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check,
                      PrState, Thread, claude_off_diff, claude_reviews, copilot_ask, copilot_declined, copilot_reviews, current_loop,
-                     decide, is_claude_review, review_rounds, summarize_checks, thread_opened_by_person, trailing_dirty,
+                     decide, is_claude_review, longest_dirty, review_rounds, summarize_checks, thread_opened_by_person,
                      unreplied_notice, unreplied_threads)
 from settings import read_repo_list
 
@@ -165,7 +165,10 @@ def needs_record(node):
 
 
 def could_be_exhausted(node):
-    """Whether the PR's review loop could be exhausted: MAX_CLAUDE_ROUNDS dirty rounds in a row, before any restart.
+    """Whether the PR's review loop could be exhausted: MAX_CLAUDE_ROUNDS dirty rounds in a row anywhere, before any restart.
+
+    The longest run counts, not the trailing one, as in review_loop(): a restarted loop whose newest rounds are clean
+    or unreviewed has still to be walked (mpaulosky/dotfiles#378).
 
     Claude's reviews count here as if Copilot were gone unless a request is pending, since only the comments say
     whether it is; the exact answer is to_state()'s.
@@ -173,7 +176,7 @@ def could_be_exhausted(node):
     requested = any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested_reviewers(node))
     declined = copilot_declined([((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"))
                                  for review in node["reviews"]["nodes"]])
-    return trailing_dirty(review_rounds(review_records(node), declined, not requested or node["headRefOid"] in declined)) >= MAX_CLAUDE_ROUNDS
+    return longest_dirty(review_rounds(review_records(node), declined, not requested or node["headRefOid"] in declined)) >= MAX_CLAUDE_ROUNDS
 
 
 def needs_comments(node):
@@ -401,11 +404,7 @@ def review_loop(node, rounds, copilot_cant_review):
     permission that can't be read make the loop unread when it reached the cap, so it never is called exhausted
     (reviewLoopState does the same).
     """
-    streak = longest = 0
-    for item in rounds:
-        streak = streak + 1 if item.dirty else 0
-        longest = max(longest, streak)
-    if longest < MAX_CLAUDE_ROUNDS:
+    if longest_dirty(rounds) < MAX_CLAUDE_ROUNDS:
         return rounds, False, False
     comments = node.get("comments")
     events = node.get("labelEvents")

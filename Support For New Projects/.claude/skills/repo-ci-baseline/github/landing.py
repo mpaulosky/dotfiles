@@ -273,6 +273,15 @@ def trailing_dirty(rounds):
     return count
 
 
+def longest_dirty(rounds):
+    """The longest run of dirty rounds in a row anywhere in the rounds (a loop that reached the cap may have been restarted since)."""
+    longest = streak = 0
+    for round_ in rounds:
+        streak = streak + 1 if round_.dirty else 0
+        longest = max(longest, streak)
+    return longest
+
+
 @dataclass(frozen=True)
 class LoopWalk:
     """Where a PR's review loop stands after the walk over its restarts (see current_loop()).

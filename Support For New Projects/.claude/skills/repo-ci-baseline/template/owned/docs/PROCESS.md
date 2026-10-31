@@ -95,9 +95,9 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   comment on the PR (once it is ready) saying whether its head was reviewed and listing every thread and finding still
   open, and merges the PR once its required checks pass and it has no conflict. The threads Copilot and Claude Review
   opened don't hold it, so answer them on the merged PR in a follow-up; a thread opened by a person still does, and the
-  comment says which. Re-Apply PRs are bounded the same way. To start a new loop on a PR that is still open, add
-  `review:claude` again, as a login with write access to the repository (mpaulosky/dotfiles#375,
-  mpaulosky/dotfiles#378); PR Auto-Merge never adds it while that comment is the newest word.
+  comment says which. Re-Apply PRs are bounded the same way. To start a new loop on a PR that is still open and where
+  Copilot can't review the head, add `review:claude` again, as a login with write access to the repository
+  (mpaulosky/dotfiles#375, mpaulosky/dotfiles#378); PR Auto-Merge never adds it while that comment is the newest word.
   `review:claude` is ignored while Copilot can review: it calls Claude in only where Copilot can't (its quota note
   is on the head, or its request didn't register), and PR Auto-Merge takes the label off at once otherwise, whoever
   added it.

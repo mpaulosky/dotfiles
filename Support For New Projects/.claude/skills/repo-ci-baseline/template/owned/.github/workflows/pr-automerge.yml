@@ -1803,9 +1803,11 @@ jobs:
             // null. labelOff: review:claude is off (the removal succeeded, or
             // it was never on); false says it is being removed. restarted: the
             // comment documents a loop an add of the label has just replaced,
-            // so the label is on again for the new loop
-            // (mpaulosky/dotfiles#378).
-            function exhaustionComment(pr, findings, claudeHead, runId, { reviewedHead = null, labelOff = true, restarted = false } = {}) {
+            // so the label is on again for the new loop. cannotReview: Copilot
+            // can't review the head (copilotCannotReview), the only case where
+            // adding the label again starts a new loop, so the advice to add
+            // it is given only then (mpaulosky/dotfiles#378).
+            function exhaustionComment(pr, findings, claudeHead, runId, { reviewedHead = null, labelOff = true, restarted = false, cannotReview = false } = {}) {
               const shortHead = String(pr.headRefOid).slice(0, 7);
               const headSentence = reviewedHead === pr.headRefOid
                 ? `The head \`${shortHead}\` was reviewed.`
@@ -1857,8 +1859,10 @@ jobs:
               const rest = restarted
                 ? `A new review loop has started: \`${CLAUDE_LABEL}\` was added after this one's last round, so the earlier rounds no longer count.`
                 : `\`${CLAUDE_LABEL}\` ${labelOff ? "is off" : "is being removed"}, and the PR merges once its required checks pass, it has ` +
-                  "no conflict and no thread opened by a person is unresolved. To start a new loop while the PR is open, add " +
-                  `\`${CLAUDE_LABEL}\` again.`;
+                  "no conflict and no thread opened by a person is unresolved. " +
+                  (cannotReview
+                    ? `To start a new loop while the PR is open, add \`${CLAUDE_LABEL}\` again.`
+                    : `Claude reviews only where Copilot can't, so adding \`${CLAUDE_LABEL}\` again starts no new loop while Copilot can review the head.`);
               return [
                 "**PR Auto-Merge: the review loop is exhausted.**",
                 `${lead}${headSentence} ${rest} mpaulosky/dotfiles#375`,
@@ -2219,7 +2223,7 @@ jobs:
                 }
                 const documentedOld = await documentExhaustion(
                   pullNumber, pr, { ...loop, documented: false, rounds: loop.oldRounds },
-                  offDiffFindings(found.review), found.claudeHead, { reviewedHead, restarted: true }
+                  offDiffFindings(found.review), found.claudeHead, { reviewedHead, restarted: true, cannotReview: copilotCannotReview(pr) }
                 );
                 if (!documentedOld) {
                   core.info(`Waiting on PR #${pullNumber}: the review loop that ${CLAUDE_LABEL} replaced isn't documented yet.`);
@@ -2321,7 +2325,7 @@ jobs:
                   return;
                 }
                 const labelOff = labelRemoved ?? !pr.labels.nodes.some((label) => label.name === CLAUDE_LABEL);
-                if (!(await documentExhaustion(pullNumber, pr, loop, offDiffFindings(found.review), found.claudeHead, { reviewedHead, labelOff }))) {
+                if (!(await documentExhaustion(pullNumber, pr, loop, offDiffFindings(found.review), found.claudeHead, { reviewedHead, labelOff, cannotReview: copilotCannotReview(pr) }))) {
                   core.info(`Waiting on PR #${pullNumber}: the exhausted review loop isn't documented yet.`);
                   return;
                 }

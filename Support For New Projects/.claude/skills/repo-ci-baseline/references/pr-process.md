@@ -18,8 +18,8 @@ Seed: `docs/CONTRIBUTING.md` (links to `PROCESS.md`) and `.github/dependabot.yml
   (a merge of `main` is never one), dirty when it raised a thread or an off-diff finding, and that the loop is exhausted after `MAX_CLAUDE_ROUNDS` (3) of them in a row.
   PR Auto-Merge then removes `review:claude`, documents the threads still open in one comment (it says when the head was not reviewed) and merges once the checks pass:
   exhaustion and the threads Copilot and Claude opened no longer hold the merge, but a thread opened by a person does (mpaulosky/dotfiles#378).
-  A login with write access adding `review:claude` again to a PR still open starts a new loop ([automerge.md](automerge.md)).
-  `review:claude` is ignored while Copilot can review: Claude reviews only where Copilot can't.
+  A login with write access adding `review:claude` again to a PR still open starts a new loop, but only where Copilot can't review the head ([automerge.md](automerge.md)).
+  `review:claude` is ignored while Copilot can review: Claude reviews only where Copilot can't, and the comment gives the add-it-again advice only then.
 - **PR titles follow the commit format.** The title is the squash commit's subject and the Release's name. The survey
   found lowercase titles in four repos, so the format is a required check (**PR title**), not a guideline.
 - **PR descriptions share one shape.** The template's headings are Why, What changed and Verification, and `Fixes #`.

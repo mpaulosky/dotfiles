@@ -659,13 +659,26 @@ def test_a_pr_that_could_be_exhausted_gets_the_comments_query_even_when_copilot_
     exhausted = dict(pr_node(number=1, reviews=DIRTY3, comments=None), reviewRequests=COPILOT_REQUESTED)
     two = dict(pr_node(number=2, reviews=DIRTY3[:2], comments=None), reviewRequests=COPILOT_REQUESTED)
     clean_last = dict(pr_node(number=3, reviews=[*DIRTY3, round_of(4, dirty=False)], comments=None), reviewRequests=COPILOT_REQUESTED)
-    asked_ids = comments_graphql(monkeypatch, repo(exhausted, two, clean_last), {"PR_1": comments_of(marker_comment())})
+    asked_ids = comments_graphql(monkeypatch, repo(exhausted, two, clean_last), {"PR_1": comments_of(marker_comment()), "PR_3": comments_of(marker_comment())})
     data = st.gh_graphql("owner", "app")
     by_number = {node["number"]: node for node in data["repository"]["pullRequests"]["nodes"]}
 
-    assert asked_ids == ["PR_1"]
-    assert by_number[1]["comments"]["totalCount"] == 1
-    assert by_number[2]["comments"] is None and by_number[3]["comments"] is None
+    # The longest dirty run counts, not the trailing one (review_loop's test): PR 3's loop may have been restarted since
+    # its three dirty rounds, so its comments and label events are read too; PR 2 never reached the cap.
+    assert asked_ids == ["PR_1", "PR_3"]
+    assert by_number[1]["comments"]["totalCount"] == 1 and by_number[3]["comments"]["totalCount"] == 1
+    assert by_number[2]["comments"] is None
+
+
+def test_a_restarted_loop_whose_newest_rounds_are_clean_reads_its_label_events_and_is_not_unread():
+    # d d d, a writer re-adds review:claude, one clean round, then a head nobody has reviewed: the trailing dirty streak is 0,
+    # but the loop reached the cap once, so the comments and events must be read for the walk (mpaulosky/dotfiles#378).
+    clean = (COPILOT_LOGIN, f"{4:040x}", "", {"at": "2026-01-02T03:00:00Z", "threads": 0, "merge": False})
+    node = pr_node(reviews=[*DIRTY3, clean], comments=comments_of(GONE, marker_comment()), events=[relabel("2026-01-02T01:00:00Z")])
+    state = state_of(node)
+
+    assert not state.loop_unread and not state.loop_exhausted
+    assert [item.oid for item in state.rounds] == [f"{4:040x}"]
 
 
 def test_a_failed_comments_query_for_a_pr_that_could_be_exhausted_makes_its_loop_unread(monkeypatch, capsys):

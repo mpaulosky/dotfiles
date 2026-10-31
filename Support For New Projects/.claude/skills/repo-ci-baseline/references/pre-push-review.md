@@ -39,8 +39,9 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   the Owned files that carry behaviour (`REVIEWED_ON_REAPPLY`: `.github/ci/coverage-threshold`, which ci.yml enforces at any value,
   `.claude/rules/sandcastle-hand-off.md`, which loads into every session, and the three `.github/ISSUE_TEMPLATE/` files, whose front matter sets labels and assignees)
   needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files. A re-Apply
-  that writes one (every repo's first one writes the threshold) is reviewed in its `chore/reapply-baseline` worktree with `/pre-push-review` before `reapply.sh`
-  pushes; a finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.
+  that writes one (a repo whose `coverage-threshold` isn't already `80`, or that lacks the file, gets it from its first one) is refused at `reapply.sh`'s first
+  push, which leaves the Apply commit on `chore/reapply-baseline` unpushed. Review it in that worktree with `/pre-push-review`, then run `reapply.sh` again: step 1
+  carries the never-pushed branch on. A finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.
 - `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
   Sandcastle's own reviewer role stands in there, and running this review in a sandbox is not designed yet.
 - Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub

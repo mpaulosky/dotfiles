@@ -51,7 +51,7 @@ reapply="$skill/reapply.sh"
 # $stub/comments.json holds the PR's comments; `pr comment` appends one by the
 # owner (acme) and keeps its body in $stub/comment-body, unless
 # $stub/comment-fails exists. While $stub/comments-fail exists, reading the
-# comments fails.
+# comments fails. While $stub/merged-fails exists, listing the merged PRs fails.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -64,7 +64,9 @@ case "$1 $2" in
   "pr list")
     case "$*" in
       *"--state open"*) cat "$stub/open" 2>/dev/null ;;
-      *"--state merged"*) cat "$stub/merged" 2>/dev/null ;;
+      *"--state merged"*)
+        if [[ -e "$stub/merged-fails" ]]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
+        cat "$stub/merged" 2>/dev/null ;;
     esac ;;
   "pr create") body_from "$@"; echo "https://github.com/acme/Widget/pull/7" ;;
   "pr view")
@@ -111,7 +113,7 @@ git_q() { git -c core.hooksPath=/dev/null "$@"; }
 reset_gh() {
   : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; echo '[]' > "$stub/comments.json"
   command rm -f "$stub/already" "$stub/dropped" "$stub/request-fails" "$stub/requests" "$stub/reviews" \
-    "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body"
+    "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body" "$stub/merged-fails"
 }
 
 # ── The repo: a bare origin, its primary checkout on main, and a helper clone
@@ -372,7 +374,7 @@ reset_gh; touch "$stub/dropped"; git -C "$origin" rev-parse chore/reapply-baseli
 check "ask record: a PR opened by this run with the request dropped gets one comment on #7" \
   '[[ $rc -eq 0 ]] && grep -q "^pr create" "$stub/gh.log" && [[ "$(comments_posted)" -eq 1 ]] && grep -q "^pr comment 7 --body " "$stub/gh.log"'
 
-# ── An unmerged branch with no open PR: refused ─────────────────────────────
+# ── An unmerged branch with no open PR, pushed to the remote: refused ───────
 reset_gh
 printf 'local\n' > "$wt/local.txt"
 git_q -C "$wt" add -A && git_q -C "$wt" commit -q -m "chore: local work"
@@ -381,18 +383,52 @@ out="$("$reapply" --brings '#84' "$repo" 2>&1)" && rc=0 || rc=$?
 check "unmerged: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
 check "unmerged: branch kept" '[[ "$(git -C "$wt" rev-parse HEAD)" == "$tip" ]]'
 
-# ── A refused first push leaves an unpushed branch and no PR: the rerun carries on ─
-# The gate refuses a re-Apply that writes a file it reviews, before any PR exists, so there is no
-# origin/<branch> and no open PR: the documented recovery (review, then run this again) must not
-# stop at "commits no open or merged PR carries".
+# ── A branch pushed once whose remote branch is gone: still refused ─────────
+# `fetch --prune` drops origin/<branch> after a merge or a close deletes it, so a missing remote ref
+# alone can't mean "never pushed": the branch keeps the upstream `push -u` set, and its unmerged
+# commits are refused.
 reset_gh
 git -C "$origin" branch -D chore/reapply-baseline >/dev/null
-unpushed="$(git -C "$wt" rev-parse HEAD)"
+pushed_tip="$(git -C "$wt" rev-parse HEAD)"
 out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
-check "unpushed: the rerun succeeds" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
-check "unpushed: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
-check "unpushed: no commit is lost" 'git -C "$wt" merge-base --is-ancestor "$unpushed" HEAD'
-check "unpushed: the PR is opened" 'grep -q "^pr create" "$stub/gh.log"'
+check "pushed, remote branch deleted: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
+check "pushed, remote branch deleted: branch kept" '[[ "$(git -C "$wt" rev-parse HEAD)" == "$pushed_tip" ]]'
+check "pushed, remote branch deleted: nothing pushed" '! git -C "$origin" rev-parse --verify --quiet chore/reapply-baseline >/dev/null'
+
+# ── A never-pushed branch when the merged-PR lookup fails: refused ──────────
+# The lookup is what tells a merged branch from a new one, so its failure ends the run.
+git -C "$repo" config --unset branch.chore/reapply-baseline.merge
+git -C "$repo" config --unset branch.chore/reapply-baseline.remote
+touch "$stub/merged-fails"
+out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
+check "merged lookup fails: refused" '[[ $rc -ne 0 ]] && ! grep -q "carrying it on" <<< "$out"'
+check "merged lookup fails: branch kept" '[[ "$(git -C "$wt" rev-parse HEAD)" == "$pushed_tip" ]]'
+command rm -f "$stub/merged-fails"
+
+# ── A refused first push leaves a never-pushed branch and no PR: the rerun carries on ─
+# The gate refuses a re-Apply that writes a file it reviews, before any PR exists, so the branch has
+# no origin/<branch>, no upstream and no open PR: the documented recovery (review, then run this
+# again) must not stop at "commits no open or merged PR carries".
+out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
+check "never pushed: the rerun succeeds" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
+check "never pushed: says it carries the branch on" 'grep -q "was never pushed; carrying it on" <<< "$out"'
+check "never pushed: the reuse line names no open PR" 'grep -q "reusing" <<< "$out" && ! grep -q "for open PR" <<< "$out"'
+check "never pushed: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
+check "never pushed: no commit is lost" 'git -C "$wt" merge-base --is-ancestor "$pushed_tip" HEAD'
+check "never pushed: the PR is opened" 'grep -q "^pr create" "$stub/gh.log"'
+
+# The same with the worktree gone and the local branch kept.
+reset_gh
+git -C "$repo" worktree remove "$wt"
+git -C "$origin" branch -D chore/reapply-baseline >/dev/null
+git -C "$repo" config --unset branch.chore/reapply-baseline.merge
+git -C "$repo" config --unset branch.chore/reapply-baseline.remote
+kept_tip="$(git -C "$repo" rev-parse refs/heads/chore/reapply-baseline)"
+out="$("$reapply" --brings '#86' "$repo" 2>&1)" && rc=0 || rc=$?
+check "never pushed, no worktree: the rerun succeeds" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
+check "never pushed, no worktree: the local branch is checked out, not recreated from main" \
+  'git -C "$wt" merge-base --is-ancestor "$kept_tip" HEAD && grep -q "on chore/reapply-baseline from the local branch" <<< "$out" && ! grep -q "from origin/main" <<< "$out"'
+check "never pushed, no worktree: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
 
 # ── Bad arguments ───────────────────────────────────────────────────────────
 check "args: --brings required" '! "$reapply" "$repo" >/dev/null 2>&1'

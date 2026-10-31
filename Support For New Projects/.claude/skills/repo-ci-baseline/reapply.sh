@@ -11,10 +11,12 @@
 #
 # Steps, each stopping the run on failure:
 #   1. Fetch, then prepare the worktree ../<Repo>-worktrees/chore-reapply-baseline:
-#      reuse it while its branch has an open PR, or was never pushed (a refused
-#      first push); replace it (worktree and local branch) once its work has
-#      merged; refuse it with uncommitted work, or with pushed commits no open
-#      or merged PR carries.
+#      reuse it while its branch has an open PR, or was never pushed (no
+#      origin/<branch> and no upstream, as after a refused first push: a branch
+#      pushed once keeps its upstream even when its remote branch is deleted);
+#      replace it (worktree and local branch) once its work has merged, which is
+#      read from GitHub and ends the run when it can't be; refuse it with
+#      uncommitted work, or with commits no open or merged PR carries.
 #   2. Merge origin/chore/reapply-baseline (when it exists), then origin/main,
 #      so the push is never non-fast-forward and the pre-push gate's
 #      up-to-date check passes.
@@ -155,16 +157,22 @@ if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && [[ -z "$open_
   if g merge-base --is-ancestor "$tip" origin/main; then
     merged=true
   else
+    # Read before the loop, so a gh failure ends the run (set -e) rather than reading as "no merged PR".
+    merged_heads="$(gh_ pr list --head "$branch" --state merged --limit 100 --json headRefOid --jq '.[].headRefOid')"
     while IFS= read -r oid; do
       [[ -n "$oid" ]] || continue
       if g merge-base --is-ancestor "$tip" "$oid" 2>/dev/null; then merged=true; break; fi
-    done < <(gh_ pr list --head "$branch" --state merged --limit 100 --json headRefOid --jq '.[].headRefOid')
+    done <<< "$merged_heads"
   fi
-  # A branch the remote never got (the gate refused the first push, before any PR existed) is
-  # kept and carried on: its commits are not lost, and the push below sends them.
-  if ! $merged && g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
-    die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
+  # A branch that was never pushed (the gate refused the first push, before any PR existed) has no
+  # upstream: push -u sets one, and apply's worktree is made with --no-track. A missing origin/<branch>
+  # alone doesn't say so, since fetch --prune drops it after a merge or a close deletes the remote
+  # branch. Such a branch is kept and carried on: its commits are not lost, and the push below sends them.
+  never_pushed=false
+  if ! g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null && [[ -z "$(g config --get "branch.$branch.merge" || true)" ]]; then
+    never_pushed=true
   fi
+  $merged || $never_pushed || die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
   if $merged; then
     if [[ -n "$existing" ]]; then
       echo "── $repo_name: replacing $worktree, whose work has merged"
@@ -187,6 +195,7 @@ else
   mkdir -p "$(dirname "$worktree")"
   if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
     g worktree add --quiet "$worktree" "$branch"
+    base="the local branch"
   else
     g worktree add --quiet --no-track -b "$branch" "$worktree" "$base"
   fi

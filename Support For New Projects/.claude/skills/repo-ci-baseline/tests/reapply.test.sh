@@ -9,6 +9,7 @@
 set -euo pipefail
 
 skill_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+command -v jq >/dev/null || { echo "reapply.test.sh: jq is not installed; skipped" >&2; exit 0; }
 work="$(mktemp -d)"
 trap 'command rm -rf "$work"' EXIT
 
@@ -40,46 +41,78 @@ reapply="$skill/reapply.sh"
 
 # ── A fake gh: answers from files in $stub and logs every call ──────────────
 # $stub/open is the open PR's number (empty for none), $stub/merged the merged
-# PRs' head commits, $stub/body the PR description. Copilot's review request
-# reads back as registered unless $stub/dropped exists (GitHub accepts it and
-# drops it). While $stub/request-fails exists, the request call itself fails
-# and nothing registers.
+# PRs' head commits, $stub/body the PR description. `pr view --json ...` serves
+# canned JSON and runs the real jq on the --jq argument, so reapply.sh's own
+# filters are exercised. Copilot's review request reads back as registered (a
+# request by "Copilot") unless $stub/dropped exists (GitHub accepts it and drops
+# it); while $stub/request-fails exists, the request call itself fails and
+# nothing registers. $stub/requests (one login per line) and $stub/reviews
+# (logins of the reviews of the head) override what the PR holds.
+# $stub/comments.json holds the PR's comments; `pr comment` appends one by the
+# owner (acme) and keeps its body in $stub/comment-body, unless
+# $stub/comment-fails exists. While $stub/comments-fail exists, reading the
+# comments fails.
 mkdir -p "$work/bin"
-cat > "$work/bin/gh" <<EOF
+cat > "$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-stub="$stub"
-printf '%s\n' "\$*" >> "\$stub/gh.log"
-body_from() { while [[ \$# -gt 0 ]]; do [[ "\$1" == --body-file ]] && cp "\$2" "\$stub/body"; shift; done; }
-case "\$1 \$2" in
+stub="@STUB@"
+printf '%s\n' "$*" >> "$stub/gh.log"
+body_from() { while [[ $# -gt 0 ]]; do [[ "$1" == --body-file ]] && cp "$2" "$stub/body"; shift; done; }
+arg_after() { local flag="$1"; shift; while [[ $# -gt 0 ]]; do [[ "$1" == "$flag" ]] && { printf '%s' "$2"; return; }; shift; done; }
+logins_json() { jq -Rn '[inputs | select(length > 0)]'; }
+case "$1 $2" in
   "pr list")
-    case "\$*" in
-      *"--state open"*) cat "\$stub/open" 2>/dev/null ;;
-      *"--state merged"*) cat "\$stub/merged" 2>/dev/null ;;
+    case "$*" in
+      *"--state open"*) cat "$stub/open" 2>/dev/null ;;
+      *"--state merged"*) cat "$stub/merged" 2>/dev/null ;;
     esac ;;
-  "pr create") body_from "\$@"; echo "https://github.com/acme/Widget/pull/7" ;;
+  "pr create") body_from "$@"; echo "https://github.com/acme/Widget/pull/7" ;;
   "pr view")
-    if [[ "\$*" == *"--json headRefOid,reviewRequests,reviews,url"* ]]; then
-      if [[ -e "\$stub/dropped" || -e "\$stub/request-fails" ]]; then echo "0 https://github.com/acme/Widget/pull/7"; else echo "1 https://github.com/acme/Widget/pull/7"; fi
+    if [[ "$*" == *"--json headRefOid,reviewRequests,reviews,url"* ]]; then
+      if [[ -e "$stub/requests" ]]; then requests="$(logins_json < "$stub/requests")"
+      elif [[ -e "$stub/dropped" || -e "$stub/request-fails" ]]; then requests='[]'
+      else requests='["Copilot"]'; fi
+      reviews='[]'
+      [[ -e "$stub/reviews" ]] && reviews="$(logins_json < "$stub/reviews")"
+      json="$(jq -n --argjson rq "$requests" --argjson rv "$reviews" '{
+        headRefOid: "abc123", url: "https://github.com/acme/Widget/pull/7",
+        reviewRequests: ($rq | map({login: .})),
+        reviews: ($rv | map({author: {login: .}, commit: {oid: "abc123"}}))}')"
+      jq -r "$(arg_after --jq "$@")" <<< "$json"
+    elif [[ "$*" == *"--json comments"* ]]; then
+      if [[ -e "$stub/comments-fail" ]]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
+      jq -r "$(arg_after --jq "$@")" <<< "{\"comments\": $(cat "$stub/comments.json")}"
     else
-      cat "\$stub/body"
+      cat "$stub/body"
     fi ;;
+  "pr comment")
+    if [[ -e "$stub/comment-fails" ]]; then echo "HTTP 403: Resource not accessible" >&2; exit 1; fi
+    text="$(arg_after --body "$@")"
+    printf '%s' "$text" > "$stub/comment-body"
+    jq --arg b "$text" '. + [{author: {login: "acme"}, body: $b}]' "$stub/comments.json" > "$stub/comments.tmp"
+    mv "$stub/comments.tmp" "$stub/comments.json" ;;
   "pr edit")
-    body_from "\$@"
-    if [[ "\$*" == *"--add-reviewer"* && -e "\$stub/already" ]]; then
+    body_from "$@"
+    if [[ "$*" == *"--add-reviewer"* && -e "$stub/already" ]]; then
       echo "reviewer already requested" >&2; exit 1
     fi
-    if [[ "\$*" == *"--add-reviewer"* && -e "\$stub/request-fails" ]]; then
+    if [[ "$*" == *"--add-reviewer"* && -e "$stub/request-fails" ]]; then
       echo "GraphQL: Could not add requested reviewers to pull request. (requestReviewsByLogin)" >&2; exit 1
     fi ;;
-  *) echo "fake gh: unexpected \$*" >&2; exit 1 ;;
+  *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
 esac
 EOF
+sed -i "s|@STUB@|$stub|" "$work/bin/gh"
 chmod +x "$work/bin/gh"
 export PATH="$work/bin:$PATH"
 
 # Hooks off for the test's own git calls.
 git_q() { git -c core.hooksPath=/dev/null "$@"; }
-reset_gh() { : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; command rm -f "$stub/already" "$stub/dropped" "$stub/request-fails"; }
+reset_gh() {
+  : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; echo '[]' > "$stub/comments.json"
+  command rm -f "$stub/already" "$stub/dropped" "$stub/request-fails" "$stub/requests" "$stub/reviews" \
+    "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body"
+}
 
 # ── The repo: a bare origin, its primary checkout on main, and a helper clone
 # that plays GitHub (squash merges, update-branch) ──────────────────────────
@@ -239,6 +272,105 @@ check "request fails: never adds review:claude" '! grep -q -- "--add-label" "$st
 check "request fails: warns with gh's message" \
   'grep -q "warning: requesting Copilot.s review on #7 failed: GraphQL: Could not add requested reviewers" <<< "$out"'
 check "request fails: names land.sh as the next step" 'grep -q "next: land.sh acme/Widget#7" <<< "$out"'
+
+# ── The ask record (mpaulosky/dotfiles#384) ─────────────────────────────────
+# A re-Apply PR runs its base's workflows, which are the previous PR Auto-Merge
+# and never record that Copilot was asked. So when the request doesn't register,
+# reapply.sh posts the record as the owner (Claude Review ignores review:claude
+# until the PR carries it); land.sh then adds review:claude. A request that
+# registers needs none.
+marker='<!-- pr-automerge:copilot-asked -->'
+expected_comment="$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import landing; sys.stdout.write(landing.COPILOT_ASKED_COMMENT)' "$skill_dir/github")"
+ci_round=0
+# Another Template change (so the run isn't "nothing to commit") against the PR
+# and the stub as they are; sets out and rc.
+rerun() {
+  ci_round=$((ci_round + 1))
+  printf 'name: CI ask %s\n' "$ci_round" > "$skill/template/owned/.github/workflows/ci.yml"
+  : > "$stub/gh.log"
+  out="$("$reapply" --brings '#90' "$repo" 2>&1)" && rc=0 || rc=$?
+}
+# A fresh PR state, then rerun.
+scenario() { reset_gh; echo 7 > "$stub/open"; rerun; }
+comments_posted() { grep -c '^pr comment ' "$stub/gh.log" || true; }
+marker_comments() { jq '[.[] | select(.body | contains("<!-- pr-automerge:copilot-asked -->"))] | length' "$stub/comments.json"; }
+
+# Criterion 1: a request that registers needs no record.
+scenario
+check "ask record, request registers: exits 0 and says Copilot requested" '[[ $rc -eq 0 ]] && grep -q "Copilot requested" <<< "$out"'
+check "ask record, request registers: no comment posted" '[[ "$(comments_posted)" -eq 0 ]]'
+scenario_reg() { # registers as: $1
+  reset_gh; echo 7 > "$stub/open"; printf '%s\n' "$1" > "$stub/requests"; rerun
+}
+scenario_reg copilot-pull-request-reviewer[bot]
+check "ask record, request by copilot-pull-request-reviewer[bot] registers: no comment posted" '[[ $rc -eq 0 && "$(comments_posted)" -eq 0 ]]'
+reset_gh; echo 7 > "$stub/open"; : > "$stub/requests"; echo copilot-pull-request-reviewer[bot] > "$stub/reviews"; rerun
+check "ask record, a review of the head by copilot-pull-request-reviewer[bot] counts as registered: no comment posted" \
+  '[[ $rc -eq 0 && "$(comments_posted)" -eq 0 ]]'
+
+# Criterion 1: a request that doesn't register gets the record, once.
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped"; rerun
+check "ask record, request dropped: exits 0" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
+check "ask record, request dropped: one comment posted on #7" '[[ "$(comments_posted)" -eq 1 ]] && grep -q "^pr comment 7 --body " "$stub/gh.log"'
+check "ask record, request dropped: the comment is landing.py's ask comment, marker included" \
+  '[[ "$(cat "$stub/comment-body" 2>/dev/null)" == "$expected_comment" && "$expected_comment" == *"$marker" ]]'
+check "ask record, request dropped: the record is by the owner and counts once" '[[ "$(marker_comments)" -eq 1 ]]'
+check "ask record, request dropped: still never adds review:claude" '! grep -q -- "--add-label" "$stub/gh.log"'
+check "ask record, request dropped: the warning says the ask is recorded and land.sh adds review:claude" \
+  'grep -q "didn.t register on #7" <<< "$out" && grep -qi "recorded" <<< "$out" && grep -q "land.sh acme/Widget#7" <<< "$out"'
+# Same PR, run again with the record in place: not posted twice.
+rerun
+check "ask record, re-run: exits 0, still warns the request didn't register" '[[ $rc -eq 0 ]] && grep -q "didn.t register on #7" <<< "$out"'
+check "ask record, re-run: no second comment" '[[ "$(comments_posted)" -eq 0 && "$(marker_comments)" -eq 1 ]]'
+check "ask record, re-run: says the record was already there" 'grep -qi "already recorded" <<< "$out"'
+
+reset_gh; echo 7 > "$stub/open"; touch "$stub/request-fails"; rerun
+check "ask record, request refused: exits 0 and posts one comment, the ask comment" \
+  '[[ $rc -eq 0 && "$(comments_posted)" -eq 1 && "$(cat "$stub/comment-body" 2>/dev/null)" == "$expected_comment" ]]'
+rerun
+check "ask record, request refused, re-run: no second comment" '[[ "$(comments_posted)" -eq 0 && "$(marker_comments)" -eq 1 ]]'
+
+# Only a record by github-actions or the owner counts, as in claude-review.yml.
+seed_comment() { # login, body
+  jq --arg l "$1" --arg b "$2" '. + [{author: {login: $l}, body: $b}]' "$stub/comments.json" > "$stub/comments.tmp"
+  mv "$stub/comments.tmp" "$stub/comments.json"
+}
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped"; seed_comment mallory "$marker"; rerun
+check "ask record: a marker comment by a stranger is no record, so one is posted" '[[ "$(comments_posted)" -eq 1 ]]'
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped"; seed_comment "github-actions[bot]" "$marker"; rerun
+check "ask record: a record by github-actions[bot] counts, so none is posted" '[[ $rc -eq 0 && "$(comments_posted)" -eq 0 ]]'
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped"; seed_comment github-actions "$marker"; rerun
+check "ask record: a record by github-actions counts, so none is posted" '[[ "$(comments_posted)" -eq 0 ]]'
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped"; seed_comment acme "$marker"; rerun
+check "ask record: a record by the owner counts, so none is posted" '[[ "$(comments_posted)" -eq 0 ]]'
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped"; seed_comment acme "a comment with no marker"; rerun
+check "ask record: an owner comment without the marker is no record, so one is posted" '[[ "$(comments_posted)" -eq 1 ]]'
+
+# Copilot is the exact bot: a login that merely contains "copilot" is nobody's request.
+reset_gh; echo 7 > "$stub/open"; echo copilot-x > "$stub/requests"; rerun
+check "ask record: a request by copilot-x is not Copilot's, so the record is posted" '[[ "$(comments_posted)" -eq 1 ]]'
+reset_gh; echo 7 > "$stub/open"; : > "$stub/requests"; echo copilot-x > "$stub/reviews"; rerun
+check "ask record: a review of the head by copilot-x is not Copilot's, so the record is posted" '[[ "$(comments_posted)" -eq 1 ]]'
+reset_gh; echo 7 > "$stub/open"; : > "$stub/requests"; echo not-copilot-pull-request-reviewer[bot] > "$stub/reviews"; rerun
+check "ask record: a review by not-copilot-pull-request-reviewer[bot] is not Copilot's, so the record is posted" '[[ "$(comments_posted)" -eq 1 ]]'
+reset_gh; echo 7 > "$stub/open"; echo myCopilotFork > "$stub/requests"; rerun
+check "ask record: a request by myCopilotFork is not Copilot's, so the record is posted" '[[ "$(comments_posted)" -eq 1 ]]'
+
+# A failing gh never fails the run.
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped" "$stub/comment-fails"; rerun
+check "ask record: a failed post exits 0" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
+check "ask record: a failed post warns with gh's message" \
+  'grep -q "warning: recording the ask for Copilot.s review on #7 failed: HTTP 403: Resource not accessible" <<< "$out"'
+check "ask record: a failed post still names land.sh as the next step" 'grep -q "next: land.sh acme/Widget#7" <<< "$out"'
+reset_gh; echo 7 > "$stub/open"; touch "$stub/dropped" "$stub/comments-fail"; rerun
+check "ask record: an unreadable comment list counts as no record, so the record is posted" '[[ $rc -eq 0 && "$(comments_posted)" -eq 1 ]]'
+check "ask record: an unreadable comment list never adds review:claude" '! grep -q -- "--add-label" "$stub/gh.log"'
+
+# A new PR whose request is dropped gets the record too (the first PR of a repo).
+# (the old branch's work counts as merged, so this run starts a new branch and PR)
+reset_gh; touch "$stub/dropped"; git -C "$origin" rev-parse chore/reapply-baseline > "$stub/merged"; rerun
+check "ask record: a PR opened by this run with the request dropped gets one comment on #7" \
+  '[[ $rc -eq 0 ]] && grep -q "^pr create" "$stub/gh.log" && [[ "$(comments_posted)" -eq 1 ]] && grep -q "^pr comment 7 --body " "$stub/gh.log"'
 
 # ── An unmerged branch with no open PR: refused ─────────────────────────────
 reset_gh

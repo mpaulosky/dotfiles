@@ -705,6 +705,15 @@ for restart_doc in "$automerge_doc" "$adr_0002"; do
 done
 grep -qF -- 'mpaulosky/dotfiles#381' <<<"$header"   || fail "pr-automerge.yml's header must cite mpaulosky/dotfiles#381 where it describes the restart and the 404 permission lookup"
 grep -qE '\b404\b' <<<"$header"   || fail "pr-automerge.yml's header must say a 404 permission lookup counts as no write access (mpaulosky/dotfiles#381)"
+# The re-Apply PR's ask record, and Copilot as the exact bot (mpaulosky/dotfiles#384): a PR runs its base's workflows, so a repo's first
+# re-Apply PR has the previous PR Auto-Merge, which never posts the ask record; reapply.sh posts it when its Copilot request doesn't register.
+for record_doc in "$automerge_doc" "$pr_process" "$skill_dir/references/gotchas.md" "$adr_0004"; do
+  grep -qF -- "\`reapply.sh\` posts the ask record" "$record_doc"     || fail "${record_doc#"$skill_dir"/} must say \`reapply.sh\` posts the ask record on a repo's first re-Apply PR, when its Copilot request doesn't register (mpaulosky/dotfiles#384)"
+done
+grep -qF -- 'mpaulosky/dotfiles#384' "$adr_0004"   || fail "ADR 0004 must cite mpaulosky/dotfiles#384"
+grep -qF -- 'copilot-pull-request-reviewer[bot]' "$claude_review_yml"   || fail "claude-review.yml must name the exact bot, copilot-pull-request-reviewer[bot], that its Copilot step matches (mpaulosky/dotfiles#384)"
+grep -qF -- 'copilot-pull-request-reviewer[bot]' "$automerge_doc"   || fail "references/automerge.md must say Claude Review matches Copilot by its exact login, copilot-pull-request-reviewer[bot] (mpaulosky/dotfiles#384)"
+grep -qiE "records Copilot's ask" "$skill_dir/SKILL.md"   || fail "SKILL.md must say reapply.sh records Copilot's ask when the request doesn't register (mpaulosky/dotfiles#384)"
 # The docs of today's behaviour no longer say a Claude review runs beside Copilot's, or that no thread holds an exhausted loop's merge.
 for current_doc in "$automerge_doc" "$pr_process" "$adr_0002" "$owned/docs/PROCESS.md"; do
   if grep -qE "neither (does|do) the threads still (open|unresolved)|Exhaustion doesn't hold the merge, and neither" "$current_doc"; then

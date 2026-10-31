@@ -10,9 +10,16 @@ name: Claude Review
 # whoever added it, the owner included (no exception), PR Auto-Merge takes it
 # off at once, and this workflow starts no paid review. Its first step reads
 # whether Copilot can review, by PR Auto-Merge's rule (copilotCannotReview),
-# and when it can't tell, no review starts either. The label's only job is to
-# call Claude in where Copilot is out. It runs only on request: while the PR
-# carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) in
+# and when it can't tell, no review starts either. It matches Copilot by the
+# exact bot, copilot-pull-request-reviewer[bot] (and the Bot user "Copilot" as a
+# requested reviewer), never a login that merely contains "copilot"
+# (mpaulosky/dotfiles#384). The ask record that rule reads is posted by PR
+# Auto-Merge, but a PR runs its base branch's workflows, so a repo's first
+# re-Apply PR has the previous PR Auto-Merge, which never posts it:
+# `reapply.sh` posts the ask record (from the owner's login) when its Copilot
+# request doesn't register, and land.sh then adds review:claude. The label's
+# only job is to call Claude in where Copilot is out. It runs only on request:
+# while the PR carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) in
 # either case, as the repo-ci-baseline skill's land.sh (in
 # mpaulosky/dotfiles, not this repo) does, and a person can add at any time
 # (it counts where Copilot is out); a review of a head Copilot reviewed covers
@@ -163,11 +170,19 @@ jobs:
       # (PR Auto-Merge's settle time), no Copilot review request is pending and
       # Copilot hasn't really reviewed the head (a settled ask with no request is
       # also what a finished review leaves behind). Then can_review is false and
-      # the rest of the job runs. When a read fails it is unknown, which skips
-      # like true: PR Auto-Merge's gate wouldn't count a Claude review while
-      # Copilot may review, so a paid review would buy nothing, and the warning
-      # says to push or add the label again once the API works. The step carries
-      # on past an error or a timeout, which skips too.
+      # the rest of the job runs. Copilot is the exact bot, as PR Auto-Merge counts
+      # its reviews: a review or a quota note from copilot-pull-request-reviewer[bot],
+      # a request for that login or the Bot user "Copilot"; an account whose login
+      # merely contains "copilot" is not Copilot's, and neither is a team. A PR runs
+      # its base branch's workflows, so a repo's first (re-Apply) PR has the
+      # previous PR Auto-Merge, which never posts the ask record: on that PR
+      # `reapply.sh` posts the ask record (a comment as the owner) when its Copilot
+      # request doesn't register, and PR Auto-Merge posts it on every later PR.
+      # When a read fails it is unknown, which skips like true: PR Auto-Merge's
+      # gate wouldn't count a Claude review while Copilot may review, so a paid
+      # review would buy nothing, and the warning says to push or add the label
+      # again once the API works. The step carries on past an error or a timeout,
+      # which skips too.
       - name: Skip while Copilot can review
         id: copilot
         continue-on-error: true
@@ -189,7 +204,10 @@ jobs:
           ASKED_MARKER = "<!-- pr-automerge:copilot-asked -->"
           NO_REVIEW = re.compile(r"[ \t\r\n]*Copilot was unable to review")
           SETTLE_SECONDS = 30
-          COPILOT = re.compile("copilot", re.IGNORECASE)
+          # The only account that is Copilot's reviewer, as PR Auto-Merge counts its reviews; a pending request names the
+          # same Bot as the REST user "Copilot". A login that merely contains "copilot" is anyone's (mpaulosky/dotfiles#384).
+          COPILOT_REVIEWER = "copilot-pull-request-reviewer[bot]"
+          COPILOT_REQUESTED = (COPILOT_REVIEWER, "Copilot")
 
 
           class Unreadable(Exception):
@@ -214,14 +232,13 @@ jobs:
               reviews = read(f"pulls/{PR}/reviews", True)
               pending = read(f"pulls/{PR}/requested_reviewers", False)
               comments = read(f"issues/{PR}/comments", True)
-              copilot = [r for r in reviews if COPILOT.search((r.get("user") or {}).get("login") or "")]
+              copilot = [r for r in reviews if (r.get("user") or {}).get("login") == COPILOT_REVIEWER]
               noted = {r.get("commit_id") for r in copilot if NO_REVIEW.match(r.get("body") or "")}
               if noted & {current, HEAD_SHA}:
                   return False, "Copilot answered with its quota note"
               if any(r.get("commit_id") == current and not NO_REVIEW.match(r.get("body") or "") for r in copilot):
                   return True, "Copilot has reviewed the head"
-              requested = [*(pending.get("users") or []), *(pending.get("teams") or [])]
-              if any(COPILOT.search(who.get("login") or who.get("name") or "") for who in requested):
+              if any((who.get("login") or "") in COPILOT_REQUESTED for who in pending.get("users") or []):
                   return True, "Copilot's review is requested"
               owner = REPOSITORY.split("/")[0].lower()
               asks = [c for c in comments

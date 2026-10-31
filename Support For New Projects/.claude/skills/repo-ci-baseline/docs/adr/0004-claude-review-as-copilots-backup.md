@@ -58,6 +58,8 @@ This update replaces the grace (mpaulosky/dotfiles#360). PR Auto-Merge and `land
    Only a comment by `github-actions` (the workflow's `GITHUB_TOKEN`) or by the repository owner (`land.sh`, through the owner's `gh` login) counts:
    anyone can comment the marker, which would otherwise switch the fallback on, the same stance as the Dependabot rebase marker.
    The record listed first decides. The request itself is made with the PAT (`RELEASE_PR_PAT`), which GitHub should treat as a person's.
+   A PR runs its base branch's workflows, so a repo's first re-Apply PR has the previous PR Auto-Merge, which never posts the record, and Claude Review would skip it for ever:
+   `reapply.sh` posts the ask record (a comment from the owner's login) when its Copilot request doesn't register, unless the PR already has one (mpaulosky/dotfiles#384).
 3. **Copilot can't review the head** when its quota note is on it, or when the record exists and has settled (30 seconds old, or written by this very run, which read the request back)
    and the head has neither a real Copilot review nor a pending Copilot request. A request that threw counts as dropped at once.
    A pending request always means keep waiting, and a request list the run can't read counts as pending.
@@ -120,6 +122,14 @@ A PR never gets both reviewers' reviews. This update (mpaulosky/dotfiles#378) ch
 4. **The exhaustion comment says when the head was not reviewed** (``The head `abc1234` was not reviewed.``). Nothing else about merging changes: the fix for a third dirty round still merges unreviewed.
 5. **No change** for a clean merge of `main` onto a Claude-reviewed commit while Copilot is available: the gate asks Copilot and waits. With rule 1 this case only arises through a past
    Claude review, which is now rare.
+
+## Update (#384): the first re-Apply PR gets the record, and Copilot is the exact bot
+
+1. **`reapply.sh` posts the ask record** on the re-Apply PR when its Copilot request doesn't register (see point 2 above); a request that registers needs none, and a re-run posts none twice.
+   `land.sh` then adds `review:claude` as before, so the first PR of a repo gets Claude's review with no hand step.
+2. **Claude Review matches Copilot by its exact login.** Its "Skip while Copilot can review" step compares with `copilot-pull-request-reviewer[bot]` for reviews and quota notes
+   and with that or `Copilot` (the Bot as a requested reviewer) for requests, as PR Auto-Merge counts Copilot's reviews. A login that merely contains "copilot" no longer makes the step
+   answer "Copilot has reviewed the head" (which stalled the PR) or call in a paid review the merge gate doesn't count.
 
 ## Considered Options
 

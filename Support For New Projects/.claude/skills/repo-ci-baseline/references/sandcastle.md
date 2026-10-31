@@ -33,11 +33,11 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 
 The Owned modules read only the names `lib/repo-config.mts` exports (below), and `config.mts` imports nothing from it.
 
-Outside `.sandcastle/`, the Owned `.claude/rules/sandcastle-hand-off.md` is the session guidance for handing a pull request off to Sandcastle with `sandcastle:follow-up`
-([Hand-off PRs](#hand-off-prs)). It loads in every session and holds no per-repo value, so Apply keeps it current.
 A change to an Owned module that reads a new name breaks every repo until it adds that name, and `tsc --noEmit` reports it in the repo's own check.
 
-Outside `.sandcastle/`, the Owned Sandcastle section also has `.github/workflows/sandcastle.yml` ([The workflow](#the-workflow)), a root copy in dotfiles like the rest.
+Outside `.sandcastle/`, the Owned Sandcastle section also has `.github/workflows/sandcastle.yml` ([The workflow](#the-workflow)), a root copy in dotfiles like the rest,
+and `.claude/rules/sandcastle-hand-off.md`, the session guidance for handing a pull request off to Sandcastle with `sandcastle:follow-up` ([Hand-off PRs](#hand-off-prs)).
+It loads in every session and holds no per-repo value, so Apply keeps it current.
 
 Under `.sandcastle/`, the no-placeholders check refuses only Apply's `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}`:
 Sandcastle fills its own `{{NAME}}`s (`{{ISSUES_JSON}}`, `{{SHARED_RULES}}` and the rest) when it runs a prompt.

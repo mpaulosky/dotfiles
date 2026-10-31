@@ -14,10 +14,10 @@ Done when every item below is resolved for this repo and `scripts/gate.sh` passe
 - **Seed files skipped.** Diff each against `template/seed/` and bring over what the repo lacks.
   The repo's version wins on content.
 - **Seed files written.** Check each against what the repo had before.
-- **The coverage gate.** `.github/ci/coverage-threshold` is Owned, so Apply sets it to the Template's 80 in every repo. A repo whose coverage is below 80 (IssueTracker's gate was 60)
-  raises its coverage, or the Template's number changes in a dotfiles PR; it doesn't keep its own.
   A repo that deleted a Seed on purpose gets it back from Apply: IssueManager's #237 had removed a security policy that
   described another project, and the Seed `docs/SECURITY.md` was that same policy until it was made generic.
+- **The coverage gate.** `.github/ci/coverage-threshold` is Owned, so Apply sets it to the Template's 80 in every repo. A repo whose coverage is below 80 (IssueTracker's gate was 60)
+  raises its coverage, or the Template's number changes in a dotfiles PR; it doesn't keep its own.
 - **Ignores only this repo needs**, such as atelier-store's generated `wwwroot/app.css`, go in a `.gitignore` beside them (`src/AtelierStore.Web/.gitignore`).
   The root `.gitignore` is Owned, so a line added there is reverted by the next Apply.
 - **Analyzer settings only this repo needs** go in an `.editorconfig` beside the code they cover, for the same reason: the root one is Owned.

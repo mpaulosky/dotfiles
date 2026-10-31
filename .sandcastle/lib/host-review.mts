@@ -111,6 +111,7 @@ export function patchPaths(patch: string): string[] {
 // A reviewer to start: the Bar or one lens. The Bar's `row` is empty.
 export type Reviewer = { lens: string; row: string };
 
+// The lens name the Bar reviewer's findings carry.
 export const BAR_LENS = "Bar";
 
 // The reviewers for the files a round reads: the Bar first, then each lens whose "Applies to" matches one of the files, in the
@@ -123,37 +124,52 @@ export function reviewersFor(files: readonly string[], lenses: readonly Lens[]):
   return [{ lens: BAR_LENS, row: "" }, ...matching.map((lens) => ({ lens: lens.name, row: lens.row }))];
 }
 
-// A finding as a reviewer answers it.
+// What the ledger takes as a repository path (review-ledger.mts's findingFields): a reviewer's answer is checked against it now, so a
+// path the ledger would refuse is asked for again with the reason, not found out when the review is recorded.
+const PATH_SHAPE = /^[^\s<>`]+( [^\s<>`]+)*$/;
+
+// A finding as a reviewer answers it, in the strict shape the ledger will take: anything else is refused, and the reviewer asked again.
+// `security` is the reviewer's own call: true for a weakness, or when unsure; only an explicit false lets the PR note list the finding.
 export const reviewerFindingSchema = z
   .object({
-    lens: z.string().min(1),
-    path: z.string().min(1),
+    lens: z.string().trim().min(1),
+    path: z.string().trim().min(1).regex(PATH_SHAPE, "a path has no whitespace but single spaces, and no <, > or backtick"),
     line: z.number().int().nonnegative(),
     severity: z.enum(["critical", "warning", "advisory"]),
-    summary: z.string().min(1),
+    summary: z.string().trim().min(1),
     fix: z.string(),
     needsPerson: z.boolean(),
     why: z.string(),
+    security: z.boolean().optional(),
   })
   .strict();
 
+// A finding as a reviewer answered it.
 export type ReviewerFinding = z.infer<typeof reviewerFindingSchema>;
 
 // Thrown for a reviewer answer that holds no valid findings block.
 export class ReviewerAnswerError extends Error {}
 
 // The findings in the last `<findings>[...]</findings>` block of a reviewer's output. The last wins: a reviewer may quote
-// the format, or text it read, before its answer.
+// the format, or text it read, before its answer. A block ends at the first closing tag that leaves valid JSON.
 export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
-  const blocks = [...stdout.matchAll(/<findings>([\s\S]*?)<\/findings>/g)];
-  const block = blocks.at(-1)?.[1];
-  if (block === undefined) throw new ReviewerAnswerError("the answer has no <findings>[...]</findings> block");
+  const start = stdout.lastIndexOf("<findings>");
+  if (start < 0 || !stdout.includes("</findings>", start)) throw new ReviewerAnswerError("the answer has no <findings>[...]</findings> block");
+  // The block ends at the closing tag that leaves valid JSON: a finding may quote the tag itself, so the first one isn't always the end.
+  const body = stdout.slice(start + "<findings>".length);
+  const ends = [...body.matchAll(/<\/findings>/g)].map((match) => match.index!);
   let value: unknown;
-  try {
-    value = JSON.parse(block);
-  } catch (error) {
-    throw new ReviewerAnswerError(`the findings block is not valid JSON: ${(error as Error).message}`);
+  let jsonError: unknown;
+  for (const end of ends) {
+    try {
+      value = JSON.parse(body.slice(0, end));
+      jsonError = undefined;
+      break;
+    } catch (error) {
+      jsonError ??= error;
+    }
   }
+  if (value === undefined) throw new ReviewerAnswerError(`the findings block is not valid JSON: ${(jsonError as Error).message}`);
   if (!Array.isArray(value)) throw new ReviewerAnswerError("the findings block must hold a JSON array of findings");
   return value.map((item, index) => {
     const parsed = reviewerFindingSchema.safeParse(item);
@@ -198,11 +214,14 @@ export function triageRound({
         severity: RANK[found.severity] > RANK[earlier.severity] ? found.severity : earlier.severity,
         fix: earlier.fix.trim() === "" ? found.fix : earlier.fix,
         needsPerson: earlier.needsPerson || found.needsPerson,
+        // Not a weakness only when every reviewer that raised it said so.
+        security: earlier.security === false && found.security === false ? false : true,
       });
     }
   }
   return [...merged.values()].map((found, index) => {
-    const security = found.severity === "warning" || /security/i.test(found.lens);
+    // A reviewer's own mark counts: a finding is non-security only when it said so, since the PR note publishes non-security ones.
+    const security = found.severity === "warning" || /security/i.test(found.lens) || found.security !== false;
     return {
       id: `R${firstId + index}`,
       lens: found.lens,
@@ -278,6 +297,7 @@ export type HostReviewHost = {
   log(line: string): void;
 };
 
+// How a review ends: recorded, failed (with the last commit the gate passed on, which is published), or the gate stayed red.
 export type HostReviewResult =
   | { status: "recorded"; head: string; rounds: number; ledger: Ledger }
   | { status: "failed"; head: string; reason: string }
@@ -323,7 +343,7 @@ export async function runHostReview(
     if (error instanceof UncountedStopError) throw error;
     // Any host step (reading the skill files, the sandbox, git) that throws ends the review as failed, so the finished and gated work
     // is still published with a note. The reason is host-written: the error's own text may hold an agent's words.
-    host.log(`  ✗ the local review failed: a host step threw: ${(error as Error).message}`);
+    host.log(`  ✗ the local review failed: a host step threw: ${errorText(error)}`);
     return { status: "failed", head: progress.head, reason: "a step of the review on the host failed" };
   }
 }
@@ -392,6 +412,10 @@ async function runRounds(
       result.status === "rejected" ? [{ lens: reviewers[index]!.lens, what: failureText(result.reason) }] : [],
     );
     if (failures.length > 0) {
+      // The raw errors go to the host's log only (its sink makes them safe for a terminal); the reason, which goes into the PR, stays host-written.
+      settled.forEach((result, index) => {
+        if (result.status === "rejected") host.log(`  ✗ the ${reviewers[index]!.lens} reviewer's error: ${errorText(result.reason)}`);
+      });
       const reason = `the ${failures.map((failure) => `${failure.lens} reviewer ${failure.what}`).join(", the ")}`;
       host.log(`  ✗ the local review failed in round ${round}: ${reason}`);
       return { status: "failed", head: prepared.head, reason };
@@ -409,7 +433,7 @@ async function runRounds(
         await host.runFixer(reviewFixPrompt({ issue, branch, round, findings: fixable, outcomesPath: `${runDir}/outcomes.json` }));
       } catch (error) {
         if (error instanceof UncountedStopError) throw error;
-        host.log(`  ✗ the local review failed: the backend role's run for round ${round} ended in an error`);
+        host.log(`  ✗ the local review failed: the backend role's run for round ${round} ended in an error: ${errorText(error)}`);
         return { status: "failed", head: prepared.head, reason: `the backend role's run fixing round ${round}'s findings ${failureText(error)}` };
       }
       const after = await host.head();
@@ -432,6 +456,11 @@ async function runRounds(
     head = gated;
     progress.head = gated;
   }
+}
+
+// An error's message, or the thrown value as text when it isn't an Error.
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // The text added to a reviewer's prompt when its last answer wasn't valid.
@@ -470,10 +499,16 @@ function record(host: HostReviewHost, input: { branch: string }, last: PreparedR
     );
     return { status: "recorded", head: last.head, rounds, ledger };
   } catch (error) {
-    host.log(`  ✗ the local review's record was refused: ${(error as Error).message}`);
+    host.log(`  ✗ the local review's record was refused: ${errorText(error)}`);
     return { status: "failed", head: last.head, reason: "the ledger refused the review's record" };
   }
 }
+
+// The most findings the PR note lists, and the most characters of each field of one: the note is appended to a description that may
+// already be near GitHub's limit, and its text is a reviewer's, so its size is bounded here.
+const NOTE_FINDINGS = 20;
+const NOTE_FIELD_LIMIT = 300;
+const cut = (text: string) => (text.length <= NOTE_FIELD_LIMIT ? text : `${[...text].slice(0, NOTE_FIELD_LIMIT).join("")}…`);
 
 // The PR note listing the findings the review left open: each non-security one with its place, summary and suggested fix, as
 // plain text. A security finding (isSecurity: a Warning, a lens that names security, or one not marked otherwise) is only
@@ -483,14 +518,17 @@ export function openFindingsNote(ledger: Ledger): string {
   if (open.length === 0) return "";
   const listed = open.filter((finding) => !isSecurity(finding));
   const hidden = open.length - listed.length;
-  const lines = listed.map((finding) => {
-    const fix = finding.fix == null ? "" : ` Suggested fix: ${plainText(finding.fix)}`;
-    return `- ${finding.id} ${plainText(`${finding.path}:${finding.line}`)}: ${plainText(finding.summary)}${fix}`;
+  const shown = listed.slice(0, NOTE_FINDINGS);
+  const lines = shown.map((finding) => {
+    const fix = finding.fix == null ? "" : ` Suggested fix: ${cut(plainText(finding.fix))}`;
+    return `- ${finding.id} ${cut(plainText(`${finding.path}:${finding.line}`))}: ${cut(plainText(finding.summary))}${fix}`;
   });
+  const more = listed.length - shown.length;
   return [
     "The local review left these findings open:",
     "",
     ...lines,
+    ...(more > 0 ? [`${more} more open finding${more === 1 ? " is" : "s are"} in the local review record and aren't listed here.`] : []),
     ...(hidden > 0 ? [...(lines.length > 0 ? [""] : []), `${hidden} security finding${hidden === 1 ? " is" : "s are"} left open in the local review record and aren't listed here.`] : []),
   ].join("\n");
 }

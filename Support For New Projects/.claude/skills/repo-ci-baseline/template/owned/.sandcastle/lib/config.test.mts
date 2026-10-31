@@ -94,7 +94,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   // run's, so it must outlast the longest build a live run can make, or a
   // second run would clear a live build's label and build the issue too.
   // BUILD_ROLES, each once, plus the gate-fixer's attempts at both
-  // checkpoints, plus the host-side review (lib/host-review.mts): every round's reviewers (REVIEW_FIX_ROUNDS rounds that fix
+  // checkpoints, plus the host-side review (lib/host-review.mts): every round's reviewers, each run up to REVIEWER_ATTEMPTS times (REVIEW_FIX_ROUNDS rounds that fix
   // something, then one that only reviews), each fixing round's backend run, and the gate with its gate-fixer attempts after it.
   // build.test.mts checks buildIssue runs no other role.
   it("outlasts the longest build the role timeouts allow, with an hour for gates, sandboxes and publishing", () => {
@@ -104,7 +104,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
     const timeout = (role: (typeof BUILD_ROLES)[number]) => (role === "ui" && !uiEnabled() ? ROLE_AGENTS.backend : roleAgent(role)).timeoutMinutes;
     const gateFixing = ROLE_AGENTS["gate-fixer"].timeoutMinutes * GATE_FIXER_ATTEMPTS;
     const review =
-      (REVIEW_FIX_ROUNDS + 1) * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes +
+      (REVIEW_FIX_ROUNDS + 1) * REVIEWER_ATTEMPTS * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes +
       REVIEW_FIX_ROUNDS * (ROLE_AGENTS.backend.timeoutMinutes + gateFixing);
     const minutes = BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) + checkpoints * gateFixing + review;
     const hour = 60;

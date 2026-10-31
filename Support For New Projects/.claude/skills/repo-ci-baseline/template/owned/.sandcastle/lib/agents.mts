@@ -51,8 +51,9 @@ export const LEDGER_DENIED_TOOLS: readonly string[] = [
 
 // What a role's agent is held to besides its model and effort: the only tools
 // it gets, rules it is denied, and whether only the MCP servers named on the
-// command line may start.
-export type AgentRestrictions = { tools?: readonly string[]; denied?: readonly string[]; strictMcp?: boolean };
+// command line may start, and whether Claude Code reads only the user's settings, not the branch's .claude/settings.json (whose hooks
+// would run shell commands, with the sandbox's environment, in a run that is meant to hold no shell).
+export type AgentRestrictions = { tools?: readonly string[]; denied?: readonly string[]; strictMcp?: boolean; userSettingsOnly?: boolean };
 
 const PRINT_COMMAND_START = "claude --print ";
 
@@ -72,10 +73,11 @@ export function restrictedClaudeCode(
   build: typeof sandcastle.claudeCode = sandcastle.claudeCode,
 ): sandcastle.AgentProvider {
   const provider = build(model, { effort });
-  const { tools, denied, strictMcp } = restrictions;
+  const { tools, denied, strictMcp, userSettingsOnly } = restrictions;
   const flags = [
     ...(tools === undefined ? [] : ["--tools", shellWord(tools.join(","))]),
     ...(strictMcp === true ? ["--strict-mcp-config"] : []),
+    ...(userSettingsOnly === true ? ["--setting-sources", "user"] : []),
     ...(denied === undefined || denied.length === 0 ? [] : ["--disallowedTools", ...denied.map(shellWord)]),
   ];
   if (flags.length === 0) return provider;

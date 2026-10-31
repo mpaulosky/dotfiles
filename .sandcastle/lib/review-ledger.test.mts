@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  ledgerGitEnv,
+  pinLedgerGit,
   acceptFinding,
   checkReview,
   diffKey,
@@ -596,6 +598,30 @@ describe("diffKey", () => {
         else process.env[name] = value;
       }
     }
+  });
+});
+
+describe("ledgerGitEnv", () => {
+  it("turns replace refs off and drops the variables a hook sets", () => {
+    const before = { ...process.env };
+    process.env.GIT_COMMON_DIR = "/elsewhere/.git";
+    process.env.GIT_INDEX_FILE = "/elsewhere/index";
+    try {
+      const env = ledgerGitEnv("/nowhere-pinned");
+
+      assert.equal(env.GIT_NO_REPLACE_OBJECTS, "1");
+      assert.equal(env.GIT_COMMON_DIR, undefined);
+      assert.equal(env.GIT_INDEX_FILE, undefined);
+    } finally {
+      process.env = before;
+    }
+  });
+
+  it("pins the shared .git directory for a checkout the host asked for, and for no other", () => {
+    pinLedgerGit("/main/checkout", "/main/checkout/.git");
+
+    assert.equal(ledgerGitEnv("/main/checkout").GIT_COMMON_DIR, "/main/checkout/.git");
+    assert.equal(ledgerGitEnv("/some/worktree").GIT_COMMON_DIR, undefined);
   });
 });
 

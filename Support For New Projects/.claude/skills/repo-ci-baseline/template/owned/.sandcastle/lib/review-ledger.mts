@@ -291,17 +291,35 @@ export type Ledger = z.infer<typeof ledgerSchema>;
 // checkout's, and the ones that change what `git diff` prints.
 const hookGitVariables = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR", "GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF"];
 
-// Run git in `cwd` and return its stdout as bytes, with the hook variables
-// dropped. Replace refs are off, so the review reads and keys commits as they
-// are, not as a replace ref shows them.
-function gitBytes(cwd: string, args: readonly string[]): Buffer {
+// The shared .git directories the host pinned for a checkout (pinLedgerGit).
+const pinnedCommonDirs = new Map<string, string>();
+
+// Makes every ledger git command run in `cwd` take its config, refs and objects from `commonDir`, whatever a commondir file there
+// says (GIT_COMMON_DIR outranks it). The Sandcastle host calls this for the main checkout, whose .git agents can write; the review
+// CLI doesn't, and keeps stripping the variables a hook sets.
+export function pinLedgerGit(cwd: string, commonDir: string): void {
+  pinnedCommonDirs.set(cwd, commonDir);
+}
+
+// The environment a ledger git command runs in at `cwd`: the hook variables dropped, replace refs and the system gitattributes
+// file off, and the shared .git directory pinned when the host asked (pinLedgerGit).
+export function ledgerGitEnv(cwd: string): NodeJS.ProcessEnv {
   // GIT_ATTR_NOSYSTEM: not the machine's system-wide gitattributes file
   // either, which could mark text files binary for one person's review only.
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_ATTR_NOSYSTEM: "1" };
   for (const name of hookGitVariables) {
     delete env[name];
   }
-  return execFileSync("git", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 512 * 1024 * 1024 });
+  const pinned = pinnedCommonDirs.get(cwd);
+  if (pinned !== undefined) env.GIT_COMMON_DIR = pinned;
+  return env;
+}
+
+// Run git in `cwd` and return its stdout as bytes, with the hook variables
+// dropped. Replace refs are off, so the review reads and keys commits as they
+// are, not as a replace ref shows them.
+function gitBytes(cwd: string, args: readonly string[]): Buffer {
+  return execFileSync("git", args, { cwd, env: ledgerGitEnv(cwd), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 512 * 1024 * 1024 });
 }
 
 const git = (cwd: string, ...args: string[]) => gitBytes(cwd, args).toString("utf8").trim();
@@ -324,7 +342,7 @@ export function mergeBase(cwd: string, main: string = "origin/main", head: strin
   try {
     return git(cwd, "merge-base", main, head);
   } catch (error) {
-    throw new Error("can't find where this branch left origin/main: run `git fetch origin main` first", { cause: error });
+    throw new Error(`can't find where this branch left ${main}: fetch it first (for origin/main, run \`git fetch origin main\`)`, { cause: error });
   }
 }
 
@@ -634,7 +652,8 @@ export function prepareRound(
 }
 
 // Record a review of HEAD's diff, replacing any ledger at the same diff.
-// Refuses a dirty worktree, and a HEAD that isn't the code the last round
+// Without `at`, refuses a dirty worktree; with `at` the caller names the commit and the branch and answers for the
+// worktree it reviewed (the host's review of a sandbox's worktree: the gate ran clean on that commit). Refuses a HEAD that isn't the code the last round
 // reviewed: the review would vouch for code it never read. Also refuses any id
 // at or below the highest the ledger it replaces or any earlier review of the
 // branch's own commits took, so an id names one finding along the branch: a
@@ -658,7 +677,7 @@ export function recordReview(
   const parsed = reviewInputSchema.parse(input);
   // The security record is local and not code (see security-record.mts): an untracked README, or a symlink put in its
   // place, isn't a change HEAD fails to vouch for. Tracked changes there still count.
-  // With `at` the caller names the commit and branch (the host's review of a sandbox's worktree, which it has checked is clean at that
+  // With `at` the caller names the commit and branch (the host's review of a sandbox's worktree, whose gate ran clean on that
   // commit), so this checkout's own worktree and HEAD are not what is vouched for.
   if (at === undefined) {
     const dirty = git(cwd, "status", "--porcelain", "--untracked-files=all")

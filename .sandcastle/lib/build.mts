@@ -26,14 +26,14 @@ import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
 import { openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
-import { repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs, reviewerPromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
-import { mergeBase, prepareRound, recordReview, takenIds } from "./review-ledger.mts";
+import { mergeBase, pinLedgerGit, prepareRound, recordReview, takenIds } from "./review-ledger.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
-import { git } from "./shell.mts";
+import { git, hostGitInvocation, runHostGit } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
 import { terminalText } from "./status.mts";
@@ -67,7 +67,7 @@ export function prTitle(issue: Pick<SandcastleIssue, "number" | "title" | "label
 // Re-exported for the callers and tests that already import it from here.
 export { UncountedStopError };
 
-// Push the commit checkpoint 2's gate passed on to the issue branch, and open
+// Push the commit the last checkpoint's gate passed on (2, or 3 after a review round's fixes) to the issue branch, and open
 // (or reuse) the PR that closes the issue. Both run in the main checkout, with
 // git hooks off. Pushing from the worktree would run its pre-push hook: the
 // branch's own .github/hooks/pre-push, scripts/gate.sh and test code, files the
@@ -617,8 +617,10 @@ export function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
     const own = read(".claude/skills/code-review/SKILL.md");
     // Only a file that holds a lens table of the skill's shape: the repository's code-review skill may hold nothing of the kind.
     if (/^\|\s*Lens\s*\|\s*Applies to\s*\|/im.test(own)) repoLenses = own;
-  } catch {
-    // The repository has no code-review skill of its own, which is allowed.
+  } catch (error) {
+    // Only a missing file is "no code-review skill of its own", which is allowed: a file that can't be read would drop the repository's
+    // own lenses without a word, so that ends the review as failed instead.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   return {
     lenses: read(`${skill}/lenses.md`),
@@ -637,7 +639,13 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
   const { sandbox, issue, main, limits } = args;
   const runRel = `.sandcastle/work/${issue.number}/review`;
   const outcomesFile = `${runRel}/outcomes.json`;
-  const baseOf = (head: string) => mergeBase(checkout, main, head);
+  // The ledger's git commands run in the main checkout, whose .git agents can write: pinned to its own shared directory, whatever a
+  // commondir file says (lib/host-safety.mts).
+  const pin = () => pinLedgerGit(checkout, mainGitDir(checkout));
+  const baseOf = (head: string) => {
+    pin();
+    return mergeBase(checkout, main, head);
+  };
   return {
     readSkillFiles: () => readSkillFiles(checkout),
     worktree: async () => {
@@ -646,12 +654,16 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       if (result.exitCode !== 0 || !path.startsWith("/")) throw new Error("the sandbox's worktree path can't be read");
       return path;
     },
-    prepare: (opts) => prepareRound(checkout, opts),
+    prepare: (opts) => {
+      pin();
+      return prepareRound(checkout, opts);
+    },
     takenIds: (head) => takenIds(checkout, baseOf(head), head),
     writeRunFile: async (path, content) => {
       // Only the run's own folder, which the sandbox git-ignores (.sandcastle/work/).
       if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only write under ${runRel}/, not ${path}`);
-      const written = await sandbox.exec(`mkdir -p ${shellWord(runRel)} && cat > ${shellWord(path)}`, { stdin: content.toString("utf8") });
+      // Base64, so the bytes git printed arrive as they are: a patch of a file that isn't UTF-8 would otherwise be rewritten in transit.
+      const written = await sandbox.exec(`mkdir -p ${shellWord(runRel)} && base64 -d > ${shellWord(path)}`, { stdin: Buffer.from(content).toString("base64") });
       if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
     },
     runReviewer: async (_reviewer, prompt) => {
@@ -659,6 +671,8 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
         tools: REVIEWER_TOOLS,
         denied: LEDGER_DENIED_TOOLS,
         strictMcp: true,
+        // Not the branch's .claude/settings.json: its hooks would run shell commands, with the sandbox's environment, in a run meant to hold no shell.
+        userSettingsOnly: true,
       });
       return run.stdout;
     },
@@ -674,7 +688,7 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
     },
     head: () => headOf(sandbox),
     changedFiles: (from, to) =>
-      git("diff", "--name-only", "-z", "--no-renames", from, to)
+      runHostGit(checkout, hostGitInvocation(checkout, mainGitDir(checkout), ["diff", "--name-only", "-z", "--no-renames", from, to]))
         .split("\0")
         .filter((file) => file !== ""),
     gate: () => args.gate(),
@@ -685,7 +699,8 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
           for (const warning of outcome.warnings) console.error(`  ⚠ .security: ${terminalText(warning)}`);
         },
       }),
-    log: (line) => console.log(`  #${issue.number} ${line.trimStart()}`),
+    // The reviewers' and the backend role's words can reach a log line: made safe for the operator's terminal.
+    log: (line) => console.log(terminalText(`  #${issue.number} ${line.trimStart()}`)),
   };
 }
 

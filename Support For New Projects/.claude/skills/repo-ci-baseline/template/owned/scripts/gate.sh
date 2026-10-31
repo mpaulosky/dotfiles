@@ -136,7 +136,7 @@ python3 -I .github/scripts/check_gh_repo.py --repo "$ROOT"
 # The local review (/pre-push-review) must have passed this branch's diff, with
 # no open Critical or Warning finding: scripts/review.sh keeps the record under
 # .git/review/. Sandcastle's sandboxes set GATE_SKIP_REVIEW=1 (lib/skills.mts),
-# since its reviewer role stands in there. A repo without a .sandcastle/ folder
+# since the host runs the review's rounds on a built branch itself (lib/host-review.mts). A repo without a .sandcastle/ folder
 # has no ledger code to run, so it has no review to check.
 step "Local review (scripts/review.sh check)"
 if [[ "${GATE_SKIP_REVIEW:-}" == "1" ]]; then

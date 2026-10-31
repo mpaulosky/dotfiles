@@ -3380,6 +3380,36 @@ describe("buildIssue's local review", () => {
     assert.ok(!run.publishedReviewNotes[0], `unexpected note: ${run.publishedReviewNotes[0]}`);
   });
 
+  it("gives the review a checkpoint 3 gate that returns the commit it passed on, and takes the commits the review's roles made", async () => {
+    let gated: string | undefined;
+    const run = host([0, 0, 0], {
+      localReview: async (args) => {
+        gated = await args.gate();
+        args.addCommits([{ sha: "review-made" }]);
+        return { status: "recorded", head: gated ?? args.startHead, rounds: 1, ledger: ledgerWith(gated ?? args.startHead, []) };
+      },
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(gated, run.head());
+    assert.deepEqual(run.scanned, [run.head()]);
+    assert.ok(result.commits.some((commit) => commit.sha === "review-made"), JSON.stringify(result.commits));
+  });
+
+  it("ends as a gate failure at checkpoint 3 when the gate the review asks for stays red", async () => {
+    const run = host([0, 0, 1, 1, 1], {
+      localReview: async (args) => ((await args.gate()) === undefined ? { status: "gate failed" } : { status: "failed", head: args.startHead, reason: "unexpected" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "gate failed");
+    assert.equal(result.detail, "checkpoint 3");
+    assert.ok(run.steps.some((step) => step.startsWith("gate-fixer")), run.steps.join("\n"));
+    assert.deepEqual(run.pushed, []);
+  });
+
   it("logs a failed review as an error that names its reason", async () => {
     const errors: string[] = [];
     const original = console.error;
@@ -3490,7 +3520,7 @@ describe("liveReviewHost", () => {
     writeFileSync(join(dir, ".claude/agents/pre-push-reviewer.md"), "---\nname: pre-push-reviewer\n---\nThe reviewer's body.");
     return dir;
   }
-  function recorder() {
+  function recorder(outcomes?: string) {
     const execs: { command: string; stdin?: string }[] = [];
     const runs: SandboxRunOptions[] = [];
     const orderOf: string[] = [];
@@ -3498,7 +3528,8 @@ describe("liveReviewHost", () => {
       exec: async (command: string, options?: { stdin?: string }) => {
         execs.push({ command, stdin: options?.stdin });
         orderOf.push(`exec ${command}`);
-        return { stdout: command.startsWith("git rev-parse") ? "/home/agent/workspace\n" : "", stderr: "", exitCode: command.startsWith("cat ") ? 1 : 0 };
+        if (command.startsWith("cat ")) return outcomes === undefined ? { stdout: "", stderr: "", exitCode: 1 } : { stdout: outcomes, stderr: "", exitCode: 0 };
+        return { stdout: command.startsWith("git rev-parse") ? "/home/agent/workspace\n" : "", stderr: "", exitCode: 0 };
       },
       run: async (options: SandboxRunOptions) => {
         runs.push(options);
@@ -3531,6 +3562,7 @@ describe("liveReviewHost", () => {
       const command = commandOf(runs[0]!);
       assert.match(command, /--tools '?Read,Grep,Glob'?(?= |$)/);
       assert.match(command, /--strict-mcp-config/);
+      assert.match(command, /--setting-sources '?user'?(?= |$)/);
       assert.match(command, /--disallowedTools/);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
@@ -3565,7 +3597,8 @@ describe("liveReviewHost", () => {
       }
 
       assert.equal(execs.filter((found) => found.stdin !== undefined).length, 1);
-      assert.equal(execs.find((found) => found.stdin !== undefined)?.stdin, "patch");
+      assert.equal(execs.find((found) => found.stdin !== undefined)?.stdin, Buffer.from("patch").toString("base64"));
+      assert.match(execs.find((found) => found.stdin !== undefined)?.command ?? "", /base64 -d > /);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }
@@ -3580,6 +3613,76 @@ describe("liveReviewHost", () => {
       await assert.rejects(() => liveReviewHost(failing, dir).worktree(), /worktree path/);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("sends the bytes of a patch that isn't UTF-8 through unchanged", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const bytes = Buffer.from([0x2b, 0xff, 0xfe, 0x0a]);
+
+      await liveReviewHost(args, dir).writeRunFile(".sandcastle/work/387/review/diff.patch", bytes);
+
+      assert.deepEqual(Buffer.from(execs.find((found) => found.stdin !== undefined)!.stdin!, "base64"), bytes);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("runs none of its sandbox commands through scripts/review.sh or .git/review", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.worktree();
+      await live.writeRunFile(".sandcastle/work/387/review/diff.patch", "p");
+      await live.runFixer("fix");
+      await live.readOutcomes();
+
+      assert.ok(execs.length >= 4);
+      assert.ok(execs.every((found) => !/review\.sh|\.git\/review/.test(found.command)), execs.map((found) => found.command).join("\n"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("returns outcomes.json's text when the sandbox has the file", async () => {
+    const { args } = recorder('{"outcomes":[]}');
+    const dir = checkout();
+    try {
+      assert.equal(await liveReviewHost(args, dir).readOutcomes(), '{"outcomes":[]}');
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("lists the files a round changed, NUL-split, with spaces, non-ASCII and a deleted file", () => {
+    const repo = mkdtempSync(join(tmpdir(), "live-review-git-"));
+    const run = (...gitArgs: string[]) => spawnSync("git", gitArgs, { cwd: repo, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e" } });
+    try {
+      run("init", "-q", "-b", "main");
+      writeFileSync(join(repo, "gone.txt"), "x");
+      writeFileSync(join(repo, "keep.txt"), "a");
+      run("add", "-A");
+      run("commit", "-q", "-m", "first");
+      const from = run("rev-parse", "HEAD").stdout.trim();
+      rmSync(join(repo, "gone.txt"));
+      writeFileSync(join(repo, "keep.txt"), "b");
+      writeFileSync(join(repo, "with space.txt"), "c");
+      writeFileSync(join(repo, "café.txt"), "d");
+      run("add", "-A");
+      run("commit", "-q", "-m", "second");
+      const to = run("rev-parse", "HEAD").stdout.trim();
+      const { args } = recorder();
+
+      const changed = liveReviewHost(args, repo).changedFiles(from, to);
+
+      assert.deepEqual([...changed].sort(), ["café.txt", "gone.txt", "keep.txt", "with space.txt"]);
+      assert.deepEqual(liveReviewHost(args, repo).changedFiles(to, to), []);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
     }
   });
 
@@ -3608,6 +3711,35 @@ describe("liveReviewHost", () => {
     } finally {
       rmSync(main, { recursive: true, force: true, maxRetries: 5 });
       rmSync(worktree, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("keeps the repository's own lens table, ignores a code-review skill with none, and ignores a missing one", () => {
+    const dir = checkout();
+    try {
+      mkdirSync(join(dir, ".claude/skills/code-review"), { recursive: true });
+      const own = "# Own\n\n| Lens | Applies to | Ask |\n| --- | --- | --- |\n| Mine | Any file | Ask. |\n";
+      writeFileSync(join(dir, ".claude/skills/code-review/SKILL.md"), own);
+      assert.equal(readSkillFiles(dir).repoLenses, own);
+
+      writeFileSync(join(dir, ".claude/skills/code-review/SKILL.md"), "# No table here\n");
+      assert.equal(readSkillFiles(dir).repoLenses, undefined);
+
+      rmSync(join(dir, ".claude/skills/code-review"), { recursive: true, force: true, maxRetries: 5 });
+      assert.equal(readSkillFiles(dir).repoLenses, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("fails, rather than dropping the repository's lenses, when its code-review skill can't be read", () => {
+    const dir = checkout();
+    try {
+      mkdirSync(join(dir, ".claude/skills/code-review/SKILL.md"), { recursive: true });
+
+      assert.throws(() => readSkillFiles(dir), /EISDIR/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }
   });
 

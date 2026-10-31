@@ -339,6 +339,14 @@ describe("runRoleInSandbox with restrictions", () => {
     assert.match(command, /--model 'sonnet'/);
   });
 
+  it("reads only the user's settings when asked, not the branch's hooks", async () => {
+    const runs: SandboxRunOptions[] = [];
+
+    await runRoleInSandbox(sandboxRecording(runs), "pre-push-reviewer", { prompt: "review" }, new RunLimits(), { tools: REVIEWER_TOOLS, userSettingsOnly: true });
+
+    assert.match(commandOf(runs[0]!), /--setting-sources '?user'?(?= |$)/);
+  });
+
   it("runs a role given no restrictions as before, with no --tools or deny list", async () => {
     const runs: SandboxRunOptions[] = [];
 

@@ -10,7 +10,7 @@ type BuildResult = { prUrl: string | undefined; publishFailed: boolean };
 type BuildReportFields = Pick<OutcomeEntry, "outcome" | "detail">;
 
 // The summary's lines: each pull request the round opened, then each branch
-// that passed both checkpoints but couldn't be pushed or get a PR. That work is
+// that passed its checkpoints but couldn't be pushed or get a PR. That work is
 // done but stranded, which a person needs to hear apart from a round that
 // built nothing. `stop` is the line to stop the run on when no pull request
 // opened, and undefined when one did. `settled` holds each `work` item's

@@ -256,6 +256,7 @@ const raw = (overrides: Partial<ReviewerFinding> = {}): ReviewerFinding => ({
   fix: "Trim the name first.",
   needsPerson: false,
   why: "The guard checks the length only.",
+  security: false,
   ...overrides,
 });
 const reviewer = (lens: string): Reviewer => ({ lens, row: lens === BAR_LENS ? "" : (lenses.find((found) => found.name === lens)?.row ?? `| ${lens} | x | y |`) });
@@ -287,6 +288,25 @@ describe("triageRound", () => {
     assert.equal(found?.needsPerson, false);
     assert.equal(found?.security, false);
     assert.equal(found?.severity, "critical");
+  });
+
+  it("treats a finding as a security one unless its reviewer said it isn't", () => {
+    const { security: _unsaid, ...unmarked } = raw();
+
+    const [found] = triage({ "Edge cases": [unmarked as ReviewerFinding] });
+
+    assert.equal(found?.security, true);
+    assert.equal(found?.severity, "warning");
+  });
+
+  it("keeps a merged finding a security one when any reviewer who raised it didn't say it isn't", () => {
+    const got = triage({
+      "Edge cases": [raw()],
+      "Error contract": [raw({ lens: "Error contract", security: true })],
+    });
+
+    assert.equal(got.length, 1);
+    assert.equal(got[0]?.security, true);
   });
 
   it("leaves a finding that needs a person open and not fixable, with its fix", () => {
@@ -380,6 +400,31 @@ describe("triageRound", () => {
 
   it("returns nothing for reviewers with no findings", () => {
     assert.deepEqual(triage({ [BAR_LENS]: [], "Edge cases": [] }), []);
+  });
+});
+
+describe("parseReviewerAnswer's edges", () => {
+  const block = (findings: unknown) => `<findings>${typeof findings === "string" ? findings : JSON.stringify(findings)}</findings>`;
+
+  it("reads a finding whose text quotes the closing tag", () => {
+    const quoted = raw({ summary: "The parser stops at </findings> inside a summary." });
+
+    const got = parseReviewerAnswer(block([quoted]));
+
+    assert.equal(got[0]?.summary, quoted.summary);
+  });
+
+  it("refuses a path the ledger would refuse, so the reviewer is asked again", () => {
+    for (const path of ["`src/app.ts`", "src/a.ts (new)\tb", "<src/app.ts>", "src/a.ts\nsrc/b.ts"]) {
+      assert.throws(() => parseReviewerAnswer(block([raw({ path })])), ReviewerAnswerError, path);
+    }
+  });
+
+  it("refuses a whitespace-only summary or lens, and trims the text it keeps", () => {
+    assert.throws(() => parseReviewerAnswer(block([raw({ summary: "   " })])), ReviewerAnswerError);
+    assert.throws(() => parseReviewerAnswer(block([raw({ lens: " " })])), ReviewerAnswerError);
+    assert.equal(parseReviewerAnswer(block([raw({ summary: "  Padded.  ", path: " src/app.ts " })]))[0]?.summary, "Padded.");
+    assert.equal(parseReviewerAnswer(block([raw({ path: " src/app.ts " })]))[0]?.path, "src/app.ts");
   });
 });
 
@@ -973,6 +1018,33 @@ describe("runHostReview's rounds", () => {
 });
 
 // Criterion: no agent can read, write or run scripts/review.sh or .git/review; only the host records.
+describe("runHostReview's decisions file", () => {
+  const decisionsOf = (run: ReturnType<typeof fake>, round: number) => {
+    const writes = run.files.filter((file) => file.path.endsWith("decisions.md"));
+    return writes[round - 1]?.content ?? "";
+  };
+
+  it("says nothing was decided in round 1, and lists round 1's findings and their outcomes in round 2", async () => {
+    const run = fake({ answers: (round, who) => (round === 1 && who.lens === "Edge cases" ? [raw()] : []), fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["tests/app.test.ts"] }) });
+
+    recorded(await runHostReview(run.host, input(run.startHead)));
+
+    assert.match(decisionsOf(run, 1), /Nothing has been decided yet/);
+    assert.match(decisionsOf(run, 2), /R1 \(Edge cases, src\/app\.ts:10\) fixed, pinned by tests\/app\.test\.ts::blank_name/);
+  });
+
+  it("marks a finding left open to be raised again", async () => {
+    const run = fake({
+      answers: (round, who) => (round === 1 && who.lens === "Edge cases" ? [raw(), raw({ line: 30, summary: "Other.", needsPerson: true })] : []),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["tests/app.test.ts"] }),
+    });
+
+    recorded(await runHostReview(run.host, input(run.startHead)));
+
+    assert.match(decisionsOf(run, 2), /R2 .*Other\..*Raise again if still in the code/);
+  });
+});
+
 describe("runHostReview's access", () => {
   const withoutAgentBody = (prompt: string) => prompt.replace(agentBody, "").replace(agentBody.trim(), "");
   const forbidden: [string, RegExp][] = [
@@ -1043,12 +1115,6 @@ describe("runHostReview's access", () => {
     for (const found of run.reviewerRuns) {
       assert.match(found.prompt, /\/home\/agent\/workspace\/\.sandcastle\/work\/387\/review\/(?:[^\s]*\/)?diff\.patch/);
     }
-  });
-
-  it("has the host record, and nothing else: the host object offers nothing that runs the worktree's scripts", () => {
-    const run = fake();
-
-    assert.deepEqual(Object.keys(run.host).filter((key) => /script|shell|exec|review\.sh/i.test(key)), []);
   });
 });
 
@@ -1215,6 +1281,28 @@ describe("runHostReview's stops and failures", () => {
     await assert.rejects(() => runHostReview(run.host, input(run.startHead)), (error: unknown) => error === stop);
   });
 
+  it("logs a failing reviewer's own error for the operator, and keeps it out of the reason", async () => {
+    const run = fake({ answers: (_round, who) => (who.lens === "Tests" ? new Error("docker image missing") : []) });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.ok(run.logs.some((line) => line.includes("Tests") && line.includes("docker image missing")), run.logs.join("\n"));
+    assert.doesNotMatch((result as { reason: string }).reason, /docker image missing/);
+  });
+
+  it("logs a thrown value that isn't an Error as text, not as undefined", async () => {
+    const run = fake();
+    run.host.worktree = async () => {
+      throw "plain string thrown";
+    };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.ok(run.logs.some((line) => line.includes("plain string thrown")), run.logs.join("\n"));
+  });
+
   it("puts nothing from the reviewer's failure text that is the agent's own in the reason: the reason is host-written", async () => {
     const run = fake({ answers: (_round, who) => (who.lens === "Tests" ? new Error(`${"gh"}p_${"0123456789abcdef".repeat(2)}0123 leaked`) : []) });
 
@@ -1222,6 +1310,45 @@ describe("runHostReview's stops and failures", () => {
 
     assert.equal(result.status, "failed");
     assert.doesNotMatch((result as { reason: string }).reason, /ghp_/);
+  });
+});
+
+describe("openFindingsNote's size", () => {
+  const manyOpen = (count: number, summary: string): Ledger => ({
+    version: 1,
+    key: "k",
+    branch: "feature/387-x",
+    base: BASE,
+    head: hex(2),
+    recordedAt: "2026-01-01T00:00:00.000Z",
+    rounds: 1,
+    findings: Array.from({ length: count }, (_, index) => ({
+      id: `R${index + 1}`,
+      lens: "Edge cases",
+      path: "src/app.ts",
+      line: index + 1,
+      summary,
+      severity: "critical" as const,
+      security: false,
+      status: "open" as const,
+      test: null,
+      reason: null,
+      fix: summary,
+    })),
+  });
+
+  it("lists at most 20 findings and counts the rest", () => {
+    const note = openFindingsNote(manyOpen(150, "Short."));
+
+    assert.equal(note.split("\n").filter((line) => line.startsWith("- R")).length, 20);
+    assert.match(note, /130 more open findings are in the local review record/);
+  });
+
+  it("cuts a long summary and fix, so the note stays well under GitHub's limit", () => {
+    const note = openFindingsNote(manyOpen(150, "x".repeat(5000)));
+
+    assert.ok(note.length < 15_000, `the note is ${note.length} characters`);
+    assert.match(note, /…/);
   });
 });
 

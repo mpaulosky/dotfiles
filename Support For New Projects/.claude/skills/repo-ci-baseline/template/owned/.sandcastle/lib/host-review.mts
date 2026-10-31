@@ -236,20 +236,19 @@ export function applyOutcomes(
   headAdvanced: boolean,
 ): ReviewInput["findings"] {
   const changed = new Set(changedFiles.map((file) => file.replace(/^\.\//, "")));
-  return findings.map(({ needsPerson: _needsPerson, fixable, ...finding }) => {
-    const open = finding;
-    const outcome = outcomes.find((candidate) => candidate.id === finding.id);
+  return findings.map(({ needsPerson: _needsPerson, fixable, ...open }) => {
+    const outcome = outcomes.find((candidate) => candidate.id === open.id);
     if (!fixable || outcome === undefined) return open;
     const reason = outcome.reason?.trim() ? outcome.reason.trim() : null;
     if (outcome.status === "dismissed") {
-      return reason !== null && /\S+:\d+/.test(reason) ? { ...finding, status: "dismissed", test: null, reason, fix: null } : open;
+      return reason !== null && /\S+:\d+/.test(reason) ? { ...open, status: "dismissed", test: null, reason, fix: null } : open;
     }
     if (outcome.status !== "fixed" || !headAdvanced) return open;
     const test = outcome.test?.trim() ? outcome.test.trim() : null;
     if (test !== null) {
-      return changed.has((test.split("::")[0] ?? "").replace(/^\.\//, "")) ? { ...finding, status: "fixed", test, reason, fix: null } : open;
+      return changed.has((test.split("::")[0] ?? "").replace(/^\.\//, "")) ? { ...open, status: "fixed", test, reason, fix: null } : open;
     }
-    return !finding.security && finding.severity !== "warning" && reason !== null ? { ...finding, status: "fixed", test: null, reason, fix: null } : open;
+    return !open.security && open.severity !== "warning" && reason !== null ? { ...open, status: "fixed", test: null, reason, fix: null } : open;
   });
 }
 

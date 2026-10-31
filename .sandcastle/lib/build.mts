@@ -605,7 +605,6 @@ const liveHost: BuildHost = {
   localReview: (args) => runLocalReview(args),
 };
 
-
 // The skill files the host-side review reads, from the main checkout and never the worktree: the worktree is the branch's, so a
 // branch could edit the Bar, a lens or the reviewer's instructions to go easy on itself.
 function readSkillFiles(checkout: string = process.cwd()): SkillFiles {

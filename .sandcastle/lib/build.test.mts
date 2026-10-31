@@ -310,7 +310,7 @@ function host(
   const publishedPrBodies: (string | undefined)[] = [];
   // The reviewNote argument buildMarkedIssue passed to host.publish (its 11th), one entry per call.
   const publishedReviewNotes: (string | undefined)[] = [];
-  // Every localReview call's arguments, and the sandbox commands run before it was called.
+  // Every localReview call's arguments.
   const localReviewCalls: LocalReviewArgs[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
   const handBackWorkflowChangeCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];

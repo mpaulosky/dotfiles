@@ -254,7 +254,8 @@ describe("restrictedClaudeCode", () => {
 
     assert.equal(text.split("--tools").length - 1, 1, text);
     assert.match(text, /--tools '?Read,Grep,Glob'?(?= |$)/);
-    assert.doesNotMatch(text, /Bash/);
+    // The ledger's deny rules name Bash(scripts/review.sh:*), which takes a shell tool away; what is granted holds no shell.
+    assert.doesNotMatch(text.replace(/--disallowedTools(?: '[^']*')+/, ""), /Bash/);
     assert.match(text, /--model 'sonnet'/);
     assert.match(text, /--effort high/);
   });

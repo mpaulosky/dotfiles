@@ -20,6 +20,8 @@ Seed: `docs/CONTRIBUTING.md` (links to `PROCESS.md`) and `.github/dependabot.yml
   exhaustion and the threads Copilot and Claude opened no longer hold the merge, but a thread opened by a person does (mpaulosky/dotfiles#378).
   A login with write access adding `review:claude` again to a PR still open starts a new loop, but only where Copilot can't review the head ([automerge.md](automerge.md)).
   `review:claude` is ignored while Copilot can review: Claude reviews only where Copilot can't, and the comment gives the add-it-again advice only then.
+  On a repo's first re-Apply PR the base's PR Auto-Merge is the previous one and never posts the ask record that tells Claude Review Copilot was asked, so
+  `reapply.sh` posts the ask record (a comment as the owner) when its Copilot request doesn't register; `land.sh` then adds the label, with no hand step (mpaulosky/dotfiles#384).
 - **PR titles follow the commit format.** The title is the squash commit's subject and the Release's name. The survey
   found lowercase titles in four repos, so the format is a required check (**PR title**), not a guideline.
 - **PR descriptions share one shape.** The template's headings are Why, What changed and Verification, and `Fixes #`.

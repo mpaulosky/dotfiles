@@ -21,6 +21,12 @@ Lessons that apply to every part of the Baseline, learned bringing repos onto it
 - **Refresh the PR description after every follow-up commit.** The release workflow copies the merged PR's description
   into its blog post word for word. A stale claim (a test count, a feature since removed) turns into a stale post, and
   Copilot then holds the blog PR on it.
+- **The first re-Apply PR carries the old PR Auto-Merge** (mpaulosky/dotfiles#384). A PR runs its base branch's workflows, so on a repo's first re-Apply PR the
+  PR Auto-Merge is the previous one, which never posts the ask record (`<!-- pr-automerge:copilot-asked -->`, a comment by `github-actions` or the owner). Claude Review ignores
+  `review:claude` until the record is there ("Copilot hasn't been asked to review yet"), so with no Copilot budget the PR stalled (TicketManager#253). `reapply.sh` posts the ask record, as the owner,
+  when its Copilot request doesn't register, and `land.sh` then adds the label. It needs `gh` logged in as the repository owner. If a PR still lacks one, post it by hand as the owner:
+  `gh pr comment <n> --body '<!-- pr-automerge:copilot-asked -->'`, then re-add `review:claude`. Claude Review matches Copilot as the exact bot `copilot-pull-request-reviewer[bot]`
+  (and the Bot user `Copilot` as a requested reviewer): a login such as `copilot-x` is not Copilot's.
 - **Answer every Copilot thread**, fix or reply, then resolve it, and only after the push has landed, so the reply names
   a commit that exists. Auto-merge waits for every thread until the review loop is exhausted
   (three dirty rounds in a row, then one comment lists the open threads and the PR merges; #146, superseded by mpaulosky/dotfiles#375). Workflow and release logic draws real findings:

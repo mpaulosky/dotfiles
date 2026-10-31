@@ -85,7 +85,8 @@ Order across repos: `github/repos.txt`'s, the one list of the repos (retiring on
      Start with `--dry-run`. It ends with the `land.sh` command for the PRs it left open.
    - **One repo:** `reapply.sh --brings mpaulosky/dotfiles#<n>,#<n> <repo>` (what `rollout.sh` runs, and the way to retry a repo that failed)
      prepares the `chore/reapply-baseline` worktree, merges the remote branch and `main`, commits `apply.sh`'s output alone,
-     pushes through the gate, opens the re-Apply PR ready (or adds the commit to the open one) and requests Copilot.
+     pushes through the gate, opens the re-Apply PR ready (or adds the commit to the open one) and requests Copilot;
+     it records Copilot's ask on the PR when the request doesn't register, so Claude Review runs (a first re-Apply PR has the old PR Auto-Merge).
      Its header comment has the details; name the head it prints in thread replies.
    - **Land:** `land.sh <owner/repo#n>...` watches the PRs and acts on the landing decision until each PR and its release-blog PR land
      ([automerge.md](references/automerge.md#landing-a-round)); start with `land.sh --once --dry-run`.

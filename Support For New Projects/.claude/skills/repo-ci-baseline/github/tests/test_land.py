@@ -16,7 +16,7 @@ NEW = "abcdef0" + "0" * 33
 COPILOT = [("copilot-pull-request-reviewer", HEAD)]
 NOTE = ("copilot-pull-request-reviewer", HEAD, "Copilot was unable to review this pull request because the user who "
         "requested the review has reached their quota limit.")
-# Claude backs Copilot up on a head Copilot answered with its quota note, or whose request GitHub dropped.
+# Claude backs Copilot up on a head Copilot answered with its quota note, or whose request GitHub dropped (once the ask has settled).
 CLAUDE = [NOTE, ("github-actions", HEAD, "<!-- claude-review -->\n**Claude Review**")]
 GREEN = [{"__typename": "CheckRun", "name": "Template tests", "status": "COMPLETED", "conclusion": "SUCCESS",
           "startedAt": "2026-10-07T10:00:00Z"}]
@@ -56,8 +56,9 @@ def node(number=7, title="feat: Something", branch="feat/x", head=HEAD, draft=Fa
                                "submittedAt": f"2026-01-02T00:{index:02d}:00Z",
                                "comments": {"totalCount": 1 if "dirty" in review[3:] else 0},
                                "body": review[2] if len(review) > 2 else ""} for index, review in enumerate(reviews)]},
-        # The PR's last label events as (createdAt, label name).
-        "timelineItems": {"nodes": [{"createdAt": created, "label": {"name": name}} for created, name in events]},
+        # The PR's review:claude label events as (createdAt, whether the login that added it has write access); None is a read
+        # that failed (mpaulosky/dotfiles#378).
+        "labelEvents": None if events is None else [{"createdAt": created, "writer": writer} for created, writer in events],
         # A thread is True/False (resolved or not) or a full reviewThreads node.
         "reviewThreads": {"nodes": [{"isResolved": thread} if isinstance(thread, bool) else thread for thread in threads]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": list(contexts)}}
@@ -175,9 +176,12 @@ def test_a_copilot_request_github_dropped_is_warned_about_and_backed_up_by_claud
     assert "  warning: Copilot's review request didn't register on #7 (GitHub drops it once the Copilot code review budget " \
            "is used up); review:claude backs Copilot up for this PR" in text
     assert "  failed:" not in text
-    # The same run polls again: the record is on the PR now, 2 s old, and the drop it read back is remembered for this
-    # head, so review:claude is added as soon as the checks are green, without waiting out the 30 seconds.
+    # The same run polls again: the record is on the PR now, 2 s old. PR Auto-Merge takes review:claude off an ask that
+    # young, so land.py waits out the 30 seconds too instead of adding a label that is removed and never added again.
     fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, comments=[record(2)])]
+    lander.poll()
+    assert "-> add review:claude" not in printed(out) and fake.calls == [RECORD_CALL, REQUEST_CALL]
+    fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, comments=[record(31)])]
     lander.poll()
     assert "-> add review:claude" in printed(out) and fake.calls[2:] == [LABEL_CALL]
     # A later head: the record is old, so Copilot is not asked again and Claude is called in.
@@ -243,7 +247,8 @@ def test_claude_isnt_called_in_while_copilot_is_requested_or_the_label_is_on():
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     assert "Copilot is requested" in printed(out) and fake.calls == []
-    fake.open["o/app"] = [node(contexts=GREEN, labels=["review:claude"])]
+    # Copilot asked long ago and nothing pending: it can't review, so the label stands and Claude is waited for.
+    fake.open["o/app"] = [node(contexts=GREEN, labels=["review:claude"], comments=[record(3600)])]
     lander.poll()
     assert "review:claude is on" in printed(out) and fake.calls == []
 
@@ -274,7 +279,9 @@ def test_claudes_reviews_of_two_commits_and_a_merge_from_main_are_no_reason_to_s
 def test_a_loop_of_three_dirty_rounds_is_left_to_pr_auto_merge_with_the_threads_left_open():
     body = "<!-- claude-review -->\n**Claude Review**"
     reviews = [NOTE, *[("github-actions", sha * 40, body, "dirty") for sha in "123"]]
-    fake = Fake({"o/app": [node(reviews=reviews, contexts=GREEN, threads=[False, False])]})
+    # Copilot's threads: a person's would hold the merge (mpaulosky/dotfiles#378).
+    threads = [thread_by("copilot-pull-request-reviewer", "Bot")] * 2
+    fake = Fake({"o/app": [node(reviews=reviews, contexts=GREEN, threads=threads)]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     text = printed(out)
@@ -296,15 +303,17 @@ def test_a_dirty_round_after_a_clean_one_doesnt_exhaust_the_loop_and_gets_the_la
 def test_claude_isnt_called_in_while_the_exhaustion_comment_is_the_newest_word_but_is_once_the_owner_re_adds_the_label():
     marker = ("github-actions", "Review loop exhausted.\n\n" + landing.EXHAUSTED_MARKER + " " + HEAD + " -->", ago(3600))
     # Copilot's quota note is on the head and the checks are green, but the label is the owner's to add after the comment.
-    clean_after = [NOTE, ("github-actions", "9" * 40, "<!-- claude-review -->\nNo findings.")]
+    body = "<!-- claude-review -->\n**Claude Review**"
+    dirty3 = [("github-actions", sha * 40, body, "dirty") for sha in "123"]
+    clean_after = [NOTE, *dirty3, ("github-actions", "9" * 40, "<!-- claude-review -->\nNo findings.")]
     fake = Fake({"o/app": [node(reviews=clean_after, contexts=GREEN, comments=[marker])]})
     lander, out, _ = start(fake, {"o/app": None})
     lander.poll()
     text = printed(out)
     assert "-> wait" in text and "review:claude" in text
     assert fake.calls == []
-    # The owner adds review:claude after the comment (and the loop's rounds start over).
-    fake.open["o/app"] = [node(reviews=clean_after, contexts=GREEN, comments=[marker], events=[(ago(1800), "review:claude")])]
+    # The owner adds review:claude after the exhausting round (and the loop's rounds start over).
+    fake.open["o/app"] = [node(reviews=clean_after, contexts=GREEN, comments=[marker], events=[(ago(1800), True)])]
     lander.poll()
     assert fake.calls == [LABEL_CALL]
 
@@ -665,3 +674,69 @@ def test_targets_parse_prs_urls_and_repos():
         {"o/app": {7, 8}, "o/dots": None}
     with pytest.raises(ValueError):
         land.parse_targets(["app"])
+
+
+# ── Claude reviews only where Copilot can't; a person's threads hold (mpaulosky/dotfiles#378) ──
+
+def thread_by(login, kind="User", review=None):
+    """An unresolved reviewThreads node opened by login."""
+    return {"isResolved": False, "path": "src/a.py", "line": 3, "originalLine": 3,
+            "comments": {"totalCount": 1, "nodes": [{"url": "https://github.com/o/app/pull/7#discussion_r1",
+                                                     "author": {"login": login, "__typename": kind},
+                                                     "pullRequestReview": {"body": review or ""}}]}}
+
+
+EXHAUSTED_REVIEWS = [("copilot-pull-request-reviewer", sha * 40, "", "dirty") for sha in "123"]
+
+
+def test_review_claude_is_ignored_while_copilot_can_review_it_acceptance_criterion_2():
+    # Never asked: Copilot is asked, the label notwithstanding.
+    fake = Fake({"o/app": [node(reviews=OLDER, contexts=GREEN, labels=["review:claude"])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert fake.calls == [RECORD_CALL, REQUEST_CALL]
+    assert "review:claude is on" not in printed(out)
+    # Asked and a request pending: Copilot is waited for, not Claude.
+    fake.open["o/app"] = [node(reviews=OLDER, contexts=GREEN, labels=["review:claude"], requested=["Copilot"], comments=[record(3600)])]
+    lander.poll()
+    assert "Copilot is requested" in printed(out) and len(fake.calls) == 2
+
+
+def test_an_exhausted_loop_waits_for_a_thread_opened_by_a_person_but_not_for_bots_acceptance_criterion_3():
+    person = Fake({"o/app": [node(reviews=EXHAUSTED_REVIEWS, contexts=GREEN, threads=[thread_by("octo")])]})
+    lander, out, _ = start(person, {"o/app": None})
+    lander.poll()
+    held = printed(out)
+    assert "-> wait" in held and "person" in held and "leave to PR Auto-Merge" not in held
+
+    bots = Fake({"o/app": [node(reviews=EXHAUSTED_REVIEWS, contexts=GREEN,
+                                threads=[thread_by("copilot-pull-request-reviewer", "Bot"),
+                                         thread_by("github-actions", "Bot", "<!-- claude-review -->\n**Claude Review**")])]})
+    lander, out, _ = start(bots, {"o/app": None})
+    lander.poll()
+    assert "-> leave to PR Auto-Merge (review loop exhausted" in printed(out)
+
+    both = Fake({"o/app": [node(reviews=EXHAUSTED_REVIEWS, contexts=GREEN,
+                                threads=[thread_by("copilot-pull-request-reviewer", "Bot"), thread_by("octo")])]})
+    lander, out, _ = start(both, {"o/app": None})
+    lander.poll()
+    assert "-> wait" in printed(out)
+
+
+def test_a_thread_whose_author_cant_be_read_holds_an_exhausted_loop_acceptance_criterion_3():
+    unreadable = thread_by("x")
+    unreadable["comments"]["nodes"][0]["author"] = None
+    fake = Fake({"o/app": [node(reviews=EXHAUSTED_REVIEWS, contexts=GREEN, threads=[unreadable])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert "-> wait" in printed(out)
+
+
+def test_a_label_event_whose_permission_couldnt_be_read_leaves_land_waiting_acceptance_criterion_11():
+    # Copilot answered the head with its note, so an add could count; its permission is unreadable, so the loop is unread.
+    reviews = [NOTE, *[("github-actions", sha * 40, "<!-- claude-review -->\n**Claude Review**", "dirty") for sha in "123"]]
+    fake = Fake({"o/app": [node(reviews=reviews, contexts=GREEN, events=[(ago(1800), None)])]})
+    lander, out, _ = start(fake, {"o/app": None})
+    lander.poll()
+    assert "leave to PR Auto-Merge" not in printed(out) and "review loop exhausted" not in printed(out)
+    assert fake.calls == []

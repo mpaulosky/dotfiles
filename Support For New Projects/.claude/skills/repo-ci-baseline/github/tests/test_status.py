@@ -43,8 +43,9 @@ def pr_node(number=7, title="feat: Something", draft=False, merge_state="CLEAN",
             contexts=(), armed=False, comments=comments_of(), events=()):
     return {
         "id": f"PR_{number}", "comments": comments,
-        # The last label events, as the timelineItems of QUERY report them: [{createdAt, label: {name}}].
-        "timelineItems": {"nodes": list(events)},
+        # The PR's review:claude label events, all of them oldest first, as gh_graphql reads them (EVENTS_QUERY, paged)
+        # and resolves the actor's write access: [{createdAt, writer}]; None is a read that failed (mpaulosky/dotfiles#378).
+        "labelEvents": None if events is None else list(events),
         "number": number, "title": title, "state": "OPEN", "isDraft": draft, "headRefOid": HEAD,
         "mergeStateStatus": merge_state,
         "autoMergeRequest": {"enabledAt": "2026-10-07T10:00:00Z"} if armed else None,
@@ -291,6 +292,8 @@ def fake_graphql(monkeypatch, repo_data, threads_by_id):
     def graphql(query, *fields, **raw):
         if query == st.COMMENTS_QUERY:
             return {"node": {"comments": comments_of()}}
+        if query == st.EVENTS_QUERY:
+            return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
         calls.append(raw.get("id"))
         if query == st.THREADS_QUERY:
             return {"node": {"reviewThreads": {"nodes": threads_by_id[raw["id"]]}}}
@@ -423,6 +426,8 @@ def comments_graphql(monkeypatch, repo_data, comments_by_id):
     asked_ids = []
 
     def graphql(query, *fields, **raw):
+        if query == st.EVENTS_QUERY:
+            return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
         if query == st.COMMENTS_QUERY:
             asked_ids.append(raw["id"])
             answer = comments_by_id[raw["id"]]
@@ -489,9 +494,13 @@ def marker_comment(at="2026-01-02T01:00:00Z", login="github-actions", body=EXHAU
     return {"author": {"login": login}, "body": body, "createdAt": at}
 
 
-def relabel(at="2026-01-02T02:00:00Z", label="review:claude"):
-    """A label event, as the timelineItems of QUERY report it."""
-    return {"createdAt": at, "label": {"name": label}}
+def relabel(at="2026-01-02T02:00:00Z", writer=True):
+    """A review:claude label event as to_state reads it: when, and whether the login that added it has write access."""
+    return {"createdAt": at, "writer": writer}
+
+
+# The ask was recorded long ago and nothing is pending: Copilot is gone, so a review:claude add can restart the loop.
+GONE = at(3600)
 
 
 def state_of(node, **kwargs):
@@ -499,7 +508,7 @@ def state_of(node, **kwargs):
 
 
 def test_the_line_shows_an_exhausted_loop_as_ready_to_merge_with_the_threads_left_open():
-    node = pr_node(reviews=DIRTY3, threads=[False, False, True], contexts=GREEN)
+    node = pr_node(reviews=DIRTY3, threads=[open_thread(), open_thread(), thread_node(resolved=True)], contexts=GREEN)
     _, out, _ = run(["owner/app"], {"owner/app": repo(node)})
 
     assert "threads:2" in out
@@ -566,27 +575,30 @@ def test_an_exhaustion_comment_with_no_relabel_after_it_is_the_newest_word():
 
 def test_the_owner_re_adding_review_claude_after_the_comment_starts_a_new_loop():
     # Three dirty rounds before the label's event, and a fourth before it too: none of them counts any more.
-    before = pr_node(reviews=[*DIRTY3, round_of(4, minute=30)], comments=comments_of(marker_comment()), events=[relabel()])
+    before = pr_node(reviews=[*DIRTY3, round_of(4, minute=30)], comments=comments_of(GONE, marker_comment()), events=[relabel()])
     state = state_of(before)
     assert not state.exhaustion_marker_newest
     assert state.rounds == () and not state.loop_exhausted
     # A round after the event is the new loop's first.
     fresh = (COPILOT_LOGIN, f"{5:040x}", "", {"at": "2026-01-02T03:00:00Z", "threads": 1, "merge": False})
-    after = state_of(pr_node(reviews=[*DIRTY3, fresh], comments=comments_of(marker_comment()), events=[relabel()]))
+    after = state_of(pr_node(reviews=[*DIRTY3, fresh], comments=comments_of(GONE, marker_comment()), events=[relabel()]))
     assert [item.oid for item in after.rounds] == [f"{5:040x}"] and not after.loop_exhausted
 
 
-def test_a_label_event_before_the_comment_or_for_another_label_is_no_restart():
-    for events in ([relabel(at="2026-01-02T00:30:00Z")], [relabel(label="enhancement")], []):
-        state = state_of(pr_node(reviews=DIRTY3, comments=comments_of(marker_comment()), events=events))
+def test_a_label_event_before_the_exhausting_round_or_by_a_reader_is_no_restart():
+    # DIRTY3's third round is at 00:02. An add before it is part of the loop; an add by a login without write access
+    # (acceptance criterion 11) starts nothing.
+    for events in ([relabel(at="2026-01-02T00:01:30Z")], [relabel(writer=False)], []):
+        state = state_of(pr_node(reviews=DIRTY3, comments=comments_of(GONE, marker_comment()), events=events))
         assert state.exhaustion_marker_newest and state.loop_exhausted, events
 
 
-def test_only_the_first_relabel_after_the_comment_restarts_the_loop():
-    # PR Auto-Merge's PAT adds the label as the owner, later in the loop: that must not discard the loop's rounds.
+def test_only_the_first_relabel_after_the_exhausting_round_restarts_the_loop_and_a_later_add_inside_the_new_loop_keeps_its_rounds():
+    # PR Auto-Merge's PAT adds the label as the owner, later in the loop (before its third dirty round): that must not
+    # discard the loop's rounds.
     rounds = [(COPILOT_LOGIN, f"{n:040x}", "", {"at": f"2026-01-02T03:{n:02d}:00Z", "threads": 1}) for n in (1, 2, 3)]
-    node = pr_node(reviews=[*DIRTY3, *rounds], comments=comments_of(marker_comment()),
-                   events=[relabel("2026-01-02T02:00:00Z"), relabel("2026-01-02T03:30:00Z")])
+    node = pr_node(reviews=[*DIRTY3, *rounds], comments=comments_of(GONE, marker_comment()),
+                   events=[relabel("2026-01-02T02:00:00Z"), relabel("2026-01-02T03:02:30Z")])
     state = state_of(node)
 
     assert len(state.rounds) == 3 and state.loop_exhausted and not state.exhaustion_marker_newest
@@ -599,12 +611,16 @@ def test_only_github_actions_comments_count_as_the_exhaustion_record():
     assert state_of(pr_node(reviews=DIRTY3, comments=comments_of(marker_comment(login="github-actions[bot]")))).exhaustion_marker_newest
 
 
-def test_the_latest_exhaustion_comment_decides_where_the_new_loop_starts():
+def test_the_latest_exhaustion_comment_of_the_new_loop_is_the_newest_word():
     first = marker_comment(at="2026-01-02T01:00:00Z")
     second = marker_comment(at="2026-01-02T05:00:00Z")
-    node = pr_node(reviews=DIRTY3, comments=comments_of(first, second), events=[relabel("2026-01-02T02:00:00Z")])
-    # The relabel is before the newest comment, so that comment is the newest word again.
-    assert state_of(node).exhaustion_marker_newest
+    new_loop = [(COPILOT_LOGIN, f"{n:040x}", "", {"at": f"2026-01-02T03:{n:02d}:00Z", "threads": 1}) for n in (1, 2, 3)]
+    node = pr_node(reviews=[*DIRTY3, *new_loop], comments=comments_of(GONE, first, second), events=[relabel("2026-01-02T02:00:00Z")])
+    # The second loop was exhausted too and the second comment documents it: nobody has added the label since.
+    state = state_of(node)
+    assert state.exhaustion_marker_newest and state.loop_exhausted
+    # A comment older than the second loop's exhausting round doesn't: that loop isn't documented yet.
+    assert not state_of(pr_node(reviews=[*DIRTY3, *new_loop], comments=comments_of(GONE, first), events=[relabel("2026-01-02T02:00:00Z")])).exhaustion_marker_newest
 
 
 def test_a_loop_whose_comments_or_label_events_cant_be_read_is_never_exhausted():
@@ -612,8 +628,7 @@ def test_a_loop_whose_comments_or_label_events_cant_be_read_is_never_exhausted()
         state = state_of(pr_node(reviews=DIRTY3, comments=comments))
         assert state.loop_unread and not state.loop_exhausted, comments
     # A comment is there but the label events are not: no telling where the new loop starts.
-    node = pr_node(reviews=DIRTY3, comments=comments_of(marker_comment()))
-    del node["timelineItems"]
+    node = pr_node(reviews=DIRTY3, comments=comments_of(marker_comment()), events=None)
     assert state_of(node).loop_unread and not state_of(node).loop_exhausted
     # The page is partial but holds the comment: read.
     found = state_of(pr_node(reviews=DIRTY3, comments=comments_of(marker_comment(), total=150)))
@@ -629,14 +644,14 @@ def test_an_unread_loop_is_not_shown_as_ready_to_merge():
     assert "review loop exhausted" not in out and "-> leave to PR Auto-Merge" not in out
 
 
-def test_the_repo_query_reads_each_reviews_time_and_thread_count_and_the_label_events():
+def test_the_repo_query_reads_each_reviews_time_and_thread_count():
     reviews = st.QUERY[st.QUERY.index("reviews(last: 100)"):]
     reviews = reviews[:reviews.index("reviewThreads")]
     assert "submittedAt" in reviews and "comments { totalCount }" in reviews
     # The existing fields stay.
     assert "author { login } commit { oid parents { totalCount } } body" in st.QUERY
-    assert "timelineItems(" in st.QUERY and "LABELED_EVENT" in st.QUERY
-    assert "createdAt" in st.QUERY[st.QUERY.index("timelineItems("):] and "label { name }" in st.QUERY[st.QUERY.index("timelineItems("):]
+    # The label events are not the repo query's any more (acceptance criterion 12): a "last 30" misses the add on a PR with many.
+    assert "timelineItems(" not in st.QUERY
 
 
 def test_a_pr_that_could_be_exhausted_gets_the_comments_query_even_when_copilot_is_requested(monkeypatch):
@@ -644,13 +659,26 @@ def test_a_pr_that_could_be_exhausted_gets_the_comments_query_even_when_copilot_
     exhausted = dict(pr_node(number=1, reviews=DIRTY3, comments=None), reviewRequests=COPILOT_REQUESTED)
     two = dict(pr_node(number=2, reviews=DIRTY3[:2], comments=None), reviewRequests=COPILOT_REQUESTED)
     clean_last = dict(pr_node(number=3, reviews=[*DIRTY3, round_of(4, dirty=False)], comments=None), reviewRequests=COPILOT_REQUESTED)
-    asked_ids = comments_graphql(monkeypatch, repo(exhausted, two, clean_last), {"PR_1": comments_of(marker_comment())})
+    asked_ids = comments_graphql(monkeypatch, repo(exhausted, two, clean_last), {"PR_1": comments_of(marker_comment()), "PR_3": comments_of(marker_comment())})
     data = st.gh_graphql("owner", "app")
     by_number = {node["number"]: node for node in data["repository"]["pullRequests"]["nodes"]}
 
-    assert asked_ids == ["PR_1"]
-    assert by_number[1]["comments"]["totalCount"] == 1
-    assert by_number[2]["comments"] is None and by_number[3]["comments"] is None
+    # The longest dirty run counts, not the trailing one (review_loop's test): PR 3's loop may have been restarted since
+    # its three dirty rounds, so its comments and label events are read too; PR 2 never reached the cap.
+    assert asked_ids == ["PR_1", "PR_3"]
+    assert by_number[1]["comments"]["totalCount"] == 1 and by_number[3]["comments"]["totalCount"] == 1
+    assert by_number[2]["comments"] is None
+
+
+def test_a_restarted_loop_whose_newest_rounds_are_clean_reads_its_label_events_and_is_not_unread():
+    # d d d, a writer re-adds review:claude, one clean round, then a head nobody has reviewed: the trailing dirty streak is 0,
+    # but the loop reached the cap once, so the comments and events must be read for the walk (mpaulosky/dotfiles#378).
+    clean = (COPILOT_LOGIN, f"{4:040x}", "", {"at": "2026-01-02T03:00:00Z", "threads": 0, "merge": False})
+    node = pr_node(reviews=[*DIRTY3, clean], comments=comments_of(GONE, marker_comment()), events=[relabel("2026-01-02T01:00:00Z")])
+    state = state_of(node)
+
+    assert not state.loop_unread and not state.loop_exhausted
+    assert [item.oid for item in state.rounds] == [f"{4:040x}"]
 
 
 def test_a_failed_comments_query_for_a_pr_that_could_be_exhausted_makes_its_loop_unread(monkeypatch, capsys):
@@ -662,3 +690,356 @@ def test_a_failed_comments_query_for_a_pr_that_could_be_exhausted_makes_its_loop
     assert st.main(["owner/app"], out=out, err=err) == 0
     assert "review loop exhausted" not in out.getvalue()
     assert "502 Bad Gateway" in capsys.readouterr().err
+
+
+# ── Claude reviews only where Copilot can't; a person's threads hold; every label event is read (mpaulosky/dotfiles#378) ──
+
+COPILOT_REQUESTED_NODE = {"nodes": [{"requestedReviewer": {"login": "Copilot"}}]}
+NOTE_TEXT = "Copilot was unable to review this pull request because the user who requested the review has reached their quota limit."
+
+
+def test_a_review_claude_add_by_a_writer_after_the_exhausting_round_starts_a_new_loop_with_no_comment_acceptance_criterion_4():
+    node = pr_node(reviews=[*DIRTY3, round_of(4, minute=30)], comments=comments_of(GONE), events=[relabel()])
+    state = state_of(node)
+
+    assert state.rounds == () and not state.loop_exhausted and not state.exhaustion_marker_newest and not state.loop_unread
+
+
+def test_the_add_is_ignored_while_copilot_can_review_acceptance_criteria_1_and_4():
+    # Never asked, or a request pending even after a long-settled record: Copilot may still review, so the label means nothing.
+    never_asked = pr_node(reviews=DIRTY3, events=[relabel()])
+    pending = dict(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel()]), reviewRequests=COPILOT_REQUESTED_NODE)
+    just_asked = pr_node(reviews=DIRTY3, comments=comments_of(at(5)), events=[relabel()])
+    for node in (never_asked, pending, just_asked):
+        state = state_of(node)
+        assert state.loop_exhausted and len(state.rounds) == 3, node["reviewRequests"] if "reviewRequests" in node else node["comments"]
+
+
+def test_the_add_counts_when_copilots_note_is_on_the_head_acceptance_criterion_4():
+    note = (COPILOT_LOGIN, HEAD, NOTE_TEXT)
+    state = state_of(pr_node(reviews=[*DIRTY3, note], events=[relabel()]))
+
+    assert state.rounds == () and not state.loop_exhausted
+
+
+def test_the_add_is_ignored_when_copilot_has_really_reviewed_the_head_acceptance_criterion_1():
+    # A settled ask and no pending request is also what a finished Copilot review leaves behind (#270): not "gone".
+    reviewed = (COPILOT_LOGIN, HEAD, "", {"at": "2026-01-02T00:03:00Z", "threads": 1})
+    state = state_of(pr_node(reviews=[round_of(1), round_of(2), round_of(3), reviewed], comments=comments_of(GONE), events=[relabel("2026-01-02T00:04:00Z")]))
+
+    assert state.loop_exhausted
+
+
+def test_a_review_claude_add_by_a_login_without_write_access_starts_no_loop_acceptance_criterion_11():
+    state = state_of(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel(writer=False)]))
+
+    assert state.loop_exhausted and not state.loop_unread
+
+
+def test_a_review_claude_add_whose_permission_couldnt_be_read_leaves_the_loop_unread_acceptance_criterion_11():
+    state = state_of(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel(writer=None)]))
+
+    assert state.loop_unread and not state.loop_exhausted
+
+
+def test_the_first_add_by_a_writer_counts_after_adds_by_readers_acceptance_criterion_11():
+    events = [relabel("2026-01-02T01:00:00Z", writer=False), relabel("2026-01-02T01:30:00Z", writer=True), relabel("2026-01-02T02:00:00Z", writer=None)]
+    state = state_of(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=events))
+
+    assert state.rounds == () and not state.loop_unread
+
+
+def test_label_events_that_were_not_read_leave_a_loop_that_could_be_exhausted_unread_acceptance_criterion_12():
+    absent = pr_node(reviews=DIRTY3, comments=comments_of(GONE))
+    del absent["labelEvents"]
+    for node in (absent, pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=None)):
+        state = state_of(node)
+        assert state.loop_unread and not state.loop_exhausted
+    # Fewer than three dirty rounds can't be exhausted, so unread events say nothing.
+    assert not state_of(pr_node(reviews=DIRTY3[:2], comments=comments_of(GONE), events=None)).loop_unread
+
+
+def test_an_unread_label_events_loop_is_not_shown_as_ready_to_merge_acceptance_criterion_12():
+    node = pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=None, contexts=GREEN)
+    _, out, _ = run(["owner/app"], {"owner/app": repo(node)})
+
+    assert "review loop exhausted" not in out and "-> leave to PR Auto-Merge" not in out
+
+
+# ── A person's open threads still hold the merge at an exhausted loop ──
+
+def open_thread(login="copilot-pull-request-reviewer", kind="Bot", review="", **kwargs):
+    return thread_node(login=login, kind=kind, review=review, resolved=False, **kwargs)
+
+
+CLAUDE_THREAD = dict(login="github-actions", review="<!-- claude-review -->\n**Claude Review**")
+
+
+def test_to_state_counts_the_open_threads_a_person_opened_acceptance_criterion_3():
+    persons = state_of(pr_node(reviews=DIRTY3, threads=[open_thread(login="octo", kind="User")]))
+    bots = state_of(pr_node(reviews=DIRTY3, threads=[open_thread(), open_thread(**CLAUDE_THREAD)]))
+    both = state_of(pr_node(reviews=DIRTY3, threads=[open_thread(), open_thread(login="octo", kind="User"), open_thread(**CLAUDE_THREAD)]))
+
+    assert (persons.open_threads, persons.open_person_threads) == (1, 1)
+    assert (bots.open_threads, bots.open_person_threads) == (2, 0)
+    assert (both.open_threads, both.open_person_threads) == (3, 1)
+
+
+def test_a_thread_whose_author_cant_be_read_counts_as_a_persons_acceptance_criterion_3():
+    unreadable = state_of(pr_node(reviews=DIRTY3, threads=[open_thread(login=None)]))
+    # A thread node without its comments (the repo query reads none) has no opener either.
+    uncommented = state_of(pr_node(reviews=DIRTY3, threads=[False]))
+
+    assert unreadable.open_person_threads == 1 and uncommented.open_person_threads == 1
+
+
+def test_a_resolved_thread_of_a_person_holds_nothing_acceptance_criterion_3():
+    state = state_of(pr_node(reviews=DIRTY3, threads=[thread_node(login="octo", kind="User", resolved=True), open_thread()]))
+
+    assert state.open_threads == 1 and state.open_person_threads == 0
+
+
+def test_the_line_for_an_exhausted_loop_waits_on_a_persons_thread_and_hands_off_for_bot_threads_acceptance_criterion_3():
+    person = pr_node(reviews=DIRTY3, threads=[open_thread(), open_thread(login="octo", kind="User")], contexts=GREEN)
+    bots = pr_node(number=8, reviews=DIRTY3, threads=[open_thread(), open_thread(**CLAUDE_THREAD)], contexts=GREEN)
+    _, out, _ = run(["owner/app"], {"owner/app": repo(person, bots)})
+    held, handed = out.splitlines()
+
+    assert "-> wait" in held and "person" in held and "-> leave to PR Auto-Merge" not in held
+    assert "-> leave to PR Auto-Merge (review loop exhausted" in handed and "2 thread(s) left open" in handed
+
+
+def test_a_pr_that_could_be_exhausted_with_open_threads_gets_the_threads_query_for_their_authors_acceptance_criterion_3(monkeypatch):
+    exhausted = dict(pr_node(number=1, reviews=DIRTY3, threads=[False, True], comments=comments_of(marker_comment())), id="PR_ex")
+    below = dict(pr_node(number=2, reviews=DIRTY3[:2], threads=[False], comments=None), id="PR_below")
+    resolved = dict(pr_node(number=3, reviews=DIRTY3, threads=[True], comments=comments_of(marker_comment())), id="PR_resolved")
+    threads_asked = []
+
+    def graphql(query, *fields, **raw):
+        if query == st.EVENTS_QUERY:
+            return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
+        if query == st.COMMENTS_QUERY:
+            return {"node": {"comments": comments_of(marker_comment())}}
+        if query == st.THREADS_QUERY:
+            threads_asked.append(raw["id"])
+            return {"node": {"reviewThreads": {"nodes": [open_thread(login="octo", kind="User"), thread_node(resolved=True)]}}}
+        return repo(exhausted, below, resolved)
+    monkeypatch.setattr(st, "graphql", graphql)
+    data = st.gh_graphql("owner", "app")
+    by_number = {node["number"]: node for node in data["repository"]["pullRequests"]["nodes"]}
+
+    assert "PR_ex" in threads_asked and "PR_below" not in threads_asked
+    assert st.to_state(by_number[1], **FLAGS, owner="o", now=NOW).open_person_threads == 1
+
+
+def test_a_failed_threads_read_leaves_every_open_thread_a_persons_acceptance_criterion_3(monkeypatch, capsys):
+    exhausted = dict(pr_node(number=1, reviews=DIRTY3, threads=[False], comments=comments_of(marker_comment())), id="PR_ex")
+
+    def graphql(query, *fields, **raw):
+        if query == st.EVENTS_QUERY:
+            return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}
+        if query == st.COMMENTS_QUERY:
+            return {"node": {"comments": comments_of(marker_comment())}}
+        if query == st.THREADS_QUERY:
+            raise RuntimeError("502 Bad Gateway")
+        return repo(exhausted)
+    monkeypatch.setattr(st, "graphql", graphql)
+    monkeypatch.setattr(st, "COMMENTS_FAILED", set())
+    data = st.gh_graphql("owner", "app")
+    node = data["repository"]["pullRequests"]["nodes"][0]
+
+    assert st.to_state(node, **FLAGS, owner="o", now=NOW).open_person_threads == 1
+    assert "502 Bad Gateway" in capsys.readouterr().err
+
+
+# ── Every review:claude label event is read, a page at a time (acceptance criteria 11 and 12) ──
+
+def event_node(at_time, login, kind="User", label="review:claude"):
+    return {"createdAt": at_time, "label": {"name": label}, "actor": None if login is None else {"login": login, "__typename": kind}}
+
+
+def events_page(nodes, next_cursor=None):
+    return {"node": {"timelineItems": {"pageInfo": {"hasNextPage": next_cursor is not None, "endCursor": next_cursor}, "nodes": nodes}}}
+
+
+class Served:
+    """GitHub as gh_graphql reads it: repo data, then per PR id the pages of its comments (newest page first), its label
+    events (oldest page first) and its threads, and the collaborator permission of each login."""
+
+    def __init__(self, repo_data, comments=None, events=None, threads=None, permissions=None):
+        self.repo_data, self.comments, self.events = repo_data, comments or {}, events or {}
+        self.threads, self.permissions = threads or {}, permissions or {}
+        self.calls = []  # (kind, id) per query, and ("permission", login) per REST lookup
+        self.reads = {}
+
+    def graphql(self, query, *fields, **raw):
+        args = "|".join([*map(str, fields), *map(str, raw.values()), *map(str, raw.keys())])
+        for kind, constant, pages in (("comments", st.COMMENTS_QUERY, self.comments), ("events", st.EVENTS_QUERY, self.events)):
+            if query == constant:
+                key = (kind, raw.get("id") or next(f.split("=", 1)[1] for f in fields if f.startswith("id=")))
+                self.calls.append(key)
+                index = self.reads.get(key, 0)
+                self.reads[key] = index + 1
+                page = pages[key[1]][index]
+                if isinstance(page, Exception):
+                    raise page
+                if index:
+                    # A later page is asked for from the cursor the page before gave.
+                    previous = pages[key[1]][index - 1]
+                    info = previous["node"]["timelineItems" if kind == "events" else "comments"]["pageInfo"]
+                    assert str(info.get("endCursor") or info.get("startCursor")) in args, (kind, args)
+                return page
+        if query == st.THREADS_QUERY:
+            self.calls.append(("threads", raw["id"]))
+            return {"node": {"reviewThreads": {"nodes": self.threads[raw["id"]]}}}
+        return self.repo_data
+
+    def rest(self, path):
+        login = path.split("/collaborators/")[1].split("/")[0]
+        self.calls.append(("permission", login))
+        answer = self.permissions.get(login, "none")
+        if isinstance(answer, Exception):
+            raise answer
+        return {"permission": answer}
+
+    def install(self, monkeypatch):
+        monkeypatch.setattr(st, "graphql", self.graphql)
+        monkeypatch.setattr(st, "rest", self.rest)
+        monkeypatch.setattr(st, "PERMISSIONS", {})
+        monkeypatch.setattr(st, "COMMENTS_FAILED", set())
+        return self
+
+
+def comments_page(nodes, total, previous=None):
+    return {"node": {"comments": {"totalCount": total, "pageInfo": {"hasPreviousPage": previous is not None, "startCursor": previous},
+                                  "nodes": nodes}}}
+
+
+def exhausted_node(**kwargs):
+    return dict(pr_node(number=1, reviews=DIRTY3, **kwargs), id="PR_1")
+
+
+def test_the_events_query_pages_through_the_review_claude_events_acceptance_criterion_12():
+    assert "timelineItems" in st.EVENTS_QUERY and "LABELED_EVENT" in st.EVENTS_QUERY
+    for field in ("$id: ID!", "first: 100", "after:", "pageInfo", "hasNextPage", "endCursor", "createdAt", "label { name }", "actor", "login", "__typename"):
+        assert field in st.EVENTS_QUERY, field
+
+
+def test_the_comments_query_pages_backwards_acceptance_criterion_9():
+    for field in ("comments(last: 100", "before", "pageInfo", "hasPreviousPage", "startCursor"):
+        assert field in st.COMMENTS_QUERY, field
+
+
+def test_more_than_30_label_events_after_the_exhausting_round_are_all_read_acceptance_criterion_12(monkeypatch):
+    strangers = [event_node(f"2026-01-02T01:{minute:02d}:00Z", "stranger") for minute in range(30)]
+    later = [event_node("2026-01-02T02:00:00Z", "owner"), *[event_node(f"2026-01-02T02:{minute:02d}:00Z", "stranger") for minute in range(1, 10)]]
+    # The 35th event is the owner's; the repo's owner has write access without a lookup.
+    pages = [events_page(strangers, "c1"), events_page(later)]
+    served = Served(repo(exhausted_node(comments=None)), comments={"PR_1": [comments_page([GONE], 1)]},
+                    events={"PR_1": pages}, permissions={"stranger": "read"}).install(monkeypatch)
+    data = st.gh_graphql("owner", "app")
+    node = data["repository"]["pullRequests"]["nodes"][0]
+
+    assert len(node["labelEvents"]) == 40
+    assert [event["writer"] for event in node["labelEvents"][:30]] == [False] * 30
+    assert node["labelEvents"][30] == {"createdAt": "2026-01-02T02:00:00Z", "writer": True}
+    assert served.calls.count(("events", "PR_1")) == 2
+    state = st.to_state(node, **FLAGS, owner="owner", now=NOW)
+    assert state.rounds == () and not state.loop_exhausted and not state.loop_unread
+
+
+def test_a_page_of_label_events_that_cant_be_read_marks_the_loop_unread_acceptance_criterion_12(monkeypatch, capsys):
+    pages = [events_page([event_node("2026-01-02T01:00:00Z", "stranger")], "c1"), RuntimeError("502 Bad Gateway")]
+    Served(repo(exhausted_node(comments=None)), comments={"PR_1": [comments_page([GONE], 1)]}, events={"PR_1": pages},
+           permissions={"stranger": "read"}).install(monkeypatch)
+    data = st.gh_graphql("owner", "app")
+    node = data["repository"]["pullRequests"]["nodes"][0]
+
+    assert node["labelEvents"] is None
+    assert "502 Bad Gateway" in capsys.readouterr().err
+    state = st.to_state(node, **FLAGS, owner="owner", now=NOW)
+    assert state.loop_unread and not state.loop_exhausted
+
+
+def test_only_review_claude_events_are_kept_and_each_login_is_asked_about_once_acceptance_criterion_11(monkeypatch):
+    events = [
+        event_node("2026-01-02T01:00:00Z", "stranger"),
+        event_node("2026-01-02T01:01:00Z", "stranger"),
+        event_node("2026-01-02T01:02:00Z", "colleague"),
+        event_node("2026-01-02T01:03:00Z", "enhancer", label="enhancement"),
+        event_node("2026-01-02T01:04:00Z", "github-actions", kind="Bot"),
+        event_node("2026-01-02T01:05:00Z", None),
+        event_node("2026-01-02T01:06:00Z", "flaky"),
+        event_node("2026-01-02T01:07:00Z", "owner"),
+    ]
+    served = Served(repo(exhausted_node(comments=None)), comments={"PR_1": [comments_page([GONE], 1)]}, events={"PR_1": [events_page(events)]},
+                    permissions={"stranger": "read", "colleague": "write", "flaky": RuntimeError("502")}).install(monkeypatch)
+    node = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+
+    assert [(event["createdAt"][-9:-1], event["writer"]) for event in node["labelEvents"]] == [
+        ("01:00:00", False), ("01:01:00", False), ("01:02:00", True),
+        # A bot, and an actor that can't be read (a deleted account), never have write access; a failed lookup is unread.
+        ("01:04:00", False), ("01:05:00", False), ("01:06:00", None), ("01:07:00", True),
+    ]
+    lookups = [login for kind, login in served.calls if kind == "permission"]
+    assert sorted(set(lookups)) == sorted(lookups), lookups
+    assert "owner" not in lookups and "github-actions" not in lookups and "enhancer" not in lookups
+    assert {"stranger", "colleague", "flaky"} <= set(lookups)
+
+
+def test_the_permission_of_a_login_is_asked_through_the_collaborators_permission_endpoint_acceptance_criterion_11(monkeypatch):
+    paths = []
+    served = Served(repo(exhausted_node(comments=None)), comments={"PR_1": [comments_page([GONE], 1)]},
+                    events={"PR_1": [events_page([event_node("2026-01-02T01:00:00Z", "colleague")])]}, permissions={"colleague": "admin"})
+    served.install(monkeypatch)
+    monkeypatch.setattr(st, "rest", lambda path: paths.append(path) or served.rest(path))
+    node = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+
+    assert paths == ["repos/owner/app/collaborators/colleague/permission"]
+    assert node["labelEvents"][0]["writer"] is True
+
+
+def test_a_pr_that_cant_be_exhausted_reads_no_label_events(monkeypatch):
+    served = Served(repo(dict(pr_node(number=1, reviews=DIRTY3[:2], comments=None), id="PR_1")), comments={"PR_1": [comments_page([GONE], 1)]}).install(monkeypatch)
+    st.gh_graphql("owner", "app")
+
+    assert not any(kind == "events" for kind, _ in served.calls)
+
+
+def test_a_pr_with_more_than_100_comments_and_no_marker_on_the_last_page_reads_the_earlier_pages_acceptance_criterion_9(monkeypatch):
+    filler = [{"author": {"login": "someone"}, "body": "Looks good.", "createdAt": "2026-01-02T05:00:00Z"}] * 100
+    comments = [comments_page(filler, 150, previous="p1"), comments_page([GONE, marker_comment()], 150)]
+    served = Served(repo(exhausted_node(comments=None)), comments={"PR_1": comments}, events={"PR_1": [events_page([])]}).install(monkeypatch)
+    node = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+
+    assert served.calls.count(("comments", "PR_1")) == 2
+    state = st.to_state(node, **FLAGS, owner="o", now=NOW)
+    assert state.exhaustion_marker_newest and state.loop_exhausted and not state.loop_unread
+
+
+def test_comments_that_cant_be_paged_in_full_leave_the_loop_unread_acceptance_criterion_9(monkeypatch, capsys):
+    filler = [{"author": {"login": "someone"}, "body": "Looks good.", "createdAt": "2026-01-02T05:00:00Z"}] * 100
+    comments = [comments_page(filler, 150, previous="p1"), RuntimeError("502 Bad Gateway")]
+    Served(repo(exhausted_node(comments=None)), comments={"PR_1": comments}, events={"PR_1": [events_page([])]}).install(monkeypatch)
+    node = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+    state = st.to_state(node, **FLAGS, owner="o", now=NOW)
+
+    assert state.loop_unread and not state.loop_exhausted
+    assert "502 Bad Gateway" in capsys.readouterr().err
+
+
+def test_a_marker_on_the_last_page_needs_no_earlier_page_acceptance_criterion_9(monkeypatch):
+    comments = [comments_page([GONE, marker_comment()], 150, previous="p1")]
+    served = Served(repo(exhausted_node(comments=None)), comments={"PR_1": comments}, events={"PR_1": [events_page([])]}).install(monkeypatch)
+    st.gh_graphql("owner", "app")
+
+    assert served.calls.count(("comments", "PR_1")) == 1
+
+
+def test_a_pr_that_cant_be_exhausted_reads_one_page_of_comments_acceptance_criterion_9(monkeypatch):
+    filler = [{"author": {"login": "someone"}, "body": "Looks good.", "createdAt": "2026-01-02T05:00:00Z"}] * 100
+    node = dict(pr_node(number=1, reviews=OLDER, comments=None), id="PR_1")
+    served = Served(repo(node), comments={"PR_1": [comments_page(filler, 150, previous="p1")]}).install(monkeypatch)
+    st.gh_graphql("owner", "app")
+
+    assert served.calls.count(("comments", "PR_1")) == 1

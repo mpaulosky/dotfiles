@@ -65,10 +65,11 @@ PAT means `RELEASE_PR_PAT`. Every workflow below falls back to `GITHUB_TOKEN` wh
 | pr-automerge | `git.getTree` | GITHUB_TOKEN | A read, for the clean-merge-from-main check |
 | pr-automerge | `repos.compareCommitsWithBasehead` | GITHUB_TOKEN | A read, for the clean-merge-from-main check |
 | pr-automerge | `issues.listEvents` | GITHUB_TOKEN | A read: who removed `sandcastle:needs-human`, and when `review:claude` was added or removed (`issues: read`) |
-| pr-automerge | `issues.listComments` | GITHUB_TOKEN | A read: whether Dependabot was already asked to rebase this head (`issues: read`) |
+| pr-automerge | `issues.listComments` | GITHUB_TOKEN | A read: whether Dependabot was already asked to rebase this head, and all of an exhausted loop's PR's comments when its exhaustion comment isn't among the last 100 (`issues: read`) |
+| pr-automerge | `repos.getCollaboratorPermissionLevel` (once a run per login that added `review:claude` after a loop's exhausting round, never the owner or a bot) | GITHUB_TOKEN | A read: only a login with write access restarts a review loop (mpaulosky/dotfiles#378). If GitHub refuses it for another user, every such add is unreadable and an exhausted loop waits with a warning |
 | pr-automerge | `actions.listWorkflowRuns` | GITHUB_TOKEN | A read: Claude Review's runs for the head (`actions: read`) |
 | pr-automerge | `actions.listWorkflowRunsForRepo` | GITHUB_TOKEN | A read: the head's runs when no check is required (`actions: read`) |
-| pr-automerge | `issues.removeLabel` (`review:claude`, when Copilot reviewed the head and when the review loop is exhausted) | GITHUB_TOKEN | The removal should start no workflow. `pull-requests: write` covers a PR's labels |
+| pr-automerge | `issues.removeLabel` (`review:claude`, while Copilot can review, and when the review loop is exhausted) | GITHUB_TOKEN | The removal should start no workflow. `pull-requests: write` covers a PR's labels |
 | pr-automerge | `issues.createComment` (the comment that documents an exhausted review loop, `pr-automerge:review-loop-exhausted`; once per exhaustion) | GITHUB_TOKEN | A write that needs no person: it is `github-actions`' comment, which is what the exhaustion rule trusts, and posting it starts no workflow. `pull-requests: write` covers it |
 | pr-automerge | `issues.deleteComment` (this run's own exhaustion comment, when another run's is listed ahead of it) | GITHUB_TOKEN | A run deletes only the comment it posted, as the same login. `pull-requests: write` covers it |
 | pr-automerge | `pulls.merge` | PAT | release.yml (`pull_request: closed`) and the push to main (CI, the next sweep) must start |

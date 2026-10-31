@@ -11,8 +11,10 @@ and the landing decision's next action (github/landing.py), then a
 `notice:` naming the resolved Copilot or Claude Review threads nobody replied to. One GraphQL query
 per repo, plus one for each PR whose threads are all resolved and that Copilot or Claude Review reviewed (it reads the
 thread comments the notice needs; they would cost far more in the repo query), and one for each open, ready PR whose head
-Copilot hasn't reviewed and isn't asked for, or whose review loop could be exhausted (the last 100 comments, for the
-record that Copilot was asked and PR Auto-Merge's exhaustion comment), read-only. Prints nothing else, apart from one line when no PR is
+Copilot hasn't reviewed and isn't asked for, or whose review loop could be exhausted (its comments, back to PR
+Auto-Merge's exhaustion comment, for it and the record that Copilot was asked; its review:claude label events, all of them,
+with the permission of each login that added one; and the authors of its open threads, a person's holding the merge),
+read-only. Prints nothing else, apart from one line when no PR is
 open; a repo that can't be read is reported on stderr and exits 1.
 
 Every listed repo requires checks and runs PR Auto-Merge, which merges a
@@ -28,8 +30,9 @@ import time
 from datetime import datetime
 
 from landing import (COPILOT, EXHAUSTED_MARKER, GITHUB_ACTIONS, MAX_CLAUDE_ROUNDS, RELEASE_BLOG_BRANCHES, REVIEW_CLAUDE, Check,
-                     PrState, Thread, claude_off_diff, claude_reviews, copilot_ask, copilot_declined, copilot_reviews, decide,
-                     is_claude_review, review_rounds, summarize_checks, trailing_dirty, unreplied_notice, unreplied_threads)
+                     PrState, Thread, claude_off_diff, claude_reviews, copilot_ask, copilot_declined, copilot_reviews, current_loop,
+                     decide, is_claude_review, longest_dirty, review_rounds, summarize_checks, thread_opened_by_person,
+                     unreplied_notice, unreplied_threads)
 from settings import read_repo_list
 
 QUERY = """
@@ -40,7 +43,6 @@ query($owner: String!, $name: String!) {
         id number title state isDraft headRefName headRefOid mergeStateStatus
         autoMergeRequest { enabledAt }
         labels(first: 20) { nodes { name } }
-        timelineItems(last: 30, itemTypes: [LABELED_EVENT]) { nodes { ... on LabeledEvent { createdAt label { name } } } }
         reviewRequests(first: 20) { nodes { requestedReviewer {
           ... on Bot { login }
           ... on User { login }
@@ -59,13 +61,20 @@ query($owner: String!, $name: String!) {
 }
 """
 
-# The last 100 comments of one PR, for the record that Copilot was asked (mpaulosky/dotfiles#360) and PR Auto-Merge's
-# comment on an exhausted review loop (mpaulosky/dotfiles#375).
+# A page of up to 100 comments of one PR, the newest 100 by default and the page before $cursor when given (startCursor
+# of the page read last), for the record that Copilot was asked (mpaulosky/dotfiles#360) and PR Auto-Merge's comment on
+# an exhausted review loop (mpaulosky/dotfiles#375). A loop that could be exhausted pages back to its comment, or the
+# first comment (mpaulosky/dotfiles#378).
 COMMENTS_QUERY = """
-query($id: ID!) {
+query($id: ID!, $cursor: String) {
   node(id: $id) {
     ... on PullRequest {
-      comments(last: 100) { totalCount nodes { author { login } body createdAt } }
+      # comments(last: 100) is the newest page; with $cursor, the 100 before it.
+      comments(last: 100, before: $cursor) {
+        totalCount
+        pageInfo { hasPreviousPage startCursor }
+        nodes { author { login } body createdAt }
+      }
     }
   }
 }
@@ -84,6 +93,34 @@ query($id: ID!) {
   }
 }
 """
+
+# The PR's label events, oldest first, a page of 100 at a time after $cursor (mpaulosky/dotfiles#378): every one is read,
+# since the owner's add of review:claude that restarts a loop can come after any number of others.
+EVENTS_QUERY = """
+query($id: ID!, $cursor: String) {
+  node(id: $id) {
+    ... on PullRequest {
+      timelineItems(first: 100, after: $cursor, itemTypes: [LABELED_EVENT]) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ... on LabeledEvent { createdAt label { name } actor { login __typename } } }
+      }
+    }
+  }
+}
+"""
+
+# {(owner/name, login): True | False} for the collaborator permission lookups that were read: whether the login has write
+# access. A lookup that failed isn't kept, so the next read tries again.
+PERMISSIONS = {}
+
+
+def rest(path):
+    """The parsed JSON of one `gh api <path>` call."""
+    run = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    if run.returncode != 0:
+        raise RuntimeError(run.stderr.strip() or run.stdout.strip())
+    return json.loads(run.stdout)
+
 
 TITLE_WIDTH = 40
 
@@ -128,7 +165,10 @@ def needs_record(node):
 
 
 def could_be_exhausted(node):
-    """Whether the PR's review loop could be exhausted: MAX_CLAUDE_ROUNDS dirty rounds in a row, before any restart.
+    """Whether the PR's review loop could be exhausted: MAX_CLAUDE_ROUNDS dirty rounds in a row anywhere, before any restart.
+
+    The longest run counts, not the trailing one, as in review_loop(): a restarted loop whose newest rounds are clean
+    or unreviewed has still to be walked (mpaulosky/dotfiles#378).
 
     Claude's reviews count here as if Copilot were gone unless a request is pending, since only the comments say
     whether it is; the exact answer is to_state()'s.
@@ -136,7 +176,7 @@ def could_be_exhausted(node):
     requested = any(COPILOT.search(reviewer.get("login") or reviewer.get("name") or "") for reviewer in requested_reviewers(node))
     declined = copilot_declined([((review.get("author") or {}).get("login"), (review.get("commit") or {}).get("oid"), review.get("body"))
                                  for review in node["reviews"]["nodes"]])
-    return trailing_dirty(review_rounds(review_records(node), declined, not requested or node["headRefOid"] in declined)) >= MAX_CLAUDE_ROUNDS
+    return longest_dirty(review_rounds(review_records(node), declined, not requested or node["headRefOid"] in declined)) >= MAX_CLAUDE_ROUNDS
 
 
 def needs_comments(node):
@@ -146,6 +186,76 @@ def needs_comments(node):
     return needs_record(node) or (not node.get("isDraft") and could_be_exhausted(node))
 
 
+def exhaustion_markers(nodes):
+    """The comments among COMMENTS_QUERY's nodes that are PR Auto-Merge's (github-actions) exhaustion comments."""
+    return [comment for comment in nodes
+            if ((comment.get("author") or {}).get("login") or "").removesuffix("[bot]") == GITHUB_ACTIONS
+            and EXHAUSTED_MARKER in (comment.get("body") or "")]
+
+
+def read_comments(node_id, to_the_marker):
+    """The comments COMMENTS_QUERY reads for a PR, as its "comments" key: {totalCount, nodes}, oldest first.
+
+    The newest 100. With to_the_marker (a review loop that could be exhausted) the pages before it too, until a page
+    holds PR Auto-Merge's exhaustion comment or the first comment is read (mpaulosky/dotfiles#378), so a PR with more
+    than 100 comments is read in full, as the workflow reads it. A page that fails raises.
+    """
+    comments = graphql(COMMENTS_QUERY, id=node_id)["node"]["comments"]
+    nodes = [comment or {} for comment in comments.get("nodes") or []]
+    info = comments.get("pageInfo") or {}
+    while to_the_marker and info.get("hasPreviousPage") and not exhaustion_markers(nodes):
+        page = graphql(COMMENTS_QUERY, id=node_id, cursor=info["startCursor"])["node"]["comments"]
+        nodes = [comment or {} for comment in page.get("nodes") or []] + nodes
+        info = page.get("pageInfo") or {}
+    total = len(nodes) if to_the_marker and not info.get("hasPreviousPage") else comments.get("totalCount", len(nodes))
+    return {"totalCount": total, "nodes": nodes}
+
+
+def writer_access(owner, name, actor):
+    """Whether the login that did a label event has write access to the repo: True, False, or None when it can't be read.
+
+    The repository's owner always has it, a bot or an actor that can't be read (a deleted account) never does; any other
+    login is asked once through the collaborators' permission endpoint (admin or write), and a failed lookup isn't kept.
+    """
+    login = (actor or {}).get("login")
+    if not login or actor.get("__typename") == "Bot":
+        return False
+    if login.lower() == owner.lower():
+        return True
+    key = (f"{owner}/{name}", login)
+    if key not in PERMISSIONS:
+        try:
+            PERMISSIONS[key] = rest(f"repos/{owner}/{name}/collaborators/{login}/permission").get("permission") in ("admin", "write")
+        except Exception:  # noqa: BLE001 - an unreadable permission makes the loop unread, never a restart
+            return None
+    return PERMISSIONS[key]
+
+
+def read_label_events(owner, name, node_id):
+    """The PR's review:claude label events, all of them, oldest first, as [{createdAt, writer}] (see writer_access).
+
+    EVENTS_QUERY is paged to the end: the add that restarts a loop can follow any number of others
+    (mpaulosky/dotfiles#378). A page that fails raises.
+    """
+    events, cursor = [], None
+    while True:
+        page = graphql(EVENTS_QUERY, id=node_id, **({"cursor": cursor} if cursor else {}))["node"]["timelineItems"]
+        events += page.get("nodes") or []
+        info = page.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            break
+        cursor = info["endCursor"]
+    return [{"createdAt": event.get("createdAt"), "writer": writer_access(owner, name, event.get("actor"))}
+            for event in events if event and (event.get("label") or {}).get("name") == REVIEW_CLAUDE]
+
+
+def report_once(key, message):
+    """Write message on stderr the first time key fails, so a polling land.py says it once."""
+    if key not in COMMENTS_FAILED:
+        COMMENTS_FAILED.add(key)
+        sys.stderr.write(message)
+
+
 def gh_graphql(owner, name):
     """The query's data for one repo, through `gh api graphql`.
 
@@ -153,36 +263,52 @@ def gh_graphql(owner, name):
     about 53 points a read instead of 3. A PR whose threads are all resolved
     and that a bot reviewed gets THREADS_QUERY (1 point), and its thread nodes
     are replaced by that query's, which carry the comments the notice reads.
-    The notice is advisory, so a failed or empty comments query keeps the
-    comment-less nodes (no notice) and never costs the repo's read; the first
-    failure for a PR is reported on stderr.
+    So does a PR that could be exhausted and has an unresolved thread: the
+    authors tell the threads a person opened, which hold the merge, from
+    Copilot's and Claude Review's (mpaulosky/dotfiles#378). The notice is
+    advisory, so a failed or empty comments query keeps the comment-less nodes
+    (no notice, and every unresolved thread counts as a person's) and never
+    costs the repo's read; the first failure for a PR is reported on stderr.
 
-    QUERY reads no comments either. A PR that needs the record that Copilot was
-    asked (needs_record), or whose review loop could be exhausted
+    QUERY reads no comments either. A PR that needs the record that Copilot
+    was asked (needs_record), or whose review loop could be exhausted
     (could_be_exhausted: PR Auto-Merge's exhaustion comment decides), gets
-    COMMENTS_QUERY (1 point) and its node a "comments" key; a failed query sets
-    it to None, which to_state reads as a record nobody can see: neither asked
-    nor called dropped, and the loop never exhausted. The first failure is reported.
+    COMMENTS_QUERY (1 point) and its node a "comments" key, the pages back to
+    the exhaustion comment for a loop that could be exhausted; a failed query
+    sets it to None, which to_state reads as a record nobody can see: neither
+    asked nor called dropped, and the loop never exhausted. A loop that could
+    be exhausted also gets all its review:claude label events, EVENTS_QUERY
+    paged, in "labelEvents" (None when a page failed, which to_state reads as
+    a loop it can't tell the state of). The first failure is reported.
     """
     data = graphql(QUERY, f"owner={owner}", f"name={name}")
     for node in data["repository"]["pullRequests"]["nodes"]:
+        label = f"{owner}/{name}#{node.get('number')}"
+        candidate = node.get("state") == "OPEN" and not node.get("isDraft") and could_be_exhausted(node)
         if needs_comments(node):
             try:
-                node["comments"] = graphql(COMMENTS_QUERY, id=node["id"])["node"]["comments"]
+                node["comments"] = read_comments(node["id"], candidate)
             except Exception as error:  # noqa: BLE001 - an unread record fails closed, it mustn't make the repo unreadable
                 node["comments"] = None
-                if ("record", node["id"]) not in COMMENTS_FAILED:
-                    COMMENTS_FAILED.add(("record", node["id"]))
-                    sys.stderr.write(f"{owner}/{name}#{node.get('number')}: comments unreadable, Copilot neither asked nor called gone, "
-                                     f"its review loop not called exhausted: {error!r}\n")
+                report_once(("record", node["id"]), f"{label}: comments unreadable, Copilot neither asked nor called gone, "
+                                                    f"its review loop not called exhausted: {error!r}\n")
+        if candidate:
+            try:
+                node["labelEvents"] = read_label_events(owner, name, node["id"])
+            except Exception as error:  # noqa: BLE001 - unread events fail closed, they mustn't make the repo unreadable
+                node["labelEvents"] = None
+                report_once(("events", node["id"]), f"{label}: label events unreadable, its review loop not called exhausted: {error!r}\n")
         threads = node["reviewThreads"]["nodes"]
-        if threads and all(thread["isResolved"] for thread in threads) and bot_reviewed(node):
+        resolved = threads and all(thread["isResolved"] for thread in threads) and bot_reviewed(node)
+        authors = candidate and not all(thread["isResolved"] for thread in threads)
+        if resolved or authors:
             try:
                 node["reviewThreads"]["nodes"] = graphql(THREADS_QUERY, id=node["id"])["node"]["reviewThreads"]["nodes"]
             except Exception as error:  # noqa: BLE001 - an advisory notice mustn't make the repo unreadable
-                if node["id"] not in COMMENTS_FAILED:
-                    COMMENTS_FAILED.add(node["id"])
-                    sys.stderr.write(f"{owner}/{name}#{node.get('number')}: thread comments unreadable, no notice: {error!r}\n")
+                report_once(node["id"] if resolved else ("authors", node["id"]),
+                            f"{label}: thread comments unreadable, no notice"
+                            + ("" if resolved else ", every unresolved thread counts as a person's")
+                            + f": {error!r}\n")
     return data
 
 
@@ -267,44 +393,38 @@ def instant(text):
         return float("-inf")
 
 
-def review_loop(node, rounds):
-    """(rounds, exhaustion_marker_newest, loop_unread) for a node's review rounds, cut at the owner's re-add of review:claude.
+def review_loop(node, rounds, copilot_cant_review):
+    """(rounds, exhaustion_marker_newest, loop_unread) for a node's review rounds, after the loop's restarts.
 
-    PR Auto-Merge's exhaustion comment (github-actions, EXHAUSTED_MARKER) is read from the node's "comments"; the newest
-    one decides. The loop restarts at the first review:claude added after it, which is the owner's re-add (PR Auto-Merge's
-    own later adds mustn't restart it): only rounds submitted after that count. Comments or label events that can't be
-    read make the loop unread when it could be exhausted, so it never is (reviewLoopState does the same).
+    The rounds that count are the final generation's (landing.current_loop): a loop that reached MAX_CLAUDE_ROUNDS dirty
+    rounds in a row restarts at the first review:claude added after the round that got it there by a login with write
+    access, comment or none, while Copilot can't review (copilot_cant_review); with Copilot available the label is ignored.
+    PR Auto-Merge's exhaustion comment (github-actions, EXHAUSTED_MARKER) is read from the node's "comments"; it is the
+    newest word when it is no older than the round that exhausted the final generation. Comments, label events or a
+    permission that can't be read make the loop unread when it reached the cap, so it never is called exhausted
+    (reviewLoopState does the same).
     """
-    could_be = trailing_dirty(rounds) >= MAX_CLAUDE_ROUNDS
+    if longest_dirty(rounds) < MAX_CLAUDE_ROUNDS:
+        return rounds, False, False
     comments = node.get("comments")
-    events = (node.get("timelineItems") or {}).get("nodes")
-    if comments is None:
-        return rounds, False, could_be
+    events = node.get("labelEvents")
+    if comments is None or events is None:
+        return rounds, False, True
     nodes = [comment or {} for comment in comments.get("nodes") or []]
-    markers = [comment for comment in nodes
-               if ((comment.get("author") or {}).get("login") or "").removesuffix("[bot]") == GITHUB_ACTIONS
-               and EXHAUSTED_MARKER in (comment.get("body") or "")]
-    if not markers:
-        # More comments than were read and no record among them: it may be on a page that wasn't read.
-        return rounds, False, could_be and comments.get("totalCount", len(nodes)) > len(nodes)
-    if events is None:
-        return rounds, False, could_be
-    marker_at = instant(markers[-1].get("createdAt"))
-    restart = next((event for event in events
-                    if ((event or {}).get("label") or {}).get("name") == REVIEW_CLAUDE and instant(event.get("createdAt")) > marker_at),
-                   None)
-    if restart is None:
-        return rounds, True, False
-    restart_at = instant(restart.get("createdAt"))
-    return tuple(item for item in rounds if instant(item.at) > restart_at), False, False
+    adds = [(instant(event.get("createdAt")), event.get("writer")) for event in events] if copilot_cant_review else []
+    walk = current_loop(rounds, adds)
+    markers = [instant(comment.get("createdAt")) for comment in exhaustion_markers(nodes)]
+    # More comments than were read and no record among them: it may be on a page that wasn't read.
+    if walk.unread or (not markers and comments.get("totalCount", len(nodes)) > len(nodes)):
+        return walk.rounds, False, True
+    return walk.rounds, walk.hit is not None and any(marker >= walk.hit for marker in markers), False
 
 
-def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, copilot_dropped=False, owner="",
+def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=False, owner="",
              now=None):
     """A PrState from one pullRequests node of QUERY.
 
-    copilot_dropped is the caller's memory that Copilot's request for this
-    head didn't register. owner is the repository's owner, who with
+    owner is the repository's owner, who with
     github-actions may write the record that Copilot was asked; now is epoch
     seconds (default: the clock), which the record's 30 seconds are counted to.
     """
@@ -320,8 +440,12 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
     labels = {label["name"] for label in (node.get("labels") or {}).get("nodes", []) if label}
     declined = copilot_declined(reviews)
     # Copilot can't review the PR (landing.PrState.claude_backed): Claude's review of any commit then counts as a round.
-    gone = copilot_dropped or (asked and settled and not copilot_is_requested) or node["headRefOid"] in declined
-    rounds, marker_newest, unread = review_loop(node, review_rounds(review_records(node), declined, gone))
+    gone = (asked and settled and not copilot_is_requested) or node["headRefOid"] in declined
+    # Claude reviews only where Copilot can't (mpaulosky/dotfiles#378): its quota note is on the head, or it is gone and
+    # hasn't really reviewed the head. Otherwise a review:claude add means nothing, and starts no new loop.
+    cant_review = node["headRefOid"] in declined or (gone and node["headRefOid"] not in copilot_reviews(reviews))
+    rounds, marker_newest, unread = review_loop(node, review_rounds(review_records(node), declined, gone), cant_review)
+    threads = [(thread["isResolved"], to_thread(thread)) for thread in node["reviewThreads"]["nodes"]]
     return PrState(
         state=node["state"],
         draft=node["isDraft"],
@@ -335,11 +459,11 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
         claude_off_diff=claude_off_diff(reviews),
         copilot_requested=copilot_is_requested,
         claude_requested=REVIEW_CLAUDE in labels,
-        copilot_dropped=copilot_dropped,
         copilot_asked=asked,
         copilot_ask_settled=settled,
-        open_threads=sum(1 for thread in node["reviewThreads"]["nodes"] if not thread["isResolved"]),
-        unreplied_threads=unreplied_threads([to_thread(thread) for thread in node["reviewThreads"]["nodes"]]),
+        open_threads=sum(1 for resolved, _ in threads if not resolved),
+        open_person_threads=sum(1 for resolved, thread in threads if not resolved and thread_opened_by_person(thread)),
+        unreplied_threads=unreplied_threads([thread for _, thread in threads]),
         merge_state=node["mergeStateStatus"],
         checks=tuple(to_check(context) for context in contexts if context),
         checks_required=checks_required,

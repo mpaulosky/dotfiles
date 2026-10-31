@@ -18,8 +18,10 @@ The Template waits for `CLEAN` on purpose, so a failing optional check such as m
 
 A same-repo PR into `main` squash-merges on its own once its required checks pass, a reviewer has reviewed its head commit, and every review thread is resolved.
 The reviewer is Copilot, or Claude as its backup when Copilot can't review the head (its quota note, or a request GitHub dropped, #318, #360): see [ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md).
+Claude reviews only where Copilot can't: `review:claude` is ignored while Copilot can review (mpaulosky/dotfiles#378), and PR Auto-Merge takes it off at once.
 Nothing merges before the review arrives, or past an unresolved thread, until the PR's review loop is exhausted (three dirty rounds in a row);
-an exhausted loop is documented in one comment and then merges with its threads open: see [ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md).
+an exhausted loop is documented in one comment and then merges with the threads Copilot and Claude opened still open, but not past a thread a person opened:
+see [ADR 0002](../docs/adr/0002-copilot-review-cap-and-hand-back-hold.md).
 A ready PR that falls `BEHIND` main is brought up to date, and a clean merge from main keeps the review of the commit it merges into:
 see [ADR 0005](../docs/adr/0005-pr-auto-merge-brings-ready-prs-up-to-date.md).
 A PR handed back with `sandcastle:needs-human` never merges while it carries the label.
@@ -40,7 +42,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   The ask settles 30 seconds after its record, or at once for the run that asked and read the request back. A Claude review of an earlier commit with no note covers
   nothing, label or not (so `land.sh` and the workflow agree on that).
   A head with no check besides Claude's and the workflow's own gets no label from the run: it logs a notice to review and merge it by hand.
-  `land.sh` and the workflow use one rule (`landing.copilot_gone`), and `land.sh` also counts a request it read back as dropped in the same process before the 30 seconds are over.
+  `land.sh` and the workflow use one rule (`landing.copilot_gone`), and `land.sh` waits out the 30 seconds too, even for a request it read back as dropped:
+  PR Auto-Merge takes `review:claude` off an ask younger than that and `land.sh` would not add it again (mpaulosky/dotfiles#378).
   Neither counts Claude's review of a head Copilot's request is still pending for (unless the note is on it), since that review may be merely late and counting Claude's would let the PR merge before Copilot's
   findings arrive (`pr-automerge.test.mjs` pins each case).
   A Copilot review counts only when it reviewed something. Once the account's Copilot code review quota is used up, Copilot still posts a review
@@ -80,18 +83,30 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
   - Until then every new non-merge head that nobody reviewed gets a review: Copilot's, or `review:claude` added where Copilot can't review it, even if an earlier removal
     took the label off. A clean review of the head, every thread resolved and the required checks green merges, as always.
   - **At exhaustion** the run takes `review:claude` off (`GITHUB_TOKEN`, #170; before the draft, hand-back and auto-merge checks, for any open same-repo PR into `main`),
-    posts **one comment** with `GITHUB_TOKEN` and then lets the PR merge once its required checks pass and it has no conflict. Exhaustion doesn't hold the merge,
-    and neither do the threads still unresolved then, nor Claude's findings outside the diff on the head: the comment is where they are kept, so they can be resolved later.
-    This supersedes #146's rule that every unresolved thread held the merge, whatever the round. The comment holds a bullet list of every thread still unresolved
-    (path and line, the first line of its first comment, a link to the thread) and every off-diff finding of Claude's review of the head (its first line), and ends with the hidden marker
+    posts **one comment** with `GITHUB_TOKEN` and then lets the PR merge once its required checks pass and it has no conflict. Exhaustion itself holds nothing,
+    and the threads Copilot and Claude Review opened that are still unresolved then hold nothing either, nor Claude's findings outside the diff on the head: the comment is where they are kept,
+    so they can be resolved later. **A thread opened by a person still holds the merge** (an unreadable author counts as a person), and the log says so:
+    `Waiting on PR #n: N unresolved review thread(s) opened by a person hold the merge`. This supersedes #146's rule that every unresolved thread held the merge, whatever the round,
+    for the bots' threads only (mpaulosky/dotfiles#378). The comment names the head and says whether a review covers it (``The head `abc1234` was not reviewed.``, or that it is a clean merge of `main`
+    onto a reviewed commit), says `review:claude` is off (or is being removed, when the removal failed), and holds a bullet list of every thread still unresolved
+    (path and line, the first line of its first comment, a link to the thread; a person's thread is marked "holds the merge" and is listed first when the list is cut) and every off-diff finding
+    of Claude's review of the head (its first line). It ends with the hidden marker
     `<!-- pr-automerge:review-loop-exhausted <head> -->`, so it is posted once per exhaustion, before the merge call. Text quoted from the PR is escaped, since it is posted as `github-actions`.
     The record is "the newest marker comment is no older than the newest round", so a head moved by update-branch while exhausted posts no second one, and a new dirty round after it does.
     Two runs can both find no comment, so after posting a run reads the comments again and deletes its own when another run's comment for this exhaustion is listed first.
-    A comment that fails to post, or comments that weren't read in full (the last 100 are read), hold the merge until the next event. A failing required check, a conflict, a branch that is `BEHIND`
-    (updated first), a draft and the hand-back label still hold it. The log says `Review loop exhausted on PR #n: merging with N unresolved thread(s)`.
-  - **A new loop.** The owner adding `review:claude` to a PR that is still open after that comment starts one: only rounds submitted after the first `review:claude` added after the comment count
-    (the first, not the latest: PR Auto-Merge's PAT adds the label for later heads in the new loop, and a restart at that add would make it endless). Reading the label events fails closed:
-    unreadable ones neither merge nor add the label. PR Auto-Merge never adds `review:claude` while the comment is the newest word on the PR.
+    The comment is posted once the PR is otherwise ready: not `BEHIND` (updated first), no conflict, required checks green, not while a check still holds it.
+    A comment that fails to post, or comments that weren't read in full, hold the merge until the next event. The comment is looked for in all the PR's comments:
+    when the last 100 hold none the run pages through them with `issues.listComments`, and when it still can't read them it posts a notice naming the PR.
+    A failing required check, a conflict, a branch that is `BEHIND`, a draft and the hand-back label still hold it. The log says `Review loop exhausted on PR #n: merging with N unresolved thread(s)`.
+  - **A new loop.** The first `review:claude` added after the round that exhausted the loop **by a login with write access to the repository** (the owner, or the PAT's account, read with
+    `repos.getCollaboratorPermissionLevel`, `GITHUB_TOKEN`) starts one: only rounds submitted after it count, whether or not the exhaustion comment exists yet
+    (a PR with none gets the old loop's comment first). An add by anyone else is ignored, and a permission that can't be read leaves the loop unread (no merge, no label, a warning): it fails closed.
+    The first add, not the latest: PR Auto-Merge's PAT adds the label for later heads in the new loop, and a restart at that add would make it endless.
+    Reading the label events fails closed too. PR Auto-Merge never adds `review:claude` while the comment is the newest word on the PR.
+  - **Claude reviews only where Copilot can't** (mpaulosky/dotfiles#378). Copilot can't review the PR when its quota note is on the head, or it is gone (asked, the ask settled, no request pending,
+    and no real review of the head). Otherwise `review:claude` is ignored while Copilot can review: the run takes it off at once, whoever added it (the workflow starts on the `labeled` event for that),
+    logs why, and `claude-review.yml` starts no paid review (its first step applies the same rule; when it can't read the state it skips with a warning). No exception for an owner's add.
+    No add counts as the start of a new loop then either.
   - The run takes `review:claude` off a PR once Copilot has really reviewed its head (#270) too: Copilot has budget, so Claude's review would cover nothing.
     A failed removal is a warning, tried again on the next run. A Claude Review run that posts nothing (a failure, a timeout, a usage limit) leaves the label on until one posts
     and makes no round. That's accepted: such a run opens no thread and holds no merge, so it costs only the runs.
@@ -326,15 +341,17 @@ Only once Copilot can't review the head (`PrState.copilot_gone`), because it ans
 from the PR's last 100 comments; unreadable counts as asked) and the record is 30 seconds old (`copilot_ask_settled`) with no request pending,
 does it **add review:claude**.
 `status.sh` reads the comments of only the PRs that need the record, or whose loop could be exhausted
-(three dirty rounds in a row, before any restart; 1 GraphQL point each), and the last 30 `review:claude` label events with the repo query.
+(three dirty rounds in a row, before any restart; 1 GraphQL point each, plus a page per 100 comments back to the exhaustion comment), every `review:claude` label event of such a PR (paged),
+the permission of each login that added one (REST, once per login) and the authors of its open threads, which `landing.py` splits into a person's and the bots'.
 It needs no memory, and neither does a `land.sh --once` run.
-A loop whose comments or label events can't be read is never shown as exhausted.
+A loop whose comments, label events or permissions can't be read is never shown as exhausted, and gets no `review:claude`.
+With Copilot available (`claude_requested` and not `copilot_gone` or `copilot_declined`) the label is ignored: it asks for Copilot, not Claude.
 It adds it once the head has at least one check other than Claude Review's own and every such check is green
 (Claude Review's own don't count: a run cancelled when the label came off needs no rerun), never while one runs or is queued, and never while an exhaustion comment is the newest word.
 When PR Auto-Merge's review loop is exhausted (`PrState.loop_exhausted`: `MAX_CLAUDE_ROUNDS` dirty rounds in a row in `PrState.rounds`,
 re-Apply PRs included; `REVIEW_CAP` must still match `COPILOT_REVIEW_CAP`) it asks for neither reviewer,
-and goes on to the checks as PR Auto-Merge does: the threads and off-diff findings still open no longer hold it,
-and the line reads `review loop exhausted (3 rounds with findings in a row), ready to merge, N thread(s) left open`.
+and goes on to the checks as PR Auto-Merge does: the bots' threads and off-diff findings still open no longer hold it, a person's thread does (the line reads `wait`, naming the person's threads),
+and otherwise the line reads `review loop exhausted (3 rounds with findings in a row), ready to merge, N thread(s) left open`.
 While PR Auto-Merge's exhaustion comment is the newest word (no `review:claude` added since, `PrState.exhaustion_marker_newest`) it asks for no review either: the owner adds the label to start a new loop;
 then **leave to PR Auto-Merge** in a Baseline repo, whose workflow merges it (it never arms native auto-merge, so neither does anything going around it),
 or **arm auto-merge** where there is no such workflow. A repo with no required checks waits for its checks to finish green first,

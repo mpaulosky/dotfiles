@@ -675,6 +675,35 @@ grep -qE 'const MAX_CLAUDE_ROUNDS = 3;' "$pr_automerge" \
   || fail "pr-automerge.yml must keep 'const MAX_CLAUDE_ROUNDS = 3;'"
 grep -qF -- 'const EXHAUSTED_MARKER = "<!-- pr-automerge:review-loop-exhausted";' "$pr_automerge" \
   || fail "pr-automerge.yml must declare the exhaustion marker github/landing.py's EXHAUSTED_MARKER must equal"
+# Claude reviews only where Copilot can't, and a person's threads still hold at an exhausted loop (mpaulosky/dotfiles#378): the label is
+# ignored while Copilot can review, a person's open thread holds the merge, the exhaustion comment says when the head was not reviewed, and
+# only a login with write access restarts a loop.
+claude_review_yml="$owned/.github/workflows/claude-review.yml"
+claude_review_header="$(sed -n '1,/^"on":/p' "$claude_review_yml")"
+for rule_doc in "$automerge_doc" "$pr_process" "$adr_0002" "$adr_0004"; do
+  grep -qF -- 'ignored while Copilot' "$rule_doc"     || fail "${rule_doc#"$skill_dir"/} must say review:claude is ignored while Copilot can review (Claude reviews only where Copilot can't: mpaulosky/dotfiles#378)"
+  grep -qF -- 'mpaulosky/dotfiles#378' "$rule_doc"     || fail "${rule_doc#"$skill_dir"/} must cite mpaulosky/dotfiles#378"
+done
+for header_text in "$header" "$claude_review_header"; do
+  grep -qF -- 'ignored while Copilot' <<<"$header_text"     || fail "the headers of pr-automerge.yml and claude-review.yml must say review:claude is ignored while Copilot can review (mpaulosky/dotfiles#378)"
+done
+for person_doc in "$automerge_doc" "$pr_process" "$adr_0002"; do
+  grep -qiE "opened by a person|a person's (open )?threads?" "$person_doc"     || fail "${person_doc#"$skill_dir"/} must say a person's open thread still holds the merge at an exhausted review loop (mpaulosky/dotfiles#378)"
+done
+grep -qiE "opened by a person|a person's (open )?threads?" <<<"$header"   || fail "pr-automerge.yml's header must say a person's open thread still holds the merge at an exhausted review loop (mpaulosky/dotfiles#378)"
+for restart_doc in "$automerge_doc" "$adr_0002"; do
+  grep -qiE 'write access' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must say only a login with write access restarts a review loop (mpaulosky/dotfiles#378)"
+  grep -qF -- 'was not reviewed' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must say the exhaustion comment says when the head 'was not reviewed' (mpaulosky/dotfiles#378)"
+done
+# The docs of today's behaviour no longer say a Claude review runs beside Copilot's, or that no thread holds an exhausted loop's merge.
+for current_doc in "$automerge_doc" "$pr_process" "$adr_0002" "$owned/docs/PROCESS.md"; do
+  if grep -qE "neither (does|do) the threads still (open|unresolved)|Exhaustion doesn't hold the merge, and neither" "$current_doc"; then
+    fail "${current_doc#"$skill_dir"/} still says no thread holds an exhausted loop's merge: a person's open thread does (mpaulosky/dotfiles#378)"
+  fi
+done
+if grep -qE "neither do the threads$|neither do the threads still open" <<<"$header"; then
+  fail "pr-automerge.yml's header still says the threads still open at exhaustion don't hold the merge: a person's do (mpaulosky/dotfiles#378)"
+fi
 # The record-head job of the Owned sandcastle.yml posts the comment lib/follow-up.mts#approvedHeadOf reads, from the label event's head.
 sandcastle_yml="$owned/.github/workflows/sandcastle.yml"
 head_marker="$(sed -nE 's/^export const APPROVED_HEAD_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"

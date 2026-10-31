@@ -1,7 +1,7 @@
 # Per-project test matrix
 
-Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jobs), `.github/scripts/discover_tests.py`, `global.json`, and the Seeds
-`.github/ci/prepare.sh` and `.github/ci/coverage-threshold`. History: IssueTracker #178.
+Template files (Owned): `ci.yml` (the `discover-tests`, `test` and `coverage` jobs), `.github/scripts/discover_tests.py`, `global.json`, `.github/ci/coverage-threshold`, and the Seed
+`.github/ci/prepare.sh`. History: IssueTracker #178.
 
 ## The rule
 
@@ -22,8 +22,8 @@ discovery miss would otherwise pass every PR with no tests run (atelier-store's 
 Tests run on **Microsoft Testing Platform** (`global.json` → `"test": {"runner": "Microsoft.Testing.Platform"}`), so
 `ci.yml` passes MTP's options: `--report-xunit-trx` for the TRX report and `--coverage --coverage-output-format
 cobertura` for coverage, not VSTest's `--logger` and `--collect`. A test project on VSTest fails under it; moving it is
-an Adapt step ([adapt.md](adapt.md#test-runner)). The coverage job gates on line coverage at the percentage in the Seed
-`.github/ci/coverage-threshold` (80 when the file is missing).
+an Adapt step ([adapt.md](adapt.md#test-runner)). The coverage job gates on line coverage at the percentage in the Owned
+`.github/ci/coverage-threshold` (80 when the file is missing; the Template carries 80 and Apply restores it, so a repo has no threshold of its own).
 Codecov's `patch` and `project` checks are informational (`codecov.yml`): they report on every PR but never fail it, so this
 gate is the only one. Their default targets compare against the base (100% on a fully covered repo, no drop at all), and
 PR Auto-Merge holds a PR with any failed check, so they blocked PRs that passed the gate (Blazor-Server #260, #184).

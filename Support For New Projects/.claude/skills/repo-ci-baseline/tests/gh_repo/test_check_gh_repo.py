@@ -469,10 +469,10 @@ def test_every_owned_entry_exists_in_the_template():
     assert missing == []
 
 
-def test_owned_names_files_and_folders_under_scripts_and_the_review_skills_only():
+def test_owned_names_files_and_folders_under_scripts_the_skills_readme_and_the_review_skills_only():
     # Arrange, Act, Assert
     assert check_gh_repo.OWNED
-    assert all(entry.startswith(("scripts/", ".claude/skills/pre-push-review/", ".claude/skills/hardening-review/")) for entry in check_gh_repo.OWNED)
+    assert all(entry.startswith(("scripts/", ".claude/skills/README.md", ".claude/skills/pre-push-review/", ".claude/skills/hardening-review/")) for entry in check_gh_repo.OWNED)
 
 
 def test_scope_is_scripts_github_ci_and_skills():
@@ -1397,7 +1397,7 @@ def test_the_untold_gh_commands_of_the_skills_beside_the_template_are_fixed(skil
 # R45 and R52: gotchas.md holds the rules; the docstring points at it.
 BASELINE_SKILL = HERE.parents[1]
 GOTCHAS = BASELINE_SKILL / "references" / "gotchas.md"
-SEED_SKILLS_README = BASELINE_SKILL / "template" / "seed" / ".claude" / "skills" / "README.md"
+SKILLS_README = BASELINE_SKILL / "template" / "owned" / ".claude" / "skills" / "README.md"
 
 
 def test_the_checkers_docstring_is_one_line_that_points_at_gotchas_md():
@@ -1418,9 +1418,9 @@ def test_gotchas_md_says_a_placeholder_repository_in_a_skill_is_refused():
     assert re.search(r"<owner>/<repo>[^.]*\brefused\b|\brefused\b[^.]*<owner>/<repo>", text)
 
 
-def test_the_seed_skills_readme_says_a_placeholder_repository_in_a_skill_is_refused():
+def test_the_owned_skills_readme_says_a_placeholder_repository_in_a_skill_is_refused():
     # Arrange
-    text = SEED_SKILLS_README.read_text()
+    text = SKILLS_README.read_text()
 
     # Act, Assert
     assert "<owner>/<repo>" in text

@@ -11,8 +11,14 @@
 #
 # Steps, each stopping the run on failure:
 #   1. Fetch, then prepare the worktree ../<Repo>-worktrees/chore-reapply-baseline:
-#      reuse it while its branch has an open PR; replace it (worktree and local
-#      branch) once its work has merged; refuse it with uncommitted work, or with
+#      reuse it while its branch has an open PR, or was never pushed (no
+#      origin/<branch>, no upstream of its own and no PR of this repo whose head
+#      it carries, as after a refused first push: a branch pushed once keeps its
+#      upstream, and one a PR carries is not new, even when its remote branch is
+#      deleted; the earlier rounds' PRs, which share the name, don't count);
+#      replace it (worktree and local branch) once its work has merged: main
+#      carries its tip, or else a merged PR's head does, read from GitHub (a
+#      failed read ends the run); refuse it with uncommitted work, or with
 #      commits no open or merged PR carries.
 #   2. Merge origin/chore/reapply-baseline (when it exists), then origin/main,
 #      so the push is never non-fast-forward and the pre-push gate's
@@ -21,7 +27,12 @@
 #      changes nothing and nothing is left unpushed (an earlier failed push),
 #      stop there and say so.
 #   4. git push -u origin HEAD, through the repo's pre-push gate. A failed push
-#      prints its log's path and exits 1.
+#      prints its log's path and exits 1. The gate lets a re-Apply through without
+#      a review only when every file is an Owned file that carries no behaviour; when Apply writes the coverage
+#      threshold, the hand-off rules, an issue template, the reviewer agent, a
+#      judging-role prompt or global.json, the gate asks for one
+#      (its message names them): run /pre-push-review in the worktree, then run
+#      this again.
 #   5. Open the re-Apply PR (ready, not a draft), or add a line for this Apply
 #      commit to the open one's description, then request Copilot's review and
 #      read the request back: gh exits 0 even when GitHub drops it. A request
@@ -122,13 +133,27 @@ worktree_of() {
 }
 # gh runs in the primary checkout, so it picks the repo from origin.
 gh_() { (cd "$primary" && gh "$@"); }
+# A commit id as gh returns it (SHA-1 or SHA-256 hex): anything else, a leading dash included, ends the run
+# before git can read it as an option.
+check_commit_id() { [[ "$1" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || die "gh returned '$1', not a commit id"; }
+# Exit 0 when $1 is an ancestor of $2, 1 when it is not, or when this clone lacks either commit (a tip
+# can't carry a commit it doesn't have). Any other git failure ends the run rather than reading as "not".
+ancestor() {
+  g cat-file -e "$1^{commit}" 2>/dev/null || return 1
+  g cat-file -e "$2^{commit}" 2>/dev/null || return 1
+  local status=0
+  g merge-base --is-ancestor "$1" "$2" || status=$?
+  [[ $status -le 1 ]] || die "git merge-base --is-ancestor failed (status $status) for $1 and $2"
+  return "$status"
+}
 
 echo "── $repo_name: fetching"
 g fetch --prune --quiet origin
 g rev-parse --verify --quiet origin/main >/dev/null || die "origin/main not found in $primary"
 g worktree prune
 
-open_pr="$(gh_ pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
+# --head matches the branch name only, so a fork's PR of the same name is left out: it is not this repo's PR.
+open_pr="$(gh_ pr list --head "$branch" --state open --limit 100 --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository == false)][0].number // empty')"
 
 # ── 1. The worktree ─────────────────────────────────────────────────────────
 existing="$(worktree_of "$branch")"
@@ -150,22 +175,52 @@ if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && [[ -z "$open_
   if g merge-base --is-ancestor "$tip" origin/main; then
     merged=true
   else
+    # Read before the loop, so a gh failure ends the run (set -e) rather than reading as "no merged PR".
+    merged_heads="$(gh_ pr list --head "$branch" --state merged --limit 100 --json headRefOid --jq '.[].headRefOid')"
     while IFS= read -r oid; do
       [[ -n "$oid" ]] || continue
-      if g merge-base --is-ancestor "$tip" "$oid" 2>/dev/null; then merged=true; break; fi
-    done < <(gh_ pr list --head "$branch" --state merged --limit 100 --json headRefOid --jq '.[].headRefOid')
+      check_commit_id "$oid"
+      if ancestor "$tip" "$oid"; then merged=true; break; fi
+    done <<< "$merged_heads"
   fi
-  $merged || die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
-  if [[ -n "$existing" ]]; then
-    echo "── $repo_name: replacing $worktree, whose work has merged"
-    g worktree remove "$existing"
+  # A branch that was never pushed (the gate refused the first push, before any PR existed) has no
+  # origin/<branch>, no upstream of its own (push -u sets branch.<b>.merge to refs/heads/<b>; the
+  # branch below is created with --no-track, and one made another way that tracks main doesn't
+  # count), and no PR that carries it. A missing origin/<branch> alone doesn't say so, since fetch
+  # --prune drops it after a merge or a close deletes the remote branch, and a push without -u sets no
+  # upstream. What tells those apart is a PR of this repo (not a fork's) whose head the branch carries
+  # and main doesn't. The branch name is the same every round, so a PR by name alone would match the
+  # earlier rounds' merged ones: heads that main has, or this branch was never built on, don't count.
+  # A never-pushed branch is kept and carried on: its commits are not lost, and the push below sends
+  # them. The PR lookup, like the merged one, ends the run when gh fails.
+  never_pushed=false
+  if ! $merged \
+    && ! g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    && [[ "$(g config --get "branch.$branch.merge" || true)" != "refs/heads/$branch" ]]; then
+    pr_heads="$(gh_ pr list --head "$branch" --state all --limit 100 --json headRefOid,isCrossRepository --jq '.[] | select(.isCrossRepository == false) | .headRefOid')"
+    carried=false
+    while IFS= read -r oid; do
+      [[ -n "$oid" ]] || continue
+      check_commit_id "$oid"
+      if ancestor "$oid" "$tip" && ! ancestor "$oid" origin/main; then carried=true; break; fi
+    done <<< "$pr_heads"
+    $carried || never_pushed=true
   fi
-  g branch -D "$branch" >/dev/null
-  existing=""
+  $merged || $never_pushed || die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
+  if $merged; then
+    if [[ -n "$existing" ]]; then
+      echo "── $repo_name: replacing $worktree, whose work has merged"
+      g worktree remove "$existing"
+    fi
+    g branch -D "$branch" >/dev/null
+    existing=""
+  else
+    echo "── $repo_name: $branch was never pushed; carrying it on"
+  fi
 fi
 
 if [[ -n "$existing" ]]; then
-  echo "── $repo_name: reusing $worktree for open PR #$open_pr"
+  echo "── $repo_name: reusing $worktree${open_pr:+ for open PR #$open_pr}"
 else
   base=origin/main
   if [[ -n "$open_pr" ]] && g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
@@ -174,6 +229,7 @@ else
   mkdir -p "$(dirname "$worktree")"
   if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
     g worktree add --quiet "$worktree" "$branch"
+    base="the local branch"
   else
     g worktree add --quiet --no-track -b "$branch" "$worktree" "$base"
   fi

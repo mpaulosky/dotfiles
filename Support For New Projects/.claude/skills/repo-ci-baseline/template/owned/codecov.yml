@@ -20,7 +20,7 @@ coverage:
     default_rules:
       flag_coverage_not_uploaded_behavior: include
     # Informational: Codecov reports coverage on every PR but never fails
-    # it. The gate is ci.yml's coverage check against the repo's own
+    # it. The gate is ci.yml's coverage check against the Template's
     # .github/ci/coverage-threshold; Codecov's default targets compare
     # against the base instead (100% on a fully covered repo), and PR
     # Auto-Merge holds any PR with a failed check, so a red one would

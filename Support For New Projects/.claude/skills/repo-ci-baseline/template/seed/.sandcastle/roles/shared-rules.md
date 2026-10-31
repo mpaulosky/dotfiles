@@ -21,6 +21,9 @@ Use the commands for each stack the issue touches:
 | pnpm workspace | `package.json`, `pnpm-workspace.yaml` | run `pnpm install` after changing `package.json` | commit `pnpm-lock.yaml` in the same commit |
 
 - Tests must pass by the end of the last developer run, not on every commit.
+- A test that needs a string shaped like a secret (a GitHub token, an API key) builds it at run time, splitting the prefix from the body: `` `${"gh"}p_${"A".repeat(36)}` ``.
+  Never write the whole shape in a source line, a fixture or a comment. The host scans every commit's added lines, and a match stops the issue from being published.
+  A later commit does not clear it, because the scan reads each commit.
 - Shell scripts pass `shellcheck`. The code standards are in `.sandcastle/CODING_STANDARDS.md`.
 
 ## The gate

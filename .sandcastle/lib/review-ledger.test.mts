@@ -783,7 +783,7 @@ describe("checkReview", () => {
   it("passes a Baseline re-Apply that changes only Owned files", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, "scripts"));
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     commit(repo, "scripts/check-branch-name.sh", "#!/bin/sh\n", "re-Apply");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
@@ -793,7 +793,7 @@ describe("checkReview", () => {
     for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md"]) {
       run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
       mkdirSync(join(repo, dirname(path)), { recursive: true });
-      commit(repo, "global.json", "{}\n", "re-Apply");
+      commit(repo, ".editorconfig", "{}\n", "re-Apply");
       commit(repo, path, "0\n", "re-Apply");
 
       assert.equal(isOwnedPath(path), true, `${path} is still Owned`);
@@ -804,7 +804,7 @@ describe("checkReview", () => {
   it("says which Owned files a re-Apply's review was withheld for, so the person knows why a re-Apply asks for one", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, ".github/ci"), { recursive: true });
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     commit(repo, ".github/ci/coverage-threshold", "80\n", "re-Apply");
 
     const result = checkReview(repo, mergeBase(repo), {});
@@ -812,7 +812,7 @@ describe("checkReview", () => {
     assert.equal(result.ok, false);
     assert.match(result.message, /No review is recorded for this diff/);
     assert.match(result.message, /\.github\/ci\/coverage-threshold/);
-    assert.doesNotMatch(result.message, /global\.json/);
+    assert.doesNotMatch(result.message, /\.editorconfig/);
   });
 
   it("gives the plain message, with no note about withheld files, on a branch that isn't a re-Apply, though it changes one", () => {
@@ -827,7 +827,7 @@ describe("checkReview", () => {
 
   it("names no withheld file when a re-Apply is refused for a change that isn't Owned", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     commit(repo, "app.cs", "sneaked in\n", "not Owned");
 
     const result = checkReview(repo, mergeBase(repo), {});
@@ -838,7 +838,7 @@ describe("checkReview", () => {
 
   it("reviews a re-Apply branch that changes anything not Owned", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     commit(repo, "app.cs", "sneaked in\n", "not Owned");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
@@ -860,18 +860,18 @@ describe("checkReview", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     run(repo, "update-index", "--add", "--cacheinfo", `160000,${run(sub, "rev-parse", "HEAD")},vendor`);
     run(repo, "-c", "diff.ignoreSubmodules=none", "commit", "--quiet", "-m", "submodule");
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     run(repo, "config", "diff.ignoreSubmodules", "all");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });
 
   it("reviews a re-Apply checked from a folder, whatever diff.relative says", () => {
-    // From sub/, a relative diff would list sub/global.json as global.json,
+    // From sub/, a relative diff would list sub/.editorconfig as .editorconfig,
     // which is Owned.
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, "sub"));
-    commit(repo, "sub/global.json", "not Owned\n", "not Owned");
+    commit(repo, "sub/.editorconfig", "not Owned\n", "not Owned");
     run(repo, "config", "diff.relative", "true");
 
     assert.equal(checkReview(join(repo, "sub"), mergeBase(repo), {}).ok, false);
@@ -879,17 +879,17 @@ describe("checkReview", () => {
 
   it("reviews a re-Apply whose first path starts with whitespace", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    commit(repo, "global.json", "{}\n", "re-Apply");
-    commit(repo, "\tglobal.json", "sneaked in\n", "not Owned");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
+    commit(repo, "\t.editorconfig", "sneaked in\n", "not Owned");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });
 
   it("reviews a re-Apply that deletes an Owned file, which Apply never does", () => {
-    commit(upstream, "global.json", "{}\n", "main has an Owned file");
+    commit(upstream, ".editorconfig", "{}\n", "main has an Owned file");
     run(repo, "fetch", "--quiet", "origin", "main");
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    run(repo, "rm", "--quiet", "global.json");
+    run(repo, "rm", "--quiet", ".editorconfig");
     run(repo, "commit", "--quiet", "-m", "delete an Owned file");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
@@ -897,8 +897,8 @@ describe("checkReview", () => {
 
   it("reviews a re-Apply that turns an Owned path into a symlink", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    symlinkSync("/etc/passwd", join(repo, "global.json"));
-    run(repo, "add", "global.json");
+    symlinkSync("/etc/passwd", join(repo, ".editorconfig"));
+    run(repo, "add", ".editorconfig");
     run(repo, "commit", "--quiet", "-m", "symlink");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
@@ -913,7 +913,7 @@ describe("checkReview", () => {
   });
 
   it("still passes a re-Apply that adds a new executable Owned file and edits one main already has", () => {
-    commit(upstream, "global.json", "[]\n", "main has an Owned file");
+    commit(upstream, ".editorconfig", "[]\n", "main has an Owned file");
     run(repo, "fetch", "--quiet", "origin", "main");
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, "scripts"), { recursive: true });
@@ -921,14 +921,14 @@ describe("checkReview", () => {
     chmodSync(join(repo, "scripts/check-pr-title.sh"), 0o755);
     run(repo, "add", "scripts/check-pr-title.sh");
     run(repo, "commit", "--quiet", "-m", "re-Apply");
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
   });
 
   it("reviews Owned-only changes on any other branch", () => {
-    run(repo, "switch", "--quiet", "-C", "chore/edit-global", "origin/main");
-    commit(repo, "global.json", "{}\n", "edit");
+    run(repo, "switch", "--quiet", "-C", "chore/edit-editorconfig", "origin/main");
+    commit(repo, ".editorconfig", "{}\n", "edit");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });

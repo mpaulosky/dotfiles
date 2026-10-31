@@ -110,7 +110,10 @@ export const OWNED_PATHS = [
 // ci.yml enforces (any whole percentage passes it, 0 included), the rules
 // file that loads into every Claude session in the repository, and the issue
 // templates, whose front matter sets the labels and assignee of every issue
-// opened from them (a `Sandcastle` label would feed the unattended pipeline).
+// opened from them (a `Sandcastle` label would feed the unattended pipeline),
+// the reviewer agent, whose `tools:` front matter is what keeps reviewers
+// read-only, the two prompts that instruct the pipeline's judging roles, and
+// global.json, which sets the SDK and the msbuild-sdks a build runs.
 // The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
 // the READMEs under .security/ and .claude/skills/) are text. A re-Apply
 // overwrites them like any Owned file, but checkReview does not let a
@@ -122,6 +125,10 @@ export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
   ".github/ISSUE_TEMPLATE/bug_report.md",
   ".github/ISSUE_TEMPLATE/config.yml",
   ".github/ISSUE_TEMPLATE/feature_request.md",
+  ".claude/agents/pre-push-reviewer.md",
+  ".sandcastle/critique-prompt.md",
+  ".sandcastle/intake-prompt.md",
+  "global.json",
 ]);
 
 // The files under an Owned pattern that the Template doesn't supply: its Seed

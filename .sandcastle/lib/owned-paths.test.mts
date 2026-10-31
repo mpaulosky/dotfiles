@@ -61,12 +61,9 @@ describe("OWNED_PATHS against the Template's template/owned/", () => {
 // exempt by default: it fails the test below until someone puts it in one list or the other.
 const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".github/pull_request_template.md",
-  ".claude/agents/pre-push-reviewer.md",
   ".sandcastle/main.mts",
   ".sandcastle/status.mts",
   ".sandcastle/status.test.mts",
-  ".sandcastle/critique-prompt.md",
-  ".sandcastle/intake-prompt.md",
   ".sandcastle/tsconfig.json",
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
@@ -89,7 +86,6 @@ const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".yamllint.yml",
   "codecov.yml",
   "GitVersion.yml",
-  "global.json",
 ];
 
 describe("the files a re-Apply may write without a review", () => {
@@ -99,6 +95,12 @@ describe("the files a re-Apply may write without a review", () => {
     const unclassified = singleFiles.filter((file) => !REVIEWED_ON_REAPPLY.has(file) && !EXEMPT_ON_REAPPLY_AUDITED.includes(file));
 
     assert.deepEqual(unclassified, [], "a new Owned file skips the review on a re-Apply by its path alone: put it in REVIEWED_ON_REAPPLY if it carries behaviour, or in EXEMPT_ON_REAPPLY_AUDITED here once someone has read it");
+  });
+
+  it("reviews the files whose content widens what the review, the judging roles or the build can do", () => {
+    for (const file of [".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", "global.json"]) {
+      assert.equal(REVIEWED_ON_REAPPLY.has(file), true, file);
+    }
   });
 
   it("lists no file in both, and no file that isn't a single-file Owned pattern", () => {

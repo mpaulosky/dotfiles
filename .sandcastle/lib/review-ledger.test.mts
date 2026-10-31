@@ -789,8 +789,8 @@ describe("checkReview", () => {
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
   });
 
-  it("reviews a re-Apply that changes the coverage gate or the hand-off rules, though both are Owned: they carry behaviour a path alone can't vouch for", () => {
-    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md"]) {
+  it("reviews a re-Apply that changes an Owned file that carries behaviour (the coverage gate, the hand-off rules, an issue template, the reviewer agent, a judging prompt, global.json), though all are Owned: they carry behaviour a path alone can't vouch for", () => {
+    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md", ".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", "global.json"]) {
       run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
       mkdirSync(join(repo, dirname(path)), { recursive: true });
       commit(repo, ".editorconfig", "{}\n", "re-Apply");

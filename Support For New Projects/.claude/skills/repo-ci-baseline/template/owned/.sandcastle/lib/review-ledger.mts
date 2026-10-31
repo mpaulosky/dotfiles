@@ -795,7 +795,7 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
     };
   }
   if (ledger === undefined || !isReviewedCode(cwd, ledger.head, base, head)) {
-    const why = withheld.length > 0 ? ` A re-Apply skips the review only for Owned files that are text; it is withheld for: ${withheld.join(", ")}.` : "";
+    const why = withheld.length > 0 ? ` A re-Apply skips the review only for Owned files that carry no behaviour; it is withheld for: ${withheld.join(", ")}.` : "";
     return { ok: false, message: `No review is recorded for this diff. Run /pre-push-review, which reviews, fixes and records it.${why}` };
   }
   const blocking = ledger.findings.filter(isBlocking);

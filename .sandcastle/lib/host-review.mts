@@ -143,15 +143,18 @@ export const reviewerFindingSchema = z
 // A finding as a reviewer answered it.
 export type ReviewerFinding = z.infer<typeof reviewerFindingSchema>;
 
-// How many opening and closing tags the parser tries, so quoted tags can't make it quadratic.
-const MAX_TAG_CANDIDATES = 20;
+// How many opening tags (from each end of the output) and closing tags (the last ones) the parser tries, so tags a reviewer quotes
+// from a file the branch planted can't make it quadratic, and a real answer is never out of reach: it is among the last ones.
+const MAX_TAG_CANDIDATES = 10;
 
 // Thrown for a reviewer answer that holds no valid findings block.
 export class ReviewerAnswerError extends Error {}
 
 // The findings in a reviewer's output: the span from the earliest opening tag to the latest closing tag that parses as a JSON
-// array. A reviewer may quote the format, or text it read, before its answer, and prose after it may mention a tag; neither counts.
-// An answer that was attempted after a candidate closing tag but doesn't parse (malformed, or cut short) is refused, not skipped.
+// array. A reviewer may quote the format, or text it read, before its answer, and prose after it may mention a lone tag; neither
+// counts. The last block wins, as the prompt says to write nothing after the answer; a quote of the format after it can't be told from the
+// answer. It fails closed on an opening tag followed by `[` after the closing tag it reads (a later answer that is malformed or cut
+// short, or prose after the answer that quotes the format with an opening tag), and the reviewer is asked again.
 export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   const starts = [...stdout.matchAll(/<findings>/g)].map((match) => match.index! + "<findings>".length);
   const ends = [...stdout.matchAll(/<\/findings>/g)].map((match) => match.index!);
@@ -160,14 +163,12 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   // block's. The block is the one that ends at the latest closing tag that leaves a JSON array, and starts at the earliest opening tag
   // that does: a quoted `<findings>[]</findings>` inside a finding sits inside the real block and can't cut it short to read as clean,
   // and an example before the answer, or prose after it, doesn't make the answer unreadable.
+  const candidateStarts = [...new Set([...starts.slice(0, MAX_TAG_CANDIDATES), ...starts.slice(-MAX_TAG_CANDIDATES)])];
+  const spans: { start: number; end: number; items: unknown[] }[] = [];
   let value: unknown;
   let jsonError: unknown;
-  // Bounded, since a branch can plant a file full of tags that a reviewer quotes.
-  const candidateStarts = starts.slice(0, MAX_TAG_CANDIDATES);
-  search: for (const end of ends.slice(-MAX_TAG_CANDIDATES).reverse()) {
-    // An opening tag after this closing tag that leads into an array is a later answer that failed to parse above: reading an
-    // earlier quoted block instead would record a broken review as clean, so the reviewer is asked again.
-    if (starts.some((start) => start > end && /^\s*\[/.test(stdout.slice(start, start + 64)))) {
+  for (const end of ends.slice(-MAX_TAG_CANDIDATES * 2).reverse()) {
+    if (spans.length === 0 && starts.some((start) => start > end && /^\s*\[/.test(stdout.slice(start, start + 64)))) {
       throw new ReviewerAnswerError(`the findings block is not valid JSON: ${jsonError === undefined ? "it is cut short" : (jsonError as Error).message}`);
     }
     for (const start of candidateStarts) {
@@ -175,8 +176,8 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
       try {
         const parsed: unknown = JSON.parse(stdout.slice(start, end));
         if (Array.isArray(parsed)) {
-          value = parsed;
-          break search;
+          spans.push({ start, end, items: parsed });
+          break;
         }
         value ??= parsed;
       } catch (error) {
@@ -184,9 +185,12 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
       }
     }
   }
-  if (value === undefined) throw new ReviewerAnswerError(`the findings block is not valid JSON: ${(jsonError as Error).message}`);
-  if (!Array.isArray(value)) throw new ReviewerAnswerError("the findings block must hold a JSON array of findings");
-  return value.map((item, index) => {
+  const chosen = spans[0];
+  if (chosen === undefined) {
+    if (value === undefined) throw new ReviewerAnswerError(`the findings block is not valid JSON: ${(jsonError as Error).message}`);
+    throw new ReviewerAnswerError("the findings block must hold a JSON array of findings");
+  }
+  return chosen.items.map((item, index) => {
     const parsed = reviewerFindingSchema.safeParse(item);
     if (parsed.success) return parsed.data;
     const issues = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(finding)"}: ${issue.message}`);

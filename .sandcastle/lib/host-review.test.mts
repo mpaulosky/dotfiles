@@ -436,6 +436,13 @@ describe("parseReviewerAnswer's edges", () => {
     assert.throws(() => parseReviewerAnswer(`Format: <findings>[]</findings>\n<findings>[${bad}`), ReviewerAnswerError);
   });
 
+  it("reads the real answer after more than the capped number of quoted blocks", () => {
+    const answer = [raw()];
+    const quotes = `<findings>[]</findings> `.repeat(25);
+
+    assert.deepEqual(parseReviewerAnswer(`${quotes}\n${block(answer)}`).map((found) => found.summary), [answer[0]!.summary]);
+  });
+
   it("tries a bounded number of tags", () => {
     const noise = "<findings>".repeat(5000) + "</findings>".repeat(5000);
     const started = Date.now();

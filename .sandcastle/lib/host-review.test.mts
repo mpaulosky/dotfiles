@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { REVIEWER_TOOLS } from "./agents.mts";
-import { FIXED_ROLE_AGENTS, REVIEW_FIX_ROUNDS } from "./config.mts";
+import { FIXED_ROLE_AGENTS, MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS } from "./config.mts";
 import { UncountedStopError } from "./errors.mts";
 import {
   applyOutcomes,
@@ -424,6 +424,15 @@ describe("parseReviewerAnswer's edges", () => {
     const got = parseReviewerAnswer(block([quoted, second]));
 
     assert.deepEqual(got.map((found) => found.summary), [quoted.summary, second.summary]);
+  });
+
+  it("reads an answer that follows a copy of the prompt's own example finding", async () => {
+    const run = fake({});
+    await runHostReview(run.host, input(run.startHead));
+    const example = /<findings>\n([\s\S]*?)\n<\/findings>/.exec(run.reviewerRuns[0]!.prompt)![1]!;
+    const answer = [raw()];
+
+    assert.deepEqual(parseReviewerAnswer(`I will answer like <findings>${example}</findings>.\n${block(answer)}`).map((found) => found.summary), [answer[0]!.summary]);
   });
 
   it("ignores a quoted example block before the answer and prose that mentions the tags after it", () => {
@@ -1198,6 +1207,16 @@ describe("runHostReview's access", () => {
 
 // A real sandbox run showed reviewers started together race for the sandbox's git config lock (`git config --global` in each role's setup).
 describe("runHostReview's reviewers", () => {
+  it("fails the review, asking no reviewer, when a round has more reviewers than the time bounds allow", async () => {
+    const rows = Array.from({ length: MAX_REVIEWERS_PER_ROUND }, (_, index) => `| Extra ${index} | Any code | Does it hold? |\n`).join("");
+    const run = fake({ repoLenses: `| Lens | Applies to | Ask |\n| --- | --- | --- |\n${rows}` });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(run.reviewerRuns.length, 0);
+  });
+
   it("runs the reviewers of a round one after another, never two in one sandbox at once", async () => {
     const run = fake({});
 
@@ -1211,7 +1230,7 @@ describe("runHostReview's reviewers", () => {
 // Criterion: a usage or time stop during the review leaves the branch for a later round and is not published as reviewed. A reviewer that
 // fails is reported, and the branch is not recorded as reviewed.
 describe("runHostReview's stops and failures", () => {
-  it("rejects with the UncountedStopError a reviewer hits, after the other reviewers settle, and records nothing", async () => {
+  it("rejects with the UncountedStopError a reviewer hits at once, starting no later reviewer, and records nothing", async () => {
     const stop = new UncountedStopError("Claude's usage limit was hit during the pre-push-reviewer run");
     let settled = 0;
     const run = fake({
@@ -1224,7 +1243,9 @@ describe("runHostReview's stops and failures", () => {
 
     await assert.rejects(() => runHostReview(run.host, input(run.startHead)), (error: unknown) => error === stop);
 
-    assert.equal(settled, CODE_REVIEWERS.length - 1);
+    const before = run.reviewerRuns.map((found) => found.lens);
+    assert.equal(before.at(-1), "Security", "the stop ends the round: no reviewer runs after it");
+    assert.equal(settled, CODE_REVIEWERS.indexOf("Security"));
     assert.equal(run.records.length, 0);
     assert.equal(run.fixerPrompts.length, 0);
   });
@@ -1480,6 +1501,14 @@ describe("openFindingsNote", () => {
     assert.match(note, /- R1 critical src\/app\.ts:12/);
     assert.doesNotMatch(note, /A blank name passes the guard/);
     assert.doesNotMatch(note, /Trim the name first/);
+  });
+
+  it("cuts a long path, and names the severity of a finding that has none", () => {
+    const note = openFindingsNote(ledgerOf([found({ path: "a/" + "x".repeat(5000) }), found({ id: "R2", severity: undefined })]));
+
+    assert.ok(note.length < 1_500, `the note is ${note.length} characters`);
+    assert.match(note, /- R2 warning /);
+    assert.doesNotMatch(note, /undefined/);
   });
 
   it("lists an open Advisory finding that isn't a security one", () => {

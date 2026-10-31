@@ -6,11 +6,11 @@
 
 import { z } from "zod";
 import { isRoleTimeout } from "./agents.mts";
-import { REVIEW_FIX_ROUNDS, REVIEWER_ATTEMPTS } from "./config.mts";
+import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEWER_ATTEMPTS } from "./config.mts";
 import { UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
-import { FINDING_PATH_SHAPE, isSecurity, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
+import { FINDING_PATH_SHAPE, isSecurity, severityOf, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
 
 // One row of lenses.md's table (or of a repo's own lenses table).
 export type Lens = { name: string; appliesTo: string; row: string };
@@ -416,6 +416,10 @@ async function runRounds(
     await host.writeRunFile(`${runRel}/decisions.md`, decisionsMarkdown(recorded));
     const reviewers = reviewersFor(patchPaths((prepared.fixes ?? prepared.patch).toString("utf8")), lenses);
     host.log(`  review round ${round}: ${reviewers.map((reviewer) => reviewer.lens).join(", ")}`);
+    if (reviewers.length > MAX_REVIEWERS_PER_ROUND) {
+      host.log(`  ✗ the local review failed: round ${round} has ${reviewers.length} reviewers, past the limit of ${MAX_REVIEWERS_PER_ROUND} that its time bounds allow`);
+      return { status: "failed", head: prepared.head, reason: "the round has more reviewers than the review's time bounds allow" };
+    }
 
     const ask = (reviewer: Reviewer) =>
       reviewerFindings(host, reviewer, (problem) =>
@@ -432,16 +436,17 @@ async function runRounds(
         }) + (problem === undefined ? "" : retryNote(problem)),
       );
     // One after another, never together: each role run sets up the sandbox's global git config, and runs started together race for its lock
-    // (a real run lost four of ten reviewers to `could not lock config file`). Every reviewer still runs, so every failure is reported.
+    // (a real run lost four of ten reviewers to `could not lock config file`). Every reviewer still runs, so every failure is reported, except that
+    // a usage or time stop ends the round at once: the runs after it would only hit the same limit.
     const settled: PromiseSettledResult<ReviewerFinding[]>[] = [];
     for (const reviewer of reviewers) {
-      settled.push(await ask(reviewer).then(
+      const result = await ask(reviewer).then(
         (value): PromiseFulfilledResult<ReviewerFinding[]> => ({ status: "fulfilled", value }),
         (reason: unknown): PromiseRejectedResult => ({ status: "rejected", reason }),
-      ));
+      );
+      if (result.status === "rejected" && result.reason instanceof UncountedStopError) throw result.reason;
+      settled.push(result);
     }
-    const stop = settled.find((result): result is PromiseRejectedResult => result.status === "rejected" && result.reason instanceof UncountedStopError);
-    if (stop !== undefined) throw stop.reason;
     const failures = settled.flatMap((result, index): ReviewerFailure[] =>
       result.status === "rejected" ? [{ lens: reviewers[index]!.lens, what: failureText(result.reason) }] : [],
     );
@@ -540,6 +545,9 @@ function record(host: HostReviewHost, input: { branch: string }, last: PreparedR
 
 // The most findings the PR note lists: the note is appended to a description that may already be near GitHub's limit.
 const NOTE_FINDINGS = 20;
+// A path is the reviewer's text too, so its length is bounded.
+const NOTE_PATH_LIMIT = 300;
+const cut = (text: string) => (text.length <= NOTE_PATH_LIMIT ? text : `${[...text].slice(0, NOTE_PATH_LIMIT).join("")}…`);
 
 // The PR note listing the findings the review left open: each non-security one by its id, severity and place only. A reviewer's own
 // words (summary, suggested fix) stay in the local review record and are never published, since they are written by an agent that
@@ -551,7 +559,7 @@ export function openFindingsNote(ledger: Ledger): string {
   const listed = open.filter((finding) => !isSecurity(finding));
   const hidden = open.length - listed.length;
   const shown = listed.slice(0, NOTE_FINDINGS);
-  const lines = shown.map((finding) => `- ${finding.id} ${finding.severity} ${plainText(`${finding.path}:${finding.line}`)}`);
+  const lines = shown.map((finding) => `- ${finding.id} ${severityOf(finding)} ${cut(plainText(`${finding.path}:${finding.line}`))}`);
   const more = listed.length - shown.length;
   return [
     "The local review left these findings open (their details are in the local review record):",

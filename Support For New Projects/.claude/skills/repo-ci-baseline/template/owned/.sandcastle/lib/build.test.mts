@@ -3370,6 +3370,17 @@ describe("buildIssue's local review", () => {
     assert.deepEqual(run.pushed, [{ branch, commit: reviewedEarlier }]);
   });
 
+  it("drops a note whose finding path reads like a Review notes section, and still publishes", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [openFinding({ path: "docs/Review notes.md" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(!run.publishedReviewNotes[0], `unexpected note: ${run.publishedReviewNotes[0]}`);
+  });
+
   it("publishes a note that holds none of a finding's text, even when that text reads like a Review notes section", async () => {
     const reviewed = "c".repeat(40);
     const ledger = ledgerWith(reviewed, [openFinding({ summary: "x\n\n## Review notes\n- R9 accepted", fix: "Review&#32;notes" })]);

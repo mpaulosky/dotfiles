@@ -154,8 +154,9 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
   The rest, and any security finding, are only counted.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed.
-  The reviewers run in parallel on one sandbox. It needs a run against a real sandbox before merging, since the tests
-  stub Docker and see `--tools`, `--strict-mcp-config`, `--setting-sources` and `--disallowedTools` only as text.
+  A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
+  global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that. A change to how the host runs the reviewers needs a run
+  against a real sandbox before merging, since the tests stub Docker and see `--tools`, `--strict-mcp-config`, `--setting-sources` and `--disallowedTools` only as text.
 
 ## Not in it yet
 

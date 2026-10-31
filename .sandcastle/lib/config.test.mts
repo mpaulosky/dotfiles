@@ -20,6 +20,7 @@ import {
   QUEUE_SCOPE_USAGE,
   QueueScopeError,
   REVIEW_FIX_ROUNDS,
+  MAX_REVIEWERS_PER_ROUND,
   REVIEWER_ATTEMPTS,
   ROLES,
   RunModeError,
@@ -90,8 +91,6 @@ describe("the host-side review's fixed role", () => {
 });
 
 describe("BUILDING_LABEL_MAX_AGE_MS", () => {
-  // The Bar and every lens of lenses.md, run one after another.
-  const REVIEWERS_PER_ROUND = 12;
   // A startup clears a sandcastle:building label older than this as a crashed
   // run's, so it must outlast the longest build a live run can make, or a
   // second run would clear a live build's label and build the issue too.
@@ -106,7 +105,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
     const timeout = (role: (typeof BUILD_ROLES)[number]) => (role === "ui" && !uiEnabled() ? ROLE_AGENTS.backend : roleAgent(role)).timeoutMinutes;
     const gateFixing = ROLE_AGENTS["gate-fixer"].timeoutMinutes * GATE_FIXER_ATTEMPTS;
     const review =
-      (REVIEW_FIX_ROUNDS + 1) * REVIEWERS_PER_ROUND * REVIEWER_ATTEMPTS * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes +
+      (REVIEW_FIX_ROUNDS + 1) * MAX_REVIEWERS_PER_ROUND * REVIEWER_ATTEMPTS * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes +
       REVIEW_FIX_ROUNDS * (ROLE_AGENTS.backend.timeoutMinutes + gateFixing);
     const minutes = BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) + checkpoints * gateFixing + review;
     const hour = 60;

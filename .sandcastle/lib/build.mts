@@ -1315,9 +1315,10 @@ async function buildMarkedIssue(
     } else {
       gated = review.head;
       reviewNote = openFindingsNote(review.ledger);
-      // The reviewers' words are an agent's: the note goes out only if the host's public-text check leaves it as it is.
+      // The note holds only ids, severities and file paths, but a path comes from the branch: it goes out only if the host's public-text check leaves it
+      // as it is, a backstop behind the ledger's path shape and the note's length bounds.
       if (reviewNote !== "" && host.publicError(reviewNote) !== reviewNote) {
-        log("the local review's open findings hold text that isn't safe to publish, so the PR gets no note on them");
+        log("the local review's open findings hold a path that isn't safe to publish, so the PR gets no note on them");
         reviewNote = "";
       }
     }

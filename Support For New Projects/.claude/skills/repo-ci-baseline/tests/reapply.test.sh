@@ -66,7 +66,13 @@ logins_json() { jq -Rn '[inputs | select(length > 0)]'; }
 case "$1 $2" in
   "pr list")
     case "$*" in
-      *"--state open"*) cat "$stub/open" 2>/dev/null ;;
+      *"--state open"*)
+        # $stub/open is a PR number; it lists as a PR of this repo unless $stub/open-cross exists (a fork's).
+        n="$(cat "$stub/open" 2>/dev/null || true)"
+        if [[ -n "$n" ]]; then
+          cross=false; [[ -e "$stub/open-cross" ]] && cross=true
+          jq -nr --argjson n "$n" --argjson c "$cross" "[{number: \$n, isCrossRepository: \$c}] | $(arg_after --jq "$@")"
+        fi ;;
       *"--state merged"*)
         if [[ -e "$stub/merged-fails" ]]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
         cat "$stub/merged" 2>/dev/null ;;
@@ -119,7 +125,7 @@ git_q() { git -c core.hooksPath=/dev/null "$@"; }
 reset_gh() {
   : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; : > "$stub/all-prs"; echo '[]' > "$stub/comments.json"
   command rm -f "$stub/already" "$stub/dropped" "$stub/request-fails" "$stub/requests" "$stub/reviews" \
-    "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body" "$stub/merged-fails" "$stub/all-fails"
+    "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body" "$stub/merged-fails" "$stub/all-fails" "$stub/open-cross"
 }
 
 # ── The repo: a bare origin, its primary checkout on main, and a helper clone
@@ -450,11 +456,43 @@ check "closed PR, no upstream, remote branch deleted: refused" '[[ $rc -ne 0 ]] 
 check "closed PR, no upstream, remote branch deleted: nothing pushed" \
   '! git -C "$origin" rev-parse --verify --quiet chore/reapply-baseline >/dev/null && [[ "$(git -C "$wt" rev-parse HEAD)" == "$closed_tip" ]]'
 
-# The branch name is the same every round, so the PRs of earlier rounds (merged, or with a head main
-# already has, or one this clone never saw) say nothing about a new branch: it is still carried on.
+# A PR head strictly behind the tip (a later local commit sits on top of the closed PR's work) still
+# counts: the test is "the branch carries the head", not "the head is the tip".
 reset_gh
-printf '[{"headRefOid":"%s","isCrossRepository":false},{"headRefOid":"%s","isCrossRepository":false}]\n' \
-  "$(git -C "$repo" rev-parse origin/main)" "$(printf 'a%.0s' {1..40})" > "$stub/all-prs"
+behind_head="$(git -C "$wt" rev-parse HEAD^)"
+check "behind-the-tip setup: HEAD^ is on the branch and not in main" \
+  'git -C "$repo" merge-base --is-ancestor "$behind_head" "$closed_tip" && ! git -C "$repo" merge-base --is-ancestor "$behind_head" origin/main'
+printf '[{"headRefOid":"%s","isCrossRepository":false}]\n' "$behind_head" > "$stub/all-prs"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a PR head behind the tip: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
+
+# The PR list is read in full: heads that don't count come first, and a later one that does still refuses.
+# A real commit this clone has that isn't in the tip (an earlier round, squash-merged) doesn't count.
+side_commit="$(git -C "$repo" commit-tree -m "an earlier round, squash-merged" "$(git -C "$repo" rev-parse 'origin/main^{tree}')")"
+reset_gh
+printf '[{"headRefOid":"%s","isCrossRepository":false},{"headRefOid":"%s","isCrossRepository":false},{"headRefOid":"%s","isCrossRepository":false}]\n' \
+  "$(git -C "$repo" rev-parse origin/main)" "$side_commit" "$closed_tip" > "$stub/all-prs"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "several PRs, the last one carried: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
+
+# A head that isn't a commit id never reaches git: the run ends, in either lookup.
+reset_gh
+printf '[{"headRefOid":"--upload-pack=x","isCrossRepository":false}]\n' > "$stub/all-prs"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a PR head that isn't a commit id: the run ends" '[[ $rc -ne 0 ]] && grep -q "not a commit id" <<< "$out" && ! grep -q "carrying it on" <<< "$out"'
+reset_gh
+echo "--upload-pack=x" > "$stub/merged"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a merged PR head that isn't a commit id: the run ends" '[[ $rc -ne 0 ]] && grep -q "not a commit id" <<< "$out" && ! grep -q "carrying it on" <<< "$out"'
+check "bad PR heads: nothing pushed" '! git -C "$origin" rev-parse --verify --quiet chore/reapply-baseline >/dev/null'
+
+# The branch name is the same every round, so the PRs of earlier rounds (merged, or with a head main
+# already has, or one this clone never saw, or a real commit the tip doesn't carry) say nothing about a
+# new branch: it is still carried on.
+reset_gh
+check "earlier-rounds setup: main is behind the tip" 'git -C "$repo" merge-base --is-ancestor origin/main refs/heads/chore/reapply-baseline'
+printf '[{"headRefOid":"%s","isCrossRepository":false},{"headRefOid":"%s","isCrossRepository":false},{"headRefOid":"%s","isCrossRepository":false}]\n' \
+  "$side_commit" "$(git -C "$repo" rev-parse origin/main)" "$(printf 'a%.0s' {1..40})" > "$stub/all-prs"
 out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
 check "earlier rounds' PRs: the never-pushed branch is carried on" '[[ $rc -eq 0 ]] && grep -q "was never pushed; carrying it on" <<< "$out"'
 check "earlier rounds' PRs: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
@@ -481,13 +519,21 @@ check "PR lookup fails: refused" \
 check "PR lookup fails: nothing pushed" '! git -C "$origin" rev-parse --verify --quiet chore/reapply-baseline >/dev/null'
 
 # A branch that tracks main (made with `git checkout -b ... origin/main`) has an upstream, but not its own:
-# with no origin/<branch> and no PR it is still a never-pushed branch.
+# with no origin/<branch> and no PR whose head it carries it is still a never-pushed branch.
 reset_gh
 git -C "$repo" config branch.chore/reapply-baseline.remote origin
 git -C "$repo" config branch.chore/reapply-baseline.merge refs/heads/main
 out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
 check "never pushed, tracking main: carried on" '[[ $rc -eq 0 ]] && grep -q "was never pushed; carrying it on" <<< "$out"'
 check "never pushed, tracking main: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
+
+# An open PR from a fork with this branch name is not this repo's: it isn't reused or edited. The branch
+# is pushed, with no PR of this repo, so the run refuses it like any unmerged pushed branch.
+reset_gh
+echo 7 > "$stub/open"
+touch "$stub/open-cross"
+out="$("$reapply" --brings '#88' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a fork's open PR of the same name: not reused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out" && ! grep -q "^pr edit 7" "$stub/gh.log" && ! grep -q "reusing" <<< "$out"'
 
 # ── Bad arguments ───────────────────────────────────────────────────────────
 check "args: --brings required" '! "$reapply" "$repo" >/dev/null 2>&1'

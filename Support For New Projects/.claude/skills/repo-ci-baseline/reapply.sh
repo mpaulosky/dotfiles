@@ -132,13 +132,27 @@ worktree_of() {
 }
 # gh runs in the primary checkout, so it picks the repo from origin.
 gh_() { (cd "$primary" && gh "$@"); }
+# A commit id as gh returns it (SHA-1 or SHA-256 hex): anything else, a leading dash included, ends the run
+# before git can read it as an option.
+check_commit_id() { [[ "$1" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || die "gh returned '$1', not a commit id"; }
+# Exit 0 when $1 is an ancestor of $2, 1 when it is not, or when this clone lacks either commit (a tip
+# can't carry a commit it doesn't have). Any other git failure ends the run rather than reading as "not".
+ancestor() {
+  g cat-file -e "$1^{commit}" 2>/dev/null || return 1
+  g cat-file -e "$2^{commit}" 2>/dev/null || return 1
+  local status=0
+  g merge-base --is-ancestor "$1" "$2" || status=$?
+  [[ $status -le 1 ]] || die "git merge-base --is-ancestor failed (status $status) for $1 and $2"
+  return "$status"
+}
 
 echo "── $repo_name: fetching"
 g fetch --prune --quiet origin
 g rev-parse --verify --quiet origin/main >/dev/null || die "origin/main not found in $primary"
 g worktree prune
 
-open_pr="$(gh_ pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
+# --head matches the branch name only, so a fork's PR of the same name is left out: it is not this repo's PR.
+open_pr="$(gh_ pr list --head "$branch" --state open --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository == false)][0].number // empty')"
 
 # ── 1. The worktree ─────────────────────────────────────────────────────────
 existing="$(worktree_of "$branch")"
@@ -164,7 +178,8 @@ if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && [[ -z "$open_
     merged_heads="$(gh_ pr list --head "$branch" --state merged --limit 100 --json headRefOid --jq '.[].headRefOid')"
     while IFS= read -r oid; do
       [[ -n "$oid" ]] || continue
-      if g merge-base --is-ancestor "$tip" "$oid" 2>/dev/null; then merged=true; break; fi
+      check_commit_id "$oid"
+      if ancestor "$tip" "$oid"; then merged=true; break; fi
     done <<< "$merged_heads"
   fi
   # A branch that was never pushed (the gate refused the first push, before any PR existed) has no
@@ -185,7 +200,8 @@ if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && [[ -z "$open_
     carried=false
     while IFS= read -r oid; do
       [[ -n "$oid" ]] || continue
-      if g merge-base --is-ancestor "$oid" "$tip" 2>/dev/null && ! g merge-base --is-ancestor "$oid" origin/main 2>/dev/null; then carried=true; break; fi
+      check_commit_id "$oid"
+      if ancestor "$oid" "$tip" && ! ancestor "$oid" origin/main; then carried=true; break; fi
     done <<< "$pr_heads"
     $carried || never_pushed=true
   fi

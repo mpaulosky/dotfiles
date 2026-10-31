@@ -277,6 +277,15 @@ Those are the Read tool's limits in Claude Code 2.1.293 (what the action pin ins
     (taken 2026-10-09; GitHub calls the named files "an example of some of the files", so this is the documented subset).
     Excluded files go in no piece and are never read; INDEX lists them as excluded, and the prompt says to skip them.
     Everything else is reviewed as git shows it, binaries included, as Copilot sees them.
+  - **A root copy identical to the Template's file isn't read twice** (mpaulosky/dotfiles#380). A repo that carries copies of the Template's Owned files
+    (dotfiles) changes the Template's file and its root copy to the same bytes, so every large Baseline PR showed its diff twice
+    and went past `MAX_READ_PIECES`, with pieces unread and the merge held for the owner (mpaulosky/dotfiles#377, #379).
+    The step leaves out a root copy of a changed Template file (`template/owned/<path>` is the copy of `<path>`) when both have the same
+    mode and blob at the head: it goes in no piece, counts against neither the read budget nor what holds the merge, and INDEX lists it as
+    "identical to `<Template path>`". An identical copy is read through the Template's file. The test is by content, never by name, so a copy that differs from the Template's file (a drifting copy),
+    or whose Template file isn't in the PR, is read like any file and the drift still reaches the review. The mapping is read off the Template's
+    layout, not from a list, and a repo with no `template/owned/` path in the diff is unchanged. A PR still too big after the copies are left out
+    gets the not-read finding as before.
   - **What nobody reads can't merge on this review.** Copilot's review is advice and a person still merges; this one gates PR Auto-Merge.
     Reviews of the re-Apply PRs (IssueTracker#248, atelier-store#136, Blazor-Server#192) showed what matching Copilot alone let through:
     a PR changing only `.github/actions/*/dist/index.js` or a `vendor/*.min.js` merged on a review that read nothing,

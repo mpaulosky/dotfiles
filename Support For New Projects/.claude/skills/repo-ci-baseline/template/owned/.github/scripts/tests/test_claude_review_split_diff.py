@@ -211,7 +211,7 @@ def check_line_numbers(folder, repo, head):
         for key, _ in segments((folder / name).read_bytes()):
             content = (folder / name).read_bytes()
             lines = content[content.index(key):].split(b"\n")
-            path = next(line[6:].decode() for line in lines if line.startswith(b"+++ b/"))
+            path = next(line[6:].decode().rstrip("\t") for line in lines if line.startswith(b"+++ b/"))  # git ends a path with a space in it with a tab
             file = repo.git("show", f"{head}:{path}").split(b"\n")
             new = None
             for at, line in enumerate(lines[1:], 1):

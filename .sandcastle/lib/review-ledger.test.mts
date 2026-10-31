@@ -815,7 +815,10 @@ describe("checkReview", () => {
     assert.doesNotMatch(result.message, /global\.json/);
   });
 
-  it("gives the plain message, with no note about withheld files, on a branch that isn't a re-Apply", () => {
+  it("gives the plain message, with no note about withheld files, on a branch that isn't a re-Apply, though it changes one", () => {
+    mkdirSync(join(repo, ".github/ci"), { recursive: true });
+    commit(repo, ".github/ci/coverage-threshold", "80\n", "change the gate");
+
     const result = checkReview(repo, mergeBase(repo), {});
 
     assert.equal(result.ok, false);

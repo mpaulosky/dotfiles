@@ -54,7 +54,8 @@ reapply="$skill/reapply.sh"
 # comments fails. While $stub/merged-fails exists, listing the merged PRs fails.
 # $stub/all-prs is the JSON list of the PRs in any state for the branch name, each
 # {headRefOid, isCrossRepository}; the real jq runs on the --jq argument. While
-# $stub/all-fails exists, listing them fails.
+# $stub/all-fails exists, listing them fails. While $stub/open-cross exists, the open PR
+# lists as a fork's (isCrossRepository true). $stub/open must hold a number.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -534,6 +535,41 @@ echo 7 > "$stub/open"
 touch "$stub/open-cross"
 out="$("$reapply" --brings '#88' "$repo" 2>&1)" && rc=0 || rc=$?
 check "a fork's open PR of the same name: not reused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out" && ! grep -q "^pr edit 7" "$stub/gh.log" && ! grep -q "reusing" <<< "$out"'
+# The fork filter runs after gh's cut, so the lookup asks for the same 100 the others do: with gh's default
+# of 30, enough forks' PRs of that name would push this repo's own open PR out of the list.
+check "the open-PR lookup asks for 100, as the others do" \
+  'grep "^pr list .*--state open" "$stub/gh.log" | grep -q -- "--limit 100"'
+
+# ── The merged PRs' heads: the tip must be carried BY the head, not the other way round ──
+# A head strictly behind the tip (a local commit sits on top of what merged) carries nothing of it.
+reset_gh
+cur_tip="$(git -C "$repo" rev-parse refs/heads/chore/reapply-baseline)"
+cur_behind="$(git -C "$repo" rev-parse "$cur_tip^")"
+check "merged-direction setup: the head behind the tip is not in main" \
+  '! git -C "$repo" merge-base --is-ancestor "$cur_tip" origin/main && git -C "$repo" merge-base --is-ancestor "$cur_behind" "$cur_tip" && ! git -C "$repo" merge-base --is-ancestor "$cur_tip" "$cur_behind"'
+echo "$cur_behind" > "$stub/merged"
+out="$("$reapply" --brings '#89' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a merged head behind the tip: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
+check "a merged head behind the tip: branch kept" '[[ "$(git -C "$repo" rev-parse refs/heads/chore/reapply-baseline)" == "$cur_tip" ]]'
+
+# A git failure that is neither "ancestor" nor "not" ends the run. A commit whose parent this clone lacks
+# makes the walk fail (status 128) while both commits exist.
+reset_gh
+missing_parent="$(printf 'b%.0s' {1..40})"
+broken="$(printf 'tree %s\nparent %s\nauthor T <t@example.com> 1 +0000\ncommitter T <t@example.com> 1 +0000\n\nbroken\n' \
+  "$(git -C "$repo" rev-parse 'origin/main^{tree}')" "$missing_parent" | git -C "$repo" hash-object -t commit -w --literally --stdin)"
+echo "$broken" > "$stub/merged"
+out="$("$reapply" --brings '#89' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a git failure in the ancestor test: the run ends" \
+  '[[ $rc -ne 0 ]] && grep -q "is-ancestor failed (status" <<< "$out" && ! grep -q "carrying it on\|replacing" <<< "$out"'
+check "a git failure in the ancestor test: branch kept" '[[ "$(git -C "$repo" rev-parse refs/heads/chore/reapply-baseline)" == "$cur_tip" ]]'
+
+# A merged head strictly ahead of the tip (the PR got more commits after the tip) carries it: replaced.
+reset_gh
+ahead="$(git -C "$repo" commit-tree -p "$cur_tip" -m "added in the PR after the tip" "$(git -C "$repo" rev-parse "$cur_tip^{tree}")")"
+echo "$ahead" > "$stub/merged"
+out="$("$reapply" --brings '#89' "$repo" 2>&1)" && rc=0 || rc=$?
+check "a merged head ahead of the tip: the branch is replaced" '[[ $rc -eq 0 ]] && grep -q "replacing" <<< "$out"'
 
 # ── Bad arguments ───────────────────────────────────────────────────────────
 check "args: --brings required" '! "$reapply" "$repo" >/dev/null 2>&1'

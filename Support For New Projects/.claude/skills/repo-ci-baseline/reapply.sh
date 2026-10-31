@@ -152,7 +152,7 @@ g rev-parse --verify --quiet origin/main >/dev/null || die "origin/main not foun
 g worktree prune
 
 # --head matches the branch name only, so a fork's PR of the same name is left out: it is not this repo's PR.
-open_pr="$(gh_ pr list --head "$branch" --state open --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository == false)][0].number // empty')"
+open_pr="$(gh_ pr list --head "$branch" --state open --limit 100 --json number,isCrossRepository --jq '[.[] | select(.isCrossRepository == false)][0].number // empty')"
 
 # ── 1. The worktree ─────────────────────────────────────────────────────────
 existing="$(worktree_of "$branch")"

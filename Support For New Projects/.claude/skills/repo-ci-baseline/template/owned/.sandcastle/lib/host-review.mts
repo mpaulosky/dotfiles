@@ -143,11 +143,15 @@ export const reviewerFindingSchema = z
 // A finding as a reviewer answered it.
 export type ReviewerFinding = z.infer<typeof reviewerFindingSchema>;
 
+// How many opening and closing tags the parser tries, so quoted tags can't make it quadratic.
+const MAX_TAG_CANDIDATES = 20;
+
 // Thrown for a reviewer answer that holds no valid findings block.
 export class ReviewerAnswerError extends Error {}
 
-// The findings in the last `<findings>[...]</findings>` block of a reviewer's output. The last wins: a reviewer may quote
-// the format, or text it read, before its answer. The block ends at the latest closing tag that leaves a JSON array, and starts at the earliest opening tag that does.
+// The findings in a reviewer's output: the span from the earliest opening tag to the latest closing tag that parses as a JSON
+// array. A reviewer may quote the format, or text it read, before its answer, and prose after it may mention a tag; neither counts.
+// An answer that was attempted after a candidate closing tag but doesn't parse (malformed, or cut short) is refused, not skipped.
 export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   const starts = [...stdout.matchAll(/<findings>/g)].map((match) => match.index! + "<findings>".length);
   const ends = [...stdout.matchAll(/<\/findings>/g)].map((match) => match.index!);
@@ -158,8 +162,15 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   // and an example before the answer, or prose after it, doesn't make the answer unreadable.
   let value: unknown;
   let jsonError: unknown;
-  search: for (const end of [...ends].reverse()) {
-    for (const start of starts) {
+  // Bounded, since a branch can plant a file full of tags that a reviewer quotes.
+  const candidateStarts = starts.slice(0, MAX_TAG_CANDIDATES);
+  search: for (const end of ends.slice(-MAX_TAG_CANDIDATES).reverse()) {
+    // An opening tag after this closing tag that leads into an array is a later answer that failed to parse above: reading an
+    // earlier quoted block instead would record a broken review as clean, so the reviewer is asked again.
+    if (starts.some((start) => start > end && /^\s*\[/.test(stdout.slice(start, start + 64)))) {
+      throw new ReviewerAnswerError(`the findings block is not valid JSON: ${jsonError === undefined ? "it is cut short" : (jsonError as Error).message}`);
+    }
+    for (const start of candidateStarts) {
       if (start > end) break;
       try {
         const parsed: unknown = JSON.parse(stdout.slice(start, end));

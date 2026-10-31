@@ -127,15 +127,15 @@ export const SEVERITIES = ["critical", "warning", "advisory"] as const;
 
 export type Severity = (typeof SEVERITIES)[number];
 
+// What a finding's path may look like. The host's reviewer schema (lib/host-review.mts) uses the same pattern, so a path the ledger would
+// refuse is asked for again with the reason, not found out when the review is recorded.
+export const FINDING_PATH_SHAPE = /^[^\s<>`]+( [^\s<>`]+)*$/;
+
 // One finding. `fixed` needs the regression test that pins it, or the reason
 // it has none (a workflow or prose finding); `dismissed` needs the evidence
 // that the reviewer was wrong, read from the code; `accepted` needs the reason
 // a person accepted it; `open` waits for a person, or for the follow-up issue
 // when it's Advisory.
-// What a finding's path may look like. The host's reviewer schema (lib/host-review.mts) uses the same pattern, so a path the ledger would
-// refuse is asked for again with the reason, not found out when the review is recorded.
-export const FINDING_PATH_SHAPE = /^[^\s<>`]+( [^\s<>`]+)*$/;
-
 const findingFields = z.object({
   id: z.string().regex(/^R[1-9]\d{0,5}$/, "ids are R1, R2, ... up to R999999, with no leading zero"),
   lens: z.string().trim().min(1),

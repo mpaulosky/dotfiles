@@ -80,7 +80,7 @@ export function reviewerPrompt({
     "End your answer with one block, a JSON array of findings (an empty array when there is nothing), exactly in this form:",
     "",
     "<findings>",
-    `[{ "lens": "${isBar ? "Bar" : lens.lens}", "path": "src/file.ts", "line": 12, "severity": "critical", "summary": "what goes wrong, and in which situation", "fix": "the suggested fix", "needsPerson": false, "security": true, "why": "what you read or relied on" }]`,
+    `[{ "lens": "${isBar ? "Bar" : lens.lens}", "path": "src/file.ts", "line": 12, "severity": "warning", "summary": "what goes wrong, and in which situation", "fix": "the suggested fix", "needsPerson": false, "security": true, "why": "what you read or relied on" }]`,
     "</findings>",
     "",
     "`severity` is `critical`, `warning` or `advisory`, from the Severities table, and every finding has one and a suggested `fix`. `path` is relative to the repository root,",

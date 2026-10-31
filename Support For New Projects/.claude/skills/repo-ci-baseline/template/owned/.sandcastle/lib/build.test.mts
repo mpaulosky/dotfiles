@@ -39,6 +39,7 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
+import { LEDGER_DENIED_TOOLS } from "./agents.mts";
 import { TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import type { HostReviewResult } from "./host-review.mts";
@@ -3644,7 +3645,7 @@ describe("liveReviewHost", () => {
 
       assert.equal(runs.length, 2);
       // The deny rules name the ledger on purpose; nothing else in a role's command may.
-      const withoutDenyRules = (command: string) => command.replace(/'[^']*(?:scripts\/review\.sh|\.git\/review)[^']*'/g, "");
+      const withoutDenyRules = (command: string) => LEDGER_DENIED_TOOLS.reduce((text, rule) => text.split(rule).join(""), command);
       assert.ok(runs.every((found) => !/review\.sh|\.git\/review/.test(withoutDenyRules(commandOf(found)))), runs.map((found) => commandOf(found)).join("\n"));
       assert.ok(execs.length >= 4);
       assert.ok(execs.every((found) => !/review\.sh|\.git\/review/.test(found.command)), execs.map((found) => found.command).join("\n"));
@@ -3681,6 +3682,7 @@ describe("liveReviewHost", () => {
 
       writeFileSync(join(repo, ".git", "commondir"), "../elsewhere\n");
       assert.throws(() => live.takenIds("0".repeat(40)), /commondir/);
+      assert.throws(() => live.prepare({ main: "origin/main" }), /commondir/);
     } finally {
       rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
     }

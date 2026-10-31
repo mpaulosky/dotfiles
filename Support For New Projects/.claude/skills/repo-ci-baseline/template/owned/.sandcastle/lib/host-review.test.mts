@@ -430,6 +430,19 @@ describe("parseReviewerAnswer's edges", () => {
     assert.deepEqual(parseReviewerAnswer(text).map((found) => found.summary), [answer[0]!.summary]);
   });
 
+  it("refuses a malformed or cut-short answer after a quoted block, instead of reading the quoted one as the answer", () => {
+    const bad = `{ "lens": "Bar", }`;
+    assert.throws(() => parseReviewerAnswer(`Format: <findings>[]</findings>\n<findings>[${bad}]</findings>`), ReviewerAnswerError);
+    assert.throws(() => parseReviewerAnswer(`Format: <findings>[]</findings>\n<findings>[${bad}`), ReviewerAnswerError);
+  });
+
+  it("tries a bounded number of tags", () => {
+    const noise = "<findings>".repeat(5000) + "</findings>".repeat(5000);
+    const started = Date.now();
+    assert.throws(() => parseReviewerAnswer(noise), ReviewerAnswerError);
+    assert.ok(Date.now() - started < 5000);
+  });
+
   it("still refuses an answer with no block, an unclosed one and one that isn't a JSON array", () => {
     assert.throws(() => parseReviewerAnswer("no block"), ReviewerAnswerError);
     assert.throws(() => parseReviewerAnswer("<findings>[]"), ReviewerAnswerError);

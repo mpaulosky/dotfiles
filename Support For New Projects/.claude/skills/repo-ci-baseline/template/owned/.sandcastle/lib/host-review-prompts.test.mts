@@ -43,6 +43,15 @@ const forbidden: [string, RegExp][] = [
 ];
 
 describe("reviewerPrompt", () => {
+  it("shows an example that marks a security finding true and a Warning, and bans both tags inside a finding", () => {
+    const prompt = reviewerPrompt(args());
+    const example = JSON.parse(/<findings>\n([\s\S]*?)\n<\/findings>/.exec(prompt)![1]!) as { security: boolean; severity: string }[];
+
+    assert.equal(example[0]!.security, true);
+    assert.equal(example[0]!.severity, "warning");
+    assert.match(prompt, /Don't write the literal text `<findings>` or `<\/findings>` inside a finding/);
+  });
+
   it("starts with the agent file's body, so the reviewer is told what the pre-push-reviewer is told", () => {
     const prompt = reviewerPrompt(args({ agentBody: agentBody.trim() }));
 

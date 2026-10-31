@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for mpaulosky/dotfiles#333: each Template rule has one full statement, and the copies that must stay self-contained
-# (the Seed hand-off rule, which loads in every Baseline repo and can't link to dotfiles' references/, and the label's
+# (the Owned hand-off rule, which loads in every Baseline repo and can't link to dotfiles' references/, and the label's
 # description, which GitHub shows and caps at 100 characters) carry the shortest text that can't drift from it.
 #
 # Two kinds of check:
@@ -22,7 +22,7 @@ skill = Path(sys.argv[1])
 owned = skill / "template" / "owned"
 lib = owned / ".sandcastle" / "lib"
 
-seed_rule = (skill / "template/owned/.claude/rules/sandcastle-hand-off.md").read_text()
+hand_off_rule = (skill / "template/owned/.claude/rules/sandcastle-hand-off.md").read_text()
 reference = (skill / "references/sandcastle.md").read_text()
 skill_md = (skill / "SKILL.md").read_text()
 context = (skill / "CONTEXT.md").read_text()
@@ -81,35 +81,35 @@ check("FOLLOW_UP_LABEL_DEFINITION has a one-line description in lib/config.mts",
 
 # ---- Agreement: the self-contained copies state the same facts as the source ----------------------------------------------
 label = (constant(config, "FOLLOW_UP_LABEL") or "").strip('"')
-check("the Seed rule and the reference both name the label FOLLOW_UP_LABEL gives", bool(label) and label in seed_rule and label in hand_off_ref, label)
+check("the hand-off rule and the reference both name the label FOLLOW_UP_LABEL gives", bool(label) and label in hand_off_rule and label in hand_off_ref, label)
 
 marker = (constant(config, "SESSION_REPLY_MARKER") or "").strip('"')
-check("the Seed rule and the reference both give SESSION_REPLY_MARKER's text", bool(marker) and marker in seed_rule and marker in hand_off_ref, marker)
+check("the hand-off rule and the reference both give SESSION_REPLY_MARKER's text", bool(marker) and marker in hand_off_rule and marker in hand_off_ref, marker)
 
 cap = constant(config, "FOLLOW_UP_PASS_CAP")
-said_cap = number_before(seed_rule, r"(?:follow-up )?passes")
-check("the Seed rule's pass cap is FOLLOW_UP_PASS_CAP", cap is not None and said_cap == int(cap), f"code {cap}, Seed rule {said_cap}")
+said_cap = number_before(hand_off_rule, r"(?:follow-up )?passes")
+check("the hand-off rule's pass cap is FOLLOW_UP_PASS_CAP", cap is not None and said_cap == int(cap), f"code {cap}, hand-off rule {said_cap}")
 
 depth = constant(follow_up, "MAX_MAIN_MERGES")
-said_depth = number_before(seed_rule, r"merges")
-check("the Seed rule's merge depth is MAX_MAIN_MERGES", depth is not None and said_depth == int(depth), f"code {depth}, Seed rule {said_depth}")
+said_depth = number_before(hand_off_rule, r"merges")
+check("the hand-off rule's merge depth is MAX_MAIN_MERGES", depth is not None and said_depth == int(depth), f"code {depth}, hand-off rule {said_depth}")
 check("the reference names MAX_MAIN_MERGES for that depth", "MAX_MAIN_MERGES" in hand_off_ref)
 
-# Who may hand a PR off: the owner, or a session under the owner's token. The Seed rule and the label's description are the copies
+# Who may hand a PR off: the owner, or a session under the owner's token. The hand-off rule and the label's description are the copies
 # that must stay self-contained, so each says it in its own words, and the phrase they share with the source is pinned here.
 check("the reference's Who bullet says the label must come from the owner", "owner" in who.lower())
 check("the reference's Who bullet says a session posts under the owner's token", "owner's token" in flat(who))
-check("the Seed rule says a session adds the label under the owner's token", "owner's token" in flat(seed_rule))
-check("the Seed rule says a label from anyone else does not count", re.search(r"anyone else[^.]*not count|not count[^.]*anyone else", flat(seed_rule)) is not None)
+check("the hand-off rule says a session adds the label under the owner's token", "owner's token" in flat(hand_off_rule))
+check("the hand-off rule says a label from anyone else does not count", re.search(r"anyone else[^.]*not count|not count[^.]*anyone else", flat(hand_off_rule)) is not None)
 check("the label's description says it counts only from the owner", re.search(r"only from the owner", label_description) is not None, label_description)
 check("the label's description stays within GitHub's 100 characters", 0 < len(label_description) <= 100, f"{len(label_description)} characters")
-check("the Seed rule doesn't say any login with push access counts (the code counts it, but only the owner's label records a head)",
-      "push access" not in seed_rule)
+check("the hand-off rule doesn't say any login with push access counts (the code counts it, but only the owner's label records a head)",
+      "push access" not in hand_off_rule)
 check("the label's description doesn't say any login with push access counts", "push access" not in label_description)
-check("the Seed rule says the pull request must be opened by the repository's owner or a session",
-      "opened by the repository's owner" in flat(seed_rule))
-check("the Seed rule names the token the repository's Actions runs need (SANDCASTLE_GH_TOKEN), as the reference does",
-      "SANDCASTLE_GH_TOKEN" in seed_rule and "SANDCASTLE_GH_TOKEN" in hand_off_ref)
+check("the hand-off rule says the pull request must be opened by the repository's owner or a session",
+      "opened by the repository's owner" in flat(hand_off_rule))
+check("the hand-off rule names the token the repository's Actions runs need (SANDCASTLE_GH_TOKEN), as the reference does",
+      "SANDCASTLE_GH_TOKEN" in hand_off_rule and "SANDCASTLE_GH_TOKEN" in hand_off_ref)
 
 # The Copilot fallback: PR Auto-Merge asks Copilot once and falls back to Claude after COPILOT_ASK_SETTLE_MS. Each doc that
 # states the wait states the workflow's number.
@@ -126,11 +126,11 @@ said = {int(n) for n in re.findall(r"\b(\d+)[ -]seconds?\b", process)}
 check(f"docs/PROCESS.md states the Copilot fallback's wait as COPILOT_ASK_SETTLE_MS's {seconds} seconds", seconds in said, f"seconds named: {sorted(said)}")
 
 # ---- One source: the other places say less or point to the reference ------------------------------------------------------
-check("the Seed rule stays short (at most 3000 characters): the model is in the reference", len(seed_rule) <= 3000, f"{len(seed_rule)} characters")
-check("the Seed rule doesn't walk through how the head is recorded (RELEASE_PR_PAT, the workflow comment): the reference does",
-      "RELEASE_PR_PAT" not in seed_rule and "workflow comment" not in seed_rule)
-check("the Seed rule doesn't mention dotfiles or link to references/ (it loads in every Baseline repo)",
-      not re.search(r"dotfiles|repo-ci-baseline|Support For New Projects|references/", seed_rule))
+check("the hand-off rule stays short (at most 3000 characters): the model is in the reference", len(hand_off_rule) <= 3000, f"{len(hand_off_rule)} characters")
+check("the hand-off rule doesn't walk through how the head is recorded (RELEASE_PR_PAT, the workflow comment): the reference does",
+      "RELEASE_PR_PAT" not in hand_off_rule and "workflow comment" not in hand_off_rule)
+check("the hand-off rule doesn't mention dotfiles or link to references/ (it loads in every Baseline repo)",
+      not re.search(r"dotfiles|repo-ci-baseline|Support For New Projects|references/", hand_off_rule))
 
 row = next((l for l in skill_md.splitlines() if l.startswith("| Sandcastle |")), "")
 check("SKILL.md has a Sandcastle row in its table of parts", bool(row))

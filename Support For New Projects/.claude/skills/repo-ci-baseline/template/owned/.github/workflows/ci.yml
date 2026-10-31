@@ -640,8 +640,9 @@ jobs:
             echo "::error::No coverable lines found in Summary.json"
             exit 1
           fi
-          # The threshold is per repo: the Seed .github/ci/coverage-threshold
-          # holds a whole percentage, 80 when the file is missing.
+          # The threshold is the Owned .github/ci/coverage-threshold, a whole
+          # percentage the Template sets for every repo; 80 when the file is
+          # missing.
           threshold=80
           if [ -f .github/ci/coverage-threshold ]; then
             threshold=$(tr -d '[:space:]' < .github/ci/coverage-threshold)

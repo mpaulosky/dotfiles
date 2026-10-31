@@ -78,8 +78,8 @@ again, and settled differently, on the next (one weakness took six rounds). The 
 - **Where.** The main worktree's `.security/`, found with `git worktree list`, so a review in any worktree or branch reads and writes the same entries. A bare clone has none:
   nothing is written, with a warning. The directory is mode 0700, entries 0600, written with `wx`; a symlink there is refused.
 - **Git-ignored, never published.** The Owned `.gitignore` carries `.security/*` and `!.security/README.md`, and `record` writes nothing, with a warning to
-  re-Apply, where `git check-ignore` says the directory isn't ignored. The README comes from the Seed once, and a re-Apply leaves it and every entry alone. (The
-  ignore lines are in the Owned `.gitignore`, not the Seed: Apply overwrites that file, so a Seed copy would never be written.) The follow-up issue, the PR's Review notes and the
+  re-Apply, where `git check-ignore` says the directory isn't ignored. The README is Owned, so a re-Apply restores it, and it leaves every entry alone. (The
+  ignore lines are in the Owned `.gitignore` too, so they reach every repo.) The follow-up issue, the PR's Review notes and the
   report never include an entry's text. The worktree check of `record` does not count an untracked `.security/` file as a change.
 - **Who reads it.** `scripts/review.sh security` lists the entries (id, status, lens, finding path, file), never their text. Step 3 of `pre-push-review` and of
   `hardening-review` read that list, and it reaches reviewers by id, lens and path only. A finding that repeats a weakness a `fixed` entry holds isn't raised again as new:

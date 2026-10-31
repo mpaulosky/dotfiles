@@ -2539,7 +2539,7 @@ describe("repoSlugProblem and the repo command", () => {
 
 describe("OWNED_PATHS", () => {
   it("matches folders and globs as the rule means them", () => {
-    for (const path of [".github/workflows/ci.yml", ".github/hooks/tests/pre-push.test.sh", ".github/scripts/a/b/c.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".claude/skills/hardening-review/SKILL.md", ".claude/skills/hardening-review/scripts/mutate.py", ".claude/skills/hardening-review/references/brief.md", ".sandcastle/lib/build.mts"]) {
+    for (const path of [".github/workflows/ci.yml", ".github/hooks/tests/pre-push.test.sh", ".github/scripts/a/b/c.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".claude/skills/hardening-review/SKILL.md", ".claude/skills/hardening-review/scripts/mutate.py", ".claude/skills/hardening-review/references/brief.md", ".sandcastle/lib/build.mts", ".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".claude/skills/README.md", ".security/README.md", "LICENSE", "docs/CODE_OF_CONDUCT.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md"]) {
       assert.equal(isOwnedPath(path), true, path);
     }
     for (const path of [
@@ -2555,6 +2555,11 @@ describe("OWNED_PATHS", () => {
       "global.json.bak",
       "globalxjson",
       "xglobal.json",
+      ".github/ISSUE_TEMPLATE/question.md",
+      ".github/ISSUE_TEMPLATE/sub/bug_report.md",
+      "docs/LICENSE",
+      "LICENSE.bak",
+      ".security/0001-an-entry.md",
     ]) {
       assert.equal(isOwnedPath(path), false, path);
     }

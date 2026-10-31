@@ -147,6 +147,20 @@ if grep -rnE '\{\{[A-Z_]+\}\}' --exclude-dir=.sandcastle "$owned" \
   fail "Owned files must not carry {{PLACEHOLDER}}s; per-repo values belong in Seed files"
 fi
 
+step "A file is Owned or Seed, never both, and the Owned files that moved from the Seed hold what Apply stamps on every repo"
+# Apply writes the Owned copy and then reports the Seed one as skipped, so a file back in both folders would sit unnoticed.
+both="$(comm -12 <(cd "$owned" && find . -type f | sort) <(cd "$seed" && find . -type f | sort))"
+[[ -z "$both" ]] || fail "these files are in both template/owned and template/seed: $both"
+threshold="$(tr -d '[:space:]' < "$owned/.github/ci/coverage-threshold")"
+if [[ ! "$threshold" =~ ^[0-9]+$ ]] || (( 10#$threshold > 100 )); then
+  fail "the Owned .github/ci/coverage-threshold must hold a whole percentage from 0 to 100 (ci.yml refuses anything else), not '$threshold'"
+fi
+grep -qxF 'Copyright (c) 2021 mpaulosky' "$owned/LICENSE" || fail "the Owned LICENSE must read 'Copyright (c) 2021 mpaulosky': the oldest year in use, the same in every repo"
+for template in bug_report.md feature_request.md; do
+  grep -qxF 'assignees: mpaulosky' "$owned/.github/ISSUE_TEMPLATE/$template" \
+    || fail "the Owned $template must carry 'assignees: mpaulosky': an Owned file has no {{OWNER}} to fill"
+done
+
 step "Issue references in Owned files name their repo"
 # Applied into a repo, a bare #N reads as that repo's own issue or PR
 # (mpaulosky/dotfiles#186): write mpaulosky/dotfiles#N, or <Repo>#N for
@@ -265,6 +279,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .claude/skills/hardening-review/references/mutations.md .claude/skills/hardening-review/references/state.md \
   .claude/skills/hardening-review/references/triage.md .claude/skills/hardening-review/scripts/known_open.py \
   .claude/skills/hardening-review/scripts/mutate.py \
+  .security/README.md \
   .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/critique-prompt.md \
   .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
   .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
@@ -308,7 +323,6 @@ step "The security record: its README is Owned, and the .gitignore keeps its ent
 [[ -f "$owned/.security/README.md" ]] || fail "the Template must carry .security/README.md as an Owned file"
 [[ ! -e "$seed/.security" ]] || fail "the Template's .security/README.md is Owned: the Seed must not carry a copy"
 [[ -f "$dotfiles/.security/README.md" ]] || fail "dotfiles must carry its own .security/README.md, a copy of the Template's"
-cmp -s "$owned/.security/README.md" "$dotfiles/.security/README.md" || fail "dotfiles' .security/README.md differs from the Template's; copy it over"
 for ignore_file in "$owned/.gitignore" "$dotfiles/.gitignore"; do
   grep -qxF '.security/*' "$ignore_file" || fail "$ignore_file must ignore .security/*"
   grep -qxF '!.security/README.md' "$ignore_file" || fail "$ignore_file must keep .security/README.md"

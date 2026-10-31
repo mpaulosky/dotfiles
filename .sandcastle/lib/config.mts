@@ -263,11 +263,11 @@ export const BUILDING_LABEL = "sandcastle:building";
 // any real build: every role's timeoutMinutes, even with two gate-fixer
 // attempts at each of the two checkpoints, plus the host-side review's rounds
 // (REVIEW_FIX_ROUNDS fixing rounds and one that only reviews, each fixing
-// round's backend run and the gate after it), adds up to well under 14 hours, counting a
-// reviewer's second attempt at an answer (REVIEWER_ATTEMPTS).
+// round's backend run and the gate after it), adds up to well under 44 hours, counting a
+// reviewer's second attempt at an answer (REVIEWER_ATTEMPTS) and that a round's reviewers run one after another.
 // config.test.mts checks that sum (see BUILD_ROLES), with an hour to spare,
 // stays below it.
-export const BUILDING_LABEL_MAX_AGE_MS = 14 * 60 * 60 * 1000;
+export const BUILDING_LABEL_MAX_AGE_MS = 44 * 60 * 60 * 1000;
 
 // Every label from the Labels table that the host, not a human, is
 // responsible for creating. `Sandcastle` is a human's to add. `bug` is

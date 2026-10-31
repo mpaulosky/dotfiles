@@ -431,7 +431,15 @@ async function runRounds(
           hasFixes: prepared.fixes !== undefined,
         }) + (problem === undefined ? "" : retryNote(problem)),
       );
-    const settled = await Promise.allSettled(reviewers.map(ask));
+    // One after another, never together: each role run sets up the sandbox's global git config, and runs started together race for its lock
+    // (a real run lost four of ten reviewers to `could not lock config file`). Every reviewer still runs, so every failure is reported.
+    const settled: PromiseSettledResult<ReviewerFinding[]>[] = [];
+    for (const reviewer of reviewers) {
+      settled.push(await ask(reviewer).then(
+        (value): PromiseFulfilledResult<ReviewerFinding[]> => ({ status: "fulfilled", value }),
+        (reason: unknown): PromiseRejectedResult => ({ status: "rejected", reason }),
+      ));
+    }
     const stop = settled.find((result): result is PromiseRejectedResult => result.status === "rejected" && result.reason instanceof UncountedStopError);
     if (stop !== undefined) throw stop.reason;
     const failures = settled.flatMap((result, index): ReviewerFailure[] =>

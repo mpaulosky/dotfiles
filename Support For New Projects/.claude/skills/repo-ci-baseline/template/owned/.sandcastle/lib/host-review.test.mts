@@ -672,6 +672,8 @@ function fake(options: Fake = {}) {
   let round = 0;
   let headNumber = 1;
   let fixerRuns = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
   let gateRuns = 0;
   let outcomesFile: string | undefined;
   let changed: string[] = [];
@@ -699,13 +701,21 @@ function fake(options: Fake = {}) {
     takenIds: () => options.taken ?? 0,
     writeRunFile: async (path, content) => void files.push({ path, content: content.toString() }),
     runReviewer: async (reviewerToRun, prompt) => {
-      const key = `${round}:${reviewerToRun.lens}`;
-      const attempt = (attempts.get(key) ?? 0) + 1;
-      attempts.set(key, attempt);
-      reviewerRuns.push({ round, lens: reviewerToRun.lens, prompt, attempt });
-      const answer = options.answers?.(round, reviewerToRun, attempt) ?? [];
-      if (answer instanceof Error) throw answer;
-      return typeof answer === "string" ? answer : findingsBlock(answer);
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        // Yield, so reviewers the host started together would overlap here.
+        await new Promise((resolve) => setImmediate(resolve));
+        const key = `${round}:${reviewerToRun.lens}`;
+        const attempt = (attempts.get(key) ?? 0) + 1;
+        attempts.set(key, attempt);
+        reviewerRuns.push({ round, lens: reviewerToRun.lens, prompt, attempt });
+        const answer = options.answers?.(round, reviewerToRun, attempt) ?? [];
+        if (answer instanceof Error) throw answer;
+        return typeof answer === "string" ? answer : findingsBlock(answer);
+      } finally {
+        inFlight--;
+      }
     },
     runFixer: async (prompt) => {
       fixerRuns++;
@@ -751,6 +761,7 @@ function fake(options: Fake = {}) {
     host,
     events,
     reviewerRuns,
+    maxInFlight: () => maxInFlight,
     fixerPrompts,
     files,
     prepares,
@@ -1182,6 +1193,18 @@ describe("runHostReview's access", () => {
     for (const found of run.reviewerRuns) {
       assert.match(found.prompt, /\/home\/agent\/workspace\/\.sandcastle\/work\/387\/review\/(?:[^\s]*\/)?diff\.patch/);
     }
+  });
+});
+
+// A real sandbox run showed reviewers started together race for the sandbox's git config lock (`git config --global` in each role's setup).
+describe("runHostReview's reviewers", () => {
+  it("runs the reviewers of a round one after another, never two in one sandbox at once", async () => {
+    const run = fake({});
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.ok(run.reviewerRuns.length > 1);
+    assert.equal(run.maxInFlight(), 1);
   });
 });
 

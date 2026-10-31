@@ -11,9 +11,10 @@
 #
 # Steps, each stopping the run on failure:
 #   1. Fetch, then prepare the worktree ../<Repo>-worktrees/chore-reapply-baseline:
-#      reuse it while its branch has an open PR; replace it (worktree and local
-#      branch) once its work has merged; refuse it with uncommitted work, or with
-#      commits no open or merged PR carries.
+#      reuse it while its branch has an open PR, or was never pushed (a refused
+#      first push); replace it (worktree and local branch) once its work has
+#      merged; refuse it with uncommitted work, or with pushed commits no open
+#      or merged PR carries.
 #   2. Merge origin/chore/reapply-baseline (when it exists), then origin/main,
 #      so the push is never non-fast-forward and the pre-push gate's
 #      up-to-date check passes.
@@ -159,17 +160,25 @@ if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && [[ -z "$open_
       if g merge-base --is-ancestor "$tip" "$oid" 2>/dev/null; then merged=true; break; fi
     done < <(gh_ pr list --head "$branch" --state merged --limit 100 --json headRefOid --jq '.[].headRefOid')
   fi
-  $merged || die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
-  if [[ -n "$existing" ]]; then
-    echo "── $repo_name: replacing $worktree, whose work has merged"
-    g worktree remove "$existing"
+  # A branch the remote never got (the gate refused the first push, before any PR existed) is
+  # kept and carried on: its commits are not lost, and the push below sends them.
+  if ! $merged && g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
+    die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
   fi
-  g branch -D "$branch" >/dev/null
-  existing=""
+  if $merged; then
+    if [[ -n "$existing" ]]; then
+      echo "── $repo_name: replacing $worktree, whose work has merged"
+      g worktree remove "$existing"
+    fi
+    g branch -D "$branch" >/dev/null
+    existing=""
+  else
+    echo "── $repo_name: $branch was never pushed; carrying it on"
+  fi
 fi
 
 if [[ -n "$existing" ]]; then
-  echo "── $repo_name: reusing $worktree for open PR #$open_pr"
+  echo "── $repo_name: reusing $worktree${open_pr:+ for open PR #$open_pr}"
 else
   base=origin/main
   if [[ -n "$open_pr" ]] && g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then

@@ -381,6 +381,19 @@ out="$("$reapply" --brings '#84' "$repo" 2>&1)" && rc=0 || rc=$?
 check "unmerged: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
 check "unmerged: branch kept" '[[ "$(git -C "$wt" rev-parse HEAD)" == "$tip" ]]'
 
+# ── A refused first push leaves an unpushed branch and no PR: the rerun carries on ─
+# The gate refuses a re-Apply that writes a file it reviews, before any PR exists, so there is no
+# origin/<branch> and no open PR: the documented recovery (review, then run this again) must not
+# stop at "commits no open or merged PR carries".
+reset_gh
+git -C "$origin" branch -D chore/reapply-baseline >/dev/null
+unpushed="$(git -C "$wt" rev-parse HEAD)"
+out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
+check "unpushed: the rerun succeeds" '[[ $rc -eq 0 ]] || { echo "$out" >&2; false; }'
+check "unpushed: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
+check "unpushed: no commit is lost" 'git -C "$wt" merge-base --is-ancestor "$unpushed" HEAD'
+check "unpushed: the PR is opened" 'grep -q "^pr create" "$stub/gh.log"'
+
 # ── Bad arguments ───────────────────────────────────────────────────────────
 check "args: --brings required" '! "$reapply" "$repo" >/dev/null 2>&1'
 check "args: unreadable --brings refused" '! "$reapply" --brings "dotfiles 80" "$repo" >/dev/null 2>&1'

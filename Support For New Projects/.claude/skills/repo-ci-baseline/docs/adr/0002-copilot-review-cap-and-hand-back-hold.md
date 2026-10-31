@@ -90,7 +90,8 @@ The hold is in the Template, not a per-repo file, because Applying the old Templ
   An add counts unless PR Auto-Merge removed it (mpaulosky/dotfiles#381): an add made while Copilot can review is the one the workflow takes off at once, so the label events say
   which adds were ignored, and a **recognised restart stays recognised**: Copilot reviewing a later head, or a request going pending, can't undo it. (The first version decided it from whether
   Copilot can review now, so d d d, a writer's add and one dirty Copilot review read as a streak of 4, and the PR merged with Copilot's new threads open.) A removal counts only
-  when `github-actions` made it after the add and before the next round; the removal at exhaustion comes before the restart and cancels nothing.
+  when `github-actions` made it after the add and before the next round, and no request for Copilot's review came between the add and the removal: such a removal was made
+  for the request (Copilot can review again), not for the add, which stays a restart. The removal at exhaustion comes before the restart and cancels nothing.
   Whoever added it is looked up with `repos.getCollaboratorPermissionLevel` (`GITHUB_TOKEN`, a read, once per login a run);
   the repository's owner has write access without a lookup, and a bot never does. A **404** from the lookup (a login that doesn't exist any more) is a definite no write access,
   cached for the run like a found permission, so it never leaves the loop unread; a network error, a 5xx or a rate limit is still unknown, and the run waits and retries.

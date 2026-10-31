@@ -305,7 +305,7 @@ def round_epoch(round_):
         return None
 
 
-def current_loop(rounds, adds, removals=()):
+def current_loop(rounds, adds, removals=(), copilot_requests=()):
     """Walk the loop's generations: the rounds that count after the restarts (mpaulosky/dotfiles#378).
 
     rounds are the PR's Rounds, oldest first; adds are (epoch seconds, writer)
@@ -320,7 +320,9 @@ def current_loop(rounds, adds, removals=()):
     removals are the epoch seconds of PR Auto-Merge's (github-actions) removals
     of review:claude. An add made while Copilot could review is the one PR
     Auto-Merge removes at once, so an add is ignored when a removal follows it
-    before the next round submitted after it. Whether Copilot can review now
+    before the next round submitted after it, unless a request for Copilot's
+    review (copilot_requests, epoch seconds) came in between: the removal was
+    then made for that request, not for the add. Whether Copilot can review now
     doesn't decide it, so a recognised restart can't flip back when Copilot
     reviews a later head (mpaulosky/dotfiles#381); callers pass every add.
     PR Auto-Merge's reviewLoopState() does the same.
@@ -330,7 +332,8 @@ def current_loop(rounds, adds, removals=()):
     def removed(added):
         after = [stamp for stamp in stamps if stamp > added]
         until = min(after) if after else float("inf")
-        return any(added <= removal < until for removal in removals)
+        return any(added <= removal < until and not any(added < asked <= removal for asked in copilot_requests)
+                   for removal in removals)
 
     adds = [(added, writer) for added, writer in adds if not removed(added)]
     start = float("-inf")

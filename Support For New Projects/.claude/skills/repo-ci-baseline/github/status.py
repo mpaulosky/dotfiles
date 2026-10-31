@@ -96,16 +96,22 @@ query($id: ID!) {
 
 # The PR's label events, oldest first, a page of 100 at a time after $cursor (mpaulosky/dotfiles#378): every one is read,
 # since the owner's add of review:claude that restarts a loop can come after any number of others. The removals are read too
-# (mpaulosky/dotfiles#381): the one PR Auto-Merge makes at once is what tells an ignored add from a restart.
+# (mpaulosky/dotfiles#381): the one PR Auto-Merge makes at once is what tells an ignored add from a restart, unless a
+# request for Copilot's review came between the add and the removal, which the review requests tell.
 EVENTS_QUERY = """
 query($id: ID!, $cursor: String) {
   node(id: $id) {
     ... on PullRequest {
-      timelineItems(first: 100, after: $cursor, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+      timelineItems(first: 100, after: $cursor, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, REVIEW_REQUESTED_EVENT]) {
         pageInfo { hasNextPage endCursor }
         nodes {
           ... on LabeledEvent { __typename createdAt label { name } actor { login __typename } }
           ... on UnlabeledEvent { __typename createdAt label { name } actor { login __typename } }
+          ... on ReviewRequestedEvent { __typename createdAt requestedReviewer {
+            ... on Bot { login }
+            ... on User { login }
+            ... on Team { name }
+          } }
         }
       }
     }
@@ -249,7 +255,8 @@ def read_label_events(owner, name, node_id):
     """The PR's review:claude label events, all of them, oldest first (see writer_access).
 
     An add is {createdAt, writer}; github-actions' removal (PR Auto-Merge's, mpaulosky/dotfiles#381) is
-    {createdAt, removed: True}, and costs no permission lookup. Any other removal is dropped.
+    {createdAt, removed: True}, and costs no permission lookup. Any other removal is dropped. A request for Copilot's
+    review is {createdAt, copilotRequested: True}.
 
     EVENTS_QUERY is paged to the end: the add that restarts a loop can follow any number of others
     (mpaulosky/dotfiles#378). A page that fails raises.
@@ -264,6 +271,11 @@ def read_label_events(owner, name, node_id):
         cursor = info["endCursor"]
     read = []
     for event in events:
+        if event and event.get("__typename") == "ReviewRequestedEvent":
+            reviewer = event.get("requestedReviewer") or {}
+            if COPILOT.search(reviewer.get("login") or reviewer.get("name") or ""):
+                read.append({"createdAt": event.get("createdAt"), "copilotRequested": True})
+            continue
         if not event or (event.get("label") or {}).get("name") != REVIEW_CLAUDE:
             continue
         if event.get("__typename") == "UnlabeledEvent":
@@ -424,7 +436,7 @@ def review_loop(node, rounds):
     The rounds that count are the final generation's (landing.current_loop): a loop that reached MAX_CLAUDE_ROUNDS dirty
     rounds in a row restarts at the first review:claude added after the round that got it there by a login with write
     access, comment or none, unless PR Auto-Merge removed that add before the next round (the add made while Copilot
-    could review). Whether Copilot can review now doesn't decide it, so a restart stays recognised (mpaulosky/dotfiles#381).
+    could review), with no request for Copilot's review in between. Whether Copilot can review now doesn't decide it, so a restart stays recognised (mpaulosky/dotfiles#381).
     PR Auto-Merge's exhaustion comment (github-actions, EXHAUSTED_MARKER) is read from the node's "comments"; it is the
     newest word when it is no older than the round that exhausted the final generation. Comments, label events or a
     permission that can't be read make the loop unread when it reached the cap, so it never is called exhausted
@@ -437,9 +449,11 @@ def review_loop(node, rounds):
     if comments is None or events is None:
         return rounds, False, True
     nodes = [comment or {} for comment in comments.get("nodes") or []]
-    adds = [(instant(event.get("createdAt")), event.get("writer")) for event in events if not event.get("removed")]
+    adds = [(instant(event.get("createdAt")), event.get("writer")) for event in events
+            if not event.get("removed") and not event.get("copilotRequested")]
     removals = [instant(event.get("createdAt")) for event in events if event.get("removed")]
-    walk = current_loop(rounds, adds, removals)
+    requests = [instant(event.get("createdAt")) for event in events if event.get("copilotRequested")]
+    walk = current_loop(rounds, adds, removals, requests)
     markers = [instant(comment.get("createdAt")) for comment in exhaustion_markers(nodes)]
     # More comments than were read and no record among them: it may be on a page that wasn't read.
     if walk.unread or (not markers and comments.get("totalCount", len(nodes)) > len(nodes)):

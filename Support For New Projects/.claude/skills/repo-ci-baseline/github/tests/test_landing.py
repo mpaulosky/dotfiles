@@ -979,6 +979,23 @@ def test_a_removal_cancels_only_the_add_it_follows_acceptance_criterion_2():
     assert later.restarted and [item.oid for item in later.rounds] == [item.oid for item in rounds("d d d d d")[4:]]
 
 
+def test_a_removal_after_a_copilot_request_is_not_the_removal_of_an_ignored_add_acceptance_criterion_1():
+    # d d d, a writer's add while Copilot can't review, then a request for Copilot's review goes pending and PR Auto-Merge
+    # takes the label off (ignored while Copilot can review). The removal was made for the request, so the add still counts.
+    walk = ld.current_loop(rounds("d d d"), [(at_minute(2, 30), True)], removals=[at_minute(2, 50)], copilot_requests=[at_minute(2, 40)])
+    assert walk.restarted and walk.rounds == ()
+    # A new dirty review of the new head then makes the streak 1, not 4.
+    later = ld.current_loop(rounds("d d d d"), [(at_minute(2, 30), True)], removals=[at_minute(2, 50)], copilot_requests=[at_minute(2, 40)])
+    assert later.restarted and len(later.rounds) == 1
+
+
+def test_a_copilot_request_before_the_add_or_after_the_removal_does_not_save_the_add_acceptance_criterion_2():
+    before = ld.current_loop(rounds("d d d"), [(at_minute(2, 30), True)], removals=[at_minute(2, 31)], copilot_requests=[at_minute(2, 10)])
+    assert not before.restarted
+    after = ld.current_loop(rounds("d d d"), [(at_minute(2, 30), True)], removals=[at_minute(2, 31)], copilot_requests=[at_minute(2, 45)])
+    assert not after.restarted
+
+
 def test_a_restarted_loop_is_not_exhausted_again_by_the_old_streak_plus_one_dirty_round_acceptance_criterion_1():
     # d d d, a writer's add, Copilot reviews the new head and raises a thread: the streak is 1, not 4.
     walk = ld.current_loop(rounds("d d d d"), [(at_minute(2, 30), True)])

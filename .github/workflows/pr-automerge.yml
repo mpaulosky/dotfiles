@@ -54,7 +54,9 @@ name: PR Auto-Merge
 # for the run like a found permission; a network error, a 5xx and a rate limit
 # still leave the loop unread. A restart stays recognised
 # (mpaulosky/dotfiles#381): an add counts unless PR Auto-Merge (github-actions)
-# removed the label after it and before the next round, which is what an add
+# removed the label after it and before the next round, with no request for
+# Copilot's review between the add and the removal (such a removal was made
+# because Copilot can review again, not for the add): that is what an add
 # made while Copilot can review leaves behind. Whether Copilot can review now
 # doesn't decide it, so Copilot reviewing a later head doesn't undo a restart.
 # This run never adds the label while the comment is the newest word on the PR.
@@ -1280,7 +1282,7 @@ jobs:
             // caller waits. An add made while Copilot can review is ignored,
             // and PR Auto-Merge removes the label at once: an add counts
             // unless a removal by github-actions follows it before the next
-            // round, so whether Copilot can review now doesn't decide it and
+            // round with no request for Copilot's review in between, so whether Copilot can review now doesn't decide it and
             // a recognised restart can't flip back when Copilot reviews a
             // later head (mpaulosky/dotfiles#381). The label events are read
             // (GITHUB_TOKEN) only once the streak has reached the cap, and the
@@ -1338,12 +1340,22 @@ jobs:
                 .filter((event) => event.event === "unlabeled" && event.actor?.login?.toLowerCase().replace(/\[bot\]$/, "") === "github-actions")
                 .map((event) => Date.parse(event.created_at));
               const roundTimes = allRounds.map((round) => round.at).filter((at) => at > -Infinity);
+              // The times Copilot's review was requested. PR Auto-Merge removes
+              // an add made while Copilot can review at once; a removal after
+              // a request that came later was made for that request, not for
+              // the add (mpaulosky/dotfiles#381). A review Copilot submitted
+              // is a round, which bounds the removal already.
+              const copilotRequests = events
+                .filter((event) => event.event === "review_requested" && /copilot/i.test(event.requested_reviewer?.login ?? event.requested_team?.name ?? ""))
+                .map((event) => Date.parse(event.created_at));
               const adds = claudeEvents
                 .filter((event) => event.event === "labeled")
                 .map((event) => ({ at: Date.parse(event.created_at), actor: event.actor }))
                 .filter((add) => {
                   const next = Math.min(Infinity, ...roundTimes.filter((at) => at > add.at));
-                  return !removals.some((removal) => removal >= add.at && removal < next);
+                  return !removals.some((removal) => {
+                    return removal >= add.at && removal < next && !copilotRequests.some((at) => at > add.at && at <= removal);
+                  });
                 });
               let start = -Infinity;
               let generation;

@@ -104,7 +104,8 @@ A PR handed back with `sandcastle:needs-human` never merges while it carries the
     A **404** from the permission lookup (a login that no longer exists) is no write access, cached for the run like a found permission;
     a network error, a 5xx and a rate limit still leave the loop unread (mpaulosky/dotfiles#381).
     **A recognised restart stays recognised** (mpaulosky/dotfiles#381): an add counts unless PR Auto-Merge (`github-actions`) removed the label after it
-    and before the next round, which is what an add made while Copilot can review leaves behind. Whether Copilot can review now doesn't decide it,
+    and before the next round, with no request for Copilot's review between the add and the removal (a removal after such a request was made because Copilot can
+    review again, not for the add): that is what an add made while Copilot can review leaves behind. Whether Copilot can review now doesn't decide it,
     so Copilot reviewing a later head, or a request going pending, doesn't undo a restart. `landing.py` and `status.py` read the label's `unlabeled` events the same way.
     The first add, not the latest: PR Auto-Merge's PAT adds the label for later heads in the new loop, and a restart at that add would make it endless.
     Reading the label events fails closed too. PR Auto-Merge never adds `review:claude` while the comment is the newest word on the PR.

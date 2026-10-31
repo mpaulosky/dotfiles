@@ -4976,6 +4976,37 @@ test("a writer's restart still counts while a Copilot request is pending for the
   assert.deepEqual(result.merges, [], "the new loop waits for its review, the old streak doesn't merge it");
 });
 
+const copilotRequestedAt = (at, reviewer = { login: "Copilot", type: "Bot" }) => ({ event: "review_requested", created_at: at, requested_reviewer: reviewer, actor: { login: "ruleset" } });
+
+test("a writer's restart survives PR Auto-Merge's removal made for a Copilot request that came after the add (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  // d d d, the owner's add while Copilot can't review, then a request goes pending (a ruleset on a push) and PR Auto-Merge takes the label off.
+  const pr = documentedLoop({ reviewRequests: COPILOT_PENDING });
+  const events = [addedBy(OWNER), copilotRequestedAt("2026-01-02T00:30:03Z"), removedByActions("2026-01-02T00:30:05Z")];
+  const result = await evaluate(pr, events);
+
+  assert.deepEqual(result.exhaustionPosts, [], result.logs.join("\n"));
+  assert.deepEqual(result.merges, [], "the new loop waits for its review");
+});
+
+test("a dirty Copilot review of the new head after such a removal is a streak of 1, not 4 (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
+  const events = [addedBy(OWNER), copilotRequestedAt("2026-01-02T00:30:03Z"), removedByActions("2026-01-02T00:30:05Z")];
+  const result = await evaluate(pr, events);
+
+  assert.deepEqual(result.exhaustionPosts, []);
+  assert.deepEqual(result.merges, [], "Copilot's new thread holds the merge");
+});
+
+test("a Copilot request before the add, or a request for someone else, does not save an add that PR Auto-Merge removed (mpaulosky/dotfiles#381, criterion 2)", async () => {
+  const before = await evaluate(documentedLoop({ reviewRequests: COPILOT_PENDING }),
+    [copilotRequestedAt("2026-01-02T00:29:00Z"), addedBy(OWNER), removedByActions("2026-01-02T00:30:05Z")]);
+  assert.equal(before.merges.length, 1, before.logs.join("\n"));
+
+  const other = await evaluate(documentedLoop({ reviewRequests: COPILOT_PENDING }),
+    [addedBy(OWNER), copilotRequestedAt("2026-01-02T00:30:03Z", { login: "octo", type: "User" }), removedByActions("2026-01-02T00:30:05Z")]);
+  assert.equal(other.merges.length, 1, other.logs.join("\n"));
+});
+
 test("a restart by a collaborator with write access stays recognised after Copilot reviews too (mpaulosky/dotfiles#381, criterion 1)", async () => {
   const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
   const result = await evaluate(pr, [addedBy("colleague")], { permissions: { colleague: "write" } });

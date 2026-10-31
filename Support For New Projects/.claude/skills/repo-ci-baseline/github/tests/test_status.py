@@ -501,6 +501,11 @@ def relabel(at="2026-01-02T02:00:00Z", writer=True):
     return {"createdAt": at, "writer": writer}
 
 
+def copilot_request(at):
+    """A request for Copilot's review as to_state reads it (mpaulosky/dotfiles#381)."""
+    return {"createdAt": at, "copilotRequested": True}
+
+
 def removal(at="2026-01-02T02:00:05Z"):
     """PR Auto-Merge's (github-actions) removal of review:claude as to_state reads it (mpaulosky/dotfiles#381): the add it follows
     was made while Copilot could review, and is ignored."""
@@ -1159,6 +1164,38 @@ def test_gh_graphql_keeps_a_restart_that_a_later_review_of_copilot_would_have_hi
     state = st.to_state(read, **FLAGS, owner="owner", now=NOW)
 
     assert len(state.rounds) == 1 and not state.loop_exhausted
+
+
+def test_the_events_query_reads_review_requests_too_acceptance_criterion_1():
+    assert "REVIEW_REQUESTED_EVENT" in st.EVENTS_QUERY and "ReviewRequestedEvent" in st.EVENTS_QUERY
+
+
+def request_node(at_time, login="Copilot"):
+    return {"__typename": "ReviewRequestedEvent", "createdAt": at_time, "requestedReviewer": {"login": login}}
+
+
+def test_gh_graphql_keeps_a_copilot_request_and_a_removal_after_it_leaves_the_restart_acceptance_criterion_1(monkeypatch):
+    # d d d, the owner's add at 01:00, a request for Copilot's review at 01:00:03 (a ruleset on a push), and PR Auto-Merge's
+    # removal at 01:00:05 for that request: the add still counts, and a dirty review at 02:00 is a streak of 1, not 4.
+    late = (COPILOT_LOGIN, HEAD, "", {"at": "2026-01-02T02:00:00Z", "threads": 1})
+    node = dict(pr_node(number=1, reviews=[*DIRTY3, late], comments=None), id="PR_1")
+    events = [event_node("2026-01-02T01:00:00Z", "owner"), request_node("2026-01-02T01:00:03Z"),
+              request_node("2026-01-02T01:00:04Z", login="someone-else"), unevent_node("2026-01-02T01:00:05Z")]
+    Served(repo(node), comments={"PR_1": [comments_page([GONE], 1)]}, events={"PR_1": [events_page(events)]}).install(monkeypatch)
+    read = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+
+    assert read["labelEvents"] == [{"createdAt": "2026-01-02T01:00:00Z", "writer": True}, {"createdAt": "2026-01-02T01:00:03Z", "copilotRequested": True},
+                                   {"createdAt": "2026-01-02T01:00:05Z", "removed": True}]
+    state = st.to_state(read, **FLAGS, owner="owner", now=NOW)
+    assert len(state.rounds) == 1 and not state.loop_exhausted
+
+
+def test_to_state_counts_an_add_whose_removal_followed_a_copilot_request_but_not_one_that_did_not_acceptance_criterion_1():
+    asked = pr_node(reviews=DIRTY3, comments=comments_of(GONE),
+                    events=[relabel(), copilot_request("2026-01-02T02:00:02Z"), removal("2026-01-02T02:00:05Z")])
+    assert not state_of(asked).loop_exhausted and not state_of(asked).exhaustion_marker_newest
+    plain = pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel(), removal()])
+    assert state_of(plain).loop_exhausted
 
 
 # A permission lookup is `gh api repos/<owner>/<name>/collaborators/<login>/permission`; these fake gh itself, so they hold

@@ -52,6 +52,7 @@ reapply="$skill/reapply.sh"
 # owner (acme) and keeps its body in $stub/comment-body, unless
 # $stub/comment-fails exists. While $stub/comments-fail exists, reading the
 # comments fails. While $stub/merged-fails exists, listing the merged PRs fails.
+# $stub/all-prs is the number of a PR in any state (a closed one) for the branch.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -67,6 +68,7 @@ case "$1 $2" in
       *"--state merged"*)
         if [[ -e "$stub/merged-fails" ]]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
         cat "$stub/merged" 2>/dev/null ;;
+      *"--state all"*) cat "$stub/all-prs" 2>/dev/null ;;
     esac ;;
   "pr create") body_from "$@"; echo "https://github.com/acme/Widget/pull/7" ;;
   "pr view")
@@ -111,7 +113,7 @@ export PATH="$work/bin:$PATH"
 # Hooks off for the test's own git calls.
 git_q() { git -c core.hooksPath=/dev/null "$@"; }
 reset_gh() {
-  : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; echo '[]' > "$stub/comments.json"
+  : > "$stub/gh.log"; : > "$stub/open"; : > "$stub/merged"; : > "$stub/all-prs"; echo '[]' > "$stub/comments.json"
   command rm -f "$stub/already" "$stub/dropped" "$stub/request-fails" "$stub/requests" "$stub/reviews" \
     "$stub/comment-fails" "$stub/comments-fail" "$stub/comment-body" "$stub/merged-fails"
 }
@@ -401,7 +403,8 @@ git -C "$repo" config --unset branch.chore/reapply-baseline.merge
 git -C "$repo" config --unset branch.chore/reapply-baseline.remote
 touch "$stub/merged-fails"
 out="$("$reapply" --brings '#85' "$repo" 2>&1)" && rc=0 || rc=$?
-check "merged lookup fails: refused" '[[ $rc -ne 0 ]] && ! grep -q "carrying it on" <<< "$out"'
+check "merged lookup fails: refused" \
+  '[[ $rc -ne 0 ]] && grep -q "HTTP 502" <<< "$out" && ! grep -q "carrying it on\|commits no open or merged PR carries" <<< "$out" && ! grep -q "^pr create" "$stub/gh.log"'
 check "merged lookup fails: branch kept" '[[ "$(git -C "$wt" rev-parse HEAD)" == "$pushed_tip" ]]'
 command rm -f "$stub/merged-fails"
 
@@ -429,6 +432,28 @@ check "never pushed, no worktree: the rerun succeeds" '[[ $rc -eq 0 ]] || { echo
 check "never pushed, no worktree: the local branch is checked out, not recreated from main" \
   'git -C "$wt" merge-base --is-ancestor "$kept_tip" HEAD && grep -q "on chore/reapply-baseline from the local branch" <<< "$out" && ! grep -q "from origin/main" <<< "$out"'
 check "never pushed, no worktree: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
+
+# A branch pushed without -u has no upstream; once a PR for it closed unmerged and its remote branch
+# was deleted, it still isn't new: a PR in any state refuses it.
+reset_gh
+git -C "$origin" branch -D chore/reapply-baseline >/dev/null
+git -C "$repo" config --unset branch.chore/reapply-baseline.merge
+git -C "$repo" config --unset branch.chore/reapply-baseline.remote
+echo 9 > "$stub/all-prs"
+closed_tip="$(git -C "$wt" rev-parse HEAD)"
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "closed PR, no upstream, remote branch deleted: refused" '[[ $rc -ne 0 ]] && grep -q "commits no open or merged PR carries" <<< "$out"'
+check "closed PR, no upstream, remote branch deleted: nothing pushed" \
+  '! git -C "$origin" rev-parse --verify --quiet chore/reapply-baseline >/dev/null && [[ "$(git -C "$wt" rev-parse HEAD)" == "$closed_tip" ]]'
+
+# A branch that tracks main (made with `git checkout -b ... origin/main`) has an upstream, but not its own:
+# with no origin/<branch> and no PR it is still a never-pushed branch.
+reset_gh
+git -C "$repo" config branch.chore/reapply-baseline.remote origin
+git -C "$repo" config branch.chore/reapply-baseline.merge refs/heads/main
+out="$("$reapply" --brings '#87' "$repo" 2>&1)" && rc=0 || rc=$?
+check "never pushed, tracking main: carried on" '[[ $rc -eq 0 ]] && grep -q "was never pushed; carrying it on" <<< "$out"'
+check "never pushed, tracking main: the local commits are pushed" '[[ "$(git -C "$origin" rev-parse chore/reapply-baseline)" == "$(git -C "$wt" rev-parse HEAD)" ]]'
 
 # ── Bad arguments ───────────────────────────────────────────────────────────
 check "args: --brings required" '! "$reapply" "$repo" >/dev/null 2>&1'

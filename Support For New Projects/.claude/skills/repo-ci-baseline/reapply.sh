@@ -12,11 +12,13 @@
 # Steps, each stopping the run on failure:
 #   1. Fetch, then prepare the worktree ../<Repo>-worktrees/chore-reapply-baseline:
 #      reuse it while its branch has an open PR, or was never pushed (no
-#      origin/<branch> and no upstream, as after a refused first push: a branch
-#      pushed once keeps its upstream even when its remote branch is deleted);
-#      replace it (worktree and local branch) once its work has merged, which is
-#      read from GitHub and ends the run when it can't be; refuse it with
-#      uncommitted work, or with commits no open or merged PR carries.
+#      origin/<branch>, no upstream of its own and no PR in any state, as after a
+#      refused first push: a branch pushed once keeps its upstream, and one that
+#      ever had a PR is not new, even when its remote branch is deleted);
+#      replace it (worktree and local branch) once its work has merged: main
+#      carries its tip, or else a merged PR's head does, read from GitHub (a
+#      failed read ends the run); refuse it with uncommitted work, or with
+#      commits no open or merged PR carries.
 #   2. Merge origin/chore/reapply-baseline (when it exists), then origin/main,
 #      so the push is never non-fast-forward and the pre-push gate's
 #      up-to-date check passes.
@@ -165,12 +167,19 @@ if g rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && [[ -z "$open_
     done <<< "$merged_heads"
   fi
   # A branch that was never pushed (the gate refused the first push, before any PR existed) has no
-  # upstream: push -u sets one, and apply's worktree is made with --no-track. A missing origin/<branch>
-  # alone doesn't say so, since fetch --prune drops it after a merge or a close deletes the remote
-  # branch. Such a branch is kept and carried on: its commits are not lost, and the push below sends them.
+  # origin/<branch>, no upstream of its own (push -u sets branch.<b>.merge to refs/heads/<b>; the
+  # branch below is created with --no-track, and one made another way that tracks main doesn't
+  # count), and no PR in any state. A missing origin/<branch> alone doesn't say so, since fetch --prune
+  # drops it after a merge or a close deletes the remote branch, and a push without -u sets no upstream:
+  # a PR that was ever opened for the branch is what tells those apart. A never-pushed branch is kept and
+  # carried on: its commits are not lost, and the push below sends them. The PR lookup, like the merged
+  # one, ends the run when gh fails.
   never_pushed=false
-  if ! g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null && [[ -z "$(g config --get "branch.$branch.merge" || true)" ]]; then
-    never_pushed=true
+  if ! $merged \
+    && ! g rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    && [[ "$(g config --get "branch.$branch.merge" || true)" != "refs/heads/$branch" ]]; then
+    any_pr="$(gh_ pr list --head "$branch" --state all --limit 1 --json number --jq '.[0].number // empty')"
+    [[ -n "$any_pr" ]] || never_pushed=true
   fi
   $merged || $never_pushed || die "$branch has commits no open or merged PR carries (tip $(g rev-parse --short=7 "$tip")); land or delete them first"
   if $merged; then

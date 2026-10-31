@@ -695,6 +695,16 @@ for restart_doc in "$automerge_doc" "$adr_0002"; do
   grep -qiE 'write access' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must say only a login with write access restarts a review loop (mpaulosky/dotfiles#378)"
   grep -qF -- 'was not reviewed' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must say the exhaustion comment says when the head 'was not reviewed' (mpaulosky/dotfiles#378)"
 done
+# A recognised restart stays recognised, and a 404 permission lookup is no write access (mpaulosky/dotfiles#381): the restart is decided
+# from the label events and the rounds (an add counts unless PR Auto-Merge removed it), never from whether Copilot can review now.
+for restart_doc in "$automerge_doc" "$adr_0002"; do
+  grep -qF -- 'mpaulosky/dotfiles#381' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must cite mpaulosky/dotfiles#381"
+  grep -qE '\b404\b' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must say a 404 from the permission lookup counts as no write access (mpaulosky/dotfiles#381)"
+  grep -qiE 'no write access' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must say a login without write access never restarts a loop, a 404 included (mpaulosky/dotfiles#381)"
+  grep -qiE 'recognised|removed (it|the label)|removal' "$restart_doc"     || fail "${restart_doc#"$skill_dir"/} must say a recognised restart stays recognised: an add counts unless PR Auto-Merge removed it (mpaulosky/dotfiles#381)"
+done
+grep -qF -- 'mpaulosky/dotfiles#381' <<<"$header"   || fail "pr-automerge.yml's header must cite mpaulosky/dotfiles#381 where it describes the restart and the 404 permission lookup"
+grep -qE '\b404\b' <<<"$header"   || fail "pr-automerge.yml's header must say a 404 permission lookup counts as no write access (mpaulosky/dotfiles#381)"
 # The docs of today's behaviour no longer say a Claude review runs beside Copilot's, or that no thread holds an exhausted loop's merge.
 for current_doc in "$automerge_doc" "$pr_process" "$adr_0002" "$owned/docs/PROCESS.md"; do
   if grep -qE "neither (does|do) the threads still (open|unresolved)|Exhaustion doesn't hold the merge, and neither" "$current_doc"; then

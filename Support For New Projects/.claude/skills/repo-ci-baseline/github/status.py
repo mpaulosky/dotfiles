@@ -95,14 +95,24 @@ query($id: ID!) {
 """
 
 # The PR's label events, oldest first, a page of 100 at a time after $cursor (mpaulosky/dotfiles#378): every one is read,
-# since the owner's add of review:claude that restarts a loop can come after any number of others.
+# since the owner's add of review:claude that restarts a loop can come after any number of others. The removals are read too
+# (mpaulosky/dotfiles#381): the one PR Auto-Merge makes at once is what tells an ignored add from a restart, unless a
+# request for Copilot's review came between the add and the removal, which the review requests tell.
 EVENTS_QUERY = """
 query($id: ID!, $cursor: String) {
   node(id: $id) {
     ... on PullRequest {
-      timelineItems(first: 100, after: $cursor, itemTypes: [LABELED_EVENT]) {
+      timelineItems(first: 100, after: $cursor, itemTypes: [LABELED_EVENT, UNLABELED_EVENT, REVIEW_REQUESTED_EVENT]) {
         pageInfo { hasNextPage endCursor }
-        nodes { ... on LabeledEvent { createdAt label { name } actor { login __typename } } }
+        nodes {
+          ... on LabeledEvent { __typename createdAt label { name } actor { login __typename } }
+          ... on UnlabeledEvent { __typename createdAt label { name } actor { login __typename } }
+          ... on ReviewRequestedEvent { __typename createdAt requestedReviewer {
+            ... on Bot { login }
+            ... on User { login }
+            ... on Team { name }
+          } }
+        }
       }
     }
   }
@@ -114,10 +124,16 @@ query($id: ID!, $cursor: String) {
 PERMISSIONS = {}
 
 
+class NotFound(RuntimeError):
+    """A `gh api` call that GitHub answered with 404."""
+
+
 def rest(path):
-    """The parsed JSON of one `gh api <path>` call."""
+    """The parsed JSON of one `gh api <path>` call; a 404 raises NotFound."""
     run = subprocess.run(["gh", "api", path], capture_output=True, text=True)
     if run.returncode != 0:
+        if "HTTP 404" in run.stderr or "HTTP 404" in run.stdout:
+            raise NotFound(run.stderr.strip() or run.stdout.strip())
         raise RuntimeError(run.stderr.strip() or run.stdout.strip())
     return json.loads(run.stdout)
 
@@ -215,7 +231,9 @@ def writer_access(owner, name, actor):
     """Whether the login that did a label event has write access to the repo: True, False, or None when it can't be read.
 
     The repository's owner always has it, a bot or an actor that can't be read (a deleted account) never does; any other
-    login is asked once through the collaborators' permission endpoint (admin or write), and a failed lookup isn't kept.
+    login is asked once through the collaborators' permission endpoint (admin or write). A 404 from it (a login that
+    doesn't exist) is a definite no write access (mpaulosky/dotfiles#381), kept like a found permission; a network error,
+    a 5xx or a rate limit is None and isn't kept, so the next read tries again.
     """
     login = (actor or {}).get("login")
     if not login or actor.get("__typename") == "Bot":
@@ -226,13 +244,19 @@ def writer_access(owner, name, actor):
     if key not in PERMISSIONS:
         try:
             PERMISSIONS[key] = rest(f"repos/{owner}/{name}/collaborators/{login}/permission").get("permission") in ("admin", "write")
+        except NotFound:
+            PERMISSIONS[key] = False
         except Exception:  # noqa: BLE001 - an unreadable permission makes the loop unread, never a restart
             return None
     return PERMISSIONS[key]
 
 
 def read_label_events(owner, name, node_id):
-    """The PR's review:claude label events, all of them, oldest first, as [{createdAt, writer}] (see writer_access).
+    """The PR's review:claude label events, all of them, oldest first (see writer_access).
+
+    An add is {createdAt, writer}; github-actions' removal (PR Auto-Merge's, mpaulosky/dotfiles#381) is
+    {createdAt, removed: True}, and costs no permission lookup. Any other removal is dropped. A request for Copilot's
+    review is {createdAt, copilotRequested: True}.
 
     EVENTS_QUERY is paged to the end: the add that restarts a loop can follow any number of others
     (mpaulosky/dotfiles#378). A page that fails raises.
@@ -245,8 +269,21 @@ def read_label_events(owner, name, node_id):
         if not info.get("hasNextPage"):
             break
         cursor = info["endCursor"]
-    return [{"createdAt": event.get("createdAt"), "writer": writer_access(owner, name, event.get("actor"))}
-            for event in events if event and (event.get("label") or {}).get("name") == REVIEW_CLAUDE]
+    read = []
+    for event in events:
+        if event and event.get("__typename") == "ReviewRequestedEvent":
+            reviewer = event.get("requestedReviewer") or {}
+            if COPILOT.search(reviewer.get("login") or reviewer.get("name") or ""):
+                read.append({"createdAt": event.get("createdAt"), "copilotRequested": True})
+            continue
+        if not event or (event.get("label") or {}).get("name") != REVIEW_CLAUDE:
+            continue
+        if event.get("__typename") == "UnlabeledEvent":
+            if ((event.get("actor") or {}).get("login") or "").lower() == "github-actions":
+                read.append({"createdAt": event.get("createdAt"), "removed": True})
+        else:
+            read.append({"createdAt": event.get("createdAt"), "writer": writer_access(owner, name, event.get("actor"))})
+    return read
 
 
 def report_once(key, message):
@@ -393,12 +430,13 @@ def instant(text):
         return float("-inf")
 
 
-def review_loop(node, rounds, copilot_cant_review):
+def review_loop(node, rounds):
     """(rounds, exhaustion_marker_newest, loop_unread) for a node's review rounds, after the loop's restarts.
 
     The rounds that count are the final generation's (landing.current_loop): a loop that reached MAX_CLAUDE_ROUNDS dirty
     rounds in a row restarts at the first review:claude added after the round that got it there by a login with write
-    access, comment or none, while Copilot can't review (copilot_cant_review); with Copilot available the label is ignored.
+    access, comment or none, unless PR Auto-Merge removed that add before the next round (the add made while Copilot
+    could review), with no request for Copilot's review in between. Whether Copilot can review now doesn't decide it, so a restart stays recognised (mpaulosky/dotfiles#381).
     PR Auto-Merge's exhaustion comment (github-actions, EXHAUSTED_MARKER) is read from the node's "comments"; it is the
     newest word when it is no older than the round that exhausted the final generation. Comments, label events or a
     permission that can't be read make the loop unread when it reached the cap, so it never is called exhausted
@@ -411,8 +449,11 @@ def review_loop(node, rounds, copilot_cant_review):
     if comments is None or events is None:
         return rounds, False, True
     nodes = [comment or {} for comment in comments.get("nodes") or []]
-    adds = [(instant(event.get("createdAt")), event.get("writer")) for event in events] if copilot_cant_review else []
-    walk = current_loop(rounds, adds)
+    adds = [(instant(event.get("createdAt")), event.get("writer")) for event in events
+            if not event.get("removed") and not event.get("copilotRequested")]
+    removals = [instant(event.get("createdAt")) for event in events if event.get("removed")]
+    requests = [instant(event.get("createdAt")) for event in events if event.get("copilotRequested")]
+    walk = current_loop(rounds, adds, removals, requests)
     markers = [instant(comment.get("createdAt")) for comment in exhaustion_markers(nodes)]
     # More comments than were read and no record among them: it may be on a page that wasn't read.
     if walk.unread or (not markers and comments.get("totalCount", len(nodes)) > len(nodes)):
@@ -441,10 +482,7 @@ def to_state(node, checks_required=True, merged_by_workflow=False, want_ready=Fa
     declined = copilot_declined(reviews)
     # Copilot can't review the PR (landing.PrState.claude_backed): Claude's review of any commit then counts as a round.
     gone = (asked and settled and not copilot_is_requested) or node["headRefOid"] in declined
-    # Claude reviews only where Copilot can't (mpaulosky/dotfiles#378): its quota note is on the head, or it is gone and
-    # hasn't really reviewed the head. Otherwise a review:claude add means nothing, and starts no new loop.
-    cant_review = node["headRefOid"] in declined or (gone and node["headRefOid"] not in copilot_reviews(reviews))
-    rounds, marker_newest, unread = review_loop(node, review_rounds(review_records(node), declined, gone), cant_review)
+    rounds, marker_newest, unread = review_loop(node, review_rounds(review_records(node), declined, gone))
     threads = [(thread["isResolved"], to_thread(thread)) for thread in node["reviewThreads"]["nodes"]]
     return PrState(
         state=node["state"],

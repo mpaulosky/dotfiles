@@ -1,6 +1,7 @@
 """Tests for github/status.py with the GraphQL fetch replaced by fixtures. No GitHub."""
 
 import io
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import status as st  # noqa: E402
 
 HEAD = "1234567" + "0" * 33
+REAL_REST = st.rest
 
 
 def ago(seconds):
@@ -499,6 +501,17 @@ def relabel(at="2026-01-02T02:00:00Z", writer=True):
     return {"createdAt": at, "writer": writer}
 
 
+def copilot_request(at):
+    """A request for Copilot's review as to_state reads it (mpaulosky/dotfiles#381)."""
+    return {"createdAt": at, "copilotRequested": True}
+
+
+def removal(at="2026-01-02T02:00:05Z"):
+    """PR Auto-Merge's (github-actions) removal of review:claude as to_state reads it (mpaulosky/dotfiles#381): the add it follows
+    was made while Copilot could review, and is ignored."""
+    return {"createdAt": at, "removed": True}
+
+
 # The ask was recorded long ago and nothing is pending: Copilot is gone, so a review:claude add can restart the loop.
 GONE = at(3600)
 
@@ -707,9 +720,10 @@ def test_a_review_claude_add_by_a_writer_after_the_exhausting_round_starts_a_new
 
 def test_the_add_is_ignored_while_copilot_can_review_acceptance_criteria_1_and_4():
     # Never asked, or a request pending even after a long-settled record: Copilot may still review, so the label means nothing.
-    never_asked = pr_node(reviews=DIRTY3, events=[relabel()])
-    pending = dict(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel()]), reviewRequests=COPILOT_REQUESTED_NODE)
-    just_asked = pr_node(reviews=DIRTY3, comments=comments_of(at(5)), events=[relabel()])
+    # PR Auto-Merge removed each add at once (mpaulosky/dotfiles#381): that removal is what makes the add ignored.
+    never_asked = pr_node(reviews=DIRTY3, events=[relabel(), removal()])
+    pending = dict(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel(), removal()]), reviewRequests=COPILOT_REQUESTED_NODE)
+    just_asked = pr_node(reviews=DIRTY3, comments=comments_of(at(5)), events=[relabel(), removal()])
     for node in (never_asked, pending, just_asked):
         state = state_of(node)
         assert state.loop_exhausted and len(state.rounds) == 3, node["reviewRequests"] if "reviewRequests" in node else node["comments"]
@@ -725,7 +739,8 @@ def test_the_add_counts_when_copilots_note_is_on_the_head_acceptance_criterion_4
 def test_the_add_is_ignored_when_copilot_has_really_reviewed_the_head_acceptance_criterion_1():
     # A settled ask and no pending request is also what a finished Copilot review leaves behind (#270): not "gone".
     reviewed = (COPILOT_LOGIN, HEAD, "", {"at": "2026-01-02T00:03:00Z", "threads": 1})
-    state = state_of(pr_node(reviews=[round_of(1), round_of(2), round_of(3), reviewed], comments=comments_of(GONE), events=[relabel("2026-01-02T00:04:00Z")]))
+    state = state_of(pr_node(reviews=[round_of(1), round_of(2), round_of(3), reviewed], comments=comments_of(GONE),
+                                events=[relabel("2026-01-02T00:04:00Z"), removal("2026-01-02T00:04:05Z")]))
 
     assert state.loop_exhausted
 
@@ -1043,3 +1058,224 @@ def test_a_pr_that_cant_be_exhausted_reads_one_page_of_comments_acceptance_crite
     st.gh_graphql("owner", "app")
 
     assert served.calls.count(("comments", "PR_1")) == 1
+
+
+# ── A recognised restart stays recognised; a 404 permission lookup is no write access (mpaulosky/dotfiles#381) ──
+
+def reviewed_head(minute=5, threads=1):
+    """Copilot's real review of the head, submitted at minute of 2026-01-02T00 (after the add at 00:04)."""
+    return (COPILOT_LOGIN, HEAD, "", {"at": f"2026-01-02T00:{minute:02d}:00Z", "threads": threads})
+
+
+ADD_AFTER_ROUNDS = "2026-01-02T00:04:00Z"
+
+
+def test_a_restart_stays_recognised_once_copilot_really_reviews_a_later_head_acceptance_criterion_1():
+    # d d d, a writer's add made while Copilot couldn't review, then Copilot really reviews the new head and raises a thread.
+    state = state_of(pr_node(reviews=[*DIRTY3, reviewed_head()], comments=comments_of(GONE), events=[relabel(ADD_AFTER_ROUNDS)]))
+
+    assert [item.dirty for item in state.rounds] == [True], "the streak is 1, not 4"
+    assert not state.loop_exhausted and not state.loop_unread
+
+
+def test_a_restart_stays_recognised_while_a_copilot_request_is_pending_acceptance_criterion_1():
+    node = dict(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel(ADD_AFTER_ROUNDS)]), reviewRequests=COPILOT_REQUESTED_NODE)
+    state = state_of(node)
+
+    assert state.rounds == () and not state.loop_exhausted and not state.loop_unread
+
+
+def test_a_restart_stays_recognised_after_a_clean_copilot_review_too_acceptance_criterion_1():
+    state = state_of(pr_node(reviews=[*DIRTY3, reviewed_head(threads=0)], comments=comments_of(GONE), events=[relabel(ADD_AFTER_ROUNDS)]))
+
+    assert [item.dirty for item in state.rounds] == [False] and not state.loop_exhausted
+
+
+def test_the_new_loop_is_exhausted_by_three_dirty_rounds_after_the_restart_not_by_the_old_ones_acceptance_criterion_1():
+    two = [round_of(4, minute=5), reviewed_head(minute=6)]
+    state = state_of(pr_node(reviews=[*DIRTY3, *two], comments=comments_of(GONE), events=[relabel(ADD_AFTER_ROUNDS)]))
+    assert len(state.rounds) == 2 and not state.loop_exhausted
+
+    three = [round_of(4, minute=5), round_of(5, minute=6), reviewed_head(minute=7)]
+    state = state_of(pr_node(reviews=[*DIRTY3, *three], comments=comments_of(GONE), events=[relabel(ADD_AFTER_ROUNDS)]))
+    assert len(state.rounds) == 3 and state.loop_exhausted
+
+
+def test_an_add_that_pr_auto_merge_removed_is_no_restart_even_when_copilot_cant_review_now_acceptance_criterion_2():
+    state = state_of(pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel(ADD_AFTER_ROUNDS), removal("2026-01-02T00:04:05Z")]))
+
+    assert state.loop_exhausted and len(state.rounds) == 3 and not state.loop_unread
+
+
+def test_an_add_that_pr_auto_merge_removed_is_no_restart_after_copilot_reviewed_the_head_acceptance_criterion_2():
+    events = [relabel(ADD_AFTER_ROUNDS), removal("2026-01-02T00:04:05Z")]
+    state = state_of(pr_node(reviews=[*DIRTY3, reviewed_head()], comments=comments_of(GONE), events=events))
+
+    assert state.loop_exhausted and len(state.rounds) == 4
+
+
+def test_a_removal_after_the_next_round_does_not_undo_the_restart_acceptance_criterion_1():
+    events = [relabel(ADD_AFTER_ROUNDS), removal("2026-01-02T00:30:00Z")]
+    state = state_of(pr_node(reviews=[*DIRTY3, reviewed_head()], comments=comments_of(GONE), events=events))
+
+    assert len(state.rounds) == 1 and not state.loop_exhausted
+
+
+def test_an_add_by_a_login_without_write_access_is_no_restart_after_copilot_reviewed_the_head_acceptance_criterion_2():
+    state = state_of(pr_node(reviews=[*DIRTY3, reviewed_head()], comments=comments_of(GONE), events=[relabel(ADD_AFTER_ROUNDS, writer=False)]))
+
+    assert state.loop_exhausted and len(state.rounds) == 4
+
+
+def unevent_node(at_time, login="github-actions", kind="Bot", label="review:claude"):
+    return {"__typename": "UnlabeledEvent", **event_node(at_time, login, kind, label)}
+
+
+def test_the_events_query_reads_unlabeled_events_too_acceptance_criterion_1():
+    assert "UNLABELED_EVENT" in st.EVENTS_QUERY and "LABELED_EVENT" in st.EVENTS_QUERY
+    assert "UnlabeledEvent" in st.EVENTS_QUERY and "__typename" in st.EVENTS_QUERY
+
+
+def test_gh_graphql_keeps_prs_removals_of_review_claude_and_drops_other_removals_acceptance_criterion_1(monkeypatch):
+    events = [
+        event_node("2026-01-02T01:00:00Z", "colleague"),
+        unevent_node("2026-01-02T01:00:05Z"),
+        unevent_node("2026-01-02T01:01:00Z", login="octo", kind="User"),
+        unevent_node("2026-01-02T01:02:00Z", label="enhancement"),
+    ]
+    served = Served(repo(exhausted_node(comments=None)), comments={"PR_1": [comments_page([GONE], 1)]}, events={"PR_1": [events_page(events)]},
+                    permissions={"colleague": "write"}).install(monkeypatch)
+    node = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+
+    assert node["labelEvents"] == [{"createdAt": "2026-01-02T01:00:00Z", "writer": True}, {"createdAt": "2026-01-02T01:00:05Z", "removed": True}]
+    assert [login for kind, login in served.calls if kind == "permission"] == ["colleague"], "a removal costs no permission lookup"
+    # d d d at 00:01..00:03 are before the add at 01:00, which PR Auto-Merge removed five seconds later: still exhausted.
+    state = st.to_state(node, **FLAGS, owner="owner", now=NOW)
+    assert state.loop_exhausted
+
+
+def test_gh_graphql_keeps_a_restart_that_a_later_review_of_copilot_would_have_hidden_acceptance_criterion_1(monkeypatch):
+    # The add at 01:00 follows d d d; Copilot really reviews the head at 02:00 and raises a thread.
+    late = (COPILOT_LOGIN, HEAD, "", {"at": "2026-01-02T02:00:00Z", "threads": 1})
+    node = dict(pr_node(number=1, reviews=[*DIRTY3, late], comments=None), id="PR_1")
+    Served(repo(node), comments={"PR_1": [comments_page([GONE], 1)]},
+           events={"PR_1": [events_page([event_node("2026-01-02T01:00:00Z", "owner")])]}).install(monkeypatch)
+    read = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+    state = st.to_state(read, **FLAGS, owner="owner", now=NOW)
+
+    assert len(state.rounds) == 1 and not state.loop_exhausted
+
+
+def test_the_events_query_reads_review_requests_too_acceptance_criterion_1():
+    assert "REVIEW_REQUESTED_EVENT" in st.EVENTS_QUERY and "ReviewRequestedEvent" in st.EVENTS_QUERY
+
+
+def request_node(at_time, login="Copilot"):
+    return {"__typename": "ReviewRequestedEvent", "createdAt": at_time, "requestedReviewer": {"login": login}}
+
+
+def test_gh_graphql_keeps_a_copilot_request_and_a_removal_after_it_leaves_the_restart_acceptance_criterion_1(monkeypatch):
+    # d d d, the owner's add at 01:00, a request for Copilot's review at 01:00:03 (a ruleset on a push), and PR Auto-Merge's
+    # removal at 01:00:05 for that request: the add still counts, and a dirty review at 02:00 is a streak of 1, not 4.
+    late = (COPILOT_LOGIN, HEAD, "", {"at": "2026-01-02T02:00:00Z", "threads": 1})
+    node = dict(pr_node(number=1, reviews=[*DIRTY3, late], comments=None), id="PR_1")
+    events = [event_node("2026-01-02T01:00:00Z", "owner"), request_node("2026-01-02T01:00:03Z"),
+              request_node("2026-01-02T01:00:04Z", login="someone-else"), unevent_node("2026-01-02T01:00:05Z")]
+    Served(repo(node), comments={"PR_1": [comments_page([GONE], 1)]}, events={"PR_1": [events_page(events)]}).install(monkeypatch)
+    read = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+
+    assert read["labelEvents"] == [{"createdAt": "2026-01-02T01:00:00Z", "writer": True}, {"createdAt": "2026-01-02T01:00:03Z", "copilotRequested": True},
+                                   {"createdAt": "2026-01-02T01:00:05Z", "removed": True}]
+    state = st.to_state(read, **FLAGS, owner="owner", now=NOW)
+    assert len(state.rounds) == 1 and not state.loop_exhausted
+
+
+def test_to_state_counts_an_add_whose_removal_followed_a_copilot_request_but_not_one_that_did_not_acceptance_criterion_1():
+    asked = pr_node(reviews=DIRTY3, comments=comments_of(GONE),
+                    events=[relabel(), copilot_request("2026-01-02T02:00:02Z"), removal("2026-01-02T02:00:05Z")])
+    assert not state_of(asked).loop_exhausted and not state_of(asked).exhaustion_marker_newest
+    plain = pr_node(reviews=DIRTY3, comments=comments_of(GONE), events=[relabel(), removal()])
+    assert state_of(plain).loop_exhausted
+
+
+# A permission lookup is `gh api repos/<owner>/<name>/collaborators/<login>/permission`; these fake gh itself, so they hold
+# whatever way status.py reads the failure.
+
+class FakeGh:
+    def __init__(self, stderr="", stdout="", code=1):
+        self.stderr, self.stdout, self.code, self.calls = stderr, stdout, code, 0
+
+    def __call__(self, argv, **kwargs):
+        self.calls += 1
+        return subprocess.CompletedProcess(argv, self.code, stdout=self.stdout, stderr=self.stderr)
+
+
+NOT_FOUND = dict(stderr="gh: Not Found (HTTP 404)\n", stdout='{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}')
+USER = {"login": "ghost", "__typename": "User"}
+
+
+def lookup_with(monkeypatch, gh):
+    monkeypatch.setattr(st, "PERMISSIONS", {})
+    monkeypatch.setattr(st.subprocess, "run", gh)
+
+
+def test_a_404_from_the_permission_lookup_is_no_write_access_acceptance_criterion_3(monkeypatch):
+    gh = FakeGh(**NOT_FOUND)
+    lookup_with(monkeypatch, gh)
+
+    assert st.writer_access("owner", "app", USER) is False
+
+
+def test_a_404_is_cached_for_the_run_like_a_found_permission_acceptance_criterion_3(monkeypatch):
+    gh = FakeGh(**NOT_FOUND)
+    lookup_with(monkeypatch, gh)
+
+    assert st.writer_access("owner", "app", USER) is False
+    assert st.writer_access("owner", "app", USER) is False
+    assert gh.calls == 1
+
+
+def test_a_404_for_one_login_leaves_another_logins_lookup_alone_acceptance_criterion_3(monkeypatch):
+    lookup_with(monkeypatch, FakeGh(**NOT_FOUND))
+    assert st.writer_access("owner", "app", USER) is False
+
+    monkeypatch.setattr(st.subprocess, "run", FakeGh(stdout='{"permission":"write"}', code=0))
+    assert st.writer_access("owner", "app", {"login": "colleague", "__typename": "User"}) is True
+
+
+def test_a_5xx_a_network_error_and_a_rate_limit_are_still_unread_and_not_cached_acceptance_criterion_3(monkeypatch):
+    failures = {
+        "500": dict(stderr="gh: Internal Server Error (HTTP 500)\n", stdout='{"message":"Server Error","status":"500"}'),
+        "502": dict(stderr="gh: Bad Gateway (HTTP 502)\n"),
+        "503": dict(stderr="gh: Service Unavailable (HTTP 503)\n"),
+        "network": dict(stderr="error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n"),
+        "403 rate limit": dict(stderr="gh: API rate limit exceeded for user ID 1. (HTTP 403)\n",
+                               stdout='{"message":"API rate limit exceeded for user ID 1.","status":"403"}'),
+        "429": dict(stderr="gh: Too Many Requests (HTTP 429)\n"),
+    }
+    for name, failure in failures.items():
+        gh = FakeGh(**failure)
+        lookup_with(monkeypatch, gh)
+
+        assert st.writer_access("owner", "app", USER) is None, name
+        assert st.writer_access("owner", "app", USER) is None and gh.calls == 2, f"{name}: a failed lookup isn't kept"
+
+
+def test_a_404_does_not_leave_the_loop_unread_but_a_5xx_does_acceptance_criterion_3(monkeypatch):
+    events = [event_node("2026-01-02T01:00:00Z", "ghost")]
+
+    def read(failure):
+        node = dict(pr_node(number=1, reviews=DIRTY3, comments=None), id="PR_1")
+        Served(repo(node), comments={"PR_1": [comments_page([GONE], 1)]}, events={"PR_1": [events_page(events)]}).install(monkeypatch)
+        monkeypatch.setattr(st, "rest", REAL_REST)
+        monkeypatch.setattr(st.subprocess, "run", FakeGh(**failure))
+        read_node = st.gh_graphql("owner", "app")["repository"]["pullRequests"]["nodes"][0]
+        return read_node, st.to_state(read_node, **FLAGS, owner="owner", now=NOW)
+
+    node, state = read(NOT_FOUND)
+    assert node["labelEvents"] == [{"createdAt": "2026-01-02T01:00:00Z", "writer": False}]
+    assert state.loop_exhausted and not state.loop_unread
+
+    node, state = read(dict(stderr="gh: Internal Server Error (HTTP 500)\n"))
+    assert node["labelEvents"] == [{"createdAt": "2026-01-02T01:00:00Z", "writer": None}]
+    assert state.loop_unread and not state.loop_exhausted

@@ -3261,7 +3261,9 @@ test("never adds review:claude while the exhaustion comment is the newest word o
 });
 
 test("adds review:claude again once a person has added it after the comment (mpaulosky/dotfiles#375)", async () => {
-  const events = readded([labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T02:30:00Z", "github-actions[bot]")]);
+  // PR Auto-Merge took the label off at exhaustion, before the person's re-add (mpaulosky/dotfiles#381: a removal after an add
+  // and before the next round would make the add an ignored one).
+  const events = [labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T01:45:00Z", "github-actions[bot]"), ...readded()];
   const { addedLabels } = await evaluate(readyPr({ copilotReviews: CLEAN_AFTER_COMMENT(), comments: documented() }), events);
 
   assert.deepEqual(addedLabels, LABEL_FOR_CLAUDE);
@@ -4947,6 +4949,179 @@ test("reads GITHUB_TOKEN's collaborator permission for the login, in this reposi
   assert.ok(!calls.some(({ client, call }) => client === "pat" && call === "repos.getCollaboratorPermissionLevel"));
 });
 
+// ── A recognised restart stays recognised (mpaulosky/dotfiles#381) ──────────
+// Whether a writer's add restarts the loop is decided from the label events and the rounds, not from whether Copilot
+// can review the head now: an add counts unless github-actions removed review:claude after it, before the next round
+// (PR Auto-Merge removes at once an add made while Copilot can review).
+
+const removedByActions = (at) => ({ ...labelEventAt("unlabeled", CLAUDE_LABEL, at, "github-actions[bot]"), actor: { login: "github-actions[bot]", type: "Bot" } });
+// Copilot really reviewed the head, with a thread, long after the add.
+const REVIEWED_HEAD_AT = "2026-01-02T03:00:00Z";
+const copilotReviewedDirtyHead = () => copilotReviewsOf(...roundEntries("d d d"), { oid: HEAD, threads: 1, at: REVIEWED_HEAD_AT });
+
+test("a writer's restart still counts once Copilot really reviews a later head: d d d, add, one dirty review is a streak of 1, not 4 (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
+  const result = await evaluate(pr, [addedBy(OWNER)]);
+
+  assert.deepEqual(result.exhaustionPosts, [], "not exhausted again: " + result.logs.join("\n"));
+  assert.deepEqual(result.merges, [], "Copilot's new thread holds the merge");
+  assert.deepEqual(result.removedLabels, []);
+});
+
+test("a writer's restart still counts while a Copilot request is pending for the new head (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  const pr = documentedLoop({ reviewRequests: COPILOT_PENDING });
+  const result = await evaluate(pr, [addedBy(OWNER)]);
+
+  assert.deepEqual(result.exhaustionPosts, []);
+  assert.deepEqual(result.merges, [], "the new loop waits for its review, the old streak doesn't merge it");
+});
+
+const copilotRequestedAt = (at, reviewer = { login: "Copilot", type: "Bot" }) => ({ event: "review_requested", created_at: at, requested_reviewer: reviewer, actor: { login: "ruleset" } });
+
+test("a writer's restart survives PR Auto-Merge's removal made for a Copilot request that came after the add (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  // d d d, the owner's add while Copilot can't review, then a request goes pending (a ruleset on a push) and PR Auto-Merge takes the label off.
+  const pr = documentedLoop({ reviewRequests: COPILOT_PENDING });
+  const events = [addedBy(OWNER), copilotRequestedAt("2026-01-02T00:30:03Z"), removedByActions("2026-01-02T00:30:05Z")];
+  const result = await evaluate(pr, events);
+
+  assert.deepEqual(result.exhaustionPosts, [], result.logs.join("\n"));
+  assert.deepEqual(result.merges, [], "the new loop waits for its review");
+});
+
+test("a dirty Copilot review of the new head after such a removal is a streak of 1, not 4 (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
+  const events = [addedBy(OWNER), copilotRequestedAt("2026-01-02T00:30:03Z"), removedByActions("2026-01-02T00:30:05Z")];
+  const result = await evaluate(pr, events);
+
+  assert.deepEqual(result.exhaustionPosts, []);
+  assert.deepEqual(result.merges, [], "Copilot's new thread holds the merge");
+});
+
+test("a Copilot request before the add, or a request for someone else, does not save an add that PR Auto-Merge removed (mpaulosky/dotfiles#381, criterion 2)", async () => {
+  const before = await evaluate(documentedLoop({ reviewRequests: COPILOT_PENDING }),
+    [copilotRequestedAt("2026-01-02T00:29:00Z"), addedBy(OWNER), removedByActions("2026-01-02T00:30:05Z")]);
+  assert.equal(before.merges.length, 1, before.logs.join("\n"));
+
+  const other = await evaluate(documentedLoop({ reviewRequests: COPILOT_PENDING }),
+    [addedBy(OWNER), copilotRequestedAt("2026-01-02T00:30:03Z", { login: "octo", type: "User" }), removedByActions("2026-01-02T00:30:05Z")]);
+  assert.equal(other.merges.length, 1, other.logs.join("\n"));
+});
+
+test("a restart by a collaborator with write access stays recognised after Copilot reviews too (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
+  const result = await evaluate(pr, [addedBy("colleague")], { permissions: { colleague: "write" } });
+
+  assert.deepEqual(result.exhaustionPosts, []);
+  assert.deepEqual(result.merges, []);
+});
+
+test("two dirty rounds after a recognised restart are not an exhausted loop, three are (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  const twoMore = copilotReviewsOf(...roundEntries("d d d"), { oid: "four", threads: 1, at: "2026-01-02T02:00:00Z" }, { oid: HEAD, threads: 1, at: REVIEWED_HEAD_AT });
+  const two = await evaluate(readyPr({ copilotReviews: twoMore, comments: documented(), reviewThreads: threadsBy(COPILOT) }), [addedBy(OWNER)]);
+  assert.deepEqual(two.exhaustionPosts, []);
+  assert.deepEqual(two.merges, []);
+
+  const threeMore = copilotReviewsOf(...roundEntries("d d d"), { oid: "four", threads: 1, at: "2026-01-02T02:00:00Z" }, { oid: "five", threads: 1, at: "2026-01-02T02:30:00Z" },
+    { oid: HEAD, threads: 1, at: REVIEWED_HEAD_AT });
+  const three = await evaluate(readyPr({ copilotReviews: threeMore, comments: documented(), reviewThreads: threadsBy(COPILOT) }), [addedBy(OWNER)]);
+  assert.equal(three.exhaustionPosts.length, 1);
+  assert.equal(three.merges.length, 1);
+});
+
+test("an add that PR Auto-Merge removed (made while Copilot could review) is not a restart, even when Copilot can't review now (mpaulosky/dotfiles#381, criterion 2)", async () => {
+  const events = [addedBy(OWNER, AFTER_ROUNDS), removedByActions("2026-01-02T00:30:05Z")];
+  const result = await evaluate(documentedLoop(), events);
+
+  assert.equal(result.merges.length, 1, result.logs.join("\n"));
+  assert.deepEqual(result.exhaustionPosts, []);
+});
+
+test("an add removed by PR Auto-Merge is not a restart once Copilot reviewed the head either (mpaulosky/dotfiles#381, criterion 2)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
+  const result = await evaluate(pr, [addedBy(OWNER, AFTER_ROUNDS), removedByActions("2026-01-02T00:30:05Z")]);
+
+  assert.equal(result.exhaustionPosts.length, 1, "four dirty rounds in a row: exhausted again");
+  assert.equal(result.merges.length, 1);
+});
+
+test("a removal by a person is not PR Auto-Merge's: the add it follows still restarts (mpaulosky/dotfiles#381, criterion 2)", async () => {
+  const events = [addedBy(OWNER, AFTER_ROUNDS), labelEventAt("unlabeled", CLAUDE_LABEL, "2026-01-02T00:30:05Z", "octo")];
+  const result = await evaluate(documentedLoop(), events);
+
+  assert.deepEqual(result.merges, []);
+});
+
+test("a removal after the next round does not undo the restart that round belongs to (mpaulosky/dotfiles#381, criterion 1)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
+  const result = await evaluate(pr, [addedBy(OWNER, AFTER_ROUNDS), removedByActions("2026-01-02T04:00:00Z")]);
+
+  assert.deepEqual(result.exhaustionPosts, []);
+  assert.deepEqual(result.merges, []);
+});
+
+test("an add by a login without write access is no restart even after Copilot reviewed a later head (mpaulosky/dotfiles#381, criterion 2)", async () => {
+  const pr = readyPr({ copilotReviews: copilotReviewedDirtyHead(), comments: documented(), reviewThreads: threadsBy(COPILOT) });
+  const result = await evaluate(pr, [addedBy("stranger")], { permissions: { stranger: "read" } });
+
+  assert.equal(result.exhaustionPosts.length, 1);
+  assert.equal(result.merges.length, 1);
+});
+
+// ── A 404 from the permission lookup is no write access (mpaulosky/dotfiles#381) ──
+
+const notFound = () => Object.assign(new Error("Not Found"), { status: 404 });
+
+test("a 404 from the permission lookup counts as no write access: the add is no restart and the loop is read (mpaulosky/dotfiles#381, criterion 3)", async () => {
+  const result = await evaluate(documentedLoop(), [addedBy("ghost")], { permissions: { ghost: notFound() } });
+
+  assert.equal(result.merges.length, 1, result.logs.join("\n"));
+  assert.deepEqual(result.exhaustionPosts, []);
+  assert.ok(!result.logs.some((line) => line.startsWith("warning: ") && /permission/i.test(line)), result.logs.join("\n"));
+  assert.ok(result.permissionRequests.includes("ghost"));
+});
+
+test("a 404 is cached like a found permission: a login that 404s is asked once however many adds (mpaulosky/dotfiles#381, criterion 3)", async () => {
+  const events = [addedBy("ghost", "2026-01-02T00:30:00Z"), addedBy("ghost", "2026-01-02T00:40:00Z"), addedBy("ghost", "2026-01-02T00:50:00Z")];
+  const { permissionRequests, merges } = await evaluate(documentedLoop(), events, { permissions: { ghost: notFound() } });
+
+  assert.equal(permissionRequests.filter((login) => login === "ghost").length, 1, JSON.stringify(permissionRequests));
+  assert.equal(merges.length, 1);
+});
+
+test("a login that 404s doesn't hide a later add by a writer: that one restarts the loop (mpaulosky/dotfiles#381, criterion 3)", async () => {
+  const events = [addedBy("ghost", "2026-01-02T00:30:00Z"), addedBy("colleague", "2026-01-02T00:50:00Z")];
+  const result = await evaluate(documentedLoop(), events, { permissions: { ghost: notFound(), colleague: "write" } });
+
+  assert.ok(restartedBy(result), result.logs.join("\n"));
+});
+
+test("a 5xx, a network error and a rate limit still leave the loop unread: nothing is posted or merged, and it warns (mpaulosky/dotfiles#381, criterion 3)", async () => {
+  const errors = {
+    "a 500": Object.assign(new Error("Internal Server Error"), { status: 500 }),
+    "a 502": Object.assign(new Error("Bad Gateway"), { status: 502 }),
+    "a 503": Object.assign(new Error("Service Unavailable"), { status: 503 }),
+    "a network error": Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }),
+    "a 403 rate limit": Object.assign(new Error("API rate limit exceeded"), { status: 403 }),
+    "a 429": Object.assign(new Error("Too Many Requests"), { status: 429 })
+  };
+  for (const [name, error] of Object.entries(errors)) {
+    const { merges, exhaustionPosts, addedLabels, logs } = await evaluate(documentedLoop(), [addedBy("stranger")], { permissions: { stranger: error } });
+
+    assert.deepEqual(merges, [], name);
+    assert.deepEqual(exhaustionPosts, [], name);
+    assert.deepEqual(addedLabels, [], name);
+    assert.ok(logs.some((line) => line.startsWith("warning: ") && /permission/i.test(line)), `${name}: ${logs.join("\n")}`);
+  }
+});
+
+test("a sweep still stops on a 429 reading a permission, and a 404 in a sweep is no write access (mpaulosky/dotfiles#381, criterion 3)", async () => {
+  const limited = { stranger: Object.assign(new Error("Too Many Requests"), { status: 429 }) };
+  await assert.rejects(evaluate(documentedLoop(), [addedBy("stranger")], { push: true, permissions: limited }), /Too Many Requests/);
+
+  const result = await evaluate(documentedLoop(), [addedBy("ghost")], { push: true, permissions: { ghost: notFound() } });
+  assert.equal(result.merges.length, 1);
+});
+
 // ── An owner's add on an exhausted PR starts a new loop, comment or not ─────
 
 test("an add before the exhausting round is no restart (mpaulosky/dotfiles#378)", async () => {
@@ -4958,7 +5133,8 @@ test("an add before the exhausting round is no restart (mpaulosky/dotfiles#378)"
 
 test("an add while Copilot can review is ignored: the loop stays exhausted, is documented and merges (mpaulosky/dotfiles#378)", async () => {
   // No record that Copilot was asked, so it may still review: the label means nothing.
-  const { merges, exhaustionPosts, permissionRequests } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }), [addedBy(OWNER)]);
+  // PR Auto-Merge removed it at once (mpaulosky/dotfiles#381): a removal by github-actions after the add is what tells it apart.
+  const { merges, exhaustionPosts, permissionRequests } = await evaluate(readyPr({ copilotReviews: exhaustedCopilot() }), [addedBy(OWNER), removedByActions("2026-01-02T00:30:05Z")]);
 
   assert.equal(exhaustionPosts.length, 1);
   assert.equal(merges.length, 1);
@@ -4967,7 +5143,7 @@ test("an add while Copilot can review is ignored: the loop stays exhausted, is d
 
 test("an add while a Copilot request is pending is ignored too (mpaulosky/dotfiles#378)", async () => {
   const pr = documentedLoop({ reviewRequests: COPILOT_PENDING });
-  const { merges, exhaustionPosts } = await evaluate(pr, [addedBy(OWNER)]);
+  const { merges, exhaustionPosts } = await evaluate(pr, [addedBy(OWNER), removedByActions("2026-01-02T00:30:05Z")]);
 
   assert.deepEqual(exhaustionPosts, []);
   assert.equal(merges.length, 1);

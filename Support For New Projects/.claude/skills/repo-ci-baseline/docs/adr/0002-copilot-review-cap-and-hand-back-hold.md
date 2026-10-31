@@ -87,8 +87,14 @@ The hold is in the Template, not a per-repo file, because Applying the old Templ
   and `landing.py` holds both constants in step by tests. `.github/scripts/tests/pr-automerge.test.mjs` covers the loop, the comment and the hold, and CI and `test.sh` run it.
 - A new loop starts at the **first** `review:claude` added by a login with write access after the round that exhausted the loop, not the latest add:
   PR Auto-Merge's own PAT adds the label for a later head in the new loop, and a restart at that add would discard the loop's rounds and make it endless.
-  An add counts only where Copilot can't review. Whoever added it is looked up with `repos.getCollaboratorPermissionLevel` (`GITHUB_TOKEN`, a read, once per login a run);
-  the repository's owner has write access without a lookup, and a bot never does.
+  An add counts unless PR Auto-Merge removed it (mpaulosky/dotfiles#381): an add made while Copilot can review is the one the workflow takes off at once, so the label events say
+  which adds were ignored, and a **recognised restart stays recognised**: Copilot reviewing a later head, or a request going pending, can't undo it. (The first version decided it from whether
+  Copilot can review now, so d d d, a writer's add and one dirty Copilot review read as a streak of 4, and the PR merged with Copilot's new threads open.) A removal counts only
+  when `github-actions` made it after the add and before the next round, and no request for Copilot's review came between the add and the removal: such a removal was made
+  for the request (Copilot can review again), not for the add, which stays a restart. The removal at exhaustion comes before the restart and cancels nothing.
+  Whoever added it is looked up with `repos.getCollaboratorPermissionLevel` (`GITHUB_TOKEN`, a read, once per login a run);
+  the repository's owner has write access without a lookup, and a bot never does. A **404** from the lookup (a login that doesn't exist any more) is a definite no write access,
+  cached for the run like a found permission, so it never leaves the loop unread; a network error, a 5xx or a rate limit is still unknown, and the run waits and retries.
   The rule is a walk over generations: a restart can come before the comment (the comment is posted once the PR is ready), so the comment no longer marks where the loop restarts.
 - The workflow reads a PR's label events with `GITHUB_TOKEN` and `issues: read`, so `RELEASE_PR_PAT` needs no Issues access,
   and `pull_request_target` gains the `unlabeled` type so the owner removing the label re-evaluates the PR at once, and `labeled`, so a `review:claude` added while Copilot can review

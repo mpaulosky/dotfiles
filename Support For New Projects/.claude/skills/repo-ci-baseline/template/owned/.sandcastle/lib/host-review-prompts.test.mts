@@ -59,6 +59,12 @@ describe("reviewerPrompt", () => {
     assert.ok(prompt.indexOf(agentBody.trim()) < prompt.indexOf(worktree));
   });
 
+  it("doesn't point the reviewer at the worktree's lenses.md, which the branch controls: the lens row and the bar are in the prompt", () => {
+    const prompt = reviewerPrompt(args());
+    assert.ok(!prompt.includes("lenses.md"));
+    assert.ok(prompt.includes("CLAUDE.md"));
+  });
+
   it("names the worktree by absolute path, for Read, Grep and Glob", () => {
     assert.ok(reviewerPrompt(args()).includes(worktree));
   });

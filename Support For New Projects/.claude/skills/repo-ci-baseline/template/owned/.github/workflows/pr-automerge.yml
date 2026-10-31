@@ -57,8 +57,8 @@ name: PR Auto-Merge
 # removed the label after it and before the next round, which is what an add
 # made while Copilot can review leaves behind. Whether Copilot can review now
 # doesn't decide it, so Copilot reviewing a later head doesn't undo a restart.
-# This run never adds the label while the comment is the newest word on the PR. A
-# re-Apply PR (chore/reapply-baseline) is bounded like any other
+# This run never adds the label while the comment is the newest word on the PR.
+# A re-Apply PR (chore/reapply-baseline) is bounded like any other
 # (mpaulosky/dotfiles#174), though it changes this gate itself: with Claude
 # reviewing every re-Apply commit in every repo, the exemption let a round chase
 # reviews without end, and a finding on one is fixed in the Template, where its
@@ -1282,10 +1282,10 @@ jobs:
             // unless a removal by github-actions follows it before the next
             // round, so whether Copilot can review now doesn't decide it and
             // a recognised restart can't flip back when Copilot reviews a
-            // later head (mpaulosky/dotfiles#381). The label events are read (GITHUB_TOKEN)
-            // only once the streak has reached the cap, and the comments in
-            // full (REST's pages) only if the last 100 hold no exhaustion
-            // comment. markerNewest: the final generation's exhaustion has a
+            // later head (mpaulosky/dotfiles#381). The label events are read
+            // (GITHUB_TOKEN) only once the streak has reached the cap, and the
+            // comments in full (REST's pages) only if the last 100 hold no
+            // exhaustion comment. markerNewest: the final generation's exhaustion has a
             // comment and nobody has added the label since, so this run never
             // adds it. documented: the newest comment is no older than the
             // newest round, so this exhaustion is on record (the comment names

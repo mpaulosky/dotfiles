@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the Seed's .sandcastle/check.sh: it runs Sandcastle's check only when a file the
+# Tests for the Owned .sandcastle/check.sh: it runs Sandcastle's check only when a file the
 # check reads changed since <merge-base> (always, with no merge base), so a repo that copies it
 # doesn't stop checking when only one of those files changes. Each case runs the Seed script in
 # a throwaway repo with a stub pnpm that logs its calls.
@@ -7,7 +7,7 @@
 set -uo pipefail
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CHECK="$SKILL_DIR/template/seed/.sandcastle/check.sh"
+CHECK="$SKILL_DIR/template/owned/.sandcastle/check.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -124,6 +124,36 @@ git -C "$REPO" commit -qam "touch package.json"
 run_check_in_hook "$BASE"
 check "with the variables set, a change to package.json runs the Sandcastle check" ran_check
 check "with the variables set, a change to package.json leaves pnpm none of them" pnpm_saw_no_git_variables
+git -C "$REPO" switch -q main
+
+# A repo lists the other files its tests read in .sandcastle/check-paths.txt (Seed).
+cat > "$REPO/.sandcastle/check-paths.txt" <<'LIST'
+# a comment, then a blank line
+
+CLAUDE.md
+:(glob)docs/guides/**
+LIST
+mkdir -p "$REPO/docs/guides/sub"
+echo start > "$REPO/CLAUDE.md"; echo start > "$REPO/docs/guides/sub/a.md"
+git -C "$REPO" add -A
+git -C "$REPO" commit -q -m "paths list"
+LISTBASE="$(git -C "$REPO" rev-parse HEAD)"
+
+run_check "$LISTBASE"
+check "with a paths list and nothing changed since it, nothing runs" not ran_check
+for path in CLAUDE.md docs/guides/sub/a.md; do
+  git -C "$REPO" switch -q -c "listed-$RANDOM" main
+  echo more >> "$REPO/$path"
+  git -C "$REPO" commit -qam "touch $path"
+  run_check "$LISTBASE"
+  check "a change to $path, listed in check-paths.txt, runs the Sandcastle check" ran_check
+  git -C "$REPO" switch -q main
+done
+git -C "$REPO" switch -q -c listed-unrelated main
+echo more >> "$REPO/docs/unrelated.md"
+git -C "$REPO" commit -qam "unrelated again"
+run_check "$LISTBASE"
+check "a file the list doesn't name still runs nothing (the comment and blank lines name no path)" not ran_check
 git -C "$REPO" switch -q main
 
 echo

@@ -119,7 +119,7 @@ shell_files=(
   "$owned/scripts/sync-copilot-review.sh" "$owned/scripts/tests/sync-copilot-review.test.sh"
   "$owned/scripts/watch-pr.sh" "$owned/scripts/tests/watch-pr.test.sh"
   "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh" "$owned/scripts/review.sh"
-  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.sandcastle/check.sh"
+  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$owned/.sandcastle/check.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )

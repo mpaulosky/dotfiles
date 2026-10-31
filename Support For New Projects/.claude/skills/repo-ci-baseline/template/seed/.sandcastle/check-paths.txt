@@ -1,0 +1,3 @@
+# Files, besides the Template's own list, whose change makes .sandcastle/check.sh run Sandcastle's
+# check: the files this repo's .sandcastle/ tests read (CLAUDE.md, .github/workflows, the solution
+# file and so on). One git pathspec per line; blank lines and # lines are ignored.

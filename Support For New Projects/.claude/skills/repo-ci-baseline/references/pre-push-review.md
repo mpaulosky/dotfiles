@@ -14,7 +14,7 @@ Why: [ADR 0008](../docs/adr/0008-review-before-the-push.md). The process a devel
 | The repeat-until-quiet loop for a large or risky branch, with its mutation runner and known-open list | `.claude/skills/hardening-review/` (`SKILL.md`, `references/`, `scripts/mutate.py`, `scripts/known_open.py`) | Owned |
 | The read-only reviewer agent (Read, Grep and Glob only) | `.claude/agents/pre-push-reviewer.md` | Owned |
 | The ledger: what the review found and what became of it, keyed by the branch's own hunks | `.sandcastle/lib/review-ledger.mts` (run as `scripts/review.sh`) | Owned |
-| The security record: a local, git-ignored file per security finding, written by `record` and read by both reviews | `.security/` in the main checkout (`.sandcastle/lib/security-record.mts`) | Owned code; Seed `.security/README.md`; Owned `.gitignore` lines |
+| The security record: a local, git-ignored file per security finding, written by `record` and read by both reviews | `.security/` in the main checkout (`.sandcastle/lib/security-record.mts`) | Owned code; Owned `.security/README.md`; Owned `.gitignore` lines |
 | The gate's check | `scripts/gate.sh`, step "Local review" | Owned |
 | The repo's name for `GH_REPO` (`scripts/review.sh repo`) and its own non-Template files under Owned patterns | `REPO_SLUG`, `NOT_OWNED_BASELINE_PATHS` in `.sandcastle/lib/repo-config.mts` | Seed |
 | The repo's own lenses, and the guidance reviewers read | `.claude/skills/code-review/SKILL.md`, `CLAUDE.md`, `docs/CODING_STANDARDS.md`, `.claude/rules/` | the repo's |
@@ -35,8 +35,15 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
 - The ledger is keyed by the branch's hunks against its merge base with `origin/main`. A clean merge of `main` keeps the review; a new commit, a conflict
   resolution or a `main` change inside one of the branch's hunks needs a new one. A re-Apply on `chore/reapply-baseline` passes without one only when every
   change is a regular Owned file added or modified, as Apply writes them (`OWNED_PATHS` in the ledger lists them, and a dotfiles test keeps it equal to
-  `template/owned/`). A deleted Owned file, a symlink, a submodule, a file of the repo's own, or a Seed file the re-Apply writes because the repo lacked it
-  needs a review like any other change.
+  `template/owned/`). A deleted Owned file, a symlink, a submodule, a file of the repo's own, a Seed file the re-Apply writes because the repo lacked it, or one of
+  the Owned files that carry behaviour (`REVIEWED_ON_REAPPLY`: `.github/ci/coverage-threshold`, which ci.yml enforces at any value,
+  `.claude/rules/sandcastle-hand-off.md`, which loads into every session, the three `.github/ISSUE_TEMPLATE/` files, whose front matter sets labels and assignees,
+  `.claude/agents/pre-push-reviewer.md`, whose `tools:` front matter keeps reviewers read-only, `.sandcastle/critique-prompt.md` and `intake-prompt.md`, which instruct the
+  pipeline's judging roles, and `global.json`, which sets the SDK and msbuild-sdks a build runs)
+  needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files. A re-Apply
+  that writes one (a repo whose `coverage-threshold` isn't already `80`, or that lacks the file, gets it from its first one) is refused at `reapply.sh`'s first
+  push, which leaves the Apply commit on `chore/reapply-baseline` unpushed. Review it in that worktree with `/pre-push-review`, then run `reapply.sh` again: step 1
+  carries the never-pushed branch on. A finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.
 - `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
   the host runs the review's rounds on a built branch itself, after checkpoint 2 ([below](#sandcastle-runs-the-review-on-the-host)), so the sandbox's gate need not.
 - Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
@@ -78,8 +85,8 @@ again, and settled differently, on the next (one weakness took six rounds). The 
 - **Where.** The main worktree's `.security/`, found with `git worktree list`, so a review in any worktree or branch reads and writes the same entries. A bare clone has none:
   nothing is written, with a warning. The directory is mode 0700, entries 0600, written with `wx`; a symlink there is refused.
 - **Git-ignored, never published.** The Owned `.gitignore` carries `.security/*` and `!.security/README.md`, and `record` writes nothing, with a warning to
-  re-Apply, where `git check-ignore` says the directory isn't ignored. The README comes from the Seed once, and a re-Apply leaves it and every entry alone. (The
-  ignore lines are in the Owned `.gitignore`, not the Seed: Apply overwrites that file, so a Seed copy would never be written.) The follow-up issue, the PR's Review notes and the
+  re-Apply, where `git check-ignore` says the directory isn't ignored. The README is Owned, so a re-Apply restores it, and it leaves every entry alone. (The
+  ignore lines are in the Owned `.gitignore` too, so they reach every repo.) The follow-up issue, the PR's Review notes and the
   report never include an entry's text. The worktree check of `record` does not count an untracked `.security/` file as a change.
 - **Who reads it.** `scripts/review.sh security` lists the entries (id, status, lens, finding path, file), never their text. Step 3 of `pre-push-review` and of
   `hardening-review` read that list, and it reaches reviewers by id, lens and path only. A finding that repeats a weakness a `fixed` entry holds isn't raised again as new:

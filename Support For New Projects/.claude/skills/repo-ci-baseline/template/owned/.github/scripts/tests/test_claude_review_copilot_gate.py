@@ -92,16 +92,16 @@ def quota_note(commit=HEAD):
     return copilot_review(commit, QUOTA_NOTE)
 
 
-def requested(*logins):
-    return {"users": [{"login": login} for login in logins], "teams": []}
+def requested(*logins, teams=()):
+    return {"users": [{"login": login} for login in logins], "teams": [{"name": name} for name in teams]}
 
 
-def serve(*, current=HEAD, reviews=(), pending=(), comments=(), failing=(), raw=()):
+def serve(*, current=HEAD, reviews=(), pending=(), teams=(), comments=(), failing=(), raw=()):
     """The routes the fake gh serves, by path after repos/<owner>/<repo>/. failing: routes that error; raw: ones that print junk."""
     routes = {
         f"pulls/{PR}": {"payload": {"head": {"sha": current}}},
         f"pulls/{PR}/reviews": {"payload": list(reviews)},
-        f"pulls/{PR}/requested_reviewers": {"payload": requested(*pending)},
+        f"pulls/{PR}/requested_reviewers": {"payload": requested(*pending, teams=teams)},
         f"issues/{PR}/comments": {"payload": list(comments)},
     }
     for route in failing:
@@ -155,7 +155,8 @@ def test_a_pr_never_asked_for_copilots_review_is_one_copilot_can_review(tmp_path
 
 
 def test_a_pending_copilot_request_means_copilot_can_review(tmp_path):
-    for pending in (["Copilot"], ["copilot-pull-request-reviewer"], ["copilot-pull-request-reviewer[bot]"]):
+    # The Bot as a requested reviewer is the REST user "Copilot"; its review login is the [bot] one.
+    for pending in (["Copilot"], ["copilot-pull-request-reviewer[bot]"]):
         can_review, _, _ = run_step(tmp_path, serve(comments=[ask_record(3600)], pending=pending))
         assert can_review == "true", pending
 
@@ -317,3 +318,100 @@ def test_the_header_says_claude_reviews_only_where_copilot_cant_and_the_label_is
     header = WORKFLOW.read_text().split('\n"on":', 1)[0]
     assert re.search(r"ignored while Copilot", header), "claude-review.yml's header must say the label is ignored while Copilot can review"
     assert re.search(r"never (gets|reviews)|only where Copilot can't|no exception", header, re.IGNORECASE)
+
+
+# ── Acceptance criterion 2 (mpaulosky/dotfiles#384): Copilot is the exact bot, as in PR Auto-Merge ──
+# On a public repo anyone can register a login such as copilot-x. A review, a requested reviewer or a quota note from
+# an account whose login merely contains "copilot" is not Copilot's.
+
+IMPOSTORS = ["copilot-x", "not-copilot-pull-request-reviewer[bot]", "copilot-pull-request-reviewer", "myCopilot", "COPILOT-PULL-REQUEST-REVIEWER[BOT]"]
+
+
+@pytest.mark.parametrize("login", IMPOSTORS)
+def test_a_review_of_the_head_by_a_login_containing_copilot_is_not_copilots_review(tmp_path, login):
+    # With a settled ask, an impostor's COMMENT review must not make the step answer "Copilot has reviewed the head".
+    can_review, out, _ = run_step(tmp_path, serve(comments=[ask_record(3600)], reviews=[copilot_review(login=login)]))
+    assert can_review == "false", out
+    assert "Copilot has reviewed the head" not in out
+
+
+def test_the_real_bots_review_of_the_head_still_means_copilot_can_review(tmp_path):
+    can_review, out, _ = run_step(tmp_path, serve(comments=[ask_record(3600)], reviews=[copilot_review()]))
+    assert can_review == "true"
+    assert "Copilot has reviewed the head" in out
+
+
+def test_an_impostors_review_of_the_head_does_not_stall_a_pr_with_no_ask(tmp_path):
+    # No ask at all: the answer is "Copilot hasn't been asked", and the impostor's review is not what says so.
+    can_review, out, _ = run_step(tmp_path, serve(reviews=[copilot_review(login="copilot-x")]))
+    assert can_review == "true"
+    assert "Copilot has reviewed the head" not in out
+
+
+@pytest.mark.parametrize("login", IMPOSTORS)
+def test_a_requested_reviewer_whose_login_contains_copilot_is_not_a_copilot_request(tmp_path, login):
+    can_review, out, _ = run_step(tmp_path, serve(comments=[ask_record(3600)], pending=[login]))
+    assert can_review == "false", out
+    assert "review is requested" not in out
+
+
+def test_a_team_named_copilot_is_not_a_copilot_request(tmp_path):
+    can_review, out, _ = run_step(tmp_path, serve(comments=[ask_record(3600)], teams=["copilot"]))
+    assert can_review == "false", out
+    assert "review is requested" not in out
+
+
+@pytest.mark.parametrize("login", ["Copilot", "copilot-pull-request-reviewer[bot]"])
+def test_the_bots_own_logins_as_a_requested_reviewer_are_copilots_request(tmp_path, login):
+    can_review, out, _ = run_step(tmp_path, serve(comments=[ask_record(3600)], pending=[login]))
+    assert can_review == "true"
+    assert "review is requested" in out
+
+
+def test_an_impostor_among_other_pending_reviewers_does_not_hide_the_real_request(tmp_path):
+    assert run_step(tmp_path, serve(comments=[ask_record(3600)], pending=["copilot-x", "Copilot"]))[0] == "true"
+
+
+@pytest.mark.parametrize("login", IMPOSTORS)
+def test_an_impostors_quota_note_on_the_head_is_not_copilots_answer(tmp_path, login):
+    # No ask: the impostor's "Copilot was unable to review" note must not call in a paid review the merge gate doesn't count.
+    can_review, out, _ = run_step(tmp_path, serve(reviews=[copilot_review(HEAD, QUOTA_NOTE, login=login)]))
+    assert can_review == "true", out
+    assert "quota note" not in out
+
+
+@pytest.mark.parametrize("login", IMPOSTORS)
+def test_an_impostors_quota_note_on_the_event_head_is_not_copilots_answer_after_the_pr_moved_on(tmp_path, login):
+    can_review, out, _ = run_step(tmp_path, serve(current=OTHER, reviews=[copilot_review(HEAD, QUOTA_NOTE, login=login)]))
+    assert can_review == "true", out
+    assert "quota note" not in out
+
+
+def test_an_impostors_quota_note_does_not_stand_in_for_a_settled_ask_either(tmp_path):
+    # With a settled ask the answer is the ask's, never "answered with its quota note".
+    can_review, out, _ = run_step(tmp_path, serve(comments=[ask_record(3600)], reviews=[copilot_review(HEAD, QUOTA_NOTE, login="copilot-x")]))
+    assert can_review == "false"
+    assert "quota note" not in out
+    assert "no review request is pending" in out
+
+
+def test_the_real_bots_quota_note_still_means_copilot_cant_review(tmp_path):
+    can_review, out, _ = run_step(tmp_path, serve(reviews=[quota_note()]))
+    assert can_review == "false"
+    assert "quota note" in out
+
+
+def test_the_step_names_the_exact_bot_login_and_no_longer_matches_copilot_loosely():
+    script = copilot_gate_step()
+    assert "copilot-pull-request-reviewer[bot]" in script
+    assert not re.search(r're\.compile\(\s*["\']copilot["\']', script, re.IGNORECASE), "the step still matches any login containing 'copilot'"
+
+
+# ── Acceptance criterion 3 (mpaulosky/dotfiles#384): the ask record on a re-Apply PR ──
+
+def test_the_header_says_reapply_sh_posts_the_ask_record_on_the_first_pr_and_that_copilot_is_the_exact_bot():
+    header = WORKFLOW.read_text().split('\n"on":', 1)[0]
+    assert "`reapply.sh` posts the ask record" in header, "the header must say who posts the ask record on a repo's first (re-Apply) PR"
+    assert "copilot-pull-request-reviewer[bot]" in header, "the header must name the exact bot Copilot is matched as"
+    assert re.search(r"base[' ]*(branch's|'s)? ?(workflow|PR Auto-Merge)|previous PR Auto-Merge|old PR Auto-Merge", header), \
+        "the header must say why: a PR runs its base's workflows, so the first PR has the previous PR Auto-Merge"

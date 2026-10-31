@@ -31,7 +31,17 @@
 #      started, and a Claude review costs money. land.sh asks Copilot again
 #      and adds the label once the head's checks are green and Copilot can't
 #      review it (its quota note, or a request that didn't register); the
-#      warning prints its command.
+#      warning prints its command. Copilot is the exact bot (a request by
+#      "Copilot", a review by copilot-pull-request-reviewer[bot]), never a login
+#      that merely contains "copilot". A request that didn't register also gets
+#      the ask record, a PR comment from the owner's gh login, unless the PR
+#      already has one (by github-actions or the owner): a PR runs its base
+#      branch's workflows, and a repo's first re-Apply PR has the previous PR
+#      Auto-Merge, which never posts it, so without the record Claude Review
+#      would skip the PR for ever while it takes review:claude for "Copilot
+#      hasn't been asked yet" (mpaulosky/dotfiles#384). A request that
+#      registers needs none, and a re-run finds the record, so it is posted once.
+#      A failed post only warns, and a comment list it can't read counts as no record.
 #
 # The head it prints and writes into the description comes from the local
 # branch after the push, never from the API, which lags behind a push: name
@@ -44,9 +54,13 @@ commit_subject="chore: Apply repo-ci-baseline Template"
 co_author="Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 pr_title="chore: Re-apply the repo-ci-baseline Template"
 footer="🤖 Generated with [Claude Code](https://claude.com/claude-code)"
-# "<n> <url>": n counts Copilot's review requests and its reviews of the head.
+# PR Auto-Merge's COPILOT_ASKED_MARKER and landing.py's COPILOT_ASKED_COMMENT, word for word (a test holds them equal).
+asked_marker="<!-- pr-automerge:copilot-asked -->"
+asked_comment="Copilot's review was requested for this PR. It is asked once per PR; if GitHub drops the request, review:claude calls in Claude instead. mpaulosky/dotfiles#360"$'\n\n'"$asked_marker"
+# "<n> <url>": n counts Copilot's review requests and its reviews of the head. Copilot is the exact
+# bot: the Bot user "Copilot" or copilot-pull-request-reviewer, with or without gh's [bot] suffix.
 # shellcheck disable=SC2016 # jq, not shell, expands $h
-copilot_jq='.headRefOid as $h | "\([(.reviewRequests[] | .login // .name // ""), (.reviews[] | select(.commit.oid == $h) | .author.login)] | map(select(test("copilot"; "i"))) | length) \(.url)"'
+copilot_jq='.headRefOid as $h | "\([(.reviewRequests[] | .login // .name // ""), (.reviews[] | select(.commit.oid == $h) | .author.login)] | map(select(test("^(Copilot|copilot-pull-request-reviewer)(\\[bot\\])?$"))) | length) \(.url)"'
 
 usage() {
   echo "usage: reapply.sh --brings <owner/repo#n,#n,...> <repo>" >&2
@@ -258,11 +272,27 @@ if [[ "${copilot:-0}" -gt 0 ]]; then
   exit 0
 fi
 # Not review:claude: CI has only just started on this head, a Claude review
-# costs money. land.sh asks Copilot once for the PR (a record comment, then the
-# request) and adds the label once the head's checks are green if that request
-# didn't register.
+# costs money. land.sh adds the label once the head's checks are green if that
+# request didn't register.
 ref="${url#https://github.com/}"
-ref="${ref%/pull/*}#$pr"
+repo_path="${ref%/pull/*}"
+ref="$repo_path#$pr"
+# The request didn't register, so the PR needs the ask record, or Claude Review
+# ignores review:claude (mpaulosky/dotfiles#384). The base's PR Auto-Merge may be
+# the previous one, which never posts it. Only a record by github-actions or the
+# owner counts, as in claude-review.yml; an unreadable list counts as none, since
+# a second record is harmless and a missing one stalls the PR.
+owner="${repo_path%%/*}"
+[[ "$owner" =~ ^[A-Za-z0-9-]+$ ]] || die "can't read the repository owner from '$url'"
+records_jq=".comments | map(select((.body // \"\") | contains(\"$asked_marker\")) | select((.author.login // \"\") | ascii_downcase | sub(\"\\\\[bot\\\\]$\"; \"\") | . == \"github-actions\" or . == \"${owner,,}\")) | length"
+records="$(gh_ pr view "$pr" --json comments --jq "$records_jq" 2>/dev/null || true)"
+if [[ "${records:-0}" =~ ^[0-9]+$ && "${records:-0}" -gt 0 ]]; then
+  echo "reapply.sh: the ask for Copilot's review is already recorded on #$pr" >&2
+elif post_out="$(gh_ pr comment "$pr" --body "$asked_comment" 2>&1)"; then
+  echo "reapply.sh: recorded the ask for Copilot's review on #$pr, so Claude Review can run" >&2
+else
+  echo "reapply.sh: warning: recording the ask for Copilot's review on #$pr failed: $post_out" >&2
+fi
 echo "reapply.sh: warning: Copilot's review request didn't register on #$pr (GitHub drops it once the Copilot code" \
   "review budget is used up); land.sh adds review:claude once its checks are green: land.sh $ref" >&2
 echo "reapply.sh: $repo_name PR #$pr, head $head, no reviewer yet; next: land.sh $ref"

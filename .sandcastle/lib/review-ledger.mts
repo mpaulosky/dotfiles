@@ -58,7 +58,8 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // these (and writes any Seed file the repository lacks, which is not on this
 // list and needs a review), and they're reviewed in the Template's own PRs; a
 // repository must never change them, so a review there could only raise
-// findings nobody there may fix.
+// findings nobody there may fix. A re-Apply skips the local review for them,
+// except for REVIEWED_ON_REAPPLY below.
 export const OWNED_PATHS = [
   ".github/workflows/*.yml",
   ".github/hooks/**",
@@ -87,6 +88,15 @@ export const OWNED_PATHS = [
   "scripts/watch-pr.sh",
   "scripts/tests/**",
   "docs/PROCESS.md",
+  "docs/CODE_OF_CONDUCT.md",
+  ".github/ISSUE_TEMPLATE/bug_report.md",
+  ".github/ISSUE_TEMPLATE/config.yml",
+  ".github/ISSUE_TEMPLATE/feature_request.md",
+  ".github/ci/coverage-threshold",
+  ".claude/rules/sandcastle-hand-off.md",
+  ".claude/skills/README.md",
+  ".security/README.md",
+  "LICENSE",
   ".editorconfig",
   ".gitignore",
   ".markdownlint-cli2.jsonc",
@@ -95,6 +105,31 @@ export const OWNED_PATHS = [
   "GitVersion.yml",
   "global.json",
 ] as const;
+
+// The Owned files whose content is behaviour, not text: the coverage gate
+// ci.yml enforces (any whole percentage passes it, 0 included), the rules
+// file that loads into every Claude session in the repository, and the issue
+// templates, whose front matter sets the labels and assignee of every issue
+// opened from them (a `Sandcastle` label would feed the unattended pipeline),
+// the reviewer agent, whose `tools:` front matter is what keeps reviewers
+// read-only, the two prompts that instruct the pipeline's judging roles, and
+// global.json, which sets the SDK and the msbuild-sdks a build runs.
+// The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
+// the READMEs under .security/ and .claude/skills/) are text. A re-Apply
+// overwrites them like any Owned file, but checkReview does not let a
+// re-Apply branch skip the review for them: the exemption below judges a path,
+// never the bytes, and a repository has no copy of the Template to compare with.
+export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
+  ".github/ci/coverage-threshold",
+  ".claude/rules/sandcastle-hand-off.md",
+  ".github/ISSUE_TEMPLATE/bug_report.md",
+  ".github/ISSUE_TEMPLATE/config.yml",
+  ".github/ISSUE_TEMPLATE/feature_request.md",
+  ".claude/agents/pre-push-reviewer.md",
+  ".sandcastle/critique-prompt.md",
+  ".sandcastle/intake-prompt.md",
+  "global.json",
+]);
 
 // The files under an Owned pattern that the Template doesn't supply: its Seed
 // repo-config.mts, and the files the repository lists in repo-config.mts's
@@ -720,7 +755,7 @@ export type ReviewCheck = { ok: boolean; message: string };
 // The gate's review check: HEAD's diff has a recorded review with no open
 // Critical or Warning finding. Three things pass without one: `GATE_SKIP_REVIEW=1` (that value
 // only), a branch with no changes against the base, and a Baseline re-Apply
-// on REAPPLY_BRANCH that changes only Owned files.
+// on REAPPLY_BRANCH that changes only Owned files, REVIEWED_ON_REAPPLY apart.
 export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = process.env): ReviewCheck {
   if (env[SKIP_REVIEW_ENV] === "1") {
     return { ok: true, message: `Review check skipped (${SKIP_REVIEW_ENV}=1).` };
@@ -728,6 +763,7 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
   const head = headCommit(cwd);
   const key = diffKey(cwd, base, head);
   if (key === EMPTY_DIFF_KEY) return { ok: true, message: "No changes against origin/main to review." };
+  let withheld: string[] = [];
   if (git(cwd, "branch", "--show-current") === REAPPLY_BRANCH) {
     // The key's own pins: no renames (a file moved into an Owned folder is
     // still a change elsewhere), no ignored submodules, no relative paths, and
@@ -745,7 +781,8 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
       changes.push({ status, mode, path: raw[index + 1]! });
     }
     const writtenByApply = (change: { status: string; mode: string; path: string }) =>
-      (change.status === "A" || change.status === "M") && (change.mode === "100644" || change.mode === "100755") && isOwnedPath(change.path);
+      (change.status === "A" || change.status === "M") && (change.mode === "100644" || change.mode === "100755") && isOwnedPath(change.path) && !REVIEWED_ON_REAPPLY.has(change.path);
+    withheld = changes.filter((change) => REVIEWED_ON_REAPPLY.has(change.path)).map((change) => change.path);
     if (changes.length > 0 && changes.every(writtenByApply)) {
       return { ok: true, message: "A Baseline re-Apply that changes only Owned files: the Template's own review covers them." };
     }
@@ -758,7 +795,8 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
     };
   }
   if (ledger === undefined || !isReviewedCode(cwd, ledger.head, base, head)) {
-    return { ok: false, message: "No review is recorded for this diff. Run /pre-push-review, which reviews, fixes and records it." };
+    const why = withheld.length > 0 ? ` A re-Apply skips the review only for Owned files that carry no behaviour; it is withheld for: ${withheld.join(", ")}.` : "";
+    return { ok: false, message: `No review is recorded for this diff. Run /pre-push-review, which reviews, fixes and records it.${why}` };
   }
   const blocking = ledger.findings.filter(isBlocking);
   if (blocking.length > 0) {

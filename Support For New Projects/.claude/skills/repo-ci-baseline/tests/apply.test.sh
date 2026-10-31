@@ -53,11 +53,12 @@ printf 'other\n' > "$skill/template/owned/.claude/skills/other/SKILL.md"
 # The Sandcastle workflow and the Seed skills list it reads are part of the Sandcastle section too.
 printf 'name: Sandcastle\n' > "$skill/template/owned/.github/workflows/sandcastle.yml"
 printf '# skills\n' > "$skill/template/seed/.github/ci/sandcastle-skills.txt"
-# The session guidance for handing a pull request off to Sandcastle (a Seed rules file, so a repo can keep or change it).
-printf '# Hand a pull request off to Sandcastle\n' > "$skill/template/seed/.claude/rules/sandcastle-hand-off.md"
-# The security record's README: a Seed file in every repo, whose entries and edits a re-Apply leaves alone.
-mkdir -p "$skill/template/seed/.security"
-printf '# The security record\n' > "$skill/template/seed/.security/README.md"
+# The session guidance for handing a pull request off to Sandcastle (an Owned rules file, in the Sandcastle section).
+mkdir -p "$skill/template/owned/.claude/rules"
+printf '# Hand a pull request off to Sandcastle\n' > "$skill/template/owned/.claude/rules/sandcastle-hand-off.md"
+# The security record's README: Owned in every repo, while its entries are left alone by a re-Apply.
+mkdir -p "$skill/template/owned/.security"
+printf '# The security record\n' > "$skill/template/owned/.security/README.md"
 apply="$skill/apply.sh"
 
 # Hooks off: a global init.templateDir can install hooks (such as a
@@ -222,7 +223,7 @@ check "sandcastle, .sandcastle/ present: the hand-off guidance is written" '[[ -
 check "sandcastle, .sandcastle/ present: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
 check "sandcastle, .sandcastle/ present: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 
-# The hand-off guidance is a Seed file: a repo that changed it keeps its version, and the report says it was skipped.
+# The hand-off guidance is an Owned file: a repo's own version is overwritten, and the report says it changed.
 repo="$work/sandcastle own hand-off guidance"
 new_repo "$repo"
 mkdir -p "$repo/.sandcastle" "$repo/.claude/rules"
@@ -231,8 +232,8 @@ printf '# our own hand-off rule\n' > "$repo/.claude/rules/sandcastle-hand-off.md
 commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
 out="$("$apply" "$repo")"
-check "sandcastle, own hand-off guidance: kept" 'grep -qx "# our own hand-off rule" "$repo/.claude/rules/sandcastle-hand-off.md"'
-check "sandcastle, own hand-off guidance: reported as a kept Seed file" 'grep -A3 "Seed files skipped" <<< "$out" | grep -q "sandcastle-hand-off.md"'
+check "sandcastle, own hand-off guidance: overwritten" 'grep -qx "# Hand a pull request off to Sandcastle" "$repo/.claude/rules/sandcastle-hand-off.md"'
+check "sandcastle, own hand-off guidance: reported as a changed Owned file" 'grep -q "sandcastle-hand-off.md" <<< "$out" && ! grep -A3 "Seed files skipped" <<< "$out" | grep -q "sandcastle-hand-off.md"'
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never
 # rewritten): a repo whose copy lacks them gets the rest of the Sandcastle files, not the four that import it.
@@ -303,7 +304,7 @@ out="$("$apply" --dry-run "$repo")"
 check "sandcastle, dry run without a remote: {{REPO}} in a Sandcastle Seed file is unfilled" \
   'grep -A3 "unfilled placeholders" <<< "$out" | grep -q ".sandcastle/roles/architect.md"'
 
-# ── The security record: README from the Seed once, entries and edits left alone ───
+# ── The security record: README is Owned, entries left alone ───
 repo="$work/security record"
 new_repo "$repo"
 touch "$repo/Widget.slnx"
@@ -311,21 +312,19 @@ printf '.security/*\n!.security/README.md\n' > "$repo/.gitignore"
 commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
 "$apply" "$repo" >/dev/null
-check "security record: the README is written from the Seed" 'grep -qx "# The security record" "$repo/.security/README.md"'
+check "security record: the README is written from the Template" 'grep -qx "# The security record" "$repo/.security/README.md"'
 printf 'Our own note.\n' >> "$repo/.security/README.md"
 printf '# 0001: An entry\n\n- Status: fixed\n' > "$repo/.security/0001-an-entry.md"
 commit_all "$repo" "apply"
-before="$(cat "$repo/.security/README.md" "$repo/.security/0001-an-entry.md")"
 dry="$("$apply" --dry-run "$repo")"
-check "security record: dry run lists no .security file as overwritten or added" \
-  '! awk "/^Owned files that would be (added|overwritten)/ {on = 1; next} /^\$/ {on = 0} on" <<< "$dry" | grep -q "\.security/"'
-check "security record: dry run lists the README as a Seed file skipped" \
-  'grep -A5 "Seed files skipped" <<< "$dry" | grep -q "\.security/README.md"'
+check "security record: dry run lists no .security entry as overwritten or added" \
+  '! awk "/^Owned files that would be (added|overwritten)/ {on = 1; next} /^\$/ {on = 0} on" <<< "$dry" | grep -q "\.security/0001"'
+check "security record: dry run lists the edited README as an Owned file it would overwrite" \
+  'awk "/^Owned files that would be overwritten/ {on = 1; next} /^\$/ {on = 0} on" <<< "$dry" | grep -q "\.security/README.md"'
 check "security record: dry run lists the entry nowhere" '! grep -q "0001-an-entry" <<< "$dry"'
 "$apply" "$repo" >/dev/null
-check "security record: a re-Apply leaves the README's edits and the entry alone" \
-  '[[ "$(cat "$repo/.security/README.md" "$repo/.security/0001-an-entry.md")" == "$before" ]]'
-check "security record: a re-Apply leaves the worktree clean, the entry ignored" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
+check "security record: a re-Apply restores the README" 'grep -qx "# The security record" "$repo/.security/README.md" && ! grep -q "Our own note" "$repo/.security/README.md"'
+check "security record: a re-Apply leaves the entry alone" '[[ "$(cat "$repo/.security/0001-an-entry.md")" == "$(printf "# 0001: An entry\n\n- Status: fixed")" ]]'
 
 echo "apply.test.sh: $pass passed, $failed failed"
 [[ $failed -eq 0 ]]

@@ -143,6 +143,7 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".claude/skills/hardening-review/references/triage.md",
   ".claude/skills/hardening-review/scripts/known_open.py",
   ".claude/skills/hardening-review/scripts/mutate.py",
+  ".security/README.md",
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
   ".sandcastle/.markdownlint-cli2.jsonc",

@@ -34,7 +34,7 @@ A fix made only in a repo is reverted by its next Apply.
 | Release labels | `semver:minor` and `semver:major` exist, because `release.yml` reads them | [release-pipeline.md](references/release-pipeline.md) |
 | Review before the push | In a repo with Sandcastle, `/pre-push-review` reviews the branch's whole diff locally, grades each finding, fixes the real ones and records a ledger; `scripts/gate.sh` refuses a push without a clean one, so GitHub's reviewers are a backstop; `/hardening-review` repeats it as full passes, with each reviewer's example input run, a mutation check on every batch of fixes and a stop when a pass finds nothing new, for a large or risky branch | [pre-push-review.md](references/pre-push-review.md) |
 | Copilot review instructions | A repo with a code-review skill generates `.github/copilot-instructions.md` from it, and the gate and CI fail when it drifts; a repo without the skill passes | [copilot-review-sync.md](references/copilot-review-sync.md) |
-| Sandcastle | Repos that run Sandcastle share its code, prompts, workflow and guardrails (Owned) and start from the same per-repo values and session guidance for handing a PR off (Seed); Apply adds them only to a repo with a `.sandcastle/` folder or no commits | [sandcastle.md](references/sandcastle.md) |
+| Sandcastle | Repos that run Sandcastle share its code, prompts, workflow, guardrails and the session guidance for handing a PR off (Owned) and start from the same per-repo values (Seed); Apply adds them only to a repo with a `.sandcastle/` folder or no commits | [sandcastle.md](references/sandcastle.md) |
 | PR watcher | `scripts/watch-pr.sh <pr>` polls one PR read-only and exits with the reason the session that opened it must act (merged, conflict, a failed check, a thread, a person's words), skipping what the session and Sandcastle post by their markers | [watch-pr.md](references/watch-pr.md) |
 | GitHub settings | One standard for merge settings, the `main-rules` ruleset and required checks, labels, Actions and security, checked and applied by `github-settings.sh` | [github-settings.md](references/github-settings.md) |
 
@@ -85,7 +85,8 @@ Order across repos: `github/repos.txt`'s, the one list of the repos (retiring on
      Start with `--dry-run`. It ends with the `land.sh` command for the PRs it left open.
    - **One repo:** `reapply.sh --brings mpaulosky/dotfiles#<n>,#<n> <repo>` (what `rollout.sh` runs, and the way to retry a repo that failed)
      prepares the `chore/reapply-baseline` worktree, merges the remote branch and `main`, commits `apply.sh`'s output alone,
-     pushes through the gate, opens the re-Apply PR ready (or adds the commit to the open one) and requests Copilot;
+     pushes through the gate (which asks for a review when Apply writes the coverage threshold,
+     the hand-off rules, an issue template, the reviewer agent, a judging-role prompt or global.json), opens the re-Apply PR ready (or adds the commit to the open one) and requests Copilot;
      it records Copilot's ask on the PR when the request doesn't register, so Claude Review runs (a first re-Apply PR has the old PR Auto-Merge).
      Its header comment has the details; name the head it prints in thread replies.
    - **Land:** `land.sh <owner/repo#n>...` watches the PRs and acts on the landing decision until each PR and its release-blog PR land

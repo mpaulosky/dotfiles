@@ -43,11 +43,11 @@ _Avoid_: Orphan, stale file
 
 **Security record**:
 The review's local, git-ignored `.security/` folder in the main checkout: one file per security finding, written by `scripts/review.sh record`
-and read by both reviews by id, lens and path only. Its README is a Seed file; its entries are never published.
+and read by both reviews by id, lens and path only. Its README is an Owned file; its entries are never published.
 _Avoid_: Security log, findings database
 
 **Sandcastle section**:
-The Template's files for a repo that runs Sandcastle: `.sandcastle/`, its workflow and Seed skills list, the Seed session guidance
+The Template's files for a repo that runs Sandcastle: `.sandcastle/`, its workflow and Seed skills list, the session guidance
 `.claude/rules/sandcastle-hand-off.md`, and the local review's skills, agent and `scripts/review.sh`.
 Apply adds them only to a repo that has a `.sandcastle/` folder or no commits yet.
 The files, and the model for handing a PR off, are in [references/sandcastle.md](references/sandcastle.md#hand-off-prs).

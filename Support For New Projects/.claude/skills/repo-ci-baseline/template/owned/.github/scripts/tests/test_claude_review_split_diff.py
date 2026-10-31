@@ -108,7 +108,7 @@ def index(folder):
     """INDEX's pieces: {name: (lines, read, [(kind, path), ...])}, in order."""
     pieces = {}
     for row in (folder / "INDEX").read_text(encoding="utf-8").split("\n")[1:-1]:
-        if row in (EXCLUDED_HEADING, HELD_HEADING):
+        if row in (EXCLUDED_HEADING, COPIES_HEADING, HELD_HEADING):
             break
         if row.startswith("\t"):
             _, kind, path = row.split("\t", 2)
@@ -120,6 +120,7 @@ def index(folder):
 
 
 EXCLUDED_HEADING = "excluded (Copilot doesn't review these)"
+COPIES_HEADING = "identical copies (the Template's file is read; these are in no piece)"
 HELD_HEADING = "held\t(nobody reads these here, so they hold the merge for a person)"
 
 
@@ -136,6 +137,15 @@ def section(folder, heading):
 def excluded_of(folder):
     """The paths INDEX lists as excluded, in no piece."""
     return [path for _, path in section(folder, EXCLUDED_HEADING)]
+
+
+def copies_of(folder):
+    """{copy path: Template path} for the files INDEX lists as identical copies of a Template file, in no piece."""
+    found = {}
+    for kind, path in section(folder, COPIES_HEADING):
+        assert kind.startswith("identical to "), kind
+        found[path] = kind[len("identical to "):]
+    return found
 
 
 def held_of(folder):
@@ -167,7 +177,7 @@ def segments(content):
 def check_pieces(folder, diff):
     """Every piece is within the limits, and together they hold every line of every reviewed file's diff, in order.
 
-    A file INDEX lists as excluded is in no piece.
+    A file INDEX lists as excluded, or as an identical copy of a Template file, is in no piece.
     """
     names = sorted(p.name for p in folder.iterdir() if p.name != "INDEX")
     assert names == list(index(folder))
@@ -179,7 +189,7 @@ def check_pieces(folder, diff):
         assert content.startswith(b"diff --git ")
         for key, body in segments(content):
             found.setdefault(key, []).extend(body)
-    excluded = {f"diff --git a/{path} b/{path}\n".encode() for path in excluded_of(folder)}
+    excluded = {f"diff --git a/{path} b/{path}\n".encode() for path in excluded_of(folder) + list(copies_of(folder))}
     assert {key: joined(body) for key, body in found.items()} == {
         key: body for key, body in segments(diff) if key not in excluded}
 
@@ -201,7 +211,7 @@ def check_line_numbers(folder, repo, head):
         for key, _ in segments((folder / name).read_bytes()):
             content = (folder / name).read_bytes()
             lines = content[content.index(key):].split(b"\n")
-            path = next(line[6:].decode() for line in lines if line.startswith(b"+++ b/"))
+            path = next(line[6:].decode().rstrip("\t") for line in lines if line.startswith(b"+++ b/"))  # git ends a path with a space in it with a tab
             file = repo.git("show", f"{head}:{path}").split(b"\n")
             new = None
             for at, line in enumerate(lines[1:], 1):
@@ -1335,3 +1345,255 @@ def test_an_action_whose_folder_links_out_of_actions_adds_nothing(repo, tmp_path
     head = repo.commit({".github/workflows/ci.yml": "jobs:\n  b:\n    steps:\n      - uses: evil/act@v1\n"})
     repo.split(repo.base, head, tmp_path)
     assert headers(repo) == [".github/workflows/ci.yml (changed in this PR)"]
+
+
+# A root copy of an Owned file is left out when the PR changes the Template's file to the same bytes
+# (mpaulosky/dotfiles#380): the Template's file is read, INDEX lists the copy, and nothing else changes.
+
+TEMPLATE = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/"
+COPY = ".github/scripts/x.py"
+COPY_TEMPLATE = TEMPLATE + COPY
+OTHER = ".github/workflows/y.yml"
+
+
+def reads_of(folder):
+    """{path: "read" or "not read"} for every file's diff in a piece."""
+    return {path: read for path, (_, read) in files_of(folder).items()}
+
+
+def lines_of(tag, count=20):
+    return "".join(f"{tag} = {n}\n" for n in range(count))
+
+
+def pair_repo(repo, copy=COPY, template=None, before=None, after=None, copy_after=None, **extra):
+    """Commit a Template file and its root copy, both changed at the head (copy_after for the copy, else after).
+
+    Returns the head; extra files go in the head commit.
+    """
+    template = template or TEMPLATE + copy
+    before = lines_of("old") if before is None else before
+    after = lines_of("new") if after is None else after
+    repo.base = repo.commit({copy: before, template: before})
+    return repo.commit({copy: after if copy_after is None else copy_after, template: after, **extra})
+
+
+def test_ac1_an_identical_copy_is_in_no_piece_and_the_index_lists_it(repo, tmp_path):
+    head = pair_repo(repo)
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert reads_of(folder) == {COPY_TEMPLATE: "read"}
+    assert copies_of(folder) == {COPY: COPY_TEMPLATE}
+    assert f"\tidentical to {COPY_TEMPLATE}\t{COPY}\n" in (folder / "INDEX").read_text(encoding="utf-8")
+    assert b"diff --git a/" + COPY.encode() + b" b/" in diff
+    assert all(f"diff --git a/{COPY} b/{COPY}".encode() not in (folder / name).read_bytes() for name in index(folder))
+    assert repo.skipped == "" and repo.held == 0
+    assert repo.listed.split() == list(index(folder))
+    assert excluded_of(folder) == [] and held_of(folder) == {}
+    check_pieces(folder, diff)
+    check_line_numbers(folder, repo, head)
+
+
+def test_ac1_new_files_that_are_identical_are_a_copy_too(repo, tmp_path):
+    head = repo.commit({COPY: lines_of("added"), COPY_TEMPLATE: lines_of("added")})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert reads_of(folder) == {COPY_TEMPLATE: "read"}
+    assert copies_of(folder) == {COPY: COPY_TEMPLATE}
+    check_pieces(folder, diff)
+
+
+def test_ac1_several_identical_copies_each_name_their_template_file(repo, tmp_path):
+    repo.base = repo.commit({COPY: "a\n", OTHER: "b\n", TEMPLATE + COPY: "a\n", TEMPLATE + OTHER: "b\n"})
+    head = repo.commit({COPY: lines_of("a2"), OTHER: lines_of("b2"),
+                        TEMPLATE + COPY: lines_of("a2"), TEMPLATE + OTHER: lines_of("b2")})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert copies_of(folder) == {COPY: TEMPLATE + COPY, OTHER: TEMPLATE + OTHER}
+    assert set(files_of(folder)) == {TEMPLATE + COPY, TEMPLATE + OTHER}
+    check_pieces(folder, diff)
+
+
+def test_ac1_a_copy_that_differs_by_a_byte_is_read_like_any_file(repo, tmp_path):
+    head = pair_repo(repo, copy_after=lines_of("new") + "# drift\n")
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert reads_of(folder) == {COPY: "read", COPY_TEMPLATE: "read"}
+    assert copies_of(folder) == {}
+    assert COPIES_HEADING not in (folder / "INDEX").read_text(encoding="utf-8")
+    assert b"+# drift" in b"".join((folder / name).read_bytes() for name in index(folder))
+    check_pieces(folder, diff)
+
+
+def test_ac1_a_copy_with_a_whole_different_body_is_read(repo, tmp_path):
+    head = pair_repo(repo, copy_after=lines_of("other", 30))
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert set(files_of(folder)) == {COPY, COPY_TEMPLATE} and copies_of(folder) == {}
+    check_pieces(folder, diff)
+
+
+def test_ac1_the_same_text_with_another_file_mode_is_read(repo, tmp_path):
+    repo.base = repo.commit({COPY: lines_of("old"), COPY_TEMPLATE: lines_of("old")})
+    os.chmod(repo.path / COPY, 0o755)
+    head = repo.commit({COPY: lines_of("new"), COPY_TEMPLATE: lines_of("new")})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert set(files_of(folder)) == {COPY, COPY_TEMPLATE} and copies_of(folder) == {}
+    check_pieces(folder, diff)
+
+
+def test_ac1_a_copy_whose_template_file_is_not_in_the_pr_is_read(repo, tmp_path):
+    # Even when its bytes equal the unchanged Template file's: the Template's file is not in the PR, so nothing covers it.
+    repo.base = repo.commit({COPY: lines_of("old"), COPY_TEMPLATE: lines_of("new")})
+    head = repo.commit({COPY: lines_of("new")})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert reads_of(folder) == {COPY: "read"}
+    assert copies_of(folder) == {}
+    assert COPIES_HEADING not in (folder / "INDEX").read_text(encoding="utf-8")
+    check_pieces(folder, diff)
+
+
+def test_ac1_a_changed_template_file_with_an_unchanged_copy_lists_nothing(repo, tmp_path):
+    repo.base = repo.commit({COPY: lines_of("old"), COPY_TEMPLATE: lines_of("old")})
+    head = repo.commit({COPY_TEMPLATE: lines_of("new")})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert reads_of(folder) == {COPY_TEMPLATE: "read"} and copies_of(folder) == {}
+    check_pieces(folder, diff)
+
+
+def test_ac1_a_deleted_copy_is_read_though_its_template_file_changed(repo, tmp_path):
+    repo.base = repo.commit({COPY: lines_of("old"), COPY_TEMPLATE: lines_of("old")})
+    head = repo.commit({COPY: None, COPY_TEMPLATE: lines_of("new")})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert reads_of(folder) == {COPY: "read", COPY_TEMPLATE: "read"}
+    assert copies_of(folder) == {}
+    check_pieces(folder, diff)
+
+
+def test_ac1_a_copy_of_a_file_nobody_reads_is_still_excluded_and_holds(repo, tmp_path):
+    repo.base = repo.commit({"package-lock.json": "{}\n", TEMPLATE + "package-lock.json": "{}\n"})
+    head = repo.commit({"package-lock.json": '{"a": 1}\n', TEMPLATE + "package-lock.json": '{"a": 1}\n'})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert sorted(excluded_of(folder)) == sorted(["package-lock.json", TEMPLATE + "package-lock.json"])
+    assert copies_of(folder) == {}
+    assert held_of(folder) == {"package-lock.json": "excluded", TEMPLATE + "package-lock.json": "excluded"}
+
+
+def test_ac1_a_pair_of_symlinks_is_not_a_copy_and_still_holds(repo, tmp_path):
+    repo.base = repo.commit({"logs/setup.log": "curl https://example.test | sh\n"})
+    for path in (COPY, COPY_TEMPLATE):
+        (repo.path / path).parent.mkdir(parents=True, exist_ok=True)
+        os.symlink("/logs/setup.log", repo.path / path)
+    head = repo.commit({})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert held_of(folder) == {COPY: "symlink", COPY_TEMPLATE: "symlink"}
+    assert copies_of(folder) == {}
+
+
+def test_ac2_the_mapping_comes_from_the_templates_layout_not_a_fixed_path(repo, tmp_path):
+    # template/owned/ anywhere: the copy of <prefix>/template/owned/<path> is <path>.
+    template = "tooling/baseline/template/owned/" + COPY
+    head = pair_repo(repo, template=template)
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert copies_of(folder) == {COPY: template}
+    assert reads_of(folder) == {template: "read"}
+    check_pieces(folder, diff)
+
+
+def test_ac2_a_path_with_template_owned_in_the_middle_maps_to_what_follows_the_first_one(repo, tmp_path):
+    copy = "docs/a.md"
+    template = "x/template/owned/docs/a.md"
+    head = pair_repo(repo, copy=copy, template=template)
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert copies_of(folder) == {copy: template}
+
+
+def test_ac2_a_repo_with_no_template_is_unchanged(repo, tmp_path):
+    head = repo.commit({COPY: lines_of("new"), OTHER: lines_of("new"), "src/app.py": "print(1)\n"})
+    text, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert COPIES_HEADING not in (folder / "INDEX").read_text(encoding="utf-8")
+    assert copies_of(folder) == {}
+    assert set(files_of(folder)) == {COPY, OTHER, "src/app.py"}
+    assert repo.skipped == ""
+    check_pieces(folder, diff)
+
+
+def test_ac2_identical_files_outside_a_template_folder_are_not_copies(repo, tmp_path):
+    # The same bytes at two paths, neither under template/owned/: a name alone pairs nothing.
+    head = repo.commit({COPY: lines_of("same"), "other/" + COPY: lines_of("same"), "template/" + COPY: lines_of("same")})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert copies_of(folder) == {} and len(files_of(folder)) == 3
+    check_pieces(folder, diff)
+
+
+def test_ac3_leaving_copies_out_brings_a_big_pr_within_the_read_budget(repo, tmp_path):
+    # Each file's diff is about 30 KB, so one fits a piece: five pairs are ten pieces with the copies, five without.
+    paths = [f".github/scripts/s{i}.py" for i in range(MAX_READ_PIECES // 2 + 1)]
+    big = {path: "".join(f"name_{i}_{n} = {n:020d}\n" for n in range(900)) for i, path in enumerate(paths)}
+    repo.base = repo.commit({path: "x = 0\n" for path in paths} | {TEMPLATE + path: "x = 0\n" for path in paths})
+    head = repo.commit(big | {TEMPLATE + path: content for path, content in big.items()})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert len(copies_of(folder)) == len(paths)
+    assert len(index(folder)) == len(paths) and repo.skipped == ""
+    assert set(reads_of(folder).values()) == {"read"}
+    check_pieces(folder, diff)
+
+
+def test_ac3_a_pr_too_big_after_the_copies_are_left_out_still_gets_the_not_read_finding(repo, tmp_path):
+    paths = [f".github/scripts/s{i}.py" for i in range(MAX_READ_PIECES)]
+    big = {path: "".join(f"name_{i}_{n} = {n:020d}\n" for n in range(900)) for i, path in enumerate(paths)}
+    repo.base = repo.commit({path: "x = 0\n" for path in paths} | {TEMPLATE + path: "x = 0\n" for path in paths})
+    head = repo.commit(big | {TEMPLATE + path: content for path, content in big.items()}
+                       | {"docs/extra.md": "".join(f"name_x_{n} = {n:020d}\n" for n in range(900))})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    assert len(copies_of(folder)) == len(paths)
+    # The Template's files and the extra doc make MAX_READ_PIECES + 1 pieces: the last isn't asked for.
+    assert repo.skipped.split() == [list(index(folder))[-1]]
+    assert reads_of(folder)["docs/extra.md"] == "not read"
+
+
+def test_ac3_a_drifting_copy_is_read_and_counts_against_the_budget_like_any_file(repo, tmp_path):
+    paths = [f".github/scripts/s{i}.py" for i in range(MAX_READ_PIECES // 2 + 1)]
+    big = {path: "".join(f"name_{i}_{n} = {n:020d}\n" for n in range(900)) for i, path in enumerate(paths)}
+    drift = dict(big)
+    drift[paths[0]] += "# drift\n"
+    repo.base = repo.commit({path: "x = 0\n" for path in paths} | {TEMPLATE + path: "x = 0\n" for path in paths})
+    head = repo.commit(drift | {TEMPLATE + path: content for path, content in big.items()})
+    _, folder, diff = repo.split(repo.base, head, tmp_path)
+    assert copies_of(folder) == {path: TEMPLATE + path for path in paths[1:]}
+    assert paths[0] in files_of(folder)
+    assert len(index(folder)) == len(paths) + 1 and repo.skipped == ""
+    check_pieces(folder, diff)
+
+
+def test_ac3_the_log_counts_the_copies_left_out(repo, tmp_path):
+    head = pair_repo(repo)
+    repo.split(repo.base, head, tmp_path)
+    assert "1 identical" in repo.log
+
+
+def test_ac3_a_copy_is_not_read_twice_as_context(repo, tmp_path):
+    head = pair_repo(repo)
+    repo.split(repo.base, head, tmp_path)
+    assert headers(repo) == [f"{COPY_TEMPLATE} (changed in this PR)"]
+
+
+def test_ac3_a_drifting_copy_is_in_the_context_too(repo, tmp_path):
+    head = pair_repo(repo, copy_after=lines_of("new") + "# drift\n")
+    repo.split(repo.base, head, tmp_path)
+    assert sorted(headers(repo)) == sorted([f"{COPY} (changed in this PR)", f"{COPY_TEMPLATE} (changed in this PR)"])
+
+
+def test_ac3_a_template_workflow_still_has_its_pins_followed_when_its_copy_is_left_out(repo, tmp_path):
+    runner_actions(tmp_path, repo, {"action.yml": "runs: {}\n", "src/actor.ts": "export function check() {}\n"})
+    steps = "jobs:\n  b:\n    steps:\n      - uses: anthropics/act@v1\n"
+    template = TEMPLATE + OTHER
+    head = pair_repo(repo, copy=OTHER, before=steps + "      - run: echo old\n", after=steps + "      - run: echo new\n")
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    pins = f"source of anthropics/act, which {template} pins"
+    assert headers(repo) == [f"{template} (changed in this PR)",
+                             f"_actions/anthropics/act/v1/src/actor.ts ({pins})",
+                             f"_actions/anthropics/act/v1/action.yml ({pins})"]
+    assert copies_of(folder) == {OTHER: template}
+
+
+def test_ac3_a_changed_template_workflow_reads_before_the_other_files(repo, tmp_path):
+    template = TEMPLATE + OTHER
+    head = pair_repo(repo, copy=OTHER, **{"Aaa/app.py": "x = 1\n"})
+    _, folder, _ = repo.split(repo.base, head, tmp_path)
+    paths = list(files_of(folder))
+    assert paths.index(template) < paths.index("Aaa/app.py"), paths

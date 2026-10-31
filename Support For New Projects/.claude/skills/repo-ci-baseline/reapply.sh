@@ -41,7 +41,7 @@
 #      would skip the PR for ever while it takes review:claude for "Copilot
 #      hasn't been asked yet" (mpaulosky/dotfiles#384). A request that
 #      registers needs none, and a re-run finds the record, so it is posted once.
-#      A failed post or an unreadable comment list only warns.
+#      A failed post only warns, and a comment list it can't read counts as no record.
 #
 # The head it prints and writes into the description comes from the local
 # branch after the push, never from the API, which lags behind a push: name

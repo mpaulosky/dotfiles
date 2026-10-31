@@ -17,9 +17,9 @@ name: Claude Review
 # Auto-Merge, but a PR runs its base branch's workflows, so a repo's first
 # re-Apply PR has the previous PR Auto-Merge, which never posts it:
 # `reapply.sh` posts the ask record (from the owner's login) when its Copilot
-# request doesn't register, and land.sh then adds review:claude. The label's only job is to
-# call Claude in where Copilot is out. It runs only on request: while the PR
-# carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) in
+# request doesn't register, and land.sh then adds review:claude. The label's
+# only job is to call Claude in where Copilot is out. It runs only on request:
+# while the PR carries review:claude, which PR Auto-Merge adds (with RELEASE_PR_PAT) in
 # either case, as the repo-ci-baseline skill's land.sh (in
 # mpaulosky/dotfiles, not this repo) does, and a person can add at any time
 # (it counts where Copilot is out); a review of a head Copilot reviewed covers
@@ -178,10 +178,11 @@ jobs:
       # previous PR Auto-Merge, which never posts the ask record: on that PR
       # `reapply.sh` posts the ask record (a comment as the owner) when its Copilot
       # request doesn't register, and PR Auto-Merge posts it on every later PR.
-      # When a read fails it is unknown, which skips like true: PR Auto-Merge's gate wouldn't count a Claude review while
-      # Copilot may review, so a paid review would buy nothing, and the warning
-      # says to push or add the label again once the API works. The step carries
-      # on past an error or a timeout, which skips too.
+      # When a read fails it is unknown, which skips like true: PR Auto-Merge's
+      # gate wouldn't count a Claude review while Copilot may review, so a paid
+      # review would buy nothing, and the warning says to push or add the label
+      # again once the API works. The step carries on past an error or a timeout,
+      # which skips too.
       - name: Skip while Copilot can review
         id: copilot
         continue-on-error: true

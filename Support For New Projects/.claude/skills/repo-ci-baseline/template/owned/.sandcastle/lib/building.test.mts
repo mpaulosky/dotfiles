@@ -21,22 +21,22 @@ const labeled = (createdAt: string): TimelineLabelEvent => ({ event: "labeled", 
 const unlabeled = (createdAt: string): TimelineLabelEvent => ({ event: "unlabeled", label: BUILDING_LABEL, createdAt });
 
 describe("labelIsStale", () => {
-  const now = Date.parse("2026-10-10T12:00:00Z");
+  const now = Date.parse("2026-10-10T20:00:00Z");
 
   it("is stale once the label's most recent labeled event is more than the max age old", () => {
-    const timeline = [labeled("2026-10-10T05:00:00Z")]; // 7h before `now`
+    const timeline = [labeled("2026-10-10T05:00:00Z")]; // 15h before `now`
 
     assert.equal(labelIsStale(timeline, BUILDING_LABEL, BUILDING_LABEL_MAX_AGE_MS, now), true);
   });
 
   it("isn't stale while the label's most recent labeled event is within the max age", () => {
-    const timeline = [labeled("2026-10-10T09:00:00Z")]; // 3h before `now`
+    const timeline = [labeled("2026-10-10T09:00:00Z")]; // 11h before `now`
 
     assert.equal(labelIsStale(timeline, BUILDING_LABEL, BUILDING_LABEL_MAX_AGE_MS, now), false);
   });
 
   it("uses the label's most recent labeled event, not an earlier one", () => {
-    // Labelled a day ago, then again 2h ago: a second run picked the issue up
+    // Labelled a day ago, then again 10h ago: a second run picked the issue up
     // after the first one cleared it.
     const timeline = [labeled("2026-10-09T00:00:00Z"), unlabeled("2026-10-09T01:00:00Z"), labeled("2026-10-10T10:00:00Z")];
 
@@ -63,7 +63,7 @@ describe("clearStaleBuildingLabels", () => {
     };
   }
 
-  const now = Date.parse("2026-10-10T12:00:00Z");
+  const now = Date.parse("2026-10-10T20:00:00Z");
 
   it("removes the label from an issue whose most recent labeling is older than the max age", () => {
     const gh = github({ 42: [labeled("2026-10-10T05:00:00Z")] });
@@ -127,7 +127,7 @@ describe("clearStaleBuildingLabels", () => {
 // A hand-off pull request (lib/follow-up.mts#sweepSubject) carries the claim itself, so a crashed run can leave
 // sandcastle:building on a PR as well as on an issue.
 describe("clearStaleBuildingLabels and pull requests", () => {
-  const now = Date.parse("2026-10-10T12:00:00Z");
+  const now = Date.parse("2026-10-10T20:00:00Z");
 
   function github(issues: Record<number, TimelineLabelEvent[]>, pullRequests: Record<number, TimelineLabelEvent[]>) {
     const removedIssues: number[] = [];

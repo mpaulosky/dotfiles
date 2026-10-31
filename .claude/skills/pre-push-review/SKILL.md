@@ -291,8 +291,9 @@ happened to it, and its test or reason.
 When Critical or Warning findings are open, the push is blocked: say so, and for each one say what decision it needs and
 the suggested fix. The person either accepts it with `scripts/review.sh accept R3 "<reason>"`, or asks you to fix it:
 fix it as in step 6, then start a new run at step 1, in which the record just made is step 3's earlier review. The
-Advisory findings left open never block. Sandcastle doesn't run this review yet: its sandboxes skip the check and see an empty
-`.git/review`, and how a Sandcastle run records a review is still to be decided.
+Advisory findings left open never block. For a branch Sandcastle builds, the host runs these rounds itself (`.sandcastle/lib/host-review.mts`), with these
+reviewers, the Bar and lenses, and `prepare` and `record` run by the host in the main checkout, so no session records for it and no agent reaches `.git/review`;
+its sandboxes still skip the gate's review check and see an empty `.git/review`.
 
 File the open Advisory findings in one follow-up issue per branch. The body is the output of
 `scripts/review.sh advisory`, written to `<run>/advisory.md` as it is: it lists each open Advisory finding with its id,

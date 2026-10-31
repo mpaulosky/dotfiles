@@ -261,10 +261,12 @@ export const BUILDING_LABEL = "sandcastle:building";
 // How old a sandcastle:building label must be before startup clears it as a
 // crashed run's (see lib/building.mts#clearStaleBuildingLabels). It outlasts
 // any real build: every role's timeoutMinutes, even with two gate-fixer
-// attempts at each of the two checkpoints, adds up to well under 6 hours.
+// attempts at each of the two checkpoints, plus the host-side review's rounds
+// (REVIEW_FIX_ROUNDS fixing rounds and one that only reviews, each fixing
+// round's backend run and the gate after it), adds up to well under 12 hours.
 // config.test.mts checks that sum (see BUILD_ROLES), with an hour to spare,
 // stays below it.
-export const BUILDING_LABEL_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+export const BUILDING_LABEL_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 // Every label from the Labels table that the host, not a human, is
 // responsible for creating. `Sandcastle` is a human's to add. `bug` is

@@ -95,8 +95,9 @@ function aliases(mount: ReadOnlyMount, mounts: readonly MountSpec[]): ReadOnlyMo
 }
 
 // The environment every sandbox starts with. scripts/gate.sh refuses a diff
-// /pre-push-review hasn't passed, and Sandcastle's reviewer doesn't run that
-// review yet, so every gate in the sandbox (the host's checkpoints and the
+// /pre-push-review hasn't passed. The host runs that review's rounds itself,
+// after checkpoint 2 (lib/host-review.mts), and the ledger is hidden from the
+// sandbox, so every gate in the sandbox (the host's checkpoints and the
 // agents' own) skips the check. Set at `docker run`, not in the image, so a
 // local image built before the check existed still gets it.
 export const SANDBOX_ENV: Readonly<Record<string, string>> = { GATE_SKIP_REVIEW: "1" };

@@ -65,6 +65,13 @@ describe("reviewerPrompt", () => {
     assert.ok(prompt.includes("CLAUDE.md"));
   });
 
+  it("doesn't point the reviewer at the worktree's code-review skill, whose lens table the host already holds, and says the guidance files are the branch's own text", () => {
+    const prompt = reviewerPrompt(args());
+    assert.ok(!prompt.includes("code-review/SKILL.md"));
+    assert.match(prompt, /branch's own text/);
+    assert.match(prompt, /never override the bar, your lens's row or the severities/);
+  });
+
   it("names the worktree by absolute path, for Read, Grep and Glob", () => {
     assert.ok(reviewerPrompt(args()).includes(worktree));
   });

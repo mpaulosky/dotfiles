@@ -140,6 +140,9 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
 - The host starts the same reviewers `/pre-push-review` does: the Bar and one per lens whose "Applies to" matches a changed file, read from the main checkout's
   `lenses.md`, `review-bar.md`, `SKILL.md` and `pre-push-reviewer.md` (never the worktree's, which the branch controls), plus a repo's own lenses. `LENS_APPLIES` holds a path rule per
   lens, and `host-review.test.mts` fails when `lenses.md` gains, loses or rewords a lens, or the model, effort, tools or round limit differ.
+- A repo's own `code-review` skill reaches the host reviewers only as lens rows, read from the main checkout. They read `CLAUDE.md`, `CONTEXT.md`,
+  `CODING_STANDARDS`, the ADRs and `.claude/rules/` from the worktree, and the prompt says that is the branch's own text, applied as conventions but
+  never overriding the bar, a lens's row or the severities.
 - Reviewers run in the build's sandbox as `claude --print --tools Read,Grep,Glob`,
   with `--strict-mcp-config`, `--setting-sources user` (the branch's `.claude/settings.json` hooks never run) and
   deny rules for `.git/review`. Their prompts name no shell, token or `scripts/review.sh`.

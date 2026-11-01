@@ -62,7 +62,7 @@ export function reviewerPrompt({
     "",
     ...toRead,
     `- The earlier decisions of this review: \`${runDir}/decisions.md\`. Don't report again what it says was fixed or dismissed; report again what it marks to raise again.`,
-    "- The repository's own guidance for the files you review, where it has it (your lens's row and the bar below are already in this prompt):",
+    "- The repository's own guidance for the files you review, where it has it (the bar, and your lens's row when you have one, are already in this prompt):",
     "  `CLAUDE.md`, `CONTEXT.md`, `.claude/skills/code-review/SKILL.md`, `.sandcastle/CODING_STANDARDS.md` or `docs/CODING_STANDARDS.md`, the ADRs in `docs/adr/` the change touches,",
     "  and the `.claude/rules/` files whose paths match.",
     "",

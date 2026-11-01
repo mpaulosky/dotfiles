@@ -50,7 +50,9 @@ guardrails keep agent-written code from running on the host. A change keeps ever
 - Each sandbox mounts `.git/config` and `.git/hooks` read-only through the provider's `create()` (`lib/skills.mts`), and an empty read-only
   folder over `.git/review` (the local review's ledgers hold accepted security findings, never published), at every path a mount puts `.git`
   (`protectedGitMounts`, `withCreateMounts`), and one over the main checkout's `.security` (the local security record, never published:
-  `protectedRecordMounts`). Every sandbox also sets `GATE_SKIP_REVIEW=1` (`SANDBOX_ENV`): Sandcastle doesn't run that review yet.
+  `protectedRecordMounts`). Every sandbox also sets `GATE_SKIP_REVIEW=1` (`SANDBOX_ENV`): the host runs that review's rounds itself after checkpoint 2
+  (`lib/host-review.mts`), recording in the main checkout through `prepareRound` and `recordReview`, never by running the worktree's `scripts/review.sh`. The reviewers
+  get Read, Grep and Glob only (`restrictedClaudeCode`), and no agent's prompt names a shell on the ledger, a token or `.git/review`.
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
 - The host pushes the commit the gate passed on, after the secret scan (`lib/scan.mts`), and posts only
   `publicErrorText` on public issues.

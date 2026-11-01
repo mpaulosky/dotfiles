@@ -81,14 +81,18 @@
 //                               the scribe (when picked) documents the change,
 //                               a reviewer runs, main is merged in when the
 //                               branch doesn't contain it, and the gate runs
-//                               again (checkpoint 2). A red gate gets two gate-fixer
+//                               again (checkpoint 2). Then the host runs the pre-push
+//                               review's rounds (lib/host-review.mts); each round that
+//                               fixes something is followed by the gate again (checkpoint 3).
+//                               A red gate gets two gate-fixer
 //                               attempts per checkpoint; past that nothing is
 //                               pushed. A red checkpoint or a failed architect,
 //                               tester, backend or UI run is a failed build
 //                               attempt: the first gets a comment, the second
 //                               hands the issue back with sandcastle:needs-human
-//                               (lib/handback.mts). A failed scribe or reviewer
-//                               still publishes, with a note in the PR.
+//                               (lib/handback.mts). A failed scribe, reviewer or
+//                               local review still publishes, with a note in the PR;
+//                               a usage or time stop leaves the branch for a later round.
 //                               Otherwise the host scans the commits for the
 //                               sandbox's secrets, pushes the commit the gate
 //                               passed on from the main checkout with git hooks

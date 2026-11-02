@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { spawnSync, type execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
 import { join } from "node:path";
@@ -3384,6 +3384,32 @@ describe("createCheckedSandbox's step limits", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(wasClosed(), true);
+  });
+
+  it("checks and leaves a late sandbox whose worktree exists at the expected path, since only a gone one skips the check", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    const cwd = mkdtempSync(join(tmpdir(), "late-"));
+    try {
+      const expected = worktreePathFor(cwd, "feature");
+      mkdirSync(expected, { recursive: true });
+      t.mock.method(process, "cwd", () => cwd);
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      Object.assign(sandbox, { worktreePath: expected });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const checked: string[] = [];
+      // The check before the create passes; the one after the late answer finds the worktree redirected.
+      const check = (path: string) => (checked.push(path), checked.length === 1 ? [] : ["its .git points elsewhere"]);
+
+      await assert.rejects(createCheckedSandbox("feature", create, () => identity, check, { dockerCallMinutes: 0.001 }), StalledStepError);
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(checked, [expected, expected]);
+      assert.equal(wasClosed(), false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it("checks and leaves a late sandbox whose worktree is gone from some other path than the one the host expects", async (t) => {

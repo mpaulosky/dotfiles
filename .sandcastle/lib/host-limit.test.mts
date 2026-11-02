@@ -369,7 +369,9 @@ describe("exitAfterStall", () => {
     const { code, stderr, elapsed } = await runChild([stallDockerCall, "setTimeout(() => undefined, 30_000);", "process.exitCode = 3;", "exitAfterStall(0.3);"].join("\n"));
 
     assert.equal(code, 3, stderr);
-    assert.match(stderr, /gave up on 1 call.*creating the sandbox/);
+    assert.match(stderr, /^ {2}⚠ ending the run 0\.3s after its cleanup\. the host gave up on 1 call.*creating the sandbox/m);
+    assert.equal((stderr.match(/gave up on/g) ?? []).length, 1, stderr);
+    assert.equal((stderr.match(/⚠/g) ?? []).length, 1, stderr);
     assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
   });
 
@@ -386,6 +388,7 @@ describe("exitAfterStall", () => {
 
     assert.equal(code, 3, stderr);
     assert.match(stderr, /the sandbox exec "git fetch"/);
+    assert.equal((stderr.match(/gave up on/g) ?? []).length, 1, stderr);
     assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
   });
 
@@ -393,6 +396,8 @@ describe("exitAfterStall", () => {
     const { code, stderr, elapsed } = await runChild([stallDockerCall, "exitAfterStall(60);"].join("\n"));
 
     assert.equal(code, 0, stderr);
+    assert.match(stderr, /^ {2}⚠ the host gave up on 1 call.*creating the sandbox/m, "the exit listener didn't print the warning");
+    assert.equal((stderr.match(/gave up on/g) ?? []).length, 1, stderr);
     assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
   });
 
@@ -420,5 +425,23 @@ describe("exitAfterStall", () => {
     assert.equal(code, 1);
     assert.match(stderr, /gave up on 1 call.*creating the sandbox/);
     assert.equal((stderr.match(/gave up on/g) ?? []).length, 1, stderr);
+  });
+
+  it("removes format and line-separator characters from a failing onLate's message too", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    let resolveCall: (value: string) => void = () => undefined;
+    const call = new Promise<string>((resolve) => (resolveCall = resolve));
+
+    await assert.rejects(
+      () => withinDockerLimit("creating the sandbox", call, 0.001, () => { throw new Error("bad\u202Ething\u2028here"); }),
+      StalledStepError,
+    );
+    resolveCall("a sandbox");
+    await call;
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.match(logged.join("\n"), /handling the late answer failed: Error: bad thing here/);
+    assert.doesNotMatch(logged.join("\n"), /[\u202E\u2028]/);
   });
 });

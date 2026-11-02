@@ -511,8 +511,8 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // check and close. `stepLimits` is for tests.
 //
 // The create runs under withinDockerLimit (stepLimits.dockerCallMinutes): a create Docker never answers is a StalledStepError, and a
-// sandbox it makes too late is closed once its worktree passes the check (a worktree that is gone counts as passing; one that fails it, or
-// whose check throws, is left in place with a warning). The close after a refusal is bounded the same way.
+// sandbox it makes too late is closed once its worktree passes the check (a worktree that is gone from the path the host expects counts as
+// passing; one that fails it, whose check throws, or that is at any other path, is left in place with a warning). The close after a refusal is bounded the same way.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree

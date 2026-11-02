@@ -40,16 +40,21 @@ let warnedOfAbandonedCalls = false;
 // The warning that names the abandoned calls. The process ends without closing a sandbox that a create the host gave up on makes later,
 // and an abandoned exec or close may still hold its container, so a person looks for a leftover container and worktree.
 const abandonedCallsWarning = (): string =>
-  `  ⚠ the host gave up on ${abandonedCalls.length} call${abandonedCalls.length === 1 ? "" : "s"} that may still be pending (${abandonedCalls.join("; ")}). ` +
+  `the host gave up on ${abandonedCalls.length} call${abandonedCalls.length === 1 ? "" : "s"} that may still be pending (${abandonedCalls.join("; ")}). ` +
   "A sandbox one of them was creating is not closed once it arrives, and one still running holds its container, so look for a leftover container and worktree.";
 
-// Records a call the host gave up on. `what` is shown in the warning, with control, format and line-separator characters removed. The
-// warning is also printed when the process exits (once), so a run that crashes before exitAfterStall still names the calls.
+// Text for a log line with the characters that could change what a terminal or a CI log shows removed: control and format characters
+// (bidi overrides, zero-width ones) and the line and paragraph separators. This module may import only lib/errors.mts, so it can't use status.mts#terminalText.
+const plain = (text: string): string => text.replace(/[\p{C}\u2028\u2029]/gu, " ");
+
+// Records a call the host gave up on. `what` is shown in the warning, cleaned by `plain`. The warning is also printed when the process
+// exits (once), so a run that crashes before exitAfterStall still names the calls. The exit listener goes first, ahead of slow or fallible
+// exit work such as the building labels' release. A test process that stalls a call without calling exitAfterStall prints it when it ends.
 export function markHostCallAbandoned(what: string): void {
-  abandonedCalls.push(what.replace(/[\p{C}\u2028\u2029]/gu, " "));
+  abandonedCalls.push(plain(what));
   if (abandonedCalls.length === 1) {
-    process.once("exit", () => {
-      if (!warnedOfAbandonedCalls) console.error(abandonedCallsWarning());
+    process.prependOnceListener("exit", () => {
+      if (!warnedOfAbandonedCalls) console.error(`  ⚠ ${abandonedCallsWarning()}`);
     });
   }
 }
@@ -72,7 +77,7 @@ export function exitAfterStall(
   if (abandonedCalls.length === 0) return;
   setTimeout(() => {
     warnedOfAbandonedCalls = true;
-    log(`  ⚠ ending the run ${graceSeconds}s after its cleanup.${abandonedCallsWarning().slice(1)}`);
+    log(`  ⚠ ending the run ${graceSeconds}s after its cleanup. ${abandonedCallsWarning()}`);
     exit(Number(process.exitCode ?? 0));
   }, graceSeconds * 1000).unref();
 }
@@ -98,7 +103,7 @@ export async function withinDockerLimit<T>(
       try {
         onLate(value);
       } catch (error) {
-        console.error(`  ⚠ ${what}: handling the late answer failed: ${String(error).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")}`);
+        console.error(`  ⚠ ${what}: handling the late answer failed: ${plain(String(error))}`);
       }
     },
     () => undefined,

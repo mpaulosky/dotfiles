@@ -1303,10 +1303,14 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
 // rethrown, so main.mts's catch ends the run cleanly rather than the round
 // carrying on as if nothing had stopped it. A StalledStepError is not
 // rethrown: it is that PR's failed pass (the other PRs, intake and the builds
-// carry on), recorded in `stalls` so the run still ends red. Each settled pass reaches
+// carry on, and the run's later rounds skip that PR), recorded in `stalls` so the run still ends red. Each settled pass reaches
 // `report` first (passOutcomeEntry, or "stopped" for a stop), so a stop
 // doesn't lose the round's rows. Returns one outcome per target, in order; a
 // PR that wasn't passed on is "skipped".
+// The PRs whose pass stalled in this run: a stalled sandbox costs a whole step limit, so the run's later rounds don't pass
+// the same PR again (the next run does). A test passes its own set.
+const runStalledPrs = new Set<number>();
+
 export async function followUpPassPhase(
   targets: readonly PassTarget[],
   issues: readonly SandcastleIssue[],
@@ -1314,12 +1318,18 @@ export async function followUpPassPhase(
   host: PassHost = livePassHost,
   report: OutcomeReport = outcomeReport,
   stalls: IntakeStopReport = intakeStopReport,
+  stalledPrs: Set<number> = runStalledPrs,
 ): Promise<PassOutcome[]> {
   const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
   const outcomes: PassOutcome[] = targets.map(() => ({ kind: "skipped", reason: "not started" }));
   const started: { index: number; issue: SandcastleIssue }[] = [];
   // Serially, because concurrent fetches contend on the same ref lock.
   for (const [index, target] of targets.entries()) {
+    if (stalledPrs.has(target.number)) {
+      host.log(`  ⏹ PR #${target.number}: its pass stalled earlier in this run, so it's passed on until the next run.`);
+      outcomes[index] = { kind: "skipped", reason: "its pass stalled earlier in this run" };
+      continue;
+    }
     // A hand-off PR has no issue in the queue: the prompt sees the PR itself.
     const issue = target.handOff !== undefined ? handOffIssue(target) : byNumber.get(target.issueNumber);
     if (issue === undefined) {
@@ -1353,6 +1363,7 @@ export async function followUpPassPhase(
       // One PR's stalled sandbox must not starve the queue: this pass failed like any other, and the sweep finds the
       // PR again. The stall is recorded, so the run still ends red with the step named.
       stalls.record(stall);
+      stalledPrs.add(target.number);
       host.log(`  ⏹ PR #${target.number}: the follow-up pass stalled, so it's swept again next round: ${stall.firstError}`);
       report.record({ ...pr, outcome: "stopped", detail: stall.firstError });
     } else if (result.reason instanceof UncountedStopError) {

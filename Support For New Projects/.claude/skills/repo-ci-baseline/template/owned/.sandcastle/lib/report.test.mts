@@ -223,7 +223,7 @@ describe("renderSummary", () => {
   it("says a stalled run ended red, never that it stopped cleanly", () => {
     const summary = renderSummary({ ...fullInput, ending: { kind: "stalled", reason: 'The step "git fetch" ran over its limit.' } });
 
-    assert.match(summary, /The run stopped and ends red: The step "git fetch" ran over its limit\./);
+    assert.match(summary, /The run ends red: The step "git fetch" ran over its limit\./);
     assert.doesNotMatch(summary, /stopped cleanly/);
   });
 

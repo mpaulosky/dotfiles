@@ -505,9 +505,10 @@ try {
   if (!(error instanceof UncountedStopError)) throw error;
   const stall = stallStop(error);
   if (stall !== undefined) intakeStopReport.record(stall);
-  ending = stall === undefined ? { kind: "stopped", reason: error.message } : runEnding(undefined, [stall]);
+  // A stall a follow-up pass recorded earlier in the run counts too: the ending comes from everything recorded.
+  ending = runEnding(error.message, intakeStopReport.items());
   console.log(
-    stall === undefined
+    ending.kind !== "stalled"
       ? `\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`
       : `\n⏹ Stopping the run, which ends red: ${error.message}. Nothing more starts; the next run meets the same stall until a person looks.`,
   );

@@ -189,8 +189,9 @@ export function intakeStopExitCode(stops: readonly IntakeStopEntry[]): number {
   return stops.length > 0 ? 1 : 0;
 }
 
-// The reason of a stall's report entry; runEnding reads it to tell a stall from an intake stop.
-export const STALL_STOP_REASON = "a sandbox step stalled, so the run stopped";
+// The reason of a stall's report entry; runEnding reads it to tell a stall from an intake stop. A stall ends the run red, and
+// stops it when a build hit it; a follow-up pass's stall is recorded while the run carries on.
+export const STALL_STOP_REASON = "a sandbox step stalled";
 
 // The report entry for a stalled sandbox step (a StalledStepError reaching main.mts, or a follow-up pass that ended in one), so the run ends red with the step
 // named: it recorded no hand-back and spent no failed attempt, and the next run would otherwise meet the same stall unseen.
@@ -273,7 +274,7 @@ function endingSentence(ending: RunEnding): string {
     case "stopped":
       return `The run stopped cleanly: ${cell(ending.reason.replace(/\.$/, ""))}.`;
     case "stalled":
-      return `The run stopped and ends red: ${cell(ending.reason.replace(/\.$/, ""))}.`;
+      return `The run ends red: ${cell(ending.reason.replace(/\.$/, ""))}.`;
     case "crashed":
       return "The run ended on an error; see the run log.";
   }

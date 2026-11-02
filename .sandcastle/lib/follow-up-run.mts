@@ -53,7 +53,8 @@ export const liveFollowUpRunSteps: FollowUpRunSteps = {
 
 // Sweeps the open PRs once and runs a follow-up pass on each one that needs it, then returns. It never loops
 // back for a second round: the next scheduled run sweeps again. An UncountedStopError from a pass (the time
-// budget or Claude's usage limit) propagates, and main.mts's catch ends the run cleanly on it.
+// budget or Claude's usage limit) propagates, and main.mts's catch ends the run cleanly on it. A StalledStepError doesn't: followUpPassPhase
+// records it in intakeStopReport, so main.mts ends the run red once the report is written.
 export async function followUpOnlyRun(
   steps: FollowUpRunSteps = liveFollowUpRunSteps,
   log: (line: string) => void = console.log,

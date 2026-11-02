@@ -37,7 +37,7 @@ import {
 } from "./follow-up-pass.mts";
 import type { HeadCheck, ReviewThread, SandcastleIssue } from "./github.mts";
 import type { IsOwner } from "./queue.mts";
-import { IntakeStopReport, intakeStopExitCode, OutcomeReport, STALL_STOP_REASON, type HumanThreadEntry } from "./report.mts";
+import { IntakeStopReport, intakeStopExitCode, intakeStopReport, OutcomeReport, runEnding, STALL_STOP_REASON, type HumanThreadEntry } from "./report.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
@@ -1616,7 +1616,7 @@ describe("followUpPassPhase", () => {
     const report = new OutcomeReport();
     const stalls = new IntakeStopReport();
 
-    const outcomes = await followUpPassPhase([passTarget()], [issue], BASE, passHost, report, stalls);
+    const outcomes = await followUpPassPhase([passTarget()], [issue], BASE, passHost, report, stalls, new Set());
 
     assert.equal(outcomes[0]?.kind, "skipped");
     assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
@@ -1625,6 +1625,40 @@ describe("followUpPassPhase", () => {
     assert.equal(stalls.items().length, 1);
     assert.equal(stalls.items()[0]?.reason, STALL_STOP_REASON);
     assert.equal(intakeStopExitCode(stalls.items()), 1);
+    // The step is named, in the stop and in the report row.
+    assert.match(stalls.items()[0]?.firstError ?? "", /ran over its \d+-minute limit/);
+    assert.equal(report.items()[0]?.detail, stalls.items()[0]?.firstError);
+    assert.equal(runEnding(undefined, stalls.items()).kind, "stalled");
+  });
+
+  it("records into the run-wide intakeStopReport by default, which is what ends the run red", async () => {
+    const { passHost } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => stalledSandbox();
+    const before = intakeStopReport.items().length;
+
+    await followUpPassPhase([passTarget()], [issue], BASE, passHost, new OutcomeReport(), undefined, new Set());
+
+    const added = intakeStopReport.items().slice(before);
+    assert.equal(added.length, 1);
+    assert.equal(added[0]?.reason, STALL_STOP_REASON);
+    assert.equal(runEnding(undefined, added).kind, "stalled");
+  });
+
+  it("does not pass a PR again in the same run once its pass stalled, so a later round doesn't repeat the stall", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async (branch) => {
+      calls.createSandbox.push(branch);
+      return stalledSandbox();
+    };
+    const stalls = new IntakeStopReport();
+    const stalledPrs = new Set<number>();
+
+    await followUpPassPhase([passTarget()], [issue], BASE, passHost, new OutcomeReport(), stalls, stalledPrs);
+    const second = await followUpPassPhase([passTarget()], [issue], BASE, passHost, new OutcomeReport(), stalls, stalledPrs);
+
+    assert.equal(calls.createSandbox.length, 1);
+    assert.equal(stalls.items().length, 1);
+    assert.equal(second[0]?.kind, "skipped");
   });
 
   it("lets the other PRs' passes finish when one stalls, so a PR that always stalls cannot starve the queue", async () => {
@@ -1636,7 +1670,7 @@ describe("followUpPassPhase", () => {
     };
     const stalls = new IntakeStopReport();
 
-    const outcomes = await followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, new OutcomeReport(), stalls);
+    const outcomes = await followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, new OutcomeReport(), stalls, new Set());
 
     assert.equal(outcomes[0]?.kind, "skipped");
     assert.equal(outcomes[1]?.kind, "passed");
@@ -1660,7 +1694,7 @@ describe("followUpPassPhase", () => {
       const stalls = new IntakeStopReport();
 
       await assert.rejects(
-        () => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, report, stalls),
+        () => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, report, stalls, new Set()),
         (error: unknown) => error === usage,
       );
 

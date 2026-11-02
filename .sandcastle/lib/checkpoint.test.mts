@@ -430,15 +430,24 @@ describe("the gate guard in a git repository", () => {
       assert.doesNotMatch(message, /GATE_SCRIPT in lib/);
     });
 
-    it("keeps only the first line, without a carriage return, control characters or more than 200 characters", async () => {
+    it("keeps only the first line with text, capped at 200 characters", async () => {
       const crlf = (await gateScriptChange(failing(128, "fatal: x\r\nmore\r\n"), { base: "abc123" })) ?? "";
       assert.match(crlf, /\(exit 128: fatal: x\)/);
 
-      const long = (await gateScriptChange(failing(128, `fatal: ${"y".repeat(300)}`), { base: "abc123" })) ?? "";
-      assert.match(long, new RegExp(`\\(exit 128: fatal: ${"y".repeat(193)}\\)`));
+      for (const [length, kept] of [[199, 199], [200, 200], [201, 200]] as const) {
+        const long = (await gateScriptChange(failing(128, `${"y".repeat(length)}\nmore`), { base: "abc123" })) ?? "";
+        assert.ok(long.includes(`(exit 128: ${"y".repeat(kept)})`), `${length} characters`);
+      }
 
-      const control = (await gateScriptChange(failing(128, "fatal: a\u001b[31mb\u0007"), { base: "abc123" })) ?? "";
-      assert.doesNotMatch(control, /[\u0000-\u0008\u000b-\u001f\u007f]/);
+      const blank = (await gateScriptChange(failing(128, "\u0007\u001b\nfatal: real\n"), { base: "abc123" })) ?? "";
+      assert.match(blank, /\(exit 128: fatal: real\)/);
+    });
+
+    it("replaces control, format and line-separator characters with a space", async () => {
+      const text = "fatal:\tx\ry\u001b[31mz\u007f\u009bq\u202ew\u200bv\u2028u\u{E0041}t";
+      const message = (await gateScriptChange(failing(128, text), { base: "abc123" })) ?? "";
+
+      assert.ok(message.includes("(exit 128: fatal: x y [31mz  q w v u t)"), message);
     });
   });
 

@@ -109,11 +109,13 @@ export async function gateScriptChange(sandbox: Pick<Sandbox, "exec">, guard: Ga
       );
     }
     // Any other failure is git itself (a broken sandbox, a bad object database), not a verdict on GATE_SCRIPT.
-    // The first line only, without a stray carriage return or control character, and capped, since it goes into a comment and a prompt.
-    const firstLine = output.split("\n")[0]!.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200).trim() || "(no output)";
+    // The first line git printed that has text left, without control, format (bidi, zero-width, tag) or line-separator characters, and capped,
+    // since it goes into a comment and a prompt and the branch's agent may control what git prints.
+    const clean = (line: string) => line.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " ").slice(0, 200).trim();
+    const firstLine = output.split("\n").map(clean).find((line) => line !== "") ?? "(no output)";
     return (
       `❌ git failed (exit ${tracked.exitCode}: ${firstLine}) checking ${GATE_SCRIPT} at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
-      "The sandbox or its git may be broken."
+      "The sandbox or its git may be broken, or git's output may not be in English."
     );
   }
   const changed = await changedFiles(sandbox, guard, [GATE_SCRIPT]);

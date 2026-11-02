@@ -18,8 +18,9 @@ export class UncountedStopError extends Error {}
 // on one, so it may still be running in the container. That command throws this, naming the step, and so does every
 // exec after it and every role start (lib/agents.mts#runRoleInSandbox), instead of an exit code a caller could read as
 // a git answer ("not an ancestor", "no conflict") or a red gate. It is an UncountedStopError, so the places that
-// rethrow one (the roles, the gate-fixer loop, the reviewer, the follow-up pass) rethrow it too, the build spends no
-// failed attempt, and the issue's label is released. main.mts ends the run red when one reaches it (lib/report.mts#stallStop).
+// rethrow one (the roles, the gate-fixer loop, the reviewer) rethrow it too, the build spends no failed attempt, and
+// the issue's label is released. main.mts ends the run red when one reaches it (lib/report.mts#stallStop). The
+// follow-up pass phase doesn't rethrow it: that PR's pass fails, the phase records the stall, and the run still ends red.
 export class StalledStepError extends UncountedStopError {}
 
 // For a sandbox whose git identity couldn't be set and whose worktree no

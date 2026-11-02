@@ -340,7 +340,8 @@ try {
     // -----------------------------------------------------------------------
     // See lib/follow-up-pass.mts#followUpPassPhase: each pass runs in its own
     // sandbox, in parallel, and the build phase starts after them. A failed
-    // pass is logged and the sweep finds its PR again next round.
+    // pass, a stalled one included, is logged and the sweep finds its PR again next round;
+    // a stall is also recorded, so the run still ends red.
     if (passes.length > 0) {
       const passBase = fetchMain();
       await followUpPassPhase(passes, loadQueue(), passBase);

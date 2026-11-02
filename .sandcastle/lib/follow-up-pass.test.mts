@@ -11,7 +11,7 @@ import {
   SESSION_REPLY_MARKER,
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
-import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
@@ -37,7 +37,7 @@ import {
 } from "./follow-up-pass.mts";
 import type { HeadCheck, ReviewThread, SandcastleIssue } from "./github.mts";
 import type { IsOwner } from "./queue.mts";
-import { OutcomeReport, type HumanThreadEntry } from "./report.mts";
+import { IntakeStopReport, intakeStopExitCode, OutcomeReport, STALL_STOP_REASON, type HumanThreadEntry } from "./report.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
@@ -1610,24 +1610,45 @@ describe("followUpPassPhase", () => {
     return limitSandboxExec(underlying, { log: () => {}, now: () => clock });
   }
 
-  it("ends a stalled pass with the StalledStepError, only logging that closing its sandbox failed, and releases the label", async () => {
+  it("treats a stalled pass as that PR's failed pass: the phase resolves, the stall is recorded, the close failure is only logged and the label is released", async () => {
     const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
     passHost.createSandbox = async () => stalledSandbox();
     const report = new OutcomeReport();
+    const stalls = new IntakeStopReport();
 
-    await assert.rejects(() => followUpPassPhase([passTarget()], [issue], BASE, passHost, report), StalledStepError);
+    const outcomes = await followUpPassPhase([passTarget()], [issue], BASE, passHost, report, stalls);
 
+    assert.equal(outcomes[0]?.kind, "skipped");
     assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
     assert.equal(report.items()[0]?.outcome, "stopped");
     assert.equal(report.items()[0]?.number, PR_NUMBER);
+    assert.equal(stalls.items().length, 1);
+    assert.equal(stalls.items()[0]?.reason, STALL_STOP_REASON);
+    assert.equal(intakeStopExitCode(stalls.items()), 1);
   });
 
-  // Results are walked in target order, so each order of the two stops needs its own test: "last stop wins" passes only the first.
+  it("lets the other PRs' passes finish when one stalls, so a PR that always stalls cannot starve the queue", async () => {
+    const okSandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async (branch) => {
+      calls.createSandbox.push(branch);
+      return branch === BRANCH ? stalledSandbox() : okSandbox.sandbox;
+    };
+    const stalls = new IntakeStopReport();
+
+    const outcomes = await followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, new OutcomeReport(), stalls);
+
+    assert.equal(outcomes[0]?.kind, "skipped");
+    assert.equal(outcomes[1]?.kind, "passed");
+    assert.equal(stalls.items().length, 1);
+  });
+
+  // Results are walked in target order, so each order of the two stops needs its own test.
   for (const [title, stalledBranch] of [
-    ["a usage stop on an earlier target", "feature/51-tidy-widget"],
-    ["a usage stop on a later target", BRANCH],
+    ["a stall on an earlier target", BRANCH],
+    ["a stall on a later target", "feature/51-tidy-widget"],
   ] as const) {
-    it(`rethrows the StalledStepError over ${title}`, async () => {
+    it(`still rethrows another pass's usage stop, and records the stall too, with ${title}`, async () => {
       const usage = new UncountedStopError("usage limit reached");
       const usageSandbox = sandboxFake({ roleFailing: ["follow-up"], roleFailWith: { "follow-up": usage } });
       const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
@@ -1635,18 +1656,20 @@ describe("followUpPassPhase", () => {
         calls.createSandbox.push(branch);
         return branch === stalledBranch ? stalledSandbox() : usageSandbox.sandbox;
       };
-
       const report = new OutcomeReport();
+      const stalls = new IntakeStopReport();
 
-      await assert.rejects(() => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, report), StalledStepError);
+      await assert.rejects(
+        () => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, report, stalls),
+        (error: unknown) => error === usage,
+      );
 
-      // Both stops really happened, so neither mutant ("first wins", "last wins") can pass for want of a second stop.
-      const usageNumber = stalledBranch === BRANCH ? 8 : PR_NUMBER;
+      // Both stops really happened.
       assert.deepEqual(
         report.items().map(({ number, outcome }) => [number, outcome]).toSorted(),
         [[PR_NUMBER, "stopped"], [8, "stopped"]].toSorted(),
       );
-      assert.equal(report.items().find((entry) => entry.number === usageNumber)?.detail, usage.message);
+      assert.equal(stalls.items().length, 1);
     });
   }
 });

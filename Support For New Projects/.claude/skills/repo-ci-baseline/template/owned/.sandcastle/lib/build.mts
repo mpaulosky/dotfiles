@@ -487,10 +487,12 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // report. A check that itself fails counts as a tampered worktree. The sandbox
 // it returns runs every exec under a limit (lib/step-limit.mts), so a stalled
 // gate or git command ends as exit code 124 with its name in the output; the
-// two git config commands that set the identity run first, on the sandbox
-// itself, and have none. It also needs `timeout` (GNU coreutils) in the image,
-// which is checked once: an image without it is refused with a message that
-// says so, rather than failing every later command.
+// two git config commands that set the identity and the `command -v timeout`
+// probe run first, on the sandbox itself, and have none. The image needs
+// `timeout` (GNU coreutils), which the probe checks once: an image without it
+// is refused with a message that says so, rather than failing every later
+// command. The probe fails like the identity step: a rejection or a refusal
+// goes through the same worktree check and close.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
@@ -511,6 +513,10 @@ export async function createCheckedSandbox(
   const sandbox = await create(branch);
   try {
     await setGitIdentity(sandbox, hostIdentity());
+    const probe = await sandbox.exec("command -v timeout");
+    if (probe.exitCode !== 0) {
+      throw new Error("the sandbox image has no `timeout` command (GNU coreutils), which the step limits in lib/step-limit.mts need");
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // The check itself can fail (the worktree gone, git failing). Then the
@@ -530,11 +536,6 @@ export async function createCheckedSandbox(
     }
     await sandbox.close().catch(() => undefined);
     throw error;
-  }
-  const probe = await sandbox.exec("command -v timeout");
-  if (probe.exitCode !== 0) {
-    await sandbox.close().catch(() => undefined);
-    throw new Error("the sandbox image has no `timeout` command (GNU coreutils), which the step limits in lib/step-limit.mts need");
   }
   // Every later exec (the gate, the merge of main, the reads of git state) runs under a limit, so a stalled one ends the step.
   return limitSandboxExec(sandbox, { prefix: `  ${terminalText(branch)}: ` });

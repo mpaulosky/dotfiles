@@ -161,6 +161,68 @@ describe("limitSandboxExec", () => {
     assert.equal(await limited.close(), "real");
   });
 
+  it("refuses every later exec at once after a command other than the gate ran over its limit, so a stalled sandbox costs one limit", async () => {
+    const { sandbox, calls } = fakeSandbox({ stdout: "", exitCode: 124 });
+    const lines: string[] = [];
+    const limited = limitSandboxExec(sandbox, { log: (line) => lines.push(line), now: clockOf(COMMAND_LIMIT_MINUTES * 60_000) });
+
+    const first = await limited.exec("git fetch");
+    const second = await limited.exec("git status");
+
+    assert.match(first.stdout, /ran over its 10-minute limit/);
+    assert.equal(second.exitCode, 124);
+    assert.match(second.stdout, /^❌ The step "git status" wasn't run: the step "git fetch" didn't end at its limit/);
+    assert.equal(calls.length, 1, "the second command reached the sandbox");
+    assert.match(lines.at(-1)!, /step refused: git status/);
+  });
+
+  it("lets the gate run again after a gate that timeout killed, since the kill was clean", async () => {
+    const { sandbox, calls } = fakeSandbox({ stdout: "", exitCode: 124 });
+    const limited = limitSandboxExec(sandbox, { log: () => undefined, now: clockOf(GATE_LIMIT_MINUTES * 60_000) });
+
+    await limited.exec(`${GATE_COMMAND} 2>&1`);
+    await limited.exec(`${GATE_COMMAND} 2>&1`);
+
+    assert.equal(calls.length, 2);
+  });
+
+  it("refuses every later exec after the host gave up on one, since its command may still be running", async () => {
+    let started = 0;
+    const sandbox = { exec: () => (started++, new Promise(() => undefined)) } as unknown as Sandbox;
+    const limited = limitSandboxExec(sandbox, { log: () => undefined, commandMinutes: 0.001, graceSeconds: 0, backstopSlackSeconds: 0.05 });
+
+    await limited.exec("git fetch");
+    const after = await limited.exec("git status");
+
+    assert.equal(started, 1);
+    assert.match(after.stdout, /wasn't run/);
+  });
+
+  it("refuses a limit timeout or the host's timer can't hold: zero, negative, NaN, infinite or past setTimeout's ceiling", () => {
+    const { sandbox } = fakeSandbox({ stdout: "", exitCode: 0 });
+
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31]) {
+      assert.throws(() => limitSandboxExec(sandbox, { gateMinutes: bad }), /GATE_LIMIT_MINUTES must be a positive number/, String(bad));
+      assert.throws(() => limitSandboxExec(sandbox, { commandMinutes: bad }), /COMMAND_LIMIT_MINUTES must be a positive number/, String(bad));
+    }
+  });
+
+  it("measures a step on a monotonic clock, so a wall-clock step during it doesn't hide the kill", async (t) => {
+    let wall = 0;
+    t.mock.method(Date, "now", () => (wall -= 1e7));
+    const sandbox = {
+      exec: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        return { stdout: "", stderr: "", exitCode: 124 };
+      },
+    } as unknown as Sandbox;
+    const limited = limitSandboxExec(sandbox, { log: () => undefined, commandMinutes: 0.0001 });
+
+    const result = await limited.exec("git fetch");
+
+    assert.match(result.stdout, /ran over its/);
+  });
+
   it("gives up on an exec that never returns, a little after the limit and the kill grace", async () => {
     const sandbox = { exec: () => new Promise(() => undefined) } as unknown as Sandbox;
     const lines: string[] = [];

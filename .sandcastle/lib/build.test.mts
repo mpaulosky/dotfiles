@@ -31,6 +31,7 @@ import {
   BUILD_ROLES,
   DESIGN_MARKER,
   GATE_FIXER_ATTEMPTS,
+  MAX_GATE_RUNS,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
@@ -40,7 +41,8 @@ import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
 import type { SecretMatch } from "./scan.mts";
-import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
+import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
+import { KILL_GRACE_SECONDS } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -2292,6 +2294,17 @@ describe("buildIssue marking the issue as building", () => {
     assert.equal(roles.filter((role) => role === "gate-fixer").length, 2 * GATE_FIXER_ATTEMPTS);
   });
 
+  it("makes no more gate runs than MAX_GATE_RUNS, which sizes BUILDING_LABEL_MAX_AGE_MS, on the longest build", async () => {
+    // Checkpoint 1 turns green after its fixers; checkpoint 2 stays red through every attempt.
+    const { steps, buildHost } = host([1, 1, 0, ...Array<number>(20).fill(1)]);
+
+    await withUiRole(true, () => buildIssue(withRoles(["architect", "ui", "scribe"]), branch, base, buildHost)).catch(() => undefined);
+
+    const gateRuns = steps.filter((step) => step.startsWith("gate:")).length;
+    assert.ok(gateRuns > GATE_FIXER_ATTEMPTS + 1, `only ${gateRuns} gate runs: the build never reached checkpoint 2`);
+    assert.ok(gateRuns <= MAX_GATE_RUNS, `${gateRuns} gate runs, past MAX_GATE_RUNS (${MAX_GATE_RUNS})`);
+  });
+
   it("marks the issue as building exactly once and unmarks it exactly once per build", async () => {
     const { order, buildHost } = host([0, 0]);
 
@@ -3182,9 +3195,9 @@ describe("PR_BODY_RULES against what the host refuses in the reviewer's PR body"
 describe("createCheckedSandbox's step limits", () => {
   const identity = { name: "Host Person", email: "host@example.com" };
 
-  // A sandbox that records the commands exec is given. Its git config and `command -v` commands succeed; any other command
-  // answers with `exitCode` after `elapsed` milliseconds on the injected clock.
-  function recordingSandbox(exitCode: number, hasTimeout = true) {
+  // A sandbox that records the commands exec is given. Its git config commands succeed, `command -v timeout` succeeds when
+  // `hasTimeout` and rejects when `probeRejects`, and any other command answers with `exitCode`.
+  function recordingSandbox(exitCode: number, hasTimeout = true, probeRejects = false) {
     const commands: string[] = [];
     let closed = false;
     const sandbox = {
@@ -3194,6 +3207,7 @@ describe("createCheckedSandbox's step limits", () => {
       },
       exec: async (command: string) => {
         commands.push(command);
+        if (command.startsWith("command -v timeout") && probeRejects) throw new Error("docker exec failed");
         if (command.startsWith("command -v timeout")) return { stdout: "", stderr: "", exitCode: hasTimeout ? 0 : 1 };
         return { stdout: "", stderr: "", exitCode: command.includes("git config --global") ? 0 : exitCode };
       },
@@ -3209,7 +3223,7 @@ describe("createCheckedSandbox's step limits", () => {
 
     assert.match(commands[0]!, /^git config --global user\.name /);
     const last = commands.at(-1) ?? "";
-    assert.ok(last.startsWith("timeout -k 30s 10m sh -c 'scripts/gate.sh"), last);
+    assert.ok(last.startsWith(`timeout -k ${KILL_GRACE_SECONDS}s ${GATE_LIMIT_MINUTES}m sh -c '${GATE_COMMAND}`), last);
     assert.ok(!commands.slice(0, -1).some((command) => command.startsWith("timeout ")), "an exec before the wrapper was limited");
   });
 
@@ -3230,5 +3244,24 @@ describe("createCheckedSandbox's step limits", () => {
     await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => []), /no `timeout` command/);
 
     assert.equal(wasClosed(), true);
+  });
+
+  it("closes the sandbox and rethrows when the timeout probe's exec rejects", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, true, true);
+
+    await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => []), /docker exec failed/);
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("leaves a tampered worktree and its sandbox in place when the image has no timeout, as for a failed identity step", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, false);
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => identity, () => ["its .git points elsewhere"]),
+      (error: unknown) => error instanceof TamperedWorktreeError && /no `timeout` command/.test(error.message),
+    );
+
+    assert.equal(wasClosed(), false);
   });
 });

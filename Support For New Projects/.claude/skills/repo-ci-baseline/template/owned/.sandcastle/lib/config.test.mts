@@ -11,6 +11,7 @@ import {
   FOLLOW_UP_LABEL,
   FOLLOW_UP_LABEL_DEFINITION,
   GATE_FIXER_ATTEMPTS,
+  MAX_GATE_RUNS,
   HOST_LABELS,
   LOCAL_QUEUE_LABEL,
   LOCAL_QUEUE_LABEL_DEFINITION,
@@ -84,13 +85,13 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
     const timeout = (role: (typeof BUILD_ROLES)[number]) => (role === "ui" && !uiEnabled() ? ROLE_AGENTS.backend : roleAgent(role)).timeoutMinutes;
     // Checkpoint 1 runs the gate, then once more after each gate-fixer attempt. Checkpoint 2 runs it on the merged tree first,
     // and when that is red goes through the same loop as checkpoint 1: seven runs in all, each up to its step limit.
-    const gateRuns = checkpoints * (GATE_FIXER_ATTEMPTS + 1) + 1;
+    const gateRuns = MAX_GATE_RUNS;
     const minutes =
       BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) +
       checkpoints * GATE_FIXER_ATTEMPTS * ROLE_AGENTS["gate-fixer"].timeoutMinutes +
       gateRuns * GATE_LIMIT_MINUTES +
-      // A stalled command other than the gate fails its build (every caller treats the kill as a failure), so one more limit is
-      // the most any build adds from them.
+      // A command other than the gate that runs over its limit stalls the sandbox: every later exec fails at once
+      // (lib/step-limit.mts), so one more limit is the most any build adds from them.
       COMMAND_LIMIT_MINUTES;
     const spare = 20;
 

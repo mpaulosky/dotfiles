@@ -17,10 +17,13 @@ export const COMMAND_LIMIT_MINUTES = 10;
 // Seconds `timeout` waits after TERM before it sends KILL.
 export const KILL_GRACE_SECONDS = 30;
 
+// The most a timer can wait: setTimeout fires at once for a longer delay.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
 // Seconds the host waits past the limit and the kill grace before it gives up on a call that hasn't returned.
 export const BACKSTOP_SLACK_SECONDS = 60;
 
-// How many characters of a command name a step in the log.
+// How many code points of a command its step name keeps in the log.
 const NAME_LENGTH = 60;
 
 // `timeout` exits 124 when the command ran over, and 137 when it had to send KILL as well. A command can
@@ -30,6 +33,15 @@ const TIMED_OUT_EXIT_CODES = new Set([124, 137]);
 
 // How much shorter than its limit a step may have run and still count as timed out, in milliseconds.
 const CLOCK_SLACK_MS = 1000;
+
+// A limit is a positive, finite number of minutes the host's timer can wait for: `timeout` treats 0 as no limit
+// and exits at once on NaN or a negative, and setTimeout fires at once for a delay past MAX_TIMER_MS.
+function checkedLimit(name: string, minutes: number, graceSeconds: number, backstopSlackSeconds: number): void {
+  const waitMs = minutes * 60_000 + (graceSeconds + backstopSlackSeconds) * 1000;
+  if (!Number.isFinite(minutes) || minutes <= 0 || waitMs > MAX_TIMER_MS) {
+    throw new Error(`${name} must be a positive number of minutes the host can wait for, not ${minutes}`);
+  }
+}
 
 function shellWord(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
@@ -74,15 +86,31 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
   const {
     log = console.log,
     prefix = "  ",
-    now = Date.now,
+    now = () => performance.now(),
     gateMinutes = GATE_LIMIT_MINUTES,
     commandMinutes = COMMAND_LIMIT_MINUTES,
     graceSeconds = KILL_GRACE_SECONDS,
     backstopSlackSeconds = BACKSTOP_SLACK_SECONDS,
   } = options;
+  checkedLimit("GATE_LIMIT_MINUTES", gateMinutes, graceSeconds, backstopSlackSeconds);
+  checkedLimit("COMMAND_LIMIT_MINUTES", commandMinutes, graceSeconds, backstopSlackSeconds);
+
+  // The first step that ran over its limit (a command other than the gate) or that the host gave up on. The gate's own
+  // kill is clean: `timeout` ended it, and the next gate may run. After either of the others a command may still be
+  // running in the container, holding git's locks, and a stalled sandbox would otherwise cost one limit per command, so
+  // every later exec fails at once. That keeps the build's worst case at one command limit (lib/config.test.mts).
+  let stalledStep: string | undefined;
 
   const exec: Sandbox["exec"] = async (command, execOptions) => {
     const name = stepName(command);
+    if (stalledStep !== undefined) {
+      log(`${prefix}step refused: ${name}, since the step "${stalledStep}" didn't end at its limit`);
+      return {
+        exitCode: 124,
+        stdout: `❌ The step "${name}" wasn't run: the step "${stalledStep}" didn't end at its limit, so this sandbox is stalled.`,
+        stderr: "",
+      };
+    }
     const minutes = isGate(command) ? gateMinutes : commandMinutes;
     const limitMs = minutes * 60_000;
     const started = now();
@@ -96,6 +124,7 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
     try {
       const outcome = await Promise.race([sandbox.exec(limitedCommand(command, minutes, graceSeconds), execOptions), gaveUp]);
       if (outcome === "gave up") {
+        stalledStep = name;
         log(`${prefix}step gave up: ${name} didn't return after its ${minutes}-minute limit and the kill grace`);
         return {
           exitCode: 124,
@@ -111,6 +140,7 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
     const elapsed = now() - started;
     const seconds = Math.round(elapsed / 1000);
     if (TIMED_OUT_EXIT_CODES.has(result.exitCode) && elapsed >= limitMs - CLOCK_SLACK_MS) {
+      if (!isGate(command)) stalledStep = name;
       log(`${prefix}step killed: ${name} ran over its ${minutes}-minute limit after ${seconds}s`);
       return {
         ...result,

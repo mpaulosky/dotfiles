@@ -2586,6 +2586,24 @@ describe("publish", () => {
     assert.match(body, /the description was cut to fit a PR body/);
   });
 
+  it("bounds a huge check-file list and cuts a description on a character boundary, closing a fence the cut left open", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+    const checks = Array.from({ length: 4000 }, (_, index) => `.sandcastle/lib/generated-check-${index}.mts`);
+    const description = `\`\`\`text\n${"😀".repeat(PR_BODY_LIMIT)}`;
+
+    await publish(issue, branch, "a".repeat(40), true, true, description, checks, () => {}, createPullRequest, async () => {}, "note");
+
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, `${body.length} characters`);
+    assert.match(body, /… and 3900 more/);
+    assert.ok(body.includes(PR_MARKER) && body.includes(`Closes #${issue.number}`));
+    assert.doesNotMatch(body, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    assert.match(body, /\n```\n\n… \(the description was cut/);
+  });
+
   it("leaves a description that fits alone", async () => {
     let body = "";
     const createPullRequest = (_branch: string, _title: string, prBody: string): string => {

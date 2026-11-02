@@ -132,7 +132,7 @@ export async function publish(
     checkChanges.length > 0
       ? "\n\n⚠️ This branch changes files the gate and CI run, so it could have weakened a check. Look at these before merging:\n\n" +
         // File names are the agents' to choose, so they go in a fence that nothing in them can close.
-        textBlock(checkChanges.join("\n"))
+        textBlock(boundedCheckList(checkChanges))
       : "";
   // The host-side review's note (lib/host-review.mts): what it left open, or that it didn't finish.
   const reviewSection = reviewNote === "" ? "" : `\n\n${reviewNote}`;
@@ -140,7 +140,7 @@ export async function publish(
   const tail = `${docsNote}${checkNote}${reviewSection}`;
   // The marker, `Closes #n` and the notes are kept whole; the description gives way.
   const room = PR_BODY_TOTAL_LIMIT - head.length - tail.length;
-  if (description.length > room) description = `${description.slice(0, Math.max(0, room - DESCRIPTION_CUT_NOTE.length))}${DESCRIPTION_CUT_NOTE}`;
+  if (description.length > room) description = cutDescription(description, room);
   const body = `${head}${description}${tail}`;
   // A retry after a create that GitHub carried out but answered with an error
   // finds that PR rather than open a second one: openPullRequest looks for an
@@ -203,10 +203,40 @@ const DESIGN_NOTE_LIMIT = 60_000;
 // reviewer's sections.
 export const PR_BODY_LIMIT = 60_000;
 
-// The most a whole PR body may hold, leaving a margin under GitHub's 65,536. publish() cuts the reviewer's description to fit under it, so the
-// review's note, the check-file list and the warnings (none of which PR_BODY_LIMIT counts) can't push the body over and strand a pushed branch.
+// The most a whole PR body may hold, leaving a margin under GitHub's 65,536. publish() cuts the reviewer's description to fit under it, and bounds the
+// check-file list, so the review's note and the warnings (none of which PR_BODY_LIMIT counts) can't push the body over and strand a pushed branch.
 export const PR_BODY_TOTAL_LIMIT = 65_000;
 const DESCRIPTION_CUT_NOTE = "\n\n… (the description was cut to fit a PR body)";
+// The check-file list in a PR body shows at most this many paths and characters, so it can't take the whole body.
+const CHECK_LIST_MAX_FILES = 100;
+const CHECK_LIST_MAX_CHARS = 20_000;
+
+export function boundedCheckList(files: readonly string[]): string {
+  const shown: string[] = [];
+  let chars = 0;
+  for (const file of files) {
+    if (shown.length >= CHECK_LIST_MAX_FILES || chars + file.length + 1 > CHECK_LIST_MAX_CHARS) break;
+    shown.push(file);
+    chars += file.length + 1;
+  }
+  const more = files.length - shown.length;
+  return more > 0 ? `${shown.join("\n")}\n… and ${more} more` : shown.join("\n");
+}
+
+// `description` cut to fit `room` characters, with the cut noted: on a character boundary, and with any code fence the cut left open closed, so the notes
+// after it don't render inside the block.
+export function cutDescription(description: string, room: number): string {
+  const kept = cutAtCharacter(description, Math.max(0, room - DESCRIPTION_CUT_NOTE.length - 5));
+  let open = 0;
+  for (const line of kept.split("\n")) {
+    const fence = /^ {0,3}(`{3,})/.exec(line);
+    if (!fence) continue;
+    const length = fence[1]!.length;
+    if (open === 0) open = length;
+    else if (length >= open && /^ {0,3}`+\s*$/.test(line)) open = 0;
+  }
+  return `${kept}${open > 0 ? `\n${"`".repeat(open)}` : ""}${DESCRIPTION_CUT_NOTE}`;
+}
 
 // A closing keyword and the issue it names, as GitHub reads one in a PR body:
 // #N, owner/repo#N or an issue URL. GitHub closes that issue when the PR

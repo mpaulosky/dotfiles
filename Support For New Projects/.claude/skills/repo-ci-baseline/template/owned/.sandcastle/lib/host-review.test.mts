@@ -652,9 +652,16 @@ describe("applyOutcomes", () => {
   });
 
   it("takes a test in a test folder, a *.test.* or *_test.* file, a *Tests.cs file or the gate's checks as the test", () => {
-    for (const test of ["tests/app.test.ts::x", "src/app.test.mts::x", "pkg/app_test.go::x", "tests/Web.Tests.Unit/OrderTests.cs::X", "test_app.py::x", ".github/ci/gate-checks.sh::review"]) {
+    for (const test of ["tests/app.test.ts::x", "src/app.test.mts::x", "pkg/app_test.go::x", "tests/Web.Tests.Unit/OrderTests.cs::X", "test_app.py::x", ".github/ci/gate-checks.sh::review", "test.sh::x", "Support For New Projects/skill/test.sh::x", "pkg/Foo.Tests.ps1::x", "tests/a.bats::x", "web/app-spec.js::x"]) {
       const file = test.split("::")[0]!;
       assert.equal(apply(triaged(), [outcome({ test })], ["src/app.ts", file]).status, "fixed", test);
+    }
+  });
+
+  it("leaves a finding open when the named test is a docs or data file, even in a test folder", () => {
+    for (const test of ["docs/spec/notes.md::x", "tests/x.txt::x", "notes.test.md::x", "tests/data.json::x", "tests/cases.yml::x"]) {
+      const file = test.split("::")[0]!;
+      assert.equal(apply(triaged(), [outcome({ test })], ["src/app.ts", file]).status, "open", test);
     }
   });
 

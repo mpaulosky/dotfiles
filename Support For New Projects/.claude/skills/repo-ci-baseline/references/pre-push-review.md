@@ -110,9 +110,8 @@ A repo that already has Sandcastle:
    `.sandcastle/lib/repo-config.mts`, which Apply never rewrites, each as a one-line `export const NAME` (or `export let`) at the start of a line. List
    in `NOT_OWNED_BASELINE_PATHS` each file (not a folder) under an Owned pattern (see
    `OWNED_PATHS` in `lib/review-ledger.mts`) that is the repo's own, such as a workflow of its own and Sandcastle tests the Template lacks.
-   Until this is on `main`, Apply holds back the four files that import it (`scripts/review.sh`, `lib/review-ledger.mts`, and the tests
-   `review-ledger.test.mts` and `pre-push-review-skill.test.mts`) and lists them in
-   its report, so the re-Apply passes the gate without a review step; Apply again after this PR merges to bring them. `scripts/review.sh` also stops with a
+   This is a hard prerequisite: a repo with a `.sandcastle/lib/repo-config.mts` that lacks either name makes Apply stop before it writes anything, since Sandcastle's
+   `build.mts` and `host-review.mts` import the ledger and would not load. Merge this PR, then Apply. `scripts/review.sh` also stops with a
    message naming the missing export. Adding the names on `chore/reapply-baseline` instead puts a file that isn't Owned in the re-Apply, which then needs
    a full review. The old gate has no review step, so the PR on `main` needs none.
 2. Deny Claude Code reading the ledgers and credential files, in the repo's `.claude/settings.json` (the Template doesn't ship that file, since permissions are set per user):
@@ -151,10 +150,13 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
 - The host triages the findings in code (merging duplicates, grading security:
   a finding counts as non-security only when its reviewer set `security: false`) and has the backend role
   fix each fixable one behind a failing test. It records a finding `fixed`
-  only with a test whose file the round changed (a reason alone is enough only for a non-security finding) and,
+  only with a test whose file the round changed and that is a test file (a code file in a test folder or named like a test; never a docs or data file)
+  (a reason alone is enough only for a non-security finding) and,
   for a Warning or a security finding, only when the file at its `path` changed too (the next round reads only the fixes, so the reviewers
   are also told to read the code at each `fixed` item's `path:line` and raise it again if the problem is still there), `dismissed` only with a `file:line` reason
   (never for a Warning or a security finding, which stays open), and everything else `open`.
+- Round 1 removes any stale `fixes.patch` from the run folder. The PR body keeps the marker, `Closes #n` and the notes whole, lists at most 100 check files
+  ("and M more" after that), and cuts the description to fit.
 - A round that fixed something is followed by checkpoint 3 (the gate) and a round reviewing `fixes.patch`. After 3 such rounds one more round only reviews.
 - Only the host records, in the main checkout, with `prepareRound` and `recordReview` called in-process: it never runs the worktree's `scripts/review.sh`.
 - A usage-limit stop, or a stalled sandbox (a reviewer or fixer run the host gave up on `ROLE_RUN_GRACE_MINUTES` after its `timeoutMinutes`), leaves the branch for a later round: nothing is

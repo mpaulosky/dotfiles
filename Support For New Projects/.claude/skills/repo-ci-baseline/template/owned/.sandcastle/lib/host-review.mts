@@ -289,10 +289,18 @@ export function triageRound({
 // What the backend role says became of one finding.
 export type FixOutcome = { id: string; status: "fixed" | "dismissed" | "open"; test: string | null; reason: string | null };
 
-// Whether a path reads as a test or a gate check: a test folder, a *.test.* or *.spec.* file, a *_test.* or test_* file, a *Tests.cs file, or the gate's checks.
-// `fixed` is accepted only behind such a file, so a backend can't clear a finding by naming the source file it edited or any unrelated file it touched.
+// Whether a path reads as a test or a gate check: a code file (not markdown, text, JSON or YAML) in a test folder, named *.test.*, *.spec.*, *-test.*, *_test.*,
+// test_*, test.* or tests.*, *Tests.* or *.bats, or the gate's checks. `fixed` is accepted only behind such a file, which keeps a backend from clearing a
+// finding by naming a docs or data file it touched. The path's shape is all the host checks: it doesn't read that the file pins this finding.
+const TEST_CODE_FILE = /\.(?:[cm]?[jt]sx?|py|sh|bash|bats|cs|ps1|psm1|go|rs|java|kt|rb|php|swift|c|cc|cpp|h|hpp|fs|vb)$/i;
 export const looksLikeTest = (file: string): boolean =>
-  /(^|\/)(tests?|__tests__|specs?)\//i.test(file) || /[._](test|spec)\.[^/]+$/i.test(file) || /(^|\/)test_[^/]+$/i.test(file) || /Tests?\.[a-z]+$/.test(file) || /(^|\/)gate-checks\.sh$/.test(file);
+  /(^|\/)gate-checks\.sh$/.test(file) ||
+  (TEST_CODE_FILE.test(file) &&
+    (/(^|\/)(tests?|__tests__|specs?)\//i.test(file) ||
+      /[._-](test|spec)\.[^/]+$/i.test(file) ||
+      /(^|\/)(test_[^/]+|tests?\.[^/]+)$/i.test(file) ||
+      /Tests?\.[A-Za-z0-9]+$/.test(file) ||
+      /\.bats$/i.test(file)));
 
 // Turn the backend's verdicts into final statuses, enforcing the skill's rules. The backend's word is self-reported, so each
 // claim needs what the host can check: `fixed` needs HEAD to have moved and a test whose file the round changed and that looks like a test (a Warning, or

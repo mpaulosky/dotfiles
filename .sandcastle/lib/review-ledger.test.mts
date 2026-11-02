@@ -26,6 +26,9 @@ import {
   mergeBase,
   OWNED_PATHS,
   prepareRound,
+  patchKey,
+  readerPatch,
+  TEMPLATE_OWNED_PREFIX,
   latestLedger,
   readLedger,
   recordReview,
@@ -3467,3 +3470,225 @@ describe("prepare's size warning", () => {
     assert.equal(cli(["prepare", dir, head]).err, "");
   });
 });
+
+describe("readerPatch", () => {
+  const MIRROR = TEMPLATE_OWNED_PREFIX;
+  const ZERO = "0000000000000000000000000000000000000000";
+  const A = "a".repeat(40);
+  const B = "b".repeat(40);
+  const C = "c".repeat(40);
+  const hunk = "@@ -1 +1 @@\n-old\n+new\n";
+  // One file's section, as git writes it.
+  const modified = (path: string, blob = B, mode = "100644") => `diff --git a/${path} b/${path}\nindex ${A}..${blob} ${mode}\n--- a/${path}\n+++ b/${path}\n${hunk}`;
+  const created = (path: string, blob = B, mode = "100644") => `diff --git a/${path} b/${path}\nnew file mode ${mode}\nindex ${ZERO}..${blob}\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+new\n`;
+  const deleted = (path: string) => `diff --git a/${path} b/${path}\ndeleted file mode 100644\nindex ${A}..${ZERO}\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n`;
+  const text = (patch: Buffer) => patch.toString("latin1");
+  const read = (patch: string) => text(readerPatch(Buffer.from(patch, "latin1")));
+
+  it("leaves out a mirror whose root section has the same after-blob and mode", () => {
+    assert.equal(read(modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`)), modified("scripts/a.sh"));
+    assert.equal(read(modified(`${MIRROR}scripts/a.sh`) + modified("scripts/a.sh")), modified("scripts/a.sh"), "whichever comes first");
+  });
+
+  it("keeps a mirror whose after-blob differs from the root copy's: drift is for the reviewers to see", () => {
+    const patch = modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`, C);
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("keeps a mirror whose mode differs from the root copy's", () => {
+    const patch = modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`, B, "100755");
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("reads a mode change from new mode, and keeps a mirror whose new mode differs", () => {
+    const withNewMode = (path: string, mode: string) => `diff --git a/${path} b/${path}\nold mode 100644\nnew mode ${mode}\nindex ${A}..${B}\n--- a/${path}\n+++ b/${path}\n${hunk}`;
+
+    assert.equal(read(withNewMode("x.sh", "100755") + withNewMode(`${MIRROR}x.sh`, "100755")), withNewMode("x.sh", "100755"));
+    const drift = withNewMode("x.sh", "100755") + withNewMode(`${MIRROR}x.sh`, "100644");
+    assert.equal(read(drift), drift);
+  });
+
+  it("keeps a mirror with no root section in the patch, and always keeps a root section", () => {
+    const alone = modified(`${MIRROR}scripts/a.sh`);
+    const root = modified("scripts/a.sh");
+
+    assert.equal(read(alone), alone);
+    assert.equal(read(root), root);
+    assert.equal(read(root + modified(`${MIRROR}scripts/other.sh`)), root + modified(`${MIRROR}scripts/other.sh`));
+  });
+
+  it("leaves out a mirror when both sides are deleted, or both are new files", () => {
+    assert.equal(read(deleted("scripts/a.sh") + deleted(`${MIRROR}scripts/a.sh`)), deleted("scripts/a.sh"));
+    assert.equal(read(created("scripts/a.sh") + created(`${MIRROR}scripts/a.sh`)), created("scripts/a.sh"));
+  });
+
+  it("keeps a mirror that is deleted while its root copy is not", () => {
+    const patch = modified("scripts/a.sh") + deleted(`${MIRROR}scripts/a.sh`);
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("leaves unrelated sections and the bytes of the kept ones untouched", () => {
+    const patch = modified("docs/a.md") + modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`) + modified("src/b.ts");
+
+    assert.equal(read(patch), modified("docs/a.md") + modified("scripts/a.sh") + modified("src/b.ts"));
+  });
+
+  it("keeps a section whose header is quoted or can't be read, and one with no after-blob", () => {
+    const quoted = `diff --git "a/caf\\303\\251.sh" "b/caf\\303\\251.sh"\nindex ${A}..${B} 100644\n--- "a/caf\\303\\251.sh"\n+++ "b/caf\\303\\251.sh"\n${hunk}`;
+    const mirrorQuoted = quoted.replaceAll("caf", `${MIRROR}caf`);
+    const modeOnly = (path: string) => `diff --git a/${path} b/${path}\nold mode 100644\nnew mode 100755\n`;
+
+    assert.equal(read(quoted + mirrorQuoted), quoted + mirrorQuoted);
+    assert.equal(read(modeOnly("x.sh") + modeOnly(`${MIRROR}x.sh`)), modeOnly("x.sh") + modeOnly(`${MIRROR}x.sh`));
+    assert.equal(read("diff --git garbage\n"), "diff --git garbage\n");
+  });
+
+  it("keeps a section whose two halves of the header name different paths, which a --no-renames patch never holds", () => {
+    const odd = `diff --git a/scripts/a.sh b/${MIRROR}scripts/a.sh\nindex ${A}..${B} 100644\n--- a/scripts/a.sh\n+++ b/${MIRROR}scripts/a.sh\n${hunk}`;
+    const patch = modified("scripts/a.sh") + odd;
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("keeps a path that is one character off the Owned prefix", () => {
+    const seed = `${MIRROR.replace("template/owned/", "template/seed/")}scripts/a.sh`;
+    const patch = modified("scripts/a.sh") + modified(seed);
+
+    assert.equal(read(patch), patch);
+    assert.equal(read(modified("scripts/a.sh") + modified(`${MIRROR.slice(0, -1)}x/scripts/a.sh`)), modified("scripts/a.sh") + modified(`${MIRROR.slice(0, -1)}x/scripts/a.sh`));
+  });
+
+  it("returns the very same bytes when nothing is left out, and keeps every byte of the rest", () => {
+    const bytes = Buffer.concat([Buffer.from(modified("a.ts")), Buffer.from([0x80, 0xff, 0x0d, 0x00, 0xe2, 0x80, 0xa8, 0x0a]), Buffer.from(modified("b.ts").replace("new", "new\u00e9"), "latin1")]);
+
+    assert.equal(readerPatch(bytes), bytes);
+    const withMirror = Buffer.concat([bytes, Buffer.from(modified("scripts/a.sh")), Buffer.from(modified(`${MIRROR}scripts/a.sh`))]);
+    assert.ok(readerPatch(withMirror).equals(Buffer.concat([bytes, Buffer.from(modified("scripts/a.sh"))])));
+  });
+
+  it("starts a section at an LF-delimited header only: a carriage return in a changed line is content", () => {
+    const tricky = `diff --git a/x.sh b/x.sh\nindex ${A}..${B} 100644\n--- a/x.sh\n+++ b/x.sh\n@@ -1 +1 @@\n-old\n+progress\rdiff --git a/${MIRROR}x.sh b/${MIRROR}x.sh\n`;
+
+    assert.equal(read(tricky + modified("y.sh") + modified(`${MIRROR}y.sh`)), tricky + modified("y.sh"));
+  });
+
+  it("matches the sections of a path by their order: a type change is two sections, deleted then created", () => {
+    const typeChange = (path: string) => deleted(path) + created(path, B, "120000");
+
+    assert.equal(read(typeChange("l.sh") + typeChange(`${MIRROR}l.sh`)), typeChange("l.sh"), "both mirror sections go");
+    const oneSide = typeChange("l.sh") + deleted(`${MIRROR}l.sh`);
+    assert.equal(read(oneSide), oneSide, "a mirror that only deletes differs from a root that also creates");
+    const otherMode = typeChange("l.sh") + deleted(`${MIRROR}l.sh`) + created(`${MIRROR}l.sh`, B, "100644");
+    assert.equal(read(otherMode), otherMode, "a mirror whose second section differs is kept whole");
+  });
+
+  it("leaves out a symlink or submodule mirror only when blob and mode both match", () => {
+    assert.equal(read(created("l", B, "120000") + created(`${MIRROR}l`, B, "120000")), created("l", B, "120000"));
+    assert.equal(read(created("m", B, "160000") + created(`${MIRROR}m`, B, "160000")), created("m", B, "160000"));
+    const drift = created("m", B, "160000") + created(`${MIRROR}m`, C, "160000");
+    assert.equal(read(drift), drift);
+  });
+
+  it("compares a created file with a modified one by the state it ends in", () => {
+    assert.equal(read(created("a.sh") + modified(`${MIRROR}a.sh`)), created("a.sh"), "same blob and mode: dropped");
+    const deletedRoot = deleted("a.sh") + modified(`${MIRROR}a.sh`);
+    assert.equal(read(deletedRoot), deletedRoot, "a deleted root against a modified mirror: kept");
+    const modeDrift = created("a.sh") + created(`${MIRROR}a.sh`, B, "100755");
+    assert.equal(read(modeDrift), modeDrift, "created with a different mode: kept");
+  });
+
+  it("returns an empty patch for an empty patch, and keeps text before the first header", () => {
+    assert.equal(read(""), "");
+    assert.equal(read("preamble\n" + modified("a.ts")), "preamble\n" + modified("a.ts"));
+  });
+});
+
+describe("a branch that holds Template mirrors", () => {
+  const MIRROR = TEMPLATE_OWNED_PREFIX;
+  // Commit one file at a path below the repository, creating its folders.
+  const commitAt = (file: string, content: string, message: string) => {
+    mkdirSync(dirname(join(repo, file)), { recursive: true });
+    commit(repo, file, content, message);
+  };
+
+  it("prepares a patch with the mirror and a read patch without it, keyed by the whole diff", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+
+    const round = prepareRound(repo, {});
+
+    assert.match(round.patch.toString("utf8"), new RegExp(`diff --git a/${MIRROR.replaceAll("/", "\\/")}scripts/a.sh`));
+    assert.doesNotMatch(round.readPatch.toString("utf8"), /template\/owned/);
+    assert.match(round.readPatch.toString("utf8"), /diff --git a\/scripts\/a\.sh/);
+    assert.equal(round.key, patchKey(round.patch));
+    assert.notEqual(round.key, patchKey(round.readPatch));
+    assert.equal(round.key, diffKey(repo, mergeBase(repo)), "the key is that of the whole diff, as `key` prints it");
+  });
+
+  it("has prepare write the read patch to diff.patch and print the key of the whole diff", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    const dir = join(root, "run");
+
+    const [key] = cli(["prepare", dir]).out.trim().split("\n") as [string];
+
+    assert.doesNotMatch(readFileSync(join(dir, "diff.patch"), "utf8"), /template\/owned/);
+    assert.equal(key, cli(["key"]).out.trim());
+  });
+
+  it("leaves a verbatim mirror out of the fixes of a later round, and keeps a fix that touches a mirror alone", () => {
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    commitAt(`${MIRROR}scripts/only.sh`, "echo only\n", "a mirror alone");
+
+    const round = prepareRound(repo, { since: { commit: head, preparedHead: head } });
+
+    assert.doesNotMatch(round.readFixes!.toString("utf8"), /owned\/scripts\/a\.sh/);
+    assert.match(round.readFixes!.toString("utf8"), /owned\/scripts\/only\.sh/);
+    assert.match(round.fixes!.toString("utf8"), /owned\/scripts\/a\.sh/);
+  });
+
+  it("has prepare write the read fixes to fixes.patch and print the key of the whole diff", () => {
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    commitAt(`${MIRROR}scripts/only.sh`, "echo only\n", "a mirror alone");
+
+    const [key] = cli(["prepare", dir, head]).out.trim().split("\n") as [string];
+
+    const fixes = readFileSync(join(dir, "fixes.patch"), "utf8");
+    assert.doesNotMatch(fixes, /owned\/scripts\/a\.sh/);
+    assert.match(fixes, /owned\/scripts\/only\.sh/);
+    assert.equal(key, cli(["key"]).out.trim());
+  });
+
+  it("still asks for a new review when only a mirror changes", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    record([finding()]);
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
+
+    commitAt(`${MIRROR}scripts/a.sh`, "echo changed\n", "the mirror drifts");
+
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false, "a change in a mirror alone is a change to the diff the review covers");
+  });
+
+  it("has a root-and-mirror change keep the key of the whole diff whether or not the mirror is read", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    const before = prepareRound(repo, {}).key;
+
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a2\n", "only the mirror changes");
+    const after = prepareRound(repo, {});
+
+    assert.notEqual(after.key, before, "the mirror's content is in the key");
+    assert.match(after.readPatch.toString("utf8"), /owned\/scripts\/a\.sh/, "a mirror that no longer matches its root copy is read");
+  });
+});
+

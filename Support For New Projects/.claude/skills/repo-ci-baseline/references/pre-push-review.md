@@ -32,7 +32,8 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   checklist), and replaces a function that two rounds in a row fixed instead of patching it again. A branch past 30 files or 3,000 lines (a file and its Template mirror
   counting once) gets a warning in round 1 to consider splitting it; the review goes on.
 - The reviewers read less than the key covers. `prepare` leaves out of `diff.patch` and `fixes.patch` a Template mirror that is a verbatim copy of a root file in the same
-  patch (the same after-blob and mode, or both deleted); a mirror that differs from its root copy, has no root section, or has a quoted or unreadable header stays. The key
+  patch (the same after-blob and mode, or both deleted; a path git writes two sections for, such as a symlink that
+  becomes a file, must match section for section); a mirror that differs from its root copy, has no root section, or has a quoted or unreadable header stays. The key
   printed is that of the whole diff, so a change in a mirror alone still needs a new review. One agent per lens is already how the round starts; splitting round 1 by file group is not done.
 - Critical and Warning findings left open (because they need a person, or the last, review-only round raised them) block the push until the person fixes them or accepts
   them with `scripts/review.sh accept` (never on their behalf).
@@ -147,7 +148,7 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   diff just the Docs and Repo conventions lenses. `LENS_APPLIES` holds a path rule per
   lens, and `host-review.test.mts` fails when `lenses.md` gains, loses or rewords a lens, or the model, effort, tools or round limit differ.
 - The host does the same as `prepare`: it writes `readPatch` and `readFixes` (the patches without verbatim mirrors), applies the size limit, the lens choice and the PR note's
-  read paths to them, and tells every reviewer the mirrors are left out; the key it records is that of the whole diff.
+  read paths to them, and tells every reviewer the mirrors are left out when a read patch is shorter than its whole patch; the key it records is that of the whole diff.
 - Round 1 logs the branch-size warning once (`sizeWarning`, the text `prepare` writes to stderr): past 30 files or 3,000 lines, a file and its
   Template mirror counting once. It advises and never stops the review.
 - A repo's own `code-review` skill reaches the host reviewers only as lens rows, read from the main checkout. They read `CLAUDE.md`, `CONTEXT.md`,

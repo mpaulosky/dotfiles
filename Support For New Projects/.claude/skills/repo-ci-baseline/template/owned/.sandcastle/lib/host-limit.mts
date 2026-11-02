@@ -31,6 +31,25 @@ export const hostExecFileSync = ((file: string, ...rest: unknown[]) => {
   return args === undefined ? execFileSync(file, options as never) : execFileSync(file, args, options as never);
 }) as typeof execFileSync;
 
+// Whether a Docker call has stalled this run (withinDockerLimit gave up on one). The call can't be cancelled, so it may still hold a
+// child process or socket that keeps Node alive after the run's work is done: see exitAfterStall.
+let dockerCallStalled = false;
+export const dockerCallHasStalled = (): boolean => dockerCallStalled;
+
+// How long the run may take to exit by itself after its cleanup, once a Docker call has stalled, in seconds.
+export const STALL_EXIT_GRACE_SECONDS = 10;
+
+// Called once the run's reports and cleanup are done. When a Docker call stalled, whatever it left referenced may keep Node running
+// (process.exitCode doesn't force an exit), so the process is ended after `graceSeconds` with the code the run set. The timer is
+// unref'd, so a process that does end by itself isn't held for it. Does nothing when no call stalled. `exit` is for tests.
+export function exitAfterStall(
+  graceSeconds: number = STALL_EXIT_GRACE_SECONDS,
+  exit: (code: number) => void = (code) => process.exit(code),
+): void {
+  if (!dockerCallStalled) return;
+  setTimeout(() => exit(Number(process.exitCode ?? 0)), graceSeconds * 1000).unref();
+}
+
 // Waits for a Docker call (creating or closing a sandbox) for at most `minutes`, and throws StalledStepError when it hasn't
 // answered by then: the call itself can't be cancelled, so it is left running, and `onLate` gets whatever it returns if it
 // returns after all (a sandbox created too late is closed by the caller's `onLate`). A call that fails inside the limit
@@ -63,6 +82,7 @@ export async function withinDockerLimit<T>(
   const limit = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       gaveUp = true;
+      dockerCallStalled = true;
       reject(new StalledStepError(`${what} didn't finish within ${minutes} minute${minutes === 1 ? "" : "s"}, so the host gave up on it.`));
     }, minutes * 60_000);
   });

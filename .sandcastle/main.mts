@@ -180,6 +180,7 @@ import {
 } from "./lib/report.mts";
 import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
+import { exitAfterStall } from "./lib/host-limit.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
 import { umbrellaPhase } from "./lib/umbrella.mts";
 import { findWork } from "./lib/work.mts";
@@ -564,6 +565,8 @@ try {
     console.error(`\n✗ Intake stopped: ${reason}. First error: ${firstError}`);
   }
   process.exitCode = intakeStopExitCode(intakeStopReport.items());
+  // A Docker call the host gave up on may still hold something that keeps Node running; end the process after a grace period.
+  exitAfterStall();
 }
 
 console.log("\nAll done.");

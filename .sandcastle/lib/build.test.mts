@@ -3363,6 +3363,28 @@ describe("createCheckedSandbox's step limits", () => {
     assert.equal(wasClosed(), true);
   });
 
+  it("leaves a sandbox it makes too late in place when its worktree fails the check, or the check throws", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    for (const check of [() => ["its .git doesn't point into this repository"], () => { throw new Error("git rev-parse failed"); }]) {
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const lateChecks: string[] = [];
+
+      await assert.rejects(
+        createCheckedSandbox("feature", create, () => identity, (path) => (path === sandbox.worktreePath ? (lateChecks.push(path), check()) : []), { dockerCallMinutes: 0.001 }),
+        StalledStepError,
+      );
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(wasClosed(), false);
+      assert.deepEqual(lateChecks, [sandbox.worktreePath]);
+    }
+    assert.equal(logged.filter((line) => /left the late sandbox/.test(line)).length, 2, logged.join("\n"));
+  });
+
   it("still fails with the original error when the close of a refused sandbox hangs, and logs the hung close", async (t) => {
     const logged: string[] = [];
     t.mock.method(console, "error", (line: string) => void logged.push(String(line)));

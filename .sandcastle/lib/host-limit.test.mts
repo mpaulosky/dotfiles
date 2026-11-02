@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
-import { DOCKER_CALL_LIMIT_MINUTES, HOST_COMMAND_LIMIT_MINUTES, closeAfterWork, closeWithinLimit, hostExecFileSync, hostExecOptions, withinDockerLimit } from "./host-limit.mts";
+import { spawn } from "node:child_process";
+import { DOCKER_CALL_LIMIT_MINUTES, dockerCallHasStalled, exitAfterStall, HOST_COMMAND_LIMIT_MINUTES, closeAfterWork, closeWithinLimit, hostExecFileSync, hostExecOptions, withinDockerLimit } from "./host-limit.mts";
 
 const never = () => new Promise<never>(() => undefined);
 
@@ -308,5 +309,41 @@ describe("the host's calls", () => {
       .filter((name) => /=\s*execFileSync\b/.test(readFileSync(new URL(name, dir), "utf8").replace(/^\s*\/\/.*$/gm, "")));
 
     assert.deepEqual(bare, []);
+  });
+});
+
+describe("exitAfterStall", () => {
+  it("calls exit with the run's code after the grace period once a Docker call stalled, and has unref'd its timer", async () => {
+    await assert.rejects(() => withinDockerLimit("creating the sandbox", never(), 0.001), StalledStepError);
+    assert.equal(dockerCallHasStalled(), true);
+    const before = process.exitCode;
+    process.exitCode = 4;
+    try {
+      const exits: number[] = [];
+      exitAfterStall(0.01, (code) => void exits.push(code));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      assert.deepEqual(exits, [4]);
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
+  it("ends a process that a referenced child keeps running after a Docker call stalled, with the code the run set", async () => {
+    const script = [
+      'import { spawn } from "node:child_process";',
+      `import { exitAfterStall, withinDockerLimit } from ${JSON.stringify(new URL("./host-limit.mts", import.meta.url).href)};`,
+      'spawn("sleep", ["30"], { stdio: "ignore" });',
+      'await withinDockerLimit("creating the sandbox", new Promise(() => undefined), 0.001).catch(() => undefined);',
+      "process.exitCode = 3;",
+      "exitAfterStall(0.3);",
+    ].join("\n");
+    const started = Date.now();
+
+    const child = spawn(process.execPath, ["--input-type=module", "--import", "tsx", "-e", script], { stdio: "ignore" });
+    const code = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+
+    assert.equal(code, 3);
+    assert.ok(Date.now() - started < 20_000);
   });
 });

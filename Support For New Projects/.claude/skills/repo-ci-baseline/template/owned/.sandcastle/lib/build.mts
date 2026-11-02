@@ -521,6 +521,18 @@ export async function createCheckedSandbox(
   }
   // Docker has no timeout of its own: a create that never answers stalls the step, and a sandbox it makes too late is closed.
   const sandbox = await withinDockerLimit("creating the sandbox", create(branch), stepLimits.dockerCallMinutes, (late) => {
+    // Closing runs git in the worktree, which the create's hooks may have redirected, so it gets the check a normal cleanup gets. One that
+    // fails the check, or the check itself failing, leaves the sandbox and its worktree in place.
+    let tampered: string[];
+    try {
+      tampered = checkWorktree(late.worktreePath);
+    } catch (checkError) {
+      tampered = [`checking the worktree failed: ${checkError instanceof Error ? checkError.message : String(checkError)}`];
+    }
+    if (tampered.length > 0) {
+      console.error(`  ⚠ left the late sandbox at ${terminalText(late.worktreePath)} in place, as its worktree was tampered with: ${terminalText(tampered.join("; "))}`);
+      return;
+    }
     void late.close().catch(() => undefined);
   });
   let limited: sandcastle.Sandbox;

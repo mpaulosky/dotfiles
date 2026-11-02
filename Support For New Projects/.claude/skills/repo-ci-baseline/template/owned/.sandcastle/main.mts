@@ -221,8 +221,8 @@ try {
 runLimits.start(budgetMinutes);
 console.log(`Time budget: ${budgetMinutes} minutes`);
 
-// How the run ended, for the run report: set to "finished" or "stopped" by
-// the try below, so anything that throws past it reads as a crash.
+// How the run ended, for the run report: set to "finished", "stopped" or "stalled"
+// (lib/report.mts#runEnding) by the try below, so anything that throws past it reads as a crash.
 let ending: RunEnding = { kind: "crashed" };
 
 // Whether protectHostGit() has pinned every git command's environment. Only

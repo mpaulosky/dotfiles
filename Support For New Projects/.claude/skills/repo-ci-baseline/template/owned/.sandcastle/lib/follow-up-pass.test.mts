@@ -1622,17 +1622,23 @@ describe("followUpPassPhase", () => {
     assert.equal(report.items()[0]?.number, PR_NUMBER);
   });
 
-  it("rethrows the StalledStepError even when another pass's usage stop settled first", async () => {
-    const usage = new UncountedStopError("usage limit reached");
-    const usageSandbox = sandboxFake({ roleFailing: ["follow-up"], roleFailWith: { "follow-up": usage } });
-    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
-    passHost.createSandbox = async (branch) => {
-      calls.createSandbox.push(branch);
-      return branch === BRANCH ? usageSandbox.sandbox : stalledSandbox();
-    };
+  // Results are walked in target order, so each order of the two stops needs its own test: "last stop wins" passes only the first.
+  for (const [title, stalledBranch] of [
+    ["a usage stop on an earlier target", "feature/51-tidy-widget"],
+    ["a usage stop on a later target", BRANCH],
+  ] as const) {
+    it(`rethrows the StalledStepError over ${title}`, async () => {
+      const usage = new UncountedStopError("usage limit reached");
+      const usageSandbox = sandboxFake({ roleFailing: ["follow-up"], roleFailWith: { "follow-up": usage } });
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+      passHost.createSandbox = async (branch) => {
+        calls.createSandbox.push(branch);
+        return branch === stalledBranch ? stalledSandbox() : usageSandbox.sandbox;
+      };
 
-    await assert.rejects(() => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost), StalledStepError);
-  });
+      await assert.rejects(() => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost), StalledStepError);
+    });
+  }
 });
 
 // The pass's other give-ups and guards, each a hand-back with no push unless

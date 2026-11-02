@@ -188,13 +188,49 @@ describe("closeAfterWork", () => {
   });
 });
 
-// Whether a module's source uses node:child_process as a value: any import that isn't `import type …` or all `type X` names, or a
-// require() or import() call. Comments don't count.
+// The source without its comments. It walks the text so a `/*` or `//` inside a string, or a `/*` inside a line comment, isn't taken for
+// a comment's start; strings stay, since the module name is one. A quote inside a regex literal can still mislead it, which only
+// matters for a file that also hides a child_process import after one.
+function withoutComments(source: string): string {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const here = source[i]!;
+    const next = source[i + 1];
+    if (here === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+    } else if (here === "/" && next === "*") {
+      i += 2;
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) i++;
+      i += 2;
+    } else if (here === '"' || here === "'" || here === "`") {
+      out += here;
+      i++;
+      while (i < source.length && source[i] !== here) {
+        if (source[i] === "\\") out += source[i++]!;
+        out += source[i++] ?? "";
+      }
+      out += source[i] ?? "";
+      i++;
+    } else {
+      out += here;
+      i++;
+    }
+  }
+  return out;
+}
+
+// Whether a module's source uses node:child_process as a value: any import or re-export of it that isn't `import type …` /
+// `export type …` or all `type X` names, or a require() or import() call. Comments don't count.
 function usesChildProcessAsValue(source: string): boolean {
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  if (/\b(?:require|import)\s*\(\s*["'](?:node:)?child_process["']/.test(code)) return true;
-  return [...code.matchAll(/\bimport\s+((?:(?!\bimport\b)[^;])*?)\s*from\s*["'](?:node:)?child_process["']/g)].some(([, clause]) => {
+  const code = withoutComments(source);
+  if (/\b(?:require|import)\s*\(\s*["'`](?:node:)?child_process["'`]/.test(code)) return true;
+  const statement = /\b(?:import|export)\s+((?:(?!\b(?:import|export)\b)[^;])*?)\s*from\s*["'`](?:node:)?child_process["'`]/g;
+  return [...code.matchAll(statement)].some(([, clause]) => {
     if (/^type\b/.test(clause!)) return false;
+    // A default or namespace binding (`cp`, `cp, { … }`, `* as cp`, `*`) is a value whatever the braces hold.
+    const beforeBraces = clause!.split("{")[0]!.replace(/,/g, "").trim();
+    if (beforeBraces !== "") return true;
     const names = /\{([^}]*)\}/.exec(clause!)?.[1]?.split(",").map((name) => name.trim()).filter(Boolean);
     return names === undefined || names.some((name) => !/^type\s/.test(name));
   });
@@ -211,6 +247,12 @@ describe("usesChildProcessAsValue", () => {
       'const cp = await import("node:child_process");',
       'const cp = require("child_process");',
       'import type { A } from "./a.mts"\nimport { execFileSync } from "node:child_process"',
+      'export { execFileSync } from "node:child_process";',
+      'export * from "child_process";',
+      'import cp, { type A } from "node:child_process";',
+      'const cp = require(`child_process`);',
+      '// see .github/workflows/**\nimport { execFileSync } from "node:child_process";\n/** doc */',
+      'const g = ".github/workflows/*.yml";\nconst cp = require("child_process");\n/** x */',
     ]) {
       assert.equal(usesChildProcessAsValue(source), true, source);
     }
@@ -224,6 +266,8 @@ describe("usesChildProcessAsValue", () => {
       '// import { execFileSync } from "node:child_process";',
       '/* import { execFileSync } from "node:child_process"; */',
       'import { x } from "./x.mts";',
+      'export type { A } from "node:child_process";',
+      'const s = "import { execFileSync } from \\"node:child_process\\"";',
     ]) {
       assert.equal(usesChildProcessAsValue(source), false, source);
     }

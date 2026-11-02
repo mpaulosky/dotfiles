@@ -779,6 +779,16 @@ describe("buildIssue", () => {
     for (const [length, kept] of [[499, 499], [500, 500], [501, 500]] as const) {
       assert.equal(logSafeGateOutput("y".repeat(length), (text) => text), `    | ${"y".repeat(kept)}`, `${length} characters`);
     }
+    // The shapes a text can end in.
+    const same = (text: string) => logSafeGateOutput(text, (value) => value);
+    assert.equal(same("a\r\nb\r\n"), "    | a\n    | b");
+    assert.equal(same(""), "    | ");
+    assert.equal(same("\n"), "    | ");
+    assert.equal(same("a\n\n"), "    | a\n    | ");
+    // A text the real publicErrorText withholds comes out as one prefixed line.
+    const withheld = logSafeGateOutput(`${"y".repeat(900)}\nghp_abc`, (value) => publicErrorText(value, (cleaned) => cleaned.includes("ghp_")));
+    assert.match(withheld, /^    \| \(This text isn't shown: it looked like it held a secret\./);
+    assert.ok(!withheld.includes("\n"), withheld);
     // A character outside the basic plane counts once, so the cut can't split it.
     assert.equal(logSafeGateOutput(`${"y".repeat(499)}\u{1F600}z`, (text) => text), `    | ${"y".repeat(499)}\u{1F600}`);
   });

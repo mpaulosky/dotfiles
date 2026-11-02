@@ -161,6 +161,21 @@ describe("runCheckpoint", () => {
       assert.ok(lines.includes("checkpoint 1: the first red gate run couldn't be logged"), lines.join("\n"));
     });
 
+    it("rethrows the original error when the log throws on both diagnostic lines, the fallback included", async () => {
+      const stall = new StalledStepError("stalled");
+      const s = { ...steps([red("one")]), scrub, alive: async () => Promise.reject(stall) };
+      const lines: string[] = [];
+      const throwing = (line: string) => {
+        lines.push(line);
+        // The checkpoint's own lines are outside the diagnostic: a log that throws there is the error itself.
+        if (line.includes("the first red gate run")) throw new Error("the log broke");
+      };
+
+      await assert.rejects(() => runCheckpoint(1, s, throwing), (error: unknown) => error === stall);
+
+      assert.equal(lines.filter((line) => line.includes("the first red gate run")).length, 2, lines.join("\n"));
+    });
+
     it("rethrows the original error when the scrub or the log throws", async () => {
       const stall = new StalledStepError("stalled");
       const failing = (scrubber: (text: string) => string) => ({ ...steps([red("one")]), scrub: scrubber, alive: async () => Promise.reject(stall) });
@@ -185,6 +200,7 @@ describe("runCheckpoint", () => {
       await runCheckpoint(1, { ...steps([green]), scrub }, (line) => lines.push(line));
 
       assert.deepEqual(logged(lines), []);
+      assert.ok(!lines.some((line) => line.includes("couldn't be logged")), lines.join("\n"));
     });
   });
 

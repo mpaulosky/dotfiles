@@ -922,7 +922,8 @@ const LOGGED_LINE_LIMIT = 500;
 // through `publicError`, and each line is cleaned again, cut to
 // LOGGED_LINE_LIMIT characters (after the check, so the cut can't split a token
 // it has passed) and given a prefix no workflow command can start with. A final
-// newline is dropped, so the caller's line count isn't spent on a blank line.
+// newline is dropped even when `publicError` doesn't trim, so the caller's line
+// count isn't spent on a blank line.
 // terminalText folds runs of whitespace into one space and trims each line, so
 // the log is not byte for byte what the gate printed.
 export function logSafeGateOutput(text: string, publicError: (text: string) => string): string {

@@ -46,8 +46,8 @@ export type CheckpointSteps = {
   // throws), that output has no other way out, so runCheckpoint logs its tail
   // through this before rethrowing. Without it nothing is logged, since the
   // output is written by agents and may hold a secret. A scrub that throws, or a
-  // log that does, is ignored: the error that ended the checkpoint is the one
-  // rethrown.
+  // log that does, doesn't replace the error that ended the checkpoint, and a
+  // line says the output couldn't be logged.
   scrub?(text: string): string;
 };
 

@@ -531,6 +531,15 @@ describe("parseReviewerAnswer's edges", () => {
     assert.throws(() => parseReviewerAnswer(`Format: <findings>[]</findings>\n<findings>[${bad}`), ReviewerAnswerError);
   });
 
+  it("refuses a malformed or cut-short answer whose `[` comes after a long run of whitespace, and ignores a tag with no `[` after it", () => {
+    const bad = `{ "lens": "Bar", }`;
+    for (const gap of [" ".repeat(200), "\n ".repeat(100)]) {
+      assert.throws(() => parseReviewerAnswer(`Format: <findings>[]</findings>\n<findings>${gap}[${bad}]</findings>`), /not valid JSON/);
+      assert.throws(() => parseReviewerAnswer(`Format: <findings>[]</findings>\n<findings>${gap}[${bad}`), /not valid JSON/);
+    }
+    assert.deepEqual(parseReviewerAnswer(`<findings>[]</findings>\nThe tag is <findings>${" ".repeat(200)}and no array.`), []);
+  });
+
   it("reads the real answer after more than the capped number of quoted blocks", () => {
     const answer = [raw()];
     const quotes = `<findings>[]</findings> `.repeat(25);

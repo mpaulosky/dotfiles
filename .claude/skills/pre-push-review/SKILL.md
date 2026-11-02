@@ -119,10 +119,12 @@ already holds the issue or the PR (Sandcastle), use that.
 
 ### 4. Review the diff
 
-Run `scripts/review.sh prepare <run>`. It writes the branch's whole diff against its merge base with `origin/main` to
-`<run>/diff.patch` and prints two lines on stdout, the diff's key and HEAD: keep both, since they name exactly the code this round
-reviews. In a later round, run `scripts/review.sh prepare <run> <HEAD the round before printed>`: it also writes the
-diff of that round's fixes to `<run>/fixes.patch`. Write to `<run>/decisions.md` the earlier decisions from step 3 and every finding this run's earlier rounds
+Run `scripts/review.sh prepare <run>`. It writes the branch's diff against its merge base with `origin/main` to
+`<run>/diff.patch`, without the Template mirror copies that are verbatim copies of a root file in the same patch (`test.sh` already fails when
+a copy drifts, so reading both doubles the reading; a mirror that differs from its root copy, or has none, stays), and prints two lines on stdout, the diff's
+key and HEAD: keep both, since they name exactly the code this round reviews. The key is that of the whole diff, mirrors included, so a change in a
+mirror alone still needs a new review. In a later round, run `scripts/review.sh prepare <run> <HEAD the round before printed>`: it also writes the
+diff of that round's fixes to `<run>/fixes.patch`, filtered the same way. Write to `<run>/decisions.md` the earlier decisions from step 3 and every finding this run's earlier rounds
 raised, each with its id, outcome and reason, so no round raises again what an earlier one fixed or dismissed. Label
 accepted and open ones "raise again if still in the code". Give a security finding (every finding the report marks
 `(security)`: a Warning, one whose lens names security, or any not marked `security: false`) whose
@@ -159,7 +161,8 @@ Give every reviewer:
 - The worktree's absolute path (`git rev-parse --show-toplevel`): every repository file is read under it by absolute
   path, and it is Grep's and Glob's `path`, or they search the checkout the session started in.
 - [review-bar.md](review-bar.md), its lens's row, the **Severities** table above, and `<run>/diff.patch` (in a later
-  round, `<run>/fixes.patch` to review and `<run>/diff.patch` as context).
+  round, `<run>/fixes.patch` to review and `<run>/diff.patch` as context). Say that Template mirror copies identical to the root copy are left out
+  of the patch, so the root file is the one to read.
 - The sources of truth to read for the files it reviews: [lenses.md](lenses.md), and the repository's own guidance
   where it has it: `.claude/skills/code-review/SKILL.md`, `.sandcastle/CODING_STANDARDS.md` (or `docs/CODING_STANDARDS.md`, where the repository has
   one), `CLAUDE.md`, `CONTEXT.md`, the ADRs in `docs/adr/` the change touches, and the `.claude/rules/` files whose paths match.

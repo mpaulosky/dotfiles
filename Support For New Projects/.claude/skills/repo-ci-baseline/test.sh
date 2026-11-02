@@ -661,6 +661,16 @@ grep -qF -- '#146' "$adr_0002" \
 for adr in "$adr_0002" "$adr_0004"; do
   grep -qF -- 'mpaulosky/dotfiles#375' "$adr" || fail "${adr#"$skill_dir"/} must cite mpaulosky/dotfiles#375"
 done
+# mpaulosky/dotfiles#413: the reviewers read the patch without verbatim Template mirrors, the key still covers the whole diff.
+for mirror_doc in "$owned/.claude/skills/pre-push-review/SKILL.md" "$skill_dir/references/pre-push-review.md"; do
+  grep -qF -- 'verbatim' "$mirror_doc" \
+    || fail "${mirror_doc#"$skill_dir"/} must say the patch leaves out Template mirrors that are verbatim copies of a root file (mpaulosky/dotfiles#413)"
+  tr '\n' ' ' < "$mirror_doc" | tr -s ' ' | grep -qF -- 'a change in a mirror alone still needs a new review' \
+    || fail "${mirror_doc#"$skill_dir"/} must say a change in a mirror alone still needs a new review (mpaulosky/dotfiles#413)"
+done
+grep -qF -- 'identical to the root copy' "$owned/.claude/skills/hardening-review/references/brief.md" \
+  || fail "the hardening-review brief must tell its reviewers that identical Template mirrors are left out (mpaulosky/dotfiles#413)"
+
 # mpaulosky/dotfiles#380: Claude Review reads the Template's file, not an identical root copy; a drifting copy is still read.
 claude_review_wf="$owned/.github/workflows/claude-review.yml"
 for copy_doc in "$adr_0004" "$automerge_doc" "$claude_review_wf"; do

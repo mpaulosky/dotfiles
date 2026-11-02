@@ -116,6 +116,14 @@ describe("reviewerPrompt", () => {
     assert.doesNotMatch(prompt, /fixes\.patch/);
   });
 
+  it("says in every round that verbatim Template mirrors are left out of the patch", () => {
+    for (const hasFixes of [false, true]) {
+      const prompt = reviewerPrompt(args({ round: hasFixes ? 2 : 1, hasFixes }));
+
+      assert.match(prompt, /identical to the root copy are left out of the patch; read the root file/, `hasFixes ${hasFixes}`);
+    }
+  });
+
   it("points a later round at the fixes to review and the whole diff as context", () => {
     const prompt = reviewerPrompt(args({ round: 2, hasFixes: true }));
 

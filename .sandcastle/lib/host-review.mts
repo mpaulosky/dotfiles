@@ -458,20 +458,20 @@ async function runRounds(
     }
     // Both files go through the same time-limited sandbox command; the fixes of a later round are a diff between two commits, so they can
     // outgrow the whole diff (a fixer rewriting a large file holds it twice).
-    const largest = Math.max(prepared.patch.length, prepared.fixes?.length ?? 0);
+    const largest = Math.max(prepared.readPatch.length, prepared.readFixes?.length ?? 0);
     if (largest > MAX_REVIEW_PATCH_BYTES) {
       host.log(`  ✗ the local review failed: round ${round}'s diff is ${largest} bytes, past the limit of ${MAX_REVIEW_PATCH_BYTES}`);
       return { status: "failed", head: prepared.head, reason: "the diff is too large to review" };
     }
-    for (const path of patchPaths(prepared.patch.toString("utf8"))) readPaths.add(path);
+    for (const path of patchPaths(prepared.readPatch.toString("utf8"))) readPaths.add(path);
     // The branch is the same in every round, so only the first says so. It advises and never stops the review.
     const size = round === 1 ? sizeWarning(prepared.patch) : undefined;
     if (size !== undefined) host.log(`  ⚠ ${size}`);
-    await host.writeRunFile(`${runRel}/diff.patch`, prepared.patch);
-    if (prepared.fixes !== undefined) await host.writeRunFile(`${runRel}/fixes.patch`, prepared.fixes);
+    await host.writeRunFile(`${runRel}/diff.patch`, prepared.readPatch);
+    if (prepared.readFixes !== undefined) await host.writeRunFile(`${runRel}/fixes.patch`, prepared.readFixes);
     else await host.removeRunFile(`${runRel}/fixes.patch`);
     await host.writeRunFile(`${runRel}/decisions.md`, decisionsMarkdown(recorded));
-    const reviewers = reviewersFor(patchPaths((prepared.fixes ?? prepared.patch).toString("utf8")), lenses);
+    const reviewers = reviewersFor(patchPaths((prepared.readFixes ?? prepared.readPatch).toString("utf8")), lenses);
     host.log(`  review round ${round}: ${reviewers.map((reviewer) => reviewer.lens).join(", ")}`);
     if (reviewers.length > MAX_REVIEWERS_PER_ROUND) {
       host.log(`  ✗ the local review failed: round ${round} has ${reviewers.length} reviewers, past the limit of ${MAX_REVIEWERS_PER_ROUND} that its time bounds allow`);

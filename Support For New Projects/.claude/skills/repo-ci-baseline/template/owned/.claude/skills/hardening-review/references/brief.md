@@ -12,7 +12,7 @@ You review one branch's diff through the lens your prompt names. You can only re
 ## Where
 
 - Worktree (read every repository file under it by absolute path, and pass it as Grep's and Glob's `path`): <worktree>
-- The whole diff: <run>/diff.patch
+- The whole diff: <run>/diff.patch (Template mirror copies identical to the root copy are left out: read the root file)
 - Pass <N>. <In pass 2 and later: "Read <run>/fixes.patch first, since regressions cluster there, then review the whole
   diff: a problem anywhere counts.">
 - Already decided: <run>/decisions.md. Do not raise again what it records as fixed or dismissed, nor a weakness it lists as a

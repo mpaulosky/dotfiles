@@ -542,9 +542,51 @@ export function patchPaths(patch: string): string[] {
   return [...paths];
 }
 
-// How big a branch a review is asked to cover is counted here. In the dotfiles repository an Owned Template file is held twice, at the repository
-// root and under the path below; in other repositories nothing starts with this prefix, so the pair rule does nothing.
-const TEMPLATE_MIRROR_PREFIX = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+// In the dotfiles repository an Owned Template file is held twice, at the repository root and under this path. In other repositories nothing starts
+// with it, so everything that reads it does nothing there.
+export const TEMPLATE_OWNED_PREFIX = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+
+// The patch the reviewers read: `patch` without the sections of verbatim Template mirrors. A section is a mirror when its path is
+// TEMPLATE_OWNED_PREFIX + <P> and the same patch has a root section for <P> with the same final state (the same after-blob and the same
+// final mode, or both deleted). `test.sh` already fails when a copy drifts, so reading both only doubles the reading. Anything else stays:
+// a mirror with no root section, a mirror that differs from its root copy (drift), a quoted or unreadable header, a section with no after-blob.
+// The key is not computed from this: it stays that of the whole diff. The patch is read at LF only, byte for byte (latin1), so the kept
+// sections are the input's own bytes; the same bytes are returned when nothing is left out.
+export function readerPatch(patch: Buffer): Buffer {
+  const text = patch.toString("latin1");
+  const parts = text.split(/(?<=\n)(?=diff --git )/);
+  const finalState = (part: string): string | undefined => {
+    const end = part.indexOf("\n@@ ");
+    const head = end === -1 ? part : part.slice(0, end);
+    if (/^deleted file mode /m.test(head)) return "deleted";
+    const blob = /^index [0-9a-f]+\.\.([0-9a-f]+)(?: (\d+))?$/m.exec(head);
+    if (blob === null) return undefined;
+    const mode = /^new mode (\d+)$/m.exec(head)?.[1] ?? /^new file mode (\d+)$/m.exec(head)?.[1] ?? blob[2];
+    return mode === undefined ? undefined : `${blob[1]}:${mode}`;
+  };
+  const pathOf = (part: string): string | undefined => {
+    const header = part.slice(0, part.indexOf("\n") === -1 ? undefined : part.indexOf("\n"));
+    if (!header.startsWith("diff --git a/")) return undefined;
+    const path = patchPaths(header)[0];
+    return path !== undefined && header === `diff --git a/${path} b/${path}` ? path : undefined;
+  };
+  const roots = new Map<string, string | undefined>();
+  for (const part of parts) {
+    const path = pathOf(part);
+    if (path !== undefined && !path.startsWith(TEMPLATE_OWNED_PREFIX)) roots.set(path, finalState(part));
+  }
+  const kept = parts.filter((part) => {
+    const path = pathOf(part);
+    if (path === undefined || !path.startsWith(TEMPLATE_OWNED_PREFIX)) return true;
+    const root = roots.get(path.slice(TEMPLATE_OWNED_PREFIX.length));
+    const own = finalState(part);
+    return root === undefined || own === undefined || root !== own;
+  });
+  return kept.length === parts.length ? patch : Buffer.from(kept.join(""), "latin1");
+}
+
+// How big a branch a review is asked to cover is counted here, a file and its Template mirror once.
+const TEMPLATE_MIRROR_PREFIX = TEMPLATE_OWNED_PREFIX;
 
 // The files and lines (added plus deleted) a patch changes, from the hunks. The patch is read line by line at `\n` only: a lone carriage return,
 // or a Unicode line separator, inside a changed line is file content and starts nothing. Sections of the same path (git writes a deletion and an
@@ -761,7 +803,7 @@ export function takenIds(cwd: string, base: string, head: string = headCommit(cw
 // What one review round reads: the whole diff, the fixes since the round before (a later round only), the key the diff
 // has and the commits it was made between. Both the CLI's `prepare` and the host's review (lib/host-review.mts) call
 // prepareRound, so they cannot diverge.
-export type PreparedRound = { patch: Buffer; fixes: Buffer | undefined; key: string; head: string; base: string };
+export type PreparedRound = { patch: Buffer; fixes: Buffer | undefined; readPatch: Buffer; readFixes: Buffer | undefined; key: string; head: string; base: string };
 
 // The body of `prepare` without its file I/O: `head` (HEAD by default) against
 // where it left `main` (origin/main by default), plus, for a later round, the
@@ -776,7 +818,7 @@ export function prepareRound(
   const patch = reviewPatch(cwd, base, head);
   const fixes = since === undefined ? undefined : fixesPatch(cwd, since.preparedHead, since.commit, base, head, main);
   if (typeof fixes === "string") throw new Error(fixes);
-  return { patch, fixes, key: patchKey(patch), head, base };
+  return { patch, fixes, readPatch: readerPatch(patch), readFixes: fixes === undefined ? undefined : readerPatch(fixes), key: patchKey(patch), head, base };
 }
 
 // Record a review of HEAD's diff, replacing any ledger at the same diff.
@@ -1192,7 +1234,9 @@ function sameFile(cwd: string, a: string, b: string): boolean {
 const USAGE = `Usage: scripts/review.sh <command>
   prepare <absolute dir> [<since>]
                          write HEAD's diff to <dir>/diff.patch for the reviewers, and with <since> (the HEAD
-                         the round before printed) the fixes since to <dir>/fixes.patch; print the key, then HEAD
+                         the round before printed) the fixes since to <dir>/fixes.patch, both without the
+                         Template mirrors that are verbatim copies of a root file in the same patch; print
+                         the key of the whole diff, then HEAD
   key                    print the ledger key of HEAD's diff against origin/main
   check [<base>]         the gate's check: exit 1 unless HEAD's diff was reviewed clean
   record <file>          record a review from JSON ({ reviewedKey, reviewedHead, rounds, reviewerAgent, pr, findings }); - reads stdin
@@ -1240,8 +1284,9 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
         const preparedHead = existsSync(headFile) ? readFileSync(headFile, "utf8").trim() : undefined;
         const round = prepareRound(cwd, rest[1] === undefined ? {} : { since: { commit: rest[1], preparedHead } });
         mkdirSync(rest[0], { recursive: true });
-        writeFileSync(join(rest[0], "diff.patch"), round.patch);
-        if (round.fixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), round.fixes);
+        // What the reviewers read, without the verbatim Template mirrors; the key printed below is that of the whole diff.
+        writeFileSync(join(rest[0], "diff.patch"), round.readPatch);
+        if (round.readFixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), round.readFixes);
         // The HEAD this round reads, for the next round's fixesPatch.
         writeFileSync(join(rest[0], "head"), `${round.head}\n`);
         // On stderr, since callers read the two lines on stdout. Round 1 only: a later round is the same branch.

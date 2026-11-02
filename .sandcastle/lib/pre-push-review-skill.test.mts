@@ -654,4 +654,12 @@ describe("the pre-push-review skill's fewer-rounds rules", () => {
     assert.match(flat, /more than 30 files or more than 3,000 lines, a file and its Template mirror counting once/);
     assert.match(flat, /it only advises, and the review goes on/);
   });
+
+  it("tells the person and the reviewers that verbatim Template mirrors are left out, while the key covers the whole diff", () => {
+    const flat = skill.replace(/\s+/g, " ");
+
+    assert.match(flat, /without the Template mirror copies that are verbatim copies of a root file in the same patch/);
+    assert.match(flat, /The key is that of the whole diff, mirrors included, so a change in a mirror alone still needs a new review/);
+    assert.match(flat, /Template mirror copies identical to the root copy are left out of the patch, so the root file is the one to read/);
+  });
 });

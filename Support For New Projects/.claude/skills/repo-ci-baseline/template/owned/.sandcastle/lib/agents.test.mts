@@ -2,12 +2,28 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
-import { isRoleTimeout, roleOptions, uiEnabled, runRoleInSandbox, runWithinLimits, withSharedRules } from "./agents.mts";
+import type { AgentProvider } from "@ai-hero/sandcastle";
+import {
+  isRoleTimeout,
+  LEDGER_DENIED_TOOLS,
+  restrictedClaudeCode,
+  REVIEWER_TOOLS,
+  roleAgent,
+  backstopMsFor,
+  roleBackstopMs,
+  roleOptions,
+  uiEnabled,
+  runRoleInSandbox,
+  runWithinLimits,
+  withSharedRules,
+} from "./agents.mts";
+import { FIXED_ROLE_AGENTS, ROLE_RUN_GRACE_MINUTES } from "./config.mts";
 import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
-import { limitSandboxExec } from "./step-limit.mts";
+import { hostCallHasBeenAbandoned, MAX_TIMER_MS } from "./host-limit.mts";
+import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
@@ -68,6 +84,72 @@ describe("runRoleInSandbox", () => {
     );
 
     assert.equal(ran, 0);
+  });
+
+  // The role's AbortSignal ends a run that answers it; a Docker exec that never answers would hold the run until the job's cap.
+  it("gives up on a role run that never answers, with a StalledStepError, and starts no role after it in that sandbox", async () => {
+    let ran = 0;
+    const sandbox = { run: () => (ran++, new Promise<never>(() => undefined)) } as unknown as Sandbox;
+
+    await assert.rejects(
+      runRoleInSandbox(sandbox, "pre-push-reviewer", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 20 }),
+      (error: unknown) => error instanceof StalledStepError && /pre-push-reviewer run didn't finish/.test(error.message),
+    );
+    assert.match(stalledStepOf(sandbox) ?? "", /pre-push-reviewer/);
+    // The host recorded the call it gave up on, so the process ends after its cleanup instead of waiting on a handle that never settles.
+    assert.equal(hostCallHasBeenAbandoned(), true);
+    await assert.rejects(runRoleInSandbox(sandbox, "backend", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 20 }), /wasn't started/);
+    assert.equal(ran, 1);
+  });
+
+  it("leaves a role run that answers in time alone, and clears its backstop timer so it can't stall the sandbox later", async () => {
+    const sandbox = { run: async () => ({ iterations: [], commits: [] }) } as unknown as Sandbox;
+
+    const result = await runRoleInSandbox(sandbox, "tester", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 90));
+
+    assert.deepEqual(result, { iterations: [], commits: [] });
+    assert.equal(stalledStepOf(sandbox), undefined, "the timer fired after the run answered");
+  });
+
+  it("clears its backstop timer when the run fails too", async () => {
+    const sandbox = { run: () => Promise.reject(new Error("the agent failed")) } as unknown as Sandbox;
+
+    await assert.rejects(runRoleInSandbox(sandbox, "tester", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 30 }), /the agent failed/);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+
+    assert.equal(stalledStepOf(sandbox), undefined);
+  });
+
+  it("waits for the role's timeoutMinutes plus ROLE_RUN_GRACE_MINUTES by default", () => {
+    for (const role of ["backend", "pre-push-reviewer", "reviewer"] as const) {
+      assert.equal(roleBackstopMs(role), (roleAgent(role).timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000);
+    }
+  });
+
+  it("refuses a timeout the host can't wait for, instead of giving up on every run at once", () => {
+    assert.equal(backstopMsFor(45), (45 + ROLE_RUN_GRACE_MINUTES) * 60_000);
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 10 ** 9]) {
+      assert.throws(() => backstopMsFor(bad), /timeoutMinutes/, String(bad));
+    }
+    assert.ok(backstopMsFor(Math.floor(MAX_TIMER_MS / 60_000) - ROLE_RUN_GRACE_MINUTES) <= MAX_TIMER_MS);
+  });
+
+  it("rejects a role whose timeoutMinutes the host can't wait for before it starts anything, and lists no role that never ran", async () => {
+    const agent = ROLE_AGENTS.scribe as { timeoutMinutes: number };
+    const original = agent.timeoutMinutes;
+    let ran = 0;
+    const sandbox = { run: async () => (ran++, { iterations: [], commits: [] }) } as unknown as Sandbox;
+    agent.timeoutMinutes = 0;
+    try {
+      await assert.rejects(runRoleInSandbox(sandbox, "scribe", { prompt: "" }), /timeoutMinutes/);
+    } finally {
+      agent.timeoutMinutes = original;
+    }
+
+    assert.equal(ran, 0);
+    assert.equal(stalledStepOf(sandbox), undefined);
+    assert.equal(usageReport.totals().has("scribe"), false);
   });
 
   it("lists a role that ran even when its run fails", async () => {
@@ -211,5 +293,152 @@ describe("withSharedRules", () => {
 
   it("leaves an inline prompt alone, since Sandcastle rejects arguments for one", () => {
     assert.deepEqual(withSharedRules({ prompt: "Say hi" }), { prompt: "Say hi" });
+  });
+});
+
+// The host-side review (lib/host-review.mts) runs the pre-push-review skill's reviewers on text people without write access wrote, so
+// they get only Read, Grep and Glob, and no agent may reach the ledger the host alone records.
+describe("the pre-push reviewer role", () => {
+  const printed = (agent: AgentProvider, prompt = "the prompt") => agent.buildPrintCommand({ prompt, dangerouslySkipPermissions: true });
+
+  it("is read from FIXED_ROLE_AGENTS, which a repo's ROLE_AGENTS doesn't name", () => {
+    assert.deepEqual(roleAgent("pre-push-reviewer"), FIXED_ROLE_AGENTS["pre-push-reviewer"]);
+  });
+
+  it("runs sonnet at high effort for the time FIXED_ROLE_AGENTS gives it", () => {
+    const requested: number[] = [];
+    const options = roleOptions("pre-push-reviewer", (ms) => {
+      requested.push(ms);
+      return new AbortController().signal;
+    });
+    const { command } = printed(options.agent);
+
+    assert.equal(options.name, "pre-push-reviewer");
+    assert.equal(options.maxIterations, 1);
+    assert.deepEqual(requested, [FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes * 60_000]);
+    assert.match(command, /--model 'sonnet'/);
+    assert.match(command, /--effort high/);
+  });
+
+  it("gets exactly Read, Grep and Glob, the tools the agent file gives it", () => {
+    const agentFile = readFileSync(new URL("../../.claude/agents/pre-push-reviewer.md", import.meta.url), "utf8");
+    const tools = /^tools: (.+)$/m.exec(agentFile)?.[1];
+
+    assert.deepEqual([...REVIEWER_TOOLS], ["Read", "Grep", "Glob"]);
+    assert.equal(tools, REVIEWER_TOOLS.join(", "));
+  });
+});
+
+describe("restrictedClaudeCode", () => {
+  const reviewer = { tools: REVIEWER_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true };
+  const command = (restrictions: Parameters<typeof restrictedClaudeCode>[2]) =>
+    restrictedClaudeCode("sonnet", "high", restrictions).buildPrintCommand({ prompt: "the prompt", dangerouslySkipPermissions: true });
+  // The command with every single-quoted word removed: what the shell would see unquoted.
+  const unquoted = (text: string) => text.replace(/'[^']*'/g, "''");
+
+  it("names the reviewer's tools once as --tools Read,Grep,Glob, and no shell", () => {
+    const { command: text } = command(reviewer);
+
+    assert.equal(text.split("--tools").length - 1, 1, text);
+    assert.match(text, /--tools '?Read,Grep,Glob'?(?= |$)/);
+    // The ledger's deny rules name Bash(scripts/review.sh:*), which takes a shell tool away; what is granted holds no shell.
+    assert.doesNotMatch(text.replace(/--disallowedTools(?: '[^']*')+/, ""), /Bash/);
+    assert.match(text, /--model 'sonnet'/);
+    assert.match(text, /--effort high/);
+  });
+
+  it("starts the reviewer without any MCP server but the ones it names", () => {
+    assert.match(command(reviewer).command, /--strict-mcp-config/);
+  });
+
+  it("denies the ledger and scripts/review.sh to the reviewer", () => {
+    const { command: text } = command(reviewer);
+
+    assert.match(text, /--disallowedTools/);
+    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(text.includes(rule), `missing ${rule} in ${text}`);
+  });
+
+  it("keeps the prompt on stdin and the flags before -p -", () => {
+    const result = command(reviewer);
+
+    assert.equal(result.stdin, "the prompt");
+    assert.match(result.command, /^claude --print /);
+    assert.ok(result.command.endsWith(" -p -"), result.command);
+  });
+
+  it("quotes every rule, so a glob or a parenthesis reaches claude and not the shell", () => {
+    assert.doesNotMatch(unquoted(command(reviewer).command), /[()*]/);
+  });
+
+  it("gives the fixer the ledger's deny rules but no --tools list or MCP restriction", () => {
+    const { command: text } = command({ denied: LEDGER_DENIED_TOOLS });
+
+    assert.doesNotMatch(text, /--tools/);
+    assert.doesNotMatch(text, /--strict-mcp-config/);
+    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(text.includes(rule), `missing ${rule} in ${text}`);
+  });
+
+  it("changes nothing when it is given no restrictions", () => {
+    assert.equal(command({}).command, restrictedClaudeCode("sonnet", "high", {}).buildPrintCommand({ prompt: "x", dangerouslySkipPermissions: true }).command);
+    assert.doesNotMatch(command({}).command, /--tools|--disallowedTools|--strict-mcp-config/);
+  });
+
+  it("refuses a command Sandcastle builds in a shape it doesn't know, rather than run an agent without its restrictions", () => {
+    const strange = (_model: string) =>
+      ({ buildPrintCommand: () => ({ command: "node run-claude.js -p -", stdin: "x" }) }) as unknown as AgentProvider;
+
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", reviewer, strange as never), /claude --print/);
+  });
+
+  it("denies Read, Edit and Write on the ledger folder and its files, and running scripts/review.sh", () => {
+    for (const tool of ["Read", "Edit", "Write"]) {
+      assert.ok(LEDGER_DENIED_TOOLS.includes(`${tool}(//**/.git/review)`), `${tool} of the folder`);
+      assert.ok(LEDGER_DENIED_TOOLS.includes(`${tool}(//**/.git/review/**)`), `${tool} of its files`);
+    }
+    assert.ok(LEDGER_DENIED_TOOLS.includes("Bash(scripts/review.sh:*)"));
+  });
+});
+
+describe("runRoleInSandbox with restrictions", () => {
+  const sandboxRecording = (runs: SandboxRunOptions[]) =>
+    ({
+      run: async (options: SandboxRunOptions) => {
+        runs.push(options);
+        return { iterations: [], commits: [] };
+      },
+    }) as unknown as Sandbox;
+  const commandOf = (options: SandboxRunOptions) => options.agent.buildPrintCommand({ prompt: "p", dangerouslySkipPermissions: true }).command;
+
+  it("runs the role's agent with the restrictions it was given", async () => {
+    const runs: SandboxRunOptions[] = [];
+
+    await runRoleInSandbox(
+      sandboxRecording(runs),
+      "pre-push-reviewer",
+      { prompt: "review" },
+      new RunLimits(),
+      { tools: REVIEWER_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true },
+    );
+
+    const command = commandOf(runs[0]!);
+    assert.match(command, /--tools '?Read,Grep,Glob'?(?= |$)/);
+    assert.match(command, /--disallowedTools/);
+    assert.match(command, /--model 'sonnet'/);
+  });
+
+  it("reads only the user's settings when asked, not the branch's hooks", async () => {
+    const runs: SandboxRunOptions[] = [];
+
+    await runRoleInSandbox(sandboxRecording(runs), "pre-push-reviewer", { prompt: "review" }, new RunLimits(), { tools: REVIEWER_TOOLS, userSettingsOnly: true });
+
+    assert.match(commandOf(runs[0]!), /--setting-sources '?user'?(?= |$)/);
+  });
+
+  it("runs a role given no restrictions as before, with no --tools or deny list", async () => {
+    const runs: SandboxRunOptions[] = [];
+
+    await runRoleInSandbox(sandboxRecording(runs), "backend", { prompt: "build" });
+
+    assert.doesNotMatch(commandOf(runs[0]!), /--tools|--disallowedTools|--strict-mcp-config/);
   });
 });

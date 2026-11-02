@@ -6,6 +6,11 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  isAncestor,
+  mergeTreeWorks,
+  isReviewedCode,
+  ledgerGitEnv,
+  pinLedgerGit,
   acceptFinding,
   checkReview,
   diffKey,
@@ -16,6 +21,7 @@ import {
   main,
   mergeBase,
   OWNED_PATHS,
+  prepareRound,
   latestLedger,
   readLedger,
   recordReview,
@@ -594,6 +600,62 @@ describe("diffKey", () => {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;
       }
+    }
+  });
+});
+
+describe("ledgerGitEnv", () => {
+  it("turns replace refs off and drops the variables a hook sets", () => {
+    const saved = { common: process.env.GIT_COMMON_DIR, index: process.env.GIT_INDEX_FILE };
+    process.env.GIT_COMMON_DIR = "/elsewhere/.git";
+    process.env.GIT_INDEX_FILE = "/elsewhere/index";
+    try {
+      const env = ledgerGitEnv("/nowhere-pinned");
+
+      assert.equal(env.GIT_NO_REPLACE_OBJECTS, "1");
+      assert.equal(env.GIT_COMMON_DIR, undefined);
+      assert.equal(env.GIT_INDEX_FILE, undefined);
+    } finally {
+      for (const [name, value] of [["GIT_COMMON_DIR", saved.common], ["GIT_INDEX_FILE", saved.index]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  it("pins the shared .git directory for a checkout the host asked for, and for no other", () => {
+    pinLedgerGit("/main/checkout", "/main/checkout/.git");
+
+    assert.equal(ledgerGitEnv("/main/checkout").GIT_COMMON_DIR, "/main/checkout/.git");
+    assert.equal(ledgerGitEnv("/some/worktree").GIT_COMMON_DIR, undefined);
+  });
+
+  it("turns grafts off for a pinned checkout, where an agent can write .git/info/grafts, and leaves a person's checkout alone", () => {
+    pinLedgerGit("/main/checkout", "/main/checkout/.git");
+
+    assert.equal(ledgerGitEnv("/main/checkout").GIT_GRAFT_FILE, "/dev/null/no-grafts");
+    assert.equal(ledgerGitEnv("/some/worktree").GIT_GRAFT_FILE, undefined);
+  });
+
+  it("makes git ignore a planted graft in a pinned checkout, so the review reads the commits the branch has", () => {
+    const repo = mkdtempSync(join(tmpdir(), "graft-repo-"));
+    try {
+      const run = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: repo, encoding: "utf8" }).trim();
+      run("init", "-q", "-b", "main");
+      run("commit", "-q", "--allow-empty", "-m", "one");
+      const first = run("rev-parse", "HEAD");
+      run("commit", "-q", "--allow-empty", "-m", "two");
+      const second = run("rev-parse", "HEAD");
+      writeFileSync(join(repo, ".git", "info", "grafts"), `${second}\n`);
+      pinLedgerGit(repo, join(repo, ".git"));
+
+      const seen = (env: NodeJS.ProcessEnv) => execFileSync("git", ["rev-list", "--count", second], { cwd: repo, env, encoding: "utf8" }).trim();
+
+      assert.equal(seen({ ...process.env }), "1", "without the pin the graft cuts the history");
+      assert.equal(seen(ledgerGitEnv(repo)), "2");
+      assert.notEqual(first, second);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
     }
   });
 });
@@ -3022,5 +3084,217 @@ describe("the security record", () => {
 
   it("is a command the usage lists", () => {
     assert.match(cli(["nonsense"]).err, /^ {2}security {3,}/m);
+  });
+});
+
+// The host-side review (lib/host-review.mts) calls the ledger's functions in-process, in the main checkout, for a commit the sandbox
+// holds: it never runs the worktree's scripts/review.sh.
+describe("prepareRound", () => {
+  // What `prepare` printed and wrote for HEAD now.
+  function prepared() {
+    const dir = join(root, "run");
+    const [key, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    return { dir, key, head, patch: readFileSync(join(dir, "diff.patch")) };
+  }
+
+  it("gives the patch, key, head and base that prepare gives for the same HEAD", () => {
+    const expected = prepared();
+
+    const round = prepareRound(repo, {});
+
+    assert.equal(round.key, expected.key);
+    assert.equal(round.head, expected.head);
+    assert.equal(round.base, mergeBase(repo));
+    assert.ok(round.patch.equals(expected.patch));
+    assert.equal(round.fixes, undefined);
+  });
+
+  it("reads the commit it is given, not the checkout's HEAD, which the sandbox may have moved on", () => {
+    const expected = prepared();
+    commit(repo, "other.cs", "later\n", "a later commit");
+
+    const round = prepareRound(repo, { head: expected.head, main: "origin/main" });
+
+    assert.equal(round.head, expected.head);
+    assert.equal(round.key, expected.key);
+    assert.ok(round.patch.equals(expected.patch));
+    assert.doesNotMatch(round.patch.toString("utf8"), /later/);
+  });
+
+  it("takes the merge base against the main it is given", () => {
+    const expected = prepared();
+    const mainCommit = run(repo, "rev-parse", "origin/main");
+
+    const round = prepareRound(repo, { main: mainCommit });
+
+    assert.equal(round.base, mergeBase(repo));
+    assert.equal(round.key, expected.key);
+  });
+
+  it("gives the fixes since the commit the round before read, beside the whole diff", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "fixed\n", "fix");
+
+    const round = prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } });
+
+    assert.match(round.fixes?.toString("utf8") ?? "", /^\+fixed$/m);
+    assert.doesNotMatch(round.fixes?.toString("utf8") ?? "", /^\+changed$/m);
+    assert.match(round.patch.toString("utf8"), /^\+changed$/m);
+    assert.equal(round.head, run(repo, "rev-parse", "HEAD"));
+  });
+
+  it("gives the fixes of a given head, not of the checkout's", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "fixed\n", "fix");
+    const fixed = run(repo, "rev-parse", "HEAD");
+    commit(repo, "other.cs", "fixed again\n", "another");
+
+    const round = prepareRound(repo, { head: fixed, since: { commit: first.head, preparedHead: first.head } });
+
+    assert.match(round.fixes?.toString("utf8") ?? "", /^\+fixed$/m);
+    assert.doesNotMatch(round.fixes?.toString("utf8") ?? "", /fixed again/);
+  });
+
+  it("refuses a since that isn't one of the head's commits, with prepare's message", () => {
+    const first = prepared();
+    run(repo, "commit", "--quiet", "--amend", "-m", "amended", "--allow-empty");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } }), /isn't one of HEAD's commits/);
+  });
+
+  it("refuses a since later than the head the round before printed, so no fix goes unread", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "one\n", "one");
+    const second = run(repo, "rev-parse", "HEAD");
+    commit(repo, "other.cs", "two\n", "two");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: second, preparedHead: first.head } }), /later than the HEAD prepare printed/);
+  });
+
+  it("refuses a since when no round was prepared before", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "one\n", "one");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: undefined } }), /later than the HEAD prepare printed/);
+  });
+
+  it("refuses a round with no fixes since", () => {
+    const first = prepared();
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } }), /no fixes since/);
+  });
+
+  it("writes nothing under the checkout: the host decides where the patches go", () => {
+    const before = readdirSync(repo).sort();
+
+    prepareRound(repo, {});
+
+    assert.deepEqual(readdirSync(repo).sort(), before);
+    assert.equal(run(repo, "status", "--porcelain"), "");
+  });
+});
+
+describe("recordReview at a commit", () => {
+  it("records the review for the commit it is given, not the checkout's HEAD", () => {
+    const first = reviewed();
+    commit(repo, "other.cs", "later\n", "a later commit");
+
+    const ledger = recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+      at: { head: first.reviewedHead, branch: "feature/387-the-host-review" },
+    });
+
+    assert.equal(ledger.head, first.reviewedHead);
+    assert.equal(ledger.branch, "feature/387-the-host-review");
+    assert.equal(ledger.key, first.reviewedKey);
+    assert.equal(readLedger(repo, first.reviewedKey)?.head, first.reviewedHead);
+  });
+
+  it("doesn't look at the checkout's worktree, which the caller has checked is clean at the commit", () => {
+    const first = reviewed();
+    writeFileSync(join(repo, "app.cs"), "edited by hand\n");
+
+    assert.throws(() => recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }), /uncommitted changes/);
+    const ledger = recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+      at: { head: first.reviewedHead, branch: "feature/1-thing" },
+    });
+
+    assert.equal(ledger.head, first.reviewedHead);
+  });
+
+  it("still refuses a key that isn't the diff of the commit it is given", () => {
+    const first = reviewed();
+    commit(repo, "app.cs", lines(50, (index) => (index === 2 ? "changed again" : undefined)), "another change");
+    const later = run(repo, "rev-parse", "HEAD");
+
+    assert.throws(
+      () =>
+        recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+          at: { head: later, branch: "feature/1-thing" },
+        }),
+      /Review again/,
+    );
+  });
+
+  it("still refuses ids an earlier review of the branch took", () => {
+    const first = reviewed();
+    record([finding({ id: "R3" })]);
+
+    assert.throws(
+      () =>
+        recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [finding({ id: "R2" })] }, undefined, undefined, {
+          at: { head: first.reviewedHead, branch: "feature/1-thing" },
+        }),
+      /taken by earlier reviews/,
+    );
+  });
+});
+
+// A git the host's time limit killed is not an answer: "not an ancestor" or "no such main" would be a wrong one.
+describe("a git call the host's time limit ended", () => {
+  // The error execFileSync throws for a killed child, not a message about a missing main.
+  const killedByLimit = (error: unknown) => (error as { signal?: unknown }).signal === "SIGKILL";
+  const killedGit = (body: (cwd: string) => void) => () => {
+    const bin = mkdtempSync(join(tmpdir(), "killed-git-"));
+    const cwd = mkdtempSync(join(tmpdir(), "killed-cwd-"));
+    const path = process.env.PATH;
+    try {
+      writeFileSync(join(bin, "git"), "#!/bin/sh\nkill -9 $$\n");
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+      body(cwd);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 5 });
+    }
+  };
+
+  it("makes isAncestor throw, not answer that a commit isn't an ancestor", () => {
+    assert.throws(killedGit((cwd) => void isAncestor(cwd, "a".repeat(40), "b".repeat(40))), killedByLimit);
+  });
+
+  it("makes mergeTreeWorks throw when only the merge-tree call is killed, not answer that this git lacks merge-tree", () => {
+    const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const bin = mkdtempSync(join(tmpdir(), "merge-tree-git-"));
+    const repo = mkdtempSync(join(tmpdir(), "merge-tree-repo-"));
+    const path = process.env.PATH;
+    try {
+      execFileSync(real, ["init", "-q"], { cwd: repo });
+      execFileSync(real, ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: repo });
+      writeFileSync(join(bin, "git"), `#!/bin/sh\ncase "$*" in *merge-tree*) kill -9 $$ ;; *) exec ${real} "$@" ;; esac\n`);
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+
+      assert.throws(() => mergeTreeWorks(repo), killedByLimit);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes mergeBase and isReviewedCode throw the limit's error, not report a missing main or unreviewed code", () => {
+    assert.throws(killedGit((cwd) => void mergeBase(cwd, "origin/main", "HEAD")), killedByLimit);
+    assert.throws(killedGit((cwd) => void isReviewedCode(cwd, "a".repeat(40), "b".repeat(40), "c".repeat(40))), killedByLimit);
   });
 });

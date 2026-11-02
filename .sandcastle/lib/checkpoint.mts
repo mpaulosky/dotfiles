@@ -1,5 +1,6 @@
 // Gate checkpoints. The host runs scripts/gate.sh inside the sandbox after the
-// last developer run (checkpoint 1) and just before publishing (checkpoint 2).
+// last developer run (checkpoint 1) and just before the host-side review (checkpoint 2); after each review round that fixes
+// something it runs again (checkpoint 3), and the commit the last one passed on is published.
 // The gate's exit code decides, never what an agent reports, and only while the
 // branch leaves the gate script as main has it (see gateScriptChange): the
 // gate-fixer's job is to make the exit code 0, and a script it can edit would
@@ -11,7 +12,7 @@ import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMENT_LINES, GATE_FIXER_ATTEMPTS } from "./config.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 
-export type Checkpoint = 1 | 2;
+export type Checkpoint = 1 | 2 | 3;
 
 // A gate run, and on a pass the commit it passed on: the one the host pushes.
 export type GateRun = { passed: boolean; output: string; head?: string };

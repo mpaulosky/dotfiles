@@ -45,7 +45,7 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   push, which leaves the Apply commit on `chore/reapply-baseline` unpushed. Review it in that worktree with `/pre-push-review`, then run `reapply.sh` again: step 1
   carries the never-pushed branch on. A finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.
 - `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):
-  Sandcastle's own reviewer role stands in there, and running this review in a sandbox is not designed yet.
+  the host runs the review's rounds on a built branch itself, after checkpoint 2 ([below](#sandcastle-runs-the-review-on-the-host)), so the sandbox's gate need not.
 - Reviewers run as `pre-push-reviewer`, on Sonnet at high effort, because they read text people without write access wrote. They have no shell, network or GitHub
   token, only Read, Grep and Glob. Those still reach any file the person can read, so a reviewer's answer is data to check before anything of it is published.
 
@@ -110,9 +110,8 @@ A repo that already has Sandcastle:
    `.sandcastle/lib/repo-config.mts`, which Apply never rewrites, each as a one-line `export const NAME` (or `export let`) at the start of a line. List
    in `NOT_OWNED_BASELINE_PATHS` each file (not a folder) under an Owned pattern (see
    `OWNED_PATHS` in `lib/review-ledger.mts`) that is the repo's own, such as a workflow of its own and Sandcastle tests the Template lacks.
-   Until this is on `main`, Apply holds back the four files that import it (`scripts/review.sh`, `lib/review-ledger.mts`, and the tests
-   `review-ledger.test.mts` and `pre-push-review-skill.test.mts`) and lists them in
-   its report, so the re-Apply passes the gate without a review step; Apply again after this PR merges to bring them. `scripts/review.sh` also stops with a
+   This is a hard prerequisite: a repo with a `.sandcastle/lib/repo-config.mts` that lacks either name makes Apply stop before it writes anything, since Sandcastle's
+   `build.mts` and `host-review.mts` import the ledger and would not load. Merge this PR, then Apply. `scripts/review.sh` also stops with a
    message naming the missing export. Adding the names on `chore/reapply-baseline` instead puts a file that isn't Owned in the re-Apply, which then needs
    a full review. The old gate has no review step, so the PR on `main` needs none.
 2. Deny Claude Code reading the ledgers and credential files, in the repo's `.claude/settings.json` (the Template doesn't ship that file, since permissions are set per user):
@@ -133,9 +132,52 @@ A repo that already has Sandcastle:
    repo's `code-review` skill, not into the Owned `lenses.md` or `review-bar.md` (the next Apply reverts those): to change them, change the Template first.
 5. If the repo's CLAUDE.md or CONTRIBUTING repeats the thread-reply rules, replace them with a link to `docs/PROCESS.md`.
 
+## Sandcastle runs the review on the host
+
+A branch Sandcastle builds gets this review's rounds after the reviewer role and a passing checkpoint 2 (`lib/host-review.mts`, `lib/host-review-prompts.mts`):
+
+- The host starts the same reviewers `/pre-push-review` does: the Bar and one per lens whose "Applies to" matches a changed file, read from the main checkout's
+  `lenses.md`, `review-bar.md`, `SKILL.md` and `pre-push-reviewer.md` (never the worktree's, which the branch controls), plus a repo's own lenses. One difference from the local
+  review: the host gives the Security lens to Markdown under `.claude/` and `.sandcastle/` too, which steers agents that hold a shell and a token, where the skill gives a Markdown-only
+  diff just the Docs and Repo conventions lenses. `LENS_APPLIES` holds a path rule per
+  lens, and `host-review.test.mts` fails when `lenses.md` gains, loses or rewords a lens, or the model, effort, tools or round limit differ.
+- A repo's own `code-review` skill reaches the host reviewers only as lens rows, read from the main checkout. They read `CLAUDE.md`, `CONTEXT.md`,
+  `CODING_STANDARDS`, the ADRs and `.claude/rules/` from the worktree, and the prompt says that is the branch's own text, applied as conventions but
+  never overriding the bar, a lens's row or the severities.
+- Reviewers run in the build's sandbox as `claude --print --tools Read,Grep,Glob`,
+  with `--strict-mcp-config`, `--setting-sources user` (the branch's `.claude/settings.json` hooks never run) and
+  deny rules for `.git/review`. Their prompts name no shell, token or `scripts/review.sh`.
+- The host triages the findings in code (merging duplicates, grading security:
+  a finding counts as non-security only when its reviewer set `security: false`) and has the backend role
+  fix each fixable one behind a failing test. It records a finding `fixed`
+  only with a test whose file the round changed and that is a test file (a code file in a test folder or named like a test; never a docs or data file)
+  (a reason alone is enough only for a non-security finding) and,
+  for a Warning or a security finding, only when the file at its `path` changed too (the next round reads only the fixes, so the reviewers
+  are also told to read the code at each `fixed` item's `path:line` and raise it again if the problem is still there), `dismissed` only with a `file:line` reason
+  (never for a Warning or a security finding, which stays open), and everything else `open`.
+- Round 1 removes any stale `fixes.patch` from the run folder. The PR body keeps the marker, `Closes #n` and the notes whole, lists at most 100 check files
+  ("and M more" after that), and cuts the description to fit.
+- A round that fixed something is followed by checkpoint 3 (the gate) and a round reviewing `fixes.patch`. After 3 such rounds one more round only reviews.
+- Only the host records, in the main checkout, with `prepareRound` and `recordReview` called in-process: it never runs the worktree's `scripts/review.sh`.
+- A usage-limit stop, or a stalled sandbox (a reviewer or fixer run the host gave up on `ROLE_RUN_GRACE_MINUTES` after its `timeoutMinutes`), leaves the branch for a later round: nothing is
+  published and no failed attempt is spent; a usage-limit stop ends the run cleanly,
+  and a stalled sandbox ends it red. The run's time budget passing (`TimeBudgetStopError`), or the review's own cap of `REVIEW_WALL_CLOCK_MINUTES` (checked before each
+  round, reviewer and fixer run), ends the review as failed at the last commit the gate passed on, so work already gated is published with a note.
+  The first reviewer that fails ends the round (no later reviewer of it runs). That, a record that can't be made, a round's diff past `MAX_REVIEW_PATCH_BYTES`,
+  or a checkpoint 3 that stays red after a round's fixes
+  publishes the branch, at the last commit the gate passed on, with a PR note and no record. A fixer that moves HEAD without
+  changing a file ends the review at the round as it was read. A finding's lens is the reviewer's the host ran, never the one its answer names.
+  Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
+  A finding is listed only when its path is a file the review's diffs touched and is made of plain file-name characters (never a link, an image or a `www.` address), and a line the host's
+  public-text check would change, or that reads like a `## Review notes` section, is left out on its own. The rest, and any security finding, are only counted.
+- Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed.
+  A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
+  global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run,
+  an Actions run included, holds its issue that long). A change to how the host runs the reviewers needs a run
+  against a real sandbox before merging, since the tests stub Docker and see `--tools`, `--strict-mcp-config`, `--setting-sources` and `--disallowedTools` only as text.
+
 ## Not in it yet
 
-- **Sandcastle running the review.** Its builds skip the check and keep their own reviewer role.
 - **Claude Review reviewing only what a push changed.** Claude Review now opens findings only for what a local review can't check and reads the PR's
   `## Review notes` as accepted findings ([ADR 0004](../docs/adr/0004-claude-review-as-copilots-backup.md#claude-review-after-the-local-review)),
   but it still reads the PR's whole diff on every push. A delta needs the diff step's exclusion and holding rules applied to a second diff.

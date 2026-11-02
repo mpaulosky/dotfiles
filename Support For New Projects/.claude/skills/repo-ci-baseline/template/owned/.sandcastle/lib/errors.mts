@@ -14,6 +14,11 @@
 // Blazor-Server's docs/plans/sandcastle-workflow.md).
 export class UncountedStopError extends Error {}
 
+// For a stop that is the run's time budget passing (lib/limits.mts#throwIfStopped), as against Claude's usage limit. It is an
+// UncountedStopError too, so the build spends no failed attempt, but the host-side review (lib/host-review.mts) ends as failed on it,
+// at the last commit the gate passed on, so work already gated is published; a usage-limit stop is still rethrown.
+export class TimeBudgetStopError extends UncountedStopError {}
+
 // For a sandbox that stalled (lib/step-limit.mts): a command other than the gate ran over its limit, or the host gave up
 // on one, so it may still be running in the container. That command throws this, naming the step, and so does every
 // exec after it and every role start (lib/agents.mts#runRoleInSandbox), instead of an exit code a caller could read as

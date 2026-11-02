@@ -9,7 +9,7 @@
 // the call a little after the limit and the kill grace, and stalls the step the same way.
 //
 // The gate's own overrun is a red gate (exit 124): `timeout` ended it cleanly, and the gate-fixer may try. Any
-// other overrun, or a call the host gives up on, throws StalledStepError, and so does every exec after it. A call the host gives up on is also
+// other overrun, or a call the host gives up on (a role's sandbox run too, lib/agents.mts), throws StalledStepError, and so does every exec after it. A call the host gives up on is also
 // recorded with markHostCallAbandoned (lib/host-limit.mts), so main.mts ends the process after its cleanup (exitAfterStall).
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
@@ -118,6 +118,12 @@ const stalledSteps = new WeakMap<object, string>();
 // the limited one.
 export function stalledStepOf(sandbox: object): string | undefined {
   return stalledSteps.get(sandbox);
+}
+
+// Records that a step of this sandbox didn't end and the host gave up on it (a role run that never answered, lib/agents.mts), so
+// stalledStepOf names it and a limited sandbox refuses every later exec. Keeps the first one.
+export function markSandboxStalled(sandbox: object, name: string): void {
+  if (!stalledSteps.has(sandbox)) stalledSteps.set(sandbox, name);
 }
 
 // A sandbox whose `exec` runs each command under its limit and logs when the step starts and ends. The gate

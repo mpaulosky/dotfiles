@@ -299,9 +299,9 @@ describe("the host's calls", () => {
       .filter((name) => name.endsWith(".mts") && !name.endsWith(".test.mts") && name !== "host-limit.mts")
       .filter((name) => usesChildProcessAsValue(readFileSync(new URL(name, dir), "utf8")));
 
-    // review-ledger.mts and security-record.mts run in a person's terminal under scripts/review.sh, not in the unattended run, and
-    // git-sandbox-fake.mts is a test helper that runs shell setup, not the host's gh or git.
-    assert.deepEqual(uses.filter((name) => !["review-ledger.mts", "security-record.mts", "git-sandbox-fake.mts"].includes(name)), []);
+    // git-sandbox-fake.mts is a test helper that runs shell setup, not the host's gh or git. review-ledger.mts and security-record.mts
+    // also run on the host, in-process (lib/host-review.mts calls prepareRound and recordReview), so their git calls are limited too.
+    assert.deepEqual(uses.filter((name) => !["git-sandbox-fake.mts"].includes(name)), []);
   });
 
   it("never default a run parameter to a bare execFileSync", async () => {

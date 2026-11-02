@@ -236,7 +236,7 @@ check "sandcastle, own hand-off guidance: overwritten" 'grep -qx "# Hand a pull 
 check "sandcastle, own hand-off guidance: reported as a changed Owned file" 'grep -q "sandcastle-hand-off.md" <<< "$out" && ! grep -A3 "Seed files skipped" <<< "$out" | grep -q "sandcastle-hand-off.md"'
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never
-# rewritten): a repo whose copy lacks them gets the rest of the Sandcastle files, not the four that import it.
+# rewritten), and Sandcastle's build.mts imports the ledger: a repo whose copy lacks them is refused, with nothing written.
 ledger_files=(scripts/review.sh .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts)
 repo="$work/ledger waits"
 new_repo "$repo"
@@ -244,15 +244,15 @@ mkdir -p "$repo/.sandcastle/lib"
 printf 'export const ROLE_AGENTS = {};\n' > "$repo/.sandcastle/lib/repo-config.mts"
 commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
-out="$("$apply" "$repo")"
+rc=0
+out="$("$apply" "$repo" 2>&1)" || rc=$?
+check "ledger prerequisite: Apply refuses (exit 1)" '[[ $rc -eq 1 ]]'
+check "ledger prerequisite: it names the missing exports" 'grep -q "REPO_SLUG or NOT_OWNED_BASELINE_PATHS" <<< "$out"'
 for f in "${ledger_files[@]}"; do
-  check "ledger waits: $f not written" '[[ ! -e "$repo/$f" ]]'
+  check "ledger prerequisite: $f not written" '[[ ! -e "$repo/$f" ]]'
 done
-check "ledger waits: the rest of the Sandcastle files are written" '[[ -f "$repo/.sandcastle/tsconfig.json" ]]'
-check "ledger waits: the skill and agent are written" '[[ -f "$repo/.claude/agents/pre-push-reviewer.md" ]]'
-check "ledger waits: the repo's repo-config.mts is untouched" 'grep -qx "export const ROLE_AGENTS = {};" "$repo/.sandcastle/lib/repo-config.mts"'
-check "ledger waits: the report names the four and says what to add" \
-  'grep -A4 "Local review files left out" <<< "$out" | grep -q "review-ledger.mts" && grep -q "REPO_SLUG or NOT_OWNED_BASELINE_PATHS" <<< "$out"'
+check "ledger prerequisite: nothing else is written" '[[ ! -e "$repo/.sandcastle/tsconfig.json" && ! -e "$repo/.claude/agents/pre-push-reviewer.md" ]]'
+check "ledger prerequisite: the repo's repo-config.mts is untouched" 'grep -qx "export const ROLE_AGENTS = {};" "$repo/.sandcastle/lib/repo-config.mts"'
 
 # Each name is checked on its own, as a whole word, on a line of its own that isn't a comment.
 n=0
@@ -270,8 +270,9 @@ for config in 'export const REPO_SLUG = "o/r";' \
   printf '%s\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
   commit_all "$repo" "init"
   git_q -C "$repo" switch -q -c chore/standardize-baseline
-  out="$("$apply" "$repo")"
-  check "ledger waits ($n): the ledger is held back" '[[ ! -e "$repo/.sandcastle/lib/review-ledger.mts" ]]'
+  rc=0
+  "$apply" "$repo" >/dev/null 2>&1 || rc=$?
+  check "ledger prerequisite ($n): Apply refuses and the ledger is not written" '[[ $rc -eq 1 && ! -e "$repo/.sandcastle/lib/review-ledger.mts" ]]'
 done
 
 # One-line exports with a `let`, or with extra spaces, count: the same forms review.sh takes.
@@ -283,7 +284,6 @@ commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
 out="$("$apply" "$repo")"
 check "ledger ready (let, extra spaces): the ledger is written" '[[ -f "$repo/.sandcastle/lib/review-ledger.mts" ]]'
-check "ledger ready (let, extra spaces): nothing held back" '! grep -q "Local review files left out" <<< "$out"'
 
 repo="$work/ledger ready"
 new_repo "$repo"
@@ -295,7 +295,6 @@ out="$("$apply" "$repo")"
 for f in "${ledger_files[@]}"; do
   check "ledger ready: $f written" '[[ -f "$repo/$f" ]]'
 done
-check "ledger ready: nothing held back" '! grep -q "Local review files left out" <<< "$out"'
 
 # A Seed file with an Apply placeholder still counts as unfilled under .sandcastle/ (no remote, so {{REPO}} stays).
 repo="$work/sandcastle unfilled"

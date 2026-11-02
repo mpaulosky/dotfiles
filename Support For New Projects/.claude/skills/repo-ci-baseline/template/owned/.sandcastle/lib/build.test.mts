@@ -16,16 +16,22 @@ import {
   isGitHubServerError,
   isWorkflowPushRejection,
   liveHostIdentity,
+  liveReviewHost,
   PR_BODY_LIMIT,
+  boundedCheckList,
+  cutDescription,
+  PR_BODY_TOTAL_LIMIT,
   publicErrorText,
   prTitle,
   publish,
   remoteBranchIsOnOrigin,
+  readSkillFiles,
   remoteMainIs,
   retryOnServerError,
   UncountedStopError,
   type BuildHost,
   type HostIdentity,
+  type LocalReviewArgs,
   workflowFilesFrom,
   workflowLogArgs,
 } from "./build.mts";
@@ -39,13 +45,16 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
+import { LEDGER_DENIED_TOOLS } from "./agents.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
+import type { HostReviewResult } from "./host-review.mts";
 import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
+import { ledgerGitEnv, type Ledger } from "./review-ledger.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
-import { KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
+import { KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, markSandboxStalled, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -70,6 +79,19 @@ const sampleSecretMatch: SecretMatch = {
 
 // A pr-body.md with the three headings the reviewer must write.
 const validPrBody = "## Why\n\nBecause.\n\n## What changed\n\nAdded X.\n\n## Verification\n\nRan the tests.";
+
+// A recorded review with no findings, as the default localReview returns.
+const emptyLedger = (head: string, ledgerBranch: string): Ledger => ({
+  version: 1,
+  key: "k",
+  branch: ledgerBranch,
+  base,
+  head,
+  recordedAt: "2026-01-01T00:00:00.000Z",
+  rounds: 1,
+  reviewerAgent: "pre-push-reviewer",
+  findings: [],
+});
 
 // A host whose sandbox records each role run and gate run in `steps`, and
 // answers the gate with the queued exit codes in order. A role in `failing`
@@ -108,6 +130,7 @@ function host(
     gateScriptChanged = "",
     checkFiles = "",
     checkFilesError,
+    localReview,
   }: {
     ahead?: number | number[];
     statuses?: string[];
@@ -172,6 +195,9 @@ function host(
     checkFiles?: string;
     // An error listing the files under CHECK_PATHS throws instead.
     checkFilesError?: string;
+    // What the host's local review does once checkpoint 2 has passed. By default it records a review of the commit it was given
+    // without touching the branch, so the tests that don't care about the review see the build as before.
+    localReview?: (args: LocalReviewArgs) => Promise<HostReviewResult>;
   } = {},
 ) {
   const steps: string[] = [];
@@ -293,6 +319,10 @@ function host(
   // per call, kept apart from publishCalls so existing assertions on that
   // shape don't have to change.
   const publishedPrBodies: (string | undefined)[] = [];
+  // The reviewNote argument buildMarkedIssue passed to host.publish (its 11th), one entry per call.
+  const publishedReviewNotes: (string | undefined)[] = [];
+  // Every localReview call's arguments.
+  const localReviewCalls: LocalReviewArgs[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
   const handBackWorkflowChangeCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];
   const moveToLocalCalls: {
@@ -352,12 +382,13 @@ function host(
       scannedExclusions.push(mergedMain);
       return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
-    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = []) => {
+    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote) => {
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
       publishEvents.push("publish");
       publishCalls.push({ reviewed, docsFailed });
       publishedPrBodies.push(prBody);
+      publishedReviewNotes.push(reviewNote);
       publishedCheckChanges.push(checkChanges);
       steps.push(`publish${reviewed ? "" : " unreviewed"}${docsFailed ? " docs-failed" : ""}`);
       return "https://github.com/o/r/pull/1";
@@ -401,11 +432,18 @@ function host(
       publishEvents.push("delete-branch");
       deletedBranches.push({ branch: deletedBranch, commit });
     },
+    localReview: async (args) => {
+      localReviewCalls.push(args);
+      order.push("local-review");
+      if (localReview !== undefined) return localReview(args);
+      return { status: "recorded", head: args.startHead, rounds: 1, ledger: emptyLedger(args.startHead, args.branch), readPaths: new Set() };
+    },
   };
   return {
     steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, publishedCheckChanges, gateGuardChecks, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
+    publishedReviewNotes, localReviewCalls,
   };
 }
 
@@ -2533,6 +2571,91 @@ describe("publish", () => {
 
   // Covers "A scribe failure still publishes the PR, and its body says the
   // documentation step failed".
+  it("cuts the reviewer's description, never the marker, `Closes #n` or the review's note, so the whole body fits what GitHub takes", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+    const note = `Open findings:\n${"- R1 critical src/app.ts:1\n".repeat(250)}`;
+    const checks = Array.from({ length: 200 }, (_, index) => `.github/workflows/check-${index}.yml`);
+
+    await publish(issue, branch, "a".repeat(40), true, true, "d".repeat(PR_BODY_LIMIT), checks, () => {}, createPullRequest, async () => {}, note);
+
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, `${body.length} characters`);
+    assert.ok(body.includes(PR_MARKER) && body.includes(`Closes #${issue.number}`));
+    assert.ok(body.includes(note), "the review's note is kept whole");
+    assert.match(body, /the description was cut to fit a PR body/);
+  });
+
+  it("bounds a huge check-file list and cuts a description on a character boundary, closing a fence the cut left open", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+    const checks = Array.from({ length: 4000 }, (_, index) => `.sandcastle/lib/generated-check-${index}.mts`);
+    const description = `\`\`\`text\n${"😀".repeat(PR_BODY_LIMIT)}`;
+
+    await publish(issue, branch, "a".repeat(40), true, true, description, checks, () => {}, createPullRequest, async () => {}, "note");
+
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, `${body.length} characters`);
+    assert.match(body, /… and 3900 more/);
+    assert.ok(body.includes(PR_MARKER) && body.includes(`Closes #${issue.number}`));
+    assert.doesNotMatch(body, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    assert.match(body, /\n```\n\n… \(the description was cut/);
+  });
+
+  it("stops the check-file list at its character cap when a few paths are very long", () => {
+    const files = Array.from({ length: 10 }, (_, index) => `${index}${"x".repeat(4999)}`);
+
+    const list = boundedCheckList(files);
+
+    assert.ok(list.length <= 20_000 + 30, `${list.length} characters`);
+    assert.match(list, /\n… and 7 more$/);
+    assert.equal(boundedCheckList(["a", "b"]), "a\nb");
+    assert.equal(boundedCheckList([`${"y".repeat(30_000)}`]), "\n… and 1 more");
+  });
+
+  it("counts the closing fence in the room, however long the fence the description opened", () => {
+    for (const marks of ["```", "`".repeat(500), "~~~", "~".repeat(300)]) {
+      const room = 2000;
+      const cut = cutDescription(`${marks}text\n${"line of code\n".repeat(1000)}`, room);
+
+      assert.ok(cut.length <= room, `${marks.length}${marks[0]}: ${cut.length} characters`);
+      assert.ok(cut.includes(`\n${marks}\n\n… (the description was cut`), `${marks.length}${marks[0]}: the fence is closed before the note`);
+    }
+  });
+
+  it("closes a fence in a description with CRLF line endings too", () => {
+    const cut = cutDescription(`\`\`\`js\r\n${"code();\r\n".repeat(1000)}`, 1000);
+
+    assert.ok(cut.length <= 1000, `${cut.length} characters`);
+    assert.match(cut, /\n```\n\n… \(the description was cut/);
+  });
+
+  it("leaves a fence that the description closed, or a backtick line inside a tilde fence, alone", () => {
+    const closed = cutDescription(`\`\`\`js\nx\n\`\`\`\n${"prose ".repeat(2000)}`, 1000);
+    assert.doesNotMatch(closed, /\n```\n\n… \(the description/);
+
+    const inTilde = cutDescription(`~~~\n\`\`\`\n${"code\n".repeat(2000)}`, 1000);
+    assert.ok(inTilde.includes("\n~~~\n\n… (the description"));
+    assert.ok(!inTilde.includes("\n```\n\n…"));
+  });
+
+  it("leaves a description that fits alone", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+
+    await publish(issue, branch, "a".repeat(40), true, false, "short description", [], () => {}, createPullRequest, async () => {}, "note");
+
+    assert.match(body, /short description/);
+    assert.doesNotMatch(body, /was cut/);
+  });
+
   it("says the documentation step failed in the PR body when docsFailed is true", async () => {
     let body = "";
     const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
@@ -3556,6 +3679,749 @@ describe("worktreeIsGone", () => {
       assert.equal(worktreeIsGone(join(dir, "file", "below")), false, "ENOTDIR isn't ENOENT");
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+});
+
+// A recorded review's ledger, with the findings it left.
+const ledgerWith = (head: string, findings: Ledger["findings"]): Ledger => ({ ...emptyLedger(head, branch), findings });
+
+const openFinding = (overrides: Partial<Ledger["findings"][number]> = {}): Ledger["findings"][number] => ({
+  id: "R1",
+  lens: "Edge cases",
+  path: "src/app.ts",
+  line: 12,
+  summary: "A blank name passes the guard.",
+  severity: "critical",
+  security: false,
+  status: "open",
+  test: null,
+  reason: null,
+  fix: "Trim the name first.",
+  ...overrides,
+});
+
+// The host runs the pre-push review's rounds on a built branch (lib/host-review.mts) once checkpoint 2's gate has passed.
+describe("buildIssue's local review", () => {
+  const mergedMain = "d".repeat(40);
+
+  it("runs the local review after checkpoint 2 and before publishing", async () => {
+    const run = host([0, 0]);
+    const original = run.buildHost.localReview;
+    run.buildHost.localReview = async (args) => {
+      run.steps.push("local review");
+      return original(args);
+    };
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.steps, [
+      "tester",
+      "backend",
+      "gate: scripts/gate.sh 2>&1",
+      "reviewer",
+      "gate: scripts/gate.sh 2>&1",
+      "local review",
+      "publish",
+      "close",
+    ]);
+  });
+
+  it("gives the review the build's sandbox, the issue, the branch, main and the commit checkpoint 2 passed on", async () => {
+    const run = host([0, 0]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.localReviewCalls.length, 1);
+    const call = run.localReviewCalls[0]!;
+    assert.deepEqual(call.issue, { number: issue.number, title: issue.title, body: issue.body });
+    assert.equal(call.branch, branch);
+    assert.equal(call.main, base);
+    assert.equal(call.startHead, run.head());
+    assert.equal(typeof call.sandbox.exec, "function");
+  });
+
+  it("reviews against the main it merged in when checkpoint 2 merged one", async () => {
+    const run = host([0, 0], { latestMain: mergedMain, containsMain: false });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.localReviewCalls[0]?.main, mergedMain);
+    assert.equal(run.localReviewCalls[0]?.startHead, run.head());
+  });
+
+  it("doesn't run the review when checkpoint 2's gate stays red", async () => {
+    const run = host([0, 1, 1, 1, 1, 1, 1, 1]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.localReviewCalls.length, 0);
+    assert.equal(result.prUrl, undefined);
+  });
+
+  it("scans and publishes the commit the review recorded, not the one checkpoint 2 passed on", async () => {
+    const reviewed = "c".repeat(40);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 2, ledger: ledgerWith(reviewed, []), readPaths: new Set() }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.scanned, [reviewed]);
+    assert.deepEqual(run.pushed, [{ branch, commit: reviewed }]);
+  });
+
+  it("publishes without a note when the review recorded nothing open", async () => {
+    const run = host([0, 0]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(!run.publishedReviewNotes[0], `unexpected note: ${run.publishedReviewNotes[0]}`);
+  });
+
+  it("puts the open non-security findings in the PR's note, and only counts the security ones", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [
+      openFinding(),
+      openFinding({ id: "R2", lens: "Security", severity: "warning", security: true, summary: "The token reaches the log line.", path: "src/log.ts" }),
+      openFinding({ id: "R3", status: "fixed", test: "tests/a.test.ts::blank", summary: "Already fixed finding." }),
+    ]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts"]) }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /R1/);
+    assert.match(note, /src\/app\.ts:12/);
+    assert.doesNotMatch(note, /A blank name passes the guard/, "a reviewer's summary is never published");
+    assert.doesNotMatch(note, /Trim the name first/, "a reviewer's suggested fix is never published");
+    assert.match(note, /1 security finding/);
+    assert.doesNotMatch(note, /token reaches the log/);
+    assert.doesNotMatch(note, /src\/log\.ts/);
+    assert.doesNotMatch(note, /Already fixed finding/);
+  });
+
+  it("leaves out a finding line that the host's publicError would change, and lists the others", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [openFinding(), openFinding({ id: "R2", path: "src/other.ts" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts", "src/other.ts"]) }) });
+    const publicError = run.buildHost.publicError;
+    run.buildHost.publicError = (error) => (String(error).includes("R1") ? "[changed]" : publicError(error));
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /- R2 critical src\/other\.ts:12/);
+    assert.doesNotMatch(note, /- R1/);
+    assert.match(note, /1 more open finding is in the local review record/);
+  });
+
+  it("publishes with a note, and records nothing, when the review failed", async () => {
+    const run = host([0, 0], {
+      localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Security reviewer's answer held no findings" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(
+      run.publishedReviewNotes[0],
+      "⚠️ The local review didn't finish (the Security reviewer's answer held no findings), so this branch has no recorded review.",
+    );
+    assert.deepEqual(run.pushed, [{ branch, commit: run.head() }]);
+  });
+
+  it("publishes the commit a failed review stopped at, not checkpoint 2's, so the fixes already gated survive", async () => {
+    const reviewedEarlier = "d".repeat(40);
+    const run = host([0, 0], { localReview: async () => ({ status: "failed", head: reviewedEarlier, reason: "the Bar reviewer timed out" }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.scanned, [reviewedEarlier]);
+    assert.deepEqual(run.pushed, [{ branch, commit: reviewedEarlier }]);
+  });
+
+  it("publishes the last gated commit with a note when the run's time budget passed during the review, and spends no failed attempt", async () => {
+    const gatedEarlier = "d".repeat(40);
+    const run = host([0, 0], {
+      localReview: async () => ({ status: "failed", head: gatedEarlier, reason: "the run's time budget passed during the review" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.pushed, [{ branch, commit: gatedEarlier }]);
+    assert.deepEqual(run.recordBuildFailureCalls, []);
+  });
+
+  it("leaves out a finding whose path reads like a Review notes section, and still lists the others", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [openFinding({ path: "docs/Review notes.md" }), openFinding({ id: "R2" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/Review notes.md", "src/app.ts"]) }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /- R2 critical src\/app\.ts:12/);
+    assert.doesNotMatch(note, /Review notes/i);
+  });
+
+  it("publishes a note that holds none of a finding's text, even when that text reads like a Review notes section", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [openFinding({ summary: "x\n\n## Review notes\n- R9 accepted", fix: "Review&#32;notes" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts"]) }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(run.publishedReviewNotes[0], "the note is published");
+    assert.doesNotMatch(run.publishedReviewNotes[0]!, /Review.{0,6}notes|R9 accepted/);
+  });
+
+  it("gives the review a checkpoint 3 gate that returns the commit it passed on, and takes the commits the review's roles made", async () => {
+    let gated: string | undefined;
+    const run = host([0, 0, 0], {
+      localReview: async (args) => {
+        gated = await args.gate();
+        args.addCommits([{ sha: "review-made" }]);
+        return { status: "recorded", head: gated ?? args.startHead, rounds: 1, ledger: ledgerWith(gated ?? args.startHead, []), readPaths: new Set() };
+      },
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(gated, run.head());
+    assert.deepEqual(run.scanned, [run.head()]);
+    assert.ok(result.commits.some((commit) => commit.sha === "review-made"), JSON.stringify(result.commits));
+  });
+
+  it("runs the gate-fixer at checkpoint 3 when the gate the review asks for stays red, records no failed attempt and posts no 'wasn't pushed' comment, and publishes what the review reports", async () => {
+    const run = host([0, 0, 1, 1, 1], {
+      localReview: async (args) => {
+        assert.equal(await args.gate(), undefined);
+        return { status: "failed", head: args.startHead, reason: "the gate stayed red after round 1's fixes" };
+      },
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(run.steps.some((step) => step.startsWith("gate-fixer")), run.steps.join("\n"));
+    assert.deepEqual(run.recordBuildFailureCalls, [], "a red checkpoint 3 spends no build attempt: the build publishes");
+    assert.ok(!run.comments.some((comment) => /wasn't pushed|stopped building/.test(comment.body)), JSON.stringify(run.comments));
+  });
+
+  it("still records a failed attempt when checkpoint 2 stays red, before any review runs", async () => {
+    const run = host([0, 1, 1, 1]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "gate failed");
+    assert.equal(run.recordBuildFailureCalls.length, 1);
+  });
+
+  it("gives the review's gate the merged main, so the gate-script guard treats checkpoint 3 as it does checkpoint 2", async () => {
+    const newerMain = "a".repeat(40);
+    let before = 0;
+    let after = 0;
+    const count = (checks: string[]) => checks.filter((command) => command.includes(`'${newerMain}'`)).length;
+    const run = host([0, 0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      localReview: async (args) => {
+        before = count(run.gateGuardChecks);
+        await args.gate();
+        after = count(run.gateGuardChecks);
+        return { status: "failed", head: args.startHead, reason: "stop here" };
+      },
+    });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(before > 0, "checkpoint 2 names the merged main");
+    assert.ok(after > before, run.gateGuardChecks.join("\n"));
+  });
+
+  it("closes the sandbox, which removes the container of a role run the host gave up on, and publishes nothing, when the review's role run stalls", async () => {
+    const stop = new StalledStepError("The pre-push-reviewer run didn't finish within its timeout and the host's grace, so the host gave up on it.");
+    const run = host([0, 0], {
+      localReview: async (args) => {
+        markSandboxStalled(args.sandbox, "the pre-push-reviewer run");
+        throw stop;
+      },
+    });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, run.buildHost), (error: unknown) => error === stop);
+
+    assert.equal(run.steps.at(-1), "close", "the build's finally closes the sandbox the stalled run was in");
+    assert.deepEqual(run.pushed, []);
+  });
+
+  it("logs a failed review as an error that names its reason", async () => {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...parts: unknown[]) => void errors.push(parts.join(" "));
+    try {
+      const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+      await buildIssue(issue, branch, base, run.buildHost);
+    } finally {
+      console.error = original;
+    }
+
+    assert.ok(errors.some((line) => line.includes("the Bar reviewer timed out")), errors.join("\n"));
+  });
+
+  it("publishes the last gated commit with a note, not a failed attempt, when the gate stays red after the review's fixes", async () => {
+    const run = host([0, 0], {
+      localReview: async () => ({ status: "failed", head: "gated-before-the-red-fixes", reason: "the gate stayed red after round 2's fixes" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.notEqual(result.outcome, "gate failed");
+    assert.ok(run.scanned.includes("gated-before-the-red-fixes"), run.scanned.join(","));
+  });
+
+  it("rejects with UncountedStopError, publishing and recording nothing, when a usage-limit stop ends the review", async () => {
+    const stop = new UncountedStopError("Claude's usage limit was hit during the pre-push-reviewer run");
+    const run = host([0, 0], {
+      localReview: async () => {
+        throw stop;
+      },
+    });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, run.buildHost), (error: unknown) => error === stop);
+
+    assert.deepEqual(run.pushed, []);
+    assert.deepEqual(run.comments, []);
+    assert.deepEqual(run.recordBuildFailureCalls, []);
+    assert.ok(run.order.includes("close"), run.order.join(", "));
+    assert.ok(run.order.includes("unmark"), run.order.join(", "));
+  });
+
+  it("never runs scripts/review.sh or touches .git/review in the sandbox: only the host's review records", async () => {
+    const commands: string[] = [];
+    const run = host([0, 0]);
+    const createSandbox = run.buildHost.createSandbox;
+    run.buildHost.createSandbox = async (sandboxBranch) => {
+      const sandbox = await createSandbox(sandboxBranch);
+      return {
+        ...sandbox,
+        exec: async (command: string, options?: unknown) => {
+          commands.push(command);
+          return (sandbox.exec as (command: string, options?: unknown) => Promise<{ stdout: string; stderr: string; exitCode: number }>)(command, options);
+        },
+      } as Sandbox;
+    };
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(commands.length > 0);
+    assert.deepEqual(commands.filter((command) => /review\.sh|\.git\/review/.test(command)), []);
+  });
+});
+
+describe("publish with a review note", () => {
+  const createPullRequest = (bodies: string[]) => (_branch: string, _title: string, body: string) => {
+    bodies.push(body);
+    return "https://github.com/o/r/pull/1";
+  };
+
+  it("appends the review note after the check note", async () => {
+    const bodies: string[] = [];
+    const note = "⚠️ The local review didn't finish (a reason), so this branch has no recorded review.";
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, ["scripts/gate.sh"], () => {}, createPullRequest(bodies), async () => {}, note);
+
+    const body = bodies[0] ?? "";
+    assert.ok(body.endsWith(note), body);
+    assert.ok(body.indexOf("scripts/gate.sh") < body.indexOf(note), body);
+    assert.ok(body.includes(`\n\n${note}`), body);
+  });
+
+  it("leaves the body as it was when the note is empty", async () => {
+    const withNote: string[] = [];
+    const without: string[] = [];
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest(withNote), async () => {}, "");
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest(without), async () => {});
+
+    assert.equal(withNote[0], without[0]);
+  });
+});
+
+// liveReviewHost and readSkillFiles decide what the review's agents may do and which skill files the host trusts. The sandbox here is
+// a recorder: no git, no network, only the commands and role runs the host makes.
+describe("liveReviewHost", () => {
+  const SKILL = ".claude/skills/pre-push-review";
+  const skillFile = (severitiesLast: boolean, marker: string) =>
+    severitiesLast ? `# Skill\n\n## Steps\n\nDo it.\n\n## Severities\n\n- Critical ${marker}\n- Warning\n` : `# Skill\n\n## Severities\n\n- Critical ${marker}\n\n## Steps\n\nDo it.\n`;
+  function checkout(options: { severitiesLast?: boolean; marker?: string } = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), "live-review-host-"));
+    mkdirSync(join(dir, SKILL), { recursive: true });
+    mkdirSync(join(dir, ".claude/agents"), { recursive: true });
+    writeFileSync(join(dir, SKILL, "SKILL.md"), skillFile(options.severitiesLast ?? false, options.marker ?? "main"));
+    writeFileSync(join(dir, SKILL, "lenses.md"), "| Lens | Applies to | Ask |\n| --- | --- | --- |\n| Edge cases | Any code | Ask. |\n");
+    writeFileSync(join(dir, SKILL, "review-bar.md"), "The bar.");
+    writeFileSync(join(dir, ".claude/agents/pre-push-reviewer.md"), "---\nname: pre-push-reviewer\n---\nThe reviewer's body.");
+    return dir;
+  }
+  function recorder(outcomes?: string) {
+    const execs: { command: string; stdin?: string }[] = [];
+    const runs: SandboxRunOptions[] = [];
+    const orderOf: string[] = [];
+    const sandbox = {
+      exec: async (command: string, options?: { stdin?: string }) => {
+        execs.push({ command, stdin: options?.stdin });
+        orderOf.push(`exec ${command}`);
+        if (command.startsWith("cat ")) return outcomes === undefined ? { stdout: "", stderr: "", exitCode: 1 } : { stdout: outcomes, stderr: "", exitCode: 0 };
+        return { stdout: command.startsWith("git rev-parse") ? "/home/agent/workspace\n" : "", stderr: "", exitCode: 0 };
+      },
+      run: async (options: SandboxRunOptions) => {
+        runs.push(options);
+        orderOf.push(`run ${options.name}`);
+        return { iterations: [], commits: [{ sha: "made" }], stdout: "<findings>[]</findings>" };
+      },
+    } as unknown as Sandbox;
+    const commits: { sha: string }[] = [];
+    const args: LocalReviewArgs = {
+      sandbox,
+      issue: { number: 387, title: "t", body: "b" },
+      branch: "feature/387-x",
+      main: base,
+      startHead: "a".repeat(40),
+      gate: async () => undefined,
+      addCommits: (made) => void commits.push(...made),
+      limits: new RunLimits(),
+    };
+    return { args, execs, runs, orderOf, commits };
+  }
+  const commandOf = (options: SandboxRunOptions) => options.agent.buildPrintCommand({ prompt: "p", dangerouslySkipPermissions: true }).command;
+
+  it("runs a reviewer with only Read, Grep and Glob, strict MCP and the ledger deny list", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const stdout = await liveReviewHost(args, dir).runReviewer({ lens: "Bar", row: "" }, "review");
+
+      assert.equal(stdout, "<findings>[]</findings>");
+      const command = commandOf(runs[0]!);
+      assert.match(command, /--tools '?Read,Grep,Glob'?(?= |$)/);
+      assert.match(command, /--strict-mcp-config/);
+      assert.match(command, /--setting-sources '?user'?(?= |$)/);
+      assert.match(command, /--disallowedTools/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("runs the fixer with the ledger deny list only, clears the earlier outcomes first and hands the build its commits", async () => {
+    const { args, runs, orderOf, commits } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost(args, dir).runFixer("fix");
+
+      const command = commandOf(runs[0]!);
+      assert.match(command, /--disallowedTools/);
+      assert.doesNotMatch(command, /--tools|--strict-mcp-config/);
+      assert.ok(orderOf.indexOf("exec rm -f '.sandcastle/work/387/review/outcomes.json'") < orderOf.indexOf("run backend"), orderOf.join("\n"));
+      assert.deepEqual(commits, [{ sha: "made" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("writes run files only under the run's own folder", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.writeRunFile(".sandcastle/work/387/review/diff.patch", "patch");
+      for (const path of [".sandcastle/work/387/review/../../evil", ".sandcastle/work/388/review/diff.patch", "scripts/gate.sh", "/etc/passwd"]) {
+        await assert.rejects(() => live.writeRunFile(path, "x"), /may only write under/, path);
+      }
+
+      assert.equal(execs.filter((found) => found.stdin !== undefined).length, 1);
+      assert.equal(execs.find((found) => found.stdin !== undefined)?.stdin, Buffer.from("patch").toString("base64"));
+      assert.match(execs.find((found) => found.stdin !== undefined)?.command ?? "", /base64 -d > /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("removes a file only under the run's own folder", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.removeRunFile(".sandcastle/work/387/review/fixes.patch");
+      for (const path of [".sandcastle/work/387/review/../../evil", ".sandcastle/work/388/review/fixes.patch", "scripts/gate.sh", "/etc/passwd"]) {
+        await assert.rejects(() => live.removeRunFile(path), /may only remove under/, path);
+      }
+
+      assert.match(execs.at(-1)?.command ?? "", /rm -f '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+      assert.equal(execs.filter((found) => found.command.includes("rm -f")).length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes an empty run file without feeding the sandbox's command an empty stdin", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost(args, dir).writeRunFile(".sandcastle/work/387/review/fixes.patch", "");
+
+      assert.equal(execs.filter((found) => found.stdin !== undefined).length, 0);
+      assert.match(execs.at(-1)?.command ?? "", /: > '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  // Criterion: a reviewer or fix run that never answers ends the review red instead of holding the job. The tests of runRoleInSandbox
+  // alone could not tell whether the live host passes through it, so this runs the live host over a sandbox whose run never settles.
+  it("gives up on a reviewer run that never answers with a StalledStepError, and leaves the sandbox stalled", { timeout: 10_000 }, async () => {
+    const { args } = recorder();
+    const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+    const dir = checkout();
+    try {
+      const live = liveReviewHost({ ...args, sandbox, backstopMs: 20 }, dir);
+
+      await assert.rejects(() => live.runReviewer({ lens: "Bar", row: "" }, "review"), (error: unknown) => error instanceof StalledStepError);
+
+      assert.match(stalledStepOf(sandbox) ?? "", /pre-push-reviewer/);
+      await assert.rejects(() => live.runFixer("fix"), (error: unknown) => error instanceof StalledStepError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("gives up on a backend fix run that never answers with a StalledStepError", { timeout: 10_000 }, async () => {
+    const { args } = recorder();
+    const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+    const dir = checkout();
+    try {
+      await assert.rejects(
+        () => liveReviewHost({ ...args, sandbox, backstopMs: 20 }, dir).runFixer("fix"),
+        (error: unknown) => error instanceof StalledStepError && /backend/.test(error.message),
+      );
+
+      assert.match(stalledStepOf(sandbox) ?? "", /backend/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads the worktree's path from the sandbox, and fails when it can't", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      assert.equal(await liveReviewHost(args, dir).worktree(), "/home/agent/workspace");
+      const failing = { ...args, sandbox: { exec: async () => ({ stdout: "", stderr: "", exitCode: 128 }) } as unknown as Sandbox };
+      await assert.rejects(() => liveReviewHost(failing, dir).worktree(), /worktree path/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("sends the bytes of a patch that isn't UTF-8 through unchanged", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const bytes = Buffer.from([0x2b, 0xff, 0xfe, 0x0a]);
+
+      await liveReviewHost(args, dir).writeRunFile(".sandcastle/work/387/review/diff.patch", bytes);
+
+      assert.deepEqual(Buffer.from(execs.find((found) => found.stdin !== undefined)!.stdin!, "base64"), bytes);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("runs none of its sandbox commands or role runs through scripts/review.sh or .git/review", async () => {
+    const { args, execs, runs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.worktree();
+      await live.writeRunFile(".sandcastle/work/387/review/diff.patch", "p");
+      await live.runFixer("fix");
+      await live.runReviewer({ lens: "Bar", row: "" }, "review");
+      await live.readOutcomes();
+
+      assert.equal(runs.length, 2);
+      // The deny rules name the ledger on purpose; nothing else in a role's command may.
+      const withoutDenyRules = (command: string) => LEDGER_DENIED_TOOLS.reduce((text, rule) => text.split(rule).join(""), command);
+      assert.ok(runs.every((found) => !/review\.sh|\.git\/review/.test(withoutDenyRules(commandOf(found)))), runs.map((found) => commandOf(found)).join("\n"));
+      assert.ok(execs.length >= 4);
+      assert.ok(execs.every((found) => !/review\.sh|\.git\/review/.test(found.command)), execs.map((found) => found.command).join("\n"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes a logged line safe for the operator's terminal and keeps its prefix", () => {
+    const { args } = recorder();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => void lines.push(parts.join(" "));
+    try {
+      liveReviewHost(args, process.cwd()).log("  ✗ the Bar reviewer's error: boom \u001b[2J\u0007 done");
+    } finally {
+      console.log = original;
+    }
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /^ {2}#387 /);
+    assert.doesNotMatch(lines[0]!, /[\u0000-\u0008\u000b-\u001f\u007f]/);
+  });
+
+  it("pins the ledger's git to the checkout's own .git, and refuses a checkout whose .git has a planted commondir", () => {
+    const repo = mkdtempSync(join(tmpdir(), "live-review-pin-"));
+    try {
+      spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+      const { args } = recorder();
+      const live = liveReviewHost(args, repo);
+
+      assert.throws(() => live.takenIds("0".repeat(40)), /left main|can't find|fetch/);
+      assert.equal(ledgerGitEnv(repo).GIT_COMMON_DIR, join(repo, ".git"));
+
+      writeFileSync(join(repo, ".git", "commondir"), "../elsewhere\n");
+      assert.throws(() => live.takenIds("0".repeat(40)), /commondir/);
+      assert.throws(() => live.prepare({ main: "origin/main" }), /commondir/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("returns outcomes.json's text when the sandbox has the file", async () => {
+    const { args } = recorder('{"outcomes":[]}');
+    const dir = checkout();
+    try {
+      assert.equal(await liveReviewHost(args, dir).readOutcomes(), '{"outcomes":[]}');
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("lists the files a round changed, NUL-split, with spaces, non-ASCII and a deleted file", () => {
+    const repo = mkdtempSync(join(tmpdir(), "live-review-git-"));
+    const run = (...gitArgs: string[]) => spawnSync("git", gitArgs, { cwd: repo, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e" } });
+    try {
+      run("init", "-q", "-b", "main");
+      writeFileSync(join(repo, "gone.txt"), "x");
+      writeFileSync(join(repo, "keep.txt"), "a");
+      run("add", "-A");
+      run("commit", "-q", "-m", "first");
+      const from = run("rev-parse", "HEAD").stdout.trim();
+      rmSync(join(repo, "gone.txt"));
+      writeFileSync(join(repo, "keep.txt"), "b");
+      writeFileSync(join(repo, "with space.txt"), "c");
+      writeFileSync(join(repo, "café.txt"), "d");
+      run("add", "-A");
+      run("commit", "-q", "-m", "second");
+      const to = run("rev-parse", "HEAD").stdout.trim();
+      const { args } = recorder();
+
+      const changed = liveReviewHost(args, repo).changedFiles(from, to);
+
+      assert.deepEqual([...changed].sort(), ["café.txt", "gone.txt", "keep.txt", "with space.txt"]);
+      assert.deepEqual(liveReviewHost(args, repo).changedFiles(to, to), []);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads outcomes.json when the sandbox has it, and nothing when it doesn't", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      assert.equal(await liveReviewHost(args, dir).readOutcomes(), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads the skill files from the checkout it is given, whatever the worktree holds", () => {
+    const main = checkout({ marker: "main's" });
+    const worktree = checkout({ marker: "the branch's easy one" });
+    try {
+      const files = readSkillFiles(main);
+
+      assert.match(files.severities, /main's/);
+      assert.doesNotMatch(files.severities, /easy one/);
+      assert.equal(files.bar, "The bar.");
+      assert.equal(files.agentBody, "The reviewer's body.");
+      assert.equal(files.repoLenses, undefined);
+      assert.match(readSkillFiles(worktree).severities, /easy one/);
+    } finally {
+      rmSync(main, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(worktree, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("keeps the repository's own lens table, ignores a code-review skill with none, and ignores a missing one", () => {
+    const dir = checkout();
+    try {
+      mkdirSync(join(dir, ".claude/skills/code-review"), { recursive: true });
+      const own = "# Own\n\n| Lens | Applies to | Ask |\n| --- | --- | --- |\n| Mine | Any file | Ask. |\n";
+      writeFileSync(join(dir, ".claude/skills/code-review/SKILL.md"), own);
+      assert.equal(readSkillFiles(dir).repoLenses, own);
+
+      writeFileSync(join(dir, ".claude/skills/code-review/SKILL.md"), "# No table here\n");
+      assert.equal(readSkillFiles(dir).repoLenses, undefined);
+
+      rmSync(join(dir, ".claude/skills/code-review"), { recursive: true, force: true, maxRetries: 5 });
+      assert.equal(readSkillFiles(dir).repoLenses, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("fails, rather than dropping the repository's lenses, when its code-review skill can't be read", () => {
+    const dir = checkout();
+    try {
+      mkdirSync(join(dir, ".claude/skills/code-review/SKILL.md"), { recursive: true });
+
+      assert.throws(() => readSkillFiles(dir), /EISDIR/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads a Severities section that is the skill's last one", () => {
+    const dir = checkout({ severitiesLast: true });
+    try {
+      assert.match(readSkillFiles(dir).severities, /- Warning/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("fails clearly when SKILL.md has no Severities section", () => {
+    const dir = checkout();
+    try {
+      writeFileSync(join(dir, SKILL, "SKILL.md"), "# Skill\n\n## Steps\n\nDo it.\n");
+      assert.throws(() => readSkillFiles(dir), /no Severities section/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("fails when the reviewer's agent file is missing", () => {
+    const dir = checkout();
+    try {
+      rmSync(join(dir, ".claude/agents/pre-push-reviewer.md"));
+      assert.throws(() => readSkillFiles(dir), /ENOENT/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }
   });
 });

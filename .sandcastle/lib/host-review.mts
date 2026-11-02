@@ -571,7 +571,8 @@ function failureText(error: unknown): string {
   return isRoleTimeout(error) ? "timed out" : "failed";
 }
 
-// One reviewer's findings. A usage or time stop is rethrown at once (runHostReview decides what it ends the review as); an invalid answer is asked for again, quoting what was
+// One reviewer's findings. A usage-limit stop, a stalled sandbox or the time budget's stop (any UncountedStopError) is rethrown at once
+// (runHostReview decides what it ends the review as); an invalid answer is asked for again, quoting what was
 // wrong, up to REVIEWER_ATTEMPTS times in all.
 async function reviewerFindings(host: HostReviewHost, reviewer: Reviewer, prompt: (problem: string | undefined) => string): Promise<ReviewerFinding[]> {
   let problem: string | undefined;

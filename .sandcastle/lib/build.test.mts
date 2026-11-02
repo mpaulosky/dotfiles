@@ -3316,6 +3316,31 @@ describe("createCheckedSandbox's step limits", () => {
     assert.equal(wasClosed(), true);
   });
 
+  it("stalls the step when Docker never answers the create, and closes a sandbox it makes too late", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0);
+    let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+    const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+
+    await assert.rejects(
+      createCheckedSandbox("feature", create, () => identity, () => [], { dockerCallMinutes: 0.001 }),
+      (error: Error) => error instanceof StalledStepError && /creating the sandbox didn't finish/.test(error.message),
+    );
+    makeSandbox(sandbox);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("still fails with the original error when the close of a refused sandbox hangs", async () => {
+    const { sandbox } = recordingSandbox(0, false);
+    (sandbox as unknown as { close: () => Promise<never> }).close = () => new Promise<never>(() => undefined);
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { dockerCallMinutes: 0.001 }),
+      /no `timeout` command/,
+    );
+  });
+
   it("hands back the limited sandbox itself, which stalledStepOf recognises once a step stalls it", async () => {
     const { sandbox } = recordingSandbox(124);
     let time = 0;

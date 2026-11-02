@@ -33,6 +33,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
+import { closeWithinLimit, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
 import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
@@ -266,7 +267,7 @@ export function designNoteIn(body: string): string {
 export function latestDesignNote(
   issueNumber: number,
   repo: string = repoName(),
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   poster?: string,
 ): string | undefined {
   const latest = markerComments(issueNumber, "sandcastle:needs-human", DESIGN_MARKER, repo, run, poster).at(-1);
@@ -513,7 +514,10 @@ export async function createCheckedSandbox(
   if (problems.length > 0) {
     throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
-  const sandbox = await create(branch);
+  // Docker has no timeout of its own: a create that never answers stalls the step, and a sandbox it makes too late is closed.
+  const sandbox = await withinDockerLimit("creating the sandbox", create(branch), stepLimits.dockerCallMinutes, (late) => {
+    void late.close().catch(() => undefined);
+  });
   let limited: sandcastle.Sandbox;
   try {
     await setGitIdentity(sandbox, hostIdentity());
@@ -546,7 +550,7 @@ export async function createCheckedSandbox(
         sandbox.worktreePath,
       );
     }
-    await sandbox.close().catch(() => undefined);
+    await closeWithinLimit(sandbox, stepLimits.dockerCallMinutes).catch(() => undefined);
     throw error;
   }
   return limited;
@@ -1318,8 +1322,8 @@ async function buildMarkedIssue(
     } else {
       // A stalled sandbox may have a command still running in it, so its close can fail or throw something else; the
       // StalledStepError that ended the work is the error to report, so that close's failure is only logged.
-      if (stalledStepOf(sandbox) === undefined) await sandbox.close();
-      else await sandbox.close().catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
+      if (stalledStepOf(sandbox) === undefined) await closeWithinLimit(sandbox);
+      else await closeWithinLimit(sandbox).catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
     }
   }
 }

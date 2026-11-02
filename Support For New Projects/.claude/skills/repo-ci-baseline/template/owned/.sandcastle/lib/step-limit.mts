@@ -105,6 +105,8 @@ export type StepLimitOptions = {
   commandMinutes?: number;
   graceSeconds?: number;
   backstopSlackSeconds?: number;
+  // How long createCheckedSandbox waits for Docker to create the sandbox.
+  dockerCallMinutes?: number;
 };
 
 // The step that stalled each limited sandbox, if one did (see stalledStepOf).

@@ -42,6 +42,7 @@ import {
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { closeWithinLimit } from "./host-limit.mts";
 import { stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
@@ -1264,8 +1265,8 @@ async function passOnMarkedIssue(
     } else {
       // A stalled sandbox may have a command still running in it, so its close can fail or throw something else; the
       // StalledStepError that ended the work is the error to report, so that close's failure is only logged.
-      if (stalledStepOf(sandbox) === undefined) await sandbox.close();
-      else await sandbox.close().catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
+      if (stalledStepOf(sandbox) === undefined) await closeWithinLimit(sandbox);
+      else await closeWithinLimit(sandbox).catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
     }
   }
 }

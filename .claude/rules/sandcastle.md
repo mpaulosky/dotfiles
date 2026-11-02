@@ -41,6 +41,16 @@ files change.
   in `createCheckedSandbox` runs under a one-minute limit of its own. `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils
   on this machine and skips those tests without it;
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
+- **Give the host's own waits a limit.** Every `gh` and `git` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
+  one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call; never default a `run` parameter to a bare `execFileSync`
+  (`lib/host-limit.test.mts` scans for it). Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
+  (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed. The call itself can't be cancelled,
+  so a container Docker never answered for may stay running until a person removes it.
+- **Give the host's own waits a limit.** Every `gh` and `git` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
+  one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call; never default a `run` parameter to a bare `execFileSync`
+  (`lib/host-limit.test.mts` scans for it). Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
+  (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed. The call itself can't be cancelled,
+  so a container Docker never answered for may stay running until a person removes it.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

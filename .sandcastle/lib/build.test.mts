@@ -51,7 +51,7 @@ import { PR_BODY_RULES } from "./prompts.mts";
 import { ledgerGitEnv, type Ledger } from "./review-ledger.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
-import { KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
+import { KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, markSandboxStalled, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -3853,6 +3853,21 @@ describe("buildIssue's local review", () => {
 
     assert.ok(before > 0, "checkpoint 2 names the merged main");
     assert.ok(after > before, run.gateGuardChecks.join("\n"));
+  });
+
+  it("closes the sandbox, which removes the container of a role run the host gave up on, and publishes nothing, when the review's role run stalls", async () => {
+    const stop = new StalledStepError("The pre-push-reviewer run didn't finish within its timeout and the host's grace, so the host gave up on it.");
+    const run = host([0, 0], {
+      localReview: async (args) => {
+        markSandboxStalled(args.sandbox, "the pre-push-reviewer run");
+        throw stop;
+      },
+    });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, run.buildHost), (error: unknown) => error === stop);
+
+    assert.equal(run.steps.at(-1), "close", "the build's finally closes the sandbox the stalled run was in");
+    assert.deepEqual(run.pushed, []);
   });
 
   it("logs a failed review as an error that names its reason", async () => {

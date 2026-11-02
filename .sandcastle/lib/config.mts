@@ -285,7 +285,8 @@ export const BUILDING_LABEL = "sandcastle:building";
 // and the host-side review, which stops starting steps after REVIEW_WALL_CLOCK_MINUTES
 // and so takes at most that plus the step it was in (a reviewer's attempts, or a fixer
 // with its gate): all under 12 hours. A crashed run therefore holds its issue for up to
-// 12 hours, an Actions run's too: startup uses this one age. config.test.mts checks that
+// 12 hours, an Actions run's too: startup uses this one age. It can't be shorter for Actions alone, since the label's timeline names no
+// run kind and a local run may take the full 12 hours, so a shorter age could clear the label of a build that is still working. config.test.mts checks that
 // sum (see BUILD_ROLES), with twenty minutes to spare, stays below it.
 export const BUILDING_LABEL_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 

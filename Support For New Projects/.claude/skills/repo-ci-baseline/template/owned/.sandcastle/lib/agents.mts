@@ -181,7 +181,9 @@ export const roleBackstopMs = (role: AnyRole): number => backstopMsFor(roleAgent
 
 // Waits for a role's sandbox run for at most `ms`. The run's own AbortSignal ends one that answers it; a Docker exec that never answers
 // would hold the review until the job's cap. Giving up stalls the sandbox (stalledStepOf, so no later role or exec starts in a container
-// that may still be running the role), records the call (markHostCallAbandoned, so the process ends after its cleanup) and throws.
+// that may still be running the role), records the call (markHostCallAbandoned, so the process ends after its cleanup) and throws. The run itself can't be
+// cancelled, but its container doesn't outlive the build: the StalledStepError ends the work, and buildIssue's finally closes the stalled sandbox within the
+// Docker call limit (closeAfterWork), which removes the container and so the run. Only a close that stalls too leaves it, and the exit warning names that.
 async function withinBackstop<R>(sandbox: object, role: AnyRole, ms: number, run: Promise<R>): Promise<R> {
   run.catch(() => undefined);
   let timer: NodeJS.Timeout | undefined;

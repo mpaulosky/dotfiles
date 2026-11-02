@@ -349,6 +349,24 @@ describe("main.mts's intake-stop exit code", () => {
     assert.match(assignment, /intakeStopReport\.items\(\)/, "main.mts doesn't pass intakeStopReport.items() to the exit-code decision");
   });
 
+  it("ends with exitAfterStall() from lib/host-limit.mts as the last statement of the finally block, after the exit code is set", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const opener = mainMts.lastIndexOf("} finally {", mainMts.indexOf("writeRunReport("));
+    // main.mts's finally block is top-level, so its closing brace is the first line that starts with one.
+    const body = mainMts
+      .slice(opener, mainMts.indexOf("\n}", opener))
+      .split(/\r?\n/)
+      .filter((line) => !/^\s*\/\//.test(line))
+      .join("\n")
+      .trimEnd();
+
+    assert.match(mainMts, /import \{ exitAfterStall \} from "\.\/lib\/host-limit\.mts";/, "main.mts doesn't import exitAfterStall from ./lib/host-limit.mts");
+    assert.notEqual(opener, -1, "the run report isn't written in a finally block");
+    assert.ok(body.endsWith("exitAfterStall();"), "the finally block doesn't end with exitAfterStall();");
+    assert.ok(body.indexOf("process.exitCode = intakeStopExitCode(") < body.lastIndexOf("exitAfterStall();"), "exitAfterStall(); doesn't come after the exit code is set");
+    assert.equal(/\bprocess\.exit\(/.test(body), false, "the finally block ends the process itself instead of through exitAfterStall()");
+  });
+
   it("records a stalled step's entry from a settled build and from the run-stopping catch, so either ends the run red", () => {
     const mainMts = read(".sandcastle/main.mts");
 

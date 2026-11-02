@@ -3,7 +3,8 @@
 // that intake and PR follow-up share (lib/github.mts#handBack). See "Giving up
 // and telling the human" in Blazor-Server's docs/plans/sandcastle-workflow.md.
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
+import { hostExecFileSync } from "./host-limit.mts";
 import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP, LOCAL_QUEUE_LABEL, QUEUE_LABEL } from "./config.mts";
 import { commentOnIssue, handBack, replaceIssueLabel, repoName } from "./github.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
@@ -101,7 +102,7 @@ export function recordFailedAttempt(
   branch: string,
   detail: string,
   priorFailures: readonly string[],
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   report: HandBackReport = handBackReport,
 ): void {
@@ -183,7 +184,7 @@ export function handBackWorkflowChange(
   branch: string,
   detail: string,
   change: WorkflowChange,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   report: HandBackReport = handBackReport,
 ): void {
@@ -248,7 +249,7 @@ export function moveToLocalQueue(
   detail: string,
   change: WorkflowChange,
   createdAtBase: boolean,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   report: HandBackReport = handBackReport,
 ): void {

@@ -2,8 +2,8 @@
 // from a single sandbox, so every role and the gate share the same worktree.
 // Nothing is merged locally: every change reaches main through a reviewed PR.
 
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import type { execFileSync } from "node:child_process";
+import { existsSync, lstatSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { isRoleTimeout, runRoleInSandbox, uiEnabled } from "./agents.mts";
@@ -33,6 +33,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
+import { closeAfterWork, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
 import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
@@ -266,7 +267,7 @@ export function designNoteIn(body: string): string {
 export function latestDesignNote(
   issueNumber: number,
   repo: string = repoName(),
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   poster?: string,
 ): string | undefined {
   const latest = markerComments(issueNumber, "sandcastle:needs-human", DESIGN_MARKER, repo, run, poster).at(-1);
@@ -285,6 +286,8 @@ type DeveloperRole = "architect" | "tester" | "backend" | "ui";
 
 // What buildIssue needs from outside the pipeline; tests pass stubs.
 export type BuildHost = {
+  // How long the close of the build's sandbox may take, in minutes (host-limit.mts#DOCKER_CALL_LIMIT_MINUTES by default); for tests.
+  dockerCallMinutes?: number;
   createSandbox(branch: string): Promise<sandcastle.Sandbox>;
   // The commits on the branch that `base` doesn't have, counted by ref.
   commitsAhead(branch: string, base: string): number;
@@ -471,6 +474,17 @@ const tamperedWorktreeComment = (branch: string) =>
   `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
   "person to look at. Don't run git in it.";
 
+// Whether nothing exists at the path: lstat says ENOENT. A dangling symlink exists, and any other lstat error (ENOTDIR, EACCES) is not "gone"
+// either, so the worktree check still sees them.
+export const worktreeIsGone = (worktreePath: string): boolean => {
+  try {
+    lstatSync(worktreePath);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+};
+
 const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktreePath, repoGitDir());
 
 // The live sandbox for `branch`, for a build and a follow-up pass
@@ -496,6 +510,10 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // the identity step: a rejection or a refusal goes through the same worktree
 // check and close. `stepLimits` is for tests.
 //
+// The create runs under withinDockerLimit (stepLimits.dockerCallMinutes): a create Docker never answers is a StalledStepError, and a
+// sandbox it makes too late is closed once its worktree passes the check (a worktree that is gone from the path the host expects counts as
+// passing; one that fails it, whose check throws, or that is at any other path, is left in place with a warning). The close after a refusal is bounded the same way, and one the host gave up on ends the run red (closeAfterWork) while the setup error is still the one thrown.
+//
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
 // link check) are injected so tests can stand in for Sandcastle, Docker, the
@@ -513,7 +531,25 @@ export async function createCheckedSandbox(
   if (problems.length > 0) {
     throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
-  const sandbox = await create(branch);
+  // Docker has no timeout of its own: a create that never answers stalls the step, and a sandbox it makes too late is closed if its worktree is
+  // sound (see below).
+  const sandbox = await withinDockerLimit("creating the sandbox", create(branch), stepLimits.dockerCallMinutes, (late) => {
+    // Closing runs git in the worktree, which the create's hooks may have redirected, so it gets the check a normal cleanup gets. One that
+    // fails the check, or the check itself failing, leaves the sandbox and its worktree in place. A worktree that is gone from the
+    // path the host expects has nothing to redirect, so its sandbox is closed: leaving it would only leak its container. Any other path (an
+    // empty one, one elsewhere) gets the check, which fails closed.
+    let tampered: string[];
+    try {
+      tampered = late.worktreePath === existing && worktreeIsGone(existing) ? [] : checkWorktree(late.worktreePath);
+    } catch (checkError) {
+      tampered = [`checking the worktree failed: ${checkError instanceof Error ? checkError.message : String(checkError)}`];
+    }
+    if (tampered.length > 0) {
+      console.error(`  ⚠ left the late sandbox at ${terminalText(late.worktreePath)} in place, as its worktree was tampered with: ${terminalText(tampered.join("; "))}`);
+      return;
+    }
+    void late.close().catch(() => undefined);
+  });
   let limited: sandcastle.Sandbox;
   try {
     await setGitIdentity(sandbox, hostIdentity());
@@ -546,7 +582,13 @@ export async function createCheckedSandbox(
         sandbox.worktreePath,
       );
     }
-    await sandbox.close().catch(() => undefined);
+    // A close the host gave up on makes the run end red (closeAfterWork), as for any other close after work; any other close failure is
+    // only logged, and the setup error is the one thrown.
+    await closeAfterWork(sandbox, {
+      stalled: false,
+      minutes: stepLimits.dockerCallMinutes,
+      log: (line) => console.error(`  ⚠ closing the refused sandbox: ${terminalText(line)}`),
+    }).catch((closeError) => console.error(`  ⚠ closing the refused sandbox failed: ${terminalText(String(closeError))}`));
     throw error;
   }
   return limited;
@@ -1316,10 +1358,14 @@ async function buildMarkedIssue(
       console.error(`  ✗ #${issue.number}: left ${sandbox.worktreePath} and its sandbox in place: ${terminalText(problems.join("; "))}`);
       host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
     } else {
-      // A stalled sandbox may have a command still running in it, so its close can fail or throw something else; the
-      // StalledStepError that ended the work is the error to report, so that close's failure is only logged.
-      if (stalledStepOf(sandbox) === undefined) await sandbox.close();
-      else await sandbox.close().catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
+      // A close the host gave up on is logged and ends the run red (closeAfterWork, exitAfterStall), and any close failure on a stalled
+      // sandbox (which may have a command still running) is only logged: the pull request or the StalledStepError that ended the work is
+      // what to report.
+      await closeAfterWork(sandbox, {
+        stalled: stalledStepOf(sandbox) !== undefined,
+        minutes: host.dockerCallMinutes,
+        log: (line) => console.error(`  ⚠ ${terminalText(line)}`),
+      });
     }
   }
 }

@@ -183,6 +183,8 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/github.test.mts",
   ".sandcastle/lib/handback.mts",
   ".sandcastle/lib/handback.test.mts",
+  ".sandcastle/lib/host-limit.mts",
+  ".sandcastle/lib/host-limit.test.mts",
   ".sandcastle/lib/host-safety.mts",
   ".sandcastle/lib/host-safety.test.mts",
   ".sandcastle/lib/intake.mts",

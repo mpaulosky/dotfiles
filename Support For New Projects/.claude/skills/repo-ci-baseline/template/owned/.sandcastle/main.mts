@@ -180,6 +180,7 @@ import {
 } from "./lib/report.mts";
 import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
+import { exitAfterStall } from "./lib/host-limit.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
 import { umbrellaPhase } from "./lib/umbrella.mts";
 import { findWork } from "./lib/work.mts";
@@ -564,6 +565,9 @@ try {
     console.error(`\n✗ Intake stopped: ${reason}. First error: ${firstError}`);
   }
   process.exitCode = intakeStopExitCode(intakeStopReport.items());
+  // A call the host gave up on (a Docker create or close, or a sandbox exec) may still hold something that keeps Node running; end the
+  // process after a grace period. A close the host gave up on after finished work also makes this set exit code 1, so that run ends red.
+  exitAfterStall();
 }
 
 console.log("\nAll done.");

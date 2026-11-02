@@ -4,7 +4,8 @@
 // repository itself (--repo, or repos/<owner>/<name> for gh api) rather than
 // working it out from the git remote of wherever it runs.
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
+import { hostExecFileSync } from "./host-limit.mts";
 import { endOf } from "./checkpoint.mts";
 import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
@@ -22,7 +23,7 @@ export function repoName(): string {
 
 // One read of the name, with gh's stderr captured: a failure reaches the terminal only through the thrown message, where a caller
 // can print it as plain text, never written by gh itself. Takes the runner, for a test.
-export function readRepoName(run: typeof execFileSync = execFileSync): string {
+export function readRepoName(run: typeof execFileSync = hostExecFileSync): string {
   const name = ghWithStderr(run, ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).trim();
   if (name === "") throw new Error("gh repo view failed: it printed no repository name");
   return name;
@@ -73,7 +74,7 @@ export function hasLabel(issue: Pick<SandcastleIssue, "labels">, label: string):
 export function ownerApproved(
   issue: GhIssue,
   repo: string = repoName(),
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   canPush: Map<string, boolean> = new Map(),
   warn: (message: string) => void = console.error,
   failed: Set<string> = new Set(),
@@ -139,7 +140,7 @@ export function pushAccess(
   canPush: Map<string, boolean> = writeAccessByLogin,
   failed: Set<string> = new Set(),
   repo: string = repoName(),
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   warn: (message: string) => void = console.error,
 ): boolean | undefined {
   if (login === null) return false;
@@ -160,7 +161,7 @@ export function pushAccess(
 // `failed` holds one round's failed lookups, so a failure is retried next
 // round, and loadQueue shares it with its own owner checks.
 export function listSandcastleIssues(
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   canPush: Map<string, boolean> = writeAccessByLogin,
   warn: (message: string) => void = console.error,
@@ -210,7 +211,7 @@ export function sameRepository<T extends Pick<ListedPullRequest, "isCrossReposit
 // The open pull requests from this repository's branches, and their head
 // branches. gh pages through results up to --limit, so the cap sits far above
 // any real queue: a PR missed here would let its issue be built twice.
-export function openPullRequests(run: typeof execFileSync = execFileSync, repo: string = repoName()): OpenPullRequest[] {
+export function openPullRequests(run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): OpenPullRequest[] {
   return openSameRepositoryPullRequests(run, repo);
 }
 
@@ -220,7 +221,7 @@ export function openPullRequests(run: typeof execFileSync = execFileSync, repo: 
 // reads each one's files with pullRequestFiles. Fork PRs are left out, as
 // sameRepository explains: counting them would let anyone with a fork hold the
 // whole queue back.
-export function openPullRequestsIntoMain(run: typeof execFileSync = execFileSync, repo: string = repoName()): OpenPullRequest[] {
+export function openPullRequestsIntoMain(run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): OpenPullRequest[] {
   return openSameRepositoryPullRequests(run, repo, "--base", BASE_BRANCH.replace(/^origin\//, ""));
 }
 
@@ -278,7 +279,7 @@ export function openPullRequest(
   branch: string,
   title: string,
   body: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): string {
   const listed = JSON.parse(
@@ -315,7 +316,7 @@ export type ClosedPullRequest = PullRequestIdentity & { headRefOid: string; stat
 // lib/follow-up.mts#closedWithoutMerging and #startFromMain.
 export function closedPullRequests(
   author: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): ClosedPullRequest[] {
   const listed = JSON.parse(
@@ -420,7 +421,7 @@ type SweepNode = {
 // (lib/follow-up.mts#sweepPullRequests), through one GraphQL query paged by
 // hand, 50 PRs a page. Normalised to SweepPullRequest.
 export function openPullRequestsForSweep(
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): SweepPullRequest[] {
   const [owner, name] = repo.split("/") as [string, string];
@@ -526,7 +527,7 @@ export function isCopilot(login: string | null): boolean {
 // Asks Copilot to review a PR again (lib/follow-up.mts#decide), once CI has
 // been done for a while with no review of the head and no pending request.
 // union: true adds Copilot to the PR's reviewers rather than replacing them.
-export function requestCopilotReview(pullRequestId: string, run: typeof execFileSync = execFileSync): void {
+export function requestCopilotReview(pullRequestId: string, run: typeof execFileSync = hostExecFileSync): void {
   const mutation =
     "mutation($pullRequestId: ID!) { requestReviewsByLogin(input: { pullRequestId: $pullRequestId, " +
     `botLogins: [${JSON.stringify(COPILOT_REVIEWER)}], union: true }) { clientMutationId } }`;
@@ -541,7 +542,7 @@ export function requestCopilotReview(pullRequestId: string, run: typeof execFile
 export function updatePullRequestBranch(
   number: number,
   expectedHeadSha: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["api", "--method", "PUT", `repos/${repo}/pulls/${number}/update-branch`, "-f", `expected_head_sha=${expectedHeadSha}`]);
@@ -559,7 +560,7 @@ export type MainMerge = { firstParent: string } | { problem: string };
 export function mainMergeOf(
   commit: string,
   host: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): MainMerge {
   const info = JSON.parse(
@@ -601,7 +602,7 @@ export type ReviewThread = {
 // (fail closed as lib/github.mts#bodyEdits already does for issues).
 export function reviewThreadsOf(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): { headRefOid: string; threads: ReviewThread[] } {
   const [owner, name] = repo.split("/") as [string, string];
@@ -702,7 +703,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 // other than its head.
 export function headChecksOf(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): { headRefOid: string; checks: HeadCheck[] } {
   const [owner, name] = repo.split("/") as [string, string];
@@ -780,7 +781,7 @@ export function rerunFailedChecksOnce(
   number: number,
   names: readonly string[],
   expectedHead: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): CheckState[] {
   const { checks, runIds } = namedRuns(number, names, expectedHead, run, repo);
@@ -820,7 +821,7 @@ export function failedCheckLogs(
   number: number,
   names: readonly string[],
   expectedHead: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   limit: number = Number.POSITIVE_INFINITY,
 ): string {
@@ -840,7 +841,7 @@ export function failedCheckLogs(
 // addPullRequestReviewThreadReply. The body travels as a GraphQL variable in
 // a JSON request on stdin, never interpolated into the query or put on the
 // command line: it carries the role's reasoning, unchecked model text.
-export function replyToReviewThread(threadId: string, body: string, run: typeof execFileSync = execFileSync): void {
+export function replyToReviewThread(threadId: string, body: string, run: typeof execFileSync = hostExecFileSync): void {
   const mutation =
     "mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: " +
     "{ pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } } }";
@@ -851,7 +852,7 @@ export function replyToReviewThread(threadId: string, body: string, run: typeof 
 // resolveReviewThread. GitHub's mutation takes only the thread id: there's no
 // ADDRESSED/WONT_FIX/INVALID argument, so that resolution travels in the
 // reply and the pass summary instead.
-export function resolveReviewThread(threadId: string, run: typeof execFileSync = execFileSync): void {
+export function resolveReviewThread(threadId: string, run: typeof execFileSync = hostExecFileSync): void {
   const mutation = "mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { id } } }";
   ghWithStderr(run, ["api", "graphql", "-f", `query=${mutation}`, "-f", `threadId=${threadId}`]);
 }
@@ -862,7 +863,7 @@ export function resolveReviewThread(threadId: string, run: typeof execFileSync =
 export function commentOnPullRequest(
   number: number,
   body: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["pr", "comment", String(number), "--repo", repo, "--body-file", "-"], body);
@@ -878,7 +879,7 @@ const PULL_REQUEST_FILES_CAP = 3000;
 // comes out as one JSON string per line, so a path with a line break stays
 // whole. A failed read throws rather than return part of the list, and so does
 // a list at GitHub's 3000-file cap, which may be cut short.
-export function pullRequestFiles(pr: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): string[] {
+export function pullRequestFiles(pr: number, run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): string[] {
   const files = jsonLines(
     ghWithStderr(run, [
       "api", "--paginate", `repos/${repo}/pulls/${pr}/files`,
@@ -893,7 +894,7 @@ export function pullRequestFiles(pr: number, run: typeof execFileSync = execFile
 }
 
 // Any issue's body, or "" when it has none.
-export function issueBody(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): string {
+export function issueBody(number: number, run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): string {
   return ghWithStderr(run, ["api", `repos/${repo}/issues/${number}`, "--jq", '.body // ""']).trim();
 }
 
@@ -902,7 +903,7 @@ export function issueBody(number: number, run: typeof execFileSync = execFileSyn
 export function addBlockedBy(
   issue: number,
   blocker: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   const id = ghWithStderr(run, ["api", `repos/${repo}/issues/${blocker}`, "--jq", ".id"]).trim();
@@ -915,7 +916,7 @@ export function addBlockedBy(
 // issue's blockers to its first child (see lib/intake.mts#applySplit).
 export function sameRepoBlockers(
   issue: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): number[] {
   const blockers = jsonLines(
@@ -934,7 +935,7 @@ export function createIssue(
   title: string,
   body: string,
   labels: readonly string[],
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): number {
   // The REST API takes the body as JSON on stdin and answers the number
@@ -956,7 +957,7 @@ export function createIssue(
 export function addSubIssue(
   parent: number,
   child: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   // As with addBlockedBy, the API names the sub-issue by its id, not its
@@ -972,7 +973,7 @@ export type SubIssue = { number: number; state: string; state_reason: string | n
 // The parent issue's sub-issues, in the order GitHub lists them.
 export function subIssuesOf(
   parent: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): SubIssue[] {
   return jsonLines(
@@ -987,7 +988,7 @@ export function subIssuesOf(
 // (see lib/umbrella.mts#closeFinishedUmbrellas).
 export function closeIssueAsCompleted(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["issue", "close", String(number), "--repo", repo, "--reason", "completed"]);
@@ -1004,7 +1005,7 @@ export function closeIssueAsCompleted(
 // round or two.
 export function openIssuesWithComment(
   marker: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   poster: string = (signedInLogin ??= hostLogin(run)),
 ): number[] {
@@ -1026,7 +1027,7 @@ export function openIssuesWithComment(
 export function commentOnIssue(
   issue: number,
   body: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["issue", "comment", String(issue), "--repo", repo, "--body-file", "-"], body);
@@ -1040,7 +1041,7 @@ export function commentOnIssue(
 // before an issue moves to it) and the owner's hand-off label.
 export function ensureLabels(
   labels: readonly SandcastleLabel[] = HOST_LABELS,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   const existing = new Set(
@@ -1068,7 +1069,7 @@ export function ensureLabels(
 export function addIssueLabel(
   number: number,
   label: string | readonly string[],
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   const labels = typeof label === "string" ? [label] : label;
@@ -1079,7 +1080,7 @@ export function addIssueLabel(
 export function removeIssueLabel(
   number: number,
   label: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["issue", "edit", String(number), "--repo", repo, "--remove-label", label]);
@@ -1091,7 +1092,7 @@ export function replaceIssueLabel(
   number: number,
   from: string,
   to: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["issue", "edit", String(number), "--repo", repo, "--add-label", to, "--remove-label", from]);
@@ -1104,7 +1105,7 @@ export function replaceIssueLabel(
 export function addPullRequestLabel(
   number: number,
   label: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["pr", "edit", String(number), "--repo", repo, "--add-label", label]);
@@ -1114,7 +1115,7 @@ export function addPullRequestLabel(
 // than from the round's listSandcastleIssues snapshot.
 export function issueLabels(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): string[] {
   return JSON.parse(
@@ -1127,7 +1128,7 @@ export function issueLabels(
 // listSandcastleIssues, the cap sits far above any real queue.
 export function issuesWithLabel(
   label: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): number[] {
   return JSON.parse(
@@ -1153,7 +1154,7 @@ function jsonLines(output: string): unknown[] {
 // first. PRs share the issues API, so this covers both.
 export function labelTimeline(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): TimelineLabelEvent[] {
   return jsonLines(
@@ -1176,7 +1177,7 @@ export type IssueEvent = { event: "labeled" | "unlabeled" | "renamed"; actor: st
 // oldest first (GET repos/{owner}/{repo}/issues/{n}/events, --paginate).
 export function issueEvents(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): IssueEvent[] {
   return jsonLines(
@@ -1218,7 +1219,7 @@ export type ContentEdit = { editor: string | null; editedAt: string };
 // when the answer names no such issue, or any edit doesn't fit ContentEdit.
 export function bodyEdits(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): ContentEdit[] {
   return contentEdits("issue", number, run, repo);
@@ -1262,7 +1263,7 @@ function contentEdits(kind: "issue" | "pullRequest", number: number, run: typeof
 // request, or any edit doesn't fit ContentEdit.
 export function pullRequestBodyEdits(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): ContentEdit[] {
   return contentEdits("pullRequest", number, run, repo);
@@ -1272,7 +1273,7 @@ export function pullRequestBodyEdits(
 // issuesWithLabel can't see them). The cap sits far above any real number of open pull requests.
 export function pullRequestsWithLabel(
   label: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): number[] {
   return JSON.parse(
@@ -1285,7 +1286,7 @@ export function pullRequestsWithLabel(
 // The names of the labels the pull request `number` carries now, read fresh.
 export function pullRequestLabels(
   number: number,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): string[] {
   return JSON.parse(
@@ -1297,7 +1298,7 @@ export function pullRequestLabels(
 export function removePullRequestLabel(
   number: number,
   label: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): void {
   ghWithStderr(run, ["pr", "edit", String(number), "--repo", repo, "--remove-label", label]);
@@ -1354,7 +1355,7 @@ export function timestamp(time: string): number {
 // The login gh is signed in as: the account every host comment is posted
 // from. Not the repository owner, which is an organization for a repository
 // an organization owns, and never posts a comment itself.
-export function hostLogin(run: typeof execFileSync = execFileSync): string {
+export function hostLogin(run: typeof execFileSync = hostExecFileSync): string {
   return ghWithStderr(run, ["api", "user", "--jq", ".login"]).trim();
 }
 
@@ -1363,7 +1364,7 @@ let signedInLogin: string | undefined;
 // Reads the host's login (see hostLogin) and keeps it for markerComments.
 // Called once at startup, so a token that can't read /user fails the run
 // before any role runs, rather than when the first failed attempt is recorded.
-export function cacheHostLogin(run: typeof execFileSync = execFileSync): string {
+export function cacheHostLogin(run: typeof execFileSync = hostExecFileSync): string {
   signedInLogin = hostLogin(run);
   return signedInLogin;
 }
@@ -1372,7 +1373,7 @@ export function cacheHostLogin(run: typeof execFileSync = execFileSync): string 
 // openIssuesWithComment already do, for the follow-up sweep
 // (lib/follow-up.mts), which needs it outside any single GitHub read: "the
 // repository owner opened it" means this login authored the PR.
-export function signedInHostLogin(run: typeof execFileSync = execFileSync): string {
+export function signedInHostLogin(run: typeof execFileSync = hostExecFileSync): string {
   if (sweepLogin?.run !== run) sweepLogin = { run, login: hostLogin(run) };
   return sweepLogin.login;
 }
@@ -1391,7 +1392,7 @@ export function markerComments(
   label: string,
   marker: string,
   repo: string = repoName(),
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   poster: string = (signedInLogin ??= hostLogin(run)),
 ): TimestampedComment[] {
   const comments = issueComments(number, run, repo);
@@ -1401,7 +1402,7 @@ export function markerComments(
 }
 
 // Every comment on the issue or PR `number`, oldest first (PRs share the issues API).
-export function issueComments(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): TimestampedComment[] {
+export function issueComments(number: number, run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): TimestampedComment[] {
   return jsonLines(
     ghWithStderr(run, [
       "api", "--paginate", `repos/${repo}/issues/${number}/comments`,
@@ -1428,7 +1429,7 @@ export function handBack(
   label: HandBackLabel,
   reason: string,
   body: string,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   report: HandBackReport = handBackReport,
 ): void {
@@ -1443,7 +1444,7 @@ export function handBack(
 
 // Passes a PR has had since sandcastle:needs-human was last removed: the host's FOLLOW_UP_MARKER comments. The follow-up
 // pass and `pnpm run sandcastle:status` both count them here, so the status shows the number the cap is checked against.
-export function followUpPassCount(number: number, run: typeof execFileSync = execFileSync, repo: string = repoName()): number {
+export function followUpPassCount(number: number, run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): number {
   return markerComments(number, "sandcastle:needs-human", FOLLOW_UP_MARKER, repo, run).length;
 }
 
@@ -1462,7 +1463,7 @@ export type WorkflowRun = {
 // reports the runs as unreadable rather than guessing, and on a limit that isn't a positive whole number.
 export function sandcastleWorkflowRuns(
   limit: number = 10,
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): WorkflowRun[] {
   if (!Number.isInteger(limit) || limit < 1) throw new Error(`The number of workflow runs to list must be a positive whole number, not ${limit}.`);

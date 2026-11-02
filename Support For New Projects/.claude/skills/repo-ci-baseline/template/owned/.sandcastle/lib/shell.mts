@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { hostExecFileSync } from "./host-limit.mts";
 import { hostGitEnv, repoGitDir } from "./host-safety.mts";
 
 // The environment and arguments for a host git command in the main checkout at
@@ -31,7 +31,7 @@ export function hostGitInvocation(
 // so the caller can say why.
 export function runHostGit(cwd: string, invocation: { env: NodeJS.ProcessEnv; args: string[] }): string {
   try {
-    return execFileSync("git", invocation.args, {
+    return hostExecFileSync("git", invocation.args, {
       cwd,
       env: invocation.env,
       encoding: "utf8",

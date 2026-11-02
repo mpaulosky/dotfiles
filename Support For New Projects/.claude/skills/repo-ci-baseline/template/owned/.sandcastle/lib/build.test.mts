@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { spawnSync, type execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { worktreePathFor } from "./host-safety.mts";
 import { join } from "node:path";
 import {
   buildIssue,
   createCheckedSandbox,
+  worktreeIsGone,
   designComment,
   designNoteIn,
   latestDesignNote,
@@ -407,6 +410,38 @@ function host(
 }
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+describe("buildIssue when Docker never answers the close", () => {
+  // The host's sandbox, with a close that never answers and a 0.001-minute close limit.
+  function hungClose(options: Parameters<typeof host>[1] = {}) {
+    const hosted = host([0, 0], options);
+    hosted.buildHost.dockerCallMinutes = 0.001;
+    const createSandbox = hosted.buildHost.createSandbox;
+    hosted.buildHost.createSandbox = async (sandboxBranch) => {
+      const raw = await createSandbox(sandboxBranch);
+      return { ...raw, close: () => new Promise<never>(() => undefined) } as typeof raw;
+    };
+    return hosted;
+  }
+
+  it("keeps the published pull request: the hung close is logged and not reported as the build's outcome", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const { buildHost } = hungClose();
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(logged.some((line) => /closing the sandbox didn't finish within 0\.001 minutes/.test(line)), logged.join("\n"));
+  });
+
+  it("keeps the error that ended the work when the close then hangs", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    const hosted = hungClose({ failing: ["tester"], failWith: { tester: new UncountedStopError("usage limit") } });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, hosted.buildHost), UncountedStopError);
+  });
+});
 
 describe("buildIssue", () => {
   it("runs the tester, the backend developer, checkpoint 1, the reviewer and checkpoint 2 before publishing", async () => {
@@ -3054,6 +3089,28 @@ describe("createCheckedSandbox's git identity", () => {
     assert.ok(checked.includes("/work/tree"));
   });
 
+  it("throws the setup error, and logs that the run ends red, when closing the refused sandbox times out", async () => {
+    const sandbox = {
+      worktreePath: "/work/tree",
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: () => new Promise(() => undefined),
+    } as unknown as Sandbox;
+    const logged: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+    try {
+      await assert.rejects(
+        createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" }), () => [], { dockerCallMinutes: 0.001 }),
+        /setting the sandbox's git user\.name failed: could not lock config file/,
+      );
+      // The log line is written only by closeAfterWork's red-run branch, which also sets the flag exitAfterStall reads (the exit code itself is
+      // pinned in host-limit.test.mts, in a child process, since that flag is module state shared by this file's tests).
+      assert.ok(logged.some((line) => /closing the refused sandbox.*the run ends red/s.test(line)), logged.join("\n"));
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   it("leaves the sandbox in place, and keeps the identity error, when checking the worktree throws", async () => {
     let closed = 0;
     const sandbox = {
@@ -3316,6 +3373,125 @@ describe("createCheckedSandbox's step limits", () => {
     assert.equal(wasClosed(), true);
   });
 
+  it("stalls the step when Docker never answers the create, and closes a sandbox it makes too late", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0);
+    Object.assign(sandbox, { worktreePath: process.cwd() }); // a worktree that exists, so it is checked
+    let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+    const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+    const checked: string[] = [];
+
+    await assert.rejects(
+      createCheckedSandbox("feature", create, () => identity, (path) => (checked.push(path), []), { dockerCallMinutes: 0.001 }),
+      (error: Error) => error instanceof StalledStepError && /creating the sandbox didn't finish/.test(error.message),
+    );
+    makeSandbox(sandbox);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(wasClosed(), true);
+    assert.deepEqual(checked, [sandbox.worktreePath], "the late sandbox's worktree wasn't checked before it was closed");
+  });
+
+  it("closes a sandbox it makes too late when its worktree is gone, whatever the check says, since there is nothing to redirect", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0);
+    Object.assign(sandbox, { worktreePath: worktreePathFor(process.cwd(), "feature") });
+    assert.equal(existsSync(sandbox.worktreePath), false, "the sandbox's worktree should not exist for this test");
+    let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+    const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+
+    await assert.rejects(
+      createCheckedSandbox("feature", create, () => identity, () => [`${sandbox.worktreePath} is missing, not a directory`], { dockerCallMinutes: 0.001 }),
+      StalledStepError,
+    );
+    makeSandbox(sandbox);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("checks and leaves a late sandbox whose worktree exists at the expected path, since only a gone one skips the check", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    const cwd = mkdtempSync(join(tmpdir(), "late-"));
+    try {
+      const expected = worktreePathFor(cwd, "feature");
+      mkdirSync(expected, { recursive: true });
+      t.mock.method(process, "cwd", () => cwd);
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      Object.assign(sandbox, { worktreePath: expected });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const checked: string[] = [];
+      // The check before the create passes; the one after the late answer finds the worktree redirected.
+      const check = (path: string) => (checked.push(path), checked.length === 1 ? [] : ["its .git points elsewhere"]);
+
+      await assert.rejects(createCheckedSandbox("feature", create, () => identity, check, { dockerCallMinutes: 0.001 }), StalledStepError);
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(checked, [expected, expected]);
+      assert.equal(wasClosed(), false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("checks and leaves a late sandbox whose worktree is gone from some other path than the one the host expects", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    for (const worktreePath of ["", "/nonexistent/elsewhere"]) {
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      Object.assign(sandbox, { worktreePath });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const checked: string[] = [];
+
+      await assert.rejects(
+        createCheckedSandbox("feature", create, () => identity, (path) => (path === worktreePath ? (checked.push(path), ["its .git is missing"]) : []), { dockerCallMinutes: 0.001 }),
+        StalledStepError,
+      );
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(checked, [worktreePath]);
+      assert.equal(wasClosed(), false, `a late sandbox at "${worktreePath}" was closed`);
+    }
+  });
+
+  it("leaves a sandbox it makes too late in place when its worktree fails the check, or the check throws", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    for (const check of [() => ["its .git doesn't point into this repository"], () => { throw new Error("git rev-parse failed"); }]) {
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      // A worktree that exists (a gone one is closed, whatever the check says).
+      Object.assign(sandbox, { worktreePath: process.cwd() });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const lateChecks: string[] = [];
+
+      await assert.rejects(
+        createCheckedSandbox("feature", create, () => identity, (path) => (path === sandbox.worktreePath ? (lateChecks.push(path), check()) : []), { dockerCallMinutes: 0.001 }),
+        StalledStepError,
+      );
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(wasClosed(), false);
+      assert.deepEqual(lateChecks, [sandbox.worktreePath]);
+    }
+    assert.equal(logged.filter((line) => /left the late sandbox/.test(line)).length, 2, logged.join("\n"));
+  });
+
+  it("still fails with the original error when the close of a refused sandbox hangs, and logs the hung close", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const { sandbox } = recordingSandbox(0, false);
+    (sandbox as unknown as { close: () => Promise<never> }).close = () => new Promise<never>(() => undefined);
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { dockerCallMinutes: 0.001 }),
+      /no `timeout` command/,
+    );
+    assert.ok(logged.some((line) => /closing the refused sandbox: .*closing the sandbox didn't finish/.test(line)), logged.join("\n"));
+  });
+
   it("hands back the limited sandbox itself, which stalledStepOf recognises once a step stalls it", async () => {
     const { sandbox } = recordingSandbox(124);
     let time = 0;
@@ -3364,5 +3540,22 @@ describe("createCheckedSandbox's step limits", () => {
     );
 
     assert.equal(wasClosed(), false);
+  });
+});
+
+describe("worktreeIsGone", () => {
+  it("is true only for a path that lstat says doesn't exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gone-"));
+    try {
+      writeFileSync(join(dir, "file"), "x");
+      symlinkSync(join(dir, "nowhere"), join(dir, "dangling"));
+
+      assert.equal(worktreeIsGone(join(dir, "missing")), true);
+      assert.equal(worktreeIsGone(dir), false);
+      assert.equal(worktreeIsGone(join(dir, "dangling")), false, "a dangling symlink exists");
+      assert.equal(worktreeIsGone(join(dir, "file", "below")), false, "ENOTDIR isn't ENOENT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 });

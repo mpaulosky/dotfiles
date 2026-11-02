@@ -9,9 +9,11 @@
 // the call a little after the limit and the kill grace, and stalls the step the same way.
 //
 // The gate's own overrun is a red gate (exit 124): `timeout` ended it cleanly, and the gate-fixer may try. Any
-// other overrun, or a call the host gives up on, throws StalledStepError, and so does every exec after it.
+// other overrun, or a call the host gives up on, throws StalledStepError, and so does every exec after it. A call the host gives up on is also
+// recorded with markHostCallAbandoned (lib/host-limit.mts), so main.mts ends the process after its cleanup (exitAfterStall).
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
+import { MAX_TIMER_MS, markHostCallAbandoned } from "./host-limit.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { terminalText } from "./status.mts";
 
@@ -24,9 +26,6 @@ export const PROBE_LIMIT_MINUTES = 1;
 
 // Seconds `timeout` waits after TERM before it sends KILL.
 export const KILL_GRACE_SECONDS = 30;
-
-// The most a timer can wait: setTimeout fires at once for a longer delay.
-const MAX_TIMER_MS = 2 ** 31 - 1;
 
 // Seconds the host waits past the limit and the kill grace before it gives up on a call that hasn't returned.
 export const BACKSTOP_SLACK_SECONDS = 60;
@@ -105,6 +104,8 @@ export type StepLimitOptions = {
   commandMinutes?: number;
   graceSeconds?: number;
   backstopSlackSeconds?: number;
+  // How long createCheckedSandbox waits for Docker to create the sandbox, or to close one it refuses.
+  dockerCallMinutes?: number;
 };
 
 // The step that stalled each limited sandbox, if one did (see stalledStepOf).
@@ -167,6 +168,7 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
     try {
       const outcome = await Promise.race([sandbox.exec(limitedCommand(command, minutes, graceSeconds), execOptions), gaveUp]);
       if (outcome === "gave up") {
+        markHostCallAbandoned(`the sandbox exec "${name}"`);
         log(`${prefix}step gave up: ${name} didn't return after its ${minutes}-minute limit and the kill grace`);
         return stall(name, `The step "${name}" didn't return within its ${minutes}-minute limit and the kill grace, so the host gave up on it.`);
       }

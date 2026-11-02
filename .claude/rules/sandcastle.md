@@ -41,6 +41,19 @@ files change.
   in `createCheckedSandbox` runs under a one-minute limit of its own. `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils
   on this machine and skips those tests without it;
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
+- **Give the host's own waits a limit.** Every `gh` and `git` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
+  one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call. Only `lib/host-limit.mts` imports `node:child_process` as a value
+  (a type import for `typeof execFileSync` is fine; `review-ledger`, `security-record` and `git-sandbox-fake` are exempt), and a `run` parameter defaults
+  to `hostExecFileSync`: `lib/host-limit.test.mts` scans for both. Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
+  (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed once its worktree passes the check (a worktree gone from the path the
+  host expects counts as passing; one that fails it, whose check throws, or that is at any other path, is left in place with a warning). The call itself can't be cancelled, so a container
+  Docker never answered for may stay running until a person removes it. A call the host gave up on (a Docker create or close, or a sandbox exec in
+  `lib/step-limit.mts`) is recorded by `markHostCallAbandoned`, and `main.mts` ends with `exitAfterStall()` after its report and cleanup: the process
+  exits with the run's code `STALL_EXIT_GRACE_SECONDS` later, naming the abandoned calls, because process.exitCode doesn't force an exit and the call
+  may keep Node alive. The same warning is printed once when the process exits for any reason, so a run that crashes before `exitAfterStall` names them too.
+  A close the host gave up on, in a build's or a pass's `finally` or after `createCheckedSandbox` refuses a sandbox, is logged and ends the run red (`closeAfterWork`; `exitAfterStall` sets exit
+  code 1), but it never discards the pull request or the error that ended the work. Role runs through `sandcastle.run()` rely on the role's own
+  `timeoutMinutes`.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

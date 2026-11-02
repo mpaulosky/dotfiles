@@ -151,6 +151,19 @@ export type ReviewerFinding = z.infer<typeof reviewerFindingSchema>;
 // from a file the branch planted can't make it quadratic, and a real answer is never out of reach: it is among the last ones.
 const MAX_TAG_CANDIDATES = 10;
 
+// Whether the text from `at` is `[` (after any whitespace, as JSON.parse takes it), and whether it is `[` and then `{`: an array of findings.
+// A sticky match scans only the whitespace after the tag, so the check stays linear however many tags there are.
+const opensArray = (text: string, at: number): boolean => {
+  const found = /\s*\[/y;
+  found.lastIndex = at;
+  return found.test(text);
+};
+const opensFindings = (text: string, at: number): boolean => {
+  const found = /\s*\[\s*\{/y;
+  found.lastIndex = at;
+  return found.test(text);
+};
+
 // Thrown for a reviewer answer that holds no valid findings block.
 export class ReviewerAnswerError extends Error {}
 
@@ -172,7 +185,7 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   // The same for opening tags: one in the middle, beyond the first and last MAX_TAG_CANDIDATES the parser tries, that opens a block with findings.
   if (starts.length > MAX_TAG_CANDIDATES * 2) {
     for (const start of starts.slice(MAX_TAG_CANDIDATES, -MAX_TAG_CANDIDATES)) {
-      if (/^\s*\[\s*\{/.test(stdout.slice(start, start + 64))) {
+      if (opensFindings(stdout, start)) {
         throw new ReviewerAnswerError("the answer holds a block of findings among more <findings> tags than are read: quote no tag, and end with one block");
       }
     }
@@ -186,7 +199,7 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   let value: unknown;
   let jsonError: unknown;
   for (const end of ends.slice(-MAX_TAG_CANDIDATES * 2).reverse()) {
-    if (spans.length === 0 && starts.some((start) => start > end && /^\s*\[/.test(stdout.slice(start, start + 64)))) {
+    if (spans.length === 0 && starts.some((start) => start > end && opensArray(stdout, start))) {
       throw new ReviewerAnswerError(`the findings block is not valid JSON: ${jsonError === undefined ? "it is cut short" : (jsonError as Error).message}`);
     }
     for (const start of candidateStarts) {

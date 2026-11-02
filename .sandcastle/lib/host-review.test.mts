@@ -549,11 +549,24 @@ describe("parseReviewerAnswer's edges", () => {
     assert.throws(() => parseReviewerAnswer(`<findings>[ \n {"x":1}]</findings> ${quote.repeat(21)}`), ReviewerAnswerError, "whitespace inside the opening");
   });
 
-  it("refuses a block whose opening tag is among the middle ones the parser doesn't try, rather than read the last empty block as clean", () => {
-    const prose = "A <findings> tag in prose. ".repeat(15);
-    const real = block([raw({ summary: `It quotes ${"<findings> ".repeat(12)}` })]);
+  it("refuses a block whose opening tag is among the middle ones the parser doesn't try, and only those, rather than read the last empty block as clean", () => {
+    // `total` opening tags in all: the real block's is at `index`, the rest sit in prose, and a quoted empty block ends the output.
+    const answer = (index: number, total: number, gap = " ") => {
+      const prose = "A <findings> tag in prose. ";
+      const real = `<findings>${gap}${JSON.stringify([raw()])}</findings>`;
+      return `${prose.repeat(index)}${real}${prose.repeat(total - 2 - index)}<findings>[]</findings>`;
+    };
+    const refused = /more <findings> tags than are read/;
+    const twoBlocks = /two blocks of findings/;
 
-    assert.throws(() => parseReviewerAnswer(`${prose}\n${real}\n<findings>[]</findings>`), ReviewerAnswerError);
+    assert.throws(() => parseReviewerAnswer(answer(15, 29)), refused);
+    assert.throws(() => parseReviewerAnswer(answer(9, 29)), twoBlocks, "one of the first 10 is tried");
+    assert.throws(() => parseReviewerAnswer(answer(10, 29)), refused, "the first one beyond them");
+    assert.throws(() => parseReviewerAnswer(answer(18, 29)), refused, "the last one before the last 10");
+    assert.throws(() => parseReviewerAnswer(answer(19, 29)), twoBlocks, "one of the last 10 is tried");
+    assert.throws(() => parseReviewerAnswer(answer(10, 20)), twoBlocks, "20 opening tags are all tried");
+    assert.throws(() => parseReviewerAnswer(answer(15, 29, "\n\n ")), refused, "whitespace after the tag");
+    assert.throws(() => parseReviewerAnswer(answer(15, 29, " ".repeat(200))), refused, "a long run of whitespace after the tag");
   });
 
   it("tries a bounded number of tags", () => {

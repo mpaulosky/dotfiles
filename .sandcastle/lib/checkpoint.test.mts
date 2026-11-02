@@ -453,7 +453,7 @@ describe("the gate guard in a git repository", () => {
     it("never cuts a surrogate pair at the cap", async () => {
       const message = (await gateScriptChange(failing(128, `${"y".repeat(199)}\u{1F600}`), { base: "abc123" })) ?? "";
 
-      assert.ok(message.isWellFormed());
+      assert.ok(!/[\ud800-\udfff]/.test(message), message);
       assert.ok(message.includes(`(exit 128: ${"y".repeat(199)})`), message);
     });
   });

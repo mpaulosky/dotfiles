@@ -192,10 +192,9 @@ export function intakeStopExitCode(stops: readonly IntakeStopEntry[]): number {
 // The report entry for a stalled sandbox step (a StalledStepError reaching main.mts), so the run ends red with the step
 // named: it recorded no hand-back and spent no failed attempt, and the next run would otherwise meet the same stall unseen.
 // It shares the intake stops' report and exit code. Undefined for any other error.
+export const STALL_STOP_REASON = "a sandbox step stalled, so the run stopped";
 export function stallStop(error: unknown): IntakeStopEntry | undefined {
-  return error instanceof StalledStepError
-    ? { reason: "a sandbox step stalled, so the build stopped", unjudged: [], firstError: error.message }
-    : undefined;
+  return error instanceof StalledStepError ? { reason: STALL_STOP_REASON, unjudged: [], firstError: error.message } : undefined;
 }
 
 // How the run ended, so the summary tells a hand-back from a crash

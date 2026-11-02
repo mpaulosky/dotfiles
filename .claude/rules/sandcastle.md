@@ -32,9 +32,8 @@ files change.
 - **Keep dependencies where they are.** `package.json` holds Sandcastle, `zod`, the type-checker and `tsx`. Reach for
   Node's standard library first, and justify any new package in the PR description.
 - **Give every sandbox command a limit.** `createCheckedSandbox` hands back a sandbox whose `exec` runs under `timeout` (`lib/step-limit.mts`):
-  `GATE_LIMIT_MINUTES` (the Seed's `lib/repo-config.mts`) for the gate and `COMMAND_LIMIT_MINUTES` for any other command. A step that runs over ends with
-  exit code 124 and its name in the output, so the caller's non-zero handling fails closed. Run a command in a sandbox through that `exec`, and keep a
-  role run on its own `timeoutMinutes`. The gate that runs over is a red gate (exit 124); a command other than the gate that runs over,
+  `GATE_LIMIT_MINUTES` (the Seed's `lib/repo-config.mts`) for the gate and `COMMAND_LIMIT_MINUTES` for any other command. The host kills a step that runs over. Run a command
+  in a sandbox through that `exec`, and keep a role run on its own `timeoutMinutes`. The gate that runs over is a red gate (exit 124, its name in the output); a command other than the gate that runs over,
   or one the host gives up on, stalls the sandbox: it throws `StalledStepError` naming it, as does every later `exec` and every role start
   (`runRoleInSandbox`), never an exit code a caller could read as a git answer. `main.mts` ends the run red on one (`stallStop`).
   `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils on this machine and skips those tests without it;

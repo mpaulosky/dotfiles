@@ -171,6 +171,7 @@ import {
   outcomeReport,
   renderSummary,
   REPORT_DIR,
+  STALL_STOP_REASON,
   stallStop,
   usageReport,
   waitingPrReport,
@@ -235,8 +236,9 @@ let ending: RunEnding = { kind: "crashed" };
 let startedUp = false;
 
 // An UncountedStopError from any phase (intake, the planner, the critique)
-// means the budget has passed or Claude's usage limit was hit: the catch below
-// ends the run cleanly rather than crash, since the next run picks the work up.
+// means the budget has passed, Claude's usage limit was hit or a sandbox step
+// stalled: the catch below ends the run rather than crash, cleanly for the first
+// two (the next run picks the work up) and red for a stall.
 // The try starts this early so its finally writes the run report
 // (.sandcastle/logs/) after every run that got past reading its arguments,
 // even one that fails a startup check: a workflow step reads handbacks.json.
@@ -496,13 +498,24 @@ try {
   // A loop that ended on the time budget or the usage limit (no new round,
   // or a build that stopped) stopped rather than finished.
   const limitReason = runLimits.stopReason();
-  ending = limitReason === undefined ? { kind: "finished" } : { kind: "stopped", reason: limitReason };
+  // A stall sets no run limit, but it ends the run red, so the report says it stopped.
+  const stalled = intakeStopReport.items().find((entry) => entry.reason === STALL_STOP_REASON);
+  ending =
+    limitReason !== undefined
+      ? { kind: "stopped", reason: limitReason }
+      : stalled !== undefined
+        ? { kind: "stopped", reason: stalled.firstError }
+        : { kind: "finished" };
 } catch (error) {
   if (!(error instanceof UncountedStopError)) throw error;
   ending = { kind: "stopped", reason: error.message };
   const stall = stallStop(error);
   if (stall !== undefined) intakeStopReport.record(stall);
-  console.log(`\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`);
+  console.log(
+    stall === undefined
+      ? `\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`
+      : `\n⏹ Stopping the run, which ends red: ${error.message}. Nothing more starts; the next run meets the same stall until a person looks.`,
+  );
 } finally {
   console.log("\nToken usage by role:");
   const lines = usageReport.lines();

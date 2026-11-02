@@ -11,7 +11,7 @@ import {
   SESSION_REPLY_MARKER,
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
-import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
@@ -41,6 +41,7 @@ import { OutcomeReport, type HumanThreadEntry } from "./report.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
+import { limitSandboxExec } from "./step-limit.mts";
 
 // These tests name the Template's gate command, whatever this repo's
 // GATE_COMMAND is: the fake sandbox reports the configured one as the default.
@@ -1588,6 +1589,49 @@ describe("followUpPassPhase", () => {
     );
 
     assert.deepEqual(report.items(), [{ kind: "pr", number: PR_NUMBER, outcome: "stopped", detail: stop.message }]);
+  });
+
+  // A sandbox whose every command runs past its limit (the underlying exec answers 124 on a clock that jumps 11 minutes
+  // per call), so limitSandboxExec marks it stalled; closing it then fails, as a container with a live command can.
+  function stalledSandbox(): Sandbox {
+    const base = sandboxFake({ followUpJson: "[]" }).sandbox;
+    let clock = 0;
+    const underlying = {
+      worktreePath: base.worktreePath,
+      exec: async () => {
+        clock += 11 * 60_000;
+        return { stdout: "", stderr: "", exitCode: 124 };
+      },
+      run: base.run,
+      close: async () => {
+        throw new Error("docker: container still running");
+      },
+    } as unknown as Sandbox;
+    return limitSandboxExec(underlying, { log: () => {}, now: () => clock });
+  }
+
+  it("ends a stalled pass with the StalledStepError, only logging that closing its sandbox failed, and releases the label", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => stalledSandbox();
+    const report = new OutcomeReport();
+
+    await assert.rejects(() => followUpPassPhase([passTarget()], [issue], BASE, passHost, report), StalledStepError);
+
+    assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
+    assert.equal(report.items()[0]?.outcome, "stopped");
+    assert.equal(report.items()[0]?.number, PR_NUMBER);
+  });
+
+  it("rethrows the StalledStepError even when another pass's usage stop settled first", async () => {
+    const usage = new UncountedStopError("usage limit reached");
+    const usageSandbox = sandboxFake({ roleFailing: ["follow-up"], roleFailWith: { "follow-up": usage } });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async (branch) => {
+      calls.createSandbox.push(branch);
+      return branch === BRANCH ? usageSandbox.sandbox : stalledSandbox();
+    };
+
+    await assert.rejects(() => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost), StalledStepError);
   });
 });
 

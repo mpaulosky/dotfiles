@@ -295,8 +295,8 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 4. Run `pnpm install`, then commit `pnpm-lock.yaml` with the change.
 5. Add `GATE_LIMIT_MINUTES` to `lib/repo-config.mts` (the Seed's is 10): the Owned `lib/step-limit.mts` imports it, so a repo without it fails to load.
    Size it for the repo's slowest gate under parallel builds. The host runs every sandbox command under `timeout` (GNU coreutils, in the Template's
-   `node:22-trixie` image; a different base image needs it too) and kills a step that runs over, as exit code 124 with the step named. The value must be
-   a positive number of minutes the host's timer can wait for, or `createCheckedSandbox` throws. A command other than the gate that runs over, or one
+   `node:22-trixie` image; a different base image needs it too) and kills a step that runs over. The gate that runs over is a red gate (exit 124, the step named). The value must be
+   a positive number of minutes the host's timer can wait for, or `createCheckedSandbox` throws. Any other command that runs over, or one
    the host gives up on (the gate too), throws `StalledStepError` naming it, as does every later command and role start in that sandbox, and the run ends red
    (`main.mts`) instead of reading a stall as an answer.
 6. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.

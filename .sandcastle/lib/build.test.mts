@@ -1400,7 +1400,7 @@ describe("buildIssue when a step stalls the sandbox", () => {
     assert.deepEqual(recordBuildFailureCalls, []);
   });
 
-  it("starts no later role when a command the build ignores the result of stalled it", async () => {
+  it("throws on the first stall, so no later role starts even when the build ignores that command's result", async () => {
     const { steps, buildHost } = stalledOn(/^rm -f .*pr-body\.md/);
 
     await assert.rejects(buildIssue(issue, branch, base, buildHost), StalledStepError);

@@ -41,7 +41,7 @@ import {
   SESSION_REPLY_MARKER,
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
-import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
@@ -1337,7 +1337,8 @@ export async function followUpPassPhase(
     }
     const pr = { kind: "pr", number: target.number } as const;
     if (result.reason instanceof UncountedStopError) {
-      stop ??= result.reason;
+      // A stall outranks an earlier stop: main.mts ends the run red only for the error it receives, and passes settle in any order.
+      if (stop === undefined || (result.reason instanceof StalledStepError && !(stop instanceof StalledStepError))) stop = result.reason;
       host.log(`  ⏹ PR #${target.number}: the follow-up pass stopped uncounted: ${result.reason.message}`);
       report.record({ ...pr, outcome: "stopped", detail: result.reason.message });
     } else {

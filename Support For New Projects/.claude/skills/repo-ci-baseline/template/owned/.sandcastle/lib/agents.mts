@@ -155,8 +155,9 @@ export async function runRoleInSandbox(
   // stalled command; the build's own tolerant reads can have swallowed the throw that said so.
   const stalled = stalledStepOf(sandbox);
   if (stalled !== undefined) throw new StalledStepError(`the ${role} wasn't started: the step "${stalled}" didn't end at its limit, so the sandbox is stalled.`);
-  usageReport.record(role, []);
+  // Before the usage record: a timeout the host can't wait for throws here, and a role that never started must not be listed as one that ran.
   const backstopMs = backstop.backstopMs ?? roleBackstopMs(role);
+  usageReport.record(role, []);
   const result = await runWithinLimits(
     role,
     () => withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions) })),

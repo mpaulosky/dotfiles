@@ -22,7 +22,7 @@ import {
   QUEUE_SCOPE_USAGE,
   QueueScopeError,
   REVIEW_FIX_ROUNDS,
-  MAX_REVIEWERS_PER_ROUND,
+  REVIEW_WALL_CLOCK_MINUTES,
   REVIEWER_ATTEMPTS,
   ROLES,
   RunModeError,
@@ -99,8 +99,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   // run's, so it must outlast the longest build a live run can make, or a
   // second run would clear a live build's label and build the issue too.
   // BUILD_ROLES, each once, plus the gate-fixer's attempts at both
-  // checkpoints, plus the host-side review (lib/host-review.mts): every round's reviewers, each run up to REVIEWER_ATTEMPTS times (REVIEW_FIX_ROUNDS rounds that fix
-  // something, then one that only reviews), each fixing round's backend run, and the gate with its gate-fixer attempts after it.
+  // checkpoints, plus the host-side review (lib/host-review.mts), which is capped at REVIEW_WALL_CLOCK_MINUTES and may overrun it by one step.
   // build.test.mts checks buildIssue runs no other role.
   it("outlasts the longest build the role timeouts allow, with twenty minutes for sandboxes and publishing", () => {
     const checkpoints = 2;
@@ -111,9 +110,14 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
     // and when that is red goes through the same loop as checkpoint 1: MAX_GATE_RUNS runs in all, each up to its step limit.
     const gateRuns = MAX_GATE_RUNS;
     const gateFixing = ROLE_AGENTS["gate-fixer"].timeoutMinutes * GATE_FIXER_ATTEMPTS;
+    // The review stops starting steps after REVIEW_WALL_CLOCK_MINUTES (lib/host-review.mts), so it takes that plus the step it was in:
+    // a reviewer's attempts, or a fixer run with its gate-fixer attempts and gate runs after it.
     const review =
-      (REVIEW_FIX_ROUNDS + 1) * MAX_REVIEWERS_PER_ROUND * REVIEWER_ATTEMPTS * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes +
-      REVIEW_FIX_ROUNDS * (ROLE_AGENTS.backend.timeoutMinutes + gateFixing + MAX_GATE_RUNS * GATE_LIMIT_MINUTES);
+      REVIEW_WALL_CLOCK_MINUTES +
+      Math.max(
+        REVIEWER_ATTEMPTS * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes + ROLE_RUN_GRACE_MINUTES,
+        ROLE_AGENTS.backend.timeoutMinutes + ROLE_RUN_GRACE_MINUTES + gateFixing + MAX_GATE_RUNS * GATE_LIMIT_MINUTES,
+      );
     const minutes =
       BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) +
       checkpoints * gateFixing +

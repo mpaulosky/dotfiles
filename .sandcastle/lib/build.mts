@@ -392,7 +392,7 @@ export type BuildHost = {
   // refused. A branch that moved is left alone.
   deleteBranchAt(branch: string, commit: string): void;
   // Runs the pre-push review's rounds on the host (lib/host-review.mts) once checkpoint 2's gate has passed on `startHead`, against
-  // `main`, and records them. Rejects with UncountedStopError for a usage or time stop. Only the host records: the sandbox's agents
+  // `main`, and records them. Rejects with UncountedStopError for a usage-limit stop; a time-budget stop or the review's time cap ends it as failed. Only the host records: the sandbox's agents
   // get no shell on the ledger, no token and no scripts/review.sh.
   localReview(args: LocalReviewArgs): Promise<HostReviewResult>;
 };
@@ -1360,8 +1360,8 @@ async function buildMarkedIssue(
     const mergedMain = trustedMergedMain(checkpoint2.mergedMain);
 
     // The pre-push review's rounds, on the host (lib/host-review.mts), on the commit checkpoint 2 passed on. A round that fixes
-    // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage or
-    // time stop leaves the branch for a later round (UncountedStopError); a review that can't finish publishes with a note.
+    // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage-limit
+    // stop leaves the branch for a later round (UncountedStopError); a review that can't finish, or that the time budget or its own cap ends, publishes with a note.
     let reviewNote = "";
     const review = await host.localReview({
       sandbox,

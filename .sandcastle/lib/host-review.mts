@@ -6,8 +6,8 @@
 
 import { z } from "zod";
 import { isRoleTimeout } from "./agents.mts";
-import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEWER_ATTEMPTS } from "./config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, REVIEWER_ATTEMPTS } from "./config.mts";
+import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
 import { FINDING_PATH_SHAPE, isSecurity, severityOf, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
@@ -339,6 +339,10 @@ export type HostReviewHost = {
   gate(): Promise<string | undefined>;
   record(input: ReviewInput, at: { head: string; branch: string }): Ledger;
   log(line: string): void;
+  // The clock, in milliseconds, for the review's time cap (REVIEW_WALL_CLOCK_MINUTES); Date.now when absent. For tests.
+  now?: () => number;
+  // How long the whole review may run, in milliseconds; REVIEW_WALL_CLOCK_MINUTES when absent. For tests.
+  wallClockMs?: number;
 };
 
 // How a review ends: recorded, failed (with the last commit the gate passed on, which is published), or the gate stayed red.
@@ -373,9 +377,10 @@ function parseOutcomes(text: string | undefined, log: (line: string) => void): F
 // How one reviewer's run ended, for the failure reason: host-written words only, never the agent's.
 type ReviewerFailure = { lens: string; what: string };
 
-// Runs the review's rounds on `startHead` against `main`, and records them. A usage or time stop (UncountedStopError) from a
-// reviewer or the fixer rejects, after the round's other reviewers have settled, so the branch is left for a later round. A
-// reviewer that fails (a timeout, a bad answer twice, an error) ends the review as `failed`, recording nothing.
+// Runs the review's rounds on `startHead` against `main`, and records them. A usage-limit stop (UncountedStopError) from a
+// reviewer or the fixer rejects, so the branch is left for a later round. The run's time budget passing (TimeBudgetStopError) and the
+// review's own time cap (REVIEW_WALL_CLOCK_MINUTES) end it as `failed` at the last commit the gate passed on, so work already gated is
+// published rather than lost with a discarded runner. A reviewer that fails (a timeout, a bad answer twice, an error) ends the review as `failed`, recording nothing.
 export async function runHostReview(
   host: HostReviewHost,
   input: { issue: { number: number; title: string; body: string }; branch: string; main: string; startHead: string },
@@ -384,6 +389,10 @@ export async function runHostReview(
   try {
     return await runRounds(host, input, progress);
   } catch (error) {
+    if (error instanceof TimeBudgetStopError) {
+      host.log(`  ✗ the local review stopped: ${error.message}`);
+      return { status: "failed", head: progress.head, reason: "the run's time budget passed during the review" };
+    }
     if (error instanceof UncountedStopError) throw error;
     // Any host step (reading the skill files, the sandbox, git) that throws ends the review as failed, so the finished and gated work
     // is still published with a note. The reason is host-written: the error's own text may hold an agent's words.
@@ -399,6 +408,9 @@ async function runRounds(
   progress: { head: string },
 ): Promise<HostReviewResult> {
   const { issue, branch, main } = input;
+  const now = host.now ?? Date.now;
+  const startedAt = now();
+  const spent = (): boolean => now() - startedAt >= (host.wallClockMs ?? REVIEW_WALL_CLOCK_MINUTES * 60_000);
   const skill = host.readSkillFiles();
   let lenses: Lens[];
   try {
@@ -415,11 +427,17 @@ async function runRounds(
   let head = input.startHead;
   let previous: PreparedRound | undefined;
   let fixingRounds = 0;
+  // The review's own clock: checked before each round, reviewer and fixer run, so a review never starts a step it has no time for.
+  const outOfTime = (at: string): HostReviewResult => {
+    host.log(`  ✗ the local review stopped: it used its ${REVIEW_WALL_CLOCK_MINUTES}-minute time cap before ${at}`);
+    return { status: "failed", head, reason: `the review used its ${REVIEW_WALL_CLOCK_MINUTES}-minute time cap` };
+  };
   // Every file any round's diff holds: the files the reviewers read, which the PR note may name.
   const readPaths = new Set<string>();
 
   for (let round = 1; ; round++) {
     const reviewOnly = fixingRounds >= REVIEW_FIX_ROUNDS;
+    if (spent()) return outOfTime(`round ${round}`);
     let prepared: PreparedRound;
     try {
       prepared = host.prepare({
@@ -461,6 +479,7 @@ async function runRounds(
     // a usage or time stop ends the round at once: the runs after it would only hit the same limit.
     const settled: PromiseSettledResult<ReviewerFinding[]>[] = [];
     for (const reviewer of reviewers) {
+      if (spent()) return outOfTime(`the ${reviewer.lens} reviewer`);
       const result = await ask(reviewer).then(
         (value): PromiseFulfilledResult<ReviewerFinding[]> => ({ status: "fulfilled", value }),
         (reason: unknown): PromiseRejectedResult => ({ status: "rejected", reason }),
@@ -489,6 +508,7 @@ async function runRounds(
     if (fixable.length === 0) {
       final = applyOutcomes(triaged, [], [], false);
     } else {
+      if (spent()) return outOfTime(`round ${round}'s fixer`);
       try {
         await host.runFixer(reviewFixPrompt({ issue, branch, round, findings: fixable, outcomesPath: `${runDir}/outcomes.json` }));
       } catch (error) {

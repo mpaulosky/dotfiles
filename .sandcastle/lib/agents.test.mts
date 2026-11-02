@@ -133,6 +133,23 @@ describe("runRoleInSandbox", () => {
     assert.ok(backstopMsFor(Math.floor(MAX_TIMER_MS / 60_000) - ROLE_RUN_GRACE_MINUTES) <= MAX_TIMER_MS);
   });
 
+  it("rejects a role whose timeoutMinutes the host can't wait for before it starts anything, and lists no role that never ran", async () => {
+    const agent = ROLE_AGENTS.scribe as { timeoutMinutes: number };
+    const original = agent.timeoutMinutes;
+    let ran = 0;
+    const sandbox = { run: async () => (ran++, { iterations: [], commits: [] }) } as unknown as Sandbox;
+    agent.timeoutMinutes = 0;
+    try {
+      await assert.rejects(runRoleInSandbox(sandbox, "scribe", { prompt: "" }), /timeoutMinutes/);
+    } finally {
+      agent.timeoutMinutes = original;
+    }
+
+    assert.equal(ran, 0);
+    assert.equal(stalledStepOf(sandbox), undefined);
+    assert.equal(usageReport.totals().has("scribe"), false);
+  });
+
   it("lists a role that ran even when its run fails", async () => {
     const failing = { run: () => Promise.reject(new Error("timed out")) } as unknown as Sandbox;
 

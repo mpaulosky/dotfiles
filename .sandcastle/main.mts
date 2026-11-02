@@ -92,7 +92,8 @@
 //                               hands the issue back with sandcastle:needs-human
 //                               (lib/handback.mts). A failed scribe, reviewer or
 //                               local review still publishes, with a note in the PR;
-//                               a usage or time stop leaves the branch for a later round.
+//                               a usage-limit stop leaves the branch for a later round, and a
+//                               time-budget stop or the review's time cap publishes what passed the gate.
 //                               Otherwise the host scans the commits for the
 //                               sandbox's secrets, pushes the commit the gate
 //                               passed on from the main checkout with git hooks

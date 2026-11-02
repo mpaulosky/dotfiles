@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { REVIEWER_TOOLS } from "./agents.mts";
-import { FIXED_ROLE_AGENTS, MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS } from "./config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { FIXED_ROLE_AGENTS, MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES } from "./config.mts";
+import { StalledStepError, TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import {
   applyOutcomes,
   BAR_LENS,
@@ -752,6 +752,8 @@ type Fake = {
   gates?: (string | undefined)[];
   taken?: number;
   repoLenses?: string;
+  clock?: () => number;
+  wallClockMs?: number;
 };
 
 // A host whose reviewers answer from a script, whose fixer moves HEAD when it is told it commits, and which records what happened in order.
@@ -852,6 +854,8 @@ function fake(options: Fake = {}) {
       });
     },
     log: (line) => void logs.push(line),
+    ...(options.clock === undefined ? {} : { now: options.clock }),
+    ...(options.wallClockMs === undefined ? {} : { wallClockMs: options.wallClockMs }),
   };
   return {
     host,
@@ -1314,6 +1318,90 @@ describe("runHostReview's reviewers", () => {
   });
 });
 
+describe("runHostReview's time cap", () => {
+  const minute = 60_000;
+  // A clock that moves one minute every time the review looks at it.
+  const ticking = () => {
+    let calls = 0;
+    return () => ++calls * minute;
+  };
+
+  it("starts no reviewer once the cap is spent, and ends as failed at the start commit, recording nothing", async () => {
+    const run = fake({ clock: ticking(), wallClockMs: 3 * minute });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, run.startHead);
+    assert.match(result.status === "failed" ? result.reason : "", /time cap/);
+    assert.equal(run.reviewerRuns.length, 1, "the clock reads 2 and 3 minutes before the first two reviewers; the second is past the cap");
+    assert.equal(run.records.length, 0);
+    assert.ok(run.logs.some((line) => /time cap before the .* reviewer/.test(line)));
+  });
+
+  it("starts no fixer and no later round once the cap is spent, and ends at the last commit the gate passed on", async () => {
+    let now = 0;
+    let fixerRuns = 0;
+    const run = fake({
+      clock: () => now,
+      wallClockMs: 10 * minute,
+      answers: (round, who) => (who.lens === "Edge cases" && round === 1 ? [raw()] : []),
+      fixer: () => {
+        fixerRuns++;
+        now = 11 * minute;
+        return { outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] };
+      },
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(fixerRuns, 1);
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, hex(2), "round 1's fixes passed the gate; round 2 never started");
+    assert.equal(run.reviewerRuns.every((found) => found.round === 1), true);
+  });
+
+  it("starts a fixer only while it has time", async () => {
+    let now = 0;
+    const run = fake({
+      clock: () => now,
+      wallClockMs: 10 * minute,
+      answers: (_round, who) => {
+        if (who.lens === "Edge cases") now = 11 * minute;
+        return who.lens === "Edge cases" ? [raw()] : [];
+      },
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(run.fixerPrompts.length, 0);
+  });
+
+  it("lets a review that finishes inside the cap record as before", async () => {
+    const run = fake({ clock: () => 0, wallClockMs: minute });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "recorded");
+  });
+
+  it("defaults to REVIEW_WALL_CLOCK_MINUTES", async () => {
+    let now = 0;
+    const run = fake({ clock: () => now });
+    const first = run.host.prepare;
+    run.host.prepare = (options) => {
+      now += REVIEW_WALL_CLOCK_MINUTES * minute;
+      return first(options);
+    };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(run.reviewerRuns.length, 0);
+  });
+});
+
 // Criterion: a usage or time stop during the review leaves the branch for a later round and is not published as reviewed. A reviewer that
 // fails is reported, and the branch is not recorded as reviewed.
 describe("runHostReview's stops and failures", () => {
@@ -1356,6 +1444,47 @@ describe("runHostReview's stops and failures", () => {
     await assert.rejects(() => runHostReview(run.host, input(run.startHead)), (error: unknown) => error === stop);
 
     assert.equal(run.records.length, 0);
+  });
+
+  it("ends as failed at the last gated commit, publishing the work already gated, when the run's time budget passes in the fixer", async () => {
+    const stop = new TimeBudgetStopError("the run's 240-minute time budget has passed");
+    let fixerRuns = 0;
+    const run = fake({
+      answers: (round, who) => (who.lens === "Edge cases" && round <= 2 ? [raw()] : []),
+      fixer: () => {
+        if (++fixerRuns === 2) return { error: stop };
+        return { outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] };
+      },
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, hex(2), "the commit round 1's fixes passed the gate on");
+    assert.equal(run.records.length, 0);
+    assert.ok(run.logs.some((line) => /time budget/.test(line)));
+  });
+
+  it("ends as failed at the start commit when the time budget passes in a reviewer of round 1", async () => {
+    const stop = new TimeBudgetStopError("the run's 240-minute time budget has passed");
+    const run = fake({ answers: only("Security", [] as ReviewerFinding[]) });
+    const answers = run.host.runReviewer;
+    run.host.runReviewer = async (reviewer, prompt) => {
+      if (reviewer.lens === "Security") throw stop;
+      return answers(reviewer, prompt);
+    };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.deepEqual(result, { status: "failed", head: run.startHead, reason: "the run's time budget passed during the review" });
+  });
+
+  it("still rethrows a usage-limit stop and a stalled sandbox, which a later round or a person must settle", async () => {
+    for (const stop of [new UncountedStopError("Claude's usage limit was hit"), new StalledStepError("the step stalled")]) {
+      const run = fake({ answers: only("Edge cases", [raw()]), fixer: () => ({ error: stop }) });
+
+      await assert.rejects(() => runHostReview(run.host, input(run.startHead)), (error: unknown) => error === stop);
+    }
   });
 
   it("asks a reviewer whose answer is garbage a second time, quoting what was wrong, and goes on when the second answer is valid", async () => {

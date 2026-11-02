@@ -262,8 +262,13 @@ export const REVIEW_FIX_ROUNDS = 3;
 // How many times a reviewer is asked for a valid answer before its review is reported failed.
 export const REVIEWER_ATTEMPTS = 2;
 
+// How long the whole host-side review may run, in minutes. It is checked before each round, reviewer and fixer run, never in the middle of one:
+// a spent review ends as failed at the last commit the gate passed on, which the build publishes with a note. The longest the review can take is
+// this, plus the step it was in when it ran out (a reviewer, or a fixer with its gate), and BUILDING_LABEL_MAX_AGE_MS is sized from that.
+export const REVIEW_WALL_CLOCK_MINUTES = 180;
+
 // The most reviewers a round runs (the Bar and the lenses that apply). A round's reviewers run one after another, so the time a build can take
-// grows with this number: BUILDING_LABEL_MAX_AGE_MS is sized from it, and a repository whose own lenses push a round past it fails the review.
+// grows with this number, and a repository whose own lenses push a round past it fails the review. REVIEW_WALL_CLOCK_MINUTES caps the whole review.
 export const MAX_REVIEWERS_PER_ROUND = 14;
 
 // Marks an issue, or a hand-off pull request (lib/building.mts), while a
@@ -276,14 +281,12 @@ export const BUILDING_LABEL = "sandcastle:building";
 // any real build: every role's timeoutMinutes, even with two gate-fixer
 // attempts at each of the two checkpoints, plus MAX_GATE_RUNS gate runs each up to
 // GATE_LIMIT_MINUTES (lib/repo-config.mts), one more command limit (lib/step-limit.mts)
-// and the host-side review's rounds (REVIEW_FIX_ROUNDS fixing rounds and one that only
-// reviews, each fixing round's backend run and the gate after it), adds up to under
-// 72 hours, counting a reviewer's second attempt at an answer (REVIEWER_ATTEMPTS) and that a
-// round's reviewers (at most MAX_REVIEWERS_PER_ROUND) run one after another. A crashed run
-// therefore holds its issue for up to 72 hours, an Actions run's too: startup uses this one age.
-// config.test.mts checks that sum (see BUILD_ROLES), with twenty minutes to spare,
-// stays below it.
-export const BUILDING_LABEL_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+// and the host-side review, which stops starting steps after REVIEW_WALL_CLOCK_MINUTES
+// and so takes at most that plus the step it was in (a reviewer's attempts, or a fixer
+// with its gate): all under 12 hours. A crashed run therefore holds its issue for up to
+// 12 hours, an Actions run's too: startup uses this one age. config.test.mts checks that
+// sum (see BUILD_ROLES), with twenty minutes to spare, stays below it.
+export const BUILDING_LABEL_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 // Every label from the Labels table that the host, not a human, is
 // responsible for creating. `Sandcastle` is a human's to add. `bug` is

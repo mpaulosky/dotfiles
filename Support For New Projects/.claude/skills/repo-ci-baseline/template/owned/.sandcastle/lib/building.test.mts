@@ -21,17 +21,17 @@ const labeled = (createdAt: string): TimelineLabelEvent => ({ event: "labeled", 
 const unlabeled = (createdAt: string): TimelineLabelEvent => ({ event: "unlabeled", label: BUILDING_LABEL, createdAt });
 
 describe("labelIsStale", () => {
-  // 72 hours is BUILDING_LABEL_MAX_AGE_MS: the 2026-10-10 05:00 and earlier labelings below are older than it, the 09:00 and later are not.
-  const now = Date.parse("2026-10-13T08:00:00Z");
+  // 12 hours is BUILDING_LABEL_MAX_AGE_MS: the 2026-10-10 05:00 and earlier labelings below are older than it, the 09:00 and later are not.
+  const now = Date.parse("2026-10-10T20:00:00Z");
 
   it("is stale once the label's most recent labeled event is more than the max age old", () => {
-    const timeline = [labeled("2026-10-10T05:00:00Z")]; // 75h before `now`
+    const timeline = [labeled("2026-10-10T05:00:00Z")]; // 15h before `now`
 
     assert.equal(labelIsStale(timeline, BUILDING_LABEL, BUILDING_LABEL_MAX_AGE_MS, now), true);
   });
 
   it("isn't stale while the label's most recent labeled event is within the max age", () => {
-    const timeline = [labeled("2026-10-10T09:00:00Z")]; // 71h before `now`
+    const timeline = [labeled("2026-10-10T09:00:00Z")]; // 11h before `now`
 
     assert.equal(labelIsStale(timeline, BUILDING_LABEL, BUILDING_LABEL_MAX_AGE_MS, now), false);
   });
@@ -64,8 +64,8 @@ describe("clearStaleBuildingLabels", () => {
     };
   }
 
-  // 72 hours is BUILDING_LABEL_MAX_AGE_MS: the 2026-10-10 05:00 and earlier labelings below are older than it, the 09:00 and later are not.
-  const now = Date.parse("2026-10-13T08:00:00Z");
+  // 12 hours is BUILDING_LABEL_MAX_AGE_MS: the 2026-10-10 05:00 and earlier labelings below are older than it, the 09:00 and later are not.
+  const now = Date.parse("2026-10-10T20:00:00Z");
 
   it("removes the label from an issue whose most recent labeling is older than the max age", () => {
     const gh = github({ 42: [labeled("2026-10-10T05:00:00Z")] });
@@ -129,8 +129,8 @@ describe("clearStaleBuildingLabels", () => {
 // A hand-off pull request (lib/follow-up.mts#sweepSubject) carries the claim itself, so a crashed run can leave
 // sandcastle:building on a PR as well as on an issue.
 describe("clearStaleBuildingLabels and pull requests", () => {
-  // 72 hours is BUILDING_LABEL_MAX_AGE_MS: the 2026-10-10 05:00 and earlier labelings below are older than it, the 09:00 and later are not.
-  const now = Date.parse("2026-10-13T08:00:00Z");
+  // 12 hours is BUILDING_LABEL_MAX_AGE_MS: the 2026-10-10 05:00 and earlier labelings below are older than it, the 09:00 and later are not.
+  const now = Date.parse("2026-10-10T20:00:00Z");
 
   function github(issues: Record<number, TimelineLabelEvent[]>, pullRequests: Record<number, TimelineLabelEvent[]>) {
     const removedIssues: number[] = [];

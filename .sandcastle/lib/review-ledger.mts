@@ -553,7 +553,8 @@ export function branchSize(patch: Buffer | string): { files: number; lines: numb
   const lines = new Map<string, number>();
   for (const section of text.split(/^(?=diff --git )/m)) {
     // The path is read from the header the way the reviewers' lens choice reads it, so a space or a quoted character in it can't split or merge files.
-    const header = section.slice(0, section.indexOf("\n") === -1 ? undefined : section.indexOf("\n")).replace(/\r$/, "");
+    // A header patchPaths can't read still counts as a file (keyed by its text), as it does for the reviewers' lens choice: a size is never undercounted.
+    const header = section.slice(0, section.indexOf("\n") === -1 ? undefined : section.indexOf("\n"));
     const path = patchPaths(header)[0];
     if (path === undefined) continue;
     const key = path.startsWith(TEMPLATE_MIRROR_PREFIX) ? path.slice(TEMPLATE_MIRROR_PREFIX.length) : path;

@@ -134,8 +134,9 @@ source at the pinned commit into `<run>/actions/<owner>/<repo>/<path>`, as the r
 (`repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh api -H 'Accept: application/vnd.github.raw' 'repos/<action owner>/<action repo>/contents/<path>?ref=<sha>'`), since reviewers
 can't.
 
-In round 1, `prepare` also writes a warning to stderr, so stdout stays the two lines (the host review logs the same one) when the branch changes more than 30 files
-or more than 3,000 lines, a file and its Template mirror counting once. Tell the person and suggest splitting the branch; it only
+In round 1, when the branch changes more than 30 files
+or more than 3,000 lines, a file and its Template mirror counting once, `prepare` also writes a warning to stderr, so stdout stays the two lines
+(the host review logs the same one). Tell the person and suggest splitting the branch; it only
 advises, and the review goes on.
 
 Round 1 reviews the whole branch. A later round reviews the fixes, not the whole branch again: its reviewers get

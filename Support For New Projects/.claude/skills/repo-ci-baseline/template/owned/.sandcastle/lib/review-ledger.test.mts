@@ -3369,9 +3369,9 @@ describe("branchSize and sizeWarning", () => {
 
   it("reads a quoted path (a non-ASCII or special character) as one file, and pairs it with its mirror", () => {
     const quoted = (path: string, added: number) => `diff --git "a/${path}" "b/${path}"\n--- "a/${path}"\n+++ "b/${path}"\n@@ -0,0 +1 @@\n${"+x\n".repeat(added)}`;
-    const patch = quoted("caf\\303\\251.txt", 2) + quoted(`${MIRROR}caf\\303\\251.txt`, 2);
+    const patch = quoted("caf\\303\\251 b/x.txt", 2) + quoted("caf\\303\\251 b/y.txt", 3) + quoted(`${MIRROR}caf\\303\\251 b/x.txt`, 2);
 
-    assert.deepEqual(branchSize(patch), { files: 1, lines: 2 });
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 5 });
   });
 
   it("pairs a mirror whose path holds spaces with its root copy", () => {
@@ -3391,6 +3391,12 @@ describe("branchSize and sizeWarning", () => {
     assert.deepEqual(branchSize(mode), { files: 1, lines: 0 });
     assert.deepEqual(branchSize(deletion), { files: 1, lines: 3 });
     assert.deepEqual(branchSize(noNewline), { files: 1, lines: 2 });
+  });
+
+  it("counts a header it cannot read as a file, so a size is never undercounted, also as the last section with no newline", () => {
+    const patch = patchOf([{ path: "a.ts", added: 1 }]) + "diff --git garbage\n" + 'diff --git "a/unterminated b/x\n' + "diff --git a/last.ts b/last.ts";
+
+    assert.deepEqual(branchSize(patch), { files: 4, lines: 1 });
   });
 
   it("counts the lines of a CRLF file once each", () => {

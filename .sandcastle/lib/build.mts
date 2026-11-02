@@ -136,7 +136,12 @@ export async function publish(
       : "";
   // The host-side review's note (lib/host-review.mts): what it left open, or that it didn't finish.
   const reviewSection = reviewNote === "" ? "" : `\n\n${reviewNote}`;
-  const body = `${PR_MARKER}\nCloses #${issue.number}\n\n${description}${docsNote}${checkNote}${reviewSection}`;
+  const head = `${PR_MARKER}\nCloses #${issue.number}\n\n`;
+  const tail = `${docsNote}${checkNote}${reviewSection}`;
+  // The marker, `Closes #n` and the notes are kept whole; the description gives way.
+  const room = PR_BODY_TOTAL_LIMIT - head.length - tail.length;
+  if (description.length > room) description = `${description.slice(0, Math.max(0, room - DESCRIPTION_CUT_NOTE.length))}${DESCRIPTION_CUT_NOTE}`;
+  const body = `${head}${description}${tail}`;
   // A retry after a create that GitHub carried out but answered with an error
   // finds that PR rather than open a second one: openPullRequest looks for an
   // open PR from the branch first.
@@ -197,6 +202,11 @@ const DESIGN_NOTE_LIMIT = 60_000;
 // the marker, `Closes #n` and the warnings publish() adds around the
 // reviewer's sections.
 export const PR_BODY_LIMIT = 60_000;
+
+// The most a whole PR body may hold, leaving a margin under GitHub's 65,536. publish() cuts the reviewer's description to fit under it, so the
+// review's note, the check-file list and the warnings (none of which PR_BODY_LIMIT counts) can't push the body over and strand a pushed branch.
+export const PR_BODY_TOTAL_LIMIT = 65_000;
+const DESCRIPTION_CUT_NOTE = "\n\n… (the description was cut to fit a PR body)";
 
 // A closing keyword and the issue it names, as GitHub reads one in a PR body:
 // #N, owner/repo#N or an issue URL. GitHub closes that issue when the PR
@@ -730,6 +740,11 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       return prepareRound(checkout, opts);
     },
     takenIds: (head) => takenIds(checkout, baseOf(head), head),
+    removeRunFile: async (path) => {
+      if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only remove under ${runRel}/, not ${path}`);
+      const removed = await sandbox.exec(`rm -f ${shellWord(path)}`);
+      if (removed.exitCode !== 0) throw new Error(`removing ${path} in the sandbox failed: ${removed.stderr.trim()}`);
+    },
     writeRunFile: async (path, content) => {
       // Only the run's own folder, which the sandbox git-ignores (.sandcastle/work/).
       if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only write under ${runRel}/, not ${path}`);

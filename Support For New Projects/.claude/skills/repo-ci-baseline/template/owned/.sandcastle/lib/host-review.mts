@@ -289,8 +289,13 @@ export function triageRound({
 // What the backend role says became of one finding.
 export type FixOutcome = { id: string; status: "fixed" | "dismissed" | "open"; test: string | null; reason: string | null };
 
+// Whether a path reads as a test or a gate check: a test folder, a *.test.* or *.spec.* file, a *_test.* or test_* file, a *Tests.cs file, or the gate's checks.
+// `fixed` is accepted only behind such a file, so a backend can't clear a finding by naming the source file it edited or any unrelated file it touched.
+export const looksLikeTest = (file: string): boolean =>
+  /(^|\/)(tests?|__tests__|specs?)\//i.test(file) || /[._](test|spec)\.[^/]+$/i.test(file) || /(^|\/)test_[^/]+$/i.test(file) || /Tests?\.[a-z]+$/.test(file) || /(^|\/)gate-checks\.sh$/.test(file);
+
 // Turn the backend's verdicts into final statuses, enforcing the skill's rules. The backend's word is self-reported, so each
-// claim needs what the host can check: `fixed` needs HEAD to have moved and a test whose file the round changed (a Warning, or
+// claim needs what the host can check: `fixed` needs HEAD to have moved and a test whose file the round changed and that looks like a test (a Warning, or
 // any security finding, needs the test; another finding may give a reason instead); `dismissed` needs a reason citing
 // `file:line` and is never accepted for a Warning or a security finding. A Warning or security finding also needs the file at its
 // `path` to have changed in the round. Everything else, and every finding that waits for a person, stays open with its suggested fix. Nothing is
@@ -318,7 +323,8 @@ export function applyOutcomes(
     // test file and claims `fixed` leaves the defect in place otherwise (the next round reads only the fixes, so nothing would look again).
     if ((open.security || open.severity === "warning") && !changed.has(diffPath(open.path))) return open;
     if (test !== null) {
-      return changed.has((test.split("::")[0] ?? "").replace(/^\.\//, "")) ? { ...open, status: "fixed", test, reason, fix: null } : open;
+      const testFile = (test.split("::")[0] ?? "").replace(/^\.\//, "");
+      return changed.has(testFile) && looksLikeTest(testFile) ? { ...open, status: "fixed", test, reason, fix: null } : open;
     }
     return !open.security && open.severity !== "warning" && reason !== null ? { ...open, status: "fixed", test: null, reason, fix: null } : open;
   });
@@ -336,6 +342,8 @@ export type HostReviewHost = {
   takenIds(head: string): number;
   // Writes a file under the run's folder inside the sandbox.
   writeRunFile(path: string, content: Buffer | string): Promise<void>;
+  // Removes a file under the run's folder. Round 1 has no fixes, and an earlier build of the same branch may have left a fixes.patch there.
+  removeRunFile(path: string): Promise<void>;
   runReviewer(reviewer: Reviewer, prompt: string): Promise<string>;
   runFixer(prompt: string): Promise<void>;
   readOutcomes(): Promise<string | undefined>;
@@ -469,6 +477,7 @@ async function runRounds(
     for (const path of patchPaths(prepared.patch.toString("utf8"))) readPaths.add(path);
     await host.writeRunFile(`${runRel}/diff.patch`, prepared.patch);
     if (prepared.fixes !== undefined) await host.writeRunFile(`${runRel}/fixes.patch`, prepared.fixes);
+    else await host.removeRunFile(`${runRel}/fixes.patch`);
     await host.writeRunFile(`${runRel}/decisions.md`, decisionsMarkdown(recorded));
     const reviewers = reviewersFor(patchPaths((prepared.fixes ?? prepared.patch).toString("utf8")), lenses);
     host.log(`  review round ${round}: ${reviewers.map((reviewer) => reviewer.lens).join(", ")}`);

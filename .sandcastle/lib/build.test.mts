@@ -18,6 +18,7 @@ import {
   liveHostIdentity,
   liveReviewHost,
   PR_BODY_LIMIT,
+  PR_BODY_TOTAL_LIMIT,
   publicErrorText,
   prTitle,
   publish,
@@ -2568,6 +2569,36 @@ describe("publish", () => {
 
   // Covers "A scribe failure still publishes the PR, and its body says the
   // documentation step failed".
+  it("cuts the reviewer's description, never the marker, `Closes #n` or the review's note, so the whole body fits what GitHub takes", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+    const note = `Open findings:\n${"- R1 critical src/app.ts:1\n".repeat(250)}`;
+    const checks = Array.from({ length: 200 }, (_, index) => `.github/workflows/check-${index}.yml`);
+
+    await publish(issue, branch, "a".repeat(40), true, true, "d".repeat(PR_BODY_LIMIT), checks, () => {}, createPullRequest, async () => {}, note);
+
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, `${body.length} characters`);
+    assert.ok(body.includes(PR_MARKER) && body.includes(`Closes #${issue.number}`));
+    assert.ok(body.includes(note), "the review's note is kept whole");
+    assert.match(body, /the description was cut to fit a PR body/);
+  });
+
+  it("leaves a description that fits alone", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+
+    await publish(issue, branch, "a".repeat(40), true, false, "short description", [], () => {}, createPullRequest, async () => {}, "note");
+
+    assert.match(body, /short description/);
+    assert.doesNotMatch(body, /was cut/);
+  });
+
   it("says the documentation step failed in the PR body when docsFailed is true", async () => {
     let body = "";
     const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
@@ -4060,6 +4091,24 @@ describe("liveReviewHost", () => {
       assert.equal(execs.filter((found) => found.stdin !== undefined).length, 1);
       assert.equal(execs.find((found) => found.stdin !== undefined)?.stdin, Buffer.from("patch").toString("base64"));
       assert.match(execs.find((found) => found.stdin !== undefined)?.command ?? "", /base64 -d > /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("removes a file only under the run's own folder", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.removeRunFile(".sandcastle/work/387/review/fixes.patch");
+      for (const path of [".sandcastle/work/387/review/../../evil", ".sandcastle/work/388/review/fixes.patch", "scripts/gate.sh", "/etc/passwd"]) {
+        await assert.rejects(() => live.removeRunFile(path), /may only remove under/, path);
+      }
+
+      assert.match(execs.at(-1)?.command ?? "", /rm -f '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+      assert.equal(execs.filter((found) => found.command.includes("rm -f")).length, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }

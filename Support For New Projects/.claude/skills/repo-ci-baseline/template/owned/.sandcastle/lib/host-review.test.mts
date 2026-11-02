@@ -640,6 +640,24 @@ describe("applyOutcomes", () => {
     assert.ok(got.every((found) => !("needsPerson" in found) && !("fixable" in found)));
   });
 
+  it("leaves a finding open when the backend names a source file it changed as the test, or any changed file that isn't a test", () => {
+    for (const test of ["src/app.ts::blank", "src/other.ts::x", "README.md::x", "scripts/deploy.sh::x"]) {
+      const got = apply(triaged(), [outcome({ test })], ["src/app.ts", "src/other.ts", "README.md", "scripts/deploy.sh"]);
+
+      assert.equal(got.status, "open", test);
+      assert.equal(got.fix, "Trim the name first.");
+    }
+    const warning = apply(triaged({ security: true, severity: "warning", lens: "Security" }), [outcome({ test: "src/app.ts::blank" })]);
+    assert.equal(warning.status, "open", "a Warning isn't cleared behind the source file it edited");
+  });
+
+  it("takes a test in a test folder, a *.test.* or *_test.* file, a *Tests.cs file or the gate's checks as the test", () => {
+    for (const test of ["tests/app.test.ts::x", "src/app.test.mts::x", "pkg/app_test.go::x", "tests/Web.Tests.Unit/OrderTests.cs::X", "test_app.py::x", ".github/ci/gate-checks.sh::review"]) {
+      const file = test.split("::")[0]!;
+      assert.equal(apply(triaged(), [outcome({ test })], ["src/app.ts", file]).status, "fixed", test);
+    }
+  });
+
   it("leaves a Critical fixed with no test open, with its fix, when the test's file wasn't changed in the round", () => {
     const got = apply(triaged(), [outcome({ test: "tests/other.test.ts::x" })], ["src/app.ts"]);
 
@@ -782,6 +800,7 @@ function fake(options: Fake = {}) {
   const reviewerRuns: { round: number; lens: string; prompt: string; attempt: number }[] = [];
   const fixerPrompts: string[] = [];
   const files: { path: string; content: string }[] = [];
+  const removed: string[] = [];
   const prepares: Parameters<HostReviewHost["prepare"]>[0][] = [];
   const prepared: PreparedRound[] = [];
   const records: { input: ReviewInput; at: { head: string; branch: string } }[] = [];
@@ -818,6 +837,7 @@ function fake(options: Fake = {}) {
     },
     takenIds: () => options.taken ?? 0,
     writeRunFile: async (path, content) => void files.push({ path, content: content.toString() }),
+    removeRunFile: async (path) => void removed.push(path),
     runReviewer: async (reviewerToRun, prompt) => {
       inFlight++;
       maxInFlight = Math.max(maxInFlight, inFlight);
@@ -884,6 +904,7 @@ function fake(options: Fake = {}) {
     maxInFlight: () => maxInFlight,
     fixerPrompts,
     files,
+    removed,
     prepares,
     prepared,
     records,
@@ -1724,6 +1745,75 @@ describe("runHostReview's stops and failures", () => {
     const short = await runHostReview(run.host, input(run.startHead));
 
     assert.equal(short.status, "recorded", JSON.stringify(short));
+  });
+
+  it("removes a stale fixes.patch before round 1 and writes the fixes of a later round", async () => {
+    const run = fake({
+      answers: (round, who) => (round === 1 && who.lens === "Edge cases" ? [raw()] : []),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+    });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(run.removed.length, 1, "round 1 has no fixes: an earlier build's fixes.patch must not be left for the reviewers");
+    assert.match(run.removed[0] ?? "", /review\/fixes\.patch$/);
+    assert.equal(run.files.filter((file) => file.path.endsWith("fixes.patch")).length, 1, "round 2 writes its own");
+  });
+
+  it("starts round 2 from the commit the gate passed on, not the fixer's HEAD, and fails at it when a round 2 reviewer fails", async () => {
+    const run = fake({
+      answers: (round, who) => (round === 1 ? (who.lens === "Edge cases" ? [raw()] : []) : who.lens === BAR_LENS ? new Error("sandbox went away") : []),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+      gates: [hex(9)],
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(run.prepares[1]?.head, hex(9), "round 2 reads the gated commit");
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, hex(9));
+    assert.equal(result.status === "failed" && result.reason, "the Bar reviewer failed");
+    assert.equal(run.records.length, 0);
+  });
+
+  it("fails at the last gated commit when the fixer of round 2 throws", async () => {
+    const run = fake({
+      answers: (round, who) => (who.lens === "Edge cases" && round <= 2 ? [raw()] : []),
+      fixer: (n) => (n === 1 ? { outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] } : { error: new Error("sandbox went away") }),
+      gates: [hex(9)],
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, hex(9));
+    assert.equal(result.status === "failed" && result.reason, "the backend role's run fixing round 2's findings failed");
+  });
+
+  it("returns the paths of every round's diff as the ones the review read, and no others", async () => {
+    const run = fake({
+      answers: (round, who) => (round === 1 && who.lens === "Edge cases" ? [raw()] : []),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+      patches: (round) => (round === 1 ? { patch: diffFor("src/app.ts") } : { patch: diffFor("src/app.ts", "src/other.ts"), fixes: diffFor("src/other.ts") }),
+    });
+
+    const result = recorded(await runHostReview(run.host, input(run.startHead)));
+
+    assert.deepEqual([...result.readPaths].sort(), ["src/app.ts", "src/other.ts"]);
+  });
+
+  it("keeps reviewing until the clock reaches REVIEW_WALL_CLOCK_MINUTES, whatever wallClockMs is left unset", async () => {
+    let now = 0;
+    const run = fake({ clock: () => now });
+    const first = run.host.prepare;
+    run.host.prepare = (options) => {
+      now += REVIEW_WALL_CLOCK_MINUTES * 60_000 - 1;
+      return first(options);
+    };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "recorded", JSON.stringify(result));
   });
 
   it("fails with the last gated commit when a host call throws after an earlier round's fixes passed the gate", async () => {

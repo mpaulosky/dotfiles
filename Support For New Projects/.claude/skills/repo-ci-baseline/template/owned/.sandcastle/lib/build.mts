@@ -33,7 +33,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
-import { closeAfterWork, closeWithinLimit, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
+import { closeAfterWork, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
 import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
@@ -582,9 +582,13 @@ export async function createCheckedSandbox(
         sandbox.worktreePath,
       );
     }
-    await closeWithinLimit(sandbox, stepLimits.dockerCallMinutes).catch((closeError) =>
-      console.error(`  ⚠ closing the refused sandbox failed: ${terminalText(String(closeError))}`),
-    );
+    // A close the host gave up on makes the run end red (closeAfterWork), as for any other close after work; any other close failure is
+    // only logged, and the setup error is the one thrown.
+    await closeAfterWork(sandbox, {
+      stalled: false,
+      minutes: stepLimits.dockerCallMinutes,
+      log: (line) => console.error(`  ⚠ closing the refused sandbox: ${terminalText(line)}`),
+    }).catch((closeError) => console.error(`  ⚠ closing the refused sandbox failed: ${terminalText(String(closeError))}`));
     throw error;
   }
   return limited;

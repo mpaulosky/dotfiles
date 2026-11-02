@@ -5,6 +5,7 @@ import { spawnSync, type execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
+import { exitAfterStall } from "./host-limit.mts";
 import { join } from "node:path";
 import {
   buildIssue,
@@ -3089,6 +3090,31 @@ describe("createCheckedSandbox's git identity", () => {
     assert.ok(checked.includes("/work/tree"));
   });
 
+  it("throws the setup error, and makes the run end red, when closing the refused sandbox times out", async () => {
+    const sandbox = {
+      worktreePath: "/work/tree",
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: () => new Promise(() => undefined),
+    } as unknown as Sandbox;
+    const savedExitCode = process.exitCode;
+    const logged: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+    try {
+      await assert.rejects(
+        createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" }), () => [], { dockerCallMinutes: 0.001 }),
+        /setting the sandbox's git user\.name failed: could not lock config file/,
+      );
+      process.exitCode = undefined;
+      exitAfterStall(60, () => undefined, () => undefined);
+      assert.equal(process.exitCode, 1);
+      assert.ok(logged.some((line) => /closing the refused sandbox.*the run ends red/s.test(line)), logged.join("\n"));
+    } finally {
+      console.error = originalError;
+      process.exitCode = savedExitCode;
+    }
+  });
+
   it("leaves the sandbox in place, and keeps the identity error, when checking the worktree throws", async () => {
     let closed = 0;
     const sandbox = {
@@ -3467,7 +3493,7 @@ describe("createCheckedSandbox's step limits", () => {
       createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { dockerCallMinutes: 0.001 }),
       /no `timeout` command/,
     );
-    assert.ok(logged.some((line) => /closing the refused sandbox failed: .*closing the sandbox didn't finish/.test(line)), logged.join("\n"));
+    assert.ok(logged.some((line) => /closing the refused sandbox: .*closing the sandbox didn't finish/.test(line)), logged.join("\n"));
   });
 
   it("hands back the limited sandbox itself, which stalledStepOf recognises once a step stalls it", async () => {

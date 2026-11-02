@@ -368,7 +368,7 @@ describe("reviewFixPrompt", () => {
     assert.match(prompt, /removing each one,\s+or shifting it by one, fails a test/);
     assert.match(prompt, /what falls outside it/);
     for (const inputClass of ["line endings", "lone \\r", "surrogate", "whitespace", "open construct"]) assert.ok(prompt.includes(inputClass), inputClass);
-    assert.match(prompt, /`git log -p` shows this function in a `fix\(` commit of an earlier round, replace its mechanism/);
+    assert.match(prompt, /`git log -p` shows this function in the newest `fix\(` commits on the branch before yours \(the round immediately before this one, not an older round\), replace its mechanism/);
   });
 
   it("has an Advisory prose fix committed as docs", () => {

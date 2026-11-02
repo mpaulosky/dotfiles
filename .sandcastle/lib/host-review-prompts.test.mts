@@ -368,7 +368,14 @@ describe("reviewFixPrompt", () => {
     assert.match(prompt, /removing each one,\s+or shifting it by one, fails a test/);
     assert.match(prompt, /what falls outside it/);
     for (const inputClass of ["line endings", "lone \\r", "surrogate", "whitespace", "open construct"]) assert.ok(prompt.includes(inputClass), inputClass);
-    assert.match(prompt, /`git log -p` shows this function in the newest `fix\(` commits on the branch before yours \(the round immediately before this one, not an older round\), replace its mechanism/);
+  });
+
+  it("has a later round's fixer replace a function the round immediately before fixed, and a first round's fixer nothing of the kind", () => {
+    const later = reviewFixPrompt({ ...fixArgs(), round: 3 });
+
+    assert.match(later, /Round 2's fixes are the newest `fix\(` commits on the branch before yours\. When `git log -p` shows this function in them, replace its mechanism/);
+    assert.match(later, /An older round's fix of it does not count/);
+    assert.doesNotMatch(reviewFixPrompt(fixArgs()), /replace its mechanism/);
   });
 
   it("has an Advisory prose fix committed as docs", () => {

@@ -1636,7 +1636,17 @@ describe("followUpPassPhase", () => {
         return branch === stalledBranch ? stalledSandbox() : usageSandbox.sandbox;
       };
 
-      await assert.rejects(() => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost), StalledStepError);
+      const report = new OutcomeReport();
+
+      await assert.rejects(() => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, report), StalledStepError);
+
+      // Both stops really happened, so neither mutant ("first wins", "last wins") can pass for want of a second stop.
+      const usageNumber = stalledBranch === BRANCH ? 8 : PR_NUMBER;
+      assert.deepEqual(
+        report.items().map(({ number, outcome }) => [number, outcome]).toSorted(),
+        [[PR_NUMBER, "stopped"], [8, "stopped"]].toSorted(),
+      );
+      assert.equal(report.items().find((entry) => entry.number === usageNumber)?.detail, usage.message);
     });
   }
 });

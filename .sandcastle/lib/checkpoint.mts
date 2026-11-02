@@ -10,6 +10,7 @@
 
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMENT_LINES, GATE_FIXER_ATTEMPTS } from "./config.mts";
+import { UncountedStopError } from "./errors.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 
 export type Checkpoint = 1 | 2 | 3;
@@ -181,9 +182,11 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 }
 
 // Run the gate, and the gate-fixer while it's red and attempts are left.
-// Returns the last gate run, with the first red run's output when the
-// checkpoint ended red after a fixer ran, and ending the checkpoint early,
-// without a fixer, when the sandbox is down (`alive`).
+// Returns the last gate run. It carries the first red run's output
+// (`firstOutput`) when the checkpoint ended red after a fixer ran. When
+// `alive` reports the sandbox down, the checkpoint ends before that attempt's
+// fixer, with the reason appended to the output and `fixersRun` set to the
+// attempts that ran. A caller that passes no `alive` gets neither.
 export async function runCheckpoint(
   checkpoint: Checkpoint,
   steps: CheckpointSteps,
@@ -199,7 +202,7 @@ export async function runCheckpoint(
     const down = await steps.alive?.();
     if (down !== undefined) {
       log(`${prefix} ${label} not run: ${down}`);
-      return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 ? { firstOutput } : {}) };
+      return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 && firstOutput !== result.output ? { firstOutput } : {}) };
     }
     try {
       await steps.fix(checkpoint, result.output);
@@ -215,14 +218,27 @@ export async function runCheckpoint(
 }
 
 // Why the sandbox can't run a fixer, or undefined when `git rev-parse HEAD`
-// answers in it. A step the host killed leaves later calls throwing, so a throw
-// counts as the sandbox being down too.
-export async function sandboxDown(sandbox: Pick<Sandbox, "exec">): Promise<string | undefined> {
+// answers in it. A probe that throws counts as the sandbox being down, except a
+// stall (an UncountedStopError): that ends the run, and recording it as a
+// failed build attempt would hide it. `scrub` runs over the error's text
+// before it is cut to 200 printable characters, so a secret in it can't be cut
+// into a shape the scrub no longer recognises.
+export async function sandboxDown(
+  sandbox: Pick<Sandbox, "exec">,
+  scrub: (text: string) => string = (text) => text,
+): Promise<string | undefined> {
   try {
     if ((await headOf(sandbox)) !== undefined) return undefined;
     return "The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run.";
   } catch (error) {
-    const reason = String(error).replace(/[^\x20-\x7e]/g, " ").slice(0, 200).trim();
+    if (error instanceof UncountedStopError) throw error;
+    let text: string;
+    try {
+      text = String(error);
+    } catch {
+      text = "an error that can't be printed";
+    }
+    const reason = scrub(text).replace(/[^\x20-\x7e]/g, " ").slice(0, 200).trim();
     return `The sandbox can't run a command (${reason}), so no gate-fixer was run.`;
   }
 }
@@ -252,16 +268,19 @@ export function gateFailureComment(
   output: string,
   { firstOutput, fixersRun = GATE_FIXER_ATTEMPTS }: { firstOutput?: string; fixersRun?: number } = {},
 ): string {
+  const first =
+    firstOutput === undefined || firstOutput === output
+      ? []
+      : ["", `The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:`, "", textBlock(tail(firstOutput, GATE_COMMENT_LINES))];
   return [
     `Sandcastle stopped building this issue: \`${GATE_COMMAND}\` is still red at checkpoint ${checkpoint} ` +
       `after ${fixersRun} gate-fixer ${fixersRun === 1 ? "attempt" : "attempts"}, so \`${branch}\` wasn't pushed. The branch keeps its commits.`,
+    // The first run goes before the last: an over-long comment loses its start, and the last run is the one to keep.
+    ...first,
     "",
-    `The last ${GATE_COMMENT_LINES} lines of the gate output:`,
+    `The last ${GATE_COMMENT_LINES} lines of the ${first.length === 0 ? "gate output" : "last gate output"}:`,
     "",
     textBlock(tail(output, GATE_COMMENT_LINES)),
-    ...(firstOutput === undefined || firstOutput === output
-      ? []
-      : ["", `The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:`, "", textBlock(tail(firstOutput, GATE_COMMENT_LINES))]),
   ].join("\n");
 }
 

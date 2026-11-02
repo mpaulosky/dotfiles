@@ -8,6 +8,7 @@ import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_FIXER_ATTEMPTS } from "./config.mts";
 import { changedFiles, gateFailureComment, gateScriptChange, runCheckpoint, runGate, sandboxDown, tail, type Checkpoint, type GateRun } from "./checkpoint.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
+import { StalledStepError } from "./errors.mts";
 import { limitSandboxExec } from "./step-limit.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -111,6 +112,39 @@ describe("runCheckpoint", () => {
       assert.equal(result.fixersRun, 0);
       assert.equal(result.firstOutput, undefined);
       assert.deepEqual(lines, ["checkpoint 2: gate failed", "checkpoint 2: gate-fixer attempt 1/2 not run: The sandbox is down."]);
+    });
+
+    it("doesn't quote a first run that is the same as the last when the sandbox goes down at attempt 2", async () => {
+      const s = withAlive([red("same"), red("same")], [undefined, "The sandbox is down."]);
+
+      const result = await runCheckpoint(1, s, () => {});
+
+      assert.equal(result.firstOutput, undefined);
+      assert.equal(result.fixersRun, 1);
+    });
+
+    it("counts a fixer that threw as a run, then stops when the sandbox is down at attempt 2", async () => {
+      const s = {
+        ...withAlive([red("one"), red("two")], [undefined, "The sandbox is down."]),
+        fix: async () => {
+          throw new Error("timed out");
+        },
+      };
+      const lines: string[] = [];
+
+      const result = await runCheckpoint(1, s, (line) => lines.push(line));
+
+      assert.equal(result.fixersRun, 1);
+      assert.equal(result.firstOutput, "one");
+      assert.ok(lines.includes("checkpoint 1: gate-fixer attempt 2/2 not run: The sandbox is down."), lines.join("\n"));
+    });
+
+    it("rethrows a stall from the probe, without running a fixer", async () => {
+      const stall = new StalledStepError("stalled");
+      const s = { ...steps([red("one")]), alive: async () => Promise.reject(stall) };
+
+      await assert.rejects(() => runCheckpoint(1, s, () => {}), (error: unknown) => error === stall);
+      assert.deepEqual(s.calls, ["gate"]);
     });
 
     it("keeps the first run's output when the sandbox goes down after the first fixer attempt", async () => {
@@ -368,6 +402,38 @@ describe("sandboxDown", () => {
     assert.match(reason, /^The sandbox can't run a command \(Error: stalled \[31m x+\), so no gate-fixer was run\.$/);
     assert.ok(reason.length < 300, String(reason.length));
   });
+
+  it("keeps exactly 200 characters of the error text", async () => {
+    for (const [length, kept] of [[199, 199], [200, 200], [201, 200]] as const) {
+      const long = (await sandboxDown({ exec: async () => Promise.reject("x".repeat(length)) } as unknown as Pick<Sandbox, "exec">)) ?? "";
+
+      assert.ok(long.includes(`(${"x".repeat(kept)})`) && !long.includes("x".repeat(kept + 1)), `${length} characters`);
+    }
+  });
+
+  it("rethrows a stall, which ends the run, instead of reporting it as a dead sandbox", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+
+    await assert.rejects(() => sandboxDown(exec(stall)), (error: unknown) => error === stall);
+  });
+
+  it("scrubs the error text before cutting it, so a secret across the cut doesn't survive as a fragment", async () => {
+    const secret = "ghp_0123456789";
+    // "Error: " is 7 characters, so the secret starts at 192 and the cut at 200 lands inside it.
+    const text = `${"a".repeat(185)}${secret}`;
+    const scrub = (value: string) => value.replace(/ghp_\d{10}/g, "[x]");
+
+    const reason = (await sandboxDown(exec(new Error(text)), scrub)) ?? "";
+
+    assert.ok(!reason.includes("ghp_"), reason);
+    assert.ok(reason.includes("[x]"), reason);
+  });
+
+  it("reports an error that can't be turned into text without throwing", async () => {
+    const hostile = { toString: () => { throw new Error("no"); } };
+
+    assert.match((await sandboxDown({ exec: async () => Promise.reject(hostile) } as unknown as Pick<Sandbox, "exec">)) ?? "", /\(an error that can't be printed\)/);
+  });
 });
 
 describe("gateFailureComment", () => {
@@ -397,11 +463,10 @@ describe("gateFailureComment", () => {
     assert.ok(!comment.includes("line 50\n"));
   });
 
-  it("quotes the first red run too when it differs from the last", () => {
+  it("quotes the first red run too when it differs from the last, before the last so an over-long comment keeps the last", () => {
     const comment = gateFailureComment(1, "feature/69-x", "last run", { firstOutput: "first run" });
 
-    assert.match(comment, /The last 100 lines of the first red gate run, before a gate-fixer ran:\n\n```text\nfirst run\n```$/);
-    assert.ok(comment.indexOf("last run") < comment.indexOf("first run"));
+    assert.match(comment, /The last 100 lines of the first red gate run, before a gate-fixer ran:\n\n```text\nfirst run\n```\n\nThe last 100 lines of the last gate output:\n\n```text\nlast run\n```$/);
   });
 
   it("counts the gate-fixer attempts that ran, not the most there could be", () => {

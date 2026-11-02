@@ -139,7 +139,7 @@ export const INTAKE_FAILED_RUNS_LIMIT = 8;
 export const INTAKE_REFUSED_BATCHES_LIMIT = 2;
 
 // Gate-fixer runs allowed at each gate checkpoint before the issue's round is
-// given up, and how much of the final gate output the issue comment quotes.
+// given up, and how much of the last gate output (and of the first red run's, when it differs) the issue comment quotes.
 export const GATE_FIXER_ATTEMPTS = 2;
 
 // The most gate runs a build makes outside the host-side review: each of checkpoints 1 and 2 runs it, then once more after each fixer attempt, and

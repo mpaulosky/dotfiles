@@ -357,7 +357,7 @@ export type BuildHost = {
   // Records a failed build attempt (anything that stops the issue's
   // pipeline, see "When a role fails" in Blazor-Server's docs/plans/sandcastle-workflow.md):
   // posts the issue's `sandcastle:build-failed` comment with this attempt's
-  // number and `detail` (the tail of the gate output, or the role's error),
+  // number and `detail` (the tail of the last gate output and of the first red run's when it differs, or the role's error),
   // and once that's the BUILD_FAILURE_CAPth attempt since
   // `sandcastle:needs-human` was last removed, hands the issue back instead
   // (see lib/handback.mts#recordFailedAttempt). Never called for a role run
@@ -1032,7 +1032,7 @@ async function buildMarkedIssue(
   // the commit the gate passed on. When it's still red past the fixer's
   // attempts at checkpoint 1 or 2, nothing is published: the branch keeps its
   // commits, and the issue's failed build attempt is recorded with the tail of
-  // the gate output. Checkpoint 3 (the review's) records nothing: the earlier
+  // the last gate output, and of the first red run's when it differs. Checkpoint 3 (the review's) records nothing: the earlier
   // checkpoints' commit is published, so no comment may say it wasn't pushed
   // and no attempt is spent on a build that published.
   // A gate-fixer run that stopped with UncountedStopError is rethrown.
@@ -1054,7 +1054,7 @@ async function buildMarkedIssue(
           commits.push(...fixer.commits);
         },
         uncounted: (error) => error instanceof UncountedStopError,
-        alive: () => sandboxDown(sandbox),
+        alive: () => sandboxDown(sandbox, host.publicError),
       },
       log,
     );

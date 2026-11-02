@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
 import { spawn } from "node:child_process";
-import { DOCKER_CALL_LIMIT_MINUTES, dockerCallHasStalled, exitAfterStall, HOST_COMMAND_LIMIT_MINUTES, closeAfterWork, closeWithinLimit, hostExecFileSync, hostExecOptions, withinDockerLimit } from "./host-limit.mts";
+import { DOCKER_CALL_LIMIT_MINUTES, STALL_EXIT_GRACE_SECONDS, dockerCallHasStalled, exitAfterStall, markHostCallAbandoned, HOST_COMMAND_LIMIT_MINUTES, closeAfterWork, closeWithinLimit, hostExecFileSync, hostExecOptions, withinDockerLimit } from "./host-limit.mts";
 
 const never = () => new Promise<never>(() => undefined);
 
@@ -312,38 +312,90 @@ describe("the host's calls", () => {
   });
 });
 
+// Runs `body` as an ES module in a child Node process (with tsx, so it can import the .mts modules) that has host-limit.mts's exports in
+// scope, and reports how it ended. A child that outlives `killAfterMs` is killed, so a regression fails the test and doesn't hang the suite.
+const runChild = async (body: string, killAfterMs = 25_000) => {
+  const hostLimit = new URL("./host-limit.mts", import.meta.url).href;
+  const stepLimit = new URL("./step-limit.mts", import.meta.url).href;
+  const script = [
+    `import { exitAfterStall, markHostCallAbandoned, withinDockerLimit } from ${JSON.stringify(hostLimit)};`,
+    `import { limitSandboxExec } from ${JSON.stringify(stepLimit)};`,
+    body,
+  ].join("\n");
+  const started = Date.now();
+  const child = spawn(process.execPath, ["--input-type=module", "--import", import.meta.resolve("tsx"), "-e", script], { stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const killer = setTimeout(() => child.kill("SIGKILL"), killAfterMs);
+  const code = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+  clearTimeout(killer);
+  return { code, stderr, elapsed: Date.now() - started };
+};
+
+const stallDockerCall = 'await withinDockerLimit("creating the sandbox", new Promise(() => undefined), 0.001).catch(() => undefined);';
+
 describe("exitAfterStall", () => {
-  it("calls exit with the run's code after the grace period once a Docker call stalled, and has unref'd its timer", async () => {
+  it("waits ten seconds by default", () => {
+    assert.equal(STALL_EXIT_GRACE_SECONDS, 10);
+  });
+
+  it("calls exit with the run's code after the grace period once the host gave up on a call, and names the call", async () => {
     await assert.rejects(() => withinDockerLimit("creating the sandbox", never(), 0.001), StalledStepError);
+    markHostCallAbandoned("the sandbox exec \"git\u0007fetch\"");
     assert.equal(dockerCallHasStalled(), true);
     const before = process.exitCode;
-    process.exitCode = 4;
     try {
-      const exits: number[] = [];
-      exitAfterStall(0.01, (code) => void exits.push(code));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      for (const [set, expected] of [[4, 4], [undefined, 0]] as const) {
+        process.exitCode = set;
+        const exits: number[] = [];
+        const logged: string[] = [];
+        exitAfterStall(0.01, (code) => void exits.push(code), (line) => void logged.push(line));
+        await new Promise((resolve) => setTimeout(resolve, 100));
 
-      assert.deepEqual(exits, [4]);
+        assert.deepEqual(exits, [expected]);
+        assert.match(logged.join("\n"), /gave up on \d+ calls?.*creating the sandbox.*the sandbox exec "git fetch"/);
+      }
     } finally {
       process.exitCode = before;
     }
   });
 
-  it("ends a process that a referenced child keeps running after a Docker call stalled, with the code the run set", async () => {
-    const script = [
-      'import { spawn } from "node:child_process";',
-      `import { exitAfterStall, withinDockerLimit } from ${JSON.stringify(new URL("./host-limit.mts", import.meta.url).href)};`,
-      'spawn("sleep", ["30"], { stdio: "ignore" });',
-      'await withinDockerLimit("creating the sandbox", new Promise(() => undefined), 0.001).catch(() => undefined);',
+  it("ends a process that a referenced handle keeps running after a Docker call stalled, with the code the run set", async () => {
+    const { code, stderr, elapsed } = await runChild([stallDockerCall, "setTimeout(() => undefined, 30_000);", "process.exitCode = 3;", "exitAfterStall(0.3);"].join("\n"));
+
+    assert.equal(code, 3, stderr);
+    assert.match(stderr, /gave up on 1 call.*creating the sandbox/);
+    assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
+  });
+
+  it("ends a process that a sandbox exec the host gave up on keeps running", async () => {
+    const body = [
+      "const sandbox = { exec: () => new Promise(() => undefined) };",
+      'const limited = limitSandboxExec(sandbox, { log: () => undefined, commandMinutes: 0.001, graceSeconds: 0.001, backstopSlackSeconds: 0.05 });',
+      'await limited.exec("git fetch").catch(() => undefined);',
+      "setTimeout(() => undefined, 30_000);",
       "process.exitCode = 3;",
       "exitAfterStall(0.3);",
     ].join("\n");
-    const started = Date.now();
+    const { code, stderr, elapsed } = await runChild(body);
 
-    const child = spawn(process.execPath, ["--input-type=module", "--import", "tsx", "-e", script], { stdio: "ignore" });
-    const code = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+    assert.equal(code, 3, stderr);
+    assert.match(stderr, /the sandbox exec "git fetch"/);
+    assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
+  });
 
-    assert.equal(code, 3);
-    assert.ok(Date.now() - started < 20_000);
+  it("doesn't hold a process that has nothing else running for the grace period: its timer is unref'd", async () => {
+    const { code, stderr, elapsed } = await runChild([stallDockerCall, "exitAfterStall(60);"].join("\n"));
+
+    assert.equal(code, 0, stderr);
+    assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
+  });
+
+  it("leaves a process alone when the host gave up on nothing", async () => {
+    const { code, stderr, elapsed } = await runChild(["setTimeout(() => undefined, 2000);", "exitAfterStall(0.2);"].join("\n"));
+
+    assert.equal(code, 0, stderr);
+    assert.equal(stderr, "");
+    assert.ok(elapsed >= 1800, `ended after ${elapsed} ms, before its own 2-second timer`);
   });
 });

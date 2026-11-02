@@ -349,6 +349,20 @@ describe("main.mts's intake-stop exit code", () => {
     assert.match(assignment, /intakeStopReport\.items\(\)/, "main.mts doesn't pass intakeStopReport.items() to the exit-code decision");
   });
 
+  it("ends with exitAfterStall() from lib/host-limit.mts, after the report and the exit code, inside the finally block", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const writeReportCall = mainMts.indexOf("writeRunReport(");
+    const exitCodeAssignment = mainMts.indexOf("process.exitCode = intakeStopExitCode(", writeReportCall);
+    const call = mainMts.indexOf("exitAfterStall(", exitCodeAssignment);
+    const finallyBlock = mainMts.lastIndexOf("} finally {", writeReportCall);
+
+    assert.match(mainMts, /import \{ exitAfterStall \} from "\.\/lib\/host-limit\.mts";/, "main.mts doesn't import exitAfterStall from ./lib/host-limit.mts");
+    assert.notEqual(exitCodeAssignment, -1, "main.mts doesn't set process.exitCode from intakeStopExitCode( after writeRunReport(");
+    assert.notEqual(call, -1, "main.mts doesn't call exitAfterStall( after setting process.exitCode");
+    assert.notEqual(finallyBlock, -1, "the report isn't written in a finally block");
+    assert.equal(mainMts.indexOf("process.exit(", finallyBlock), -1, "main.mts ends the process itself instead of through exitAfterStall(");
+  });
+
   it("records a stalled step's entry from a settled build and from the run-stopping catch, so either ends the run red", () => {
     const mainMts = read(".sandcastle/main.mts");
 

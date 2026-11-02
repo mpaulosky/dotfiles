@@ -3,7 +3,7 @@
 // Nothing is merged locally: every change reaches main through a reviewed PR.
 
 import type { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { isRoleTimeout, runRoleInSandbox, uiEnabled } from "./agents.mts";
@@ -474,6 +474,16 @@ const tamperedWorktreeComment = (branch: string) =>
   `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
   "person to look at. Don't run git in it.";
 
+// Whether nothing exists at the path (not even a dangling symlink, which a worktree check must still see).
+const worktreeIsGone = (worktreePath: string): boolean => {
+  try {
+    lstatSync(worktreePath);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+};
+
 const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktreePath, repoGitDir());
 
 // The live sandbox for `branch`, for a build and a follow-up pass
@@ -500,7 +510,8 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // check and close. `stepLimits` is for tests.
 //
 // The create runs under withinDockerLimit (stepLimits.dockerCallMinutes): a create Docker never answers is a StalledStepError, and a
-// sandbox it makes too late is closed. The close after a refusal is bounded the same way.
+// sandbox it makes too late is closed once its worktree passes the check (a worktree that is gone counts as passing; one that fails it, or
+// whose check throws, is left in place with a warning). The close after a refusal is bounded the same way.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
@@ -519,13 +530,15 @@ export async function createCheckedSandbox(
   if (problems.length > 0) {
     throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
-  // Docker has no timeout of its own: a create that never answers stalls the step, and a sandbox it makes too late is closed.
+  // Docker has no timeout of its own: a create that never answers stalls the step, and a sandbox it makes too late is closed if its worktree is
+  // sound (see below).
   const sandbox = await withinDockerLimit("creating the sandbox", create(branch), stepLimits.dockerCallMinutes, (late) => {
     // Closing runs git in the worktree, which the create's hooks may have redirected, so it gets the check a normal cleanup gets. One that
-    // fails the check, or the check itself failing, leaves the sandbox and its worktree in place.
+    // fails the check, or the check itself failing, leaves the sandbox and its worktree in place. A worktree that is gone has nothing
+    // to redirect, so its sandbox is closed: leaving it would only leak its container.
     let tampered: string[];
     try {
-      tampered = checkWorktree(late.worktreePath);
+      tampered = worktreeIsGone(late.worktreePath) ? [] : checkWorktree(late.worktreePath);
     } catch (checkError) {
       tampered = [`checking the worktree failed: ${checkError instanceof Error ? checkError.message : String(checkError)}`];
     }

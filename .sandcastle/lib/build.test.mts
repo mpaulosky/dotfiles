@@ -3350,12 +3350,31 @@ describe("createCheckedSandbox's step limits", () => {
 
   it("stalls the step when Docker never answers the create, and closes a sandbox it makes too late", async () => {
     const { sandbox, wasClosed } = recordingSandbox(0);
+    Object.assign(sandbox, { worktreePath: process.cwd() }); // a worktree that exists, so it is checked
+    let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+    const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+    const checked: string[] = [];
+
+    await assert.rejects(
+      createCheckedSandbox("feature", create, () => identity, (path) => (checked.push(path), []), { dockerCallMinutes: 0.001 }),
+      (error: Error) => error instanceof StalledStepError && /creating the sandbox didn't finish/.test(error.message),
+    );
+    makeSandbox(sandbox);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(wasClosed(), true);
+    assert.deepEqual(checked, [sandbox.worktreePath], "the late sandbox's worktree wasn't checked before it was closed");
+  });
+
+  it("closes a sandbox it makes too late when its worktree is gone, whatever the check says, since there is nothing to redirect", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0);
+    assert.equal(existsSync(sandbox.worktreePath), false, "the sandbox's worktree should not exist for this test");
     let makeSandbox: (value: typeof sandbox) => void = () => undefined;
     const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
 
     await assert.rejects(
-      createCheckedSandbox("feature", create, () => identity, () => [], { dockerCallMinutes: 0.001 }),
-      (error: Error) => error instanceof StalledStepError && /creating the sandbox didn't finish/.test(error.message),
+      createCheckedSandbox("feature", create, () => identity, () => [`${sandbox.worktreePath} is missing, not a directory`], { dockerCallMinutes: 0.001 }),
+      StalledStepError,
     );
     makeSandbox(sandbox);
     await new Promise((resolve) => setImmediate(resolve));
@@ -3368,6 +3387,8 @@ describe("createCheckedSandbox's step limits", () => {
     t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
     for (const check of [() => ["its .git doesn't point into this repository"], () => { throw new Error("git rev-parse failed"); }]) {
       const { sandbox, wasClosed } = recordingSandbox(0);
+      // A worktree that exists (a gone one is closed, whatever the check says).
+      Object.assign(sandbox, { worktreePath: process.cwd() });
       let makeSandbox: (value: typeof sandbox) => void = () => undefined;
       const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
       const lateChecks: string[] = [];

@@ -31,28 +31,44 @@ export const hostExecFileSync = ((file: string, ...rest: unknown[]) => {
   return args === undefined ? execFileSync(file, options as never) : execFileSync(file, args, options as never);
 }) as typeof execFileSync;
 
-// Whether a Docker call has stalled this run (withinDockerLimit gave up on one). The call can't be cancelled, so it may still hold a
-// child process or socket that keeps Node alive after the run's work is done: see exitAfterStall.
-let dockerCallStalled = false;
-export const dockerCallHasStalled = (): boolean => dockerCallStalled;
+// What the host has given up on this run and cannot cancel: a Docker create or close (withinDockerLimit) or a sandbox exec
+// (lib/step-limit.mts), by name. Any of them may still hold a child process or socket that keeps Node alive after the run's work is
+// done: see exitAfterStall.
+const abandonedCalls: string[] = [];
 
-// How long the run may take to exit by itself after its cleanup, once a Docker call has stalled, in seconds.
+// Records a call the host gave up on. `what` is shown in the log line exitAfterStall prints, with control characters removed.
+export function markHostCallAbandoned(what: string): void {
+  abandonedCalls.push(what.replace(/[\u0000-\u001f\u007f-\u009f]/g, " "));
+}
+
+// Whether the host has given up on a call this run.
+export const dockerCallHasStalled = (): boolean => abandonedCalls.length > 0;
+
+// How long the run may take to exit by itself after its cleanup, once the host has given up on a call, in seconds.
 export const STALL_EXIT_GRACE_SECONDS = 10;
 
-// Called once the run's reports and cleanup are done. When a Docker call stalled, whatever it left referenced may keep Node running
-// (process.exitCode doesn't force an exit), so the process is ended after `graceSeconds` with the code the run set. The timer is
-// unref'd, so a process that does end by itself isn't held for it. Does nothing when no call stalled. `exit` is for tests.
+// Called once the run's reports and cleanup are done. When the host gave up on a call, whatever it left referenced may keep Node
+// running (process.exitCode doesn't force an exit), so the process is ended after `graceSeconds` with the code the run set (0 when it
+// set none). The abandoned calls are named in a warning first, since the process then ends without closing a sandbox one of them
+// creates later: a person looks for a leftover container and worktree. The timer is unref'd, so a process that does end by itself isn't
+// held for it. Does nothing when the host gave up on nothing. `exit` and `log` are for tests.
 export function exitAfterStall(
   graceSeconds: number = STALL_EXIT_GRACE_SECONDS,
   exit: (code: number) => void = (code) => process.exit(code),
+  log: (line: string) => void = console.error,
 ): void {
-  if (!dockerCallStalled) return;
-  setTimeout(() => exit(Number(process.exitCode ?? 0)), graceSeconds * 1000).unref();
+  if (abandonedCalls.length === 0) return;
+  setTimeout(() => {
+    log(
+      `  ⚠ ending the run ${graceSeconds}s after its cleanup: the host gave up on ${abandonedCalls.length} call${abandonedCalls.length === 1 ? "" : "s"} that may still be pending (${abandonedCalls.join("; ")}). A sandbox or worktree one of them creates later is not closed, so look for a leftover container and worktree.`,
+    );
+    exit(Number(process.exitCode ?? 0));
+  }, graceSeconds * 1000).unref();
 }
 
 // Waits for a Docker call (creating or closing a sandbox) for at most `minutes`, and throws StalledStepError when it hasn't
 // answered by then: the call itself can't be cancelled, so it is left running, and `onLate` gets whatever it returns if it
-// returns after all (a sandbox created too late is closed by the caller's `onLate`). A call that fails inside the limit
+// returns after all (the caller's `onLate` closes a sandbox created too late once its worktree passes the check). Giving up also marks the run as having abandoned a call (markHostCallAbandoned), which makes main.mts end the process after its cleanup (exitAfterStall). A call that fails inside the limit
 // fails as it did.
 export async function withinDockerLimit<T>(
   what: string,
@@ -82,7 +98,7 @@ export async function withinDockerLimit<T>(
   const limit = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       gaveUp = true;
-      dockerCallStalled = true;
+      markHostCallAbandoned(what);
       reject(new StalledStepError(`${what} didn't finish within ${minutes} minute${minutes === 1 ? "" : "s"}, so the host gave up on it.`));
     }, minutes * 60_000);
   });

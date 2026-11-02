@@ -12,7 +12,7 @@
 // other overrun, or a call the host gives up on, throws StalledStepError, and so does every exec after it.
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
-import { MAX_TIMER_MS } from "./host-limit.mts";
+import { MAX_TIMER_MS, markHostCallAbandoned } from "./host-limit.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { terminalText } from "./status.mts";
 
@@ -167,6 +167,7 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
     try {
       const outcome = await Promise.race([sandbox.exec(limitedCommand(command, minutes, graceSeconds), execOptions), gaveUp]);
       if (outcome === "gave up") {
+        markHostCallAbandoned(`the sandbox exec "${name}"`);
         log(`${prefix}step gave up: ${name} didn't return after its ${minutes}-minute limit and the kill grace`);
         return stall(name, `The step "${name}" didn't return within its ${minutes}-minute limit and the kill grace, so the host gave up on it.`);
       }

@@ -167,7 +167,7 @@ describe("closeAfterWork", () => {
   const hangs = { close: never } as unknown as Sandbox;
   const fails = { close: async () => Promise.reject(new Error("docker: busy")) } as unknown as Sandbox;
 
-  it("only logs a close the host gave up on, so the work's outcome stands", async () => {
+  it("logs a close the host gave up on and returns, so the work's outcome stands (exitAfterStall ends the run red)", async () => {
     const logged: string[] = [];
 
     await closeAfterWork(hangs, { stalled: false, minutes: 0.001, log: (line) => logged.push(line) });
@@ -465,11 +465,22 @@ describe("exitAfterStall", () => {
   });
 
   const hungClose = 'const hangs = { close: () => new Promise(() => undefined) };';
-  const giveUpOnClose = (stalled: boolean) => `await closeAfterWork(hangs, { stalled: ${stalled}, minutes: 0.001, log: () => undefined });`;
+  const giveUpOnClose = (stalled: boolean) => `await closeAfterWork(hangs, { stalled: ${stalled}, minutes: 0.001, log: (line) => console.error(line) });`;
 
   it("ends the run red when a close was given up on after finished work, whether the forced exit or the process's own end comes first", async () => {
     for (const tail of ["setTimeout(() => undefined, 30_000);\nexitAfterStall(0.3);", "exitAfterStall(60);"]) {
       const { code, stderr } = await runChild([hungClose, giveUpOnClose(false), tail].join("\n"));
+
+      // The give-up was logged by closeAfterWork and didn't throw: a crash would exit 1 as well.
+      assert.match(stderr, /may still be running, so the run ends red/);
+      assert.doesNotMatch(stderr, /\n\s+at /, "the child crashed");
+      assert.equal(code, 1, stderr);
+    }
+  });
+
+  it("ends the run red when the run set its code to 0 explicitly, as main.mts does on a green run", async () => {
+    for (const tail of ["setTimeout(() => undefined, 30_000);\nexitAfterStall(0.3);", "exitAfterStall(60);"]) {
+      const { code, stderr } = await runChild([hungClose, giveUpOnClose(false), "process.exitCode = 0;", tail].join("\n"));
 
       assert.equal(code, 1, stderr);
     }

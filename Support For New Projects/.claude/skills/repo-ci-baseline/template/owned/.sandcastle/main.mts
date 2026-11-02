@@ -566,7 +566,7 @@ try {
   }
   process.exitCode = intakeStopExitCode(intakeStopReport.items());
   // A call the host gave up on (a Docker create or close, or a sandbox exec) may still hold something that keeps Node running; end the
-  // process after a grace period.
+  // process after a grace period. A close the host gave up on after finished work also makes this set exit code 1, so that run ends red.
   exitAfterStall();
 }
 

@@ -1660,7 +1660,7 @@ describe("followUpPassPhase", () => {
     assert.deepEqual(calls.handBack, []);
   });
 
-  it("keeps a finished pass's outcome when the close of its sandbox never answers, and only logs the close", async (t) => {
+  it("keeps a finished pass's outcome when the close of its sandbox never answers, and logs the close", async (t) => {
     const logged: string[] = [];
     t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
     const sandbox = sandboxFake({ followUpJson: "[]" });

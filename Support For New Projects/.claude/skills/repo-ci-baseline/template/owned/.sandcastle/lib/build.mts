@@ -1354,8 +1354,9 @@ async function buildMarkedIssue(
       console.error(`  ✗ #${issue.number}: left ${sandbox.worktreePath} and its sandbox in place: ${terminalText(problems.join("; "))}`);
       host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
     } else {
-      // A close the host gave up on, or any close failure on a stalled sandbox (which may have a command still running), is only
-      // logged: the pull request or the StalledStepError that ended the work is what to report.
+      // A close the host gave up on is logged and ends the run red (closeAfterWork, exitAfterStall), and any close failure on a stalled
+      // sandbox (which may have a command still running) is only logged: the pull request or the StalledStepError that ended the work is
+      // what to report.
       await closeAfterWork(sandbox, {
         stalled: stalledStepOf(sandbox) !== undefined,
         minutes: host.dockerCallMinutes,

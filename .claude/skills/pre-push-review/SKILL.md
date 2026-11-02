@@ -136,7 +136,8 @@ can't.
 
 Round 1 reviews the whole branch. A later round reviews the fixes, not the whole branch again: its reviewers get
 `<run>/fixes.patch` to review and `<run>/diff.patch` as context, and raise only problems on the lines the fixes changed or
-problems the fixes cause elsewhere, such as a caller a changed function now breaks. Choose a later round's reviewers by
+problems the fixes cause elsewhere, such as a caller a changed function now breaks. Give them the whole function around
+each changed line and its callers to read, not only the patch: a fix's lines are judged by what they sit in. Choose a later round's reviewers by
 the files `fixes.patch` changes. This, with the severities, is what ends the review.
 
 Start the reviewers in parallel, all in one message. Then change nothing in the worktree, not even a commit or an amend,
@@ -220,7 +221,19 @@ Fix the Critical, Warning and Advisory findings. For each one:
 1. Write the test first, in the test project that mirrors the code (`tests/<Project>.Tests.<Kind>/`, a
    `.sandcastle/lib/*.test.mts`). Run it and see it fail for the reason the finding names.
 2. Fix the code, and see the test pass.
-3. Commit the test and the fix together: `fix(<scope>): <Summary>`.
+3. Check the fix before committing it. A fix is new code with its own edge cases, which is where most later findings come from:
+   - List every branch, constant, regex, cap and window the fix adds.
+   - Write n-1, n and n+1 boundary tests for each.
+   - Show that removing each one, or shifting it by one, fails a test (a mutation check): edit the line, see a test fail, restore it.
+     `mutate.py` ([the hardening-review's runner](../hardening-review/references/mutations.md)) does the same on a committed fix,
+     but refuses a dirty file, so use it only after the commit.
+   - Go through the **Edge-case checklist** in [lenses.md](lenses.md) on the lines the fix wrote.
+4. Commit the test and the fix together: `fix(<scope>): <Summary>`.
+
+If a function is in the fixes of two rounds in a row, stop patching it. Replace the mechanism with one that rules the class
+out, and test the new one. For example, put the parts that must survive before the part that gets cut and cut last, so
+nothing needs closing; or refuse an input over a fixed count outright instead of telling constructs apart inside windows. Find
+the repeats with `git log -p` over the earlier round's `fix(` commits.
 
 A finding no test can pin, such as one in a workflow or in prose, gets a deterministic check in
 `.github/ci/gate-checks.sh` when one can express it, or a reason saying why it has no test. A security finding (every Warning) is

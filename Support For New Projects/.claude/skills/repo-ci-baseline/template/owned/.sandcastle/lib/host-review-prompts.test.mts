@@ -124,6 +124,13 @@ describe("reviewerPrompt", () => {
     assert.ok(prompt.indexOf("fixes.patch") < prompt.indexOf("diff.patch"), "the fixes are named first, as the thing to review");
   });
 
+  it("tells a later round to read the whole function around each changed line and its callers, and a first round nothing of the kind", () => {
+    const later = "Read the whole function around each changed line and its callers, not only the patch";
+
+    assert.ok(reviewerPrompt(args({ round: 2, hasFixes: true })).includes(later));
+    assert.ok(!reviewerPrompt(args({ round: 1, hasFixes: false })).includes(later));
+  });
+
   it("points at the decisions file the earlier rounds left", () => {
     assert.ok(reviewerPrompt(args()).includes(`${runDir}/decisions.md`));
   });
@@ -352,6 +359,24 @@ describe("reviewFixPrompt", () => {
     assert.match(prompt, /red/i);
     assert.match(prompt, /green/i);
     assert.match(prompt, /fix\(<scope>\): <Summary>|fix\(/);
+  });
+
+  it("has the fixer check its own fix: boundary tests, a mutation check, the edge-case list and a redesign after two rounds", () => {
+    const prompt = reviewFixPrompt(fixArgs());
+
+    assert.match(prompt, /n-1, n and n\+1 boundary tests/);
+    assert.match(prompt, /removing each one,\s+or shifting it by one, fails a test/);
+    assert.match(prompt, /what falls outside it/);
+    for (const inputClass of ["line endings", "lone \\r", "surrogate", "whitespace", "open construct"]) assert.ok(prompt.includes(inputClass), inputClass);
+  });
+
+  it("has a later round's fixer replace a function the round immediately before fixed, and a first round's fixer nothing of the kind", () => {
+    const later = reviewFixPrompt({ ...fixArgs(), round: 3 });
+
+    assert.match(later, /Round 2's fixes are the newest `fix\(` commits on the branch before yours\. When `git log -p` shows this function in them, replace its mechanism/);
+    assert.match(later, /An older round's fix of it does not count/);
+    assert.match(reviewFixPrompt({ ...fixArgs(), round: 2 }), /Round 1's fixes are the newest `fix\(` commits on the branch before yours/);
+    assert.doesNotMatch(reviewFixPrompt(fixArgs()), /replace its mechanism/);
   });
 
   it("has an Advisory prose fix committed as docs", () => {

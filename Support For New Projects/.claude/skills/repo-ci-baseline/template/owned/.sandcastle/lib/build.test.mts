@@ -2627,6 +2627,13 @@ describe("publish", () => {
     }
   });
 
+  it("closes a fence in a description with CRLF line endings too", () => {
+    const cut = cutDescription(`\`\`\`js\r\n${"code();\r\n".repeat(1000)}`, 1000);
+
+    assert.ok(cut.length <= 1000, `${cut.length} characters`);
+    assert.match(cut, /\n```\n\n… \(the description was cut/);
+  });
+
   it("leaves a fence that the description closed, or a backtick line inside a tilde fence, alone", () => {
     const closed = cutDescription(`\`\`\`js\nx\n\`\`\`\n${"prose ".repeat(2000)}`, 1000);
     assert.doesNotMatch(closed, /\n```\n\n… \(the description/);

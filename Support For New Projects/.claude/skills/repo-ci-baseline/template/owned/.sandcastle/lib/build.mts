@@ -226,7 +226,7 @@ export function boundedCheckList(files: readonly string[]): string {
 // The fence (``` or ~~~, as long as it was opened) a cut text leaves open, or "" when it closes every fence it opens.
 function openFenceIn(text: string): string {
   let open = "";
-  for (const line of text.split("\n")) {
+  for (const line of text.split(/\r\n|\r|\n/)) {
     const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (!fence) continue;
     const marks = fence[1]!;

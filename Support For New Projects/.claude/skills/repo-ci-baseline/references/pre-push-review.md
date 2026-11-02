@@ -158,7 +158,9 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
 - A usage-limit stop, or a stalled sandbox (a reviewer or fixer run the host gave up on `ROLE_RUN_GRACE_MINUTES` after its `timeoutMinutes`), leaves the branch for a later round: nothing is
   published and the run ends red without spending a failed attempt. The run's time budget passing (`TimeBudgetStopError`), or the review's own cap of `REVIEW_WALL_CLOCK_MINUTES` (checked before each
   round, reviewer and fixer run), ends the review as failed at the last commit the gate passed on, so work already gated is published with a note.
-  A reviewer that fails, a record that can't be made, or a round's diff past `MAX_REVIEW_PATCH_BYTES` publishes the branch with a PR note and no record. A fixer that moves HEAD without
+  The first reviewer that fails ends the round (no later reviewer of it runs). That, a record that can't be made, a round's diff past `MAX_REVIEW_PATCH_BYTES`,
+  or a checkpoint 3 that stays red after a round's fixes
+  publishes the branch, at the last commit the gate passed on, with a PR note and no record. A fixer that moves HEAD without
   changing a file ends the review at the round as it was read. A finding's lens is the reviewer's the host ran, never the one its answer names.
   Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
   A finding is listed only when its path is a file the review's diffs touched and is made of plain file-name characters (never a link, an image or a `www.` address), and a line the host's

@@ -352,11 +352,10 @@ export type HostReviewHost = {
 // failed, which publishes the branch with a note.
 export const MAX_REVIEW_PATCH_BYTES = 4 * 1024 * 1024;
 
-// How a review ends: recorded, failed (with the last commit the gate passed on, which is published), or the gate stayed red.
+// How a review ends: recorded, or failed (with the last commit the gate passed on, which is published).
 export type HostReviewResult =
   | { status: "recorded"; head: string; rounds: number; ledger: Ledger; readPaths: ReadonlySet<string> }
-  | { status: "failed"; head: string; reason: string }
-  | { status: "gate failed" };
+  | { status: "failed"; head: string; reason: string };
 
 const outcomesSchema = z.object({ outcomes: z.array(z.unknown()) });
 const outcomeSchema = z.object({
@@ -387,7 +386,7 @@ type ReviewerFailure = { lens: string; what: string };
 // Runs the review's rounds on `startHead` against `main`, and records them. A usage-limit stop or a stalled sandbox (an UncountedStopError) from a
 // reviewer or the fixer rejects, so the branch is left for a later round. The run's time budget passing (TimeBudgetStopError) and the
 // review's own time cap (REVIEW_WALL_CLOCK_MINUTES) end it as `failed` at the last commit the gate passed on, so work already gated is
-// published rather than lost with a discarded runner. A reviewer that fails (a timeout, a bad answer twice, an error) ends the review as `failed`, recording nothing.
+// published rather than lost with a discarded runner. A reviewer that fails (a timeout, a bad answer twice, an error) ends the review as `failed` at once, recording nothing, and so does a gate that stays red after a round's fixes.
 export async function runHostReview(
   host: HostReviewHost,
   input: { issue: { number: number; title: string; body: string }; branch: string; main: string; startHead: string },
@@ -489,9 +488,9 @@ async function runRounds(
         }) + (problem === undefined ? "" : retryNote(problem)),
       );
     // One after another, never together: each role run sets up the sandbox's global git config, and runs started together race for its lock
-    // (a real run lost four of ten reviewers to `could not lock config file`). Every reviewer still runs, so every failure is reported, except that
-    // a usage-limit stop or a stalled sandbox ends the round at once: the runs after it would only hit the same limit (the time budget's
-    // stop does too, and runHostReview turns it into a failed review).
+    // (a real run lost four of ten reviewers to `could not lock config file`). The round ends at the first reviewer that fails: the review ends
+    // as failed anyway, so the reviewers after it would only spend the review's time. A usage-limit stop or a stalled sandbox ends the round at
+    // once too, by rethrowing (the time budget's stop does too, and runHostReview turns it into a failed review).
     const settled: PromiseSettledResult<ReviewerFinding[]>[] = [];
     for (const reviewer of reviewers) {
       if (spent()) return outOfTime(`the ${reviewer.lens} reviewer`);
@@ -501,6 +500,7 @@ async function runRounds(
       );
       if (result.status === "rejected" && result.reason instanceof UncountedStopError) throw result.reason;
       settled.push(result);
+      if (result.status === "rejected") break;
     }
     const failures = settled.flatMap((result, index): ReviewerFailure[] =>
       result.status === "rejected" ? [{ lens: reviewers[index]!.lens, what: failureText(result.reason) }] : [],
@@ -549,7 +549,12 @@ async function runRounds(
     host.log(`  review round ${round}: ${final.filter((finding) => finding.status === "fixed").length} fixed, running the gate (checkpoint 3)`);
     fixingRounds++;
     const gated = await host.gate();
-    if (gated === undefined) return { status: "gate failed" };
+    if (gated === undefined) {
+      // The fixes of this round didn't pass the gate, but every earlier round's did: the last gated commit is what's published, as for any
+      // other review that can't finish, rather than discarding the branch and spending a failed attempt on it.
+      host.log(`  ✗ the local review failed: the gate stayed red after round ${round}'s fixes`);
+      return { status: "failed", head, reason: `the gate stayed red after round ${round}'s fixes` };
+    }
     head = gated;
     progress.head = gated;
   }

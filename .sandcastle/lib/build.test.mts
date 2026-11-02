@@ -3808,17 +3808,15 @@ describe("buildIssue's local review", () => {
     assert.ok(result.commits.some((commit) => commit.sha === "review-made"), JSON.stringify(result.commits));
   });
 
-  it("ends as a gate failure at checkpoint 3 when the gate the review asks for stays red", async () => {
+  it("runs the gate-fixer at checkpoint 3 when the gate the review asks for stays red, and publishes what the review reports", async () => {
     const run = host([0, 0, 1, 1, 1], {
-      localReview: async (args) => ((await args.gate()) === undefined ? { status: "gate failed" } : { status: "failed", head: args.startHead, reason: "unexpected" }),
+      localReview: async (args) => ((await args.gate()) === undefined ? { status: "failed", head: args.startHead, reason: "the gate stayed red after round 1's fixes" } : { status: "failed", head: args.startHead, reason: "unexpected" }),
     });
 
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
-    assert.equal(result.outcome, "gate failed");
-    assert.equal(result.detail, "checkpoint 3");
+    assert.equal(result.outcome, "published");
     assert.ok(run.steps.some((step) => step.startsWith("gate-fixer")), run.steps.join("\n"));
-    assert.deepEqual(run.pushed, []);
   });
 
   it("logs a failed review as an error that names its reason", async () => {
@@ -3836,15 +3834,16 @@ describe("buildIssue's local review", () => {
     assert.ok(errors.some((line) => line.includes("the Bar reviewer timed out")), errors.join("\n"));
   });
 
-  it("ends as a gate failure at checkpoint 3, publishing nothing, when the gate stays red after the review's fixes", async () => {
-    const run = host([0, 0], { localReview: async () => ({ status: "gate failed" }) });
+  it("publishes the last gated commit with a note, not a failed attempt, when the gate stays red after the review's fixes", async () => {
+    const run = host([0, 0], {
+      localReview: async () => ({ status: "failed", head: "gated-before-the-red-fixes", reason: "the gate stayed red after round 2's fixes" }),
+    });
 
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
-    assert.equal(result.outcome, "gate failed");
-    assert.equal(result.detail, "checkpoint 3");
-    assert.equal(result.prUrl, undefined);
-    assert.deepEqual(run.pushed, []);
+    assert.equal(result.outcome, "published");
+    assert.notEqual(result.outcome, "gate failed");
+    assert.ok(run.scanned.includes("gated-before-the-red-fixes"), run.scanned.join(","));
   });
 
   it("rejects with UncountedStopError, publishing and recording nothing, when a usage-limit stop ends the review", async () => {

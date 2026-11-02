@@ -1370,7 +1370,7 @@ async function buildMarkedIssue(
 
     // The pre-push review's rounds, on the host (lib/host-review.mts), on the commit checkpoint 2 passed on. A round that fixes
     // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage-limit stop
-    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, publishes with a note.
+    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note.
     let reviewNote = "";
     const review = await host.localReview({
       sandbox,
@@ -1382,7 +1382,6 @@ async function buildMarkedIssue(
       addCommits: (made) => void commits.push(...made),
       limits: host.limits,
     });
-    if (review.status === "gate failed") return unpublished("gate failed", "checkpoint 3");
     if (review.status === "failed") {
       console.error(`  ⚠ #${issue.number}: the local review failed (${terminalText(review.reason)}), publishing without a recorded review.`);
       // The unfinished review's gated commit is published, not checkpoint 2's: earlier rounds' fixes passed checkpoint 3.

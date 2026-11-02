@@ -1162,7 +1162,7 @@ describe("runHostReview's rounds", () => {
     assert.equal(run.fixerPrompts.length, 1);
   });
 
-  it("(a gate that stays red after the fixes) ends as a gate failure and records nothing", async () => {
+  it("(a gate that stays red after the fixes) ends as failed at the last gated commit, which is published, and records nothing", async () => {
     const run = fake({
       answers: only("Edge cases", [raw()]),
       fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
@@ -1171,9 +1171,26 @@ describe("runHostReview's rounds", () => {
 
     const result = await runHostReview(run.host, input(run.startHead));
 
-    assert.deepEqual(result, { status: "gate failed" });
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, run.startHead, "no round passed the gate yet: the commit the review started on");
+    assert.match(result.status === "failed" ? result.reason : "", /gate stayed red after round 1's fixes/);
     assert.equal(run.records.length, 0);
     assert.equal(run.rounds(), 1);
+  });
+
+  it("(a gate that goes red in round 2) keeps the commit round 1's fixes passed the gate on", async () => {
+    const run = fake({
+      answers: (round, who) => (who.lens === "Edge cases" && round <= 2 ? [raw()] : []),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+      gates: [hex(2), undefined],
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, hex(2));
+    assert.match(result.status === "failed" ? result.reason : "", /after round 2's fixes/);
+    assert.equal(run.records.length, 0);
   });
 
   it("records what the last round read, as the reviewer agent that read it", async () => {
@@ -1439,6 +1456,26 @@ describe("runHostReview's stops and failures", () => {
 
     const before = run.reviewerRuns.map((found) => found.lens);
     assert.equal(before.at(-1), "Security", "the stop ends the round: no reviewer runs after it");
+    assert.equal(settled, CODE_REVIEWERS.indexOf("Security"));
+    assert.equal(run.records.length, 0);
+    assert.equal(run.fixerPrompts.length, 0);
+  });
+
+  it("ends as failed at the first reviewer that fails, starting no later reviewer of the round", async () => {
+    let settled = 0;
+    const run = fake({
+      answers: (_round, who) => {
+        if (who.lens === "Security") return new Error("the sandbox said no");
+        settled++;
+        return [];
+      },
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.match(result.status === "failed" ? result.reason : "", /Security reviewer/);
+    assert.equal(run.reviewerRuns.map((found) => found.lens).at(-1), "Security", "no reviewer runs after the one that failed");
     assert.equal(settled, CODE_REVIEWERS.indexOf("Security"));
     assert.equal(run.records.length, 0);
     assert.equal(run.fixerPrompts.length, 0);

@@ -42,7 +42,7 @@ import {
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
-import { closeWithinLimit } from "./host-limit.mts";
+import { closeAfterWork } from "./host-limit.mts";
 import { stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
@@ -492,6 +492,8 @@ export function handOffIssue(target: PassTarget): SandcastleIssue {
 // What runPass needs from outside the pass itself; tests pass a stub. The
 // live wiring sits at the bottom of this module.
 export type PassHost = {
+  // How long the close of the pass's sandbox may take, in minutes (host-limit.mts#DOCKER_CALL_LIMIT_MINUTES by default); for tests.
+  dockerCallMinutes?: number;
   // The CI checks scripts/gate.sh reproduces (lib/repo-config.mts#GATE_COVERED_CHECKS).
   gateCovered: ReadonlySet<string>;
   // branches.mts's originGit.fetch, so the sandbox's createSandbox(branch)
@@ -1263,10 +1265,13 @@ async function passOnMarkedIssue(
         console.error(`  ⚠ PR #${target.number}: commenting on the tampered worktree failed: ${error}`);
       }
     } else {
-      // A stalled sandbox may have a command still running in it, so its close can fail or throw something else; the
-      // StalledStepError that ended the work is the error to report, so that close's failure is only logged.
-      if (stalledStepOf(sandbox) === undefined) await closeWithinLimit(sandbox);
-      else await closeWithinLimit(sandbox).catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
+      // A close the host gave up on, or any close failure on a stalled sandbox (which may have a command still running), is only
+      // logged: the pull request or the StalledStepError that ended the work is what to report.
+      await closeAfterWork(sandbox, {
+        stalled: stalledStepOf(sandbox) !== undefined,
+        minutes: host.dockerCallMinutes,
+        log: (line) => console.error(`  ⚠ ${terminalText(line)}`),
+      });
     }
   }
 }

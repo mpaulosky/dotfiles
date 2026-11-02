@@ -13,7 +13,7 @@
 // fix/.
 // ---------------------------------------------------------------------------
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
 import { hostExecFileSync } from "./host-limit.mts";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { z } from "zod";

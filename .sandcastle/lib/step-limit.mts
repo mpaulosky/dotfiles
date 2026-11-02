@@ -12,6 +12,7 @@
 // other overrun, or a call the host gives up on, throws StalledStepError, and so does every exec after it.
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
+import { MAX_TIMER_MS } from "./host-limit.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { terminalText } from "./status.mts";
 
@@ -24,9 +25,6 @@ export const PROBE_LIMIT_MINUTES = 1;
 
 // Seconds `timeout` waits after TERM before it sends KILL.
 export const KILL_GRACE_SECONDS = 30;
-
-// The most a timer can wait: setTimeout fires at once for a longer delay.
-const MAX_TIMER_MS = 2 ** 31 - 1;
 
 // Seconds the host waits past the limit and the kill grace before it gives up on a call that hasn't returned.
 export const BACKSTOP_SLACK_SECONDS = 60;
@@ -105,7 +103,7 @@ export type StepLimitOptions = {
   commandMinutes?: number;
   graceSeconds?: number;
   backstopSlackSeconds?: number;
-  // How long createCheckedSandbox waits for Docker to create the sandbox.
+  // How long createCheckedSandbox waits for Docker to create the sandbox, or to close one it refuses.
   dockerCallMinutes?: number;
 };
 

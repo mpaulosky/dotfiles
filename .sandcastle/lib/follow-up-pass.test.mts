@@ -1660,6 +1660,37 @@ describe("followUpPassPhase", () => {
     assert.deepEqual(calls.handBack, []);
   });
 
+  it("keeps a finished pass's outcome when the close of its sandbox never answers, and only logs the close", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const sandbox = sandboxFake({ followUpJson: "[]" });
+    (sandbox.sandbox as unknown as { close: () => Promise<never> }).close = () => new Promise<never>(() => undefined);
+    const { passHost } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+    passHost.dockerCallMinutes = 0.001;
+
+    const outcome = await runPass(passTarget(), issue, BASE, passHost);
+
+    assert.equal(outcome.kind, "passed");
+    assert.ok(logged.some((line) => /closing the sandbox didn't finish within 0\.001 minutes/.test(line)), logged.join("\n"));
+  });
+
+  it("logs a stalled pass's hung close and surfaces the stall that ended the work", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    const { passHost } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.dockerCallMinutes = 0.001;
+    passHost.createSandbox = async () => {
+      const stalled = stalledSandbox();
+      (stalled as unknown as { close: () => Promise<never> }).close = () => new Promise<never>(() => undefined);
+      return stalled;
+    };
+    const stalls = new IntakeStopReport();
+
+    await followUpPassPhase([passTarget()], [issue], BASE, passHost, new OutcomeReport(), stalls, new Set());
+
+    assert.equal(stalls.items().length, 1);
+    assert.equal(stalls.items()[0]?.reason, STALL_STOP_REASON);
+  });
+
   it("records into the run-wide intakeStopReport by default, which is what ends the run red", async () => {
     const { passHost } = passHostFake({ threads: [botThread()], containsBase: true });
     passHost.createSandbox = async () => stalledSandbox();

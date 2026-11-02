@@ -2,7 +2,7 @@
 // from a single sandbox, so every role and the gate share the same worktree.
 // Nothing is merged locally: every change reaches main through a reviewed PR.
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
@@ -33,7 +33,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
-import { closeWithinLimit, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
+import { closeAfterWork, closeWithinLimit, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
 import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
@@ -286,6 +286,8 @@ type DeveloperRole = "architect" | "tester" | "backend" | "ui";
 
 // What buildIssue needs from outside the pipeline; tests pass stubs.
 export type BuildHost = {
+  // How long the close of the build's sandbox may take, in minutes (host-limit.mts#DOCKER_CALL_LIMIT_MINUTES by default); for tests.
+  dockerCallMinutes?: number;
   createSandbox(branch: string): Promise<sandcastle.Sandbox>;
   // The commits on the branch that `base` doesn't have, counted by ref.
   commitsAhead(branch: string, base: string): number;
@@ -496,6 +498,9 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // every later command. The probe, and a limit the repo set badly, fail like
 // the identity step: a rejection or a refusal goes through the same worktree
 // check and close. `stepLimits` is for tests.
+//
+// The create runs under withinDockerLimit (stepLimits.dockerCallMinutes): a create Docker never answers is a StalledStepError, and a
+// sandbox it makes too late is closed. The close after a refusal is bounded the same way.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
@@ -1320,10 +1325,13 @@ async function buildMarkedIssue(
       console.error(`  ✗ #${issue.number}: left ${sandbox.worktreePath} and its sandbox in place: ${terminalText(problems.join("; "))}`);
       host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
     } else {
-      // A stalled sandbox may have a command still running in it, so its close can fail or throw something else; the
-      // StalledStepError that ended the work is the error to report, so that close's failure is only logged.
-      if (stalledStepOf(sandbox) === undefined) await closeWithinLimit(sandbox);
-      else await closeWithinLimit(sandbox).catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
+      // A close the host gave up on, or any close failure on a stalled sandbox (which may have a command still running), is only
+      // logged: the pull request or the StalledStepError that ended the work is what to report.
+      await closeAfterWork(sandbox, {
+        stalled: stalledStepOf(sandbox) !== undefined,
+        minutes: host.dockerCallMinutes,
+        log: (line) => console.error(`  ⚠ ${terminalText(line)}`),
+      });
     }
   }
 }

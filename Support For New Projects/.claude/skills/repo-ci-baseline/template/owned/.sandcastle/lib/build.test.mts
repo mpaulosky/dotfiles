@@ -408,6 +408,38 @@ function host(
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+describe("buildIssue when Docker never answers the close", () => {
+  // The host's sandbox, with a close that never answers and a 0.001-minute close limit.
+  function hungClose(options: Parameters<typeof host>[1] = {}) {
+    const hosted = host([0, 0], options);
+    hosted.buildHost.dockerCallMinutes = 0.001;
+    const createSandbox = hosted.buildHost.createSandbox;
+    hosted.buildHost.createSandbox = async (sandboxBranch) => {
+      const raw = await createSandbox(sandboxBranch);
+      return { ...raw, close: () => new Promise<never>(() => undefined) } as typeof raw;
+    };
+    return hosted;
+  }
+
+  it("keeps the published pull request: the hung close is only logged", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const { buildHost } = hungClose();
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome === "not published", false);
+    assert.ok(logged.some((line) => /closing the sandbox didn't finish within 0\.001 minutes/.test(line)), logged.join("\n"));
+  });
+
+  it("keeps the error that ended the work when the close then hangs", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    const hosted = hungClose({ failing: ["tester"], failWith: { tester: new UncountedStopError("usage limit") } });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, hosted.buildHost), UncountedStopError);
+  });
+});
+
 describe("buildIssue", () => {
   it("runs the tester, the backend developer, checkpoint 1, the reviewer and checkpoint 2 before publishing", async () => {
     const { steps, comments, buildHost } = host([0, 0]);

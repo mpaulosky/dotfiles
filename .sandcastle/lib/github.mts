@@ -4,7 +4,7 @@
 // repository itself (--repo, or repos/<owner>/<name> for gh api) rather than
 // working it out from the git remote of wherever it runs.
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
 import { hostExecFileSync } from "./host-limit.mts";
 import { endOf } from "./checkpoint.mts";
 import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";

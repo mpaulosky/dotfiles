@@ -15,7 +15,7 @@
 // didn't approve, never reaches it.
 // ---------------------------------------------------------------------------
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
 import { hostExecFileSync } from "./host-limit.mts";
 import { isIssueBranch } from "./branches.mts";
 import { BUILDING_LABEL } from "./config.mts";

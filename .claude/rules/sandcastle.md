@@ -45,12 +45,8 @@ files change.
   one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call; never default a `run` parameter to a bare `execFileSync`
   (`lib/host-limit.test.mts` scans for it). Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
   (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed. The call itself can't be cancelled,
-  so a container Docker never answered for may stay running until a person removes it.
-- **Give the host's own waits a limit.** Every `gh` and `git` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
-  one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call; never default a `run` parameter to a bare `execFileSync`
-  (`lib/host-limit.test.mts` scans for it). Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
-  (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed. The call itself can't be cancelled,
-  so a container Docker never answered for may stay running until a person removes it.
+  so a container Docker never answered for may stay running until a person removes it. A close the host gave up on, in a build's or a pass's `finally`, is only logged
+  (`closeAfterWork`), so it never discards the pull request or the error that ended the work. Role runs through `sandcastle.run()` rely on the role's own `timeoutMinutes`.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

@@ -3,7 +3,7 @@
 // that intake and PR follow-up share (lib/github.mts#handBack). See "Giving up
 // and telling the human" in Blazor-Server's docs/plans/sandcastle-workflow.md.
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
 import { hostExecFileSync } from "./host-limit.mts";
 import { BUILD_FAILED_MARKER, BUILD_FAILURE_CAP, LOCAL_QUEUE_LABEL, QUEUE_LABEL } from "./config.mts";
 import { commentOnIssue, handBack, replaceIssueLabel, repoName } from "./github.mts";

@@ -1644,6 +1644,23 @@ describe("followUpPassPhase", () => {
     assert.equal(runEnding(undefined, added).kind, "stalled");
   });
 
+  it("skips a stalled PR through the run-wide default set too, which is what main.mts uses", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async (branch) => {
+      calls.createSandbox.push(branch);
+      return stalledSandbox();
+    };
+    const stalls = new IntakeStopReport();
+    // A number no other test uses: the default set lasts as long as the test process.
+    const target = passTarget({ number: 9001, id: "PR_9001" });
+
+    await followUpPassPhase([target], [issue], BASE, passHost, new OutcomeReport(), stalls);
+    const second = await followUpPassPhase([target], [issue], BASE, passHost, new OutcomeReport(), stalls);
+
+    assert.equal(calls.createSandbox.length, 1);
+    assert.equal(second[0]?.kind, "skipped");
+  });
+
   it("does not pass a PR again in the same run once its pass stalled, so a later round doesn't repeat the stall", async () => {
     const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
     passHost.createSandbox = async (branch) => {

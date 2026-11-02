@@ -1293,11 +1293,15 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
   return failedWrites;
 }
 
+// The PRs whose pass stalled in this run: a stalled sandbox costs a whole step limit, so the run's later rounds don't pass
+// the same PR again (the next run does). A test passes its own set.
+const runStalledPrs = new Set<number>();
+
 // main.mts's pass phase: fetches every target's branch serially first (a
 // failed fetch skips that PR for the round, as prepareBranches'
 // lib/branches.mts#fetchMain-style fetches do), then runs runPass for each
 // PR whose issue is in `issues` (a hand-off PR needs none) with Promise.allSettled, logging each
-// outcome. A rejection is logged and the PR is swept again next round. Once
+// outcome. A rejection is logged and the PR is swept again next round (a stalled one, the next run). Once
 // every pass has settled, the first UncountedStopError among them (a usage
 // or time-budget stop from the follow-up role or the gate-fixer) is
 // rethrown, so main.mts's catch ends the run cleanly rather than the round
@@ -1307,10 +1311,6 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
 // `report` first (passOutcomeEntry, or "stopped" for a stop), so a stop
 // doesn't lose the round's rows. Returns one outcome per target, in order; a
 // PR that wasn't passed on is "skipped".
-// The PRs whose pass stalled in this run: a stalled sandbox costs a whole step limit, so the run's later rounds don't pass
-// the same PR again (the next run does). A test passes its own set.
-const runStalledPrs = new Set<number>();
-
 export async function followUpPassPhase(
   targets: readonly PassTarget[],
   issues: readonly SandcastleIssue[],
@@ -1360,11 +1360,11 @@ export async function followUpPassPhase(
     const pr = { kind: "pr", number: target.number } as const;
     const stall = stallStop(result.reason);
     if (stall !== undefined) {
-      // One PR's stalled sandbox must not starve the queue: this pass failed like any other, and the sweep finds the
-      // PR again. The stall is recorded, so the run still ends red with the step named.
+      // One PR's stalled sandbox must not starve the queue: this pass failed like any other, but the run's later rounds skip
+      // the PR (stalledPrs), and the next run's sweep finds it again. The stall is recorded, so the run still ends red with the step named.
       stalls.record(stall);
       stalledPrs.add(target.number);
-      host.log(`  ⏹ PR #${target.number}: the follow-up pass stalled, so it's swept again next round: ${stall.firstError}`);
+      host.log(`  ⏹ PR #${target.number}: the follow-up pass stalled, so it's passed on until the next run: ${stall.firstError}`);
       report.record({ ...pr, outcome: "stopped", detail: stall.firstError });
     } else if (result.reason instanceof UncountedStopError) {
       stop ??= result.reason;

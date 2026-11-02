@@ -340,8 +340,8 @@ try {
     // -----------------------------------------------------------------------
     // See lib/follow-up-pass.mts#followUpPassPhase: each pass runs in its own
     // sandbox, in parallel, and the build phase starts after them. A failed
-    // pass, a stalled one included, is logged and the sweep finds its PR again next round;
-    // a stall is also recorded, so the run still ends red.
+    // pass is logged and the sweep finds its PR again next round. A stalled one is skipped for the rest
+    // of the run, and recorded, so the run still ends red.
     if (passes.length > 0) {
       const passBase = fetchMain();
       await followUpPassPhase(passes, loadQueue(), passBase);
@@ -510,7 +510,9 @@ try {
   console.log(
     ending.kind !== "stalled"
       ? `\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`
-      : `\n⏹ Stopping the run, which ends red: ${error.message}. Nothing more starts; the next run meets the same stall until a person looks.`,
+      : stall !== undefined
+        ? `\n⏹ Stopping the run, which ends red: ${error.message}. Nothing more starts; the next run meets the same stall until a person looks.`
+        : `\n⏹ Stopping the run: ${error.message}. Nothing more starts. It ends red because a sandbox step stalled earlier (${ending.reason}).`,
   );
 } finally {
   console.log("\nToken usage by role:");

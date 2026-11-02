@@ -36,7 +36,7 @@ files change.
   in a sandbox through that `exec`, and keep a role run on its own `timeoutMinutes`. The gate that runs over is a red gate (exit 124, its name in the output); a command other than the gate that runs over,
   or one the host gives up on, stalls the sandbox: it throws `StalledStepError` naming it, as does every later `exec` and every role start
   (`runRoleInSandbox`), never an exit code a caller could read as a git answer. `main.mts` ends the run red on one (`stallStop`).
-  A follow-up pass that stalls is only that PR's failed pass: the phase records the stall and carries on, so one stalled PR cannot stop the run.
+  A follow-up pass that stalls is only that PR's failed pass: the phase records the stall and carries on, and later rounds skip that PR, so one stalled PR cannot stop the run.
   `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils on this machine and skips those tests without it;
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an

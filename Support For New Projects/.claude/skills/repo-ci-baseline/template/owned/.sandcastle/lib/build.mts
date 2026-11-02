@@ -9,7 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { isRoleTimeout, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
-import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, type Checkpoint } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, withoutRunnerCommands, type Checkpoint } from "./checkpoint.mts";
 import {
   BASE_BRANCH,
   BUILD_FAILED_MARKER,
@@ -921,7 +921,9 @@ const LOGGED_LINE_LIMIT = 500;
 // characters can't hide a token that is rebuilt afterwards), the whole text goes
 // through `publicError`, and each line is cleaned again, cut to
 // LOGGED_LINE_LIMIT characters (after the check, so the cut can't split a token
-// it has passed) and given a prefix no workflow command can start with. A final
+// it has passed) and given a prefix no workflow command can start with, and any
+// `##[` is changed so the runner's legacy command form can't appear in the
+// middle of a line (see withoutRunnerCommands). A final
 // newline is dropped even when `publicError` doesn't trim, so the caller's line
 // count isn't spent on a blank line.
 // terminalText folds runs of whitespace into one space and trims each line, so
@@ -930,7 +932,7 @@ export function logSafeGateOutput(text: string, publicError: (text: string) => s
   const cleaned = text.replace(/\n$/, "").split("\n").map((line) => terminalText(line)).join("\n");
   return publicError(cleaned)
     .split("\n")
-    .map((line) => `    | ${[...terminalText(line)].slice(0, LOGGED_LINE_LIMIT).join("")}`)
+    .map((line) => `    | ${[...withoutRunnerCommands(terminalText(line))].slice(0, LOGGED_LINE_LIMIT).join("")}`)
     .join("\n");
 }
 

@@ -253,6 +253,13 @@ export async function runCheckpoint(
   return result.passed || firstOutput === result.output ? result : { ...result, firstOutput };
 }
 
+// `text` without the `##[` that GitHub Actions' runner reads as a command
+// anywhere in a log line, not only at its start (`##[add-mask]` would hide the
+// lines after it). It is changed to `## [`, which no command starts with.
+export function withoutRunnerCommands(text: string): string {
+  return text.replaceAll("##[", "## [");
+}
+
 // Why the sandbox can't run a fixer, or undefined when `git rev-parse HEAD`
 // answers in it. A probe that throws counts as the sandbox being down, except a
 // stall (an UncountedStopError): that ends the run, and recording it as a
@@ -276,7 +283,7 @@ export async function sandboxDown(
     } catch {
       text = "an error that can't be printed";
     }
-    const reason = scrub(text).replace(/[^\x20-\x7e]/g, " ").slice(0, 200).trim();
+    const reason = withoutRunnerCommands(scrub(text).replace(/[^\x20-\x7e]/g, " ")).slice(0, 200).trim();
     return `The sandbox can't run a command (${reason}), so no gate-fixer was run.`;
   }
 }

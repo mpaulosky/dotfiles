@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_FIXER_ATTEMPTS } from "./config.mts";
-import { changedFiles, gateFailureComment, gateScriptChange, runCheckpoint, runGate, sandboxDown, tail, type Checkpoint, type GateRun } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, gateScriptChange, runCheckpoint, runGate, sandboxDown, tail, withoutRunnerCommands, type Checkpoint, type GateRun } from "./checkpoint.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
 import { StalledStepError } from "./errors.mts";
 import { limitSandboxExec } from "./step-limit.mts";
@@ -499,6 +499,15 @@ describe("tail", () => {
   });
 });
 
+describe("withoutRunnerCommands", () => {
+  it("changes every ##[ so the runner's legacy command form can't appear, and leaves other text alone", () => {
+    assert.equal(withoutRunnerCommands("##[add-mask]x and a ##[error]y"), "## [add-mask]x and a ## [error]y");
+    assert.equal(withoutRunnerCommands("## [already safe] # [ ##"), "## [already safe] # [ ##");
+    assert.equal(withoutRunnerCommands("###[x"), "### [x");
+    assert.equal(withoutRunnerCommands(""), "");
+  });
+});
+
 describe("sandboxDown", () => {
   const exec = (result: { stdout: string; exitCode: number } | Error) =>
     ({ exec: async () => (result instanceof Error ? Promise.reject(result) : { stderr: "", ...result }) }) as unknown as Pick<Sandbox, "exec">;
@@ -520,6 +529,13 @@ describe("sandboxDown", () => {
 
     assert.match(reason, /^The sandbox can't run a command \(Error: stalled \[31m x+\), so no gate-fixer was run\.$/);
     assert.ok(reason.length < 300, String(reason.length));
+  });
+
+  it("changes a ##[ in the error text, including one a hidden character was splitting", async () => {
+    const reason = (await sandboxDown(exec(new Error("failed ##[add-mask]x ##\u200b[error]y")))) ?? "";
+
+    assert.ok(!reason.includes("##["), reason);
+    assert.ok(reason.includes("## [add-mask]x"), reason);
   });
 
   it("keeps exactly 200 characters of the error text", async () => {

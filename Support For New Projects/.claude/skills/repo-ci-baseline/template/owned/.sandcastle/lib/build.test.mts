@@ -793,6 +793,13 @@ describe("buildIssue", () => {
     assert.equal(logSafeGateOutput(`${"y".repeat(499)}\u{1F600}z`, (text) => text), `    | ${"y".repeat(499)}\u{1F600}`);
   });
 
+  it("changes a ##[ so the runner's legacy command form can't appear anywhere in a logged line", () => {
+    const logged = logSafeGateOutput("##[add-mask]checkpoint\nsee ##[error]x\n##\u200b[group]y", (value) => value);
+
+    assert.ok(!logged.includes("##["), logged);
+    assert.equal(logged, "    | ## [add-mask]checkpoint\n    | see ## [error]x\n    | ## [group]y");
+  });
+
   it("cleans each line before the secret check, so a hidden character can't hide a token that is rebuilt afterwards", () => {
     const publicError = (text: string) => publicErrorText(text, (cleaned) => cleaned.includes("ghp_abc"));
 

@@ -354,6 +354,15 @@ describe("reviewFixPrompt", () => {
     assert.match(prompt, /fix\(<scope>\): <Summary>|fix\(/);
   });
 
+  it("has the fixer check its own fix: boundary tests, a mutation check, the edge-case list and a redesign after two rounds", () => {
+    const prompt = reviewFixPrompt(fixArgs());
+
+    assert.match(prompt, /n-1, n and n\+1 boundary tests/);
+    assert.match(prompt, /removing or shifting/);
+    assert.match(prompt, /what falls outside it/);
+    assert.match(prompt, /replace its mechanism/);
+  });
+
   it("has an Advisory prose fix committed as docs", () => {
     assert.match(reviewFixPrompt(fixArgs()), /docs\(/);
   });

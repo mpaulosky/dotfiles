@@ -10,6 +10,7 @@ const agent = readFileSync(new URL("../../.claude/agents/pre-push-reviewer.md", 
 const skill = readFileSync(new URL("../../.claude/skills/pre-push-review/SKILL.md", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../../.github/workflows/claude-review.yml", import.meta.url), "utf8");
 const bar = readFileSync(new URL("../../.claude/skills/pre-push-review/review-bar.md", import.meta.url), "utf8");
+const lenses = readFileSync(new URL("../../.claude/skills/pre-push-review/lenses.md", import.meta.url), "utf8");
 const hardening = readFileSync(new URL("../../.claude/skills/hardening-review/SKILL.md", import.meta.url), "utf8");
 
 describe("the pre-push-review skill's reviewers", () => {
@@ -603,5 +604,26 @@ describe("the skills' reading of the .security record", () => {
 
     assert.match(text, /Do not read `\.security\/`/);
     assert.match(text, /fixed entry/);
+  });
+});
+
+describe("the pre-push-review skill's fewer-rounds rules", () => {
+  it("has lenses.md carry the edge-case checklist and the Tests lens ask for n-1, n and n+1 tests", () => {
+    assert.match(lenses, /^## Edge-case checklist$/m);
+    assert.match(lenses, /what falls outside it/);
+    assert.match(lenses, /line endings/);
+    assert.match(lenses, /surrogate/);
+    assert.match(lenses, /n-1, n and n\+1/);
+  });
+
+  it("has the fixer check its fix before committing, and replace a function that two rounds in a row fixed", () => {
+    assert.match(skill, /Check the fix before committing it/);
+    assert.match(skill, /mutation check/);
+    assert.match(skill, /Edge-case checklist/);
+    assert.match(skill, /in the fixes of two rounds in a row, stop patching it/);
+  });
+
+  it("gives a later round's reviewers the whole function around each changed line", () => {
+    assert.match(skill.replace(/\s+/g, " "), /the whole function around each changed line and its callers/);
   });
 });

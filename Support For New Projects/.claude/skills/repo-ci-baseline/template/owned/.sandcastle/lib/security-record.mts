@@ -16,7 +16,7 @@
 // The writers never throw for an environment problem (no main worktree, a symlinked directory, a directory git doesn't
 // ignore, a write error): the ledger is what the gate checks, so a record that can't be written is a warning for the person,
 // not a failed review.
-import { execFileSync } from "node:child_process";
+import { hostExecFileSync } from "./host-limit.mts";
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -66,7 +66,7 @@ function git(cwd: string, args: readonly string[]): string {
   for (const name of hookGitVariables) {
     delete env[name];
   }
-  return execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return hostExecFileSync("git", args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
 // The main worktree's `.security`, found from any worktree of the clone, or undefined when there's no main worktree to

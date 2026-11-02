@@ -8,6 +8,7 @@ import {
   BUILDING_LABEL_MAX_AGE_MS,
   BudgetError,
   DEFAULT_BUDGET_MINUTES,
+  FIXED_ROLE_AGENTS,
   FOLLOW_UP_LABEL,
   FOLLOW_UP_LABEL_DEFINITION,
   GATE_FIXER_ATTEMPTS,
@@ -19,6 +20,9 @@ import {
   QUEUE_LABEL,
   QUEUE_SCOPE_USAGE,
   QueueScopeError,
+  REVIEW_FIX_ROUNDS,
+  MAX_REVIEWERS_PER_ROUND,
+  REVIEWER_ATTEMPTS,
   ROLES,
   RunModeError,
   SANDCASTLE_LABELS,
@@ -72,12 +76,31 @@ describe("review-prompt.md", () => {
   });
 });
 
+describe("the host-side review's fixed role", () => {
+  it("is the pre-push-review skill's reviewer: sonnet at high effort, once per run, and in no repo's ROLES", () => {
+    const agent = FIXED_ROLE_AGENTS["pre-push-reviewer"];
+
+    assert.equal(agent.model, "sonnet");
+    assert.equal(agent.effort, "high");
+    assert.equal(agent.maxIterations, 1);
+    assert.ok(agent.timeoutMinutes > 0);
+    assert.ok(!(ROLES as readonly string[]).includes("pre-push-reviewer"), "a repo's ROLE_AGENTS would have to name it");
+  });
+
+  it("stops fixing after 3 rounds and asks each reviewer for a valid answer twice", () => {
+    assert.equal(REVIEW_FIX_ROUNDS, 3);
+    assert.equal(REVIEWER_ATTEMPTS, 2);
+  });
+});
+
 describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   // A startup clears a sandcastle:building label older than this as a crashed
   // run's, so it must outlast the longest build a live run can make, or a
   // second run would clear a live build's label and build the issue too.
   // BUILD_ROLES, each once, plus the gate-fixer's attempts at both
-  // checkpoints. build.test.mts checks buildIssue runs no other role.
+  // checkpoints, plus the host-side review (lib/host-review.mts): every round's reviewers, each run up to REVIEWER_ATTEMPTS times (REVIEW_FIX_ROUNDS rounds that fix
+  // something, then one that only reviews), each fixing round's backend run, and the gate with its gate-fixer attempts after it.
+  // build.test.mts checks buildIssue runs no other role.
   it("outlasts the longest build the role timeouts allow, with twenty minutes for sandboxes and publishing", () => {
     const checkpoints = 2;
     // The UI developer counts even in a repo that hasn't opted in, at the backend developer's budget (the Seed's example
@@ -86,13 +109,18 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
     // Checkpoint 1 runs the gate, then once more after each gate-fixer attempt. Checkpoint 2 runs it on the merged tree first,
     // and when that is red goes through the same loop as checkpoint 1: MAX_GATE_RUNS runs in all, each up to its step limit.
     const gateRuns = MAX_GATE_RUNS;
+    const gateFixing = ROLE_AGENTS["gate-fixer"].timeoutMinutes * GATE_FIXER_ATTEMPTS;
+    const review =
+      (REVIEW_FIX_ROUNDS + 1) * MAX_REVIEWERS_PER_ROUND * REVIEWER_ATTEMPTS * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes +
+      REVIEW_FIX_ROUNDS * (ROLE_AGENTS.backend.timeoutMinutes + gateFixing + MAX_GATE_RUNS * GATE_LIMIT_MINUTES);
     const minutes =
       BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) +
-      checkpoints * GATE_FIXER_ATTEMPTS * ROLE_AGENTS["gate-fixer"].timeoutMinutes +
+      checkpoints * gateFixing +
       gateRuns * GATE_LIMIT_MINUTES +
       // A command other than the gate that runs over its limit stalls the sandbox: it throws, as does every later exec and
       // every role start (lib/step-limit.mts, lib/agents.mts), so one more limit is the most any build adds from them.
-      COMMAND_LIMIT_MINUTES;
+      COMMAND_LIMIT_MINUTES +
+      review;
     const spare = 20;
 
     assert.ok(

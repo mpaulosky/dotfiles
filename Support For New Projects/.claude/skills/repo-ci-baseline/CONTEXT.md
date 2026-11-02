@@ -46,6 +46,12 @@ The review's local, git-ignored `.security/` folder in the main checkout: one fi
 and read by both reviews by id, lens and path only. Its README is an Owned file; its entries are never published.
 _Avoid_: Security log, findings database
 
+**Host-side review**:
+The pre-push review's rounds as the Sandcastle host runs them on a branch it built, after the reviewer role and a passing checkpoint 2. The host starts the skill's own reviewers,
+the backend role fixes each fixable finding behind a failing test, and only the host records the ledger; no agent gets a shell, a token or `.git/review`.
+Described in [references/pre-push-review.md](references/pre-push-review.md#sandcastle-runs-the-review-on-the-host).
+_Avoid_: Sandbox review, reviewer role (the sandbox's own, lighter review)
+
 **Sandcastle section**:
 The Template's files for a repo that runs Sandcastle: `.sandcastle/`, its workflow and Seed skills list, the session guidance
 `.claude/rules/sandcastle-hand-off.md`, and the local review's skills, agent and `scripts/review.sh`.

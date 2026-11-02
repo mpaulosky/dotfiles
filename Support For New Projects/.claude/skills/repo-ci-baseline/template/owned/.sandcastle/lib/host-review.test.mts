@@ -114,7 +114,7 @@ describe("the host's reviewers against /pre-push-review's own", () => {
     assert.deepEqual(names(reviewersFor(["src/app.ts"], lenses)), CODE_REVIEWERS.slice(0, 1).concat(["Edge cases", "Races and caches", "Error contract", "Security", "Tests", "Docs match the code", "Repo conventions"]));
   });
 
-  it("gives a diff of only Markdown the Docs match the code and Repo conventions lenses, as the skill says", () => {
+  it("gives a diff of only Markdown outside .claude/ and .sandcastle/ the Docs match the code and Repo conventions lenses, as the skill says", () => {
     assert.deepEqual(names(reviewersFor(["README.md", "docs/adr/0001-x.md"], lenses)), [BAR_LENS, "Docs match the code", "Repo conventions"]);
   });
 
@@ -1710,7 +1710,7 @@ describe("runHostReview's stops and failures", () => {
     assert.equal(result.status, "recorded", JSON.stringify(result));
   });
 
-  it("keeps reviewing while the clock is one millisecond short of the cap, and stops at the cap", async () => {
+  it("keeps reviewing while the clock is one millisecond short of the cap", async () => {
     let time = 0;
     const run = fake();
     run.host.wallClockMs = 1000;

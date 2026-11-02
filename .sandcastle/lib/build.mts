@@ -803,10 +803,12 @@ function shellWord(value: string): string {
 // (checkpoint 2, on the reviewed commit when the merge conflicts or the merged
 // tree is red) before the branch is pushed and gets a pull request
 // that closes its issue. Returns the PR's URL, or undefined when a developer
-// run failed, the branch holds nothing to publish or a checkpoint's gate
-// stayed red. Between checkpoint 2 and the push the host runs the pre-push
+// run failed, the branch holds nothing to publish or checkpoint 1's or 2's
+// gate stayed red. Between checkpoint 2 and the push the host runs the pre-push
 // review's rounds; a round that fixes something is followed by checkpoint 3,
-// and the last commit a checkpoint passed on is the one pushed. `publishFailed` is true only when the branch passed its
+// and the last commit a checkpoint passed on is the one pushed (a red
+// checkpoint 3 doesn't stop the build: the review ends as failed and that
+// commit is published). `publishFailed` is true only when the branch passed its
 // checkpoints but publishing it still failed, so the caller's round summary can
 // tell that apart from a round that built nothing.
 //

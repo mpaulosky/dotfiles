@@ -43,6 +43,8 @@ const under = (folder: string) => (path: string) => path.startsWith(`${folder}/`
 // For each lens lenses.md names, the "Applies to" text the table holds and the paths the host reviews it for. Where the
 // table speaks of content ("shared state", "async code") the host is generous: reviewing too much is the safe side.
 // A lens in a table with no entry here (a repo's own) runs for every changed file.
+// One deliberate difference from the skill, which gives a Markdown-only diff just the Docs and Repo conventions reviewers: the Security lens also
+// reads Markdown under .claude/ and .sandcastle/ here, since an unattended branch could use it to widen what an agent may do.
 export const LENS_APPLIES: Record<string, { appliesTo: string; matches(path: string): boolean }> = {
   "Edge cases": { appliesTo: "Any code", matches: isCode },
   "Races and caches": { appliesTo: "Shared state, caches, async code, Sandcastle runs", matches: isCode },

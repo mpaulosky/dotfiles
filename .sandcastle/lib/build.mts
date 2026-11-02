@@ -33,6 +33,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
+import { limitSandboxExec } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
 // A conventional-commit prefix as scripts/check-pr-title.sh accepts it: a type,
@@ -524,7 +525,8 @@ export async function createCheckedSandbox(
     await sandbox.close().catch(() => undefined);
     throw error;
   }
-  return sandbox;
+  // Every later exec (the gate, the merge of main, the reads of git state) runs under a limit, so a stalled one ends the step.
+  return limitSandboxExec(sandbox);
 }
 
 // Whether origin's main is `commit` now, by its answer to git ls-remote. Only

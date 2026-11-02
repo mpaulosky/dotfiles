@@ -3178,3 +3178,32 @@ describe("PR_BODY_RULES against what the host refuses in the reviewer's PR body"
     );
   });
 });
+
+describe("createCheckedSandbox's step limits", () => {
+  // A sandbox that records the commands exec is given, and answers a killed gate as `timeout` does.
+  function recordingSandbox(exitCode: number) {
+    const commands: string[] = [];
+    const sandbox = {
+      worktreePath: "/nonexistent/worktree",
+      close: async () => undefined,
+      exec: async (command: string) => {
+        commands.push(command);
+        return { stdout: "", stderr: "", exitCode: command.includes("git config --global") ? 0 : exitCode };
+      },
+    } as unknown as Awaited<ReturnType<typeof createCheckedSandbox>>;
+    return { sandbox, commands };
+  }
+
+  it("runs the sandbox's commands under a limit, and fails a gate that was killed", async () => {
+    const { sandbox, commands } = recordingSandbox(124);
+    const identity = { name: "Host Person", email: "host@example.com" };
+    const checked = await createCheckedSandbox("feature", async () => sandbox, () => identity, () => []);
+
+    const result = await checked.exec("scripts/gate.sh 2>&1");
+
+    const last = commands.at(-1) ?? "";
+    assert.ok(last.startsWith("timeout -k 30s 10m sh -c 'scripts/gate.sh"), last);
+    assert.equal(result.exitCode, 124);
+    assert.match(result.stdout, /The step "the gate" ran over its 10-minute limit and was killed/);
+  });
+});

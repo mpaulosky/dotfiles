@@ -31,6 +31,9 @@ files change.
   defaults (`publish` in `lib/build.mts`). The live wiring sits at the bottom of the module; tests pass stubs.
 - **Keep dependencies where they are.** `package.json` holds Sandcastle, `zod`, the type-checker and `tsx`. Reach for
   Node's standard library first, and justify any new package in the PR description.
+- **Give every sandbox command a limit.** `createCheckedSandbox` hands back a sandbox whose `exec` runs under `timeout` (`lib/step-limit.mts`):
+  10 minutes for the gate and for any other command. A stalled step ends with exit code 124 and its name in the output, so the caller's
+  non-zero handling fails closed. Run a command in a sandbox through that `exec`, and keep a role run on its own `timeoutMinutes`.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

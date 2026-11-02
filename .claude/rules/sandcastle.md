@@ -37,7 +37,9 @@ files change.
   or one the host gives up on, stalls the sandbox: it throws `StalledStepError` naming it, as does every later `exec` and every role start
   (`runRoleInSandbox`), never an exit code a caller could read as a git answer. `main.mts` ends the run red on one (`stallStop`).
   A follow-up pass that stalls is only that PR's failed pass: the phase records the stall and carries on, and later rounds skip that PR, so one stalled PR cannot stop the run.
-  `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils on this machine and skips those tests without it;
+  After a timeout the command's process group is killed, so a descendant that ignores TERM can't run beside the next step. The `timeout` probe
+  in `createCheckedSandbox` runs under a one-minute limit of its own. `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils
+  on this machine and skips those tests without it;
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.

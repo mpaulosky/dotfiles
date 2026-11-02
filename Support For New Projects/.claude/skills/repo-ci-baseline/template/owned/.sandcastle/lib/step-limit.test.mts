@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { StalledStepError } from "./errors.mts";
-import { COMMAND_LIMIT_MINUTES, KILL_GRACE_SECONDS, limitSandboxExec, limitedCommand, stalledStepOf, stepName } from "./step-limit.mts";
+import { COMMAND_LIMIT_MINUTES, KILL_GRACE_SECONDS, LIMITED_COMMAND_CLEANUP, limitSandboxExec, limitedCommand, stalledStepOf, stepName } from "./step-limit.mts";
 
 type Answer = { stdout: string; exitCode: number };
 
@@ -33,15 +36,15 @@ function clockOf(step: number) {
 
 describe("limitedCommand", () => {
   it("runs the command under timeout inside sh -c, so a redirection stays inside the limit", () => {
-    assert.equal(limitedCommand("scripts/gate.sh 2>&1", 15), `timeout -k ${KILL_GRACE_SECONDS}s 15m sh -c 'scripts/gate.sh 2>&1'`);
+    assert.equal(limitedCommand("scripts/gate.sh 2>&1", 15), `timeout -k ${KILL_GRACE_SECONDS}s 15m sh -c 'scripts/gate.sh 2>&1'${LIMITED_COMMAND_CLEANUP}`);
   });
 
   it("takes the kill grace as a parameter", () => {
-    assert.equal(limitedCommand("x", 1, 2), "timeout -k 2s 1m sh -c 'x'");
+    assert.equal(limitedCommand("x", 1, 2), `timeout -k 2s 1m sh -c 'x'${LIMITED_COMMAND_CLEANUP}`);
   });
 
   it("quotes a single quote in the command", () => {
-    assert.equal(limitedCommand("git merge -m 'a b'", 10), `timeout -k ${KILL_GRACE_SECONDS}s 10m sh -c 'git merge -m '\\''a b'\\'''`);
+    assert.equal(limitedCommand("git merge -m 'a b'", 10), `timeout -k ${KILL_GRACE_SECONDS}s 10m sh -c 'git merge -m '\\''a b'\\'''${LIMITED_COMMAND_CLEANUP}`);
   });
 });
 
@@ -79,7 +82,7 @@ describe("limitSandboxExec", () => {
 
     const result = await limited.exec("git status --porcelain 2>&1");
 
-    assert.deepEqual(calls.map((call) => call.command), [`timeout -k ${KILL_GRACE_SECONDS}s ${COMMAND_LIMIT_MINUTES}m sh -c 'git status --porcelain 2>&1'`]);
+    assert.deepEqual(calls.map((call) => call.command), [`timeout -k ${KILL_GRACE_SECONDS}s ${COMMAND_LIMIT_MINUTES}m sh -c 'git status --porcelain 2>&1'${LIMITED_COMMAND_CLEANUP}`]);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "ok");
     assert.deepEqual(lines, [
@@ -286,6 +289,38 @@ describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU 
 
     await assert.rejects(limitSandboxExec(shellSandbox(), quick).exec("trap '' TERM; sleep 60 & wait"), StalledStepError);
     assert.ok(Date.now() - started < 15_000, "the command was not killed after the grace");
+  });
+
+  it("kills a TERM-ignoring descendant that outlives a command which died on TERM, so nothing runs beside the next step", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "step-limit-"));
+    const pidFile = join(folder, "pid");
+    try {
+      // The foreground sleep dies on TERM and so does the shell, ending `timeout` at once with 124 and no KILL; the
+      // background node process ignores TERM and has its output redirected, so nothing waits on it.
+      const script = join(folder, "survivor.cjs");
+      writeFileSync(
+        script,
+        'process.on("SIGTERM", () => {});\nrequire("node:fs").writeFileSync(process.argv[2], String(process.pid));\nsetTimeout(() => {}, 60000);\n',
+      );
+      const command = `'${process.execPath}' ${script} ${pidFile} >/dev/null 2>&1 & sleep 60`;
+
+      await assert.rejects(limitSandboxExec(shellSandbox(), quick).exec(command), StalledStepError);
+
+      const pid = Number(readFileSync(pidFile, "utf8"));
+      assert.ok(pid > 1);
+      const alive = (): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      for (let waited = 0; alive() && waited < 3000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(alive(), false, "the descendant that ignores TERM was left running");
+    } finally {
+      rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it("lets a command that finishes in time return its own output", async () => {

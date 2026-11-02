@@ -33,7 +33,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
-import { type StepLimitOptions, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
+import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
 // A conventional-commit prefix as scripts/check-pr-title.sh accepts it: a type,
@@ -517,14 +517,17 @@ export async function createCheckedSandbox(
   try {
     await setGitIdentity(sandbox, hostIdentity());
     // The probe runs the form every later command takes (`timeout -k … sh -c …`), so an image whose `timeout` lacks
-    // an option, or has no `sh`, is refused here and not by every command after it.
-    const probe = await sandbox.exec(limitedCommand("true", 1));
+    // an option, or has no `sh`, is refused here and not by every command after it. It goes through its own limited
+    // sandbox with a short limit, so a Docker exec that never answers stalls it on the host's backstop (a
+    // StalledStepError, which this catch rethrows) and doesn't hold sandbox creation for good.
+    const stepPrefix = `  ${terminalText(branch)}: `;
+    const probe = await limitSandboxExec(sandbox, { prefix: stepPrefix, commandMinutes: PROBE_LIMIT_MINUTES, ...stepLimits }).exec("true");
     if (probe.exitCode !== 0) {
       throw new Error("the sandbox image has no `timeout` command (GNU coreutils), which the step limits in lib/step-limit.mts need");
     }
     // Every later exec (the gate, the merge of main, the reads of git state) runs under a limit, so a stalled one ends the step.
     // It throws on a limit the repo set badly, so it sits in the try: a throw there closes the sandbox like any other.
-    limited = limitSandboxExec(sandbox, { prefix: `  ${terminalText(branch)}: `, ...stepLimits });
+    limited = limitSandboxExec(sandbox, { prefix: stepPrefix, ...stepLimits });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // The check itself can fail (the worktree gone, git failing). Then the

@@ -1367,7 +1367,7 @@ describe("buildIssue when a step stalls the sandbox", () => {
         ...raw,
         // The fake answers the commands as the build wrote them, so the `timeout … sh -c '…'` wrapper comes off first.
         exec: async (wrapped: string, options?: unknown) => {
-          const command = (/^timeout -k \d+s [\d.]+m sh -c '(.*)'$/s.exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
+          const command = (/^timeout -k \d+s [\d.]+m sh -c '(.*)'( & p=\$!;.*)$/s.exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
           return match.test(command) ? { stdout: "", stderr: "", exitCode: 124 } : raw.exec(command, options as never);
         },
         close: closeFails ? async () => Promise.reject(new Error("docker is gone")) : raw.close,
@@ -3260,7 +3260,7 @@ describe("createCheckedSandbox's step limits", () => {
 
   // A sandbox that records the commands exec is given. Its git config commands succeed, the timeout probe succeeds when
   // `hasTimeout` and rejects when `probeRejects`, and any other command answers with `exitCode`.
-  function recordingSandbox(exitCode: number, hasTimeout = true, probeRejects = false) {
+  function recordingSandbox(exitCode: number, hasTimeout = true, probeRejects = false, probeHangs = false) {
     const commands: string[] = [];
     let closed = false;
     const sandbox = {
@@ -3270,8 +3270,10 @@ describe("createCheckedSandbox's step limits", () => {
       },
       exec: async (command: string) => {
         commands.push(command);
-        if (command === probeCommand && probeRejects) throw new Error("docker exec failed");
-        if (command === probeCommand) return { stdout: "", stderr: "", exitCode: hasTimeout ? 0 : 125 };
+        const isProbe = command.includes(" sh -c 'true' & p=$!;");
+        if (isProbe && probeRejects) throw new Error("docker exec failed");
+        if (isProbe && probeHangs) return new Promise<never>(() => undefined);
+        if (isProbe) return { stdout: "", stderr: "", exitCode: hasTimeout ? 0 : 125 };
         return { stdout: "", stderr: "", exitCode: command.includes("git config --global") ? 0 : exitCode };
       },
     } as unknown as Awaited<ReturnType<typeof createCheckedSandbox>>;
@@ -3327,6 +3329,15 @@ describe("createCheckedSandbox's step limits", () => {
     const { sandbox, wasClosed } = recordingSandbox(0, true, true);
 
     await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => []), /docker exec failed/);
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("ends a probe the sandbox never answers at the host's backstop with a StalledStepError, and closes the sandbox", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, true, false, true);
+    const quick = { log: () => undefined, commandMinutes: 0.0005, graceSeconds: 1, backstopSlackSeconds: 0 };
+
+    await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], quick), StalledStepError);
 
     assert.equal(wasClosed(), true);
   });

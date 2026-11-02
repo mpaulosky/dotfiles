@@ -3,7 +3,8 @@
 // or a git command that stalls would hold a run until the job's own cap. A stalled step is killed
 // with coreutils `timeout` inside the container, so the process ends there and not just on the host,
 // and its failure names the step. A real run once sat three hours with no log line after a role crashed.
-// `timeout` signals its own process group, and `docker exec` returns only when its output pipe closes,
+// `timeout` signals its own process group (and the wrapper kills what is left of it after a timeout, since `timeout`
+// returns as soon as its command exits), and `docker exec` returns only when its output pipe closes,
 // so a daemon that outlives the kill could still hold the host: a timer on the host's side gives up on
 // the call a little after the limit and the kill grace, and stalls the step the same way.
 //
@@ -17,6 +18,9 @@ import { terminalText } from "./status.mts";
 // How long any command other than the gate may run, in minutes. The gate's limit is per repo
 // (lib/repo-config.mts#GATE_LIMIT_MINUTES). config.test.mts sizes BUILDING_LABEL_MAX_AGE_MS from both.
 export const COMMAND_LIMIT_MINUTES = 10;
+
+// How long createCheckedSandbox's probe (`true`, which takes milliseconds) may take, in minutes.
+export const PROBE_LIMIT_MINUTES = 1;
 
 // Seconds `timeout` waits after TERM before it sends KILL.
 export const KILL_GRACE_SECONDS = 30;
@@ -70,10 +74,21 @@ export function stepName(command: string): string {
   return terminalText(Array.from(command.replace(/\s+/g, " ").trim()).slice(0, NAME_LENGTH).join(""));
 }
 
-// The command run under `timeout`. `sh -c` keeps redirections such as `2>&1` inside the limit.
+// What runs after `timeout` ends: when it timed out (124, or 137 after KILL), kill whatever is left of its process
+// group. `timeout` returns as soon as its command exits, so a descendant that ignores TERM (a background job with its
+// output redirected) outlives a command that died on TERM, and `-k` only sends KILL while the command still runs.
+// `timeout` makes itself a group leader, so the group's id is its pid. A descendant that left the group (setsid) is
+// beyond this. It is a case, not a shell `trap`, because the monitored `sh` is already gone by then.
+const CLEANUP_AFTER_TIMEOUT = "wait $p; c=$?; case $c in 124|137) kill -s KILL -- -$p 2>/dev/null;; esac; exit $c";
+
+// The command run under `timeout`. `sh -c` keeps redirections such as `2>&1` inside the limit. `timeout` runs in the
+// background so the group it leads can be cleaned up afterwards (CLEANUP_AFTER_TIMEOUT); nothing the host runs reads stdin.
 export function limitedCommand(command: string, minutes: number, graceSeconds: number = KILL_GRACE_SECONDS): string {
-  return `timeout -k ${graceSeconds}s ${minutes}m sh -c ${shellWord(command)}`;
+  return `timeout -k ${graceSeconds}s ${minutes}m sh -c ${shellWord(command)} & p=$!; ${CLEANUP_AFTER_TIMEOUT}`;
 }
+
+// The part of limitedCommand before the cleanup, for a test or a fake that unwraps it.
+export const LIMITED_COMMAND_CLEANUP = ` & p=$!; ${CLEANUP_AFTER_TIMEOUT}`;
 
 // What a test (or a repo with an unusual image) may change about the limits.
 export type StepLimitOptions = {

@@ -443,11 +443,18 @@ describe("the gate guard in a git repository", () => {
       assert.match(blank, /\(exit 128: fatal: real\)/);
     });
 
-    it("replaces control, format and line-separator characters with a space", async () => {
-      const text = "fatal:\tx\ry\u001b[31mz\u007f\u009bq\u202ew\u200bv\u2028u\u{E0041}t";
+    it("replaces everything but printable ASCII with a space", async () => {
+      const text = "fatal:\tx\ry\u001b[31mz\u007f\u009bq\u202ew\u200bv\u2028u\u2029t\u{E0041}s\ufe0fr\u3164p\u00a0o\u{1F600}n\u001fm}~l";
       const message = (await gateScriptChange(failing(128, text), { base: "abc123" })) ?? "";
 
-      assert.ok(message.includes("(exit 128: fatal: x y [31mz  q w v u t)"), message);
+      assert.ok(message.includes("(exit 128: fatal: x y [31mz  q w v u t  s r p o  n m}~l)"), message);
+    });
+
+    it("never cuts a surrogate pair at the cap", async () => {
+      const message = (await gateScriptChange(failing(128, `${"y".repeat(199)}\u{1F600}`), { base: "abc123" })) ?? "";
+
+      assert.ok(message.isWellFormed());
+      assert.ok(message.includes(`(exit 128: ${"y".repeat(199)})`), message);
     });
   });
 

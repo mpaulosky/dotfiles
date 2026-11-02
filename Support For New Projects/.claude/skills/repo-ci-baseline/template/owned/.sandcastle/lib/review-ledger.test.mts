@@ -3394,9 +3394,11 @@ describe("branchSize and sizeWarning", () => {
   });
 
   it("counts a header it cannot read as a file, so a size is never undercounted, also as the last section with no newline", () => {
-    const patch = patchOf([{ path: "a.ts", added: 1 }]) + "diff --git garbage\n" + 'diff --git "a/unterminated b/x\n' + "diff --git a/last.ts b/last.ts";
+    // The last section is a Template mirror with no newline after its header: cut short, its key would not pair with the root copy.
+    const patch =
+      patchOf([{ path: "a.ts", added: 1 }, { path: "last.ts", added: 1 }]) + "diff --git garbage\n" + 'diff --git "a/unterminated b/x\n' + `diff --git a/${MIRROR}last.ts b/${MIRROR}last.ts`;
 
-    assert.deepEqual(branchSize(patch), { files: 4, lines: 1 });
+    assert.deepEqual(branchSize(patch), { files: 4, lines: 2 });
   });
 
   it("counts the lines of a CRLF file once each", () => {

@@ -98,9 +98,20 @@ export async function changedFiles(
 export async function gateScriptChange(sandbox: Pick<Sandbox, "exec">, guard: GateGuard): Promise<string | undefined> {
   const tracked = await sandbox.exec(`${plainGit} cat-file -e ${quoted(`${guard.base}:${GATE_SCRIPT}`)} 2>&1`);
   if (tracked.exitCode !== 0) {
+    const output = `${tracked.stdout}${tracked.stderr}`.trim();
+    // Git says a missing path with exit 1 and no output, or exit 128 and "path ... does not exist in ..." (or "exists on disk, but not in ...").
+    const missing = (tracked.exitCode === 1 && output === "") || (tracked.exitCode === 128 && /^fatal: path .* (does not exist in|exists on disk, but not in) /.test(output));
+    if (missing) {
+      return (
+        `❌ ${GATE_SCRIPT} isn't a file at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
+        "GATE_SCRIPT in lib/repo-config.mts must name the committed file GATE_COMMAND runs."
+      );
+    }
+    // Any other failure is git itself (a broken sandbox, a bad object database), not a verdict on GATE_SCRIPT.
+    const firstLine = output.split("\n")[0] || "(no output)";
     return (
-      `❌ ${GATE_SCRIPT} isn't a file at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
-      "GATE_SCRIPT in lib/repo-config.mts must name the committed file GATE_COMMAND runs."
+      `❌ git failed (exit ${tracked.exitCode}: ${firstLine}) checking ${GATE_SCRIPT} at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
+      "The sandbox or its git may be broken."
     );
   }
   const changed = await changedFiles(sandbox, guard, [GATE_SCRIPT]);

@@ -206,7 +206,7 @@ describe("runGate", () => {
         exec: async (command: string) => {
           if (command.includes(" cat-file ")) {
             inner.commands.push(command);
-            return { stdout: "", stderr: "", exitCode: tracked ? 0 : 128 };
+            return tracked ? { stdout: "", stderr: "", exitCode: 0 } : { stdout: "fatal: path 'scripts/gate.sh' does not exist in 'cccc'\n", stderr: "", exitCode: 128 };
           }
           if (command.includes(" merge-base ")) {
             inner.commands.push(command);
@@ -376,6 +376,27 @@ describe("the gate guard in a git repository", () => {
 
       assert.equal(await gateScriptChange(run, { base }), undefined);
     });
+  });
+
+  it("says the gate script is missing when it isn't a file at the base", async () => {
+    await inRepo(async ({ git, run }) => {
+      git("rm", "--quiet", GATE_SCRIPT);
+      git("commit", "--quiet", "-m", "drop the gate");
+      const base = git("rev-parse", "HEAD");
+
+      const message = (await gateScriptChange(run, { base })) ?? "";
+      assert.match(message, /isn't a file at /);
+      assert.match(message, /GATE_SCRIPT in lib\/repo-config\.mts/);
+    });
+  });
+
+  it("names the exit code and first output line when git itself fails, without pointing at GATE_SCRIPT", async () => {
+    const run = { exec: async () => ({ stdout: "fatal: detected dubious ownership\nmore\n", stderr: "", exitCode: 128 }) } as unknown as Pick<Sandbox, "exec">;
+
+    const message = (await gateScriptChange(run, { base: "abc123" })) ?? "";
+    assert.match(message, /git failed \(exit 128: fatal: detected dubious ownership\)/);
+    assert.doesNotMatch(message, /GATE_SCRIPT in lib/);
+    assert.doesNotMatch(message, /more/);
   });
 
   it("refuses a branch that edits the gate script, and accepts it once the script is restored", async () => {

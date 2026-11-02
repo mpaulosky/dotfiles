@@ -1292,7 +1292,8 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
 // every pass has settled, the first UncountedStopError among them (a usage
 // or time-budget stop from the follow-up role or the gate-fixer) is
 // rethrown, so main.mts's catch ends the run cleanly rather than the round
-// carrying on as if nothing had stopped it. Each settled pass reaches
+// carrying on as if nothing had stopped it; a StalledStepError outranks any
+// earlier such stop, and ends the run red. Each settled pass reaches
 // `report` first (passOutcomeEntry, or "stopped" for a stop), so a stop
 // doesn't lose the round's rows. Returns one outcome per target, in order; a
 // PR that wasn't passed on is "skipped".
@@ -1337,7 +1338,7 @@ export async function followUpPassPhase(
     }
     const pr = { kind: "pr", number: target.number } as const;
     if (result.reason instanceof UncountedStopError) {
-      // A stall outranks an earlier stop: main.mts ends the run red only for the error it receives, and passes settle in any order.
+      // A stall outranks an earlier stop: main.mts ends the run red only for the error it receives, and results come in target order, so a stall found later replaces an earlier usage or time stop.
       if (stop === undefined || (result.reason instanceof StalledStepError && !(stop instanceof StalledStepError))) stop = result.reason;
       host.log(`  ⏹ PR #${target.number}: the follow-up pass stopped uncounted: ${result.reason.message}`);
       report.record({ ...pr, outcome: "stopped", detail: result.reason.message });

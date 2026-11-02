@@ -354,7 +354,8 @@ describe("main.mts's intake-stop exit code", () => {
 
     assert.match(mainMts, /stallStop\(outcome\.reason\)[\s\S]{0,120}intakeStopReport\.record\(/, "the settled-builds loop doesn't record a stall");
     assert.match(mainMts, /stallStop\(error\)[\s\S]{0,120}intakeStopReport\.record\(/, "the UncountedStopError catch doesn't record a stall");
-    assert.match(mainMts, /STALL_STOP_REASON/, "main.mts doesn't report a recorded stall as the run's ending");
+    assert.match(mainMts, /ending = runEnding\(limitReason, intakeStopReport\.items\(\)\)/, "main.mts doesn't take the loop's ending from runEnding");
+    assert.match(mainMts, /runEnding\(undefined, \[stall\]\)/, "the catch doesn't end a stall as stalled");
   });
 });
 

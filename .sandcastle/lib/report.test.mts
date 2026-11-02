@@ -8,6 +8,7 @@ import {
   OutcomeReport,
   REPORT_DIR,
   renderSummary,
+  runEnding,
   STALL_STOP_REASON,
   stallStop,
   targetUrl,
@@ -118,6 +119,25 @@ describe("IntakeStopReport", () => {
   });
 });
 
+describe("runEnding", () => {
+  const stall = stallStop(new StalledStepError("The step stalled."))!;
+  const intakeStop: IntakeStopEntry = { reason: "intake could not run", unjudged: [], firstError: "boom" };
+
+  it("is finished with no limit and no stall, even with an ordinary intake stop", () => {
+    assert.deepEqual(runEnding(undefined, []), { kind: "finished" });
+    assert.deepEqual(runEnding(undefined, [intakeStop]), { kind: "finished" });
+  });
+
+  it("is stopped on a limit with no stall", () => {
+    assert.deepEqual(runEnding("the time budget passed", []), { kind: "stopped", reason: "the time budget passed" });
+  });
+
+  it("is stalled, naming the step, when a stall was recorded, and a limit does not hide it", () => {
+    assert.deepEqual(runEnding(undefined, [intakeStop, stall]), { kind: "stalled", reason: "The step stalled." });
+    assert.deepEqual(runEnding("usage limit", [stall]), { kind: "stalled", reason: "The step stalled." });
+  });
+});
+
 describe("stallStop", () => {
   it("makes a report entry naming the step for a StalledStepError, which ends the run red like an intake stop", () => {
     const entry = stallStop(new StalledStepError('The step "git fetch" ran over its 10-minute limit and was killed.'));
@@ -198,6 +218,13 @@ describe("renderSummary", () => {
     const summary = renderSummary({ ...fullInput, ending: { kind: "stopped", reason: "the time budget passed" } });
 
     assert.match(summary, /The run stopped cleanly: the time budget passed\./);
+  });
+
+  it("says a stalled run ended red, never that it stopped cleanly", () => {
+    const summary = renderSummary({ ...fullInput, ending: { kind: "stalled", reason: 'The step "git fetch" ran over its limit.' } });
+
+    assert.match(summary, /The run stopped and ends red: The step "git fetch" ran over its limit\./);
+    assert.doesNotMatch(summary, /stopped cleanly/);
   });
 
   it("says the run ended on an error, when it crashed", () => {

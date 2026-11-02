@@ -171,7 +171,7 @@ import {
   outcomeReport,
   renderSummary,
   REPORT_DIR,
-  STALL_STOP_REASON,
+  runEnding,
   stallStop,
   usageReport,
   waitingPrReport,
@@ -490,27 +490,21 @@ try {
     if (summary.stop !== undefined) {
       // Nothing reached a PR, so the next plan would pick the same issues and
       // repeat the same round: stop and let a human look. Or a build stopped
-      // cleanly on the time budget or usage limit, so nothing more can start.
+      // on the time budget, the usage limit or a stalled step, so nothing more can start.
       console.log(summary.stop);
       break;
     }
   }
-  // A loop that ended on the time budget or the usage limit (no new round,
+  // A loop that ended on the time budget, the usage limit or a stalled step (no new round,
   // or a build that stopped) stopped rather than finished.
   const limitReason = runLimits.stopReason();
-  // A stall sets no run limit, but it ends the run red, so the report says it stopped.
-  const stalled = intakeStopReport.items().find((entry) => entry.reason === STALL_STOP_REASON);
-  ending =
-    limitReason !== undefined
-      ? { kind: "stopped", reason: limitReason }
-      : stalled !== undefined
-        ? { kind: "stopped", reason: stalled.firstError }
-        : { kind: "finished" };
+  // A stall sets no run limit, but it ends the run red, so the report says it stalled.
+  ending = runEnding(limitReason, intakeStopReport.items());
 } catch (error) {
   if (!(error instanceof UncountedStopError)) throw error;
-  ending = { kind: "stopped", reason: error.message };
   const stall = stallStop(error);
   if (stall !== undefined) intakeStopReport.record(stall);
+  ending = stall === undefined ? { kind: "stopped", reason: error.message } : runEnding(undefined, [stall]);
   console.log(
     stall === undefined
       ? `\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`

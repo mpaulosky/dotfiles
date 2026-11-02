@@ -163,6 +163,12 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
   const starts = [...stdout.matchAll(/<findings>/g)].map((match) => match.index! + "<findings>".length);
   const ends = [...stdout.matchAll(/<\/findings>/g)].map((match) => match.index!);
   if (starts.length === 0 || ends.length === 0 || starts[0]! > ends.at(-1)!) throw new ReviewerAnswerError("the answer has no <findings>[...]</findings> block");
+  // The parser looks at a bounded number of closing tags. A block with findings in the text before the first one it looks at could be
+  // out of its reach, and the last block (say an empty one) be read as the whole answer: such an output is refused and the reviewer asked
+  // again. Quoted empty blocks out of reach are harmless.
+  if (ends.length > MAX_TAG_CANDIDATES * 2 && /<findings>\s*\[\s*\{/.test(stdout.slice(0, ends[ends.length - MAX_TAG_CANDIDATES * 2]!))) {
+    throw new ReviewerAnswerError("the answer holds a block of findings among more <findings> tags than are read: quote no tag, and end with one block");
+  }
   // A finding may quote either tag, and prose may quote the format before or after the answer, so the first tag isn't always the
   // block's. The block is the one that ends at the latest closing tag that leaves a JSON array, and starts at the earliest opening tag
   // that does: a quoted `<findings>[]</findings>` inside a finding sits inside the real block and can't cut it short to read as clean,

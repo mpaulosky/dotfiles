@@ -538,6 +538,14 @@ describe("parseReviewerAnswer's edges", () => {
     assert.deepEqual(parseReviewerAnswer(`${quotes}\n${block(answer)}`).map((found) => found.summary), [answer[0]!.summary]);
   });
 
+  it("refuses a block of findings followed by more quoted blocks than the parser reads, rather than read the last one as clean", () => {
+    const quotes = `<findings>[]</findings> `.repeat(21);
+
+    assert.throws(() => parseReviewerAnswer(`${block([raw()])}\n${quotes}`), ReviewerAnswerError);
+    assert.throws(() => parseReviewerAnswer(`${block([raw()])}\n${quotes.repeat(3)}`), ReviewerAnswerError);
+    assert.deepEqual(parseReviewerAnswer(`${quotes}\n${block([raw()])}`).map((found) => found.summary), [raw().summary]);
+  });
+
   it("tries a bounded number of tags", () => {
     const noise = "<findings>".repeat(5000) + "</findings>".repeat(5000);
     const started = Date.now();

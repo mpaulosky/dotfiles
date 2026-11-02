@@ -424,7 +424,7 @@ describe("buildIssue when Docker never answers the close", () => {
     return hosted;
   }
 
-  it("keeps the published pull request: the hung close is logged and ends the run red, not reported as the build's outcome", async (t) => {
+  it("keeps the published pull request: the hung close is logged and not reported as the build's outcome", async (t) => {
     const logged: string[] = [];
     t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
     const { buildHost } = hungClose();

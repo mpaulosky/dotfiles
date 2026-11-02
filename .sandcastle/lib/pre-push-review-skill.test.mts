@@ -612,15 +612,17 @@ describe("the pre-push-review skill's fewer-rounds rules", () => {
 
   it("has lenses.md carry the edge-case checklist", () => {
     assert.match(lenses, /^## Edge-case checklist$/m);
-    for (const inputClass of ["what falls outside it", "line endings", "surrogate", "whitespace", "code fence", "n-1, n and n\\+1"]) {
-      assert.match(lenses, new RegExp(inputClass), inputClass);
+    // The section alone: the Edge cases and Tests rows hold some of these words too.
+    const checklist = lenses.slice(lenses.indexOf("## Edge-case checklist"), lenses.indexOf("## Out of scope"));
+    for (const inputClass of ["what falls outside it", "a missing final newline", "a combining mark", "a byte-order mark", "a non-breaking space", "a code fence, a tag, a quote", "nested in the first", "n-1, n and n\\+1"]) {
+      assert.match(checklist, new RegExp(inputClass), inputClass);
     }
   });
 
   it("has the Edge cases row carry the essentials itself, since the host gives a reviewer only its row", () => {
     const edge = row("Edge cases");
 
-    for (const inputClass of ["what falls outside it", "n-1, n and n\\+1", "a lone", "surrogate pair cut in half", "whitespace", "open construct"]) {
+    for (const inputClass of ["what falls outside it", "n-1, n and n\\+1", "a lone", "a surrogate pair cut in half, whitespace, and a cut", "open construct"]) {
       assert.match(edge, new RegExp(inputClass), inputClass);
     }
   });
@@ -637,6 +639,9 @@ describe("the pre-push-review skill's fewer-rounds rules", () => {
     assert.match(skill, /\*\*Edge-case checklist\*\* in \[lenses\.md\]/);
     assert.match(skill, /^4\. Commit the test and the fix together/m);
     assert.match(skill, /in the fixes of two rounds in a row, stop patching it/);
+    const flatSkill = skill.replace(/\s+/g, " ");
+    assert.match(flatSkill, /refuses a dirty file, so use it only after the commit/);
+    assert.match(flatSkill, /Find the repeats with `git log -p` over the earlier round's `fix\(` commits/);
   });
 
   it("gives a later round's reviewers the whole function around each changed line", () => {

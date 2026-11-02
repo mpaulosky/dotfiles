@@ -124,6 +124,13 @@ describe("reviewerPrompt", () => {
     assert.ok(prompt.indexOf("fixes.patch") < prompt.indexOf("diff.patch"), "the fixes are named first, as the thing to review");
   });
 
+  it("tells a later round to read the whole function around each changed line and its callers, and a first round nothing of the kind", () => {
+    const later = "Read the whole function around each changed line and its callers, not only the patch";
+
+    assert.ok(reviewerPrompt(args({ round: 2, hasFixes: true })).includes(later));
+    assert.ok(!reviewerPrompt(args({ round: 1, hasFixes: false })).includes(later));
+  });
+
   it("points at the decisions file the earlier rounds left", () => {
     assert.ok(reviewerPrompt(args()).includes(`${runDir}/decisions.md`));
   });

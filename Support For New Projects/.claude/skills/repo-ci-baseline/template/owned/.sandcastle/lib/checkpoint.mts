@@ -98,9 +98,25 @@ export async function changedFiles(
 export async function gateScriptChange(sandbox: Pick<Sandbox, "exec">, guard: GateGuard): Promise<string | undefined> {
   const tracked = await sandbox.exec(`${plainGit} cat-file -e ${quoted(`${guard.base}:${GATE_SCRIPT}`)} 2>&1`);
   if (tracked.exitCode !== 0) {
+    const output = `${tracked.stdout}${tracked.stderr}`.trim();
+    // Git says a missing path with exit 1 and no output, or exit 128 and "path ... does not exist in ..." (or "exists on disk, but not in ...").
+    // This reads git's English wording: under a translated locale a missing script falls to the git-failed message below, which still refuses.
+    const missing = (tracked.exitCode === 1 && output === "") || (tracked.exitCode === 128 && /^fatal: path .* (does not exist in|exists on disk, but not in) /.test(output));
+    if (missing) {
+      return (
+        `❌ ${GATE_SCRIPT} isn't a file at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
+        "GATE_SCRIPT in lib/repo-config.mts must name the committed file GATE_COMMAND runs."
+      );
+    }
+    // Any other failure is git itself (a broken sandbox, a bad object database), not a verdict on GATE_SCRIPT.
+    // The first line git printed that has text left, as printable ASCII only and capped. It goes into a comment and a prompt, and the branch's agent may
+    // control what git prints, so anything that can hide or reorder text (control, format, combining, private-use and non-ASCII space characters)
+    // is replaced by an allow-list, and the cap can't cut a surrogate pair.
+    const clean = (line: string) => line.replace(/[^\x20-\x7e]/g, " ").slice(0, 200).trim();
+    const firstLine = output.split("\n").map(clean).find((line) => line !== "") ?? "(no output)";
     return (
-      `❌ ${GATE_SCRIPT} isn't a file at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
-      "GATE_SCRIPT in lib/repo-config.mts must name the committed file GATE_COMMAND runs."
+      `❌ git failed (exit ${tracked.exitCode}: ${firstLine}) checking ${GATE_SCRIPT} at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
+      "The sandbox or its git may be broken, or git's output may not be in English."
     );
   }
   const changed = await changedFiles(sandbox, guard, [GATE_SCRIPT]);

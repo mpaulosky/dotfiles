@@ -206,7 +206,7 @@ describe("runGate", () => {
         exec: async (command: string) => {
           if (command.includes(" cat-file ")) {
             inner.commands.push(command);
-            return { stdout: "", stderr: "", exitCode: tracked ? 0 : 128 };
+            return tracked ? { stdout: "", stderr: "", exitCode: 0 } : { stdout: "fatal: path 'scripts/gate.sh' does not exist in 'cccc'\n", stderr: "", exitCode: 128 };
           }
           if (command.includes(" merge-base ")) {
             inner.commands.push(command);
@@ -375,6 +375,86 @@ describe("the gate guard in a git repository", () => {
       git("commit", "--quiet", "-am", "work");
 
       assert.equal(await gateScriptChange(run, { base }), undefined);
+    });
+  });
+
+  it("says the gate script is missing when it isn't a file at the base", async () => {
+    await inRepo(async ({ git, run }) => {
+      git("rm", "--quiet", GATE_SCRIPT);
+      git("commit", "--quiet", "-m", "drop the gate");
+      const base = git("rev-parse", "HEAD");
+
+      const message = (await gateScriptChange(run, { base })) ?? "";
+      assert.match(message, /isn't a file at /);
+      assert.match(message, /GATE_SCRIPT in lib\/repo-config\.mts/);
+    });
+  });
+
+  it("names the exit code and first output line when git itself fails, without pointing at GATE_SCRIPT", async () => {
+    const run = { exec: async () => ({ stdout: "fatal: detected dubious ownership\nmore\n", stderr: "", exitCode: 128 }) } as unknown as Pick<Sandbox, "exec">;
+
+    const message = (await gateScriptChange(run, { base: "abc123" })) ?? "";
+    assert.match(message, /git failed \(exit 128: fatal: detected dubious ownership\)/);
+    assert.doesNotMatch(message, /GATE_SCRIPT in lib/);
+    assert.doesNotMatch(message, /more/);
+  });
+
+  describe("when cat-file fails", () => {
+    const failing = (exitCode: number, stdout = "", stderr = "") =>
+      ({ exec: async () => ({ stdout, stderr, exitCode }) }) as unknown as Pick<Sandbox, "exec">;
+    const missing = /isn't a file at abc123.*GATE_SCRIPT in lib\/repo-config\.mts/;
+
+    it("calls exit 1 with no output a missing script", async () => {
+      assert.match((await gateScriptChange(failing(1), { base: "abc123" })) ?? "", missing);
+    });
+
+    it("calls git's 'exists on disk, but not in' answer a missing script", async () => {
+      const run = failing(128, "fatal: path 'scripts/gate.sh' exists on disk, but not in 'abc123'\n");
+
+      assert.match((await gateScriptChange(run, { base: "abc123" })) ?? "", missing);
+    });
+
+    it("calls exit 1 with output a git failure", async () => {
+      assert.match((await gateScriptChange(failing(1, "something odd"), { base: "abc123" })) ?? "", /git failed \(exit 1: something odd\)/);
+    });
+
+    it("says 'no output' for a git that fails silently, and reads output printed on stderr", async () => {
+      assert.match((await gateScriptChange(failing(137), { base: "abc123" })) ?? "", /git failed \(exit 137: \(no output\)\)/);
+      assert.match((await gateScriptChange(failing(2, "", "fatal: boom\n"), { base: "abc123" })) ?? "", /git failed \(exit 2: fatal: boom\)/);
+    });
+
+    it("treats another fatal path message as a git failure, not a missing script", async () => {
+      const message = (await gateScriptChange(failing(128, "fatal: path 'x' is ambiguous\n"), { base: "abc123" })) ?? "";
+
+      assert.match(message, /git failed \(exit 128: fatal: path 'x' is ambiguous\)/);
+      assert.doesNotMatch(message, /GATE_SCRIPT in lib/);
+    });
+
+    it("keeps only the first line with text, capped at 200 characters", async () => {
+      const crlf = (await gateScriptChange(failing(128, "fatal: x\r\nmore\r\n"), { base: "abc123" })) ?? "";
+      assert.match(crlf, /\(exit 128: fatal: x\)/);
+
+      for (const [length, kept] of [[199, 199], [200, 200], [201, 200]] as const) {
+        const long = (await gateScriptChange(failing(128, `${"y".repeat(length)}\nmore`), { base: "abc123" })) ?? "";
+        assert.ok(long.includes(`(exit 128: ${"y".repeat(kept)})`), `${length} characters`);
+      }
+
+      const blank = (await gateScriptChange(failing(128, "\u0007\u001b\nfatal: real\n"), { base: "abc123" })) ?? "";
+      assert.match(blank, /\(exit 128: fatal: real\)/);
+    });
+
+    it("replaces everything but printable ASCII with a space", async () => {
+      const text = "fatal:\tx\ry\u001b[31mz\u007f\u009bq\u202ew\u200bv\u2028u\u2029t\u{E0041}s\ufe0fr\u3164p\u00a0o\u{1F600}n\u001fm}~l";
+      const message = (await gateScriptChange(failing(128, text), { base: "abc123" })) ?? "";
+
+      assert.ok(message.includes("(exit 128: fatal: x y [31mz  q w v u t  s r p o  n m}~l)"), message);
+    });
+
+    it("never cuts a surrogate pair at the cap", async () => {
+      const message = (await gateScriptChange(failing(128, `${"y".repeat(199)}\u{1F600}`), { base: "abc123" })) ?? "";
+
+      assert.ok(!/[\ud800-\udfff]/.test(message), message);
+      assert.ok(message.includes(`(exit 128: ${"y".repeat(199)})`), message);
     });
   });
 

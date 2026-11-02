@@ -546,23 +546,31 @@ export function patchPaths(patch: string): string[] {
 // root and under the path below; in other repositories nothing starts with this prefix, so the pair rule does nothing.
 const TEMPLATE_MIRROR_PREFIX = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
 
-// The files and lines (added plus deleted) a patch changes, from the hunks. A file and its Template mirror count once, and their lines
-// once (the larger of the two, since `test.sh` makes them equal). A binary file, a mode change and an empty file count as a file with no lines.
+// The files and lines (added plus deleted) a patch changes, from the hunks. The patch is read line by line at `\n` only: a lone carriage return,
+// or a Unicode line separator, inside a changed line is file content and starts nothing. Sections of the same path (git writes a deletion and an
+// addition for a type change, such as a symlink that becomes a file) add up. A file and its Template mirror count once, and their lines once
+// (the larger of the two, since `test.sh` makes them equal). A binary file, a mode change and an empty file count as a file with no lines.
 export function branchSize(patch: Buffer | string): { files: number; lines: number } {
   const text = typeof patch === "string" ? patch : patch.toString("latin1");
+  const byPath = new Map<string, number>();
+  let current: string | undefined;
+  let inHunk = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      // A header patchPaths can't read still counts as a file (keyed by its text), as it does for the reviewers' lens choice: a size is never undercounted.
+      current = patchPaths(line)[0];
+      inHunk = false;
+      if (current !== undefined && !byPath.has(current)) byPath.set(current, 0);
+    } else if (current !== undefined) {
+      // The file header's own `---` and `+++` lines come before the first hunk header; a body line starts with a space, `+`, `-` or `\`
+      // (so an added line that reads `++ x` is still one added line, and "\ No newline" is none).
+      if (!inHunk) inHunk = line.startsWith("@@ ");
+      else if (line.startsWith("+") || line.startsWith("-")) byPath.set(current, (byPath.get(current) ?? 0) + 1);
+    }
+  }
   const lines = new Map<string, number>();
-  for (const section of text.split(/^(?=diff --git )/m)) {
-    // The path is read from the header the way the reviewers' lens choice reads it, so a space or a quoted character in it can't split or merge files.
-    // A header patchPaths can't read still counts as a file (keyed by its text), as it does for the reviewers' lens choice: a size is never undercounted.
-    const header = section.slice(0, section.indexOf("\n") === -1 ? undefined : section.indexOf("\n"));
-    const path = patchPaths(header)[0];
-    if (path === undefined) continue;
+  for (const [path, changed] of byPath) {
     const key = path.startsWith(TEMPLATE_MIRROR_PREFIX) ? path.slice(TEMPLATE_MIRROR_PREFIX.length) : path;
-    // The lines after the first hunk header only: the file header's own `---` and `+++` lines come before it, and a body line starts
-    // with a space, `+`, `-` or `\` (so an added line that reads `++ x` is still one added line, and "\ No newline" is none).
-    const hunks = section.search(/^@@ /m);
-    let changed = 0;
-    if (hunks >= 0) for (const line of section.slice(hunks).split("\n")) if (line.startsWith("+") || line.startsWith("-")) changed++;
     lines.set(key, Math.max(lines.get(key) ?? 0, changed));
   }
   let total = 0;

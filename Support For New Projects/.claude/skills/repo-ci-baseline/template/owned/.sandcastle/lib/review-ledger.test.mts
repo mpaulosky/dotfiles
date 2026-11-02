@@ -3401,6 +3401,28 @@ describe("branchSize and sizeWarning", () => {
     assert.deepEqual(branchSize(patch), { files: 4, lines: 2 });
   });
 
+  it("keeps a carriage return or a line separator inside a changed line as content, never as the start of a header", () => {
+    const body = "+progress\rdiff --git a/example b/example\n".repeat(2) + "+a\u2028diff --git a/x b/x\n";
+    const patch = `diff --git a/one.txt b/one.txt\n--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1,3 @@\n${body}`;
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3 });
+  });
+
+  it("adds the deletion and the addition git writes for one path, as when a symlink becomes a file", () => {
+    const patch =
+      "diff --git a/link b/link\ndeleted file mode 120000\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-target\n\\ No newline at end of file\n" +
+      `diff --git a/link b/link\nnew file mode 100644\n--- /dev/null\n+++ b/link\n@@ -0,0 +1,3000 @@\n${"+x\n".repeat(3000)}`;
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3001 });
+    assert.match(sizeWarning(patch) ?? "", /1 file and 3,001 lines/);
+  });
+
+  it("still takes the larger of a mirrored pair when each side is a deletion plus an addition", () => {
+    const conversion = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-t\n` + `diff --git a/${path} b/${path}\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,2 @@\n+x\n+y\n`;
+
+    assert.deepEqual(branchSize(conversion("l") + conversion(`${MIRROR}l`)), { files: 1, lines: 3 });
+  });
+
   it("counts the lines of a CRLF file once each", () => {
     assert.deepEqual(branchSize("diff --git a/w.txt b/w.txt\r\n--- a/w.txt\r\n+++ b/w.txt\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n"), { files: 1, lines: 2 });
   });

@@ -34,6 +34,8 @@ function clockOf(step: number) {
   return () => (time += step) - step;
 }
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 describe("limitedCommand", () => {
   it("runs the command under timeout inside sh -c, so a redirection stays inside the limit", () => {
     assert.equal(limitedCommand("scripts/gate.sh 2>&1", 15), `${LIMITED_COMMAND_PREFIX}timeout -k ${KILL_GRACE_SECONDS}s 15m sh -c 'scripts/gate.sh 2>&1'${LIMITED_COMMAND_SUFFIX}`);
@@ -96,7 +98,7 @@ describe("limitSandboxExec", () => {
 
     await limitSandboxExec(sandbox, { log: () => undefined }).exec(`  ${GATE_COMMAND} 2>&1`);
 
-    assert.match(calls[0]!.command, new RegExp(`^${LIMITED_COMMAND_PREFIX}timeout -k \\d+s ${GATE_LIMIT_MINUTES}m sh -c`));
+    assert.match(calls[0]!.command, new RegExp(`^${escapeRegExp(LIMITED_COMMAND_PREFIX)}timeout -k \\d+s ${GATE_LIMIT_MINUTES}m sh -c`));
   });
 
   it("fails a step that timeout killed after its limit, for both of timeout's exit codes, naming the step", async () => {
@@ -353,6 +355,12 @@ describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU 
     const result = await limitSandboxExec(shellSandbox(), quick).exec("cat", { stdin: "hello" });
 
     assert.equal(result.stdout, "hello");
+  });
+
+  it("does not leave the stdin copy (fd 3) open in the command", async () => {
+    const result = await limitSandboxExec(shellSandbox(), quick).exec("if [ -e /proc/self/fd/3 ]; then echo open; else echo closed; fi");
+
+    assert.equal(result.stdout, "closed\n");
   });
 
   it("lets a command that finishes in time return its own output", async () => {

@@ -406,6 +406,8 @@ function host(
   };
 }
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 describe("buildIssue", () => {
   it("runs the tester, the backend developer, checkpoint 1, the reviewer and checkpoint 2 before publishing", async () => {
     const { steps, comments, buildHost } = host([0, 0]);
@@ -1367,7 +1369,7 @@ describe("buildIssue when a step stalls the sandbox", () => {
         ...raw,
         // The fake answers the commands as the build wrote them, so the `timeout … sh -c '…'` wrapper comes off first.
         exec: async (wrapped: string, options?: unknown) => {
-          const command = (new RegExp(`^${LIMITED_COMMAND_PREFIX}timeout -k \\d+s [\\d.]+m sh -c '(.*)'${LIMITED_COMMAND_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "s").exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
+          const command = (new RegExp(`^${escapeRegExp(LIMITED_COMMAND_PREFIX)}timeout -k \\d+s [\\d.]+m sh -c '(.*)'${escapeRegExp(LIMITED_COMMAND_SUFFIX)}$`, "s").exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
           return match.test(command) ? { stdout: "", stderr: "", exitCode: 124 } : raw.exec(command, options as never);
         },
         close: closeFails ? async () => Promise.reject(new Error("docker is gone")) : raw.close,

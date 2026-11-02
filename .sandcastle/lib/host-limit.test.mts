@@ -116,6 +116,23 @@ describe("withinDockerLimit", () => {
     assert.ok(logged.some((line) => /handling the late answer failed: Error: close is gone/.test(line)), logged.join("\n"));
   });
 
+  it("strips control characters from the logged onLate failure, as terminalText does elsewhere", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(line));
+    let resolveCall: (value: number) => void = () => undefined;
+    const call = new Promise<number>((resolve) => (resolveCall = resolve));
+    await assert.rejects(
+      () => withinDockerLimit("creating the sandbox", call, 0.001, () => { throw new Error("x\u001b[31m\ny"); }),
+      StalledStepError,
+    );
+
+    resolveCall(1);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(logged.length, 1);
+    assert.doesNotMatch(logged[0]!, /[\u0000-\u001f\u007f-\u009f]/);
+  });
+
   it("refuses a limit the host's timer can't wait for", async () => {
     for (const minutes of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1e9]) {
       await assert.rejects(() => withinDockerLimit("x", Promise.resolve(1), minutes), /positive number of minutes/);
@@ -171,22 +188,55 @@ describe("closeAfterWork", () => {
   });
 });
 
+// Whether a module's source uses node:child_process as a value: any import that isn't `import type …` or all `type X` names, or a
+// require() or import() call. Comments don't count.
+function usesChildProcessAsValue(source: string): boolean {
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  if (/\b(?:require|import)\s*\(\s*["'](?:node:)?child_process["']/.test(code)) return true;
+  return [...code.matchAll(/\bimport\s+((?:(?!\bimport\b)[^;])*?)\s*from\s*["'](?:node:)?child_process["']/g)].some(([, clause]) => {
+    if (/^type\b/.test(clause!)) return false;
+    const names = /\{([^}]*)\}/.exec(clause!)?.[1]?.split(",").map((name) => name.trim()).filter(Boolean);
+    return names === undefined || names.some((name) => !/^type\s/.test(name));
+  });
+}
+
+describe("usesChildProcessAsValue", () => {
+  it("flags every way to get child_process as a value", () => {
+    for (const source of [
+      'import { execFileSync } from "node:child_process";',
+      "import { execFileSync } from 'child_process'",
+      'import * as cp from "child_process";',
+      'import {\n  execFileSync,\n} from "node:child_process";',
+      'import { spawnSync, type execFileSync } from "node:child_process";',
+      'const cp = await import("node:child_process");',
+      'const cp = require("child_process");',
+      'import type { A } from "./a.mts"\nimport { execFileSync } from "node:child_process"',
+    ]) {
+      assert.equal(usesChildProcessAsValue(source), true, source);
+    }
+  });
+
+  it("accepts a type import and a commented-out one", () => {
+    for (const source of [
+      'import type { execFileSync } from "node:child_process";',
+      'import { type execFileSync } from "node:child_process";',
+      'import { type A, type B } from "node:child_process";',
+      '// import { execFileSync } from "node:child_process";',
+      '/* import { execFileSync } from "node:child_process"; */',
+      'import { x } from "./x.mts";',
+    ]) {
+      assert.equal(usesChildProcessAsValue(source), false, source);
+    }
+  });
+});
+
 describe("the host's calls", () => {
   it("never use child_process as a value outside host-limit.mts, so every gh and git call the host makes has a time limit", async () => {
     const { readdirSync, readFileSync } = await import("node:fs");
     const dir = new URL(".", import.meta.url);
     const uses = readdirSync(dir)
       .filter((name) => name.endsWith(".mts") && !name.endsWith(".test.mts") && name !== "host-limit.mts")
-      .filter((name) => {
-        const code = readFileSync(new URL(name, dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-        if (/\b(?:require|import)\s*\(\s*["'](?:node:)?child_process["']/.test(code)) return true;
-        // An import is a value import unless it is `import type …` or every name in its braces is `type X`.
-        return [...code.matchAll(/\bimport\s+([^;]*?)\s*from\s*["'](?:node:)?child_process["']/g)].some(([, clause]) => {
-          if (/^type\b/.test(clause!)) return false;
-          const names = /\{([^}]*)\}/.exec(clause!)?.[1]?.split(",").map((name) => name.trim()).filter(Boolean);
-          return names === undefined || names.some((name) => !/^type\s/.test(name));
-        });
-      });
+      .filter((name) => usesChildProcessAsValue(readFileSync(new URL(name, dir), "utf8")));
 
     // review-ledger.mts and security-record.mts run in a person's terminal under scripts/review.sh, not in the unattended run, and
     // git-sandbox-fake.mts is a test helper that runs shell setup, not the host's gh or git.

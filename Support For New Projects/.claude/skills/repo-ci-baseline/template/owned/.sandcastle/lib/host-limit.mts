@@ -42,6 +42,7 @@ export async function withinDockerLimit<T>(
   onLate: (value: T) => void = () => undefined,
 ): Promise<T> {
   let gaveUp = false;
+  // The failure is cleaned inline, as this module may import only lib/errors.mts and so can't use status.mts#terminalText.
   // Attached first, so a call that fails after the host gave up (or before a bad limit is refused) is never an unhandled rejection,
   // and an onLate that throws is only logged: the run must not crash on a sandbox it already moved past.
   call.then(

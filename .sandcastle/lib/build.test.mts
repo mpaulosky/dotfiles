@@ -42,7 +42,7 @@ import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
-import { KILL_GRACE_SECONDS, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
+import { KILL_GRACE_SECONDS, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -1367,7 +1367,7 @@ describe("buildIssue when a step stalls the sandbox", () => {
         ...raw,
         // The fake answers the commands as the build wrote them, so the `timeout … sh -c '…'` wrapper comes off first.
         exec: async (wrapped: string, options?: unknown) => {
-          const command = (/^timeout -k \d+s [\d.]+m sh -c '(.*)'( & p=\$!;.*)$/s.exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
+          const command = (new RegExp(`^timeout -k \\d+s [\\d.]+m sh -c '(.*)'${LIMITED_COMMAND_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "s").exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
           return match.test(command) ? { stdout: "", stderr: "", exitCode: 124 } : raw.exec(command, options as never);
         },
         close: closeFails ? async () => Promise.reject(new Error("docker is gone")) : raw.close,
@@ -3255,8 +3255,8 @@ describe("PR_BODY_RULES against what the host refuses in the reviewer's PR body"
 
 describe("createCheckedSandbox's step limits", () => {
   const identity = { name: "Host Person", email: "host@example.com" };
-  // The probe createCheckedSandbox runs before the limits apply: the form every later command takes.
-  const probeCommand = limitedCommand("true", 1);
+  // The probe createCheckedSandbox runs through its own one-minute limited sandbox: the form every later command takes.
+  const probeCommand = limitedCommand("true", PROBE_LIMIT_MINUTES);
 
   // A sandbox that records the commands exec is given. Its git config commands succeed, the timeout probe succeeds when
   // `hasTimeout` and rejects when `probeRejects`, and any other command answers with `exitCode`.
@@ -3270,7 +3270,7 @@ describe("createCheckedSandbox's step limits", () => {
       },
       exec: async (command: string) => {
         commands.push(command);
-        const isProbe = command.includes(" sh -c 'true' & p=$!;");
+        const isProbe = command.includes(` sh -c 'true'${LIMITED_COMMAND_SUFFIX}`);
         if (isProbe && probeRejects) throw new Error("docker exec failed");
         if (isProbe && probeHangs) return new Promise<never>(() => undefined);
         if (isProbe) return { stdout: "", stderr: "", exitCode: hasTimeout ? 0 : 125 };

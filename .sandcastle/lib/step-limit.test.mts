@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { StalledStepError } from "./errors.mts";
-import { COMMAND_LIMIT_MINUTES, KILL_GRACE_SECONDS, LIMITED_COMMAND_CLEANUP, limitSandboxExec, limitedCommand, stalledStepOf, stepName } from "./step-limit.mts";
+import { COMMAND_LIMIT_MINUTES, KILL_GRACE_SECONDS, LIMITED_COMMAND_SUFFIX, limitSandboxExec, limitedCommand, stalledStepOf, stepName } from "./step-limit.mts";
 
 type Answer = { stdout: string; exitCode: number };
 
@@ -36,15 +36,15 @@ function clockOf(step: number) {
 
 describe("limitedCommand", () => {
   it("runs the command under timeout inside sh -c, so a redirection stays inside the limit", () => {
-    assert.equal(limitedCommand("scripts/gate.sh 2>&1", 15), `timeout -k ${KILL_GRACE_SECONDS}s 15m sh -c 'scripts/gate.sh 2>&1'${LIMITED_COMMAND_CLEANUP}`);
+    assert.equal(limitedCommand("scripts/gate.sh 2>&1", 15), `timeout -k ${KILL_GRACE_SECONDS}s 15m sh -c 'scripts/gate.sh 2>&1'${LIMITED_COMMAND_SUFFIX}`);
   });
 
   it("takes the kill grace as a parameter", () => {
-    assert.equal(limitedCommand("x", 1, 2), `timeout -k 2s 1m sh -c 'x'${LIMITED_COMMAND_CLEANUP}`);
+    assert.equal(limitedCommand("x", 1, 2), `timeout -k 2s 1m sh -c 'x'${LIMITED_COMMAND_SUFFIX}`);
   });
 
   it("quotes a single quote in the command", () => {
-    assert.equal(limitedCommand("git merge -m 'a b'", 10), `timeout -k ${KILL_GRACE_SECONDS}s 10m sh -c 'git merge -m '\\''a b'\\'''${LIMITED_COMMAND_CLEANUP}`);
+    assert.equal(limitedCommand("git merge -m 'a b'", 10), `timeout -k ${KILL_GRACE_SECONDS}s 10m sh -c 'git merge -m '\\''a b'\\'''${LIMITED_COMMAND_SUFFIX}`);
   });
 });
 
@@ -82,7 +82,7 @@ describe("limitSandboxExec", () => {
 
     const result = await limited.exec("git status --porcelain 2>&1");
 
-    assert.deepEqual(calls.map((call) => call.command), [`timeout -k ${KILL_GRACE_SECONDS}s ${COMMAND_LIMIT_MINUTES}m sh -c 'git status --porcelain 2>&1'${LIMITED_COMMAND_CLEANUP}`]);
+    assert.deepEqual(calls.map((call) => call.command), [`timeout -k ${KILL_GRACE_SECONDS}s ${COMMAND_LIMIT_MINUTES}m sh -c 'git status --porcelain 2>&1'${LIMITED_COMMAND_SUFFIX}`]);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "ok");
     assert.deepEqual(lines, [
@@ -265,13 +265,14 @@ const hasTimeout = spawnSync("timeout", ["--version"]).status === 0;
 describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU coreutils' timeout isn't installed" }, () => {
   function shellSandbox() {
     return {
-      exec: (command: string) =>
+      exec: (command: string, options?: { stdin?: string }) =>
         new Promise((resolve) => {
-          execFile("sh", ["-c", command], (error, stdout, stderr) => {
+          const child = execFile("sh", ["-c", command], (error, stdout, stderr) => {
             // A process killed by SIGKILL has no exit code: docker exec reports it as 128 + 9, and so does this.
             const exitCode = error === null ? 0 : typeof error.code === "number" ? error.code : error.signal === "SIGKILL" ? 137 : 1;
             resolve({ stdout, stderr, exitCode });
           });
+          child.stdin?.end(options?.stdin ?? "");
         }),
     } as unknown as Sandbox;
   }
@@ -294,24 +295,28 @@ describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU 
   it("kills a TERM-ignoring descendant that outlives a command which died on TERM, so nothing runs beside the next step", async () => {
     const folder = mkdtempSync(join(tmpdir(), "step-limit-"));
     const pidFile = join(folder, "pid");
+    const readyFile = join(folder, "ready");
+    let pid = 0;
     try {
-      // The foreground sleep dies on TERM and so does the shell, ending `timeout` at once with 124 and no KILL; the
-      // background node process ignores TERM and has its output redirected, so nothing waits on it.
+      // A node process that ignores TERM and has its output redirected, so nothing waits on it. The shell takes its pid
+      // from `$!` and waits until it says it is ready, so it is ignoring TERM before `timeout` sends it. The foreground
+      // sleep then dies on TERM and so does the shell, ending `timeout` at once with 124 and no KILL.
       const script = join(folder, "survivor.cjs");
       writeFileSync(
         script,
-        'process.on("SIGTERM", () => {});\nrequire("node:fs").writeFileSync(process.argv[2], String(process.pid));\nsetTimeout(() => {}, 60000);\n',
+        'process.on("SIGTERM", () => {});\nrequire("node:fs").writeFileSync(process.argv[2], "ready");\nsetTimeout(() => {}, 60000);\n',
       );
-      const command = `'${process.execPath}' ${script} ${pidFile} >/dev/null 2>&1 & sleep 60`;
+      const command = `'${process.execPath}' ${script} ${readyFile} >/dev/null 2>&1 & echo $! > ${pidFile}; while [ ! -s ${readyFile} ]; do sleep 0.05; done; sleep 60`;
 
-      await assert.rejects(limitSandboxExec(shellSandbox(), quick).exec(command), StalledStepError);
+      await assert.rejects(limitSandboxExec(shellSandbox(), { ...quick, commandMinutes: 0.1 }).exec(command), StalledStepError);
 
-      const pid = Number(readFileSync(pidFile, "utf8"));
+      pid = Number(readFileSync(pidFile, "utf8"));
       assert.ok(pid > 1);
+      // A killed process can sit as a zombie until its new parent reaps it (the sandbox's PID 1 is `sleep`), and a zombie
+      // still answers signal 0: it counts as gone.
       const alive = (): boolean => {
         try {
-          process.kill(pid, 0);
-          return true;
+          return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
         } catch {
           return false;
         }
@@ -319,8 +324,35 @@ describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU 
       for (let waited = 0; alive() && waited < 3000; waited += 50) await new Promise((resolve) => setTimeout(resolve, 50));
       assert.equal(alive(), false, "the descendant that ignores TERM was left running");
     } finally {
+      if (pid > 1) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+      }
       rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
+  });
+
+  it("returns the command's own exit code, stdout and stderr through the wrapper", async () => {
+    const result = await limitSandboxExec(shellSandbox(), quick).exec("echo out; echo err >&2; exit 3");
+
+    assert.equal(result.exitCode, 3);
+    assert.equal(result.stdout, "out\n");
+    assert.equal(result.stderr, "err\n");
+  });
+
+  it("keeps the exit code of a command that exits 124 on its own, well inside its limit", async () => {
+    const result = await limitSandboxExec(shellSandbox(), { ...quick, commandMinutes: 1 }).exec("exit 124");
+
+    assert.equal(result.exitCode, 124);
+  });
+
+  it("passes stdin through to the command", async () => {
+    const result = await limitSandboxExec(shellSandbox(), quick).exec("cat", { stdin: "hello" });
+
+    assert.equal(result.stdout, "hello");
   });
 
   it("lets a command that finishes in time return its own output", async () => {

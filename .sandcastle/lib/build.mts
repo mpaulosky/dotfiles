@@ -487,9 +487,10 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // report. A check that itself fails counts as a tampered worktree. The sandbox
 // it returns runs every exec under a limit (lib/step-limit.mts), so a stalled
 // gate ends as exit code 124 with its name in the output (a red gate), and any other command that runs over throws
-// StalledStepError, as does every exec after it. The two git config commands that set the identity and the timeout
-// probe run first, on the sandbox itself, and have none. The image needs `timeout` (GNU
-// coreutils), which the probe checks once, in the form every command takes: an
+// StalledStepError, as does every exec after it. The two git config commands that set the identity run first, on the
+// sandbox itself, and have none. The image needs `timeout` (GNU
+// coreutils), which the probe checks once, in the form every command takes, through its own one-minute limited
+// sandbox (so a Docker exec that never answers is a StalledStepError, not a hang): an
 // image without it is refused with a message that says so, rather than failing
 // every later command. The probe, and a limit the repo set badly, fail like
 // the identity step: a rejection or a refusal goes through the same worktree

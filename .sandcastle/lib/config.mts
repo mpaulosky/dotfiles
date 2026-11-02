@@ -52,8 +52,8 @@ export const DESIGN_MARKER = "<!-- sandcastle:design -->";
 
 // The roles lib/build.mts#buildIssue runs, each at most once per build,
 // besides the gate-fixer, which runs up to GATE_FIXER_ATTEMPTS times at each
-// checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts:
-// config.test.mts checks the sum fits, and build.test.mts that buildIssue runs
+// checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts and
+// the gate's limit (lib/step-limit.mts): config.test.mts checks the sum fits, and build.test.mts that buildIssue runs
 // no role outside the list.
 export const BUILD_ROLES = ["architect", "tester", "backend", "ui", "scribe", "reviewer"] as const satisfies readonly AnyRole[];
 
@@ -248,7 +248,7 @@ export const BUILDING_LABEL = "sandcastle:building";
 // any real build: every role's timeoutMinutes, even with two gate-fixer
 // attempts at each of the two checkpoints, plus each gate run up to its step limit
 // (lib/step-limit.mts), adds up to under 6 hours.
-// config.test.mts checks that sum (see BUILD_ROLES), with half an hour to spare,
+// config.test.mts checks that sum (see BUILD_ROLES), with twenty minutes to spare,
 // stays below it.
 export const BUILDING_LABEL_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 

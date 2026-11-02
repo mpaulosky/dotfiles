@@ -2273,8 +2273,8 @@ describe("buildIssue marking the issue as building", () => {
     assert.deepEqual(recordBuildFailureCalls, []);
   });
 
-  // BUILDING_LABEL_MAX_AGE_MS is sized from BUILD_ROLES' timeouts (see
-  // config.test.mts), so a role buildIssue runs outside that list could make
+  // BUILDING_LABEL_MAX_AGE_MS is sized from BUILD_ROLES' timeouts and the
+  // gate's limit (see config.test.mts), so a role buildIssue runs outside that list could make
   // a live build outlast the label and let a second run clear it.
   it("runs every BUILD_ROLES role once, and the gate-fixer at most its attempts per checkpoint, on the longest build", async () => {
     // Each checkpoint: red, fixer, red, fixer, green. The planner picked
@@ -3180,30 +3180,55 @@ describe("PR_BODY_RULES against what the host refuses in the reviewer's PR body"
 });
 
 describe("createCheckedSandbox's step limits", () => {
-  // A sandbox that records the commands exec is given, and answers a killed gate as `timeout` does.
-  function recordingSandbox(exitCode: number) {
+  const identity = { name: "Host Person", email: "host@example.com" };
+
+  // A sandbox that records the commands exec is given. Its git config and `command -v` commands succeed; any other command
+  // answers with `exitCode` after `elapsed` milliseconds on the injected clock.
+  function recordingSandbox(exitCode: number, hasTimeout = true) {
     const commands: string[] = [];
+    let closed = false;
     const sandbox = {
       worktreePath: "/nonexistent/worktree",
-      close: async () => undefined,
+      close: async () => {
+        closed = true;
+      },
       exec: async (command: string) => {
         commands.push(command);
+        if (command.startsWith("command -v timeout")) return { stdout: "", stderr: "", exitCode: hasTimeout ? 0 : 1 };
         return { stdout: "", stderr: "", exitCode: command.includes("git config --global") ? 0 : exitCode };
       },
     } as unknown as Awaited<ReturnType<typeof createCheckedSandbox>>;
-    return { sandbox, commands };
+    return { sandbox, commands, wasClosed: () => closed };
   }
 
-  it("runs the sandbox's commands under a limit, and fails a gate that was killed", async () => {
-    const { sandbox, commands } = recordingSandbox(124);
-    const identity = { name: "Host Person", email: "host@example.com" };
+  it("runs the sandbox's commands under a limit, and the git identity before it applies", async () => {
+    const { sandbox, commands } = recordingSandbox(0);
     const checked = await createCheckedSandbox("feature", async () => sandbox, () => identity, () => []);
 
-    const result = await checked.exec("scripts/gate.sh 2>&1");
+    await checked.exec("scripts/gate.sh 2>&1");
 
+    assert.match(commands[0]!, /^git config --global user\.name /);
     const last = commands.at(-1) ?? "";
     assert.ok(last.startsWith("timeout -k 30s 10m sh -c 'scripts/gate.sh"), last);
-    assert.equal(result.exitCode, 124);
-    assert.match(result.stdout, /The step "the gate" ran over its 10-minute limit and was killed/);
+    assert.ok(!commands.slice(0, -1).some((command) => command.startsWith("timeout ")), "an exec before the wrapper was limited");
+  });
+
+  it("prefixes the step lines with the branch, so parallel builds can be told apart", async (t) => {
+    const lines: string[] = [];
+    t.mock.method(console, "log", (line: string) => lines.push(line));
+    const { sandbox } = recordingSandbox(0);
+    const checked = await createCheckedSandbox("fix/7-widget", async () => sandbox, () => identity, () => []);
+
+    await checked.exec("git status");
+
+    assert.ok(lines.some((line) => line.startsWith("  fix/7-widget: step start: git status")), lines.join("\n"));
+  });
+
+  it("refuses an image without timeout, closing the sandbox and saying why", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, false);
+
+    await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => []), /no `timeout` command/);
+
+    assert.equal(wasClosed(), true);
   });
 });

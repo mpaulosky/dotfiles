@@ -264,10 +264,10 @@ describe("holdOverlappingPicks with the Template and root copies", () => {
 // in a PR's list of changed check files.
 describe("the places the gate's checks are read from (mpaulosky/dotfiles#339)", () => {
   const seedConfig = readFileSync(new URL("lib/repo-config.mts", seedFolder), "utf8");
-  const stepEight = (): string => {
+  const stepNine = (): string => {
     const reference = readFileSync(new URL(`${skill}/references/sandcastle.md`, root), "utf8");
-    const start = reference.indexOf("\n8. Set `GATE_SCRIPT`");
-    assert.notEqual(start, -1, "references/sandcastle.md has no step 8 that sets GATE_SCRIPT");
+    const start = reference.indexOf("\n9. Set `GATE_SCRIPT`");
+    assert.notEqual(start, -1, "references/sandcastle.md has no step 9 that sets GATE_SCRIPT");
     return reference.slice(start + 1, reference.indexOf("\n\n", start));
   };
 
@@ -293,8 +293,8 @@ describe("the places the gate's checks are read from (mpaulosky/dotfiles#339)", 
     assert.ok(listed.includes(".claude/skills/"), `the Seed CHECK_PATHS ${JSON.stringify(listed)} lacks .claude/skills/`);
   });
 
-  it("names the checker and .claude/skills/ in references/sandcastle.md's step 8", () => {
-    const step = stepEight();
+  it("names the checker and .claude/skills/ in references/sandcastle.md's step 9", () => {
+    const step = stepNine();
 
     assert.match(step, /check_gh_repo\.py/);
     assert.match(step, /\.claude\/skills\//);

@@ -27,7 +27,8 @@ import {
   queueScopeFrom,
   runModeFrom,
 } from "./config.mts";
-import { GATE_LIMIT_MINUTES } from "./step-limit.mts";
+import { GATE_LIMIT_MINUTES } from "./repo-config.mts";
+import { COMMAND_LIMIT_MINUTES } from "./step-limit.mts";
 import * as config from "./config.mts";
 import { roleAgent, uiEnabled } from "./agents.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
@@ -76,21 +77,26 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   // second run would clear a live build's label and build the issue too.
   // BUILD_ROLES, each once, plus the gate-fixer's attempts at both
   // checkpoints. build.test.mts checks buildIssue runs no other role.
-  it("outlasts the longest build the role timeouts allow, with half an hour for sandboxes and publishing", () => {
+  it("outlasts the longest build the role timeouts allow, with twenty minutes for sandboxes and publishing", () => {
     const checkpoints = 2;
     // The UI developer counts even in a repo that hasn't opted in, at the backend developer's budget (the Seed's example
     // entry), so a repo that opts in with a larger one gets the sum checked again by this test in its own config.
     const timeout = (role: (typeof BUILD_ROLES)[number]) => (role === "ui" && !uiEnabled() ? ROLE_AGENTS.backend : roleAgent(role)).timeoutMinutes;
+    // Checkpoint 1 runs the gate, then once more after each gate-fixer attempt. Checkpoint 2 runs it on the merged tree first,
+    // and when that is red goes through the same loop as checkpoint 1: seven runs in all, each up to its step limit.
+    const gateRuns = checkpoints * (GATE_FIXER_ATTEMPTS + 1) + 1;
     const minutes =
       BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) +
       checkpoints * GATE_FIXER_ATTEMPTS * ROLE_AGENTS["gate-fixer"].timeoutMinutes +
-      // Each checkpoint runs the gate once, then once more after each gate-fixer attempt, each up to its step limit.
-      checkpoints * (GATE_FIXER_ATTEMPTS + 1) * GATE_LIMIT_MINUTES;
-    const halfHour = 30;
+      gateRuns * GATE_LIMIT_MINUTES +
+      // A stalled command other than the gate fails its build (every caller treats the kill as a failure), so one more limit is
+      // the most any build adds from them.
+      COMMAND_LIMIT_MINUTES;
+    const spare = 20;
 
     assert.ok(
-      (minutes + halfHour) * 60_000 <= BUILDING_LABEL_MAX_AGE_MS,
-      `the longest build takes ${minutes} minutes plus half an hour, past BUILDING_LABEL_MAX_AGE_MS`,
+      (minutes + spare) * 60_000 <= BUILDING_LABEL_MAX_AGE_MS,
+      `the longest build takes ${minutes} minutes plus twenty minutes, past BUILDING_LABEL_MAX_AGE_MS`,
     );
   });
 });

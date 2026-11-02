@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
+import { GATE_FIXER_ATTEMPTS } from "./config.mts";
 import { changedFiles, gateFailureComment, gateScriptChange, runCheckpoint, runGate, tail, type Checkpoint, type GateRun } from "./checkpoint.mts";
-import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
+import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
+import { limitSandboxExec } from "./step-limit.mts";
 
 // These tests name the Template's gate command, whatever this repo's
 // GATE_COMMAND is: the fake sandbox reports the configured one as the default.
@@ -489,5 +491,30 @@ describe("changedFiles", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
+  });
+});
+
+// The step limit (lib/step-limit.mts) answers a gate it killed with exit code 124 and the step named in the output.
+describe("a gate the step limit killed", () => {
+  it("is a red gate that goes through the fixer's attempts, and the failure comment names the step", async () => {
+    let time = 0;
+    const commands: string[] = [];
+    const raw = {
+      exec: async (command: string) => {
+        commands.push(command);
+        if (command.includes(GATE_COMMAND)) return { stdout: "building...\n", stderr: "", exitCode: 124 };
+        return { stdout: `${"a".repeat(40)}\n`, stderr: "", exitCode: 0 };
+      },
+    } as unknown as Sandbox;
+    const limited = limitSandboxExec(raw, { log: () => undefined, now: () => (time += GATE_LIMIT_MINUTES * 60_000) });
+    let fixes = 0;
+
+    const result = await runCheckpoint(1, { gate: () => runGate(limited), fix: async () => void fixes++ }, () => undefined);
+
+    assert.equal(result.passed, false);
+    assert.equal(fixes, GATE_FIXER_ATTEMPTS);
+    assert.match(result.output, /The step "the gate" ran over its \d+-minute limit and was killed\.$/);
+    assert.match(gateFailureComment(1, "fix/1-x", result.output), /The step "the gate" ran over its \d+-minute limit and was killed\./);
+    assert.equal(commands.filter((command) => command.includes(GATE_COMMAND)).length, GATE_FIXER_ATTEMPTS + 1);
   });
 });

@@ -484,7 +484,13 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // again before that close: Sandcastle's close() runs git in it, and one that
 // no longer points at this repository is left in place, with its sandbox, and
 // its problems added to the error, a TamperedWorktreeError for the caller to
-// report. A check that itself fails counts as a tampered worktree.
+// report. A check that itself fails counts as a tampered worktree. The sandbox
+// it returns runs every exec under a limit (lib/step-limit.mts), so a stalled
+// gate or git command ends as exit code 124 with its name in the output; the
+// two git config commands that set the identity run first, on the sandbox
+// itself, and have none. It also needs `timeout` (GNU coreutils) in the image,
+// which is checked once: an image without it is refused with a message that
+// says so, rather than failing every later command.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
@@ -525,8 +531,13 @@ export async function createCheckedSandbox(
     await sandbox.close().catch(() => undefined);
     throw error;
   }
+  const probe = await sandbox.exec("command -v timeout");
+  if (probe.exitCode !== 0) {
+    await sandbox.close().catch(() => undefined);
+    throw new Error("the sandbox image has no `timeout` command (GNU coreutils), which the step limits in lib/step-limit.mts need");
+  }
   // Every later exec (the gate, the merge of main, the reads of git state) runs under a limit, so a stalled one ends the step.
-  return limitSandboxExec(sandbox);
+  return limitSandboxExec(sandbox, { prefix: `  ${terminalText(branch)}: ` });
 }
 
 // Whether origin's main is `commit` now, by its answer to git ls-remote. Only

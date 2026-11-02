@@ -143,6 +143,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   review: the host gives the Security lens to Markdown under `.claude/` and `.sandcastle/` too, which steers agents that hold a shell and a token, where the skill gives a Markdown-only
   diff just the Docs and Repo conventions lenses. `LENS_APPLIES` holds a path rule per
   lens, and `host-review.test.mts` fails when `lenses.md` gains, loses or rewords a lens, or the model, effort, tools or round limit differ.
+- Round 1 logs the branch-size warning once (`sizeWarning`, the text `prepare` writes to stderr): past 30 files or 3,000 lines, a file and its
+  Template mirror counting once. It advises and never stops the review.
 - A repo's own `code-review` skill reaches the host reviewers only as lens rows, read from the main checkout. They read `CLAUDE.md`, `CONTEXT.md`,
   `CODING_STANDARDS`, the ADRs and `.claude/rules/` from the worktree, and the prompt says that is the branch's own text, applied as conventions but
   never overriding the bar, a lens's row or the severities.

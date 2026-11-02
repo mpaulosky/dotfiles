@@ -491,20 +491,74 @@ export function patchKey(patch: Buffer): string {
 export const REVIEW_SIZE_MAX_FILES = 30;
 export const REVIEW_SIZE_MAX_LINES = 3000;
 
-// The Template's Owned files are held twice in the dotfiles repository, at the root and under this folder. The pair is one change.
+// The bytes of a path git quoted (C-style escapes, octal for non-ASCII), as text.
+function unquote(quoted: string): string {
+  const bytes: number[] = [];
+  const escapes: Record<string, number> = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 34, "\\": 92 };
+  for (let index = 0; index < quoted.length; index++) {
+    const char = quoted[index]!;
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char));
+      continue;
+    }
+    const octal = /^[0-3][0-7]{2}/.exec(quoted.slice(index + 1, index + 4))?.[0];
+    if (octal !== undefined) {
+      bytes.push(Number.parseInt(octal, 8));
+      index += 3;
+    } else {
+      bytes.push(escapes[quoted[index + 1] ?? ""] ?? (quoted[index + 1] ?? "\\").charCodeAt(0));
+      index += 1;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+// The path in a `diff --git` header's second half, and the rest after a quoted first half.
+function quotedToken(text: string): [string, string] | undefined {
+  const match = /^"((?:[^"\\]|\\.)*)"/.exec(text);
+  return match === null ? undefined : [unquote(match[1]!), text.slice(match[0].length).trimStart()];
+}
+
+// The repository paths a patch changes, in patch order, once each, read from its `diff --git` headers. The review's patch
+// has renames off, so both halves of a header name the same path; a deleted file keeps its old one.
+export function patchPaths(patch: string): string[] {
+  const paths = new Set<string>();
+  for (const line of patch.split("\n")) {
+    if (!line.startsWith("diff --git ")) continue;
+    const rest = line.slice("diff --git ".length);
+    let path: string | undefined;
+    const first = quotedToken(rest);
+    if (first !== undefined) {
+      const second = quotedToken(first[1]);
+      path = (second === undefined ? first[1] : second[0]).replace(/^b\//, "");
+    } else {
+      // Unquoted: "a/<p> b/<p>". With spaces in <p> only the midpoint splits it.
+      const half = (rest.length - 5) / 2;
+      path = Number.isInteger(half) && rest.slice(0, 2) === "a/" && rest.slice(2, 2 + half) === rest.slice(half + 5) ? rest.slice(2, 2 + half) : /^a\/.+ b\/(.+)$/.exec(rest)?.[1];
+    }
+    // A header it can't read still counts as a changed file, so no lens is skipped for it.
+    paths.add(path ?? rest);
+  }
+  return [...paths];
+}
+
+// How big a branch a review is asked to cover is counted here. In the dotfiles repository an Owned Template file is held twice, at the repository
+// root and under the path below; in other repositories nothing starts with this prefix, so the pair rule does nothing.
 const TEMPLATE_MIRROR_PREFIX = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
 
 // The files and lines (added plus deleted) a patch changes, from the hunks. A file and its Template mirror count once, and their lines
-// once (the larger of the two, since `test.sh` makes them equal). A binary file counts as a file with no lines.
+// once (the larger of the two, since `test.sh` makes them equal). A binary file, a mode change and an empty file count as a file with no lines.
 export function branchSize(patch: Buffer | string): { files: number; lines: number } {
   const text = typeof patch === "string" ? patch : patch.toString("latin1");
   const lines = new Map<string, number>();
   for (const section of text.split(/^(?=diff --git )/m)) {
-    const path = /^diff --git "?a\/(.*?)"? "?b\//.exec(section)?.[1];
+    // The path is read from the header the way the reviewers' lens choice reads it, so a space or a quoted character in it can't split or merge files.
+    const header = section.slice(0, section.indexOf("\n") === -1 ? undefined : section.indexOf("\n")).replace(/\r$/, "");
+    const path = patchPaths(header)[0];
     if (path === undefined) continue;
     const key = path.startsWith(TEMPLATE_MIRROR_PREFIX) ? path.slice(TEMPLATE_MIRROR_PREFIX.length) : path;
     // The lines after the first hunk header only: the file header's own `---` and `+++` lines come before it, and a body line starts
-    // with a space, `+`, `-` or `\` (so an added line that reads `++ x` is still one added line).
+    // with a space, `+`, `-` or `\` (so an added line that reads `++ x` is still one added line, and "\ No newline" is none).
     const hunks = section.search(/^@@ /m);
     let changed = 0;
     if (hunks >= 0) for (const line of section.slice(hunks).split("\n")) if (line.startsWith("+") || line.startsWith("-")) changed++;
@@ -519,7 +573,8 @@ export function branchSize(patch: Buffer | string): { files: number; lines: numb
 export function sizeWarning(patch: Buffer | string): string | undefined {
   const { files, lines } = branchSize(patch);
   if (files <= REVIEW_SIZE_MAX_FILES && lines <= REVIEW_SIZE_MAX_LINES) return undefined;
-  return `this branch changes ${files} files and ${lines} lines, past ${REVIEW_SIZE_MAX_FILES} files or ${REVIEW_SIZE_MAX_LINES} lines (a file and its Template mirror count once): a review this size takes more rounds and keeps finding problems in its own fixes. Consider splitting the branch before pushing it.`;
+  const count = (n: number, noun: string) => `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+  return `this branch changes ${count(files, "file")} and ${count(lines, "line")}, past ${count(REVIEW_SIZE_MAX_FILES, "file")} or ${count(REVIEW_SIZE_MAX_LINES, "line")} (a file and its Template mirror count once): a review this size takes more rounds and keeps finding problems in its own fixes. Consider splitting the branch before pushing it.`;
 }
 
 // The ledger key for `head`'s diff against `base`.

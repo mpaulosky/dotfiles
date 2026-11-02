@@ -120,7 +120,7 @@ already holds the issue or the PR (Sandcastle), use that.
 ### 4. Review the diff
 
 Run `scripts/review.sh prepare <run>`. It writes the branch's whole diff against its merge base with `origin/main` to
-`<run>/diff.patch` and prints two lines, the diff's key and HEAD: keep both, since they name exactly the code this round
+`<run>/diff.patch` and prints two lines on stdout, the diff's key and HEAD: keep both, since they name exactly the code this round
 reviews. In a later round, run `scripts/review.sh prepare <run> <HEAD the round before printed>`: it also writes the
 diff of that round's fixes to `<run>/fixes.patch`. Write to `<run>/decisions.md` the earlier decisions from step 3 and every finding this run's earlier rounds
 raised, each with its id, outcome and reason, so no round raises again what an earlier one fixed or dismissed. Label
@@ -134,7 +134,7 @@ source at the pinned commit into `<run>/actions/<owner>/<repo>/<path>`, as the r
 (`repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh api -H 'Accept: application/vnd.github.raw' 'repos/<action owner>/<action repo>/contents/<path>?ref=<sha>'`), since reviewers
 can't.
 
-In round 1, `prepare` also prints a warning on stderr (the host review logs the same one) when the branch changes more than 30 files
+In round 1, `prepare` also writes a warning to stderr, so stdout stays the two lines (the host review logs the same one) when the branch changes more than 30 files
 or more than 3,000 lines, a file and its Template mirror counting once. Tell the person and suggest splitting the branch; it only
 advises, and the review goes on.
 

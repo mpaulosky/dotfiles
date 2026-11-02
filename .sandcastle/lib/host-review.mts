@@ -10,7 +10,7 @@ import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, 
 import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
-import { FINDING_PATH_SHAPE, isSecurity, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
+import { FINDING_PATH_SHAPE, isSecurity, patchPaths, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
 
 // One row of lenses.md's table (or of a repo's own lenses table).
 export type Lens = { name: string; appliesTo: string; row: string };
@@ -61,56 +61,8 @@ export const LENS_APPLIES: Record<string, { appliesTo: string; matches(path: str
   "Repo conventions": { appliesTo: "Any file", matches: () => true },
 };
 
-// The bytes of a path git quoted (C-style escapes, octal for non-ASCII), as text.
-function unquote(quoted: string): string {
-  const bytes: number[] = [];
-  const escapes: Record<string, number> = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 34, "\\": 92 };
-  for (let index = 0; index < quoted.length; index++) {
-    const char = quoted[index]!;
-    if (char !== "\\") {
-      bytes.push(...Buffer.from(char));
-      continue;
-    }
-    const octal = /^[0-3][0-7]{2}/.exec(quoted.slice(index + 1, index + 4))?.[0];
-    if (octal !== undefined) {
-      bytes.push(Number.parseInt(octal, 8));
-      index += 3;
-    } else {
-      bytes.push(escapes[quoted[index + 1] ?? ""] ?? (quoted[index + 1] ?? "\\").charCodeAt(0));
-      index += 1;
-    }
-  }
-  return Buffer.from(bytes).toString("utf8");
-}
-
-// The path in a `diff --git` header's second half, and the rest after a quoted first half.
-function quotedToken(text: string): [string, string] | undefined {
-  const match = /^"((?:[^"\\]|\\.)*)"/.exec(text);
-  return match === null ? undefined : [unquote(match[1]!), text.slice(match[0].length).trimStart()];
-}
-
-// The repository paths a patch changes, in patch order, once each, read from its `diff --git` headers. The review's patch
-// has renames off, so both halves of a header name the same path; a deleted file keeps its old one.
-export function patchPaths(patch: string): string[] {
-  const paths = new Set<string>();
-  for (const line of patch.split("\n")) {
-    if (!line.startsWith("diff --git ")) continue;
-    const rest = line.slice("diff --git ".length);
-    let path: string | undefined;
-    const first = quotedToken(rest);
-    if (first !== undefined) {
-      const second = quotedToken(first[1]);
-      path = (second === undefined ? first[1] : second[0]).replace(/^b\//, "");
-    } else {
-      // Unquoted: "a/<p> b/<p>". With spaces in <p> only the midpoint splits it.
-      const half = (rest.length - 5) / 2;
-      path = Number.isInteger(half) && rest.slice(0, 2) === "a/" && rest.slice(2, 2 + half) === rest.slice(half + 5) ? rest.slice(2, 2 + half) : /^a\/.+ b\/(.+)$/.exec(rest)?.[1];
-    }
-    // A header it can't read still counts as a changed file, so no lens is skipped for it.
-    paths.add(path ?? rest);
-  }
-  return [...paths];
-}
+// The patch's changed paths are read in lib/review-ledger.mts, which counts a branch's size from the same headers.
+export { patchPaths };
 
 // A reviewer to start: the Bar or one lens. The Bar's `row` is empty.
 export type Reviewer = { lens: string; row: string };

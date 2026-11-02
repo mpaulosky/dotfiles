@@ -608,18 +608,34 @@ describe("the skills' reading of the .security record", () => {
 });
 
 describe("the pre-push-review skill's fewer-rounds rules", () => {
-  it("has lenses.md carry the edge-case checklist and the Tests lens ask for n-1, n and n+1 tests", () => {
+  const row = (name: string) => lenses.split("\n").find((line) => line.startsWith(`| ${name} |`)) ?? "";
+
+  it("has lenses.md carry the edge-case checklist", () => {
     assert.match(lenses, /^## Edge-case checklist$/m);
-    assert.match(lenses, /what falls outside it/);
-    assert.match(lenses, /line endings/);
-    assert.match(lenses, /surrogate/);
-    assert.match(lenses, /n-1, n and n\+1/);
+    for (const inputClass of ["what falls outside it", "line endings", "surrogate", "whitespace", "code fence", "n-1, n and n\\+1"]) {
+      assert.match(lenses, new RegExp(inputClass), inputClass);
+    }
+  });
+
+  it("has the Edge cases row carry the essentials itself, since the host gives a reviewer only its row", () => {
+    const edge = row("Edge cases");
+
+    for (const inputClass of ["what falls outside it", "n-1, n and n\\+1", "a lone", "surrogate pair cut in half", "whitespace", "open construct"]) {
+      assert.match(edge, new RegExp(inputClass), inputClass);
+    }
+  });
+
+  it("has the Tests row ask for n-1, n and n+1 tests that fail when removed or shifted", () => {
+    assert.match(row("Tests"), /have a test at n-1, n and n\+1 that fails when it is removed or shifted by one/);
   });
 
   it("has the fixer check its fix before committing, and replace a function that two rounds in a row fixed", () => {
     assert.match(skill, /Check the fix before committing it/);
-    assert.match(skill, /mutation check/);
-    assert.match(skill, /Edge-case checklist/);
+    assert.match(skill, /Write n-1, n and n\+1 boundary tests for each/);
+    assert.match(skill, /\(a mutation check\)/);
+    assert.match(skill, /\]\(\.\.\/hardening-review\/references\/mutations\.md\)/);
+    assert.match(skill, /\*\*Edge-case checklist\*\* in \[lenses\.md\]/);
+    assert.match(skill, /^4\. Commit the test and the fix together/m);
     assert.match(skill, /in the fixes of two rounds in a row, stop patching it/);
   });
 

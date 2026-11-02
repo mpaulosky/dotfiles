@@ -11,7 +11,7 @@ docs, comments, prompts and conventions. Every finding has a suggested fix.
 
 | Lens | Applies to | Ask |
 | --- | --- | --- |
-| Edge cases | Any code | What do empty, whitespace-only, Unicode, malformed, oversized and boundary inputs do? What if a value is missing, null or duplicated? Go through the **Edge-case checklist** below for every cap, window, truncation, dedupe and append in the diff. |
+| Edge cases | Any code | What do empty, whitespace-only, Unicode, malformed, oversized and boundary inputs do? What if a value is missing, null or duplicated? For every cap, window, truncation, dedupe and append in the diff, what falls outside it? Try the bound at n-1, n and n+1, line endings (`\n`, `\r\n`, a lone `\r`), a surrogate pair cut in half, whitespace, and a cut that lands inside an open construct (a code fence, a tag, a quote), and run the input when the tools allow. |
 | Races and caches | Shared state, caches, async code, Sandcastle runs | What if two requests, circuits or runs interleave? Can a read already in flight put a stale entry back after a write evicts it? Does every write evict what it makes stale? |
 | Error contract | Handlers, services, components showing errors | Does each expected failure come back as the failure the caller is told to expect, with the right stable code? Is anything caught too broadly, swallowed, or logged with a token or secret? |
 | Blazor lifecycle | `.razor`, `.razor.cs` | Does it work prerendered and then interactive? Is UI changed from a timer, callback or background task wrapped in `InvokeAsync(StateHasChanged)`? Is everything it subscribes to disposed? Does every link and navigation reach a page? |
@@ -25,7 +25,7 @@ docs, comments, prompts and conventions. Every finding has a suggested fix.
 
 ## Edge-case checklist
 
-For every cap, window, truncation, dedupe or append the diff adds or changes, ask **what falls outside it**: what is lost when
+The full list behind the Edge cases row. For every cap, window, truncation, dedupe or append the diff adds or changes, ask **what falls outside it**: what is lost when
 the value is bounded, and what is lost or broken when something is appended after it. Then try each input class on it, and
 run the input (a script, the test runner) when the tools allow, rather than argue it from the regex or the code:
 

@@ -224,13 +224,16 @@ Fix the Critical, Warning and Advisory findings. For each one:
 3. Check the fix before committing it. A fix is new code with its own edge cases, which is where most later findings come from:
    - List every branch, constant, regex, cap and window the fix adds.
    - Write n-1, n and n+1 boundary tests for each.
-   - Show that removing each one, or shifting it by one, fails a test (a mutation check; [the hardening-review's `mutate.py`](../hardening-review/references/mutations.md) runs it).
+   - Show that removing each one, or shifting it by one, fails a test (a mutation check): edit the line, see a test fail, restore it.
+     `mutate.py` ([the hardening-review's runner](../hardening-review/references/mutations.md)) does the same on a committed fix,
+     but refuses a dirty file, so use it only after the commit.
    - Go through the **Edge-case checklist** in [lenses.md](lenses.md) on the lines the fix wrote.
 4. Commit the test and the fix together: `fix(<scope>): <Summary>`.
 
 If a function is in the fixes of two rounds in a row, stop patching it. Replace the mechanism with one that rules the class
-out (for example, put a PR body's notes before the description and cut the description last, so no code fence needs closing;
-refuse a reviewer answer with more than N tags outright instead of telling blocks apart inside windows), and test the new one.
+out, and test the new one. For example, put the parts that must survive before the part that gets cut and cut last, so
+nothing needs closing; or refuse an input over a fixed count outright instead of telling constructs apart inside windows. Find
+the repeats with `git log -p` over the earlier round's `fix(` commits.
 
 A finding no test can pin, such as one in a workflow or in prose, gets a deterministic check in
 `.github/ci/gate-checks.sh` when one can express it, or a reason saying why it has no test. A security finding (every Warning) is

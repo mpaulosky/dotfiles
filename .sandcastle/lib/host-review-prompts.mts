@@ -48,7 +48,7 @@ export function reviewerPrompt({
     ? [
         `This is round ${round}, which reviews the fixes the earlier rounds' findings led to, not the whole branch again.`,
         `- The fixes to review: \`${runDir}/fixes.patch\`. Report only problems on the lines they changed, or problems they cause elsewhere,`,
-        "  such as a caller a changed function now breaks.",
+        "  such as a caller a changed function now breaks. Read the whole function around each changed line and its callers, not only the patch.",
         `- The branch's whole diff, as context: \`${runDir}/diff.patch\`.`,
       ]
     : [`This is round ${round}, which reviews the whole branch.`, `- The branch's diff: \`${runDir}/diff.patch\`.`];
@@ -166,9 +166,9 @@ export function reviewFixPrompt({
     "   Commit the test and the fix together as `fix(<scope>): <Summary>`, with `Refs #" + issue.number + "` in the footer.",
     "   A finding no test can pin, such as one in prose, gets a deterministic check when one can express it, or is fixed with a reason saying why it has no test; commit prose",
     "   fixes as `docs(<scope>): <Summary>`. A security weakness (a Warning) is fixed only behind a test that fails without the fix.",
-    "   Before committing, check your own fix: list every branch, constant, regex, cap and window it adds, write n-1, n and n+1 boundary tests for each, and show that removing or shifting",
-    "   each one by one fails a test. Then ask of every cap, window, truncation or append you wrote what falls outside it, and try empty input, line endings (\\n, \\r\\n, a lone \\r), a surrogate cut in half,",
-    "   whitespace and a cut inside an open construct (a code fence, a tag, a quote) on it. When this function was also in the fixes of the round before, replace its mechanism with one that rules the class out.",
+    "   Before committing, check your own fix: list every branch, constant, regex, cap and window it adds, write n-1, n and n+1 boundary tests for each, and show that removing each one,",
+    "   or shifting it by one, fails a test (edit the line, watch a test fail, restore it). Then ask of every cap, window, truncation or append you wrote what falls outside it, and try empty input, line endings (\\n, \\r\\n, a lone \\r), a surrogate cut in half,",
+    "   whitespace and a cut inside an open construct (a code fence, a tag, a quote) on it. When `git log -p` shows this function in a `fix(` commit of an earlier round, replace its mechanism with one that rules the class out.",
     "3. When the code shows the reviewer was wrong, dismiss the finding with a reason citing the code that shows it, as file:line (for example `src/app.ts:12 already trims the name`).",
     "   Never dismiss a finding because it is hard to fix.",
     "",

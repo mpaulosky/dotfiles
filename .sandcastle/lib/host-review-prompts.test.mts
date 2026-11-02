@@ -358,9 +358,10 @@ describe("reviewFixPrompt", () => {
     const prompt = reviewFixPrompt(fixArgs());
 
     assert.match(prompt, /n-1, n and n\+1 boundary tests/);
-    assert.match(prompt, /removing or shifting/);
+    assert.match(prompt, /removing each one,\s+or shifting it by one, fails a test/);
     assert.match(prompt, /what falls outside it/);
-    assert.match(prompt, /replace its mechanism/);
+    for (const inputClass of ["line endings", "lone \\r", "surrogate", "whitespace", "open construct"]) assert.ok(prompt.includes(inputClass), inputClass);
+    assert.match(prompt, /`git log -p` shows this function in a `fix\(` commit of an earlier round, replace its mechanism/);
   });
 
   it("has an Advisory prose fix committed as docs", () => {

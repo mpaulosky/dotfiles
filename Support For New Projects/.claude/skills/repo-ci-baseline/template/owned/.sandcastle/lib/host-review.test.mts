@@ -1311,6 +1311,12 @@ describe("runHostReview's decisions file", () => {
     assert.equal(run({ severity: "warning", security: true }, { severity: "advisory", security: false, test: null, reason: "Reworded." }), "open", "a lower grade");
     assert.equal(run({ severity: "warning" }, { severity: "warning", test: null, reason: "Reworded." }), "open", "a Warning needs a test");
     assert.equal(run({ severity: "warning" }, { severity: "warning" }), "fixed", "a Warning behind a test");
+    assert.equal(run({ security: true }, { security: true, test: null, reason: "Reworded." }), "open", "a security Critical needs a test");
+    assert.equal(run({ security: true }, {}), "open", "only the security flag differs (earlier is security)");
+    assert.equal(run({}, { security: true }), "open", "only the security flag differs (later is security)");
+    assert.equal(run({ security: true }, { security: true }), "fixed", "a security Critical behind a test");
+    assert.equal(run({}, { severity: "advisory" }), "open", "a Critical is not cleared by an Advisory");
+    assert.equal(run({ severity: "advisory" }, { severity: "critical" }), "fixed", "a higher grade clears a lower one");
     const person = [open({})];
     resolveRepeats(person, [fixed({})], new Set(["R1"]));
     assert.equal(person[0]!.status, "open", "a finding for a person");

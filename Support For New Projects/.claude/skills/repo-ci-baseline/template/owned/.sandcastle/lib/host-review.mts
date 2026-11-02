@@ -588,7 +588,8 @@ async function runRounds(
 // A problem an earlier round left open (the fix failed) and a later round raised again and fixed is fixed: the earlier copy takes the later
 // one's test or reason, so the ledger doesn't count it unresolved. Only the same finding counts (same path, line, lens, security grading and
 // summary) and one at least as strictly fixed: a Warning or security finding is cleared only behind a test, by a later copy graded as high.
-// A finding that waits for a person is left as it was.
+// A finding that waits for a person is left as it was. A repeat on a line the fixes moved is a different finding here and stays open beside the earlier one:
+// matching loosely could clear a Warning by an unrelated repeat.
 export function resolveRepeats(recorded: ReviewInput["findings"], later: ReviewInput["findings"], personRequired: ReadonlySet<string>): void {
   type Found = ReviewInput["findings"][number];
   const text = (found: Found) => found.summary.toLowerCase().replace(/\s+/g, " ").trim();

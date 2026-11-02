@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_FIXER_ATTEMPTS } from "./config.mts";
-import { changedFiles, gateFailureComment, gateScriptChange, runCheckpoint, runGate, sandboxDown, tail, withoutRunnerCommands, type Checkpoint, type GateRun } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, gateScriptChange, printableLine, runCheckpoint, runGate, sandboxDown, tail, withoutRunnerCommands, type Checkpoint, type GateRun } from "./checkpoint.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
 import { StalledStepError } from "./errors.mts";
 import { limitSandboxExec } from "./step-limit.mts";
@@ -320,6 +320,21 @@ describe("runCheckpoint", () => {
     ]);
   });
 
+  it("logs a fixer failure as one printable line, with no ##[ and the scrub applied", async () => {
+    const lines: string[] = [];
+    const s = {
+      ...steps([red(), green], async () => {
+        throw new Error("boom\n::stop-commands::t\n##[add-mask]y secret");
+      }),
+      scrub: (text: string) => text.replaceAll("secret", "[withheld]"),
+    };
+
+    await runCheckpoint(1, s, (line) => lines.push(line));
+
+    const failure = lines.find((line) => line.includes("failed: "))!;
+    assert.equal(failure, "checkpoint 1: gate-fixer attempt 1/2 failed: Error: boom ::stop-commands::t ## [add-mask]y [withheld]");
+  });
+
   it("logs a first-run pass", async () => {
     const lines: string[] = [];
 
@@ -508,6 +523,39 @@ describe("withoutRunnerCommands", () => {
   });
 });
 
+describe("printableLine", () => {
+  it("gives one printable line: newlines, escapes and hidden characters become spaces and a ##[ is changed", () => {
+    const line = printableLine(new Error("x\n::stop-commands::t\n##[add-mask]y\u001b[31m\u202e"));
+
+    assert.ok(!/[\r\n]/.test(line), line);
+    assert.ok(!line.includes("##["), line);
+    assert.equal(line, "Error: x ::stop-commands::t ## [add-mask]y [31m");
+  });
+
+  it("applies the scrub before the cut, so a secret across the cut doesn't survive as a fragment", () => {
+    const text = `${"a".repeat(185)}ghp_0123456789`;
+
+    const line = printableLine(text, (value) => value.replace(/ghp_\d{10}/g, "[x]"));
+
+    assert.ok(!line.includes("ghp_"), line);
+    assert.ok(line.endsWith("[x]"), line);
+  });
+
+  it("cuts at the limit", () => {
+    for (const [length, kept] of [[199, 199], [200, 200], [201, 200]] as const) {
+      assert.equal(printableLine("x".repeat(length)).length, kept, `${length} characters`);
+    }
+    assert.equal(printableLine("x".repeat(30), undefined, 10), "x".repeat(10));
+  });
+
+  it("gives a fixed text for a value that can't be printed and for a scrub that throws", () => {
+    const hostile = { toString: () => { throw new Error("no"); } };
+
+    assert.equal(printableLine(hostile), "an error that can't be printed");
+    assert.equal(printableLine("secret", () => { throw new Error("the scrub broke"); }), "text that couldn't be made safe to log");
+  });
+});
+
 describe("sandboxDown", () => {
   const exec = (result: { stdout: string; exitCode: number } | Error) =>
     ({ exec: async () => (result instanceof Error ? Promise.reject(result) : { stderr: "", ...result }) }) as unknown as Pick<Sandbox, "exec">;
@@ -531,7 +579,7 @@ describe("sandboxDown", () => {
     assert.ok(reason.length < 300, String(reason.length));
   });
 
-  it("changes a ##[ in the error text, including one a hidden character was splitting", async () => {
+  it("changes a ##[ in the error text, and replaces a hidden character inside one with a space", async () => {
     const reason = (await sandboxDown(exec(new Error("failed ##[add-mask]x ##\u200b[error]y")))) ?? "";
 
     assert.ok(!reason.includes("##["), reason);

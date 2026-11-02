@@ -918,16 +918,17 @@ const LOGGED_LINE_LIMIT = 500;
 // output is written by the branch's agents and the log is a terminal, and in
 // GitHub Actions a line that starts with `::` is a workflow command, so every
 // line is cleaned by terminalText first (before the secret check, so hidden
-// characters can't hide a token that is rebuilt afterwards), the whole text goes
-// through `publicError`, and each line is cleaned again, cut to
-// LOGGED_LINE_LIMIT characters (after the check, so the cut can't split a token
-// it has passed) and given a prefix no workflow command can start with, and any
-// `##[` is changed so the runner's legacy command form can't appear in the
-// middle of a line (see withoutRunnerCommands). A final
-// newline is dropped even when `publicError` doesn't trim, so the caller's line
-// count isn't spent on a blank line.
-// terminalText folds runs of whitespace into one space and trims each line, so
-// the log is not byte for byte what the gate printed.
+// characters can't hide a token that is rebuilt afterwards), and the whole text
+// goes through `publicError`. Each line is then cleaned again, any `##[` in it is
+// changed (after the cleaning, so a hidden character can't split one that is
+// rebuilt, and before the cut, so the extra space is counted), and it is cut to
+// LOGGED_LINE_LIMIT characters (after the secret check, so the cut can't split a
+// token it has passed) and given a prefix no workflow command can start with.
+//
+// A final newline is dropped even when `publicError` doesn't trim, so the
+// caller's line count isn't spent on a blank line. terminalText folds runs of
+// whitespace into one space and trims each line, so the log is not byte for byte
+// what the gate printed.
 export function logSafeGateOutput(text: string, publicError: (text: string) => string): string {
   const cleaned = text.replace(/\n$/, "").split("\n").map((line) => terminalText(line)).join("\n");
   return publicError(cleaned)

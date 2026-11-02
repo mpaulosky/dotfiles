@@ -226,7 +226,7 @@ export async function runCheckpoint(
         await steps.fix(checkpoint, result.output);
       } catch (error) {
         if (steps.uncounted?.(error)) throw error;
-        log(`${prefix} ${label} failed: ${error}`);
+        log(`${prefix} ${label} failed: ${printableLine(error, steps.scrub)}`);
       }
       result = await steps.gate();
       log(`${prefix} gate ${result.passed ? "passed" : "failed"} after ${label}`);
@@ -253,21 +253,44 @@ export async function runCheckpoint(
   return result.passed || firstOutput === result.output ? result : { ...result, firstOutput };
 }
 
-// `text` without the `##[` that GitHub Actions' runner reads as a command
-// anywhere in a log line, not only at its start (`##[add-mask]` would hide the
-// lines after it). It is changed to `## [`, which no command starts with.
+// `text` without the `##[` form of a GitHub Actions command. The runner can read
+// that legacy form from anywhere in a log line, not only at its start
+// (`##[add-mask]` would hide the lines after it), so it is changed to `## [`,
+// which is not that form. The match is a literal one, so a caller removes hidden
+// characters first (terminalText, or the ASCII filter in printableLine), or a
+// `##` and a `[` could be rebuilt around them.
 export function withoutRunnerCommands(text: string): string {
   return text.replaceAll("##[", "## [");
+}
+
+// `value` (an error, for one) as a single printable line for the host's log or a
+// comment: the text is made safe by `scrub` first, so a secret in it can't be cut
+// into a shape the scrub no longer recognises, then reduced to printable ASCII
+// (a newline, an escape and a hidden character become spaces, so no line can start
+// with `::`), changed by withoutRunnerCommands, cut to `limit` characters and
+// trimmed. A value that can't be printed, or a scrub that throws, gives a fixed
+// text instead, so the caller's own error is never replaced by this one.
+export function printableLine(value: unknown, scrub: (text: string) => string = (text) => text, limit = 200): string {
+  let text: string;
+  try {
+    text = String(value);
+  } catch {
+    return "an error that can't be printed";
+  }
+  try {
+    return withoutRunnerCommands(scrub(text).replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim();
+  } catch {
+    return "text that couldn't be made safe to log";
+  }
 }
 
 // Why the sandbox can't run a fixer, or undefined when `git rev-parse HEAD`
 // answers in it. A probe that throws counts as the sandbox being down, except a
 // stall (an UncountedStopError): that ends the run, and recording it as a
-// failed build attempt would hide it. `scrub` runs over the error's text
-// before it is cut to 200 printable characters, so a secret in it can't be cut
-// into a shape the scrub no longer recognises. The default scrub does nothing,
-// so a caller that logs or posts the reason must pass one. The raw error text is
-// never logged: only the scrubbed reason is.
+// failed build attempt would hide it. The reason holds the error's text as
+// printableLine makes it, with `scrub` applied first. The default scrub does
+// nothing, so a caller that logs or posts the reason must pass one. The raw
+// error text is never logged: only that reason is.
 export async function sandboxDown(
   sandbox: Pick<Sandbox, "exec">,
   scrub: (text: string) => string = (text) => text,
@@ -277,14 +300,7 @@ export async function sandboxDown(
     return "The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run.";
   } catch (error) {
     if (error instanceof UncountedStopError) throw error;
-    let text: string;
-    try {
-      text = String(error);
-    } catch {
-      text = "an error that can't be printed";
-    }
-    const reason = withoutRunnerCommands(scrub(text).replace(/[^\x20-\x7e]/g, " ")).slice(0, 200).trim();
-    return `The sandbox can't run a command (${reason}), so no gate-fixer was run.`;
+    return `The sandbox can't run a command (${printableLine(error, scrub)}), so no gate-fixer was run.`;
   }
 }
 

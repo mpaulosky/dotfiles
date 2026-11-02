@@ -127,6 +127,7 @@ function host(
     baseExecError,
     baseIsAncestor = true,
     gateOutput,
+    sandboxDiesAfterGates,
     gateScriptChanged = "",
     checkFiles = "",
     checkFilesError,
@@ -159,6 +160,8 @@ function host(
     prBodyFile?: string;
     // What every gate run prints, instead of "gate output, exit <n>".
     gateOutput?: string;
+    // `git rev-parse HEAD` fails from the Nth gate run on, as in a sandbox that was killed.
+    sandboxDiesAfterGates?: number;
     // The commit latestMain() resolves origin/main to just before checkpoint
     // 2, whether the branch already contains it, how `git merge` of it and
     // `git merge --abort` exit, and an error latestMain() throws instead (a
@@ -252,6 +255,9 @@ function host(
         return { stdout, stderr: "", exitCode: 0 };
       }
       if (command === "git rev-parse HEAD") {
+        if (sandboxDiesAfterGates !== undefined && steps.filter((step) => step.startsWith("gate:")).length >= sandboxDiesAfterGates) {
+          return { stdout: "fatal: not a git repository\n", stderr: "", exitCode: 128 };
+        }
         return { stdout: `${head()}\n`, stderr: "", exitCode: 0 };
       }
       if (command.startsWith(`git merge-base --is-ancestor '${base}'`)) {
@@ -651,6 +657,17 @@ describe("buildIssue", () => {
 
     assert.equal(recordBuildFailureCalls.length, 1);
     assert.equal(recordBuildFailureCalls[0]!.issueNumber, 69);
+  });
+
+  it("runs no gate-fixer, and records the dead sandbox, when git stops answering after the first gate", async () => {
+    const { steps, recordBuildFailureCalls, buildHost } = host([1], { sandboxDiesAfterGates: 1 });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!steps.some((step) => step.startsWith("gate-fixer")), steps.join(", "));
+    assert.equal(recordBuildFailureCalls.length, 1);
+    assert.match(recordBuildFailureCalls[0]!.detail, /after 0 gate-fixer attempts/);
+    assert.match(recordBuildFailureCalls[0]!.detail, /gate output, exit 1\n❌ The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run\./);
   });
 
   it("doesn't treat a gate-fixer attempt as a failed build attempt when the checkpoint later passes", async () => {

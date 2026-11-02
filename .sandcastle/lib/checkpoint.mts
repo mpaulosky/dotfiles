@@ -15,7 +15,12 @@ import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 export type Checkpoint = 1 | 2 | 3;
 
 // A gate run, and on a pass the commit it passed on: the one the host pushes.
-export type GateRun = { passed: boolean; output: string; head?: string };
+// `firstOutput` is the output of the checkpoint's first red gate run, kept when
+// the checkpoint ended red after a fixer had run, since the last run's output
+// may be about something else (a dead sandbox, a different failure).
+// `fixersRun` is how many gate-fixer attempts ran, set only when the checkpoint
+// ended early because the sandbox was down.
+export type GateRun = { passed: boolean; output: string; head?: string; firstOutput?: string; fixersRun?: number };
 
 // What a checkpoint does in the sandbox; tests pass stubs.
 export type CheckpointSteps = {
@@ -26,6 +31,11 @@ export type CheckpointSteps = {
   // UncountedStopError in lib/errors.mts) would only stop every later fixer
   // run too, after another full gate run each.
   uncounted?(error: unknown): boolean;
+  // Why the sandbox can't run a fixer, or undefined when it answers. Asked
+  // before every fixer attempt: a fixer run into a dead sandbox only fails on
+  // its first command and costs a whole attempt (a run's second gate-fixer died
+  // on `git config`, exit 128, and every git call after it did too).
+  alive?(): Promise<string | undefined>;
 };
 
 // The gate prints in colour, which only gets in the way of a prompt or an
@@ -171,7 +181,9 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 }
 
 // Run the gate, and the gate-fixer while it's red and attempts are left.
-// Returns the last gate run.
+// Returns the last gate run, with the first red run's output when the
+// checkpoint ended red after a fixer ran, and ending the checkpoint early,
+// without a fixer, when the sandbox is down (`alive`).
 export async function runCheckpoint(
   checkpoint: Checkpoint,
   steps: CheckpointSteps,
@@ -181,8 +193,14 @@ export async function runCheckpoint(
   let result = await steps.gate();
   log(`${prefix} gate ${result.passed ? "passed" : "failed"}`);
 
+  const firstOutput = result.output;
   for (let attempt = 1; !result.passed && attempt <= GATE_FIXER_ATTEMPTS; attempt++) {
     const label = `gate-fixer attempt ${attempt}/${GATE_FIXER_ATTEMPTS}`;
+    const down = await steps.alive?.();
+    if (down !== undefined) {
+      log(`${prefix} ${label} not run: ${down}`);
+      return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 ? { firstOutput } : {}) };
+    }
     try {
       await steps.fix(checkpoint, result.output);
     } catch (error) {
@@ -193,7 +211,20 @@ export async function runCheckpoint(
     log(`${prefix} gate ${result.passed ? "passed" : "failed"} after ${label}`);
   }
 
-  return result;
+  return result.passed || firstOutput === result.output ? result : { ...result, firstOutput };
+}
+
+// Why the sandbox can't run a fixer, or undefined when `git rev-parse HEAD`
+// answers in it. A step the host killed leaves later calls throwing, so a throw
+// counts as the sandbox being down too.
+export async function sandboxDown(sandbox: Pick<Sandbox, "exec">): Promise<string | undefined> {
+  try {
+    if ((await headOf(sandbox)) !== undefined) return undefined;
+    return "The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run.";
+  } catch (error) {
+    const reason = String(error).replace(/[^\x20-\x7e]/g, " ").slice(0, 200).trim();
+    return `The sandbox can't run a command (${reason}), so no gate-fixer was run.`;
+  }
 }
 
 // The last `lines` lines of the output.
@@ -211,14 +242,26 @@ export function endOf(text: string, limit: number): string {
 }
 
 // The issue comment for a checkpoint that stayed red past the fixer's attempts.
-export function gateFailureComment(checkpoint: Checkpoint, branch: string, output: string): string {
+// `firstOutput` is the checkpoint's first red run, quoted too when it differs
+// from the last: a gate-fixer attempt can leave the last run showing a dead
+// sandbox or a timeout, not the failure the build began with. `fixersRun` is
+// how many attempts ran when that is fewer than GATE_FIXER_ATTEMPTS.
+export function gateFailureComment(
+  checkpoint: Checkpoint,
+  branch: string,
+  output: string,
+  { firstOutput, fixersRun = GATE_FIXER_ATTEMPTS }: { firstOutput?: string; fixersRun?: number } = {},
+): string {
   return [
     `Sandcastle stopped building this issue: \`${GATE_COMMAND}\` is still red at checkpoint ${checkpoint} ` +
-      `after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts, so \`${branch}\` wasn't pushed. The branch keeps its commits.`,
+      `after ${fixersRun} gate-fixer ${fixersRun === 1 ? "attempt" : "attempts"}, so \`${branch}\` wasn't pushed. The branch keeps its commits.`,
     "",
     `The last ${GATE_COMMENT_LINES} lines of the gate output:`,
     "",
     textBlock(tail(output, GATE_COMMENT_LINES)),
+    ...(firstOutput === undefined || firstOutput === output
+      ? []
+      : ["", `The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:`, "", textBlock(tail(firstOutput, GATE_COMMENT_LINES))]),
   ].join("\n");
 }
 

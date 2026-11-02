@@ -9,7 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { isRoleTimeout, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
-import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, type Checkpoint } from "./checkpoint.mts";
 import {
   BASE_BRANCH,
   BUILD_FAILED_MARKER,
@@ -1054,6 +1054,7 @@ async function buildMarkedIssue(
           commits.push(...fixer.commits);
         },
         uncounted: (error) => error instanceof UncountedStopError,
+        alive: () => sandboxDown(sandbox),
       },
       log,
     );
@@ -1066,8 +1067,9 @@ async function buildMarkedIssue(
       // The gate runs the branch's own scripts, which agents write, in the
       // sandbox that holds the Claude token, so its output is made safe to
       // post and its <!-- broken, like a role's error.
-      const output = host.publicError(result.output).replaceAll("<!--", BROKEN_COMMENT_OPEN);
-      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, output));
+      const safe = (text: string) => host.publicError(text).replaceAll("<!--", BROKEN_COMMENT_OPEN);
+      const first = result.firstOutput === undefined ? undefined : safe(result.firstOutput);
+      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, safe(result.output), { firstOutput: first, fixersRun: result.fixersRun }));
       return undefined;
     }
     return result.head;

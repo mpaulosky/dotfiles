@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_FIXER_ATTEMPTS } from "./config.mts";
-import { changedFiles, gateFailureComment, gateScriptChange, runCheckpoint, runGate, tail, type Checkpoint, type GateRun } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, gateScriptChange, runCheckpoint, runGate, sandboxDown, tail, type Checkpoint, type GateRun } from "./checkpoint.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
 import { limitSandboxExec } from "./step-limit.mts";
 
@@ -70,8 +70,59 @@ describe("runCheckpoint", () => {
 
     const result = await runCheckpoint(1, s, () => {});
 
-    assert.deepEqual(result, red("three"));
+    assert.deepEqual(result, { ...red("three"), firstOutput: "one" });
     assert.deepEqual(s.calls, ["gate", "fix 1: one", "gate", "fix 1: two", "gate"]);
+  });
+
+  it("keeps the first red run's output when the checkpoint ends red, but not one that is the same as the last", async () => {
+    const differs = await runCheckpoint(1, steps([red("first"), red("second"), red("third")]), () => {});
+    const same = await runCheckpoint(1, steps([red("same"), red("same"), red("same")]), () => {});
+    const passes = await runCheckpoint(1, steps([red("first"), green]), () => {});
+
+    assert.equal(differs.firstOutput, "first");
+    assert.equal(same.firstOutput, undefined);
+    assert.equal(passes.firstOutput, undefined);
+  });
+
+  describe("with a sandbox that can be asked whether it is down", () => {
+    const withAlive = (gateResults: GateRun[], answers: (string | undefined)[]) => {
+      const s = steps(gateResults);
+      return { ...s, alive: async () => (s.calls.push("alive"), answers.shift()) };
+    };
+
+    it("asks before every fixer attempt and runs the fixer when the sandbox answers", async () => {
+      const s = withAlive([red("one"), red("two"), green], [undefined, undefined]);
+
+      const result = await runCheckpoint(1, s, () => {});
+
+      assert.equal(result.passed, true);
+      assert.deepEqual(s.calls, ["gate", "alive", "fix 1: one", "gate", "alive", "fix 1: two", "gate"]);
+    });
+
+    it("runs no fixer and ends the checkpoint when the sandbox is down before the first attempt", async () => {
+      const s = withAlive([red("the sandbox error")], ["The sandbox is down."]);
+      const lines: string[] = [];
+
+      const result = await runCheckpoint(2, s, (line) => lines.push(line));
+
+      assert.deepEqual(s.calls, ["gate", "alive"]);
+      assert.equal(result.passed, false);
+      assert.equal(result.output, "the sandbox error\n❌ The sandbox is down.");
+      assert.equal(result.fixersRun, 0);
+      assert.equal(result.firstOutput, undefined);
+      assert.deepEqual(lines, ["checkpoint 2: gate failed", "checkpoint 2: gate-fixer attempt 1/2 not run: The sandbox is down."]);
+    });
+
+    it("keeps the first run's output when the sandbox goes down after the first fixer attempt", async () => {
+      const s = withAlive([red("real failure"), red("sandbox error")], [undefined, "The sandbox is down."]);
+
+      const result = await runCheckpoint(1, s, () => {});
+
+      assert.deepEqual(s.calls, ["gate", "alive", "fix 1: real failure", "gate", "alive"]);
+      assert.equal(result.output, "sandbox error\n❌ The sandbox is down.");
+      assert.equal(result.firstOutput, "real failure");
+      assert.equal(result.fixersRun, 1);
+    });
   });
 
   it("counts a fixer run that throws as an attempt and re-runs the gate after it", async () => {
@@ -295,6 +346,30 @@ describe("tail", () => {
   });
 });
 
+describe("sandboxDown", () => {
+  const exec = (result: { stdout: string; exitCode: number } | Error) =>
+    ({ exec: async () => (result instanceof Error ? Promise.reject(result) : { stderr: "", ...result }) }) as unknown as Pick<Sandbox, "exec">;
+
+  it("is undefined when git rev-parse HEAD answers with a commit", async () => {
+    assert.equal(await sandboxDown(exec({ stdout: `${"a".repeat(40)}\n`, exitCode: 0 })), undefined);
+  });
+
+  it("says the sandbox no longer answers when git fails, as it did with exit 128 after the gate was killed", async () => {
+    assert.match((await sandboxDown(exec({ stdout: "fatal: not a git repository", exitCode: 128 }))) ?? "", /no longer answers `git rev-parse HEAD`, so no gate-fixer was run/);
+  });
+
+  it("says the same for an answer that isn't a commit", async () => {
+    assert.match((await sandboxDown(exec({ stdout: "\n", exitCode: 0 }))) ?? "", /no longer answers/);
+  });
+
+  it("says the sandbox can't run a command when the exec throws, with the error as printable ASCII, capped", async () => {
+    const reason = (await sandboxDown(exec(new Error(`stalled\u001b[31m ${"x".repeat(300)}`)))) ?? "";
+
+    assert.match(reason, /^The sandbox can't run a command \(Error: stalled \[31m x+\), so no gate-fixer was run\.$/);
+    assert.ok(reason.length < 300, String(reason.length));
+  });
+});
+
 describe("gateFailureComment", () => {
   const output = Array.from({ length: 150 }, (_, i) => `line ${i + 1}`).join("\n");
 
@@ -319,6 +394,31 @@ describe("gateFailureComment", () => {
 
     assert.ok(comment.includes("line 51\n"));
     assert.ok(comment.includes("line 150\n"));
+    assert.ok(!comment.includes("line 50\n"));
+  });
+
+  it("quotes the first red run too when it differs from the last", () => {
+    const comment = gateFailureComment(1, "feature/69-x", "last run", { firstOutput: "first run" });
+
+    assert.match(comment, /The last 100 lines of the first red gate run, before a gate-fixer ran:\n\n```text\nfirst run\n```$/);
+    assert.ok(comment.indexOf("last run") < comment.indexOf("first run"));
+  });
+
+  it("counts the gate-fixer attempts that ran, not the most there could be", () => {
+    assert.match(gateFailureComment(1, "feature/69-x", "o", { fixersRun: 0 }), /still red at checkpoint 1 after 0 gate-fixer attempts/);
+    assert.match(gateFailureComment(1, "feature/69-x", "o", { fixersRun: 1 }), /after 1 gate-fixer attempt\b/);
+    assert.match(gateFailureComment(1, "feature/69-x", "o"), /after 2 gate-fixer attempts/);
+  });
+
+  it("doesn't repeat a first run that is the last", () => {
+    assert.ok(!gateFailureComment(1, "feature/69-x", "same", { firstOutput: "same" }).includes("first red gate run"));
+    assert.ok(!gateFailureComment(1, "feature/69-x", "same").includes("first red gate run"));
+  });
+
+  it("quotes only the last 100 lines of the first run", () => {
+    const comment = gateFailureComment(1, "feature/69-x", "last", { firstOutput: output });
+
+    assert.ok(comment.includes("line 51\n"));
     assert.ok(!comment.includes("line 50\n"));
   });
 

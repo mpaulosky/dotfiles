@@ -51,8 +51,9 @@ files change.
   `lib/step-limit.mts`) is recorded by `markHostCallAbandoned`, and `main.mts` ends with `exitAfterStall()` after its report and cleanup: the process
   exits with the run's code `STALL_EXIT_GRACE_SECONDS` later, naming the abandoned calls, because process.exitCode doesn't force an exit and the call
   may keep Node alive. The same warning is printed once when the process exits for any reason, so a run that crashes before `exitAfterStall` names them too.
-  A close the host gave up on, in a build's or a pass's `finally`, is only logged (`closeAfterWork`), so it never discards the pull request or the error that ended the work. Role runs through
-  `sandcastle.run()` rely on the role's own `timeoutMinutes`.
+  A close the host gave up on, in a build's or a pass's `finally`, is logged and ends the run red (`closeAfterWork`; `exitAfterStall` sets exit
+  code 1), but it never discards the pull request or the error that ended the work. Role runs through `sandcastle.run()` rely on the role's own
+  `timeoutMinutes`.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

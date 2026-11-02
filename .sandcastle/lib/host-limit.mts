@@ -59,6 +59,9 @@ export function markHostCallAbandoned(what: string): void {
   }
 }
 
+// Whether a close the host gave up on, after the work was done, has made this run end red (see closeAfterWork and exitAfterStall).
+let abandonedCloseEndsRunRed = false;
+
 // Whether the host has given up on a call this run.
 export const hostCallHasBeenAbandoned = (): boolean => abandonedCalls.length > 0;
 
@@ -67,13 +70,15 @@ export const STALL_EXIT_GRACE_SECONDS = 10;
 
 // Called once the run's reports and cleanup are done. When the host gave up on a call, whatever it left referenced may keep Node
 // running (process.exitCode doesn't force an exit), so the process is ended after `graceSeconds` with the code the run set (0 when it
-// set none), after the warning that names the abandoned calls. The timer is unref'd, so a process that does end by itself isn't held
+// set none), after the warning that names the abandoned calls. A close the host gave up on after finished work (closeAfterWork) makes the
+// run end red: a run that set no failing exit code gets 1, set here and not by the timer, so it holds when the process ends by itself. The timer is unref'd, so a process that does end by itself isn't held
 // for it. Does nothing when the host gave up on nothing. `exit` and `log` are for tests.
 export function exitAfterStall(
   graceSeconds: number = STALL_EXIT_GRACE_SECONDS,
   exit: (code: number) => void = (code) => process.exit(code),
   log: (line: string) => void = console.error,
 ): void {
+  if (abandonedCloseEndsRunRed && (process.exitCode === undefined || Number(process.exitCode) === 0)) process.exitCode = 1;
   if (abandonedCalls.length === 0) return;
   setTimeout(() => {
     warnedOfAbandonedCalls = true;
@@ -131,10 +136,11 @@ export async function closeWithinLimit(sandbox: Sandbox, minutes: number = DOCKE
   await withinDockerLimit("closing the sandbox", Promise.resolve().then(() => sandbox.close()), minutes);
 }
 
-// The close in a finally block, after the work is done or has failed. A close the host gave up on is only reported through `log`
-// (a sandbox Docker won't close is a leak to look at, not a reason to discard a pull request that was opened or the error that ended
-// the work). On a sandbox that stalled, any close failure is only reported too: the StalledStepError that ended the work is the one
-// to surface. On any other, a close that fails for another reason throws as it always did.
+// The close in a finally block, after the work is done or has failed. A close the host gave up on is reported through `log` and ends the
+// run red (exitAfterStall sets the exit code), but never discards a pull request that was opened or the error that ended the work: a
+// sandbox Docker won't close is a leak for a person to look at. On a sandbox that stalled, any close failure is only reported: the
+// StalledStepError that ended the work is the one to surface, and it already ends the run red. On any other, a close that fails for
+// another reason throws as it always did.
 export async function closeAfterWork(
   sandbox: Sandbox,
   { stalled, minutes, log }: { stalled: boolean; minutes?: number; log: (line: string) => void },
@@ -143,6 +149,7 @@ export async function closeAfterWork(
     await closeWithinLimit(sandbox, minutes);
   } catch (error) {
     if (!stalled && !(error instanceof StalledStepError)) throw error;
-    log(stalled ? `closing the stalled sandbox failed: ${String(error)}` : `${String(error)} The sandbox may still be running.`);
+    if (!stalled) abandonedCloseEndsRunRed = true;
+    log(stalled ? `closing the stalled sandbox failed: ${String(error)}` : `${String(error)} The sandbox may still be running, so the run ends red.`);
   }
 }

@@ -318,7 +318,7 @@ const runChild = async (body: string, killAfterMs = 25_000) => {
   const hostLimit = new URL("./host-limit.mts", import.meta.url).href;
   const stepLimit = new URL("./step-limit.mts", import.meta.url).href;
   const script = [
-    `import { exitAfterStall, markHostCallAbandoned, withinDockerLimit } from ${JSON.stringify(hostLimit)};`,
+    `import { closeAfterWork, exitAfterStall, markHostCallAbandoned, withinDockerLimit } from ${JSON.stringify(hostLimit)};`,
     `import { limitSandboxExec } from ${JSON.stringify(stepLimit)};`,
     body,
   ].join("\n");
@@ -349,7 +349,7 @@ describe("exitAfterStall", () => {
     assert.equal(hostCallHasBeenAbandoned(), true);
     const before = process.exitCode;
     try {
-      for (const [set, expected] of [[4, 4], [undefined, 0]] as const) {
+      for (const [set, expected] of [[4, 4]] as const) {
         process.exitCode = set;
         const exits: number[] = [];
         const logged: string[] = [];
@@ -411,8 +411,10 @@ describe("exitAfterStall", () => {
 
   it("removes format and line-separator characters from a call's name too", async () => {
     const logged: string[] = [];
+    const before = process.exitCode; // an earlier test may have made a close end the run red, which exitAfterStall sets
     markHostCallAbandoned("bidi\u202Eand\u2028line\u200Bbreak");
     exitAfterStall(0.01, () => undefined, (line) => void logged.push(line));
+    process.exitCode = before;
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     assert.match(logged.join("\n"), /bidi and line break/);
@@ -454,5 +456,34 @@ describe("exitAfterStall", () => {
     const earlier = stderr.indexOf("EARLIER-REGISTERED-LISTENER");
     assert.ok(warning !== -1 && earlier !== -1, stderr);
     assert.ok(warning < earlier, `the warning came after the listener registered before it:\n${stderr}`);
+  });
+
+  it("exits with 0 when the run set no code and no close was given up on", async () => {
+    const { code, stderr } = await runChild([stallDockerCall, "setTimeout(() => undefined, 30_000);", "exitAfterStall(0.3);"].join("\n"));
+
+    assert.equal(code, 0, stderr);
+  });
+
+  const hungClose = 'const hangs = { close: () => new Promise(() => undefined) };';
+  const giveUpOnClose = (stalled: boolean) => `await closeAfterWork(hangs, { stalled: ${stalled}, minutes: 0.001, log: () => undefined });`;
+
+  it("ends the run red when a close was given up on after finished work, whether the forced exit or the process's own end comes first", async () => {
+    for (const tail of ["setTimeout(() => undefined, 30_000);\nexitAfterStall(0.3);", "exitAfterStall(60);"]) {
+      const { code, stderr } = await runChild([hungClose, giveUpOnClose(false), tail].join("\n"));
+
+      assert.equal(code, 1, stderr);
+    }
+  });
+
+  it("keeps a failing exit code the run already set when a close was given up on", async () => {
+    const { code, stderr } = await runChild([hungClose, giveUpOnClose(false), "process.exitCode = 3;", "exitAfterStall(60);"].join("\n"));
+
+    assert.equal(code, 3, stderr);
+  });
+
+  it("doesn't turn a run green into red for the close of a sandbox that already stalled, since its StalledStepError ends the run", async () => {
+    const { code, stderr } = await runChild([hungClose, giveUpOnClose(true), "exitAfterStall(60);"].join("\n"));
+
+    assert.equal(code, 0, stderr);
   });
 });

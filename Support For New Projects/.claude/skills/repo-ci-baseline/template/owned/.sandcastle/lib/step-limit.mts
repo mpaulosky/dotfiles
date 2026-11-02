@@ -81,15 +81,18 @@ export function stepName(command: string): string {
 // beyond this. It is a case, not a shell `trap`, because the monitored `sh` is already gone by then.
 const CLEANUP_AFTER_TIMEOUT = "wait $p; c=$?; case $c in 124|137) kill -s KILL -- -$p 2>/dev/null;; esac; exit $c";
 
-// What limitedCommand appends after the `timeout` command: `<&0` keeps stdin (a shell gives an asynchronous command
-// /dev/null otherwise), `&` runs `timeout` in the background so the group it leads can be cleaned up afterwards, and
-// CLEANUP_AFTER_TIMEOUT does that. A command in the background also ignores SIGINT and SIGQUIT; the host only ever
-// ends a step with TERM and KILL. A test or a fake that unwraps a limited command strips it.
-export const LIMITED_COMMAND_SUFFIX = ` <&0 & p=$!; ${CLEANUP_AFTER_TIMEOUT}`;
+// What limitedCommand puts around the `timeout` command. A shell gives an asynchronous command /dev/null for stdin before
+// it applies the command's own redirections (dash does; bash doesn't), so `<&0` on the command would copy /dev/null. The
+// prefix copies the real stdin to fd 3 first, and the suffix reads the command's stdin from that copy and closes it,
+// so stdin survives in either shell. `&` runs `timeout` in the background so the group it leads can be cleaned up
+// afterwards (CLEANUP_AFTER_TIMEOUT). A command in the background also ignores SIGINT and SIGQUIT; the host only ever
+// ends a step with TERM and KILL. A test or a fake that unwraps a limited command strips both.
+export const LIMITED_COMMAND_PREFIX = "exec 3<&0; ";
+export const LIMITED_COMMAND_SUFFIX = ` <&3 3<&- & p=$!; ${CLEANUP_AFTER_TIMEOUT}`;
 
 // The command run under `timeout`. `sh -c` keeps redirections such as `2>&1` inside the limit.
 export function limitedCommand(command: string, minutes: number, graceSeconds: number = KILL_GRACE_SECONDS): string {
-  return `timeout -k ${graceSeconds}s ${minutes}m sh -c ${shellWord(command)}${LIMITED_COMMAND_SUFFIX}`;
+  return `${LIMITED_COMMAND_PREFIX}timeout -k ${graceSeconds}s ${minutes}m sh -c ${shellWord(command)}${LIMITED_COMMAND_SUFFIX}`;
 }
 
 // What a test (or a repo with an unusual image) may change about the limits.

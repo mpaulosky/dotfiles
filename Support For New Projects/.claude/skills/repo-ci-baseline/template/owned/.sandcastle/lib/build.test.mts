@@ -42,7 +42,7 @@ import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
-import { KILL_GRACE_SECONDS, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
+import { KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -1367,7 +1367,7 @@ describe("buildIssue when a step stalls the sandbox", () => {
         ...raw,
         // The fake answers the commands as the build wrote them, so the `timeout … sh -c '…'` wrapper comes off first.
         exec: async (wrapped: string, options?: unknown) => {
-          const command = (new RegExp(`^timeout -k \\d+s [\\d.]+m sh -c '(.*)'${LIMITED_COMMAND_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "s").exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
+          const command = (new RegExp(`^${LIMITED_COMMAND_PREFIX}timeout -k \\d+s [\\d.]+m sh -c '(.*)'${LIMITED_COMMAND_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "s").exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
           return match.test(command) ? { stdout: "", stderr: "", exitCode: 124 } : raw.exec(command, options as never);
         },
         close: closeFails ? async () => Promise.reject(new Error("docker is gone")) : raw.close,
@@ -3288,9 +3288,9 @@ describe("createCheckedSandbox's step limits", () => {
 
     assert.match(commands[0]!, /^git config --global user\.name /);
     const last = commands.at(-1) ?? "";
-    assert.ok(last.startsWith(`timeout -k ${KILL_GRACE_SECONDS}s ${GATE_LIMIT_MINUTES}m sh -c '${GATE_COMMAND}`), last);
+    assert.ok(last.startsWith(`${LIMITED_COMMAND_PREFIX}timeout -k ${KILL_GRACE_SECONDS}s ${GATE_LIMIT_MINUTES}m sh -c '${GATE_COMMAND}`), last);
     assert.ok(
-      !commands.slice(0, -1).some((command) => command.startsWith("timeout ") && command !== probeCommand),
+      !commands.slice(0, -1).some((command) => command.includes("timeout -k") && command !== probeCommand),
       "an exec before the wrapper was limited",
     );
   });

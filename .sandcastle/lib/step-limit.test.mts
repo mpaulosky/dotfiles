@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { StalledStepError } from "./errors.mts";
-import { COMMAND_LIMIT_MINUTES, KILL_GRACE_SECONDS, LIMITED_COMMAND_SUFFIX, limitSandboxExec, limitedCommand, stalledStepOf, stepName } from "./step-limit.mts";
+import { COMMAND_LIMIT_MINUTES, KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, limitSandboxExec, limitedCommand, stalledStepOf, stepName } from "./step-limit.mts";
 
 type Answer = { stdout: string; exitCode: number };
 
@@ -36,15 +36,15 @@ function clockOf(step: number) {
 
 describe("limitedCommand", () => {
   it("runs the command under timeout inside sh -c, so a redirection stays inside the limit", () => {
-    assert.equal(limitedCommand("scripts/gate.sh 2>&1", 15), `timeout -k ${KILL_GRACE_SECONDS}s 15m sh -c 'scripts/gate.sh 2>&1'${LIMITED_COMMAND_SUFFIX}`);
+    assert.equal(limitedCommand("scripts/gate.sh 2>&1", 15), `${LIMITED_COMMAND_PREFIX}timeout -k ${KILL_GRACE_SECONDS}s 15m sh -c 'scripts/gate.sh 2>&1'${LIMITED_COMMAND_SUFFIX}`);
   });
 
   it("takes the kill grace as a parameter", () => {
-    assert.equal(limitedCommand("x", 1, 2), `timeout -k 2s 1m sh -c 'x'${LIMITED_COMMAND_SUFFIX}`);
+    assert.equal(limitedCommand("x", 1, 2), `${LIMITED_COMMAND_PREFIX}timeout -k 2s 1m sh -c 'x'${LIMITED_COMMAND_SUFFIX}`);
   });
 
   it("quotes a single quote in the command", () => {
-    assert.equal(limitedCommand("git merge -m 'a b'", 10), `timeout -k ${KILL_GRACE_SECONDS}s 10m sh -c 'git merge -m '\\''a b'\\'''${LIMITED_COMMAND_SUFFIX}`);
+    assert.equal(limitedCommand("git merge -m 'a b'", 10), `${LIMITED_COMMAND_PREFIX}timeout -k ${KILL_GRACE_SECONDS}s 10m sh -c 'git merge -m '\\''a b'\\'''${LIMITED_COMMAND_SUFFIX}`);
   });
 });
 
@@ -82,7 +82,7 @@ describe("limitSandboxExec", () => {
 
     const result = await limited.exec("git status --porcelain 2>&1");
 
-    assert.deepEqual(calls.map((call) => call.command), [`timeout -k ${KILL_GRACE_SECONDS}s ${COMMAND_LIMIT_MINUTES}m sh -c 'git status --porcelain 2>&1'${LIMITED_COMMAND_SUFFIX}`]);
+    assert.deepEqual(calls.map((call) => call.command), [`${LIMITED_COMMAND_PREFIX}timeout -k ${KILL_GRACE_SECONDS}s ${COMMAND_LIMIT_MINUTES}m sh -c 'git status --porcelain 2>&1'${LIMITED_COMMAND_SUFFIX}`]);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "ok");
     assert.deepEqual(lines, [
@@ -96,7 +96,7 @@ describe("limitSandboxExec", () => {
 
     await limitSandboxExec(sandbox, { log: () => undefined }).exec(`  ${GATE_COMMAND} 2>&1`);
 
-    assert.match(calls[0]!.command, new RegExp(`^timeout -k \\d+s ${GATE_LIMIT_MINUTES}m sh -c`));
+    assert.match(calls[0]!.command, new RegExp(`^${LIMITED_COMMAND_PREFIX}timeout -k \\d+s ${GATE_LIMIT_MINUTES}m sh -c`));
   });
 
   it("fails a step that timeout killed after its limit, for both of timeout's exit codes, naming the step", async () => {
@@ -308,7 +308,7 @@ describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU 
       );
       const command = `'${process.execPath}' ${script} ${readyFile} >/dev/null 2>&1 & echo $! > ${pidFile}; while [ ! -s ${readyFile} ]; do sleep 0.05; done; sleep 60`;
 
-      await assert.rejects(limitSandboxExec(shellSandbox(), { ...quick, commandMinutes: 0.1 }).exec(command), StalledStepError);
+      await assert.rejects(limitSandboxExec(shellSandbox(), { ...quick, commandMinutes: 0.05 }).exec(command), StalledStepError);
 
       pid = Number(readFileSync(pidFile, "utf8"));
       assert.ok(pid > 1);

@@ -949,6 +949,9 @@ async function passOnMarkedIssue(
   try {
     sandbox = await host.createSandbox(branch);
   } catch (error) {
+    // A stall or a usage or time stop while the sandbox is made (the creation probe is limited too) isn't this PR's problem
+    // to hand back: it goes up uncounted, so the phase records it and the run ends red.
+    if (error instanceof UncountedStopError) throw error;
     // The sandbox and its worktree were left in place for a person, as the
     // finally below does for a worktree it finds tampered with, so the PR
     // says so too.

@@ -11,7 +11,7 @@ import {
   SESSION_REPLY_MARKER,
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
-import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
@@ -1629,6 +1629,35 @@ describe("followUpPassPhase", () => {
     assert.match(stalls.items()[0]?.firstError ?? "", /ran over its \d+-minute limit/);
     assert.equal(report.items()[0]?.detail, stalls.items()[0]?.firstError);
     assert.equal(runEnding(undefined, stalls.items()).kind, "stalled");
+  });
+
+  it("treats a stall while the sandbox is created as that PR's failed pass, not a hand-back, so the run ends red", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => {
+      throw new StalledStepError('the step "the sandbox check" ran over its 1-minute limit');
+    };
+    const report = new OutcomeReport();
+    const stalls = new IntakeStopReport();
+    const stalledPrs = new Set<number>();
+
+    const outcomes = await followUpPassPhase([passTarget()], [issue], BASE, passHost, report, stalls, stalledPrs);
+
+    assert.equal(outcomes[0]?.kind, "skipped");
+    assert.deepEqual(calls.handBack, []);
+    assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
+    assert.equal(stalls.items().length, 1);
+    assert.equal(runEnding(undefined, stalls.items()).kind, "stalled");
+    assert.ok(stalledPrs.has(PR_NUMBER));
+  });
+
+  it("rethrows a usage stop raised while the sandbox is created, without handing the PR back", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => {
+      throw new UncountedStopError("usage limit");
+    };
+
+    await assert.rejects(() => runPass(passTarget(), issue, BASE, passHost), UncountedStopError);
+    assert.deepEqual(calls.handBack, []);
   });
 
   it("records into the run-wide intakeStopReport by default, which is what ends the run red", async () => {

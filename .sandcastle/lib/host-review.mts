@@ -10,7 +10,7 @@ import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, 
 import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
-import { FINDING_PATH_SHAPE, isSecurity, severityOf, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
+import { FINDING_PATH_SHAPE, isSecurity, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
 
 // One row of lenses.md's table (or of a repo's own lenses table).
 export type Lens = { name: string; appliesTo: string; row: string };
@@ -512,6 +512,9 @@ async function runRounds(
       return { status: "failed", head: prepared.head, reason: "the diff is too large to review" };
     }
     for (const path of patchPaths(prepared.patch.toString("utf8"))) readPaths.add(path);
+    // The branch is the same in every round, so only the first says so. It advises and never stops the review.
+    const size = round === 1 ? sizeWarning(prepared.patch) : undefined;
+    if (size !== undefined) host.log(`  ⚠ ${size}`);
     await host.writeRunFile(`${runRel}/diff.patch`, prepared.patch);
     if (prepared.fixes !== undefined) await host.writeRunFile(`${runRel}/fixes.patch`, prepared.fixes);
     else await host.removeRunFile(`${runRel}/fixes.patch`);

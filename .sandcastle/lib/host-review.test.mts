@@ -986,6 +986,23 @@ describe("runHostReview's rounds", () => {
     assert.deepEqual(run.reviewerRuns.map((found) => found.attempt), run.reviewerRuns.map(() => 1));
   });
 
+  it("logs a size warning once, in round 1, for a branch past 30 files, and still reviews it", async () => {
+    const run = fake({ patches: () => ({ patch: diffFor(...Array.from({ length: 31 }, (_, index) => `src/f${index}.ts`)) }) });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(run.logs.filter((line) => /⚠ this branch changes 31 files/.test(line)).length, 1, run.logs.join("\n"));
+    assert.ok(run.reviewerRuns.length > 0, "the warning doesn't stop the review");
+  });
+
+  it("logs no size warning for a branch of exactly 30 files", async () => {
+    const run = fake({ patches: () => ({ patch: diffFor(...Array.from({ length: 30 }, (_, index) => `src/f${index}.ts`)) }) });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(run.logs.filter((line) => line.includes("⚠")).length, 0);
+  });
+
   it("starts the reviewers for a Markdown-only diff the Bar, Docs match the code and Repo conventions", async () => {
     const run = fake({ patches: () => ({ patch: diffFor("README.md") }) });
 

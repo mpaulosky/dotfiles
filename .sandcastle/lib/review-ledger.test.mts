@@ -12,6 +12,10 @@ import {
   ledgerGitEnv,
   pinLedgerGit,
   acceptFinding,
+  branchSize,
+  REVIEW_SIZE_MAX_FILES,
+  REVIEW_SIZE_MAX_LINES,
+  sizeWarning,
   checkReview,
   diffKey,
   EMPTY_DIFF_KEY,
@@ -3296,5 +3300,96 @@ describe("a git call the host's time limit ended", () => {
   it("makes mergeBase and isReviewedCode throw the limit's error, not report a missing main or unreviewed code", () => {
     assert.throws(killedGit((cwd) => void mergeBase(cwd, "origin/main", "HEAD")), killedByLimit);
     assert.throws(killedGit((cwd) => void isReviewedCode(cwd, "a".repeat(40), "b".repeat(40), "c".repeat(40))), killedByLimit);
+  });
+});
+
+describe("branchSize and sizeWarning", () => {
+  const MIRROR = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+  // A patch that adds `added` lines to each named file.
+  const patchOf = (files: { path: string; added: number }[]) =>
+    files
+      .map(({ path, added }) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1,${added} @@\n${"+x\n".repeat(added)}`)
+      .join("");
+  const files = (count: number, added = 1) => Array.from({ length: count }, (_, index) => ({ path: `src/f${index}.ts`, added }));
+
+  it("counts the files and the added and deleted lines of the hunks", () => {
+    const patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 2 });
+    assert.deepEqual(branchSize(Buffer.from(patch)), { files: 1, lines: 2 });
+  });
+
+  it("counts an added line that starts with ++ or -- once, not as a file header", () => {
+    const patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n-- sql comment\n+++ x\n+-- y\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3 });
+  });
+
+  it("counts a binary file as a file with no lines", () => {
+    const patch = "diff --git a/i.png b/i.png\nindex 1..2 100644\nBinary files a/i.png and b/i.png differ\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 0 });
+  });
+
+  it("counts a file and its Template mirror once, in both files and lines", () => {
+    const patch = patchOf([{ path: "scripts/a.sh", added: 5 }, { path: `${MIRROR}scripts/a.sh`, added: 5 }, { path: "docs/b.md", added: 2 }]);
+
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 7 });
+  });
+
+  it("counts a mirror with no root copy as its own file", () => {
+    assert.deepEqual(branchSize(patchOf([{ path: `${MIRROR}scripts/a.sh`, added: 3 }, { path: "scripts/b.sh", added: 1 }])), { files: 2, lines: 4 });
+  });
+
+  it("says nothing at 29, 30 and warns at 31 files", () => {
+    assert.equal(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES - 1))), undefined);
+    assert.equal(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES))), undefined);
+    assert.match(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES + 1))) ?? "", /changes 31 files and 31 lines, past 30 files or 3000 lines/);
+  });
+
+  it("says nothing at 2,999 and 3,000 lines, and warns at 3,001", () => {
+    const one = (lines: number) => patchOf([{ path: "src/a.ts", added: lines }]);
+
+    assert.equal(sizeWarning(one(REVIEW_SIZE_MAX_LINES - 1)), undefined);
+    assert.equal(sizeWarning(one(REVIEW_SIZE_MAX_LINES)), undefined);
+    assert.match(sizeWarning(one(REVIEW_SIZE_MAX_LINES + 1)) ?? "", /changes 1 files and 3001 lines/);
+  });
+
+  it("doesn't count the mirrors twice toward the limit: 30 files with a mirror each is 30 files", () => {
+    const paired = files(REVIEW_SIZE_MAX_FILES).flatMap((file) => [file, { ...file, path: `${MIRROR}${file.path}` }]);
+
+    assert.equal(sizeWarning(patchOf(paired)), undefined);
+  });
+
+  it("is advice: the warning says to consider splitting, and nothing in prepare stops", () => {
+    assert.match(sizeWarning(patchOf(files(31))) ?? "", /Consider splitting the branch/);
+  });
+});
+
+describe("prepare's size warning", () => {
+  const addFiles = (count: number) => {
+    for (let index = 0; index < count; index++) commit(repo, `many${index}.cs`, "x\n", `add ${index}`);
+  };
+
+  it("stays quiet at 30 changed files (app.cs and 29 new ones) and warns on stderr at 31, leaving stdout's two lines alone", () => {
+    addFiles(REVIEW_SIZE_MAX_FILES - 1);
+    const quiet = cli(["prepare", join(root, "run")]);
+    assert.equal(quiet.err, "");
+
+    commit(repo, "one-more.cs", "x\n", "one more");
+    const loud = cli(["prepare", join(root, "run2")]);
+
+    assert.match(loud.err, /^⚠ this branch changes 31 files/);
+    assert.equal(loud.out.trim().split("\n").length, 2);
+    assert.equal(loud.code, 0);
+  });
+
+  it("warns in round 1 only, since a later round is the same branch", () => {
+    addFiles(REVIEW_SIZE_MAX_FILES + 1);
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commit(repo, "fix.cs", "y\n", "a fix");
+
+    assert.equal(cli(["prepare", dir, head]).err, "");
   });
 });

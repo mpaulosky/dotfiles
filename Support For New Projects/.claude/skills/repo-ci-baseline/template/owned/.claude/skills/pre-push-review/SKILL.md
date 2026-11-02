@@ -134,6 +134,10 @@ source at the pinned commit into `<run>/actions/<owner>/<repo>/<path>`, as the r
 (`repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh api -H 'Accept: application/vnd.github.raw' 'repos/<action owner>/<action repo>/contents/<path>?ref=<sha>'`), since reviewers
 can't.
 
+In round 1, `prepare` also prints a warning on stderr (the host review logs the same one) when the branch changes more than 30 files
+or more than 3,000 lines, a file and its Template mirror counting once. Tell the person and suggest splitting the branch; it only
+advises, and the review goes on.
+
 Round 1 reviews the whole branch. A later round reviews the fixes, not the whole branch again: its reviewers get
 `<run>/fixes.patch` to review and `<run>/diff.patch` as context, and raise only problems on the lines the fixes changed or
 problems the fixes cause elsewhere, such as a caller a changed function now breaks. Give them the whole function around

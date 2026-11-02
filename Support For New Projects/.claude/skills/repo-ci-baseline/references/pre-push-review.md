@@ -29,7 +29,8 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   grades each finding **Critical** (a bug in code that runs, or behaviour with no test), **Warning** (a security weakness, whatever the file) or
   **Advisory** (docs, comments, conventions), fixes all three kinds in the review (Critical and Warning ones behind a regression test, Advisory ones with a gate check when one can pin it),
   reviews the fixes again until a round fixes nothing, and records the result. The fixer checks its own fix before it commits (boundary tests, a mutation check, the edge-case
-  checklist), and replaces a function that two rounds in a row fixed instead of patching it again.
+  checklist), and replaces a function that two rounds in a row fixed instead of patching it again. A branch past 30 files or 3,000 lines (a file and its Template mirror
+  counting once) gets a warning in round 1 to consider splitting it; the review goes on.
 - Critical and Warning findings left open (because they need a person, or the last, review-only round raised them) block the push until the person fixes them or accepts
   them with `scripts/review.sh accept` (never on their behalf).
   Advisory findings never block: one that needs a person goes to one follow-up issue per branch.

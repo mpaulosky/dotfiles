@@ -647,4 +647,11 @@ describe("the pre-push-review skill's fewer-rounds rules", () => {
   it("gives a later round's reviewers the whole function around each changed line", () => {
     assert.match(skill.replace(/\s+/g, " "), /the whole function around each changed line and its callers/);
   });
+
+  it("tells the person about the size warning: past 30 files or 3,000 lines, mirrors once, advice only", () => {
+    const flat = skill.replace(/\s+/g, " ");
+
+    assert.match(flat, /more than 30 files or more than 3,000 lines, a file and its Template mirror counting once/);
+    assert.match(flat, /it only advises, and the review goes on/);
+  });
 });

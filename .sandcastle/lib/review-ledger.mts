@@ -486,6 +486,42 @@ export function patchKey(patch: Buffer): string {
   return hash.digest("hex");
 }
 
+// How big a branch a review is asked to cover. Past either limit (strictly more, so exactly 30 files or 3,000 lines is fine) the review
+// warns that the branch is better split: the rounds and the findings grow with the diff. The warning only advises.
+export const REVIEW_SIZE_MAX_FILES = 30;
+export const REVIEW_SIZE_MAX_LINES = 3000;
+
+// The Template's Owned files are held twice in the dotfiles repository, at the root and under this folder. The pair is one change.
+const TEMPLATE_MIRROR_PREFIX = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+
+// The files and lines (added plus deleted) a patch changes, from the hunks. A file and its Template mirror count once, and their lines
+// once (the larger of the two, since `test.sh` makes them equal). A binary file counts as a file with no lines.
+export function branchSize(patch: Buffer | string): { files: number; lines: number } {
+  const text = typeof patch === "string" ? patch : patch.toString("latin1");
+  const lines = new Map<string, number>();
+  for (const section of text.split(/^(?=diff --git )/m)) {
+    const path = /^diff --git "?a\/(.*?)"? "?b\//.exec(section)?.[1];
+    if (path === undefined) continue;
+    const key = path.startsWith(TEMPLATE_MIRROR_PREFIX) ? path.slice(TEMPLATE_MIRROR_PREFIX.length) : path;
+    // The lines after the first hunk header only: the file header's own `---` and `+++` lines come before it, and a body line starts
+    // with a space, `+`, `-` or `\` (so an added line that reads `++ x` is still one added line).
+    const hunks = section.search(/^@@ /m);
+    let changed = 0;
+    if (hunks >= 0) for (const line of section.slice(hunks).split("\n")) if (line.startsWith("+") || line.startsWith("-")) changed++;
+    lines.set(key, Math.max(lines.get(key) ?? 0, changed));
+  }
+  let total = 0;
+  for (const count of lines.values()) total += count;
+  return { files: lines.size, lines: total };
+}
+
+// The warning for a branch past the limits, or undefined.
+export function sizeWarning(patch: Buffer | string): string | undefined {
+  const { files, lines } = branchSize(patch);
+  if (files <= REVIEW_SIZE_MAX_FILES && lines <= REVIEW_SIZE_MAX_LINES) return undefined;
+  return `this branch changes ${files} files and ${lines} lines, past ${REVIEW_SIZE_MAX_FILES} files or ${REVIEW_SIZE_MAX_LINES} lines (a file and its Template mirror count once): a review this size takes more rounds and keeps finding problems in its own fixes. Consider splitting the branch before pushing it.`;
+}
+
 // The ledger key for `head`'s diff against `base`.
 export const diffKey = (cwd: string, base: string, head: string = headCommit(cwd)) => patchKey(reviewPatch(cwd, base, head));
 
@@ -1144,6 +1180,9 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
         if (round.fixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), round.fixes);
         // The HEAD this round reads, for the next round's fixesPatch.
         writeFileSync(join(rest[0], "head"), `${round.head}\n`);
+        // On stderr, since callers read the two lines on stdout. Round 1 only: a later round is the same branch.
+        const size = rest[1] === undefined ? sizeWarning(round.patch) : undefined;
+        if (size !== undefined) process.stderr.write(`⚠ ${size}\n`);
         out(`${round.key}\n${round.head}`);
         return 0;
       }

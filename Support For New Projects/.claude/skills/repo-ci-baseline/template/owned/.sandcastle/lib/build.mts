@@ -223,19 +223,35 @@ export function boundedCheckList(files: readonly string[]): string {
   return more > 0 ? `${shown.join("\n")}\n… and ${more} more` : shown.join("\n");
 }
 
-// `description` cut to fit `room` characters, with the cut noted: on a character boundary, and with any code fence the cut left open closed, so the notes
-// after it don't render inside the block.
-export function cutDescription(description: string, room: number): string {
-  const kept = cutAtCharacter(description, Math.max(0, room - DESCRIPTION_CUT_NOTE.length - 5));
-  let open = 0;
-  for (const line of kept.split("\n")) {
-    const fence = /^ {0,3}(`{3,})/.exec(line);
+// The fence (``` or ~~~, as long as it was opened) a cut text leaves open, or "" when it closes every fence it opens.
+function openFenceIn(text: string): string {
+  let open = "";
+  for (const line of text.split("\n")) {
+    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (!fence) continue;
-    const length = fence[1]!.length;
-    if (open === 0) open = length;
-    else if (length >= open && /^ {0,3}`+\s*$/.test(line)) open = 0;
+    const marks = fence[1]!;
+    if (open === "") {
+      if (marks[0] === "`" && fence[2]!.includes("`")) continue;
+      open = marks;
+    } else if (marks[0] === open[0] && marks.length >= open.length && fence[2]!.trim() === "") open = "";
   }
-  return `${kept}${open > 0 ? `\n${"`".repeat(open)}` : ""}${DESCRIPTION_CUT_NOTE}`;
+  return open;
+}
+
+// `description` cut to fit `room` characters, with the cut noted: on a character boundary, and with any code fence the cut left open closed (the closer is
+// counted in the room), so the notes after it don't render inside the block.
+export function cutDescription(description: string, room: number): string {
+  let reserve = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const kept = cutAtCharacter(description, Math.max(0, room - DESCRIPTION_CUT_NOTE.length - reserve));
+    const fence = openFenceIn(kept);
+    const closer = fence === "" ? "" : `\n${fence}`;
+    if (closer.length <= reserve || pass === 2) {
+      return `${kept}${closer.length <= reserve ? closer : ""}${DESCRIPTION_CUT_NOTE}`.slice(0, Math.max(room, DESCRIPTION_CUT_NOTE.length));
+    }
+    reserve = closer.length;
+  }
+  return DESCRIPTION_CUT_NOTE;
 }
 
 // A closing keyword and the issue it names, as GitHub reads one in a PR body:

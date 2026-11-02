@@ -18,6 +18,8 @@ import {
   liveHostIdentity,
   liveReviewHost,
   PR_BODY_LIMIT,
+  boundedCheckList,
+  cutDescription,
   PR_BODY_TOTAL_LIMIT,
   publicErrorText,
   prTitle,
@@ -2602,6 +2604,36 @@ describe("publish", () => {
     assert.ok(body.includes(PR_MARKER) && body.includes(`Closes #${issue.number}`));
     assert.doesNotMatch(body, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
     assert.match(body, /\n```\n\n… \(the description was cut/);
+  });
+
+  it("stops the check-file list at its character cap when a few paths are very long", () => {
+    const files = Array.from({ length: 10 }, (_, index) => `${index}${"x".repeat(4999)}`);
+
+    const list = boundedCheckList(files);
+
+    assert.ok(list.length <= 20_000 + 30, `${list.length} characters`);
+    assert.match(list, /\n… and 7 more$/);
+    assert.equal(boundedCheckList(["a", "b"]), "a\nb");
+    assert.equal(boundedCheckList([`${"y".repeat(30_000)}`]), "\n… and 1 more");
+  });
+
+  it("counts the closing fence in the room, however long the fence the description opened", () => {
+    for (const marks of ["```", "`".repeat(500), "~~~", "~".repeat(300)]) {
+      const room = 2000;
+      const cut = cutDescription(`${marks}text\n${"line of code\n".repeat(1000)}`, room);
+
+      assert.ok(cut.length <= room, `${marks.length}${marks[0]}: ${cut.length} characters`);
+      assert.ok(cut.includes(`\n${marks}\n\n… (the description was cut`), `${marks.length}${marks[0]}: the fence is closed before the note`);
+    }
+  });
+
+  it("leaves a fence that the description closed, or a backtick line inside a tilde fence, alone", () => {
+    const closed = cutDescription(`\`\`\`js\nx\n\`\`\`\n${"prose ".repeat(2000)}`, 1000);
+    assert.doesNotMatch(closed, /\n```\n\n… \(the description/);
+
+    const inTilde = cutDescription(`~~~\n\`\`\`\n${"code\n".repeat(2000)}`, 1000);
+    assert.ok(inTilde.includes("\n~~~\n\n… (the description"));
+    assert.ok(!inTilde.includes("\n```\n\n…"));
   });
 
   it("leaves a description that fits alone", async () => {

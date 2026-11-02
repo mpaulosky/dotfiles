@@ -347,7 +347,7 @@ export type HostReviewHost = {
   wallClockMs?: number;
 };
 
-// The most a round's diff may hold, in bytes. The host sends it to the sandbox through one command with a time limit, and each reviewer reads
+// The most a round's diff, or the fixes a later round reads, may hold, in bytes. The host sends each to the sandbox through one command with a time limit, and each reviewer reads
 // it: a generated file or a lockfile past this would stall that command, and the build with it, on every run. A larger diff ends the review as
 // failed, which publishes the branch with a note.
 export const MAX_REVIEW_PATCH_BYTES = 4 * 1024 * 1024;
@@ -384,7 +384,7 @@ function parseOutcomes(text: string | undefined, log: (line: string) => void): F
 // How one reviewer's run ended, for the failure reason: host-written words only, never the agent's.
 type ReviewerFailure = { lens: string; what: string };
 
-// Runs the review's rounds on `startHead` against `main`, and records them. A usage-limit stop (UncountedStopError) from a
+// Runs the review's rounds on `startHead` against `main`, and records them. A usage-limit stop or a stalled sandbox (an UncountedStopError) from a
 // reviewer or the fixer rejects, so the branch is left for a later round. The run's time budget passing (TimeBudgetStopError) and the
 // review's own time cap (REVIEW_WALL_CLOCK_MINUTES) end it as `failed` at the last commit the gate passed on, so work already gated is
 // published rather than lost with a discarded runner. A reviewer that fails (a timeout, a bad answer twice, an error) ends the review as `failed`, recording nothing.
@@ -456,8 +456,11 @@ async function runRounds(
       host.log(`  ✗ the local review failed: round ${round} couldn't be prepared: ${(error as Error).message}`);
       return { status: "failed", head, reason: `round ${round} couldn't be prepared` };
     }
-    if (prepared.patch.length > MAX_REVIEW_PATCH_BYTES) {
-      host.log(`  ✗ the local review failed: round ${round}'s diff is ${prepared.patch.length} bytes, past the limit of ${MAX_REVIEW_PATCH_BYTES}`);
+    // Both files go through the same time-limited sandbox command; the fixes of a later round are a diff between two commits, so they can
+    // outgrow the whole diff (a fixer rewriting a large file holds it twice).
+    const largest = Math.max(prepared.patch.length, prepared.fixes?.length ?? 0);
+    if (largest > MAX_REVIEW_PATCH_BYTES) {
+      host.log(`  ✗ the local review failed: round ${round}'s diff is ${largest} bytes, past the limit of ${MAX_REVIEW_PATCH_BYTES}`);
       return { status: "failed", head: prepared.head, reason: "the diff is too large to review" };
     }
     for (const path of patchPaths(prepared.patch.toString("utf8"))) readPaths.add(path);
@@ -487,7 +490,8 @@ async function runRounds(
       );
     // One after another, never together: each role run sets up the sandbox's global git config, and runs started together race for its lock
     // (a real run lost four of ten reviewers to `could not lock config file`). Every reviewer still runs, so every failure is reported, except that
-    // a usage or time stop ends the round at once: the runs after it would only hit the same limit.
+    // a usage-limit stop or a stalled sandbox ends the round at once: the runs after it would only hit the same limit (the time budget's
+    // stop does too, and runHostReview turns it into a failed review).
     const settled: PromiseSettledResult<ReviewerFinding[]>[] = [];
     for (const reviewer of reviewers) {
       if (spent()) return outOfTime(`the ${reviewer.lens} reviewer`);
@@ -567,7 +571,7 @@ function failureText(error: unknown): string {
   return isRoleTimeout(error) ? "timed out" : "failed";
 }
 
-// One reviewer's findings. A usage or time stop is rethrown at once; an invalid answer is asked for again, quoting what was
+// One reviewer's findings. A usage or time stop is rethrown at once (runHostReview decides what it ends the review as); an invalid answer is asked for again, quoting what was
 // wrong, up to REVIEWER_ATTEMPTS times in all.
 async function reviewerFindings(host: HostReviewHost, reviewer: Reviewer, prompt: (problem: string | undefined) => string): Promise<ReviewerFinding[]> {
   let problem: string | undefined;

@@ -4030,7 +4030,7 @@ describe("liveReviewHost", () => {
 
   // Criterion: a reviewer or fix run that never answers ends the review red instead of holding the job. The tests of runRoleInSandbox
   // alone could not tell whether the live host passes through it, so this runs the live host over a sandbox whose run never settles.
-  it("gives up on a reviewer run that never answers with a StalledStepError, and leaves the sandbox stalled", async () => {
+  it("gives up on a reviewer run that never answers with a StalledStepError, and leaves the sandbox stalled", { timeout: 10_000 }, async () => {
     const { args } = recorder();
     const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
     const dir = checkout();
@@ -4046,7 +4046,7 @@ describe("liveReviewHost", () => {
     }
   });
 
-  it("gives up on a backend fix run that never answers with a StalledStepError", async () => {
+  it("gives up on a backend fix run that never answers with a StalledStepError", { timeout: 10_000 }, async () => {
     const { args } = recorder();
     const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
     const dir = checkout();

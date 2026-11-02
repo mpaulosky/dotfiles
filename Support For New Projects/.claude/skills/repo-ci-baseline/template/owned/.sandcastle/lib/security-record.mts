@@ -1,5 +1,6 @@
 // The local, git-ignored record of security findings (`.security/` in the main checkout): one file per weakness, written
 // by `scripts/review.sh record` and read by the two reviews by id, lens and path only. Nothing here is published.
+// It also holds the environment every ledger git command runs in (ledgerGitEnv, pinLedgerGit), which lib/review-ledger.mts re-exports.
 //
 // Why it exists: the review's ledgers (.git/review) hold findings per diff, and `latest` looks only at the same branch's
 // commits, so a weakness one branch settled was raised again, and settled differently, on the next (one weakness took six

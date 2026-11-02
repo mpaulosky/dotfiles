@@ -1668,6 +1668,22 @@ describe("runHostReview's stops and failures", () => {
     assert.equal(run.files.length, 0);
   });
 
+  it("fails the review, asking no later reviewer, when a later round's fixes are past the size limit while its diff is not", async () => {
+    const run = fake({
+      answers: only("Edge cases", [raw()]),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+      patches: (round) => (round === 1 ? { patch: diffFor("src/app.ts") } : { patch: diffFor("src/app.ts"), fixes: "x".repeat(MAX_REVIEW_PATCH_BYTES + 1) }),
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.reason, "the diff is too large to review");
+    assert.equal(result.status === "failed" && result.head, hex(2), "the commit round 1's fixes passed the gate on");
+    assert.equal(run.reviewerRuns.every((found) => found.round === 1), true);
+    assert.equal(run.files.some((file) => file.path.endsWith("fixes.patch")), false);
+  });
+
   it("reviews a diff of exactly the largest size", async () => {
     const run = fake({ patches: () => ({ patch: "x".repeat(MAX_REVIEW_PATCH_BYTES) }) });
 

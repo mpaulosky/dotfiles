@@ -10,7 +10,7 @@
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { FIXED_ROLE_AGENTS, ROLE_RUN_GRACE_MINUTES, type AnyRole, type RoleAgent } from "./config.mts";
-import { markHostCallAbandoned } from "./host-limit.mts";
+import { MAX_TIMER_MS, markHostCallAbandoned } from "./host-limit.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { markSandboxStalled, stalledStepOf } from "./step-limit.mts";
@@ -156,7 +156,7 @@ export async function runRoleInSandbox(
   const stalled = stalledStepOf(sandbox);
   if (stalled !== undefined) throw new StalledStepError(`the ${role} wasn't started: the step "${stalled}" didn't end at its limit, so the sandbox is stalled.`);
   usageReport.record(role, []);
-  const backstopMs = backstop.backstopMs ?? (roleAgent(role).timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000;
+  const backstopMs = backstop.backstopMs ?? roleBackstopMs(role);
   const result = await runWithinLimits(
     role,
     () => withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions) })),
@@ -164,6 +164,12 @@ export async function runRoleInSandbox(
   );
   usageReport.record(role, result.iterations);
   return result;
+}
+
+// How long the host waits for a role's sandbox run: the role's timeoutMinutes and ROLE_RUN_GRACE_MINUTES. Never more than a timer can
+// wait (a longer delay fires at once, which would give up on every run).
+export function roleBackstopMs(role: AnyRole): number {
+  return Math.min((roleAgent(role).timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000, MAX_TIMER_MS);
 }
 
 // Waits for a role's sandbox run for at most `ms`. The run's own AbortSignal ends one that answers it; a Docker exec that never answers

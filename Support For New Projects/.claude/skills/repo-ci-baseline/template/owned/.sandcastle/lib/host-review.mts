@@ -234,7 +234,9 @@ export function triageRound({
 }): TriageFinding[] {
   const merged = new Map<string, ReviewerFinding>();
   for (const { findings } of raw) {
-    for (const found of findings) {
+    // The path is normalised before the key is made, so one problem a reviewer wrote as `./src/a.ts` and another as the absolute path merge.
+    for (const original of findings) {
+      const found = { ...original, path: diffPath(original.path, worktree) };
       const key = sameProblem(found);
       const earlier = merged.get(key);
       if (earlier === undefined) {
@@ -261,7 +263,7 @@ export function triageRound({
     return {
       id: `R${firstId + index}`,
       lens: found.lens,
-      path: diffPath(found.path, worktree),
+      path: found.path,
       line: found.line,
       summary: found.summary,
       severity: security ? "warning" : found.severity,
@@ -588,9 +590,9 @@ export function openFindingsNote(ledger: Ledger, readPaths: ReadonlySet<string>,
   const security = open.filter((finding) => isSecurity(finding));
   const lineOf = (finding: Ledger["findings"][number]) => `- ${finding.id} ${severityOf(finding)} ${cut(plainText(`${diffPath(finding.path)}:${finding.line}`))}`;
   // Only a path made of plain file-name characters is listed, so one that GitHub would render (a Markdown link, an image, a www. address,
-  // HTML) is counted, never published; so is a line the caller's check (`publishable`) refuses. One odd path leaves out its own line only.
+  // HTML, or `www.` anywhere in it: GitHub links one after a space or an underscore too) is counted, never published; so is a line the caller's check (`publishable`) refuses. One odd path leaves out its own line only.
   const listed = open.filter(
-    (finding) => !isSecurity(finding) && readPaths.has(diffPath(finding.path)) && SAFE_NOTE_PATH.test(diffPath(finding.path)) && !/^www\./i.test(diffPath(finding.path)) && publishable(lineOf(finding)),
+    (finding) => !isSecurity(finding) && readPaths.has(diffPath(finding.path)) && SAFE_NOTE_PATH.test(diffPath(finding.path)) && !/www\./i.test(diffPath(finding.path)) && publishable(lineOf(finding)),
   );
   const hidden = security.length;
   const unlisted = open.length - listed.length - hidden;

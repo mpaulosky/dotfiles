@@ -9,7 +9,7 @@
 // the call a little after the limit and the kill grace, and stalls the step the same way.
 //
 // The gate's own overrun is a red gate (exit 124): `timeout` ended it cleanly, and the gate-fixer may try. Any
-// other overrun, or a call the host gives up on, throws StalledStepError, and so does every exec after it. A call the host gives up on is also
+// other overrun, or a call the host gives up on (a role's sandbox run too, lib/agents.mts), throws StalledStepError, and so does every exec after it. A call the host gives up on is also
 // recorded with markHostCallAbandoned (lib/host-limit.mts), so main.mts ends the process after its cleanup (exitAfterStall).
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";

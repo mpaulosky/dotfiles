@@ -31,8 +31,8 @@ export const hostExecFileSync = ((file: string, ...rest: unknown[]) => {
   return args === undefined ? execFileSync(file, options as never) : execFileSync(file, args, options as never);
 }) as typeof execFileSync;
 
-// What the host has given up on this run and cannot cancel: a Docker create or close (withinDockerLimit) or a sandbox exec
-// (lib/step-limit.mts), by name. Any of them may still hold a child process or socket that keeps Node alive after the run's work is
+// What the host has given up on this run and cannot cancel: a Docker create or close (withinDockerLimit), a sandbox exec
+// (lib/step-limit.mts) or a role's run in a sandbox (lib/agents.mts#runRoleInSandbox), by name. Any of them may still hold a child process or socket that keeps Node alive after the run's work is
 // done: see exitAfterStall.
 const abandonedCalls: string[] = [];
 let warnedOfAbandonedCalls = false;

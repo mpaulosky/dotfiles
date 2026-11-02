@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   isAncestor,
+  mergeTreeWorks,
   isReviewedCode,
   ledgerGitEnv,
   pinLedgerGit,
@@ -3241,6 +3242,26 @@ describe("a git call the host's time limit ended", () => {
 
   it("makes isAncestor throw, not answer that a commit isn't an ancestor", () => {
     assert.throws(killedGit((cwd) => void isAncestor(cwd, "a".repeat(40), "b".repeat(40))), killedByLimit);
+  });
+
+  it("makes mergeTreeWorks throw when only the merge-tree call is killed, not answer that this git lacks merge-tree", () => {
+    const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const bin = mkdtempSync(join(tmpdir(), "merge-tree-git-"));
+    const repo = mkdtempSync(join(tmpdir(), "merge-tree-repo-"));
+    const path = process.env.PATH;
+    try {
+      execFileSync(real, ["init", "-q"], { cwd: repo });
+      execFileSync(real, ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: repo });
+      writeFileSync(join(bin, "git"), `#!/bin/sh\ncase "$*" in *merge-tree*) kill -9 $$ ;; *) exec ${real} "$@" ;; esac\n`);
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+
+      assert.throws(() => mergeTreeWorks(repo), killedByLimit);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
   });
 
   it("makes mergeBase and isReviewedCode throw the limit's error, not report a missing main or unreviewed code", () => {

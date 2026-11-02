@@ -8,6 +8,7 @@ import {
   applyOutcomes,
   BAR_LENS,
   LENS_APPLIES,
+  diffPath,
   openFindingsNote,
   parseLensTable,
   parseReviewerAnswer,
@@ -278,9 +279,38 @@ const raw = (overrides: Partial<ReviewerFinding> = {}): ReviewerFinding => ({
 });
 const reviewer = (lens: string): Reviewer => ({ lens, row: lens === BAR_LENS ? "" : (lenses.find((found) => found.name === lens)?.row ?? `| ${lens} | x | y |`) });
 
+describe("diffPath", () => {
+  it("strips every leading ./ and the worktree's prefix, and nothing else", () => {
+    assert.equal(diffPath("././src/a.ts"), "src/a.ts");
+    assert.equal(diffPath("/w/t/src/a.ts", "/w/t"), "src/a.ts");
+    assert.equal(diffPath("/w/t/src/a.ts", "/w/t///"), "src/a.ts");
+    assert.equal(diffPath("/w/t-other/x", "/w/t"), "/w/t-other/x", "a path that only shares the worktree's text is left alone");
+    assert.equal(diffPath("/w/t", "/w/t"), "/w/t", "the worktree itself names no file");
+    assert.equal(diffPath("/w/t/src/a.ts"), "/w/t/src/a.ts", "with no worktree given");
+    assert.equal(diffPath("/w/t/./src/a.ts", "/w/t"), "src/a.ts");
+  });
+});
+
 describe("triageRound", () => {
   const triage = (reviewers: Record<string, ReviewerFinding[]>, firstId = 1, reviewOnly = false) =>
     triageRound({ raw: Object.entries(reviewers).map(([lens, findings]) => ({ reviewer: reviewer(lens), findings })), firstId, reviewOnly });
+
+  it("merges one problem reported under different spellings of its path", () => {
+    const got = triageRound({
+      raw: [
+        { reviewer: reviewer("Edge cases"), findings: [raw({ path: "./src/a.ts" })] },
+        { reviewer: reviewer("Tests"), findings: [raw({ lens: "Tests", path: "/work/tree/src/a.ts" })] },
+        { reviewer: reviewer("Bar"), findings: [raw({ lens: "Bar", path: "src/a.ts" })] },
+      ],
+      firstId: 1,
+      reviewOnly: false,
+      worktree: "/work/tree",
+    });
+
+    assert.equal(got.length, 1);
+    assert.equal(got[0]!.path, "src/a.ts");
+    assert.equal(got[0]!.lens, "Edge cases/Tests/Bar");
+  });
 
   it("writes a path the way the diff does: without a leading ./ and without the worktree's absolute prefix", () => {
     const worktree = "/work/tree";
@@ -605,8 +635,8 @@ describe("applyOutcomes", () => {
     assert.equal(got.status, "open");
   });
 
-  it("takes a Warning fixed when its own path starts with ./ and the round changed that file without it", () => {
-    const got = apply(triaged({ severity: "warning", path: "./src/app.ts" }), [outcome()], ["src/app.ts", "tests/app.test.ts"]);
+  it("takes a Warning fixed when its own path starts with ./ (more than once) and the round changed that file without it", () => {
+    const got = apply(triaged({ severity: "warning", path: "././src/app.ts" }), [outcome()], ["src/app.ts", "tests/app.test.ts"]);
 
     assert.equal(got.status, "fixed");
   });
@@ -1600,12 +1630,12 @@ describe("openFindingsNote", () => {
   });
 
   it("doesn't list a path that GitHub would render as a link, even one the review read", () => {
-    const paths = ["[docs](https:/evil.example)", "www.evil.example/x", "a/![img](b)", "x<y>.md"];
+    const paths = ["[docs](https:/evil.example)", "www.evil.example/x", "a/![img](b)", "x<y>.md", "x www.evil.example/a", "a_www.evil.example", "docs/WWW.evil.example"];
     const note = openFindingsNote(ledgerOf(paths.map((path, index) => found({ id: `R${index + 1}`, path }))), new Set(paths));
 
     assert.doesNotMatch(note, /- R\d/);
     assert.doesNotMatch(note, /evil|docs|img/);
-    assert.match(note, /4 more open findings are in the local review record/);
+    assert.match(note, /7 more open findings are in the local review record/);
   });
 
   it("lists a finding whose path starts with ./ when the review read the file without it", () => {

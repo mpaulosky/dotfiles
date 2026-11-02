@@ -364,7 +364,9 @@ function gitBytes(cwd: string, args: readonly string[]): Buffer {
 // Whether a git call was ended by the host's time limit (lib/host-limit.mts kills it with SIGKILL and fails with ETIMEDOUT) and not by
 // git's own answer. The callers below read a git failure as "no" (not an ancestor, no such main, not the reviewed code); a call that
 // never answered says nothing, so it is rethrown instead.
+// Any SIGKILL counts, not only the host's own: a git that was killed (even out of memory) gave no answer either.
 function endedByLimit(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
   const { code, signal } = error as { code?: unknown; signal?: unknown };
   return code === "ETIMEDOUT" || signal === "SIGKILL";
 }
@@ -529,7 +531,7 @@ export function isReviewedCode(cwd: string, reviewedHead: string, base: string, 
 
 // Whether this git has `merge-tree --write-tree` (2.38 and later), which
 // isReviewedCode needs to see a merge of main as the reviewed code.
-function mergeTreeWorks(cwd: string): boolean {
+export function mergeTreeWorks(cwd: string): boolean {
   const head = headCommit(cwd);
   try {
     git(cwd, "merge-tree", "--write-tree", head, head);

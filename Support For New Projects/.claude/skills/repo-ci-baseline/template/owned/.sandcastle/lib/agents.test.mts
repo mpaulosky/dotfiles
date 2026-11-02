@@ -9,17 +9,19 @@ import {
   restrictedClaudeCode,
   REVIEWER_TOOLS,
   roleAgent,
+  roleBackstopMs,
   roleOptions,
   uiEnabled,
   runRoleInSandbox,
   runWithinLimits,
   withSharedRules,
 } from "./agents.mts";
-import { FIXED_ROLE_AGENTS } from "./config.mts";
+import { FIXED_ROLE_AGENTS, ROLE_RUN_GRACE_MINUTES } from "./config.mts";
 import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
+import { MAX_TIMER_MS } from "./host-limit.mts";
 import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
@@ -97,13 +99,30 @@ describe("runRoleInSandbox", () => {
     assert.equal(ran, 1);
   });
 
-  it("leaves a role run that answers in time alone, and clears its backstop timer", async () => {
+  it("leaves a role run that answers in time alone, and clears its backstop timer so it can't stall the sandbox later", async () => {
     const sandbox = { run: async () => ({ iterations: [], commits: [] }) } as unknown as Sandbox;
 
-    const result = await runRoleInSandbox(sandbox, "tester", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 60_000 });
+    const result = await runRoleInSandbox(sandbox, "tester", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 90));
 
     assert.deepEqual(result, { iterations: [], commits: [] });
+    assert.equal(stalledStepOf(sandbox), undefined, "the timer fired after the run answered");
+  });
+
+  it("clears its backstop timer when the run fails too", async () => {
+    const sandbox = { run: () => Promise.reject(new Error("the agent failed")) } as unknown as Sandbox;
+
+    await assert.rejects(runRoleInSandbox(sandbox, "tester", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 30 }), /the agent failed/);
+    await new Promise((resolve) => setTimeout(resolve, 90));
+
     assert.equal(stalledStepOf(sandbox), undefined);
+  });
+
+  it("waits for the role's timeoutMinutes plus ROLE_RUN_GRACE_MINUTES by default, never more than a timer can", () => {
+    for (const role of ["backend", "pre-push-reviewer", "reviewer"] as const) {
+      assert.equal(roleBackstopMs(role), (roleAgent(role).timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000);
+      assert.ok(roleBackstopMs(role) <= MAX_TIMER_MS);
+    }
   });
 
   it("lists a role that ran even when its run fails", async () => {

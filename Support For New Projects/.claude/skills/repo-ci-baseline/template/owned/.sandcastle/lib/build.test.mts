@@ -739,6 +739,16 @@ describe("buildIssue", () => {
     assert.ok(logs.some((line) => line.includes("not run: The sandbox can't run a command")), logs.join("\n"));
   });
 
+  it("logs a failed gate-fixer attempt's error on one line through the real scrub, without a prefix", async () => {
+    const { logs, buildHost } = host([1, 1, 1], { failing: ["gate-fixer"], failWith: { "gate-fixer": new Error("boom\n##[add-mask]x") } });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const failure = logs.find((line) => line.includes("gate-fixer attempt 1/2 failed"))!;
+    assert.match(failure, /failed: Error: boom ## \[add-mask\]x$/);
+    assert.ok(!failure.includes("|"), failure);
+  });
+
   it("logs the first red gate run, scrubbed, when a stall on the probe ends the work", async () => {
     const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
     const { logs, buildHost } = host([1], {

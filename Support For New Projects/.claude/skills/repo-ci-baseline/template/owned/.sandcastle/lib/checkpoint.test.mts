@@ -326,7 +326,7 @@ describe("runCheckpoint", () => {
       ...steps([red(), green], async () => {
         throw new Error("boom\n::stop-commands::t\n##[add-mask]y secret");
       }),
-      scrub: (text: string) => text.replaceAll("secret", "[withheld]"),
+      scrubLine: (text: string) => text.replaceAll("secret", "[withheld]"),
     };
 
     await runCheckpoint(1, s, (line) => lines.push(line));
@@ -533,7 +533,8 @@ describe("printableLine", () => {
   });
 
   it("applies the scrub before the cut, so a secret across the cut doesn't survive as a fragment", () => {
-    const text = `${"a".repeat(185)}ghp_0123456789`;
+    // 195 characters then the secret: the cut at 200 lands inside it when it runs first.
+    const text = `${"a".repeat(195)}ghp_0123456789`;
 
     const line = printableLine(text, (value) => value.replace(/ghp_\d{10}/g, "[x]"));
 
@@ -546,6 +547,12 @@ describe("printableLine", () => {
       assert.equal(printableLine("x".repeat(length)).length, kept, `${length} characters`);
     }
     assert.equal(printableLine("x".repeat(30), undefined, 10), "x".repeat(10));
+  });
+
+  it("gives a fixed text when nothing printable is left", () => {
+    assert.equal(printableLine(""), "(no printable text)");
+    assert.equal(printableLine("\u200b\n"), "(no printable text)");
+    assert.equal(printableLine("x", () => ""), "(no printable text)");
   });
 
   it("gives a fixed text for a value that can't be printed and for a scrub that throws", () => {
@@ -592,6 +599,12 @@ describe("sandboxDown", () => {
 
       assert.ok(long.includes(`(${"x".repeat(kept)})`) && !long.includes("x".repeat(kept + 1)), `${length} characters`);
     }
+  });
+
+  it("still reports a dead sandbox when the scrub throws, instead of rejecting with the scrub's error", async () => {
+    const reason = await sandboxDown(exec(new Error("exec failed")), () => { throw new Error("the scrub broke"); });
+
+    assert.match(reason ?? "", /^The sandbox can't run a command \(text that couldn't be made safe to log\), so no gate-fixer was run\.$/);
   });
 
   it("rethrows a stall, which ends the run, instead of reporting it as a dead sandbox", async () => {

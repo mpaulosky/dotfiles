@@ -49,6 +49,12 @@ export type CheckpointSteps = {
   // log that does, doesn't replace the error that ended the checkpoint, and a
   // line says the output couldn't be logged.
   scrub?(text: string): string;
+  // Makes one line of text, such as an error's message, safe to log: the same job
+  // as `scrub` for text that has to stay a single line, since `scrub` may return
+  // several. runCheckpoint logs a failed gate-fixer attempt's error through it. A
+  // caller without one still gets that line cleaned (printableLine), but with
+  // any secret in it left in.
+  scrubLine?(text: string): string;
 };
 
 // The gate prints in colour, which only gets in the way of a prompt or an
@@ -226,7 +232,7 @@ export async function runCheckpoint(
         await steps.fix(checkpoint, result.output);
       } catch (error) {
         if (steps.uncounted?.(error)) throw error;
-        log(`${prefix} ${label} failed: ${printableLine(error, steps.scrub)}`);
+        log(`${prefix} ${label} failed: ${printableLine(error, steps.scrubLine)}`);
       }
       result = await steps.gate();
       log(`${prefix} gate ${result.passed ? "passed" : "failed"} after ${label}`);
@@ -266,10 +272,12 @@ export function withoutRunnerCommands(text: string): string {
 // `value` (an error, for one) as a single printable line for the host's log or a
 // comment: the text is made safe by `scrub` first, so a secret in it can't be cut
 // into a shape the scrub no longer recognises, then reduced to printable ASCII
-// (a newline, an escape and a hidden character become spaces, so no line can start
-// with `::`), changed by withoutRunnerCommands, cut to `limit` characters and
-// trimmed. A value that can't be printed, or a scrub that throws, gives a fixed
-// text instead, so the caller's own error is never replaced by this one.
+// (a newline, an escape and a hidden character become spaces, so the result is one
+// line, and a caller puts it after a prefix of its own so it can't start one with
+// `::`), changed by withoutRunnerCommands, cut to `limit` characters and trimmed.
+// A value that can't be printed, a scrub that throws, or a result with nothing
+// printable left gives a fixed text instead, so the caller's own error is never
+// replaced by this one and the message never reads as an empty pair of brackets.
 export function printableLine(value: unknown, scrub: (text: string) => string = (text) => text, limit = 200): string {
   let text: string;
   try {
@@ -278,7 +286,7 @@ export function printableLine(value: unknown, scrub: (text: string) => string = 
     return "an error that can't be printed";
   }
   try {
-    return withoutRunnerCommands(scrub(text).replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim();
+    return withoutRunnerCommands(scrub(text).replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim() || "(no printable text)";
   } catch {
     return "text that couldn't be made safe to log";
   }

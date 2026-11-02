@@ -405,7 +405,7 @@ export type LocalReviewArgs = {
   main: string;
   startHead: string;
   // Checkpoint 3: the gate, with the gate-fixer while it is red, after a round's fixes. The commit it passed on, or undefined when it
-  // stayed red (the build's failure is recorded by then).
+  // stayed red (nothing is recorded for it: the review ends as failed and the last gated commit is published).
   gate(): Promise<string | undefined>;
   // Hands the build the commits the review's roles made, for its report.
   addCommits(commits: { sha: string }[]): void;
@@ -804,7 +804,9 @@ function shellWord(value: string): string {
 // tree is red) before the branch is pushed and gets a pull request
 // that closes its issue. Returns the PR's URL, or undefined when a developer
 // run failed, the branch holds nothing to publish or a checkpoint's gate
-// stayed red. `publishFailed` is true only when the branch passed both
+// stayed red. Between checkpoint 2 and the push the host runs the pre-push
+// review's rounds; a round that fixes something is followed by checkpoint 3,
+// and the last commit a checkpoint passed on is the one pushed. `publishFailed` is true only when the branch passed its
 // checkpoints but publishing it still failed, so the caller's round summary can
 // tell that apart from a round that built nothing.
 //
@@ -965,8 +967,11 @@ async function buildMarkedIssue(
 
   // Run a gate checkpoint, with the gate-fixer while the gate is red. Returns
   // the commit the gate passed on. When it's still red past the fixer's
-  // attempts, nothing is published: the branch keeps its commits, and the
-  // issue's failed build attempt is recorded with the tail of the gate output.
+  // attempts at checkpoint 1 or 2, nothing is published: the branch keeps its
+  // commits, and the issue's failed build attempt is recorded with the tail of
+  // the gate output. Checkpoint 3 (the review's) records nothing: the earlier
+  // checkpoints' commit is published, so no comment may say it wasn't pushed
+  // and no attempt is spent on a build that published.
   // A gate-fixer run that stopped with UncountedStopError is rethrown.
   async function gatePasses(checkpoint: Checkpoint, mergedMain?: string): Promise<string | undefined> {
     const result = await runCheckpoint(
@@ -990,6 +995,10 @@ async function buildMarkedIssue(
       log,
     );
     if (!result.passed || result.head === undefined) {
+      if (checkpoint === 3) {
+        console.error(`  ✗ #${issue.number}: the gate is still red at checkpoint 3, after the review's fixes: the last commit that passed is published.`);
+        return undefined;
+      }
       console.error(`  ✗ #${issue.number}: the gate is still red at checkpoint ${checkpoint}, so ${branch} isn't published.`);
       // The gate runs the branch's own scripts, which agents write, in the
       // sandbox that holds the Claude token, so its output is made safe to

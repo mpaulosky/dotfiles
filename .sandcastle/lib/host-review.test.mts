@@ -118,6 +118,13 @@ describe("the host's reviewers against /pre-push-review's own", () => {
     assert.deepEqual(names(reviewersFor(["README.md", "docs/adr/0001-x.md"], lenses)), [BAR_LENS, "Docs match the code", "Repo conventions"]);
   });
 
+  it("gives Markdown that steers an agent the Security lens too: an agent's tool list, a skill, a rule, a role prompt", () => {
+    for (const path of [".claude/agents/x.md", ".claude/skills/pre-push-review/SKILL.md", ".claude/rules/sandcastle.md", ".sandcastle/roles/gate-fixer.md", "Support For New Projects/.claude/skills/y/SKILL.md"]) {
+      assert.ok(names(reviewersFor([path], lenses)).includes("Security"), path);
+    }
+    assert.ok(!names(reviewersFor(["docs/PROCESS.md"], lenses)).includes("Security"));
+  });
+
   it("adds Blazor lifecycle for .razor and .razor.cs files", () => {
     const got = names(reviewersFor(["src/Pages/Index.razor"], lenses));
     assert.ok(got.includes("Blazor lifecycle"), got.join(", "));
@@ -1567,7 +1574,7 @@ describe("runHostReview's stops and failures", () => {
     const result = await runHostReview(run.host, input(run.startHead));
 
     assert.equal(result.status, "failed");
-    assert.match((result as { reason: string }).reason, /Security/);
+    assert.equal((result as { reason: string }).reason, "the Security reviewer gave no valid answer after 2 attempts");
     assert.equal(run.reviewerRuns.filter((found) => found.lens === "Security").length, 2);
     assert.equal(run.records.length, 0);
     assert.equal(run.fixerPrompts.length, 0);
@@ -1580,7 +1587,7 @@ describe("runHostReview's stops and failures", () => {
     const result = await runHostReview(run.host, input(run.startHead));
 
     assert.equal(result.status, "failed");
-    assert.match((result as { reason: string }).reason, /Error contract/);
+    assert.equal((result as { reason: string }).reason, "the Error contract reviewer timed out");
     assert.equal(run.records.length, 0);
   });
 
@@ -1590,7 +1597,7 @@ describe("runHostReview's stops and failures", () => {
     const result = await runHostReview(run.host, input(run.startHead));
 
     assert.equal(result.status, "failed");
-    assert.match((result as { reason: string }).reason, /Bar/);
+    assert.equal((result as { reason: string }).reason, "the Bar reviewer failed", "the agent's own error text stays out of the reason");
     assert.equal(run.records.length, 0);
   });
 
@@ -1606,6 +1613,7 @@ describe("runHostReview's stops and failures", () => {
   // Every host call outside the reviewers and the fixer can throw (a missing file, a failed git, a sandbox exec): none may escape.
   const throwing: { name: string; options?: Fake; wrap: (host: HostReviewHost) => void }[] = [
     { name: "readSkillFiles", wrap: (host) => void (host.readSkillFiles = () => { throw new Error("no agent file"); }) },
+    { name: "prepare", wrap: (host) => void (host.prepare = () => { throw new Error("prepare broke"); }) },
     { name: "worktree", wrap: (host) => void (host.worktree = async () => { throw new Error("rev-parse failed"); }) },
     { name: "takenIds", wrap: (host) => void (host.takenIds = () => { throw new Error("no merge base"); }) },
     { name: "writeRunFile", wrap: (host) => void (host.writeRunFile = async () => { throw new Error("exec failed"); }) },
@@ -1618,6 +1626,11 @@ describe("runHostReview's stops and failures", () => {
       name: "changedFiles",
       options: { answers: only("Edge cases", [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }]) },
       wrap: (host) => void (host.changedFiles = () => { throw new Error("diff failed"); }),
+    },
+    {
+      name: "gate",
+      options: { answers: only("Edge cases", [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }]), fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }) },
+      wrap: (host) => void (host.gate = async () => { throw new Error("gate exec failed"); }),
     },
     {
       name: "readOutcomes",
@@ -1637,6 +1650,81 @@ describe("runHostReview's stops and failures", () => {
       assert.equal(run.records.length, 0);
     });
   }
+
+  it("fails the review at the start commit, with a host-written reason, when the lens table can't be parsed", async () => {
+    const run = fake();
+    run.host.readSkillFiles = () => ({ ...skillFiles(), lenses: "no table here" });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.deepEqual(result, { status: "failed", head: run.startHead, reason: "the review's lens table couldn't be read" });
+    assert.equal(run.reviewerRuns.length, 0);
+  });
+
+  it("fails the review at the start commit with a host-written reason when a round can't be prepared", async () => {
+    const run = fake();
+    run.host.prepare = () => { throw new Error("prepare broke"); };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.deepEqual(result, { status: "failed", head: run.startHead, reason: "round 1 couldn't be prepared" });
+  });
+
+  it("fails the review at the last gated commit, not the fixer's, when the gate throws after the fixer's changes", async () => {
+    const run = fake({
+      answers: only("Edge cases", [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }]),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+    });
+    run.host.gate = async () => { throw new Error("gate exec failed"); };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.head, run.startHead);
+    assert.equal(run.records.length, 0);
+  });
+
+  it("fails the review at the round's commit, naming the backend role, when the fixer throws an ordinary error or times out", async () => {
+    for (const [error, what] of [
+      [new Error("sandbox went away"), "failed"],
+      [new DOMException("The operation was aborted due to timeout", "TimeoutError"), "timed out"],
+    ] as const) {
+      const run = fake({ answers: only("Edge cases", [{ lens: "Edge cases", path: "src/app.ts", line: 1, severity: "critical", summary: "x", fix: "y", needsPerson: false, why: "" }]), fixer: () => ({ error }) });
+
+      const result = await runHostReview(run.host, input(run.startHead));
+
+      assert.equal(result.status, "failed");
+      assert.equal(result.status === "failed" && result.reason, `the backend role's run fixing round 1's findings ${what}`);
+      assert.equal(result.status === "failed" && result.head, run.startHead);
+      assert.equal(run.records.length, 0);
+    }
+  });
+
+  it("runs a round with exactly MAX_REVIEWERS_PER_ROUND reviewers", async () => {
+    const rows = Array.from({ length: MAX_REVIEWERS_PER_ROUND - CODE_REVIEWERS.length }, (_, index) => `| Extra ${index} | Any code | Does it hold? |\n`).join("");
+    const run = fake({ repoLenses: `| Lens | Applies to | Ask |\n| --- | --- | --- |\n${rows}` });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(run.reviewerRuns.length, MAX_REVIEWERS_PER_ROUND);
+    assert.equal(result.status, "recorded", JSON.stringify(result));
+  });
+
+  it("keeps reviewing while the clock is one millisecond short of the cap, and stops at the cap", async () => {
+    let time = 0;
+    const run = fake();
+    run.host.wallClockMs = 1000;
+    run.host.now = () => time;
+    const first = run.host.prepare;
+    run.host.prepare = (opts) => {
+      time = 999;
+      return first(opts);
+    };
+
+    const short = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(short.status, "recorded", JSON.stringify(short));
+  });
 
   it("fails with the last gated commit when a host call throws after an earlier round's fixes passed the gate", async () => {
     const run = fake({

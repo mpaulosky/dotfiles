@@ -110,7 +110,7 @@ describe("makeAgentSandbox", () => {
   });
 
   // Without it, every gate in the sandbox fails on .github/ci/gate-checks.sh's
-  // review check, since Sandcastle's reviewer doesn't run /pre-push-review yet.
+  // review check: the host runs the review's rounds itself (lib/host-review.mts) and keeps the ledger out of the sandbox.
   it("starts every sandbox with the local review check skipped", () => {
     const stub = host(mkdtempSync(join(tmpdir(), "skills-")));
 

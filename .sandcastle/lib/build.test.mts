@@ -3808,15 +3808,51 @@ describe("buildIssue's local review", () => {
     assert.ok(result.commits.some((commit) => commit.sha === "review-made"), JSON.stringify(result.commits));
   });
 
-  it("runs the gate-fixer at checkpoint 3 when the gate the review asks for stays red, and publishes what the review reports", async () => {
+  it("runs the gate-fixer at checkpoint 3 when the gate the review asks for stays red, records no failed attempt and posts no 'wasn't pushed' comment, and publishes what the review reports", async () => {
     const run = host([0, 0, 1, 1, 1], {
-      localReview: async (args) => ((await args.gate()) === undefined ? { status: "failed", head: args.startHead, reason: "the gate stayed red after round 1's fixes" } : { status: "failed", head: args.startHead, reason: "unexpected" }),
+      localReview: async (args) => {
+        assert.equal(await args.gate(), undefined);
+        return { status: "failed", head: args.startHead, reason: "the gate stayed red after round 1's fixes" };
+      },
     });
 
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
     assert.ok(run.steps.some((step) => step.startsWith("gate-fixer")), run.steps.join("\n"));
+    assert.deepEqual(run.recordBuildFailureCalls, [], "a red checkpoint 3 spends no build attempt: the build publishes");
+    assert.ok(!run.comments.some((comment) => /wasn't pushed|stopped building/.test(comment.body)), JSON.stringify(run.comments));
+  });
+
+  it("still records a failed attempt when checkpoint 2 stays red, before any review runs", async () => {
+    const run = host([0, 1, 1, 1]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "gate failed");
+    assert.equal(run.recordBuildFailureCalls.length, 1);
+  });
+
+  it("gives the review's gate the merged main, so the gate-script guard treats checkpoint 3 as it does checkpoint 2", async () => {
+    const newerMain = "a".repeat(40);
+    let before = 0;
+    let after = 0;
+    const count = (checks: string[]) => checks.filter((command) => command.includes(`'${newerMain}'`)).length;
+    const run = host([0, 0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      localReview: async (args) => {
+        before = count(run.gateGuardChecks);
+        await args.gate();
+        after = count(run.gateGuardChecks);
+        return { status: "failed", head: args.startHead, reason: "stop here" };
+      },
+    });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(before > 0, "checkpoint 2 names the merged main");
+    assert.ok(after > before, run.gateGuardChecks.join("\n"));
   });
 
   it("logs a failed review as an error that names its reason", async () => {

@@ -48,7 +48,9 @@ export const LENS_APPLIES: Record<string, { appliesTo: string; matches(path: str
   "Races and caches": { appliesTo: "Shared state, caches, async code, Sandcastle runs", matches: isCode },
   "Error contract": { appliesTo: "Handlers, services, components showing errors", matches: isCode },
   "Blazor lifecycle": { appliesTo: "`.razor`, `.razor.cs`", matches: (path) => /\.razor(?:\.cs)?$/.test(path) },
-  Security: { appliesTo: "Pages, endpoints, auth, workflows, scripts", matches: isCode },
+  // Prose that steers an agent (an agent's tool list, a skill, a rule, a role prompt) is security-relevant too: a change to it can widen what an agent that
+  // holds a shell and a token may do, so the Security lens reads the folders that hold it even when the files are Markdown.
+  Security: { appliesTo: "Pages, endpoints, auth, workflows, scripts", matches: (path) => isCode(path) || under(".claude")(path) || under(".sandcastle")(path) },
   Tests: { appliesTo: "Any behaviour change", matches: isCode },
   "Docs match the code": { appliesTo: "Comments, `README.md`, `CLAUDE.md`, `CONTEXT.md`, `docs/`, prompts", matches: () => true },
   "Sandcastle host": { appliesTo: "`.sandcastle/`", matches: under(".sandcastle") },

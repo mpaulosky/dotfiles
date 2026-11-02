@@ -62,7 +62,8 @@ export const DESIGN_MARKER = "<!-- sandcastle:design -->";
 // besides the gate-fixer, which runs up to GATE_FIXER_ATTEMPTS times at each
 // checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts and
 // the gate's limit (lib/repo-config.mts#GATE_LIMIT_MINUTES): config.test.mts checks the sum fits, and build.test.mts
-// that buildIssue runs no role outside the list.
+// that buildIssue runs no role outside the list. The host-side review's own backend and pre-push-reviewer runs are not counted
+// here: config.test.mts sizes them separately, as REVIEW_WALL_CLOCK_MINUTES and one step of overshoot.
 export const BUILD_ROLES = ["architect", "tester", "backend", "ui", "scribe", "reviewer"] as const satisfies readonly AnyRole[];
 
 // The ref each issue branch is compared with: every issue PR targets main,
@@ -141,9 +142,9 @@ export const INTAKE_REFUSED_BATCHES_LIMIT = 2;
 // given up, and how much of the final gate output the issue comment quotes.
 export const GATE_FIXER_ATTEMPTS = 2;
 
-// The most gate runs a build makes: each of the two checkpoints runs it, then once more after each fixer attempt, and
-// checkpoint 2 runs it on the merged tree first. build.test.mts checks buildIssue stays within it, and config.test.mts
-// sizes BUILDING_LABEL_MAX_AGE_MS from it.
+// The most gate runs a build makes outside the host-side review: each of checkpoints 1 and 2 runs it, then once more after each fixer attempt, and
+// checkpoint 2 runs it on the merged tree first. The review's checkpoint 3 runs are sized in config.test.mts, inside REVIEW_WALL_CLOCK_MINUTES.
+// build.test.mts checks buildIssue stays within it (its tests run no review), and config.test.mts sizes BUILDING_LABEL_MAX_AGE_MS from it.
 export const MAX_GATE_RUNS = 2 * (GATE_FIXER_ATTEMPTS + 1) + 1;
 
 export const GATE_COMMENT_LINES = 100;

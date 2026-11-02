@@ -40,7 +40,7 @@ let warnedOfAbandonedCalls = false;
 // The warning that names the abandoned calls. The process ends without closing a sandbox that a create the host gave up on makes later,
 // and an abandoned exec or close may still hold its container, so a person looks for a leftover container and worktree.
 const abandonedCallsWarning = (): string =>
-  `the host gave up on ${abandonedCalls.length} call${abandonedCalls.length === 1 ? "" : "s"} that may still be pending (${abandonedCalls.join("; ")}). ` +
+  `The host gave up on ${abandonedCalls.length} call${abandonedCalls.length === 1 ? "" : "s"} that may still be pending (${abandonedCalls.join("; ")}). ` +
   "A sandbox one of them was creating is not closed once it arrives, and one still running holds its container, so look for a leftover container and worktree.";
 
 // Text for a log line with the characters that could change what a terminal or a CI log shows removed: control and format characters

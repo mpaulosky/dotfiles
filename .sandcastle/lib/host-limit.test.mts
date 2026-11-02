@@ -369,7 +369,7 @@ describe("exitAfterStall", () => {
     const { code, stderr, elapsed } = await runChild([stallDockerCall, "setTimeout(() => undefined, 30_000);", "process.exitCode = 3;", "exitAfterStall(0.3);"].join("\n"));
 
     assert.equal(code, 3, stderr);
-    assert.match(stderr, /^ {2}⚠ ending the run 0\.3s after its cleanup\. the host gave up on 1 call.*creating the sandbox/m);
+    assert.match(stderr, /^ {2}⚠ ending the run 0\.3s after its cleanup\. The host gave up on 1 call.*creating the sandbox/m);
     assert.equal((stderr.match(/gave up on/g) ?? []).length, 1, stderr);
     assert.equal((stderr.match(/⚠/g) ?? []).length, 1, stderr);
     assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
@@ -396,7 +396,7 @@ describe("exitAfterStall", () => {
     const { code, stderr, elapsed } = await runChild([stallDockerCall, "exitAfterStall(60);"].join("\n"));
 
     assert.equal(code, 0, stderr);
-    assert.match(stderr, /^ {2}⚠ the host gave up on 1 call.*creating the sandbox/m, "the exit listener didn't print the warning");
+    assert.match(stderr, /^ {2}⚠ The host gave up on 1 call.*creating the sandbox/m, "the exit listener didn't print the warning");
     assert.equal((stderr.match(/gave up on/g) ?? []).length, 1, stderr);
     assert.ok(elapsed < 20_000, `took ${elapsed} ms`);
   });
@@ -443,5 +443,16 @@ describe("exitAfterStall", () => {
 
     assert.match(logged.join("\n"), /handling the late answer failed: Error: bad thing here/);
     assert.doesNotMatch(logged.join("\n"), /[\u202E\u2028]/);
+  });
+
+  it("prints the warning ahead of an exit listener registered before the first call was abandoned", async () => {
+    const body = ['process.on("exit", () => console.error("EARLIER-REGISTERED-LISTENER"));', stallDockerCall].join("\n");
+    const { code, stderr } = await runChild(body);
+
+    assert.equal(code, 0, stderr);
+    const warning = stderr.indexOf("gave up on");
+    const earlier = stderr.indexOf("EARLIER-REGISTERED-LISTENER");
+    assert.ok(warning !== -1 && earlier !== -1, stderr);
+    assert.ok(warning < earlier, `the warning came after the listener registered before it:\n${stderr}`);
   });
 });

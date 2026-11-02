@@ -986,6 +986,49 @@ describe("runHostReview's rounds", () => {
     assert.deepEqual(run.reviewerRuns.map((found) => found.attempt), run.reviewerRuns.map(() => 1));
   });
 
+  it("logs a size warning for a branch past 30 files, and still reviews it", async () => {
+    const run = fake({ patches: () => ({ patch: diffFor(...Array.from({ length: 31 }, (_, index) => `src/f${index}.ts`)) }) });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(run.logs.filter((line) => /⚠ this branch changes 31 files and 62 lines/.test(line)).length, 1, run.logs.join("\n"));
+    assert.ok(run.reviewerRuns.length > 0, "the warning doesn't stop the review");
+  });
+
+  it("logs the size warning once across two rounds, since the patch of every round holds the same 31 files", async () => {
+    const big = diffFor(...Array.from({ length: 31 }, (_, index) => `src/f${index}.ts`));
+    const run = fake({
+      answers: (round, who) => (who.lens === "Edge cases" && round === 1 ? [raw()] : []),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+      patches: (n) => ({ patch: big, ...(n > 1 ? { fixes: diffFor("src/f0.ts") } : {}) }),
+    });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.ok(run.rounds() >= 2, "a second round ran");
+    assert.equal(run.logs.filter((line) => line.includes("⚠")).length, 1, run.logs.join("\n"));
+  });
+
+  it("logs the size warning for 3,001 lines in one file, and none for 3,000", async () => {
+    const oneFile = (lines: number) => `diff --git a/src/big.ts b/src/big.ts\n--- a/src/big.ts\n+++ b/src/big.ts\n@@ -0,0 +1,${lines} @@\n${"+x\n".repeat(lines)}`;
+    const over = fake({ patches: () => ({ patch: oneFile(3001) }) });
+    const at = fake({ patches: () => ({ patch: oneFile(3000) }) });
+
+    await runHostReview(over.host, input(over.startHead));
+    await runHostReview(at.host, input(at.startHead));
+
+    assert.equal(over.logs.filter((line) => /⚠ this branch changes 1 file and 3,001 lines/.test(line)).length, 1, over.logs.join("\n"));
+    assert.equal(at.logs.filter((line) => line.includes("⚠")).length, 0);
+  });
+
+  it("logs no size warning for a branch of exactly 30 files", async () => {
+    const run = fake({ patches: () => ({ patch: diffFor(...Array.from({ length: 30 }, (_, index) => `src/f${index}.ts`)) }) });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(run.logs.filter((line) => line.includes("⚠")).length, 0);
+  });
+
   it("starts the reviewers for a Markdown-only diff the Bar, Docs match the code and Repo conventions", async () => {
     const run = fake({ patches: () => ({ patch: diffFor("README.md") }) });
 

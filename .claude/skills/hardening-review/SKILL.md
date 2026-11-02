@@ -105,7 +105,7 @@ prints.
 
 `scripts/review.sh prepare '<run>'` for pass 1; for pass N, `scripts/review.sh prepare '<run>' <HEAD pass N-1 printed>`,
 which also writes `fixes.patch`. A later pass only follows a pass that committed fixes (step 7), so there is always one.
-Write the key and HEAD it prints into `state.md`.
+Write the key and HEAD it prints into `state.md`. Pass 1 may also write a branch-size warning to stderr; it needs no action here, since a hardening pass already reviews the branch in full passes.
 
 When the diff changes a workflow that pins an action, fetch the action's source at the pinned commit into
 `<run>/actions/<owner>/<repo>/<path>` as `pre-push-review` step 4 says, once per run and again when a pin changes: the

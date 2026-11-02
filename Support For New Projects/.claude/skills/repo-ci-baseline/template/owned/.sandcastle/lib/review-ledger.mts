@@ -486,6 +486,106 @@ export function patchKey(patch: Buffer): string {
   return hash.digest("hex");
 }
 
+// How big a branch a review is asked to cover. Past either limit (strictly more, so exactly 30 files or 3,000 lines is fine) the review
+// warns that the branch is better split: the rounds and the findings grow with the diff. The warning only advises.
+export const REVIEW_SIZE_MAX_FILES = 30;
+export const REVIEW_SIZE_MAX_LINES = 3000;
+
+// The bytes of a path git quoted (C-style escapes, octal for non-ASCII), as text.
+function unquote(quoted: string): string {
+  const bytes: number[] = [];
+  const escapes: Record<string, number> = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 34, "\\": 92 };
+  for (let index = 0; index < quoted.length; index++) {
+    const char = quoted[index]!;
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char));
+      continue;
+    }
+    const octal = /^[0-3][0-7]{2}/.exec(quoted.slice(index + 1, index + 4))?.[0];
+    if (octal !== undefined) {
+      bytes.push(Number.parseInt(octal, 8));
+      index += 3;
+    } else {
+      bytes.push(escapes[quoted[index + 1] ?? ""] ?? (quoted[index + 1] ?? "\\").charCodeAt(0));
+      index += 1;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+// The path in a `diff --git` header's second half, and the rest after a quoted first half.
+function quotedToken(text: string): [string, string] | undefined {
+  const match = /^"((?:[^"\\]|\\.)*)"/.exec(text);
+  return match === null ? undefined : [unquote(match[1]!), text.slice(match[0].length).trimStart()];
+}
+
+// The repository paths a patch changes, in patch order, once each, read from its `diff --git` headers. The review's patch
+// has renames off, so both halves of a header name the same path; a deleted file keeps its old one.
+export function patchPaths(patch: string): string[] {
+  const paths = new Set<string>();
+  for (const line of patch.split("\n")) {
+    if (!line.startsWith("diff --git ")) continue;
+    const rest = line.slice("diff --git ".length);
+    let path: string | undefined;
+    const first = quotedToken(rest);
+    if (first !== undefined) {
+      const second = quotedToken(first[1]);
+      path = (second === undefined ? first[1] : second[0]).replace(/^b\//, "");
+    } else {
+      // Unquoted: "a/<p> b/<p>". With spaces in <p> only the midpoint splits it.
+      const half = (rest.length - 5) / 2;
+      path = Number.isInteger(half) && rest.slice(0, 2) === "a/" && rest.slice(2, 2 + half) === rest.slice(half + 5) ? rest.slice(2, 2 + half) : /^a\/.+ b\/(.+)$/.exec(rest)?.[1];
+    }
+    // A header it can't read still counts as a changed file, so no lens is skipped for it.
+    paths.add(path ?? rest);
+  }
+  return [...paths];
+}
+
+// How big a branch a review is asked to cover is counted here. In the dotfiles repository an Owned Template file is held twice, at the repository
+// root and under the path below; in other repositories nothing starts with this prefix, so the pair rule does nothing.
+const TEMPLATE_MIRROR_PREFIX = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+
+// The files and lines (added plus deleted) a patch changes, from the hunks. The patch is read line by line at `\n` only: a lone carriage return,
+// or a Unicode line separator, inside a changed line is file content and starts nothing. Sections of the same path (git writes a deletion and an
+// addition for a type change, such as a symlink that becomes a file) add up. A file and its Template mirror count once, and their lines once
+// (the larger of the two, since `test.sh` makes them equal). A binary file, a mode change and an empty file count as a file with no lines.
+export function branchSize(patch: Buffer | string): { files: number; lines: number } {
+  const text = typeof patch === "string" ? patch : patch.toString("latin1");
+  const byPath = new Map<string, number>();
+  let current: string | undefined;
+  let inHunk = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      // A header patchPaths can't read still counts as a file (keyed by its text), as it does for the reviewers' lens choice: a size is never undercounted.
+      current = patchPaths(line)[0];
+      inHunk = false;
+      if (current !== undefined && !byPath.has(current)) byPath.set(current, 0);
+    } else if (current !== undefined) {
+      // The file header's own `---` and `+++` lines come before the first hunk header; a body line starts with a space, `+`, `-` or `\`
+      // (so an added line that reads `++ x` is still one added line, and "\ No newline" is none).
+      if (!inHunk) inHunk = line.startsWith("@@ ");
+      else if (line.startsWith("+") || line.startsWith("-")) byPath.set(current, (byPath.get(current) ?? 0) + 1);
+    }
+  }
+  const lines = new Map<string, number>();
+  for (const [path, changed] of byPath) {
+    const key = path.startsWith(TEMPLATE_MIRROR_PREFIX) ? path.slice(TEMPLATE_MIRROR_PREFIX.length) : path;
+    lines.set(key, Math.max(lines.get(key) ?? 0, changed));
+  }
+  let total = 0;
+  for (const count of lines.values()) total += count;
+  return { files: lines.size, lines: total };
+}
+
+// The warning for a branch past the limits, or undefined.
+export function sizeWarning(patch: Buffer | string): string | undefined {
+  const { files, lines } = branchSize(patch);
+  if (files <= REVIEW_SIZE_MAX_FILES && lines <= REVIEW_SIZE_MAX_LINES) return undefined;
+  const count = (n: number, noun: string) => `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+  return `this branch changes ${count(files, "file")} and ${count(lines, "line")}, past ${count(REVIEW_SIZE_MAX_FILES, "file")} or ${count(REVIEW_SIZE_MAX_LINES, "line")} (a file and its Template mirror count once): a review this size takes more rounds and keeps finding problems in its own fixes. Consider splitting the branch before pushing it.`;
+}
+
 // The ledger key for `head`'s diff against `base`.
 export const diffKey = (cwd: string, base: string, head: string = headCommit(cwd)) => patchKey(reviewPatch(cwd, base, head));
 
@@ -1144,6 +1244,9 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
         if (round.fixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), round.fixes);
         // The HEAD this round reads, for the next round's fixesPatch.
         writeFileSync(join(rest[0], "head"), `${round.head}\n`);
+        // On stderr, since callers read the two lines on stdout. Round 1 only: a later round is the same branch.
+        const size = rest[1] === undefined ? sizeWarning(round.patch) : undefined;
+        if (size !== undefined) process.stderr.write(`⚠ ${size}\n`);
         out(`${round.key}\n${round.head}`);
         return 0;
       }

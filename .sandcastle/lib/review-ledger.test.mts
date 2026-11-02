@@ -12,6 +12,10 @@ import {
   ledgerGitEnv,
   pinLedgerGit,
   acceptFinding,
+  branchSize,
+  REVIEW_SIZE_MAX_FILES,
+  REVIEW_SIZE_MAX_LINES,
+  sizeWarning,
   checkReview,
   diffKey,
   EMPTY_DIFF_KEY,
@@ -3296,5 +3300,170 @@ describe("a git call the host's time limit ended", () => {
   it("makes mergeBase and isReviewedCode throw the limit's error, not report a missing main or unreviewed code", () => {
     assert.throws(killedGit((cwd) => void mergeBase(cwd, "origin/main", "HEAD")), killedByLimit);
     assert.throws(killedGit((cwd) => void isReviewedCode(cwd, "a".repeat(40), "b".repeat(40), "c".repeat(40))), killedByLimit);
+  });
+});
+
+describe("branchSize and sizeWarning", () => {
+  const MIRROR = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+  // A patch that adds `added` lines to each named file.
+  const patchOf = (files: { path: string; added: number }[]) =>
+    files
+      .map(({ path, added }) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1,${added} @@\n${"+x\n".repeat(added)}`)
+      .join("");
+  const files = (count: number, added = 1) => Array.from({ length: count }, (_, index) => ({ path: `src/f${index}.ts`, added }));
+
+  it("counts the files and the added and deleted lines of the hunks", () => {
+    const patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 2 });
+    assert.deepEqual(branchSize(Buffer.from(patch)), { files: 1, lines: 2 });
+  });
+
+  it("counts an added line that starts with ++ or -- once, not as a file header", () => {
+    const patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n-- sql comment\n+++ x\n+-- y\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3 });
+  });
+
+  it("counts a binary file as a file with no lines", () => {
+    const patch = "diff --git a/i.png b/i.png\nindex 1..2 100644\nBinary files a/i.png and b/i.png differ\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 0 });
+  });
+
+  it("counts a file and its Template mirror once, in both files and lines", () => {
+    const patch = patchOf([{ path: "scripts/a.sh", added: 5 }, { path: `${MIRROR}scripts/a.sh`, added: 5 }, { path: "docs/b.md", added: 2 }]);
+
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 7 });
+  });
+
+  it("counts a mirror with no root copy as its own file", () => {
+    assert.deepEqual(branchSize(patchOf([{ path: `${MIRROR}scripts/a.sh`, added: 3 }, { path: "scripts/b.sh", added: 1 }])), { files: 2, lines: 4 });
+  });
+
+  it("says nothing at 29, 30 and warns at 31 files", () => {
+    assert.equal(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES - 1))), undefined);
+    assert.equal(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES))), undefined);
+    assert.match(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES + 1))) ?? "", /changes 31 files and 31 lines, past 30 files or 3,000 lines/);
+  });
+
+  it("says nothing at 2,999 and 3,000 lines, and warns at 3,001", () => {
+    const one = (lines: number) => patchOf([{ path: "src/a.ts", added: lines }]);
+
+    assert.equal(sizeWarning(one(REVIEW_SIZE_MAX_LINES - 1)), undefined);
+    assert.equal(sizeWarning(one(REVIEW_SIZE_MAX_LINES)), undefined);
+    assert.match(sizeWarning(one(REVIEW_SIZE_MAX_LINES + 1)) ?? "", /changes 1 file and 3,001 lines, past 30 files or 3,000 lines/);
+  });
+
+  it("doesn't count the mirrors twice toward the limit: 30 files with a mirror each is 30 files", () => {
+    const paired = files(REVIEW_SIZE_MAX_FILES).flatMap((file) => [file, { ...file, path: `${MIRROR}${file.path}` }]);
+
+    assert.equal(sizeWarning(patchOf(paired)), undefined);
+  });
+
+  it("keeps two files whose directory name holds ' b/' apart, and counts their lines separately", () => {
+    const patch = patchOf([{ path: "docs/a b/c.md", added: 2 }, { path: "docs/a b/d.md", added: 3 }]);
+
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 5 });
+  });
+
+  it("reads a quoted path (a non-ASCII or special character) as one file, and pairs it with its mirror", () => {
+    const quoted = (path: string, added: number) => `diff --git "a/${path}" "b/${path}"\n--- "a/${path}"\n+++ "b/${path}"\n@@ -0,0 +1 @@\n${"+x\n".repeat(added)}`;
+    const patch = quoted("caf\\303\\251 b/x.txt", 2) + quoted("caf\\303\\251 b/y.txt", 3) + quoted(`${MIRROR}caf\\303\\251 b/x.txt`, 2);
+
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 5 });
+  });
+
+  it("pairs a mirror whose path holds spaces with its root copy", () => {
+    assert.deepEqual(branchSize(patchOf([{ path: "docs/a b/c.md", added: 4 }, { path: `${MIRROR}docs/a b/c.md`, added: 4 }])), { files: 1, lines: 4 });
+  });
+
+  it("takes the larger line count of a mirrored pair, whichever comes first", () => {
+    assert.deepEqual(branchSize(patchOf([{ path: "a.sh", added: 5 }, { path: `${MIRROR}a.sh`, added: 3 }])), { files: 1, lines: 5 });
+    assert.deepEqual(branchSize(patchOf([{ path: "a.sh", added: 3 }, { path: `${MIRROR}a.sh`, added: 5 }])), { files: 1, lines: 5 });
+  });
+
+  it("counts a mode-only change as a file with no lines, a deletion by its removed lines, and ignores a no-newline marker", () => {
+    const mode = "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n";
+    const deletion = "diff --git a/old.ts b/old.ts\ndeleted file mode 100644\n--- a/old.ts\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-a\n-b\n-c\n";
+    const noNewline = "diff --git a/n.ts b/n.ts\n--- a/n.ts\n+++ b/n.ts\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n";
+
+    assert.deepEqual(branchSize(mode), { files: 1, lines: 0 });
+    assert.deepEqual(branchSize(deletion), { files: 1, lines: 3 });
+    assert.deepEqual(branchSize(noNewline), { files: 1, lines: 2 });
+  });
+
+  it("counts a header it cannot read as a file, so a size is never undercounted, also as the last section with no newline", () => {
+    // The last section is a Template mirror with no newline after its header: cut short, its key would not pair with the root copy.
+    const patch =
+      patchOf([{ path: "a.ts", added: 1 }, { path: "last.ts", added: 1 }]) + "diff --git garbage\n" + 'diff --git "a/unterminated b/x\n' + `diff --git a/${MIRROR}last.ts b/${MIRROR}last.ts`;
+
+    assert.deepEqual(branchSize(patch), { files: 4, lines: 2 });
+  });
+
+  it("keeps a carriage return or a line separator inside a changed line as content, never as the start of a header", () => {
+    const body = "+progress\rdiff --git a/example b/example\n".repeat(2) + "+a\u2028diff --git a/x b/x\n";
+    const patch = `diff --git a/one.txt b/one.txt\n--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1,3 @@\n${body}`;
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3 });
+  });
+
+  it("adds the deletion and the addition git writes for one path, as when a symlink becomes a file", () => {
+    const patch =
+      "diff --git a/link b/link\ndeleted file mode 120000\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-target\n\\ No newline at end of file\n" +
+      `diff --git a/link b/link\nnew file mode 100644\n--- /dev/null\n+++ b/link\n@@ -0,0 +1,3000 @@\n${"+x\n".repeat(3000)}`;
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3001 });
+    assert.match(sizeWarning(patch) ?? "", /1 file and 3,001 lines/);
+  });
+
+  it("still takes the larger of a mirrored pair when each side is a deletion plus an addition", () => {
+    const conversion = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-t\n` + `diff --git a/${path} b/${path}\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,2 @@\n+x\n+y\n`;
+
+    assert.deepEqual(branchSize(conversion("l") + conversion(`${MIRROR}l`)), { files: 1, lines: 3 });
+  });
+
+  it("counts the lines of a CRLF file once each", () => {
+    assert.deepEqual(branchSize("diff --git a/w.txt b/w.txt\r\n--- a/w.txt\r\n+++ b/w.txt\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n"), { files: 1, lines: 2 });
+  });
+
+  it("is advice: the warning says to consider splitting, and nothing in prepare stops", () => {
+    assert.match(sizeWarning(patchOf(files(31))) ?? "", /Consider splitting the branch/);
+  });
+});
+
+describe("prepare's size warning", () => {
+  const addFiles = (count: number) => {
+    for (let index = 0; index < count; index++) commit(repo, `many${index}.cs`, "x\n", `add ${index}`);
+  };
+
+  it("stays quiet at 30 changed files (app.cs and 29 new ones) and warns on stderr at 31, leaving stdout's two lines alone", () => {
+    addFiles(REVIEW_SIZE_MAX_FILES - 1);
+    const quiet = cli(["prepare", join(root, "run")]);
+    assert.equal(quiet.err, "");
+
+    commit(repo, "one-more.cs", "x\n", "one more");
+    const loud = cli(["prepare", join(root, "run2")]);
+
+    assert.match(loud.err, /^⚠ this branch changes 31 files/);
+    assert.equal(loud.out.trim().split("\n").length, 2);
+    assert.equal(loud.code, 0);
+  });
+
+  it("warns past 3,000 lines in one file, and not at 3,000", () => {
+    commit(repo, "big.cs", "x\n".repeat(REVIEW_SIZE_MAX_LINES - 2), "big");
+    assert.equal(cli(["prepare", join(root, "run")]).err, "", "app.cs's 2 lines and 2,998 more are 3,000");
+
+    commit(repo, "big.cs", "x\n".repeat(REVIEW_SIZE_MAX_LINES - 1), "bigger");
+    assert.match(cli(["prepare", join(root, "run2")]).err, /changes 2 files and 3,001 lines/);
+  });
+
+  it("warns in round 1 only, since a later round is the same branch", () => {
+    addFiles(REVIEW_SIZE_MAX_FILES + 1);
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commit(repo, "fix.cs", "y\n", "a fix");
+
+    assert.equal(cli(["prepare", dir, head]).err, "");
   });
 });

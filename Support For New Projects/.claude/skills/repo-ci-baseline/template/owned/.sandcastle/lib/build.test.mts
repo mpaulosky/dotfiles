@@ -5,7 +5,6 @@ import { spawnSync, type execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
-import { exitAfterStall } from "./host-limit.mts";
 import { join } from "node:path";
 import {
   buildIssue,
@@ -3090,13 +3089,12 @@ describe("createCheckedSandbox's git identity", () => {
     assert.ok(checked.includes("/work/tree"));
   });
 
-  it("throws the setup error, and makes the run end red, when closing the refused sandbox times out", async () => {
+  it("throws the setup error, and logs that the run ends red, when closing the refused sandbox times out", async () => {
     const sandbox = {
       worktreePath: "/work/tree",
       exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
       close: () => new Promise(() => undefined),
     } as unknown as Sandbox;
-    const savedExitCode = process.exitCode;
     const logged: string[] = [];
     const originalError = console.error;
     console.error = (...args: unknown[]) => void logged.push(args.join(" "));
@@ -3105,13 +3103,11 @@ describe("createCheckedSandbox's git identity", () => {
         createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" }), () => [], { dockerCallMinutes: 0.001 }),
         /setting the sandbox's git user\.name failed: could not lock config file/,
       );
-      process.exitCode = undefined;
-      exitAfterStall(60, () => undefined, () => undefined);
-      assert.equal(process.exitCode, 1);
+      // The log line is written only by closeAfterWork's red-run branch, which also sets the flag exitAfterStall reads (the exit code itself is
+      // pinned in host-limit.test.mts, in a child process, since that flag is module state shared by this file's tests).
       assert.ok(logged.some((line) => /closing the refused sandbox.*the run ends red/s.test(line)), logged.join("\n"));
     } finally {
       console.error = originalError;
-      process.exitCode = savedExitCode;
     }
   });
 

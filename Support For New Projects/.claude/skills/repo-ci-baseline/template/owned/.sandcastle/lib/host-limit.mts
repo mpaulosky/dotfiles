@@ -136,7 +136,7 @@ export async function closeWithinLimit(sandbox: Sandbox, minutes: number = DOCKE
   await withinDockerLimit("closing the sandbox", Promise.resolve().then(() => sandbox.close()), minutes);
 }
 
-// The close in a finally block, after the work is done or has failed. A close the host gave up on is reported through `log` and ends the
+// The close in a finally block, or after createCheckedSandbox refuses a sandbox, after the work is done or has failed. A close the host gave up on is reported through `log` and ends the
 // run red (exitAfterStall sets the exit code), but never discards a pull request that was opened or the error that ended the work: a
 // sandbox Docker won't close is a leak for a person to look at. On a sandbox that stalled, any close failure is only reported: the
 // StalledStepError that ended the work is the one to surface, and it already ends the run red. On any other, a close that fails for

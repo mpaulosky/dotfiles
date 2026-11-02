@@ -253,6 +253,14 @@ describe("usesChildProcessAsValue", () => {
       'const cp = require(`child_process`);',
       '// see .github/workflows/**\nimport { execFileSync } from "node:child_process";\n/** doc */',
       'const g = ".github/workflows/*.yml";\nconst cp = require("child_process");\n/** x */',
+      // An escaped quote doesn't end the string, so the `/*` inside it isn't a comment; with broken escapes it would swallow the import.
+      'const s = "\\\\\\"/*";\nimport { execFileSync } from "node:child_process";\n/* x */',
+      "const t = 'it\\'s /*';\nimport { execFileSync } from 'child_process';\n/* x */",
+      // An apostrophe in a comment doesn't open a string.
+      "/* it's */ import { execFileSync } from 'child_process'",
+      "// it's\nimport { execFileSync } from 'child_process'",
+      // A template literal holding a quote.
+      'const t = `a "b`;\nimport { execFileSync } from "node:child_process";',
     ]) {
       assert.equal(usesChildProcessAsValue(source), true, source);
     }
@@ -267,6 +275,11 @@ describe("usesChildProcessAsValue", () => {
       '/* import { execFileSync } from "node:child_process"; */',
       'import { x } from "./x.mts";',
       'export type { A } from "node:child_process";',
+      // An unterminated block comment hides what follows it, and unterminated input ends the walk instead of hanging it.
+      'import { a } from "./a.mts"; /* import { execFileSync } from "node:child_process";',
+      '// import { execFileSync } from "node:child_process"',
+      'const s = "abc\\\\',
+      'const s = "abc',
       'const s = "import { execFileSync } from \\"node:child_process\\"";',
     ]) {
       assert.equal(usesChildProcessAsValue(source), false, source);

@@ -428,7 +428,7 @@ describe("buildIssue when Docker never answers the close", () => {
 
     const result = await buildIssue(issue, branch, base, buildHost);
 
-    assert.equal(result.outcome === "not published", false);
+    assert.equal(result.outcome, "published");
     assert.ok(logged.some((line) => /closing the sandbox didn't finish within 0\.001 minutes/.test(line)), logged.join("\n"));
   });
 
@@ -3363,7 +3363,9 @@ describe("createCheckedSandbox's step limits", () => {
     assert.equal(wasClosed(), true);
   });
 
-  it("still fails with the original error when the close of a refused sandbox hangs", async () => {
+  it("still fails with the original error when the close of a refused sandbox hangs, and logs the hung close", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
     const { sandbox } = recordingSandbox(0, false);
     (sandbox as unknown as { close: () => Promise<never> }).close = () => new Promise<never>(() => undefined);
 
@@ -3371,6 +3373,7 @@ describe("createCheckedSandbox's step limits", () => {
       createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { dockerCallMinutes: 0.001 }),
       /no `timeout` command/,
     );
+    assert.ok(logged.some((line) => /closing the refused sandbox failed: .*closing the sandbox didn't finish/.test(line)), logged.join("\n"));
   });
 
   it("hands back the limited sandbox itself, which stalledStepOf recognises once a step stalls it", async () => {

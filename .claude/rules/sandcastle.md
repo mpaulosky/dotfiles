@@ -42,11 +42,13 @@ files change.
   on this machine and skips those tests without it;
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
 - **Give the host's own waits a limit.** Every `gh` and `git` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
-  one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call; never default a `run` parameter to a bare `execFileSync`
-  (`lib/host-limit.test.mts` scans for it). Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
-  (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed. The call itself can't be cancelled,
-  so a container Docker never answered for may stay running until a person removes it. A close the host gave up on, in a build's or a pass's `finally`, is only logged
-  (`closeAfterWork`), so it never discards the pull request or the error that ended the work. Role runs through `sandcastle.run()` rely on the role's own `timeoutMinutes`.
+  one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call. Only `lib/host-limit.mts` imports `node:child_process` as a value
+  (a type import for `typeof execFileSync` is fine; `review-ledger`, `security-record` and `git-sandbox-fake` are exempt), and a `run` parameter defaults
+  to `hostExecFileSync`: `lib/host-limit.test.mts` scans for both. Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
+  (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed. The call itself can't be
+  cancelled, so a container Docker never answered for may stay running until a person removes it. A close the host gave up on, in a build's or a pass's
+  `finally`, is only logged (`closeAfterWork`), so it never discards the pull request or the error that ended the work. Role runs through
+  `sandcastle.run()` rely on the role's own `timeoutMinutes`.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

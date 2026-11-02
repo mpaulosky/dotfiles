@@ -555,7 +555,9 @@ export async function createCheckedSandbox(
         sandbox.worktreePath,
       );
     }
-    await closeWithinLimit(sandbox, stepLimits.dockerCallMinutes).catch(() => undefined);
+    await closeWithinLimit(sandbox, stepLimits.dockerCallMinutes).catch((closeError) =>
+      console.error(`  ⚠ closing the refused sandbox failed: ${terminalText(String(closeError))}`),
+    );
     throw error;
   }
   return limited;

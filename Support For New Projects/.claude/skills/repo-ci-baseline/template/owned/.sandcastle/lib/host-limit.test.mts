@@ -172,17 +172,25 @@ describe("closeAfterWork", () => {
 });
 
 describe("the host's calls", () => {
-  it("never import child_process outside host-limit.mts, so every gh and git call the host makes has a time limit", async () => {
+  it("never use child_process as a value outside host-limit.mts, so every gh and git call the host makes has a time limit", async () => {
     const { readdirSync, readFileSync } = await import("node:fs");
     const dir = new URL(".", import.meta.url);
-    const imports = readdirSync(dir)
+    const uses = readdirSync(dir)
       .filter((name) => name.endsWith(".mts") && !name.endsWith(".test.mts") && name !== "host-limit.mts")
-      // `import type` is only for `typeof execFileSync` in a parameter's type; a value import is a call that may be unlimited.
-      .filter((name) => /^import\s+(?!type\b).*from\s+"node:child_process"/m.test(readFileSync(new URL(name, dir), "utf8")));
+      .filter((name) => {
+        const code = readFileSync(new URL(name, dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+        if (/\b(?:require|import)\s*\(\s*["'](?:node:)?child_process["']/.test(code)) return true;
+        // An import is a value import unless it is `import type …` or every name in its braces is `type X`.
+        return [...code.matchAll(/\bimport\s+([^;]*?)\s*from\s*["'](?:node:)?child_process["']/g)].some(([, clause]) => {
+          if (/^type\b/.test(clause!)) return false;
+          const names = /\{([^}]*)\}/.exec(clause!)?.[1]?.split(",").map((name) => name.trim()).filter(Boolean);
+          return names === undefined || names.some((name) => !/^type\s/.test(name));
+        });
+      });
 
     // review-ledger.mts and security-record.mts run in a person's terminal under scripts/review.sh, not in the unattended run, and
     // git-sandbox-fake.mts is a test helper that runs shell setup, not the host's gh or git.
-    assert.deepEqual(imports.filter((name) => !["review-ledger.mts", "security-record.mts", "git-sandbox-fake.mts"].includes(name)), []);
+    assert.deepEqual(uses.filter((name) => !["review-ledger.mts", "security-record.mts", "git-sandbox-fake.mts"].includes(name)), []);
   });
 
   it("never default a run parameter to a bare execFileSync", async () => {

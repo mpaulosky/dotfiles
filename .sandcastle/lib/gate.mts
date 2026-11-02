@@ -44,7 +44,7 @@ export type GateGitHub = {
   blocker(number: number): Blocker;
 };
 
-// The gate's GitHub reads, run through `run` (execFileSync by default) against `repo` (this checkout's repository by default). Each
+// The gate's GitHub reads, run through `run` (hostExecFileSync by default) against `repo` (this checkout's repository by default). Each
 // goes through ghWithStderr, so gh's stderr reaches the terminal only through the thrown message (ADR 0010).
 export function gateGitHub(run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): GateGitHub {
   return {

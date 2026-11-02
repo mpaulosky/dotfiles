@@ -16,13 +16,14 @@ export const HOST_COMMAND_LIMIT_MINUTES = 5;
 // How long Docker may take to create or close a sandbox, in minutes. Both are Sandcastle calls with no timeout of their own.
 export const DOCKER_CALL_LIMIT_MINUTES = 5;
 
-// execFileSync with a time limit, for every `gh` and `git` call the host makes: the child is killed (KILL, since a hung `gh` may
-// ignore TERM) when it runs past HOST_COMMAND_LIMIT_MINUTES, and the call throws like any failed one (code ETIMEDOUT), so each
-// caller's own handling of a failed call applies. A caller's own `timeout` or `killSignal` wins.
+// The options every host `gh` and `git` call gets: the host limit and KILL (a hung `gh` may ignore TERM). A caller's own values win.
 export function hostExecOptions(given: object = {}): object {
   return { timeout: HOST_COMMAND_LIMIT_MINUTES * 60_000, killSignal: "SIGKILL", ...given };
 }
 
+// execFileSync with a time limit, for every `gh` and `git` call the host makes: the child is killed (KILL, since a hung `gh` may
+// ignore TERM) when it runs past HOST_COMMAND_LIMIT_MINUTES, and the call throws like any failed one (code ETIMEDOUT), so each
+// caller's own handling of a failed call applies. A caller's own `timeout` or `killSignal` wins.
 export const hostExecFileSync = ((file: string, ...rest: unknown[]) => {
   const args = rest.find(Array.isArray) as string[] | undefined;
   const last = rest[rest.length - 1];
@@ -49,7 +50,7 @@ export async function withinDockerLimit<T>(
       try {
         onLate(value);
       } catch (error) {
-        console.error(`  ⚠ ${what}: handling the late answer failed: ${String(error)}`);
+        console.error(`  ⚠ ${what}: handling the late answer failed: ${String(error).replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")}`);
       }
     },
     () => undefined,

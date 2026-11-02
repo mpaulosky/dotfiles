@@ -35,7 +35,9 @@ export type CheckpointSteps = {
   // Why the sandbox can't run a fixer, or undefined when it answers. Asked
   // before every fixer attempt: a fixer run into a dead sandbox only fails on
   // its first command and costs a whole attempt (a run's second gate-fixer died
-  // on `git config`, exit 128, and every git call after it did too).
+  // on `git config`, exit 128, and every git call after it did too). It may
+  // throw an UncountedStopError (a stalled sandbox), which runCheckpoint lets
+  // propagate so the run ends on the stall instead of recording a failed attempt.
   alive?(): Promise<string | undefined>;
 };
 
@@ -186,7 +188,9 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 // (`firstOutput`) when the checkpoint ended red after a fixer ran. When
 // `alive` reports the sandbox down, the checkpoint ends before that attempt's
 // fixer, with the reason appended to the output and `fixersRun` set to the
-// attempts that ran. A caller that passes no `alive` gets neither.
+// attempts that ran. A caller that passes no `alive` never gets `fixersRun` or
+// that early end, but still gets `firstOutput`. An `alive` that throws an
+// UncountedStopError ends the checkpoint with it.
 export async function runCheckpoint(
   checkpoint: Checkpoint,
   steps: CheckpointSteps,
@@ -222,7 +226,9 @@ export async function runCheckpoint(
 // stall (an UncountedStopError): that ends the run, and recording it as a
 // failed build attempt would hide it. `scrub` runs over the error's text
 // before it is cut to 200 printable characters, so a secret in it can't be cut
-// into a shape the scrub no longer recognises.
+// into a shape the scrub no longer recognises. The default scrub does nothing,
+// so a caller that logs or posts the reason must pass one. The raw error text is
+// never logged: only the scrubbed reason is.
 export async function sandboxDown(
   sandbox: Pick<Sandbox, "exec">,
   scrub: (text: string) => string = (text) => text,

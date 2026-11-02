@@ -159,11 +159,12 @@ function host(
     // a reviewer that finished writes, so a test that pins the log isn't
     // handed the fallback's line.
     prBodyFile?: string;
-    // What every gate run prints, instead of "gate output, exit <n>".
+    // What every gate run prints, or what gate run <n> prints (counting from 1) when this is a function, instead of "gate output, exit <exit code>".
     gateOutput?: string | ((gateRun: number) => string);
     // `git rev-parse HEAD` fails once this many gate runs have printed, as in a sandbox that was killed during or right after the gate,
     // with exit 128, or by throwing `sandboxDeathError` when that is set.
     sandboxDiesAfterGates?: number;
+    // What `git rev-parse HEAD` throws, instead of failing with exit 128, once `sandboxDiesAfterGates` gate runs have printed.
     sandboxDeathError?: Error;
     // The commit latestMain() resolves origin/main to just before checkpoint
     // 2, whether the branch already contains it, how `git merge` of it and

@@ -19,7 +19,7 @@ import {
   type OptionalRole,
 } from "./config.mts";
 import { CHECK_PATHS, copyToWorktree, hooks } from "./repo-config.mts";
-import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
@@ -33,7 +33,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
-import { limitSandboxExec } from "./step-limit.mts";
+import { type StepLimitOptions, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
 // A conventional-commit prefix as scripts/check-pr-title.sh accepts it: a type,
@@ -487,12 +487,13 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // report. A check that itself fails counts as a tampered worktree. The sandbox
 // it returns runs every exec under a limit (lib/step-limit.mts), so a stalled
 // gate or git command ends as exit code 124 with its name in the output; the
-// two git config commands that set the identity and the `command -v timeout`
-// probe run first, on the sandbox itself, and have none. The image needs
-// `timeout` (GNU coreutils), which the probe checks once: an image without it
-// is refused with a message that says so, rather than failing every later
-// command. The probe fails like the identity step: a rejection or a refusal
-// goes through the same worktree check and close.
+// two git config commands that set the identity and the timeout probe run
+// first, on the sandbox itself, and have none. The image needs `timeout` (GNU
+// coreutils), which the probe checks once, in the form every command takes: an
+// image without it is refused with a message that says so, rather than failing
+// every later command. The probe, and a limit the repo set badly, fail like
+// the identity step: a rejection or a refusal goes through the same worktree
+// check and close. `stepLimits` is for tests.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
@@ -504,6 +505,7 @@ export async function createCheckedSandbox(
     sandcastle.createSandbox({ branch: name, sandbox: agentSandbox(), hooks, copyToWorktree }),
   hostIdentity: () => HostIdentity = liveHostIdentity,
   checkWorktree: (worktreePath: string) => string[] = worktreeProblems,
+  stepLimits: StepLimitOptions = {},
 ): Promise<sandcastle.Sandbox> {
   const existing = worktreePathFor(process.cwd(), branch);
   const problems = existsSync(existing) ? checkWorktree(existing) : [];
@@ -511,12 +513,18 @@ export async function createCheckedSandbox(
     throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
   const sandbox = await create(branch);
+  let limited: sandcastle.Sandbox;
   try {
     await setGitIdentity(sandbox, hostIdentity());
-    const probe = await sandbox.exec("command -v timeout");
+    // The probe runs the form every later command takes (`timeout -k … sh -c …`), so an image whose `timeout` lacks
+    // an option, or has no `sh`, is refused here and not by every command after it.
+    const probe = await sandbox.exec(limitedCommand("true", 1));
     if (probe.exitCode !== 0) {
       throw new Error("the sandbox image has no `timeout` command (GNU coreutils), which the step limits in lib/step-limit.mts need");
     }
+    // Every later exec (the gate, the merge of main, the reads of git state) runs under a limit, so a stalled one ends the step.
+    // It throws on a limit the repo set badly, so it sits in the try: a throw there closes the sandbox like any other.
+    limited = limitSandboxExec(sandbox, { prefix: `  ${terminalText(branch)}: `, ...stepLimits });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // The check itself can fail (the worktree gone, git failing). Then the
@@ -537,8 +545,7 @@ export async function createCheckedSandbox(
     await sandbox.close().catch(() => undefined);
     throw error;
   }
-  // Every later exec (the gate, the merge of main, the reads of git state) runs under a limit, so a stalled one ends the step.
-  return limitSandboxExec(sandbox, { prefix: `  ${terminalText(branch)}: ` });
+  return limited;
 }
 
 // Whether origin's main is `commit` now, by its answer to git ls-remote. Only
@@ -1207,6 +1214,11 @@ async function buildMarkedIssue(
     const prBody = await reviewerPrBody();
     const checkChanges = await changedCheckFiles(gated, mergedMain);
     const branchAtBase = await triedCreatingBranchAtBase(gated);
+
+    // A step that stalled the sandbox during a read this build tolerates (the PR body, the changed files) still ends the
+    // build red, with the step named, rather than publishing past it.
+    const stalled = stalledStepOf(sandbox);
+    if (stalled !== undefined) throw new StalledStepError(`the step "${stalled}" didn't end at its limit, so ${branch} isn't published`);
     try {
       const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody, checkChanges);
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };

@@ -11,10 +11,10 @@ import {
   FOLLOW_UP_LABEL,
   FOLLOW_UP_LABEL_DEFINITION,
   GATE_FIXER_ATTEMPTS,
-  MAX_GATE_RUNS,
   HOST_LABELS,
   LOCAL_QUEUE_LABEL,
   LOCAL_QUEUE_LABEL_DEFINITION,
+  MAX_GATE_RUNS,
   OPTIONAL_ROLES,
   QUEUE_LABEL,
   QUEUE_SCOPE_USAGE,
@@ -84,7 +84,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
     // entry), so a repo that opts in with a larger one gets the sum checked again by this test in its own config.
     const timeout = (role: (typeof BUILD_ROLES)[number]) => (role === "ui" && !uiEnabled() ? ROLE_AGENTS.backend : roleAgent(role)).timeoutMinutes;
     // Checkpoint 1 runs the gate, then once more after each gate-fixer attempt. Checkpoint 2 runs it on the merged tree first,
-    // and when that is red goes through the same loop as checkpoint 1: seven runs in all, each up to its step limit.
+    // and when that is red goes through the same loop as checkpoint 1: MAX_GATE_RUNS runs in all, each up to its step limit.
     const gateRuns = MAX_GATE_RUNS;
     const minutes =
       BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) +

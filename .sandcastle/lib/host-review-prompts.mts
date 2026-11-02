@@ -145,7 +145,7 @@ export function reviewFixPrompt({
   return [
     `# TASK`,
     "",
-    `Fix the findings below, which round ${round} of the pre-push review of branch ${branch} raised on your work for issue #${issue.number}: ${issue.title}`,
+    `Fix the findings below, which round ${round} of the pre-push review of branch ${branch} raised on your work for issue #${issue.number} (its text is in the data block below)`,
     "",
     "Read `.sandcastle/roles/shared-rules.md` first: it holds the rules every role follows.",
     "",

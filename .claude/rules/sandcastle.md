@@ -55,7 +55,8 @@ files change.
   A close the host gave up on, in a build's or a pass's `finally` or after `createCheckedSandbox` refuses a sandbox, is logged and ends the run red (`closeAfterWork`; `exitAfterStall` sets exit
   code 1), but it never discards the pull request or the error that ended the work. Role runs through `sandcastle.run()` rely on the role's own
   `timeoutMinutes`; a role run in a sandbox (`runRoleInSandbox`, a build's and a follow-up pass's) is also given up on `ROLE_RUN_GRACE_MINUTES`
-  after that timeout, which stalls the sandbox like a command that never returned.
+  after that timeout, which stalls the sandbox like a command that never returned. The host-side review as a whole stops starting steps after
+  `REVIEW_WALL_CLOCK_MINUTES` (checked before each round, reviewer and fixer run) and ends as failed at its last gated commit.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

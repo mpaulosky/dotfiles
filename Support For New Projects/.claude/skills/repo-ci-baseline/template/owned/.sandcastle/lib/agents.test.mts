@@ -22,7 +22,7 @@ import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
-import { MAX_TIMER_MS } from "./host-limit.mts";
+import { hostCallHasBeenAbandoned, MAX_TIMER_MS } from "./host-limit.mts";
 import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
@@ -96,6 +96,8 @@ describe("runRoleInSandbox", () => {
       (error: unknown) => error instanceof StalledStepError && /pre-push-reviewer run didn't finish/.test(error.message),
     );
     assert.match(stalledStepOf(sandbox) ?? "", /pre-push-reviewer/);
+    // The host recorded the call it gave up on, so the process ends after its cleanup instead of waiting on a handle that never settles.
+    assert.equal(hostCallHasBeenAbandoned(), true);
     await assert.rejects(runRoleInSandbox(sandbox, "backend", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 20 }), /wasn't started/);
     assert.equal(ran, 1);
   });

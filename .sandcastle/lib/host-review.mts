@@ -235,10 +235,12 @@ export function triageRound({
   worktree?: string;
 }): TriageFinding[] {
   const merged = new Map<string, ReviewerFinding>();
-  for (const { findings } of raw) {
+  for (const { reviewer, findings } of raw) {
     // The path is normalised before the key is made, so one problem a reviewer wrote as `./src/a.ts` and another as the absolute path merge.
+    // The lens is the reviewer's the host ran, not the one its answer names: an answer is text an injected reviewer could write, and
+    // whether a finding names a security lens decides whether it is a Warning and whether the PR note may list it.
     for (const original of findings) {
-      const found = { ...original, path: diffPath(original.path, worktree) };
+      const found = { ...original, lens: reviewer.lens, path: diffPath(original.path, worktree) };
       const key = sameProblem(found);
       const earlier = merged.get(key);
       if (earlier === undefined) {
@@ -345,6 +347,11 @@ export type HostReviewHost = {
   wallClockMs?: number;
 };
 
+// The most a round's diff may hold, in bytes. The host sends it to the sandbox through one command with a time limit, and each reviewer reads
+// it: a generated file or a lockfile past this would stall that command, and the build with it, on every run. A larger diff ends the review as
+// failed, which publishes the branch with a note.
+export const MAX_REVIEW_PATCH_BYTES = 4 * 1024 * 1024;
+
 // How a review ends: recorded, failed (with the last commit the gate passed on, which is published), or the gate stayed red.
 export type HostReviewResult =
   | { status: "recorded"; head: string; rounds: number; ledger: Ledger; readPaths: ReadonlySet<string> }
@@ -449,6 +456,10 @@ async function runRounds(
       host.log(`  ✗ the local review failed: round ${round} couldn't be prepared: ${(error as Error).message}`);
       return { status: "failed", head, reason: `round ${round} couldn't be prepared` };
     }
+    if (prepared.patch.length > MAX_REVIEW_PATCH_BYTES) {
+      host.log(`  ✗ the local review failed: round ${round}'s diff is ${prepared.patch.length} bytes, past the limit of ${MAX_REVIEW_PATCH_BYTES}`);
+      return { status: "failed", head: prepared.head, reason: "the diff is too large to review" };
+    }
     for (const path of patchPaths(prepared.patch.toString("utf8"))) readPaths.add(path);
     await host.writeRunFile(`${runRel}/diff.patch`, prepared.patch);
     if (prepared.fixes !== undefined) await host.writeRunFile(`${runRel}/fixes.patch`, prepared.fixes);
@@ -518,8 +529,10 @@ async function runRounds(
       }
       const after = await host.head();
       const moved = after !== undefined && after !== prepared.head ? after : undefined;
-      advanced = moved !== undefined;
       const changed = moved === undefined ? [] : host.changedFiles(prepared.head, moved);
+      // A move of HEAD that changes no file (an empty commit, a change and its revert) is no new code to review: the next round would have
+      // no fixes to read and fail to prepare, so the round is recorded as it was read.
+      advanced = moved !== undefined && changed.length > 0;
       final = applyOutcomes(triaged, parseOutcomes(await host.readOutcomes(), host.log), changed, advanced);
     }
     recorded.push(...final);
@@ -586,8 +599,8 @@ function record(
     );
     return { status: "recorded", head: last.head, rounds, ledger, readPaths };
   } catch (error) {
-    host.log(`  ✗ the local review's record was refused: ${errorText(error)}`);
-    return { status: "failed", head: last.head, reason: "the ledger refused the review's record" };
+    host.log(`  ✗ the local review couldn't be recorded: ${errorText(error)}`);
+    return { status: "failed", head: last.head, reason: "the review couldn't be recorded" };
   }
 }
 

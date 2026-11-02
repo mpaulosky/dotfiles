@@ -629,6 +629,35 @@ describe("ledgerGitEnv", () => {
     assert.equal(ledgerGitEnv("/main/checkout").GIT_COMMON_DIR, "/main/checkout/.git");
     assert.equal(ledgerGitEnv("/some/worktree").GIT_COMMON_DIR, undefined);
   });
+
+  it("turns grafts off for a pinned checkout, where an agent can write .git/info/grafts, and leaves a person's checkout alone", () => {
+    pinLedgerGit("/main/checkout", "/main/checkout/.git");
+
+    assert.equal(ledgerGitEnv("/main/checkout").GIT_GRAFT_FILE, "/dev/null/no-grafts");
+    assert.equal(ledgerGitEnv("/some/worktree").GIT_GRAFT_FILE, undefined);
+  });
+
+  it("makes git ignore a planted graft in a pinned checkout, so the review reads the commits the branch has", () => {
+    const repo = mkdtempSync(join(tmpdir(), "graft-repo-"));
+    try {
+      const run = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: repo, encoding: "utf8" }).trim();
+      run("init", "-q", "-b", "main");
+      run("commit", "-q", "--allow-empty", "-m", "one");
+      const first = run("rev-parse", "HEAD");
+      run("commit", "-q", "--allow-empty", "-m", "two");
+      const second = run("rev-parse", "HEAD");
+      writeFileSync(join(repo, ".git", "info", "grafts"), `${second}\n`);
+      pinLedgerGit(repo, join(repo, ".git"));
+
+      const seen = (env: NodeJS.ProcessEnv) => execFileSync("git", ["rev-list", "--count", second], { cwd: repo, env, encoding: "utf8" }).trim();
+
+      assert.equal(seen({ ...process.env }), "1", "without the pin the graft cuts the history");
+      assert.equal(seen(ledgerGitEnv(repo)), "2");
+      assert.notEqual(first, second);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
 });
 
 describe("checkReview", () => {

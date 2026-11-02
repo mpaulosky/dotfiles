@@ -3753,6 +3753,19 @@ describe("buildIssue's local review", () => {
     assert.deepEqual(run.pushed, [{ branch, commit: reviewedEarlier }]);
   });
 
+  it("publishes the last gated commit with a note when the run's time budget passed during the review, and spends no failed attempt", async () => {
+    const gatedEarlier = "d".repeat(40);
+    const run = host([0, 0], {
+      localReview: async () => ({ status: "failed", head: gatedEarlier, reason: "the run's time budget passed during the review" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.pushed, [{ branch, commit: gatedEarlier }]);
+    assert.deepEqual(run.recordBuildFailureCalls, []);
+  });
+
   it("leaves out a finding whose path reads like a Review notes section, and still lists the others", async () => {
     const reviewed = "c".repeat(40);
     const ledger = ledgerWith(reviewed, [openFinding({ path: "docs/Review notes.md" }), openFinding({ id: "R2" })]);
@@ -3834,7 +3847,7 @@ describe("buildIssue's local review", () => {
     assert.deepEqual(run.pushed, []);
   });
 
-  it("rejects with UncountedStopError, publishing and recording nothing, when a usage or time stop ends the review", async () => {
+  it("rejects with UncountedStopError, publishing and recording nothing, when a usage-limit stop ends the review", async () => {
     const stop = new UncountedStopError("Claude's usage limit was hit during the pre-push-reviewer run");
     const run = host([0, 0], {
       localReview: async () => {
@@ -3997,6 +4010,53 @@ describe("liveReviewHost", () => {
       assert.equal(execs.filter((found) => found.stdin !== undefined).length, 1);
       assert.equal(execs.find((found) => found.stdin !== undefined)?.stdin, Buffer.from("patch").toString("base64"));
       assert.match(execs.find((found) => found.stdin !== undefined)?.command ?? "", /base64 -d > /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes an empty run file without feeding the sandbox's command an empty stdin", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost(args, dir).writeRunFile(".sandcastle/work/387/review/fixes.patch", "");
+
+      assert.equal(execs.filter((found) => found.stdin !== undefined).length, 0);
+      assert.match(execs.at(-1)?.command ?? "", /: > '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  // Criterion: a reviewer or fix run that never answers ends the review red instead of holding the job. The tests of runRoleInSandbox
+  // alone could not tell whether the live host passes through it, so this runs the live host over a sandbox whose run never settles.
+  it("gives up on a reviewer run that never answers with a StalledStepError, and leaves the sandbox stalled", async () => {
+    const { args } = recorder();
+    const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+    const dir = checkout();
+    try {
+      const live = liveReviewHost({ ...args, sandbox, backstopMs: 20 }, dir);
+
+      await assert.rejects(() => live.runReviewer({ lens: "Bar", row: "" }, "review"), (error: unknown) => error instanceof StalledStepError);
+
+      assert.match(stalledStepOf(sandbox) ?? "", /pre-push-reviewer/);
+      await assert.rejects(() => live.runFixer("fix"), (error: unknown) => error instanceof StalledStepError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("gives up on a backend fix run that never answers with a StalledStepError", async () => {
+    const { args } = recorder();
+    const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+    const dir = checkout();
+    try {
+      await assert.rejects(
+        () => liveReviewHost({ ...args, sandbox, backstopMs: 20 }, dir).runFixer("fix"),
+        (error: unknown) => error instanceof StalledStepError && /backend/.test(error.message),
+      );
+
+      assert.match(stalledStepOf(sandbox) ?? "", /backend/);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }

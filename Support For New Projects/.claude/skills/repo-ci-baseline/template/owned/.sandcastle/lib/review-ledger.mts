@@ -41,7 +41,10 @@ import { z } from "zod";
 import { plainText, visibleLetters } from "./plain-text.mts";
 import { NOT_OWNED_BASELINE_PATHS, REPO_SLUG } from "./repo-config.mts";
 import { hostExecFileSync } from "./host-limit.mts";
-import { markAccepted, readEntries, recordSecurity, renderSecurityList, type SecurityInput, type SecurityOutcome } from "./security-record.mts";
+import { ledgerGitEnv, markAccepted, pinLedgerGit, readEntries, recordSecurity, renderSecurityList, type SecurityInput, type SecurityOutcome } from "./security-record.mts";
+
+// They live in security-record.mts, which runs git on the host the same way, and are re-exported for the callers of the ledger.
+export { ledgerGitEnv, pinLedgerGit };
 
 // The variable that skips the review check, for the gate runs that come
 // before or during the review: the skill's own (each round's), and every gate
@@ -325,34 +328,6 @@ export const ledgerSchema = z
   .strict();
 
 export type Ledger = z.infer<typeof ledgerSchema>;
-
-// The variables a hook sets, which would point a worktree's git at another
-// checkout's, and the ones that change what `git diff` prints.
-const hookGitVariables = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR", "GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF"];
-
-// The shared .git directories the host pinned for a checkout (pinLedgerGit).
-const pinnedCommonDirs = new Map<string, string>();
-
-// Makes every ledger git command run in `cwd` take its config, refs and objects from `commonDir`, whatever a commondir file there
-// says (GIT_COMMON_DIR outranks it). The Sandcastle host calls this for the main checkout, whose .git agents can write; the review
-// CLI doesn't, and keeps stripping the variables a hook sets.
-export function pinLedgerGit(cwd: string, commonDir: string): void {
-  pinnedCommonDirs.set(cwd, commonDir);
-}
-
-// The environment a ledger git command runs in at `cwd`: the hook variables dropped, replace refs and the system gitattributes
-// file off, and the shared .git directory pinned when the host asked (pinLedgerGit).
-export function ledgerGitEnv(cwd: string): NodeJS.ProcessEnv {
-  // GIT_ATTR_NOSYSTEM: not the machine's system-wide gitattributes file
-  // either, which could mark text files binary for one person's review only.
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_ATTR_NOSYSTEM: "1" };
-  for (const name of hookGitVariables) {
-    delete env[name];
-  }
-  const pinned = pinnedCommonDirs.get(cwd);
-  if (pinned !== undefined) env.GIT_COMMON_DIR = pinned;
-  return env;
-}
 
 // Run git in `cwd` and return its stdout as bytes, with the hook variables
 // dropped. Replace refs are off, so the review reads and keys commits as they

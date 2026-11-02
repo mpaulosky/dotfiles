@@ -8,6 +8,7 @@ import {
   applyOutcomes,
   BAR_LENS,
   LENS_APPLIES,
+  MAX_REVIEW_PATCH_BYTES,
   diffPath,
   openFindingsNote,
   parseLensTable,
@@ -300,6 +301,18 @@ describe("diffPath", () => {
 describe("triageRound", () => {
   const triage = (reviewers: Record<string, ReviewerFinding[]>, firstId = 1, reviewOnly = false) =>
     triageRound({ raw: Object.entries(reviewers).map(([lens, findings]) => ({ reviewer: reviewer(lens), findings })), firstId, reviewOnly });
+
+  it("takes a finding's lens from the reviewer the host ran, so an answer can't dodge the Security lens by naming another", () => {
+    const got = triageRound({
+      raw: [{ reviewer: reviewer("Security"), findings: [raw({ lens: "Edge cases", severity: "critical", security: false })] }],
+      firstId: 1,
+      reviewOnly: false,
+    });
+
+    assert.equal(got[0]!.lens, "Security");
+    assert.equal(got[0]!.severity, "warning");
+    assert.equal(got[0]!.security, true);
+  });
 
   it("merges one problem reported under different spellings of its path", () => {
     const got = triageRound({
@@ -1359,15 +1372,18 @@ describe("runHostReview's time cap", () => {
     assert.equal(result.status, "failed");
     assert.equal(result.status === "failed" && result.head, hex(2), "round 1's fixes passed the gate; round 2 never started");
     assert.equal(run.reviewerRuns.every((found) => found.round === 1), true);
+    assert.equal(run.prepares.length, 1, "round 2 was not even prepared: the check at the start of the round fired");
+    assert.ok(run.logs.some((line) => /time cap before round 2\b/.test(line)), run.logs.join("\n"));
   });
 
-  it("starts a fixer only while it has time", async () => {
+  it("starts a fixer only while it has time: the cap spent by the round's last reviewer stops the fixer, not a reviewer", async () => {
     let now = 0;
+    const last = CODE_REVIEWERS.at(-1)!;
     const run = fake({
       clock: () => now,
       wallClockMs: 10 * minute,
       answers: (_round, who) => {
-        if (who.lens === "Edge cases") now = 11 * minute;
+        if (who.lens === last) now = 11 * minute;
         return who.lens === "Edge cases" ? [raw()] : [];
       },
     });
@@ -1376,6 +1392,8 @@ describe("runHostReview's time cap", () => {
 
     assert.equal(result.status, "failed");
     assert.equal(run.fixerPrompts.length, 0);
+    assert.equal(run.reviewerRuns.length, CODE_REVIEWERS.length, "every reviewer of the round ran: only the fixer's own check is left");
+    assert.ok(run.logs.some((line) => /time cap before round 1's fixer/.test(line)), run.logs.join("\n"));
   });
 
   it("lets a review that finishes inside the cap record as before", async () => {
@@ -1402,8 +1420,9 @@ describe("runHostReview's time cap", () => {
   });
 });
 
-// Criterion: a usage or time stop during the review leaves the branch for a later round and is not published as reviewed. A reviewer that
-// fails is reported, and the branch is not recorded as reviewed.
+// A usage-limit stop (or a stalled sandbox) during the review leaves the branch for a later round; the run's time budget passing, or the
+// review's own time cap, ends it as failed at the last commit the gate passed on, which is published with a note and no record. A
+// reviewer that fails is reported, and the branch is not recorded as reviewed.
 describe("runHostReview's stops and failures", () => {
   it("rejects with the UncountedStopError a reviewer hits at once, starting no later reviewer, and records nothing", async () => {
     const stop = new UncountedStopError("Claude's usage limit was hit during the pre-push-reviewer run");
@@ -1426,7 +1445,7 @@ describe("runHostReview's stops and failures", () => {
   });
 
   it("rejects with the UncountedStopError the fixer hits, and records nothing", async () => {
-    const stop = new UncountedStopError("the run's 240-minute time budget has passed");
+    const stop = new UncountedStopError("Claude's usage limit was hit during the backend run");
     const run = fake({ answers: only("Edge cases", [raw()]), fixer: () => ({ error: stop }) });
 
     await assert.rejects(() => runHostReview(run.host, input(run.startHead)), (error: unknown) => error === stop);
@@ -1600,12 +1619,61 @@ describe("runHostReview's stops and failures", () => {
     assert.equal((result as { head: string }).head, hex(2));
   });
 
-  it("still rethrows a usage or time stop from a host call", async () => {
+  it("still rethrows a usage-limit stop from a host call", async () => {
     const run = fake();
     const stop = new UncountedStopError("usage limit");
     run.host.worktree = async () => { throw stop; };
 
     await assert.rejects(() => runHostReview(run.host, input(run.startHead)), (error: unknown) => error === stop);
+  });
+
+  it("ends as failed at the start commit when the time budget passes in a host call", async () => {
+    const run = fake();
+    run.host.worktree = async () => { throw new TimeBudgetStopError("the run's 240-minute time budget has passed"); };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.deepEqual(result, { status: "failed", head: run.startHead, reason: "the run's time budget passed during the review" });
+  });
+
+  it("ends as failed, not as refused by the ledger, when the record throws for any reason", async () => {
+    const run = fake();
+    run.host.record = () => { throw Object.assign(new Error("git was killed"), { signal: "SIGKILL" }); };
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.reason, "the review couldn't be recorded");
+  });
+
+  it("records the round as read, and starts no second round, when the fixer moves HEAD without changing a file", async () => {
+    const run = fake({ answers: only("Edge cases", [raw()]), fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: [] }) });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "recorded", JSON.stringify(result));
+    assert.equal(run.prepares.length, 1, "a second round would have nothing to read and fail to prepare");
+    assert.equal(run.gateRuns(), 0, "no new code, so no gate");
+    assert.equal(run.records[0]!.input.findings.find((found) => found.id === "R1")?.status, "open", "a fixed claim with no file changed isn't believed");
+  });
+
+  it("fails the review, asking no reviewer, when a round's diff is past the size the sandbox command can carry", async () => {
+    const run = fake({ patches: () => ({ patch: "x".repeat(MAX_REVIEW_PATCH_BYTES + 1) }) });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.status === "failed" && result.reason, "the diff is too large to review");
+    assert.equal(run.reviewerRuns.length, 0);
+    assert.equal(run.files.length, 0);
+  });
+
+  it("reviews a diff of exactly the largest size", async () => {
+    const run = fake({ patches: () => ({ patch: "x".repeat(MAX_REVIEW_PATCH_BYTES) }) });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "recorded");
   });
 
   it("logs a failing reviewer's own error for the operator, and keeps it out of the reason", async () => {

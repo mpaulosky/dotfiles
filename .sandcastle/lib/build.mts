@@ -392,7 +392,7 @@ export type BuildHost = {
   // refused. A branch that moved is left alone.
   deleteBranchAt(branch: string, commit: string): void;
   // Runs the pre-push review's rounds on the host (lib/host-review.mts) once checkpoint 2's gate has passed on `startHead`, against
-  // `main`, and records them. Rejects with UncountedStopError for a usage-limit stop; a time-budget stop or the review's time cap ends it as failed. Only the host records: the sandbox's agents
+  // `main`, and records them. Rejects with UncountedStopError for a usage-limit stop or a stalled sandbox; a time-budget stop or the review's time cap ends it as failed. Only the host records: the sandbox's agents
   // get no shell on the ledger, no token and no scripts/review.sh.
   localReview(args: LocalReviewArgs): Promise<HostReviewResult>;
 };
@@ -410,6 +410,9 @@ export type LocalReviewArgs = {
   // Hands the build the commits the review's roles made, for its report.
   addCommits(commits: { sha: string }[]): void;
   limits: RunLimits;
+  // How long the host waits for one reviewer or backend run before it gives up on it, in milliseconds; for tests. The default is the role's
+  // timeoutMinutes plus ROLE_RUN_GRACE_MINUTES (lib/agents.mts#roleBackstopMs).
+  backstopMs?: number;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no
@@ -704,6 +707,7 @@ export function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
 // reaches the ledger. The sandbox mounts an empty folder over .git/review and has no GitHub token.
 export function liveReviewHost(args: LocalReviewArgs, checkout: string = process.cwd()): HostReviewHost {
   const { sandbox, issue, main, limits } = args;
+  const backstop = args.backstopMs === undefined ? {} : { backstopMs: args.backstopMs };
   const runRel = `.sandcastle/work/${issue.number}/review`;
   const outcomesFile = `${runRel}/outcomes.json`;
   // The ledger's git commands run in the main checkout, whose .git agents can write: pinned to its own shared directory, whatever a
@@ -730,7 +734,12 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       // Only the run's own folder, which the sandbox git-ignores (.sandcastle/work/).
       if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only write under ${runRel}/, not ${path}`);
       // Base64, so the bytes git printed arrive as they are: a patch of a file that isn't UTF-8 would otherwise be rewritten in transit.
-      const written = await sandbox.exec(`mkdir -p ${shellWord(runRel)} && base64 -d > ${shellWord(path)}`, { stdin: Buffer.from(content).toString("base64") });
+      // An empty file is made without stdin: a command waiting on an empty stdin could hold the build until its limit.
+      const encoded = Buffer.from(content).toString("base64");
+      const written =
+        encoded === ""
+          ? await sandbox.exec(`mkdir -p ${shellWord(runRel)} && : > ${shellWord(path)}`)
+          : await sandbox.exec(`mkdir -p ${shellWord(runRel)} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
       if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
     },
     runReviewer: async (_reviewer, prompt) => {
@@ -740,13 +749,13 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
         strictMcp: true,
         // Not the branch's .claude/settings.json: its hooks would run shell commands, with the sandbox's environment, in a run meant to hold no shell.
         userSettingsOnly: true,
-      });
+      }, backstop);
       return run.stdout;
     },
     runFixer: async (prompt) => {
       // An earlier round's outcomes must not be read as this one's.
       await sandbox.exec(`rm -f ${shellWord(outcomesFile)}`);
-      const run = await runRoleInSandbox(sandbox, "backend", { prompt }, limits, { denied: LEDGER_DENIED_TOOLS });
+      const run = await runRoleInSandbox(sandbox, "backend", { prompt }, limits, { denied: LEDGER_DENIED_TOOLS }, backstop);
       args.addCommits(run.commits);
     },
     readOutcomes: async () => {
@@ -1360,8 +1369,8 @@ async function buildMarkedIssue(
     const mergedMain = trustedMergedMain(checkpoint2.mergedMain);
 
     // The pre-push review's rounds, on the host (lib/host-review.mts), on the commit checkpoint 2 passed on. A round that fixes
-    // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage-limit
-    // stop leaves the branch for a later round (UncountedStopError); a review that can't finish, or that the time budget or its own cap ends, publishes with a note.
+    // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage-limit stop
+    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, publishes with a note.
     let reviewNote = "";
     const review = await host.localReview({
       sandbox,

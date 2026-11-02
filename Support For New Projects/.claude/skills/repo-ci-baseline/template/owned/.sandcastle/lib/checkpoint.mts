@@ -100,6 +100,7 @@ export async function gateScriptChange(sandbox: Pick<Sandbox, "exec">, guard: Ga
   if (tracked.exitCode !== 0) {
     const output = `${tracked.stdout}${tracked.stderr}`.trim();
     // Git says a missing path with exit 1 and no output, or exit 128 and "path ... does not exist in ..." (or "exists on disk, but not in ...").
+    // This reads git's English wording: under a translated locale a missing script falls to the git-failed message below, which still refuses.
     const missing = (tracked.exitCode === 1 && output === "") || (tracked.exitCode === 128 && /^fatal: path .* (does not exist in|exists on disk, but not in) /.test(output));
     if (missing) {
       return (
@@ -108,7 +109,8 @@ export async function gateScriptChange(sandbox: Pick<Sandbox, "exec">, guard: Ga
       );
     }
     // Any other failure is git itself (a broken sandbox, a bad object database), not a verdict on GATE_SCRIPT.
-    const firstLine = output.split("\n")[0] || "(no output)";
+    // The first line only, without a stray carriage return or control character, and capped, since it goes into a comment and a prompt.
+    const firstLine = output.split("\n")[0]!.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 200).trim() || "(no output)";
     return (
       `❌ git failed (exit ${tracked.exitCode}: ${firstLine}) checking ${GATE_SCRIPT} at ${guard.base}, so it can't be shown that the branch leaves the gate alone. ` +
       "The sandbox or its git may be broken."

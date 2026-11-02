@@ -399,6 +399,49 @@ describe("the gate guard in a git repository", () => {
     assert.doesNotMatch(message, /more/);
   });
 
+  describe("when cat-file fails", () => {
+    const failing = (exitCode: number, stdout = "", stderr = "") =>
+      ({ exec: async () => ({ stdout, stderr, exitCode }) }) as unknown as Pick<Sandbox, "exec">;
+    const missing = /isn't a file at abc123.*GATE_SCRIPT in lib\/repo-config\.mts/;
+
+    it("calls exit 1 with no output a missing script", async () => {
+      assert.match((await gateScriptChange(failing(1), { base: "abc123" })) ?? "", missing);
+    });
+
+    it("calls git's 'exists on disk, but not in' answer a missing script", async () => {
+      const run = failing(128, "fatal: path 'scripts/gate.sh' exists on disk, but not in 'abc123'\n");
+
+      assert.match((await gateScriptChange(run, { base: "abc123" })) ?? "", missing);
+    });
+
+    it("calls exit 1 with output a git failure", async () => {
+      assert.match((await gateScriptChange(failing(1, "something odd"), { base: "abc123" })) ?? "", /git failed \(exit 1: something odd\)/);
+    });
+
+    it("says 'no output' for a git that fails silently, and reads output printed on stderr", async () => {
+      assert.match((await gateScriptChange(failing(137), { base: "abc123" })) ?? "", /git failed \(exit 137: \(no output\)\)/);
+      assert.match((await gateScriptChange(failing(2, "", "fatal: boom\n"), { base: "abc123" })) ?? "", /git failed \(exit 2: fatal: boom\)/);
+    });
+
+    it("treats another fatal path message as a git failure, not a missing script", async () => {
+      const message = (await gateScriptChange(failing(128, "fatal: path 'x' is ambiguous\n"), { base: "abc123" })) ?? "";
+
+      assert.match(message, /git failed \(exit 128: fatal: path 'x' is ambiguous\)/);
+      assert.doesNotMatch(message, /GATE_SCRIPT in lib/);
+    });
+
+    it("keeps only the first line, without a carriage return, control characters or more than 200 characters", async () => {
+      const crlf = (await gateScriptChange(failing(128, "fatal: x\r\nmore\r\n"), { base: "abc123" })) ?? "";
+      assert.match(crlf, /\(exit 128: fatal: x\)/);
+
+      const long = (await gateScriptChange(failing(128, `fatal: ${"y".repeat(300)}`), { base: "abc123" })) ?? "";
+      assert.match(long, new RegExp(`\\(exit 128: fatal: ${"y".repeat(193)}\\)`));
+
+      const control = (await gateScriptChange(failing(128, "fatal: a\u001b[31mb\u0007"), { base: "abc123" })) ?? "";
+      assert.doesNotMatch(control, /[\u0000-\u0008\u000b-\u001f\u007f]/);
+    });
+  });
+
   it("refuses a branch that edits the gate script, and accepts it once the script is restored", async () => {
     await inRepo(async ({ git, write, run }) => {
       const base = git("rev-parse", "HEAD");

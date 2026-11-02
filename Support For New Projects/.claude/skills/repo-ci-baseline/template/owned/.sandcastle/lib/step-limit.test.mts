@@ -162,14 +162,16 @@ describe("limitSandboxExec", () => {
     assert.equal(await limited.close(), "real");
   });
 
-  it("throws on every later exec after a command other than the gate ran over its limit, so a stalled sandbox costs one limit", async () => {
+  it("throws when a command other than the gate runs over its limit, and on every exec after it, so a stalled sandbox costs one limit", async () => {
     const { sandbox, calls } = fakeSandbox({ stdout: "", exitCode: 124 });
     const lines: string[] = [];
     const limited = limitSandboxExec(sandbox, { log: (line) => lines.push(line), now: clockOf(COMMAND_LIMIT_MINUTES * 60_000) });
 
-    const first = await limited.exec("git fetch");
+    await assert.rejects(
+      limited.exec("git fetch"),
+      (error: unknown) => error instanceof StalledStepError && error.message === 'The step "git fetch" ran over its 10-minute limit and was killed.',
+    );
 
-    assert.match(first.stdout, /ran over its 10-minute limit/);
     assert.equal(stalledStepOf(limited), "git fetch");
     await assert.rejects(
       limited.exec("git status"),
@@ -194,9 +196,9 @@ describe("limitSandboxExec", () => {
   it("throws on every later exec after the host gave up on one, since its command may still be running", async () => {
     let started = 0;
     const sandbox = { exec: () => (started++, new Promise(() => undefined)) } as unknown as Sandbox;
-    const limited = limitSandboxExec(sandbox, { log: () => undefined, commandMinutes: 0.001, graceSeconds: 0, backstopSlackSeconds: 0.05 });
+    const limited = limitSandboxExec(sandbox, { log: () => undefined, commandMinutes: 0.001, graceSeconds: 0.001, backstopSlackSeconds: 0.05 });
 
-    await limited.exec("git fetch");
+    await assert.rejects(limited.exec("git fetch"), StalledStepError);
 
     assert.equal(stalledStepOf(limited), "git fetch");
     await assert.rejects(limited.exec("git status"), StalledStepError);
@@ -207,9 +209,12 @@ describe("limitSandboxExec", () => {
     const { sandbox } = fakeSandbox({ stdout: "", exitCode: 0 });
 
     for (const bad of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
-      assert.throws(() => limitSandboxExec(sandbox, { graceSeconds: bad }), /graceSeconds must be a number of seconds/, String(bad));
+      assert.throws(() => limitSandboxExec(sandbox, { graceSeconds: bad }), /graceSeconds must be a number of seconds above 0/, String(bad));
       assert.throws(() => limitSandboxExec(sandbox, { backstopSlackSeconds: bad }), /backstopSlackSeconds must be a number of seconds/, String(bad));
     }
+    // GNU `timeout -k 0` sends no KILL, so a grace of 0 is no grace; the host's extra wait may be 0.
+    assert.throws(() => limitSandboxExec(sandbox, { graceSeconds: 0 }), /graceSeconds must be a number of seconds above 0/);
+    assert.doesNotThrow(() => limitSandboxExec(sandbox, { backstopSlackSeconds: 0 }));
     for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31]) {
       assert.throws(() => limitSandboxExec(sandbox, { gateMinutes: bad }), /GATE_LIMIT_MINUTES must be a positive number/, String(bad));
       assert.throws(() => limitSandboxExec(sandbox, { commandMinutes: bad }), /COMMAND_LIMIT_MINUTES must be a positive number/, String(bad));
@@ -227,9 +232,7 @@ describe("limitSandboxExec", () => {
     } as unknown as Sandbox;
     const limited = limitSandboxExec(sandbox, { log: () => undefined, commandMinutes: 0.0001 });
 
-    const result = await limited.exec("git fetch");
-
-    assert.match(result.stdout, /ran over its/);
+    await assert.rejects(limited.exec("git fetch"), /ran over its/);
   });
 
   it("gives up on an exec that never returns, a little after the limit and the kill grace", async () => {
@@ -238,14 +241,17 @@ describe("limitSandboxExec", () => {
     const limited = limitSandboxExec(sandbox, {
       log: (line) => lines.push(line),
       commandMinutes: 0.001,
-      graceSeconds: 0,
+      graceSeconds: 0.001,
       backstopSlackSeconds: 0.05,
     });
 
-    const result = await limited.exec("git fetch");
+    await assert.rejects(
+      limited.exec("git fetch"),
+      (error: unknown) =>
+        error instanceof StalledStepError &&
+        error.message === 'The step "git fetch" didn\'t return within its 0.001-minute limit and the kill grace, so the host gave up on it.',
+    );
 
-    assert.equal(result.exitCode, 124);
-    assert.match(result.stdout, /^❌ The step "git fetch" didn't return within its 0\.001-minute limit and the kill grace, so the host gave up on it\.$/);
     assert.match(lines.at(-1)!, /^ {2}step gave up: git fetch/);
   });
 });
@@ -271,19 +277,14 @@ describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU 
   it("kills a command that never ends at its limit", async () => {
     const started = Date.now();
 
-    const result = await limitSandboxExec(shellSandbox(), quick).exec("sleep 60");
-
-    assert.equal(result.exitCode, 124);
-    assert.match(result.stdout, /ran over its 0\.01-minute limit and was killed/);
+    await assert.rejects(limitSandboxExec(shellSandbox(), quick).exec("sleep 60"), /ran over its 0\.01-minute limit and was killed/);
     assert.ok(Date.now() - started < 10_000, "the command was not killed at its limit");
   });
 
   it("kills a command that ignores TERM after the grace, and a child it left running", async () => {
     const started = Date.now();
 
-    const result = await limitSandboxExec(shellSandbox(), quick).exec("trap '' TERM; sleep 60 & wait");
-
-    assert.equal(result.exitCode, 124);
+    await assert.rejects(limitSandboxExec(shellSandbox(), quick).exec("trap '' TERM; sleep 60 & wait"), StalledStepError);
     assert.ok(Date.now() - started < 15_000, "the command was not killed after the grace");
   });
 

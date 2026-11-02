@@ -5,7 +5,10 @@
 // and its failure names the step. A real run once sat three hours with no log line after a role crashed.
 // `timeout` signals its own process group, and `docker exec` returns only when its output pipe closes,
 // so a daemon that outlives the kill could still hold the host: a timer on the host's side gives up on
-// the call a little after the limit and the kill grace, and fails the step the same way.
+// the call a little after the limit and the kill grace, and stalls the step the same way.
+//
+// The gate's own overrun is a red gate (exit 124): `timeout` ended it cleanly, and the gate-fixer may try. Any
+// other overrun, or a call the host gives up on, throws StalledStepError, and so does every exec after it.
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES } from "./repo-config.mts";
@@ -38,8 +41,10 @@ const CLOCK_SLACK_MS = 1000;
 // A limit is a positive, finite number of minutes the host's timer can wait for: `timeout` treats 0 as no limit
 // and exits at once on NaN or a negative, and setTimeout fires at once for a delay past MAX_TIMER_MS.
 function checkedLimit(name: string, minutes: number, graceSeconds: number, backstopSlackSeconds: number): void {
-  for (const [option, seconds] of [["graceSeconds", graceSeconds], ["backstopSlackSeconds", backstopSlackSeconds]] as const) {
-    if (!Number.isFinite(seconds) || seconds < 0) throw new Error(`${option} must be a number of seconds, 0 or more, not ${seconds}`);
+  // GNU `timeout -k 0` sends no KILL at all, so the grace must be positive; the host's extra wait may be 0.
+  if (!Number.isFinite(graceSeconds) || graceSeconds <= 0) throw new Error(`graceSeconds must be a number of seconds above 0, not ${graceSeconds}`);
+  if (!Number.isFinite(backstopSlackSeconds) || backstopSlackSeconds < 0) {
+    throw new Error(`backstopSlackSeconds must be a number of seconds, 0 or more, not ${backstopSlackSeconds}`);
   }
   const waitMs = minutes * 60_000 + (graceSeconds + backstopSlackSeconds) * 1000;
   if (!Number.isFinite(minutes) || minutes <= 0 || waitMs > MAX_TIMER_MS) {
@@ -86,16 +91,20 @@ export type StepLimitOptions = {
 const stalledSteps = new WeakMap<object, string>();
 
 // The name of the step that stalled this sandbox, when it came from limitSandboxExec and one did: a caller about to
-// publish checks it, since a command whose failure it tolerates (a read of the PR body) may have been the one.
+// publish, or a role about to start, checks it, since a caller that tolerates a thrown exec (a read of the PR body) may
+// have swallowed the one that stalled it. An object limitSandboxExec didn't make is never stalled, so a test's fake
+// sandbox passes; createCheckedSandbox is the one place that hands the build a sandbox, and a test pins that it is
+// the limited one.
 export function stalledStepOf(sandbox: object): string | undefined {
   return stalledSteps.get(sandbox);
 }
 
-// A sandbox whose `exec` runs each command under its limit, logs when the step starts and ends, and answers a
-// step that ran over (or that the host gave up on) with exit code 124 and the reason appended to its output, so
-// every caller's existing "non-zero exit is a failure" handling fails closed. Once a command other than the gate
-// has run over, or the host has given up on one, every later exec throws StalledStepError. Every other member is
-// the sandbox's own, bound to it.
+// A sandbox whose `exec` runs each command under its limit and logs when the step starts and ends. The gate
+// that ran over comes back as exit code 124 with the reason appended to its output, so the caller's "non-zero exit
+// is a red gate" handling applies. A command other than the gate that ran over, or one the host gave up on, throws
+// StalledStepError naming it, and so does every exec after it: a caller must not read a stall as a git answer, and
+// a role must not start in a container that may still be running a command (lib/agents.mts#runRoleInSandbox checks
+// stalledStepOf too). Every other member is the sandbox's own, bound to it.
 export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {}): Sandbox {
   const {
     log = console.log,
@@ -109,20 +118,18 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
   checkedLimit("GATE_LIMIT_MINUTES", gateMinutes, graceSeconds, backstopSlackSeconds);
   checkedLimit("COMMAND_LIMIT_MINUTES", commandMinutes, graceSeconds, backstopSlackSeconds);
 
-  // The first step that ran over its limit (a command other than the gate) or that the host gave up on. The gate's own
-  // kill is clean: `timeout` ended it, and the next gate may run. After either of the others a command may still be
-  // running in the container, holding git's locks, and a stalled sandbox would otherwise cost one limit per command, so
-  // every later exec throws. It throws, not answers 124, because a caller reads a code as a git answer (`merge-base
-  // --is-ancestor` 1 means no) or runs the gate-fixer on a gate that can't run again. That keeps the build's worst case
-  // at one command limit (lib/config.test.mts).
-  let stalledStep: string | undefined;
-  const stall = (name: string): void => {
-    stalledStep = name;
-    stalledSteps.set(limited, name);
+  // The first step that ran over its limit (a command other than the gate) or that the host gave up on is kept in
+  // stalledSteps. The gate's own kill is clean: `timeout` ended it, and the next gate may run. After either of the
+  // others a command may still be running in the container, holding git's locks, so the step throws, and every later
+  // exec throws too. That keeps the build's worst case at one command limit (lib/config.test.mts).
+  const stall = (name: string, message: string): never => {
+    if (!stalledSteps.has(limited)) stalledSteps.set(limited, name);
+    throw new StalledStepError(message);
   };
 
   const exec: Sandbox["exec"] = async (command, execOptions) => {
     const name = stepName(command);
+    const stalledStep = stalledSteps.get(limited);
     if (stalledStep !== undefined) {
       log(`${prefix}step refused: ${name}, since the step "${stalledStep}" didn't end at its limit`);
       throw new StalledStepError(`The step "${name}" wasn't run: the step "${stalledStep}" didn't end at its limit, so this sandbox is stalled.`);
@@ -140,13 +147,8 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
     try {
       const outcome = await Promise.race([sandbox.exec(limitedCommand(command, minutes, graceSeconds), execOptions), gaveUp]);
       if (outcome === "gave up") {
-        stall(name);
         log(`${prefix}step gave up: ${name} didn't return after its ${minutes}-minute limit and the kill grace`);
-        return {
-          exitCode: 124,
-          stdout: `❌ The step "${name}" didn't return within its ${minutes}-minute limit and the kill grace, so the host gave up on it.`,
-          stderr: "",
-        };
+        return stall(name, `The step "${name}" didn't return within its ${minutes}-minute limit and the kill grace, so the host gave up on it.`);
       }
       result = outcome;
     } finally {
@@ -156,8 +158,8 @@ export function limitSandboxExec(sandbox: Sandbox, options: StepLimitOptions = {
     const elapsed = now() - started;
     const seconds = Math.round(elapsed / 1000);
     if (TIMED_OUT_EXIT_CODES.has(result.exitCode) && elapsed >= limitMs - CLOCK_SLACK_MS) {
-      if (!isGate(command)) stall(name);
       log(`${prefix}step killed: ${name} ran over its ${minutes}-minute limit after ${seconds}s`);
+      if (!isGate(command)) return stall(name, `The step "${name}" ran over its ${minutes}-minute limit and was killed.`);
       return {
         ...result,
         exitCode: 124,

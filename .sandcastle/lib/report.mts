@@ -5,6 +5,7 @@
 
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import type { IterationUsage } from "@ai-hero/sandcastle";
+import { StalledStepError } from "./errors.mts";
 
 type Usage = { -readonly [K in keyof IterationUsage]: number };
 
@@ -186,6 +187,15 @@ export const intakeStopReport = new IntakeStopReport();
 // when nothing else failed, a hand-back included.
 export function intakeStopExitCode(stops: readonly IntakeStopEntry[]): number {
   return stops.length > 0 ? 1 : 0;
+}
+
+// The report entry for a stalled sandbox step (a StalledStepError reaching main.mts), so the run ends red with the step
+// named: it recorded no hand-back and spent no failed attempt, and the next run would otherwise meet the same stall unseen.
+// It shares the intake stops' report and exit code. Undefined for any other error.
+export function stallStop(error: unknown): IntakeStopEntry | undefined {
+  return error instanceof StalledStepError
+    ? { reason: "a sandbox step stalled, so the build stopped", unjudged: [], firstError: error.message }
+    : undefined;
 }
 
 // How the run ended, so the summary tells a hand-back from a crash

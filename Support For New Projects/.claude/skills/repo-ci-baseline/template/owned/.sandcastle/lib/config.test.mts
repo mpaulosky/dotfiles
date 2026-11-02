@@ -90,8 +90,8 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
       BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) +
       checkpoints * GATE_FIXER_ATTEMPTS * ROLE_AGENTS["gate-fixer"].timeoutMinutes +
       gateRuns * GATE_LIMIT_MINUTES +
-      // A command other than the gate that runs over its limit stalls the sandbox: every later exec fails at once
-      // (lib/step-limit.mts), so one more limit is the most any build adds from them.
+      // A command other than the gate that runs over its limit stalls the sandbox: it throws, as does every later exec and
+      // every role start (lib/step-limit.mts, lib/agents.mts), so one more limit is the most any build adds from them.
       COMMAND_LIMIT_MINUTES;
     const spare = 20;
 

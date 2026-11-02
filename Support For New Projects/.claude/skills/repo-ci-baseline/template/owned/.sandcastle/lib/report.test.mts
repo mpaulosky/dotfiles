@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { StalledStepError, UncountedStopError } from "./errors.mts";
 import {
   handBacksJson,
   intakeStopExitCode,
@@ -7,6 +8,7 @@ import {
   OutcomeReport,
   REPORT_DIR,
   renderSummary,
+  stallStop,
   targetUrl,
   UsageReport,
   WaitingPrReport,
@@ -120,6 +122,22 @@ describe("IntakeStopReport", () => {
 // hand-backs (tested)." intakeStopExitCode is the pure decision main.mts's
 // finally applies after writeRunReport; it never sees the hand-backs report
 // at all, so what main.mts hands back can't flip it.
+describe("stallStop", () => {
+  it("makes a report entry naming the step for a StalledStepError, which ends the run red like an intake stop", () => {
+    const entry = stallStop(new StalledStepError('The step "git fetch" ran over its 10-minute limit and was killed.'));
+
+    assert.equal(entry?.reason, "a sandbox step stalled, so the build stopped");
+    assert.match(entry?.firstError ?? "", /"git fetch" ran over its 10-minute limit/);
+    assert.equal(intakeStopExitCode(entry === undefined ? [] : [entry]), 1);
+  });
+
+  it("makes none for any other error, including a usage-limit stop", () => {
+    assert.equal(stallStop(new UncountedStopError("usage limit")), undefined);
+    assert.equal(stallStop(new Error("boom")), undefined);
+    assert.equal(stallStop("boom"), undefined);
+  });
+});
+
 describe("intakeStopExitCode", () => {
   it("is 0 when intake recorded no stop this run", () => {
     assert.equal(intakeStopExitCode([]), 0);

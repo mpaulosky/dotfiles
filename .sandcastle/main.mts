@@ -171,6 +171,7 @@ import {
   outcomeReport,
   renderSummary,
   REPORT_DIR,
+  stallStop,
   usageReport,
   waitingPrReport,
   writeRunReport,
@@ -466,6 +467,8 @@ try {
     // Log any agents that threw (network error, sandbox crash, timeout, etc.).
     // A clean stop is named in the round summary instead.
     for (const [i, outcome] of settled.entries()) {
+      const stall = outcome.status === "rejected" ? stallStop(outcome.reason) : undefined;
+      if (stall !== undefined) intakeStopReport.record(stall);
       if (outcome.status === "rejected" && !(outcome.reason instanceof UncountedStopError)) {
         console.error(
           `  ✗ #${work[i]!.issue.number} (${work[i]!.branch}) failed: ${outcome.reason}`,
@@ -497,6 +500,8 @@ try {
 } catch (error) {
   if (!(error instanceof UncountedStopError)) throw error;
   ending = { kind: "stopped", reason: error.message };
+  const stall = stallStop(error);
+  if (stall !== undefined) intakeStopReport.record(stall);
   console.log(`\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`);
 } finally {
   console.log("\nToken usage by role:");

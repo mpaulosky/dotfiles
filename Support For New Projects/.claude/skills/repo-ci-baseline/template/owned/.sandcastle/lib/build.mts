@@ -486,9 +486,9 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // its problems added to the error, a TamperedWorktreeError for the caller to
 // report. A check that itself fails counts as a tampered worktree. The sandbox
 // it returns runs every exec under a limit (lib/step-limit.mts), so a stalled
-// gate or git command ends as exit code 124 with its name in the output; the
-// two git config commands that set the identity and the timeout probe run
-// first, on the sandbox itself, and have none. The image needs `timeout` (GNU
+// gate ends as exit code 124 with its name in the output (a red gate), and any other command that runs over throws
+// StalledStepError, as does every exec after it. The two git config commands that set the identity and the timeout
+// probe run first, on the sandbox itself, and have none. The image needs `timeout` (GNU
 // coreutils), which the probe checks once, in the form every command takes: an
 // image without it is refused with a message that says so, rather than failing
 // every later command. The probe, and a limit the repo set badly, fail like
@@ -1312,7 +1312,10 @@ async function buildMarkedIssue(
       console.error(`  ✗ #${issue.number}: left ${sandbox.worktreePath} and its sandbox in place: ${terminalText(problems.join("; "))}`);
       host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
     } else {
-      await sandbox.close();
+      // A stalled sandbox may have a command still running in it, so its close can fail or throw something else; the
+      // StalledStepError that ended the work is the error to report, so that close's failure is only logged.
+      if (stalledStepOf(sandbox) === undefined) await sandbox.close();
+      else await sandbox.close().catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
     }
   }
 }

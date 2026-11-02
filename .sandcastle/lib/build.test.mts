@@ -42,7 +42,7 @@ import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
-import { KILL_GRACE_SECONDS, limitSandboxExec, limitedCommand } from "./step-limit.mts";
+import { KILL_GRACE_SECONDS, limitSandboxExec, limitedCommand, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -1355,26 +1355,31 @@ describe("buildIssue and the usage limit", () => {
   });
 });
 
-// A read the build tolerates (the reviewer's PR body) that runs over its limit stalls the sandbox, and the build then
-// ends red with the step named instead of publishing past it.
-describe("buildIssue when a tolerated read stalls the sandbox", () => {
-  it("throws StalledStepError, naming the step, and publishes nothing", async () => {
-    const { steps, pushed, buildHost } = host([0, 0]);
-    const createSandbox = buildHost.createSandbox;
-    buildHost.createSandbox = async (sandboxBranch) => {
+// A command that runs over its limit stalls the sandbox: the build ends with StalledStepError naming the step, whatever
+// the command was. The fake answers `match` with timeout's code, after what looks like a full limit on the clock below.
+describe("buildIssue when a step stalls the sandbox", () => {
+  function stalledOn(match: RegExp, { closeFails = false } = {}) {
+    const hosted = host([0, 0]);
+    const createSandbox = hosted.buildHost.createSandbox;
+    hosted.buildHost.createSandbox = async (sandboxBranch) => {
       const raw = await createSandbox(sandboxBranch);
       const slow = {
         ...raw,
-        // The PR body read comes back as timeout's code, after what looks like a full limit on the clock below.
         // The fake answers the commands as the build wrote them, so the `timeout … sh -c '…'` wrapper comes off first.
         exec: async (wrapped: string, options?: unknown) => {
           const command = (/^timeout -k \d+s [\d.]+m sh -c '(.*)'$/s.exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
-          return /^cat .*pr-body\.md/.test(command) ? { stdout: "", stderr: "", exitCode: 124 } : raw.exec(command, options as never);
+          return match.test(command) ? { stdout: "", stderr: "", exitCode: 124 } : raw.exec(command, options as never);
         },
+        close: closeFails ? async () => Promise.reject(new Error("docker is gone")) : raw.close,
       } as Sandbox;
       let time = 0;
       return limitSandboxExec(slow, { log: () => undefined, now: () => (time += 11 * 60_000) });
     };
+    return hosted;
+  }
+
+  it("won't publish past a tolerated read (the reviewer's PR body) that stalled it, and releases the label", async () => {
+    const { steps, pushed, order, buildHost } = stalledOn(/^cat .*pr-body\.md/);
 
     await assert.rejects(
       buildIssue(issue, branch, base, buildHost),
@@ -1383,6 +1388,30 @@ describe("buildIssue when a tolerated read stalls the sandbox", () => {
 
     assert.equal(pushed.length, 0);
     assert.ok(!steps.some((step) => step.startsWith("publish")), steps.join(", "));
+    assert.ok(order.includes("unmark"), order.join(", "));
+  });
+
+  it("starts no gate-fixer when the stall is the gate's own first read, and spends no failed attempt", async () => {
+    const { steps, recordBuildFailureCalls, buildHost } = stalledOn(/cat-file/);
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), StalledStepError);
+
+    assert.ok(!steps.some((step) => step.startsWith("gate-fixer")), steps.join(", "));
+    assert.deepEqual(recordBuildFailureCalls, []);
+  });
+
+  it("starts no later role when a command the build ignores the result of stalled it", async () => {
+    const { steps, buildHost } = stalledOn(/^rm -f .*pr-body\.md/);
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), StalledStepError);
+
+    assert.ok(!steps.some((step) => ["tester", "backend", "reviewer"].includes(step)), steps.join(", "));
+  });
+
+  it("reports the StalledStepError even when closing the stalled sandbox fails", async () => {
+    const { buildHost } = stalledOn(/^cat .*pr-body\.md/, { closeFails: true });
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), StalledStepError);
   });
 });
 
@@ -3281,6 +3310,17 @@ describe("createCheckedSandbox's step limits", () => {
     await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => []), /no `timeout` command/);
 
     assert.equal(wasClosed(), true);
+  });
+
+  it("hands back the limited sandbox itself, which stalledStepOf recognises once a step stalls it", async () => {
+    const { sandbox } = recordingSandbox(124);
+    let time = 0;
+    const checked = await createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { now: () => (time += 11 * 60_000) });
+
+    assert.equal(stalledStepOf(checked), undefined);
+    await assert.rejects(checked.exec("git fetch"), StalledStepError);
+
+    assert.equal(stalledStepOf(checked), "git fetch");
   });
 
   it("closes the sandbox and rethrows when the timeout probe's exec rejects", async () => {

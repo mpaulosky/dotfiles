@@ -449,6 +449,8 @@ async function runRounds(
   const runRel = `.sandcastle/work/${issue.number}/review`;
   const runDir = `${worktree}/${runRel}`;
   const recorded: ReviewInput["findings"] = [];
+  // The ids of findings that wait for a person: a later round fixing the same problem never clears those.
+  const personRequired = new Set<string>();
   const nextId = host.takenIds(input.startHead) + 1;
   let head = input.startHead;
   let previous: PreparedRound | undefined;
@@ -560,6 +562,8 @@ async function runRounds(
       advanced = moved !== undefined && changed.length > 0;
       final = applyOutcomes(triaged, parseOutcomes(await host.readOutcomes(), host.log), changed, advanced);
     }
+    for (const found of triaged) if (found.needsPerson) personRequired.add(found.id);
+    resolveRepeats(recorded, final, personRequired);
     recorded.push(...final);
     previous = prepared;
 
@@ -578,6 +582,21 @@ async function runRounds(
     }
     head = gated;
     progress.head = gated;
+  }
+}
+
+// A problem an earlier round left open (the fix failed) and a later round raised again and fixed is fixed: the earlier copy takes the later
+// one's test or reason, so the ledger doesn't count it unresolved. A finding that waits for a person is left as it was.
+export function resolveRepeats(recorded: ReviewInput["findings"], later: ReviewInput["findings"], personRequired: ReadonlySet<string>): void {
+  const same = (a: ReviewInput["findings"][number], b: ReviewInput["findings"][number]) =>
+    a.path === b.path && a.summary.toLowerCase().replace(/\s+/g, " ").trim() === b.summary.toLowerCase().replace(/\s+/g, " ").trim();
+  for (const fixed of later) {
+    if (fixed.status !== "fixed") continue;
+    for (const [index, earlier] of recorded.entries()) {
+      if (earlier.status === "open" && !personRequired.has(earlier.id) && same(earlier, fixed)) {
+        recorded[index] = { ...earlier, status: "fixed", test: fixed.test, reason: fixed.reason, fix: null };
+      }
+    }
   }
 }
 

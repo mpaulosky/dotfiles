@@ -1274,6 +1274,24 @@ describe("runHostReview's decisions file", () => {
     assert.match(decisionsOf(run, 2), /R1 \(Edge cases, src\/app\.ts:10\) fixed, pinned by tests\/app\.test\.ts::blank_name/);
   });
 
+  it("records a finding fixed in a later round as fixed in the earlier round too, when that round left it open, but not one that waits for a person", async () => {
+    const run = fake({
+      answers: (round, who) =>
+        who.lens !== "Edge cases" ? [] : round === 1 ? [raw(), raw({ line: 30, summary: "Other.", needsPerson: true })] : round === 2 ? [raw(), raw({ line: 30, summary: "Other.", needsPerson: true })] : [],
+      fixer: (n) =>
+        n === 1
+          ? { outcomes: [{ id: "R1", status: "open", test: null, reason: "The fix didn't hold." }], changed: ["tests/other.test.ts"] }
+          : { outcomes: [fixedWithTest("R3")], changed: ["src/app.ts", "tests/app.test.ts"] },
+    });
+
+    recorded(await runHostReview(run.host, input(run.startHead)));
+
+    const findings = run.records[0]!.input.findings;
+    assert.equal(findings.find((found) => found.id === "R1")?.status, "fixed", "the earlier copy of a problem fixed later is fixed");
+    assert.equal(findings.find((found) => found.id === "R1")?.test, "tests/app.test.ts::blank_name");
+    assert.equal(findings.find((found) => found.id === "R2")?.status, "open", "a finding for a person stays open");
+  });
+
   it("marks a finding left open to be raised again", async () => {
     const run = fake({
       answers: (round, who) => (round === 1 && who.lens === "Edge cases" ? [raw(), raw({ line: 30, summary: "Other.", needsPerson: true })] : []),

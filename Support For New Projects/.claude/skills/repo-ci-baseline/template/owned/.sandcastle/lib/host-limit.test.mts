@@ -276,9 +276,12 @@ describe("usesChildProcessAsValue", () => {
       '/* import { execFileSync } from "node:child_process"; */',
       'import { x } from "./x.mts";',
       'export type { A } from "node:child_process";',
-      // An unterminated block comment hides what follows it, and unterminated input ends the walk instead of hanging it.
+      // An unterminated block comment hides what follows it.
       'import { a } from "./a.mts"; /* import { execFileSync } from "node:child_process";',
       '// import { execFileSync } from "node:child_process"',
+      // Hang guards, not behaviour checks: a string with no closing quote, whether the input ends in a single backslash, a pair or neither,
+      // must end the walk instead of looping. There is no import after it to find either way.
+      'const s = "abc\\',
       'const s = "abc\\\\',
       'const s = "abc',
       'const s = "import { execFileSync } from \\"node:child_process\\"";',

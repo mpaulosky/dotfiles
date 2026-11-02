@@ -149,16 +149,20 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
 - The host triages the findings in code (merging duplicates, grading security:
   a finding counts as non-security only when its reviewer set `security: false`) and has the backend role
   fix each fixable one behind a failing test. It records a finding `fixed`
-  only with a test whose file the round changed (a reason alone is enough only for a non-security finding), `dismissed` only with a `file:line` reason
+  only with a test whose file the round changed (a reason alone is enough only for a non-security finding) and,
+  for a Warning or a security finding, only when the file at its `path` changed too (the next round reads only the fixes, so the reviewers
+  are also told to read the code at each `fixed` item's `path:line` and raise it again if the problem is still there), `dismissed` only with a `file:line` reason
   (never for a Warning or a security finding, which stays open), and everything else `open`.
 - A round that fixed something is followed by checkpoint 3 (the gate) and a round reviewing `fixes.patch`. After 3 such rounds one more round only reviews.
 - Only the host records, in the main checkout, with `prepareRound` and `recordReview` called in-process: it never runs the worktree's `scripts/review.sh`.
 - A usage or time stop leaves the branch for a later round. A reviewer that fails, or a record the ledger refuses, publishes the branch with a PR note and no record.
   Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
-  The rest, and any security finding, are only counted.
+  A finding is listed only when its path is a file the review's diffs touched and is made of plain file-name characters (never a link, an image or a `www.` address), and a line the host's
+  public-text check would change, or that reads like a `## Review notes` section, is left out on its own. The rest, and any security finding, are only counted.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
-  global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that. A change to how the host runs the reviewers needs a run
+  global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that (72 hours, so a crashed run,
+  an Actions run included, holds its issue that long). A change to how the host runs the reviewers needs a run
   against a real sandbox before merging, since the tests stub Docker and see `--tools`, `--strict-mcp-config`, `--setting-sources` and `--disallowedTools` only as text.
 
 ## Not in it yet

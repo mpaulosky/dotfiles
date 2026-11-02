@@ -206,6 +206,13 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
 // A finding as triage leaves it: ready to record, plus what the host needs to route it.
 export type TriageFinding = ReviewInput["findings"][number] & { needsPerson: boolean; fixable: boolean };
 
+// A finding's path the way a diff names the file: without a leading `./` and without the worktree's absolute prefix.
+export function diffPath(path: string, worktree?: string): string {
+  let out = path;
+  if (worktree !== undefined && worktree !== "" && out.startsWith(`${worktree.replace(/\/+$/, "")}/`)) out = out.slice(worktree.replace(/\/+$/, "").length + 1);
+  return out.replace(/^(?:\.\/)+/, "");
+}
+
 const RANK = { advisory: 0, critical: 1, warning: 2 } as const;
 const sameProblem = (finding: ReviewerFinding) => `${finding.path}\0${finding.line}\0${finding.summary.toLowerCase().replace(/\s+/g, " ").trim()}`;
 
@@ -217,10 +224,13 @@ export function triageRound({
   raw,
   firstId,
   reviewOnly,
+  worktree,
 }: {
   raw: { reviewer: Reviewer; findings: ReviewerFinding[] }[];
   firstId: number;
   reviewOnly: boolean;
+  // The worktree's absolute path: a reviewer reads files by absolute path and may write a finding's path that way.
+  worktree?: string;
 }): TriageFinding[] {
   const merged = new Map<string, ReviewerFinding>();
   for (const { findings } of raw) {
@@ -251,7 +261,7 @@ export function triageRound({
     return {
       id: `R${firstId + index}`,
       lens: found.lens,
-      path: found.path,
+      path: diffPath(found.path, worktree),
       line: found.line,
       summary: found.summary,
       severity: security ? "warning" : found.severity,
@@ -296,7 +306,7 @@ export function applyOutcomes(
     const test = outcome.test?.trim() ? outcome.test.trim() : null;
     // A Warning or a security finding is fixed in code, so the code at its path must have changed too: a backend that touches any
     // test file and claims `fixed` leaves the defect in place otherwise (the next round reads only the fixes, so nothing would look again).
-    if ((open.security || open.severity === "warning") && !changed.has(open.path.replace(/^\.\//, ""))) return open;
+    if ((open.security || open.severity === "warning") && !changed.has(diffPath(open.path))) return open;
     if (test !== null) {
       return changed.has((test.split("::")[0] ?? "").replace(/^\.\//, "")) ? { ...open, status: "fixed", test, reason, fix: null } : open;
     }
@@ -467,7 +477,7 @@ async function runRounds(
       return { status: "failed", head: prepared.head, reason };
     }
     const raw = settled.map((result, index) => ({ reviewer: reviewers[index]!, findings: result.status === "fulfilled" ? result.value : [] }));
-    const triaged = triageRound({ raw, firstId: nextId + recorded.length, reviewOnly });
+    const triaged = triageRound({ raw, firstId: nextId + recorded.length, reviewOnly, worktree });
     const fixable = triaged.filter((finding) => finding.fixable);
 
     let advanced = false;
@@ -557,6 +567,9 @@ function record(
   }
 }
 
+// The characters a listed path may hold: letters, digits, `.`, `_`, `-`, `+`, `/` and a space. Anything else is counted, not listed.
+const SAFE_NOTE_PATH = /^[A-Za-z0-9._+\-/ ]+$/;
+
 // The most findings the PR note lists: the note is appended to a description that may already be near GitHub's limit.
 const NOTE_FINDINGS = 20;
 // A path is the reviewer's text too, so its length is bounded.
@@ -567,17 +580,22 @@ const cut = (text: string) => (text.length <= NOTE_PATH_LIMIT ? text : `${[...te
 // words (summary, suggested fix) stay in the local review record and are never published, since they are written by an agent that
 // read text anyone could edit. A security finding (isSecurity: a Warning, a lens that names security, or one not marked otherwise)
 // is only counted. Empty when nothing is open.
-export function openFindingsNote(ledger: Ledger, readPaths: ReadonlySet<string>): string {
+export function openFindingsNote(ledger: Ledger, readPaths: ReadonlySet<string>, publishable: (line: string) => boolean = () => true): string {
   const open = ledger.findings.filter((finding) => finding.status === "open");
   if (open.length === 0) return "";
   // A path is a reviewer's text, and one that reads untrusted content can put anything in it, so a finding is listed only when its path
   // is one of the files the review read; the rest are counted.
   const security = open.filter((finding) => isSecurity(finding));
-  const listed = open.filter((finding) => !isSecurity(finding) && readPaths.has(finding.path.replace(/^\.\//, "")));
+  const lineOf = (finding: Ledger["findings"][number]) => `- ${finding.id} ${severityOf(finding)} ${cut(plainText(`${diffPath(finding.path)}:${finding.line}`))}`;
+  // Only a path made of plain file-name characters is listed, so one that GitHub would render (a Markdown link, an image, a www. address,
+  // HTML) is counted, never published; so is a line the caller's check (`publishable`) refuses. One odd path leaves out its own line only.
+  const listed = open.filter(
+    (finding) => !isSecurity(finding) && readPaths.has(diffPath(finding.path)) && SAFE_NOTE_PATH.test(diffPath(finding.path)) && !/^www\./i.test(diffPath(finding.path)) && publishable(lineOf(finding)),
+  );
   const hidden = security.length;
   const unlisted = open.length - listed.length - hidden;
   const shown = listed.slice(0, NOTE_FINDINGS);
-  const lines = shown.map((finding) => `- ${finding.id} ${severityOf(finding)} ${cut(plainText(`${finding.path}:${finding.line}`))}`);
+  const lines = shown.map(lineOf);
   const more = listed.length - shown.length + unlisted;
   return [
     "The local review left these findings open (their details are in the local review record):",

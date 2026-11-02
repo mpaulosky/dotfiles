@@ -6,6 +6,8 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  isAncestor,
+  isReviewedCode,
   ledgerGitEnv,
   pinLedgerGit,
   acceptFinding,
@@ -3214,5 +3216,35 @@ describe("recordReview at a commit", () => {
         }),
       /taken by earlier reviews/,
     );
+  });
+});
+
+// A git the host's time limit killed is not an answer: "not an ancestor" or "no such main" would be a wrong one.
+describe("a git call the host's time limit ended", () => {
+  // The error execFileSync throws for a killed child, not a message about a missing main.
+  const killedByLimit = (error: unknown) => (error as { signal?: unknown }).signal === "SIGKILL";
+  const killedGit = (body: (cwd: string) => void) => () => {
+    const bin = mkdtempSync(join(tmpdir(), "killed-git-"));
+    const cwd = mkdtempSync(join(tmpdir(), "killed-cwd-"));
+    const path = process.env.PATH;
+    try {
+      writeFileSync(join(bin, "git"), "#!/bin/sh\nkill -9 $$\n");
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+      body(cwd);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 5 });
+    }
+  };
+
+  it("makes isAncestor throw, not answer that a commit isn't an ancestor", () => {
+    assert.throws(killedGit((cwd) => void isAncestor(cwd, "a".repeat(40), "b".repeat(40))), killedByLimit);
+  });
+
+  it("makes mergeBase and isReviewedCode throw the limit's error, not report a missing main or unreviewed code", () => {
+    assert.throws(killedGit((cwd) => void mergeBase(cwd, "origin/main", "HEAD")), killedByLimit);
+    assert.throws(killedGit((cwd) => void isReviewedCode(cwd, "a".repeat(40), "b".repeat(40), "c".repeat(40))), killedByLimit);
   });
 });

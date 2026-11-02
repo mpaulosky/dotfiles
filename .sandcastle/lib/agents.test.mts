@@ -20,7 +20,7 @@ import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
-import { limitSandboxExec } from "./step-limit.mts";
+import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
@@ -81,6 +81,29 @@ describe("runRoleInSandbox", () => {
     );
 
     assert.equal(ran, 0);
+  });
+
+  // The role's AbortSignal ends a run that answers it; a Docker exec that never answers would hold the run until the job's cap.
+  it("gives up on a role run that never answers, with a StalledStepError, and starts no role after it in that sandbox", async () => {
+    let ran = 0;
+    const sandbox = { run: () => (ran++, new Promise<never>(() => undefined)) } as unknown as Sandbox;
+
+    await assert.rejects(
+      runRoleInSandbox(sandbox, "pre-push-reviewer", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 20 }),
+      (error: unknown) => error instanceof StalledStepError && /pre-push-reviewer run didn't finish/.test(error.message),
+    );
+    assert.match(stalledStepOf(sandbox) ?? "", /pre-push-reviewer/);
+    await assert.rejects(runRoleInSandbox(sandbox, "backend", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 20 }), /wasn't started/);
+    assert.equal(ran, 1);
+  });
+
+  it("leaves a role run that answers in time alone, and clears its backstop timer", async () => {
+    const sandbox = { run: async () => ({ iterations: [], commits: [] }) } as unknown as Sandbox;
+
+    const result = await runRoleInSandbox(sandbox, "tester", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 60_000 });
+
+    assert.deepEqual(result, { iterations: [], commits: [] });
+    assert.equal(stalledStepOf(sandbox), undefined);
   });
 
   it("lists a role that ran even when its run fails", async () => {

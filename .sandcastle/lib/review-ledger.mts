@@ -361,15 +361,24 @@ function gitBytes(cwd: string, args: readonly string[]): Buffer {
   return hostExecFileSync("git", args, { cwd, env: ledgerGitEnv(cwd), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 512 * 1024 * 1024 });
 }
 
+// Whether a git call was ended by the host's time limit (lib/host-limit.mts kills it with SIGKILL and fails with ETIMEDOUT) and not by
+// git's own answer. The callers below read a git failure as "no" (not an ancestor, no such main, not the reviewed code); a call that
+// never answered says nothing, so it is rethrown instead.
+function endedByLimit(error: unknown): boolean {
+  const { code, signal } = error as { code?: unknown; signal?: unknown };
+  return code === "ETIMEDOUT" || signal === "SIGKILL";
+}
+
 const git = (cwd: string, ...args: string[]) => gitBytes(cwd, args).toString("utf8").trim();
 
 // Whether `ancestor` is an ancestor of (or is) `commit`. A commit git doesn't
 // have counts as not.
-function isAncestor(cwd: string, ancestor: string, commit: string): boolean {
+export function isAncestor(cwd: string, ancestor: string, commit: string): boolean {
   try {
     gitBytes(cwd, ["merge-base", "--is-ancestor", ancestor, commit]);
     return true;
-  } catch {
+  } catch (error) {
+    if (endedByLimit(error)) throw error;
     return false;
   }
 }
@@ -381,6 +390,7 @@ export function mergeBase(cwd: string, main: string = "origin/main", head: strin
   try {
     return git(cwd, "merge-base", main, head);
   } catch (error) {
+    if (endedByLimit(error)) throw error;
     throw new Error(`can't find where this branch left ${main}: fetch it first (for origin/main, run \`git fetch origin main\`)`, { cause: error });
   }
 }
@@ -511,7 +521,8 @@ export function isReviewedCode(cwd: string, reviewedHead: string, base: string, 
   try {
     const merged = git(cwd, "merge-tree", "--write-tree", reviewedHead, base).split("\n")[0];
     return merged === git(cwd, "rev-parse", `${head}^{tree}`);
-  } catch {
+  } catch (error) {
+    if (endedByLimit(error)) throw error;
     return false;
   }
 }
@@ -523,7 +534,8 @@ function mergeTreeWorks(cwd: string): boolean {
   try {
     git(cwd, "merge-tree", "--write-tree", head, head);
     return true;
-  } catch {
+  } catch (error) {
+    if (endedByLimit(error)) throw error;
     return false;
   }
 }

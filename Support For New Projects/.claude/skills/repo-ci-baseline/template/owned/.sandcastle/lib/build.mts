@@ -1381,10 +1381,11 @@ async function buildMarkedIssue(
       reviewNote = `⚠️ The local review didn't finish (${review.reason}), so this branch has no recorded review.`;
     } else {
       gated = review.head;
-      reviewNote = openFindingsNote(review.ledger, review.readPaths);
+      // A line the host's public-text check would change, or that reads like a Review notes section, is left out on its own.
+      reviewNote = openFindingsNote(review.ledger, review.readPaths, (line) => host.publicError(line) === line && !visibleLetters(line).includes("reviewnotes"));
       // The note holds only ids, severities and file paths, but a path comes from the branch: it goes out only if the host's public-text check leaves it
       // as it is, a backstop behind the ledger's path shape and the note's length bounds.
-      if (reviewNote !== "" && (PR_BODY_CLOSING_REFERENCE.test(reviewNote) || PR_BODY_MENTION.test(reviewNote) || host.publicError(reviewNote) !== reviewNote)) {
+      if (reviewNote !== "" && host.publicError(reviewNote) !== reviewNote) {
         log("the local review's open findings hold a path that isn't safe to publish, so the PR gets no note on them");
         reviewNote = "";
       }

@@ -15,6 +15,10 @@ export const ROLES = ["intake", "planner", "critique", "architect", "tester", "b
 
 export type Role = (typeof ROLES)[number];
 
+// How long the host waits for a role's sandbox run after the role's own timeoutMinutes, in minutes, before it gives up on a run
+// that ignored the abort (lib/agents.mts#runRoleInSandbox). A given-up run stalls its sandbox, so a build adds this once.
+export const ROLE_RUN_GRACE_MINUTES = 5;
+
 // The role a repo opts into by giving ROLE_AGENTS a `ui` entry: the UI
 // developer, who builds the Blazor components and pages after the backend
 // developer. It is left out of ROLES so that a repo-config.mts written before

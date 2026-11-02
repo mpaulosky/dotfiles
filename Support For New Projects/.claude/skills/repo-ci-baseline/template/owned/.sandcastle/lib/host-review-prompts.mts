@@ -182,7 +182,7 @@ export function reviewFixPrompt({
     "```",
     "",
     "`status` is `fixed` (with `test`, the file and test name that pins it, or `null` and a `reason` for a finding no test can pin), `dismissed` (with a `reason` citing file:line) or `open`",
-    "(a finding you did not or could not fix, with a `reason`). The host checks what it can: a fix without a test file you changed, or a Warning without a test, is recorded open.",
+    "(a finding you did not or could not fix, with a `reason`). The host checks what it can: a fix without a test file you changed, or a Warning without a test, is recorded open, and so is a Warning or a security finding unless the file at its `path` changed in your commits (put the fix there, or beside the call, or report it open with a reason).",
     "",
     "Then output <promise>COMPLETE</promise>.",
   ].join("\n");

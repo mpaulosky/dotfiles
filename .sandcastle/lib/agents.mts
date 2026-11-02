@@ -9,10 +9,11 @@
 
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { FIXED_ROLE_AGENTS, type AnyRole, type RoleAgent } from "./config.mts";
+import { FIXED_ROLE_AGENTS, ROLE_RUN_GRACE_MINUTES, type AnyRole, type RoleAgent } from "./config.mts";
+import { markHostCallAbandoned } from "./host-limit.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { StalledStepError, UncountedStopError } from "./errors.mts";
-import { stalledStepOf } from "./step-limit.mts";
+import { markSandboxStalled, stalledStepOf } from "./step-limit.mts";
 import { MAX_CAUSE_DEPTH, RunLimits, runLimits, usageLimitLine } from "./limits.mts";
 import { usageReport } from "./report.mts";
 
@@ -146,6 +147,8 @@ export async function runRoleInSandbox(
   options: Omit<sandcastle.SandboxRunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
   restrictions?: AgentRestrictions,
+  // How long to wait for the run, in milliseconds; for tests. The default is the role's timeoutMinutes plus ROLE_RUN_GRACE_MINUTES.
+  backstop: { backstopMs?: number } = {},
 ): Promise<sandcastle.SandboxRunResult> {
   // Defensive: the first stall already threw from the exec that hit it, so only a caller that swallowed that throw gets here (agents.test.mts is its only test).
   // A role runs through sandbox.run, not the limited exec, so it would start in a container that may still be running the
@@ -153,13 +156,35 @@ export async function runRoleInSandbox(
   const stalled = stalledStepOf(sandbox);
   if (stalled !== undefined) throw new StalledStepError(`the ${role} wasn't started: the step "${stalled}" didn't end at its limit, so the sandbox is stalled.`);
   usageReport.record(role, []);
+  const backstopMs = backstop.backstopMs ?? (roleAgent(role).timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000;
   const result = await runWithinLimits(
     role,
-    () => sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions) }),
+    () => withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions) })),
     limits,
   );
   usageReport.record(role, result.iterations);
   return result;
+}
+
+// Waits for a role's sandbox run for at most `ms`. The run's own AbortSignal ends one that answers it; a Docker exec that never answers
+// would hold the review until the job's cap. Giving up stalls the sandbox (stalledStepOf, so no later role or exec starts in a container
+// that may still be running the role), records the call (markHostCallAbandoned, so the process ends after its cleanup) and throws.
+async function withinBackstop<R>(sandbox: object, role: AnyRole, ms: number, run: Promise<R>): Promise<R> {
+  run.catch(() => undefined);
+  let timer: NodeJS.Timeout | undefined;
+  const gaveUp = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const what = `the ${role} run`;
+      markSandboxStalled(sandbox, what);
+      markHostCallAbandoned(`the sandbox ${what}`);
+      reject(new StalledStepError(`The ${role} run didn't finish within its timeout and the host's grace, so the host gave up on it.`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([run, gaveUp]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Exact names a role's own timeout carries: AbortSignal.timeout's

@@ -43,7 +43,7 @@ files change.
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
 - **Give the host's own waits a limit.** Every `gh` and `git` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
   one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call. Only `lib/host-limit.mts` imports `node:child_process` as a value
-  (a type import for `typeof execFileSync` is fine; `review-ledger`, `security-record` and `git-sandbox-fake` are exempt), and a `run` parameter defaults
+  (a type import for `typeof execFileSync` is fine; only `git-sandbox-fake`, a test helper, is exempt, since `review-ledger` and `security-record` run on the host too), and a `run` parameter defaults
   to `hostExecFileSync`: `lib/host-limit.test.mts` scans for both. Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`
   (`DOCKER_CALL_LIMIT_MINUTES`): a call Docker never answers is a `StalledStepError`, and a sandbox created too late is closed once its worktree passes the check (a worktree gone from the path the
   host expects counts as passing; one that fails it, whose check throws, or that is at any other path, is left in place with a warning). The call itself can't be cancelled, so a container
@@ -53,7 +53,7 @@ files change.
   may keep Node alive. The same warning is printed once when the process exits for any reason, so a run that crashes before `exitAfterStall` names them too.
   A close the host gave up on, in a build's or a pass's `finally` or after `createCheckedSandbox` refuses a sandbox, is logged and ends the run red (`closeAfterWork`; `exitAfterStall` sets exit
   code 1), but it never discards the pull request or the error that ended the work. Role runs through `sandcastle.run()` rely on the role's own
-  `timeoutMinutes`.
+  `timeoutMinutes`; a role run in a build's sandbox (`runRoleInSandbox`) is also given up on `ROLE_RUN_GRACE_MINUTES` after that timeout, which stalls the sandbox like a command that never returned.
 - **Fail closed.** When the code can't tell whether something is safe (an unexpected shape from Sandcastle, an
   unreadable GitHub response), throw or hold the issue back rather than carry on.
 

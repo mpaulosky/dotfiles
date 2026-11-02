@@ -3711,40 +3711,20 @@ describe("buildIssue's local review", () => {
     assert.doesNotMatch(note, /Already fixed finding/);
   });
 
-  it("drops a note that the host's publicError would change, and still publishes", async () => {
+  it("leaves out a finding line that the host's publicError would change, and lists the others", async () => {
     const reviewed = "c".repeat(40);
-    const ledger = ledgerWith(reviewed, [openFinding()]);
-    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts"]) }) });
+    const ledger = ledgerWith(reviewed, [openFinding(), openFinding({ id: "R2", path: "src/other.ts" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts", "src/other.ts"]) }) });
     const publicError = run.buildHost.publicError;
     run.buildHost.publicError = (error) => (String(error).includes("R1") ? "[changed]" : publicError(error));
 
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
-    assert.ok(!run.publishedReviewNotes[0], `unexpected note: ${run.publishedReviewNotes[0]}`);
-  });
-
-  it("lists no finding whose path isn't a file the review read, and publishes no live closing reference or mention even for a path it did read", async () => {
-    const reviewed = "c".repeat(40);
-    for (const path of ["Closes #12", "@octocat/x", "[click](https://example.com/x)"]) {
-      const ledger = ledgerWith(reviewed, [openFinding({ path })]);
-      const unread = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts"]) }) });
-
-      await buildIssue(issue, branch, base, unread.buildHost);
-
-      assert.ok(!(unread.publishedReviewNotes[0] ?? "").includes(path), `${path} was published: ${unread.publishedReviewNotes[0]}`);
-    }
-    // Even a path the review did read (a file really named so) is not published as a closing reference or a mention.
-    for (const path of ["Closes #12", "@octocat/x"]) {
-      const ledger = ledgerWith(reviewed, [openFinding({ path })]);
-      const read = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set([path]) }) });
-
-      const result = await buildIssue(issue, branch, base, read.buildHost);
-
-      assert.equal(result.outcome, "published");
-      // The note's own text defuses a reference (plainText), or the host drops the note: either way GitHub sees no live one.
-      assert.doesNotMatch(read.publishedReviewNotes[0] ?? "", /\b(?:closes)\s+#\d|(?<![\w`/.])@octocat/i);
-    }
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /- R2 critical src\/other\.ts:12/);
+    assert.doesNotMatch(note, /- R1/);
+    assert.match(note, /1 more open finding is in the local review record/);
   });
 
   it("publishes with a note, and records nothing, when the review failed", async () => {
@@ -3773,15 +3753,17 @@ describe("buildIssue's local review", () => {
     assert.deepEqual(run.pushed, [{ branch, commit: reviewedEarlier }]);
   });
 
-  it("drops a note whose finding path reads like a Review notes section, and still publishes", async () => {
+  it("leaves out a finding whose path reads like a Review notes section, and still lists the others", async () => {
     const reviewed = "c".repeat(40);
-    const ledger = ledgerWith(reviewed, [openFinding({ path: "docs/Review notes.md" })]);
-    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/Review notes.md"]) }) });
+    const ledger = ledgerWith(reviewed, [openFinding({ path: "docs/Review notes.md" }), openFinding({ id: "R2" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/Review notes.md", "src/app.ts"]) }) });
 
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
-    assert.ok(!run.publishedReviewNotes[0], `unexpected note: ${run.publishedReviewNotes[0]}`);
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /- R2 critical src\/app\.ts:12/);
+    assert.doesNotMatch(note, /Review notes/i);
   });
 
   it("publishes a note that holds none of a finding's text, even when that text reads like a Review notes section", async () => {

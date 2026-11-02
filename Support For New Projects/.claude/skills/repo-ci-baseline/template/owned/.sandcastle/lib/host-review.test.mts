@@ -191,6 +191,20 @@ describe("patchPaths", () => {
   it("finds nothing in an empty patch", () => {
     assert.deepEqual(patchPaths(""), []);
   });
+
+  it("reads a quoted header holding an escaped quote or a tab, a path with ' b/' inside, and a path that itself starts with b/", () => {
+    const patch =
+      'diff --git "a/x\\"y.ts" "b/x\\"y.ts"\n--- "a/x\\"y.ts"\n+++ "b/x\\"y.ts"\n@@ -1 +1 @@\n-a\n+b\n' +
+      'diff --git "a/t\\tab.ts" "b/t\\tab.ts"\n--- "a/t\\tab.ts"\n+++ "b/t\\tab.ts"\n@@ -1 +1 @@\n-a\n+b\n' +
+      "diff --git a/a b/c.ts b/a b/c.ts\n--- a/a b/c.ts\n+++ b/a b/c.ts\n@@ -1 +1 @@\n-a\n+b\n" +
+      "diff --git a/b/x.ts b/b/x.ts\n--- a/b/x.ts\n+++ b/b/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
+
+    assert.deepEqual(patchPaths(patch), ['x"y.ts', "t\tab.ts", "a b/c.ts", "b/x.ts"]);
+  });
+
+  it("doesn't throw on a header it can't read", () => {
+    assert.doesNotThrow(() => patchPaths('diff --git "a/unterminated b/x\n--- a/x\n'));
+  });
 });
 
 describe("parseReviewerAnswer", () => {
@@ -267,6 +281,18 @@ const reviewer = (lens: string): Reviewer => ({ lens, row: lens === BAR_LENS ? "
 describe("triageRound", () => {
   const triage = (reviewers: Record<string, ReviewerFinding[]>, firstId = 1, reviewOnly = false) =>
     triageRound({ raw: Object.entries(reviewers).map(([lens, findings]) => ({ reviewer: reviewer(lens), findings })), firstId, reviewOnly });
+
+  it("writes a path the way the diff does: without a leading ./ and without the worktree's absolute prefix", () => {
+    const worktree = "/work/tree";
+    const got = triageRound({
+      raw: [{ reviewer: reviewer("Edge cases"), findings: [raw({ path: "./src/a.ts" }), raw({ path: "/work/tree/src/b.ts", line: 2 }), raw({ path: "/elsewhere/c.ts", line: 3 })] }],
+      firstId: 1,
+      reviewOnly: false,
+      worktree,
+    });
+
+    assert.deepEqual(got.map((found) => found.path), ["src/a.ts", "src/b.ts", "/elsewhere/c.ts"]);
+  });
 
   it("numbers the findings from the first id, in reviewer order", () => {
     const got = triage({ "Edge cases": [raw(), raw({ line: 20, summary: "Another." })], Tests: [raw({ lens: "Tests", path: "tests/a.test.ts", summary: "No test." })] }, 5);
@@ -577,6 +603,12 @@ describe("applyOutcomes", () => {
     const got = apply(triaged({ security: true, severity: "warning", lens: "Security" }), [outcome()], ["tests/app.test.ts", "src/other.ts"]);
 
     assert.equal(got.status, "open");
+  });
+
+  it("takes a Warning fixed when its own path starts with ./ and the round changed that file without it", () => {
+    const got = apply(triaged({ severity: "warning", path: "./src/app.ts" }), [outcome()], ["src/app.ts", "tests/app.test.ts"]);
+
+    assert.equal(got.status, "fixed");
   });
 
   it("takes a Warning fixed when its path and its test's file both changed", () => {
@@ -1565,6 +1597,31 @@ describe("openFindingsNote", () => {
     assert.match(note, /- R1 critical src\/app\.ts:12/);
     assert.doesNotMatch(note, /Closes|octocat|click|example\.com|R2|R3|R4/);
     assert.match(note, /3 more open findings are in the local review record/);
+  });
+
+  it("doesn't list a path that GitHub would render as a link, even one the review read", () => {
+    const paths = ["[docs](https:/evil.example)", "www.evil.example/x", "a/![img](b)", "x<y>.md"];
+    const note = openFindingsNote(ledgerOf(paths.map((path, index) => found({ id: `R${index + 1}`, path }))), new Set(paths));
+
+    assert.doesNotMatch(note, /- R\d/);
+    assert.doesNotMatch(note, /evil|docs|img/);
+    assert.match(note, /4 more open findings are in the local review record/);
+  });
+
+  it("lists a finding whose path starts with ./ when the review read the file without it", () => {
+    assert.match(openFindingsNote(ledgerOf([found({ path: "./src/app.ts" })]), new Set(["src/app.ts"])), /- R1 critical src\/app\.ts:12/);
+  });
+
+  it("keeps listing the other findings when the host's check refuses one line", () => {
+    const note = openFindingsNote(
+      ledgerOf([found({ id: "R1", path: "docs/Review notes.md" }), found({ id: "R2" })]),
+      new Set(["docs/Review notes.md", "src/app.ts"]),
+      (line) => !/Review notes/.test(line),
+    );
+
+    assert.match(note, /- R2 critical src\/app\.ts:12/);
+    assert.doesNotMatch(note, /R1|Review notes/);
+    assert.match(note, /1 more open finding is in the local review record/);
   });
 
   it("lists nothing when the review read no file", () => {

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   BUILD_ROLES,
   BUILDING_LABEL_MAX_AGE_MS,
+  ROLE_RUN_GRACE_MINUTES,
   BudgetError,
   DEFAULT_BUDGET_MINUTES,
   FIXED_ROLE_AGENTS,
@@ -120,6 +121,8 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
       // A command other than the gate that runs over its limit stalls the sandbox: it throws, as does every later exec and
       // every role start (lib/step-limit.mts, lib/agents.mts), so one more limit is the most any build adds from them.
       COMMAND_LIMIT_MINUTES +
+      // A role run the host gave up on stalls its sandbox the same way, so a build adds this grace once.
+      ROLE_RUN_GRACE_MINUTES +
       review;
     const spare = 20;
 

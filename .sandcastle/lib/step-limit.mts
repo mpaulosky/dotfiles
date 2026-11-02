@@ -120,6 +120,12 @@ export function stalledStepOf(sandbox: object): string | undefined {
   return stalledSteps.get(sandbox);
 }
 
+// Records that a step of this sandbox didn't end and the host gave up on it (a role run that never answered, lib/agents.mts), so
+// stalledStepOf names it and a limited sandbox refuses every later exec. Keeps the first one.
+export function markSandboxStalled(sandbox: object, name: string): void {
+  if (!stalledSteps.has(sandbox)) stalledSteps.set(sandbox, name);
+}
+
 // A sandbox whose `exec` runs each command under its limit and logs when the step starts and ends. The gate
 // that ran over comes back as exit code 124 with the reason appended to its output, so the caller's "non-zero exit
 // is a red gate" handling applies. A command other than the gate that ran over, or one the host gave up on, throws

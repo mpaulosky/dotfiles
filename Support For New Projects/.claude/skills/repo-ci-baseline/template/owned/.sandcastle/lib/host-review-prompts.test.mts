@@ -58,6 +58,12 @@ describe("reviewerPrompt", () => {
     assert.match(prompt, /fixed.{0,120}path:line.{0,120}still there/s);
   });
 
+  it("tells the backend a Warning or security finding is recorded open unless the file at its path changed", () => {
+    const prompt = reviewFixPrompt({ issue: { number: 1, title: "t", body: "b" }, branch: "feature/1-x", round: 1, findings: [], outcomesPath: "/w/o.json" });
+
+    assert.match(prompt, /unless the file at its `path` changed in your commits/);
+  });
+
   it("starts with the agent file's body, so the reviewer is told what the pre-push-reviewer is told", () => {
     const prompt = reviewerPrompt(args({ agentBody: agentBody.trim() }));
 

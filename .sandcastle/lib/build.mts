@@ -911,18 +911,25 @@ export async function buildIssue(
 // What became of a build, for the run report (lib/report.mts).
 export type BuildOutcome = Extract<Outcome, "published" | "role failed" | "timed out" | "gate failed" | "not published">;
 
+// The most characters of one gate output line the host's log shows.
+const LOGGED_LINE_LIMIT = 500;
+
 // The first red gate run's output as lines safe for the host's log. The gate's
 // output is written by the branch's agents and the log is a terminal, and in
 // GitHub Actions a line that starts with `::` is a workflow command, so every
 // line is cleaned by terminalText first (before the secret check, so hidden
 // characters can't hide a token that is rebuilt afterwards), the whole text goes
-// through `publicError`, and each line gets a prefix no workflow command can
-// start with.
+// through `publicError`, and each line is cleaned again, cut to
+// LOGGED_LINE_LIMIT characters (after the check, so the cut can't split a token
+// it has passed) and given a prefix no workflow command can start with. A final
+// newline is dropped, so the caller's line count isn't spent on a blank line.
+// terminalText folds runs of whitespace into one space and trims each line, so
+// the log is not byte for byte what the gate printed.
 export function logSafeGateOutput(text: string, publicError: (text: string) => string): string {
-  const cleaned = text.split("\n").map((line) => terminalText(line)).join("\n");
+  const cleaned = text.replace(/\n$/, "").split("\n").map((line) => terminalText(line)).join("\n");
   return publicError(cleaned)
     .split("\n")
-    .map((line) => `    | ${terminalText(line)}`)
+    .map((line) => `    | ${[...terminalText(line)].slice(0, LOGGED_LINE_LIMIT).join("")}`)
     .join("\n");
 }
 

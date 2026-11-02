@@ -45,7 +45,9 @@ export type CheckpointSteps = {
   // an error rather than a result (a stall, a usage limit, a gate run that
   // throws), that output has no other way out, so runCheckpoint logs its tail
   // through this before rethrowing. Without it nothing is logged, since the
-  // output is written by agents and may hold a secret.
+  // output is written by agents and may hold a secret. A scrub that throws, or a
+  // log that does, is ignored: the error that ended the checkpoint is the one
+  // rethrown.
   scrub?(text: string): string;
 };
 
@@ -194,14 +196,14 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 // Run the gate, and the gate-fixer while it's red and attempts are left.
 // Returns the last gate run. It carries the first red run's output
 // (`firstOutput`) when the checkpoint ended red after a fixer ran and it differs
-// from the last run's output. When
-// `alive` reports the sandbox down, the checkpoint ends before that attempt's
-// fixer, with the reason appended to the output and `fixersRun` set to the
-// attempts that ran. A caller that passes no `alive` never gets `fixersRun` or
-// that early end, but still gets `firstOutput`. An `alive` that throws an
-// UncountedStopError ends the checkpoint with it. Any error that ends it is
-// rethrown unchanged, after `scrub` has made the first red run's output safe to
-// log, when the steps have one.
+// from the last run's output. When `alive` reports the sandbox down, the
+// checkpoint ends before that attempt's fixer, with the reason appended to the
+// output and `fixersRun` set to the attempts that ran. A caller that passes no
+// `alive` never gets `fixersRun` or that early end, but still gets
+// `firstOutput`. An `alive` that throws an UncountedStopError ends the
+// checkpoint with it. Any error that ends it is rethrown unchanged. When the
+// steps have a `scrub`, the first red run's output is logged through it first;
+// a scrub or a log that throws is ignored, and a line says so.
 export async function runCheckpoint(
   checkpoint: Checkpoint,
   steps: CheckpointSteps,
@@ -236,7 +238,13 @@ export async function runCheckpoint(
       try {
         log(`${prefix} the first red gate run's output, before this stopped the checkpoint:\n${tail(steps.scrub(firstOutput), GATE_COMMENT_LINES)}`);
       } catch {
-        // Only a diagnostic: a scrub or a log that throws must not replace the error that ended the checkpoint.
+        // Only a diagnostic: a scrub or a log that throws must not replace the error that ended the checkpoint. A line says the output is
+        // missing, so a broken scrub isn't read as a checkpoint that never saw a red run.
+        try {
+          log(`${prefix} the first red gate run couldn't be logged`);
+        } catch {
+          // Nothing more can be done with a log that throws.
+        }
       }
     }
     throw error;

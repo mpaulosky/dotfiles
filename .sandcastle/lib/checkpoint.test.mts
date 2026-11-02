@@ -150,6 +150,17 @@ describe("runCheckpoint", () => {
       assert.ok(!logged(lines)[0]!.includes("two"));
     });
 
+    it("says the first run couldn't be logged when the scrub throws, and still rethrows the original error", async () => {
+      const stall = new StalledStepError("stalled");
+      const s = { ...steps([red("one")]), scrub: () => { throw new Error("the scrub broke"); }, alive: async () => Promise.reject(stall) };
+      const lines: string[] = [];
+
+      await assert.rejects(() => runCheckpoint(1, s, (line) => lines.push(line)), (error: unknown) => error === stall);
+
+      assert.deepEqual(logged(lines), []);
+      assert.ok(lines.includes("checkpoint 1: the first red gate run couldn't be logged"), lines.join("\n"));
+    });
+
     it("rethrows the original error when the scrub or the log throws", async () => {
       const stall = new StalledStepError("stalled");
       const failing = (scrubber: (text: string) => string) => ({ ...steps([red("one")]), scrub: scrubber, alive: async () => Promise.reject(stall) });

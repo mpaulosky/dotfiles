@@ -772,6 +772,17 @@ describe("buildIssue", () => {
     assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(body.join("")), JSON.stringify(entry));
   });
 
+  it("drops a final newline, so the tail isn't spent on a blank line, and cuts a line at 500 characters", () => {
+    const logged = logSafeGateOutput("one\ntwo\n", (text) => text);
+    assert.equal(logged, "    | one\n    | two");
+
+    for (const [length, kept] of [[499, 499], [500, 500], [501, 500]] as const) {
+      assert.equal(logSafeGateOutput("y".repeat(length), (text) => text), `    | ${"y".repeat(kept)}`, `${length} characters`);
+    }
+    // A character outside the basic plane counts once, so the cut can't split it.
+    assert.equal(logSafeGateOutput(`${"y".repeat(499)}\u{1F600}z`, (text) => text), `    | ${"y".repeat(499)}\u{1F600}`);
+  });
+
   it("cleans each line before the secret check, so a hidden character can't hide a token that is rebuilt afterwards", () => {
     const publicError = (text: string) => publicErrorText(text, (cleaned) => cleaned.includes("ghp_abc"));
 

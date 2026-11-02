@@ -42,6 +42,8 @@ import {
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { stalledStepOf } from "./step-limit.mts";
+import { terminalText } from "./status.mts";
 import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
@@ -66,7 +68,16 @@ import { runLimits, type RunLimits } from "./limits.mts";
 import { followUpPromptArgs, gateFixerPromptArgs } from "./prompts.mts";
 import { ownerCheck, type IsOwner } from "./queue.mts";
 import { GATE_COMMAND, GATE_COVERED_CHECKS } from "./repo-config.mts";
-import { humanThreadReport, outcomeReport, type HumanThreadEntry, type OutcomeEntry, type OutcomeReport } from "./report.mts";
+import {
+  humanThreadReport,
+  intakeStopReport,
+  outcomeReport,
+  stallStop,
+  type HumanThreadEntry,
+  type IntakeStopReport,
+  type OutcomeEntry,
+  type OutcomeReport,
+} from "./report.mts";
 import { containsSandboxSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git } from "./shell.mts";
@@ -938,6 +949,9 @@ async function passOnMarkedIssue(
   try {
     sandbox = await host.createSandbox(branch);
   } catch (error) {
+    // A stall or a usage or time stop while the sandbox is made (the creation probe is limited too) isn't this PR's problem
+    // to hand back: it goes up uncounted, so the phase records it and the run ends red.
+    if (error instanceof UncountedStopError) throw error;
     // The sandbox and its worktree were left in place for a person, as the
     // finally below does for a worktree it finds tampered with, so the PR
     // says so too.
@@ -1248,7 +1262,10 @@ async function passOnMarkedIssue(
         console.error(`  ⚠ PR #${target.number}: commenting on the tampered worktree failed: ${error}`);
       }
     } else {
-      await sandbox.close();
+      // A stalled sandbox may have a command still running in it, so its close can fail or throw something else; the
+      // StalledStepError that ended the work is the error to report, so that close's failure is only logged.
+      if (stalledStepOf(sandbox) === undefined) await sandbox.close();
+      else await sandbox.close().catch((closeError) => console.error(`  ⚠ closing the stalled sandbox failed: ${terminalText(String(closeError))}`));
     }
   }
 }
@@ -1279,15 +1296,21 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
   return failedWrites;
 }
 
+// The PRs whose pass stalled in this run: a stalled sandbox costs a whole step limit, so the run's later rounds don't pass
+// the same PR again (the next run does). A test passes its own set.
+const runStalledPrs = new Set<number>();
+
 // main.mts's pass phase: fetches every target's branch serially first (a
 // failed fetch skips that PR for the round, as prepareBranches'
 // lib/branches.mts#fetchMain-style fetches do), then runs runPass for each
 // PR whose issue is in `issues` (a hand-off PR needs none) with Promise.allSettled, logging each
-// outcome. A rejection is logged and the PR is swept again next round. Once
+// outcome. A rejection is logged and the PR is swept again next round (a stalled one, the next run). Once
 // every pass has settled, the first UncountedStopError among them (a usage
 // or time-budget stop from the follow-up role or the gate-fixer) is
 // rethrown, so main.mts's catch ends the run cleanly rather than the round
-// carrying on as if nothing had stopped it. Each settled pass reaches
+// carrying on as if nothing had stopped it. A StalledStepError is not
+// rethrown: it is that PR's failed pass (the other PRs, intake and the builds
+// carry on, and the run's later rounds skip that PR), recorded in `stalls` so the run still ends red. Each settled pass reaches
 // `report` first (passOutcomeEntry, or "stopped" for a stop), so a stop
 // doesn't lose the round's rows. Returns one outcome per target, in order; a
 // PR that wasn't passed on is "skipped".
@@ -1297,12 +1320,19 @@ export async function followUpPassPhase(
   base: string,
   host: PassHost = livePassHost,
   report: OutcomeReport = outcomeReport,
+  stalls: IntakeStopReport = intakeStopReport,
+  stalledPrs: Set<number> = runStalledPrs,
 ): Promise<PassOutcome[]> {
   const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
   const outcomes: PassOutcome[] = targets.map(() => ({ kind: "skipped", reason: "not started" }));
   const started: { index: number; issue: SandcastleIssue }[] = [];
   // Serially, because concurrent fetches contend on the same ref lock.
   for (const [index, target] of targets.entries()) {
+    if (stalledPrs.has(target.number)) {
+      host.log(`  ⏹ PR #${target.number}: its pass stalled earlier in this run, so it's passed on until the next run.`);
+      outcomes[index] = { kind: "skipped", reason: "its pass stalled earlier in this run" };
+      continue;
+    }
     // A hand-off PR has no issue in the queue: the prompt sees the PR itself.
     const issue = target.handOff !== undefined ? handOffIssue(target) : byNumber.get(target.issueNumber);
     if (issue === undefined) {
@@ -1331,7 +1361,15 @@ export async function followUpPassPhase(
       continue;
     }
     const pr = { kind: "pr", number: target.number } as const;
-    if (result.reason instanceof UncountedStopError) {
+    const stall = stallStop(result.reason);
+    if (stall !== undefined) {
+      // One PR's stalled sandbox must not starve the queue: this pass failed like any other, but the run's later rounds skip
+      // the PR (stalledPrs), and the next run's sweep finds it again. The stall is recorded, so the run still ends red with the step named.
+      stalls.record(stall);
+      stalledPrs.add(target.number);
+      host.log(`  ⏹ PR #${target.number}: the follow-up pass stalled, so it's passed on until the next run: ${stall.firstError}`);
+      report.record({ ...pr, outcome: "stopped", detail: stall.firstError });
+    } else if (result.reason instanceof UncountedStopError) {
       stop ??= result.reason;
       host.log(`  ⏹ PR #${target.number}: the follow-up pass stopped uncounted: ${result.reason.message}`);
       report.record({ ...pr, outcome: "stopped", detail: result.reason.message });

@@ -14,6 +14,15 @@
 // Blazor-Server's docs/plans/sandcastle-workflow.md).
 export class UncountedStopError extends Error {}
 
+// For a sandbox that stalled (lib/step-limit.mts): a command other than the gate ran over its limit, or the host gave up
+// on one, so it may still be running in the container. That command throws this, naming the step, and so does every
+// exec after it and every role start (lib/agents.mts#runRoleInSandbox), instead of an exit code a caller could read as
+// a git answer ("not an ancestor", "no conflict") or a red gate. It is an UncountedStopError, so the places that
+// rethrow one (the roles, the gate-fixer loop, the reviewer) rethrow it too, the build spends no failed attempt, and
+// the issue's label is released. main.mts ends the run red when one reaches it (lib/report.mts#stallStop). The
+// follow-up pass phase doesn't rethrow it: that PR's pass fails, the phase records the stall, and the run still ends red.
+export class StalledStepError extends UncountedStopError {}
+
 // For a sandbox whose git identity couldn't be set and whose worktree no
 // longer points at this repository, so createCheckedSandbox (lib/build.mts)
 // left the worktree and its sandbox in place for a person instead of closing

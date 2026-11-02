@@ -348,6 +348,15 @@ describe("main.mts's intake-stop exit code", () => {
     assert.match(assignment, /intakeStopExitCode\(/, "main.mts doesn't derive the exit code from intakeStopExitCode(");
     assert.match(assignment, /intakeStopReport\.items\(\)/, "main.mts doesn't pass intakeStopReport.items() to the exit-code decision");
   });
+
+  it("records a stalled step's entry from a settled build and from the run-stopping catch, so either ends the run red", () => {
+    const mainMts = read(".sandcastle/main.mts");
+
+    assert.match(mainMts, /stallStop\(outcome\.reason\)[\s\S]{0,120}intakeStopReport\.record\(/, "the settled-builds loop doesn't record a stall");
+    assert.match(mainMts, /stallStop\(error\)[\s\S]{0,120}intakeStopReport\.record\(/, "the UncountedStopError catch doesn't record a stall");
+    assert.match(mainMts, /ending = runEnding\(limitReason, intakeStopReport\.items\(\)\)/, "main.mts doesn't take the loop's ending from runEnding");
+    assert.match(mainMts, /runEnding\(error\.message, intakeStopReport\.items\(\)\)/, "the catch doesn't take its ending from everything recorded");
+  });
 });
 
 // #147: SANDCASTLE_BUDGET_MINUTES reaches the sandbox like every other key in

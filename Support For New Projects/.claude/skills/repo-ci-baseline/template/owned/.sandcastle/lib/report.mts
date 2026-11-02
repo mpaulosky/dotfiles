@@ -5,6 +5,7 @@
 
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import type { IterationUsage } from "@ai-hero/sandcastle";
+import { StalledStepError } from "./errors.mts";
 
 type Usage = { -readonly [K in keyof IterationUsage]: number };
 
@@ -188,9 +189,32 @@ export function intakeStopExitCode(stops: readonly IntakeStopEntry[]): number {
   return stops.length > 0 ? 1 : 0;
 }
 
+// The reason of a stall's report entry; runEnding reads it to tell a stall from an intake stop. A stall ends the run red, and
+// stops it when a build hit it; a follow-up pass's stall is recorded while the run carries on.
+export const STALL_STOP_REASON = "a sandbox step stalled";
+
+// The report entry for a stalled sandbox step (a StalledStepError reaching main.mts, or a follow-up pass that ended in one), so the run ends red with the step
+// named: it recorded no hand-back and spent no failed attempt, and the next run would otherwise meet the same stall unseen.
+// It shares the intake stops' report and exit code. Undefined for any other error.
+export function stallStop(error: unknown): IntakeStopEntry | undefined {
+  return error instanceof StalledStepError ? { reason: STALL_STOP_REASON, unjudged: [], firstError: error.message } : undefined;
+}
+
 // How the run ended, so the summary tells a hand-back from a crash
 // ("Notification: the run ends red" in Blazor-Server's docs/plans/sandcastle-workflow.md).
-export type RunEnding = { kind: "finished" } | { kind: "stopped"; reason: string } | { kind: "crashed" };
+export type RunEnding =
+  | { kind: "finished" }
+  | { kind: "stopped"; reason: string }
+  | { kind: "stalled"; reason: string }
+  | { kind: "crashed" };
+
+// How a run that reached the end of its loop ended: a recorded stall first (it ends the run red, and a limit must not hide
+// it), then the time budget or usage limit, else finished.
+export function runEnding(limitReason: string | undefined, stops: readonly IntakeStopEntry[]): RunEnding {
+  const stall = stops.find((entry) => entry.reason === STALL_STOP_REASON);
+  if (stall !== undefined) return { kind: "stalled", reason: stall.firstError };
+  return limitReason === undefined ? { kind: "finished" } : { kind: "stopped", reason: limitReason };
+}
 
 // Everything renderSummary needs to render the run's Markdown report.
 export type SummaryInput = {
@@ -249,6 +273,8 @@ function endingSentence(ending: RunEnding): string {
       return "The run finished.";
     case "stopped":
       return `The run stopped cleanly: ${cell(ending.reason.replace(/\.$/, ""))}.`;
+    case "stalled":
+      return `The run ends red: ${cell(ending.reason.replace(/\.$/, ""))}.`;
     case "crashed":
       return "The run ended on an error; see the run log.";
   }

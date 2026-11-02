@@ -11,7 +11,7 @@ import {
   SESSION_REPLY_MARKER,
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
-import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import {
@@ -37,10 +37,11 @@ import {
 } from "./follow-up-pass.mts";
 import type { HeadCheck, ReviewThread, SandcastleIssue } from "./github.mts";
 import type { IsOwner } from "./queue.mts";
-import { OutcomeReport, type HumanThreadEntry } from "./report.mts";
+import { IntakeStopReport, intakeStopExitCode, intakeStopReport, OutcomeReport, runEnding, STALL_STOP_REASON, type HumanThreadEntry } from "./report.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
+import { limitSandboxExec } from "./step-limit.mts";
 
 // These tests name the Template's gate command, whatever this repo's
 // GATE_COMMAND is: the fake sandbox reports the configured one as the default.
@@ -1589,6 +1590,168 @@ describe("followUpPassPhase", () => {
 
     assert.deepEqual(report.items(), [{ kind: "pr", number: PR_NUMBER, outcome: "stopped", detail: stop.message }]);
   });
+
+  // A sandbox whose every command runs past its limit (the underlying exec answers 124 on a clock that jumps 11 minutes
+  // per call), so limitSandboxExec marks it stalled; closing it then fails, as a container with a live command can.
+  function stalledSandbox(): Sandbox {
+    const base = sandboxFake({ followUpJson: "[]" }).sandbox;
+    let clock = 0;
+    const underlying = {
+      worktreePath: base.worktreePath,
+      exec: async () => {
+        clock += 11 * 60_000;
+        return { stdout: "", stderr: "", exitCode: 124 };
+      },
+      run: base.run,
+      close: async () => {
+        throw new Error("docker: container still running");
+      },
+    } as unknown as Sandbox;
+    return limitSandboxExec(underlying, { log: () => {}, now: () => clock });
+  }
+
+  it("treats a stalled pass as that PR's failed pass: the phase resolves, the stall is recorded, the close failure is only logged and the label is released", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => stalledSandbox();
+    const report = new OutcomeReport();
+    const stalls = new IntakeStopReport();
+
+    const outcomes = await followUpPassPhase([passTarget()], [issue], BASE, passHost, report, stalls, new Set());
+
+    assert.equal(outcomes[0]?.kind, "skipped");
+    assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
+    assert.equal(report.items()[0]?.outcome, "stopped");
+    assert.equal(report.items()[0]?.number, PR_NUMBER);
+    assert.equal(stalls.items().length, 1);
+    assert.equal(stalls.items()[0]?.reason, STALL_STOP_REASON);
+    assert.equal(intakeStopExitCode(stalls.items()), 1);
+    // The step is named, in the stop and in the report row.
+    assert.match(stalls.items()[0]?.firstError ?? "", /ran over its \d+-minute limit/);
+    assert.equal(report.items()[0]?.detail, stalls.items()[0]?.firstError);
+    assert.equal(runEnding(undefined, stalls.items()).kind, "stalled");
+  });
+
+  it("treats a stall while the sandbox is created as that PR's failed pass, not a hand-back, so the run ends red", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => {
+      throw new StalledStepError('the step "the sandbox check" ran over its 1-minute limit');
+    };
+    const report = new OutcomeReport();
+    const stalls = new IntakeStopReport();
+    const stalledPrs = new Set<number>();
+
+    const outcomes = await followUpPassPhase([passTarget()], [issue], BASE, passHost, report, stalls, stalledPrs);
+
+    assert.equal(outcomes[0]?.kind, "skipped");
+    assert.deepEqual(calls.handBack, []);
+    assert.deepEqual(calls.unmarkBuilding, [ISSUE_NUMBER]);
+    assert.equal(stalls.items().length, 1);
+    assert.equal(runEnding(undefined, stalls.items()).kind, "stalled");
+    assert.ok(stalledPrs.has(PR_NUMBER));
+  });
+
+  it("rethrows a usage stop raised while the sandbox is created, without handing the PR back", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => {
+      throw new UncountedStopError("usage limit");
+    };
+
+    await assert.rejects(() => runPass(passTarget(), issue, BASE, passHost), UncountedStopError);
+    assert.deepEqual(calls.handBack, []);
+  });
+
+  it("records into the run-wide intakeStopReport by default, which is what ends the run red", async () => {
+    const { passHost } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async () => stalledSandbox();
+    const before = intakeStopReport.items().length;
+
+    await followUpPassPhase([passTarget()], [issue], BASE, passHost, new OutcomeReport(), undefined, new Set());
+
+    const added = intakeStopReport.items().slice(before);
+    assert.equal(added.length, 1);
+    assert.equal(added[0]?.reason, STALL_STOP_REASON);
+    assert.equal(runEnding(undefined, added).kind, "stalled");
+  });
+
+  it("skips a stalled PR through the run-wide default set too, which is what main.mts uses", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async (branch) => {
+      calls.createSandbox.push(branch);
+      return stalledSandbox();
+    };
+    const stalls = new IntakeStopReport();
+    // A number no other test uses: the default set lasts as long as the test process.
+    const target = passTarget({ number: 9001, id: "PR_9001" });
+
+    await followUpPassPhase([target], [issue], BASE, passHost, new OutcomeReport(), stalls);
+    const second = await followUpPassPhase([target], [issue], BASE, passHost, new OutcomeReport(), stalls);
+
+    assert.equal(calls.createSandbox.length, 1);
+    assert.equal(second[0]?.kind, "skipped");
+  });
+
+  it("does not pass a PR again in the same run once its pass stalled, so a later round doesn't repeat the stall", async () => {
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async (branch) => {
+      calls.createSandbox.push(branch);
+      return stalledSandbox();
+    };
+    const stalls = new IntakeStopReport();
+    const stalledPrs = new Set<number>();
+
+    await followUpPassPhase([passTarget()], [issue], BASE, passHost, new OutcomeReport(), stalls, stalledPrs);
+    const second = await followUpPassPhase([passTarget()], [issue], BASE, passHost, new OutcomeReport(), stalls, stalledPrs);
+
+    assert.equal(calls.createSandbox.length, 1);
+    assert.equal(stalls.items().length, 1);
+    assert.equal(second[0]?.kind, "skipped");
+  });
+
+  it("lets the other PRs' passes finish when one stalls, so a PR that always stalls cannot starve the queue", async () => {
+    const okSandbox = sandboxFake({ followUpJson: "[]" });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+    passHost.createSandbox = async (branch) => {
+      calls.createSandbox.push(branch);
+      return branch === BRANCH ? stalledSandbox() : okSandbox.sandbox;
+    };
+    const stalls = new IntakeStopReport();
+
+    const outcomes = await followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, new OutcomeReport(), stalls, new Set());
+
+    assert.equal(outcomes[0]?.kind, "skipped");
+    assert.equal(outcomes[1]?.kind, "passed");
+    assert.equal(stalls.items().length, 1);
+  });
+
+  // Results are walked in target order, so each order of the two stops needs its own test.
+  for (const [title, stalledBranch] of [
+    ["a stall on an earlier target", BRANCH],
+    ["a stall on a later target", "feature/51-tidy-widget"],
+  ] as const) {
+    it(`still rethrows another pass's usage stop, and records the stall too, with ${title}`, async () => {
+      const usage = new UncountedStopError("usage limit reached");
+      const usageSandbox = sandboxFake({ roleFailing: ["follow-up"], roleFailWith: { "follow-up": usage } });
+      const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true });
+      passHost.createSandbox = async (branch) => {
+        calls.createSandbox.push(branch);
+        return branch === stalledBranch ? stalledSandbox() : usageSandbox.sandbox;
+      };
+      const report = new OutcomeReport();
+      const stalls = new IntakeStopReport();
+
+      await assert.rejects(
+        () => followUpPassPhase(targets, [issue, otherIssue], BASE, passHost, report, stalls, new Set()),
+        (error: unknown) => error === usage,
+      );
+
+      // Both stops really happened.
+      assert.deepEqual(
+        report.items().map(({ number, outcome }) => [number, outcome]).toSorted(),
+        [[PR_NUMBER, "stopped"], [8, "stopped"]].toSorted(),
+      );
+      assert.equal(stalls.items().length, 1);
+    });
+  }
 });
 
 // The pass's other give-ups and guards, each a hand-back with no push unless
@@ -2189,7 +2352,7 @@ describe("runPass's merge of main in a sandbox from createCheckedSandbox", () =>
     assert.deepEqual(calls.handBack, []);
     assert.equal(calls.push.length, 1);
     assert.equal(fake.headIdentity(), "Host Person <host@example.com>|Host Person <host@example.com>");
-    assert.ok(fake.execs.some((command) => command.startsWith("git merge ")), fake.execs.join("\n"));
+    assert.ok(fake.execs.some((command) => command.includes("sh -c 'git merge ")), fake.execs.join("\n"));
   });
 
   it("merges main in cleanly before any role has run, when GitHub reports the PR as conflicted but the merge is clean", async (t) => {

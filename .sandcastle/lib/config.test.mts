@@ -14,6 +14,7 @@ import {
   HOST_LABELS,
   LOCAL_QUEUE_LABEL,
   LOCAL_QUEUE_LABEL_DEFINITION,
+  MAX_GATE_RUNS,
   OPTIONAL_ROLES,
   QUEUE_LABEL,
   QUEUE_SCOPE_USAGE,
@@ -27,6 +28,8 @@ import {
   queueScopeFrom,
   runModeFrom,
 } from "./config.mts";
+import { GATE_LIMIT_MINUTES } from "./repo-config.mts";
+import { COMMAND_LIMIT_MINUTES } from "./step-limit.mts";
 import * as config from "./config.mts";
 import { roleAgent, uiEnabled } from "./agents.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
@@ -75,19 +78,26 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
   // second run would clear a live build's label and build the issue too.
   // BUILD_ROLES, each once, plus the gate-fixer's attempts at both
   // checkpoints. build.test.mts checks buildIssue runs no other role.
-  it("outlasts the longest build the role timeouts allow, with an hour for gates, sandboxes and publishing", () => {
+  it("outlasts the longest build the role timeouts allow, with twenty minutes for sandboxes and publishing", () => {
     const checkpoints = 2;
     // The UI developer counts even in a repo that hasn't opted in, at the backend developer's budget (the Seed's example
     // entry), so a repo that opts in with a larger one gets the sum checked again by this test in its own config.
     const timeout = (role: (typeof BUILD_ROLES)[number]) => (role === "ui" && !uiEnabled() ? ROLE_AGENTS.backend : roleAgent(role)).timeoutMinutes;
+    // Checkpoint 1 runs the gate, then once more after each gate-fixer attempt. Checkpoint 2 runs it on the merged tree first,
+    // and when that is red goes through the same loop as checkpoint 1: MAX_GATE_RUNS runs in all, each up to its step limit.
+    const gateRuns = MAX_GATE_RUNS;
     const minutes =
       BUILD_ROLES.reduce((sum, role) => sum + timeout(role), 0) +
-      checkpoints * GATE_FIXER_ATTEMPTS * ROLE_AGENTS["gate-fixer"].timeoutMinutes;
-    const hour = 60;
+      checkpoints * GATE_FIXER_ATTEMPTS * ROLE_AGENTS["gate-fixer"].timeoutMinutes +
+      gateRuns * GATE_LIMIT_MINUTES +
+      // A command other than the gate that runs over its limit stalls the sandbox: it throws, as does every later exec and
+      // every role start (lib/step-limit.mts, lib/agents.mts), so one more limit is the most any build adds from them.
+      COMMAND_LIMIT_MINUTES;
+    const spare = 20;
 
     assert.ok(
-      (minutes + hour) * 60_000 <= BUILDING_LABEL_MAX_AGE_MS,
-      `the longest build takes ${minutes} minutes plus an hour, past BUILDING_LABEL_MAX_AGE_MS`,
+      (minutes + spare) * 60_000 <= BUILDING_LABEL_MAX_AGE_MS,
+      `the longest build takes ${minutes} minutes plus twenty minutes, past BUILDING_LABEL_MAX_AGE_MS`,
     );
   });
 });

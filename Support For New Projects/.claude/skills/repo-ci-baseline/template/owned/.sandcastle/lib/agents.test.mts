@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { isRoleTimeout, roleOptions, uiEnabled, runRoleInSandbox, runWithinLimits, withSharedRules } from "./agents.mts";
-import { UncountedStopError } from "./errors.mts";
+import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
+import { limitSandboxExec } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 const sharedRules = readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
@@ -52,6 +53,23 @@ describe("roleOptions", () => {
 });
 
 describe("runRoleInSandbox", () => {
+  it("starts no role in a sandbox that stalled, and names the step", async () => {
+    let ran = 0;
+    const raw = {
+      run: async () => (ran++, { iterations: [], commits: [] }),
+      exec: async () => ({ stdout: "", stderr: "", exitCode: 124 }),
+    } as unknown as Sandbox;
+    const stalled = limitSandboxExec(raw, { log: () => undefined, now: ((time = 0) => () => (time += 11 * 60_000))() });
+    await assert.rejects(stalled.exec("git fetch"), StalledStepError);
+
+    await assert.rejects(
+      runRoleInSandbox(stalled, "gate-fixer", { prompt: "" }),
+      (error: unknown) => error instanceof StalledStepError && /the gate-fixer wasn't started: the step "git fetch"/.test(error.message),
+    );
+
+    assert.equal(ran, 0);
+  });
+
   it("lists a role that ran even when its run fails", async () => {
     const failing = { run: () => Promise.reject(new Error("timed out")) } as unknown as Sandbox;
 

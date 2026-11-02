@@ -77,6 +77,12 @@ export const GATE_COVERED_CHECKS: readonly string[] = ["Build Solution"];
 // leaves those out (such as .sandcastle/check.sh) and keeps its lints.
 export const GATE_COMMAND = "scripts/gate.sh";
 
+// How long the gate may run in the sandbox, in minutes, before the host kills it and counts the checkpoint
+// red (lib/step-limit.mts). Parallel builds share one host, so size it for the slowest gate under that load;
+// lib/config.test.mts adds it to the longest build when it checks BUILDING_LABEL_MAX_AGE_MS. A repo whose gate
+// takes a few minutes keeps the default.
+export const GATE_LIMIT_MINUTES = 10;
+
 // The committed file GATE_COMMAND runs. It is written in the worktree by the
 // agents whose work it judges, so a gate whose branch changes it fails without
 // running (lib/checkpoint.mts#gateScriptChange); a file that isn't committed at

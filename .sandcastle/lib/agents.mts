@@ -11,7 +11,8 @@ import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { AnyRole, RoleAgent } from "./config.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { StalledStepError, UncountedStopError } from "./errors.mts";
+import { stalledStepOf } from "./step-limit.mts";
 import { MAX_CAUSE_DEPTH, RunLimits, runLimits, usageLimitLine } from "./limits.mts";
 import { usageReport } from "./report.mts";
 
@@ -89,6 +90,11 @@ export async function runRoleInSandbox(
   options: Omit<sandcastle.SandboxRunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
 ): Promise<sandcastle.SandboxRunResult> {
+  // Defensive: the first stall already threw from the exec that hit it, so only a caller that swallowed that throw gets here (agents.test.mts is its only test).
+  // A role runs through sandbox.run, not the limited exec, so it would start in a container that may still be running the
+  // stalled command; the build's own tolerant reads can have swallowed the throw that said so.
+  const stalled = stalledStepOf(sandbox);
+  if (stalled !== undefined) throw new StalledStepError(`the ${role} wasn't started: the step "${stalled}" didn't end at its limit, so the sandbox is stalled.`);
   usageReport.record(role, []);
   const result = await runWithinLimits(
     role,

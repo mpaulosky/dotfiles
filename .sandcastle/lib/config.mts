@@ -52,9 +52,9 @@ export const DESIGN_MARKER = "<!-- sandcastle:design -->";
 
 // The roles lib/build.mts#buildIssue runs, each at most once per build,
 // besides the gate-fixer, which runs up to GATE_FIXER_ATTEMPTS times at each
-// checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts:
-// config.test.mts checks the sum fits, and build.test.mts that buildIssue runs
-// no role outside the list.
+// checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts and
+// the gate's limit (lib/repo-config.mts#GATE_LIMIT_MINUTES): config.test.mts checks the sum fits, and build.test.mts
+// that buildIssue runs no role outside the list.
 export const BUILD_ROLES = ["architect", "tester", "backend", "ui", "scribe", "reviewer"] as const satisfies readonly AnyRole[];
 
 // The ref each issue branch is compared with: every issue PR targets main,
@@ -132,6 +132,11 @@ export const INTAKE_REFUSED_BATCHES_LIMIT = 2;
 // Gate-fixer runs allowed at each gate checkpoint before the issue's round is
 // given up, and how much of the final gate output the issue comment quotes.
 export const GATE_FIXER_ATTEMPTS = 2;
+
+// The most gate runs a build makes: each of the two checkpoints runs it, then once more after each fixer attempt, and
+// checkpoint 2 runs it on the merged tree first. build.test.mts checks buildIssue stays within it, and config.test.mts
+// sizes BUILDING_LABEL_MAX_AGE_MS from it.
+export const MAX_GATE_RUNS = 2 * (GATE_FIXER_ATTEMPTS + 1) + 1;
 
 export const GATE_COMMENT_LINES = 100;
 
@@ -246,8 +251,10 @@ export const BUILDING_LABEL = "sandcastle:building";
 // How old a sandcastle:building label must be before startup clears it as a
 // crashed run's (see lib/building.mts#clearStaleBuildingLabels). It outlasts
 // any real build: every role's timeoutMinutes, even with two gate-fixer
-// attempts at each of the two checkpoints, adds up to well under 6 hours.
-// config.test.mts checks that sum (see BUILD_ROLES), with an hour to spare,
+// attempts at each of the two checkpoints, plus MAX_GATE_RUNS gate runs each up to
+// GATE_LIMIT_MINUTES (lib/repo-config.mts) and one more command limit
+// (lib/step-limit.mts), adds up to under 6 hours.
+// config.test.mts checks that sum (see BUILD_ROLES), with twenty minutes to spare,
 // stays below it.
 export const BUILDING_LABEL_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 

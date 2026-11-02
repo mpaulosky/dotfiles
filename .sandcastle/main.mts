@@ -171,6 +171,8 @@ import {
   outcomeReport,
   renderSummary,
   REPORT_DIR,
+  runEnding,
+  stallStop,
   usageReport,
   waitingPrReport,
   writeRunReport,
@@ -219,8 +221,8 @@ try {
 runLimits.start(budgetMinutes);
 console.log(`Time budget: ${budgetMinutes} minutes`);
 
-// How the run ended, for the run report: set to "finished" or "stopped" by
-// the try below, so anything that throws past it reads as a crash.
+// How the run ended, for the run report: set to "finished", "stopped" or "stalled"
+// (lib/report.mts#runEnding) by the try below, so anything that throws past it reads as a crash.
 let ending: RunEnding = { kind: "crashed" };
 
 // Whether protectHostGit() has pinned every git command's environment. Only
@@ -234,8 +236,9 @@ let ending: RunEnding = { kind: "crashed" };
 let startedUp = false;
 
 // An UncountedStopError from any phase (intake, the planner, the critique)
-// means the budget has passed or Claude's usage limit was hit: the catch below
-// ends the run cleanly rather than crash, since the next run picks the work up.
+// means the budget has passed, Claude's usage limit was hit or a sandbox step
+// stalled: the catch below ends the run rather than crash, cleanly for the first
+// two (the next run picks the work up) and red for a stall.
 // The try starts this early so its finally writes the run report
 // (.sandcastle/logs/) after every run that got past reading its arguments,
 // even one that fails a startup check: a workflow step reads handbacks.json.
@@ -337,7 +340,8 @@ try {
     // -----------------------------------------------------------------------
     // See lib/follow-up-pass.mts#followUpPassPhase: each pass runs in its own
     // sandbox, in parallel, and the build phase starts after them. A failed
-    // pass is logged and the sweep finds its PR again next round.
+    // pass is logged and the sweep finds its PR again next round. A stalled one is skipped for the rest
+    // of the run, and recorded, so the run still ends red.
     if (passes.length > 0) {
       const passBase = fetchMain();
       await followUpPassPhase(passes, loadQueue(), passBase);
@@ -466,6 +470,8 @@ try {
     // Log any agents that threw (network error, sandbox crash, timeout, etc.).
     // A clean stop is named in the round summary instead.
     for (const [i, outcome] of settled.entries()) {
+      const stall = outcome.status === "rejected" ? stallStop(outcome.reason) : undefined;
+      if (stall !== undefined) intakeStopReport.record(stall);
       if (outcome.status === "rejected" && !(outcome.reason instanceof UncountedStopError)) {
         console.error(
           `  ✗ #${work[i]!.issue.number} (${work[i]!.branch}) failed: ${outcome.reason}`,
@@ -485,19 +491,29 @@ try {
     if (summary.stop !== undefined) {
       // Nothing reached a PR, so the next plan would pick the same issues and
       // repeat the same round: stop and let a human look. Or a build stopped
-      // cleanly on the time budget or usage limit, so nothing more can start.
+      // on the time budget, the usage limit or a stalled step, so nothing more can start.
       console.log(summary.stop);
       break;
     }
   }
-  // A loop that ended on the time budget or the usage limit (no new round,
+  // A loop that ended on the time budget, the usage limit or a stalled step (no new round,
   // or a build that stopped) stopped rather than finished.
   const limitReason = runLimits.stopReason();
-  ending = limitReason === undefined ? { kind: "finished" } : { kind: "stopped", reason: limitReason };
+  // A stall sets no run limit, but it ends the run red, so the report says it stalled.
+  ending = runEnding(limitReason, intakeStopReport.items());
 } catch (error) {
   if (!(error instanceof UncountedStopError)) throw error;
-  ending = { kind: "stopped", reason: error.message };
-  console.log(`\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`);
+  const stall = stallStop(error);
+  if (stall !== undefined) intakeStopReport.record(stall);
+  // A stall a follow-up pass recorded earlier in the run counts too: the ending comes from everything recorded.
+  ending = runEnding(error.message, intakeStopReport.items());
+  console.log(
+    ending.kind !== "stalled"
+      ? `\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`
+      : stall !== undefined
+        ? `\n⏹ Stopping the run, which ends red: ${error.message}. Nothing more starts; the next run meets the same stall until a person looks.`
+        : `\n⏹ Stopping the run: ${error.message}. Nothing more starts. It ends red because a sandbox step stalled earlier (${ending.reason}).`,
+  );
 } finally {
   console.log("\nToken usage by role:");
   const lines = usageReport.lines();

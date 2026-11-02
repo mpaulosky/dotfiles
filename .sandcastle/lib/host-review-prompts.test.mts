@@ -375,6 +375,7 @@ describe("reviewFixPrompt", () => {
 
     assert.match(later, /Round 2's fixes are the newest `fix\(` commits on the branch before yours\. When `git log -p` shows this function in them, replace its mechanism/);
     assert.match(later, /An older round's fix of it does not count/);
+    assert.match(reviewFixPrompt({ ...fixArgs(), round: 2 }), /Round 1's fixes are the newest `fix\(` commits on the branch before yours/);
     assert.doesNotMatch(reviewFixPrompt(fixArgs()), /replace its mechanism/);
   });
 

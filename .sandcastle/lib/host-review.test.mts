@@ -539,11 +539,21 @@ describe("parseReviewerAnswer's edges", () => {
   });
 
   it("refuses a block of findings followed by more quoted blocks than the parser reads, rather than read the last one as clean", () => {
-    const quotes = `<findings>[]</findings> `.repeat(21);
+    const quote = "<findings>[]</findings> ";
 
-    assert.throws(() => parseReviewerAnswer(`${block([raw()])}\n${quotes}`), ReviewerAnswerError);
-    assert.throws(() => parseReviewerAnswer(`${block([raw()])}\n${quotes.repeat(3)}`), ReviewerAnswerError);
-    assert.deepEqual(parseReviewerAnswer(`${quotes}\n${block([raw()])}`).map((found) => found.summary), [raw().summary]);
+    assert.throws(() => parseReviewerAnswer(`${block([raw()])}\n${quote.repeat(21)}`), ReviewerAnswerError);
+    // 21 closing tags are one more than are read; with 20 the parser reads the first block itself and refuses on its own two-blocks rule.
+    assert.throws(() => parseReviewerAnswer(`${block([raw()])}\n${quote.repeat(20)}`), /more <findings> tags than are read/);
+    assert.throws(() => parseReviewerAnswer(`${block([raw()])}\n${quote.repeat(19)}`), /two blocks of findings/);
+    assert.deepEqual(parseReviewerAnswer(`${quote.repeat(21)}\n${block([raw()])}`).map((found) => found.summary), [raw().summary]);
+    assert.throws(() => parseReviewerAnswer(`<findings>[ \n {"x":1}]</findings> ${quote.repeat(21)}`), ReviewerAnswerError, "whitespace inside the opening");
+  });
+
+  it("refuses a block whose opening tag is among the middle ones the parser doesn't try, rather than read the last empty block as clean", () => {
+    const prose = "A <findings> tag in prose. ".repeat(15);
+    const real = block([raw({ summary: `It quotes ${"<findings> ".repeat(12)}` })]);
+
+    assert.throws(() => parseReviewerAnswer(`${prose}\n${real}\n<findings>[]</findings>`), ReviewerAnswerError);
   });
 
   it("tries a bounded number of tags", () => {

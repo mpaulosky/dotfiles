@@ -1055,6 +1055,7 @@ async function buildMarkedIssue(
         },
         uncounted: (error) => error instanceof UncountedStopError,
         alive: () => sandboxDown(sandbox, host.publicError),
+        scrub: host.publicError,
       },
       log,
     );

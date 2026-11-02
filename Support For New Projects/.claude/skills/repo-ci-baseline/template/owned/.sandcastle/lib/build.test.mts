@@ -738,6 +738,22 @@ describe("buildIssue", () => {
     assert.ok(logs.some((line) => line.includes("not run: The sandbox can't run a command")), logs.join("\n"));
   });
 
+  it("logs the first red gate run, scrubbed, when a stall on the probe ends the work", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { logs, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: stall,
+      gateOutput: "FAIL: env dump\nCLAUDE_CODE_OAUTH_TOKEN=ghp_abc\n",
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    const text = logs.join("\n");
+    assert.match(text, /the first red gate run's output, before this stopped the checkpoint:\n.*looked like it held a secret/s);
+    assert.ok(!text.includes("ghp_abc"), text);
+  });
+
   it("lets a stall on the sandbox probe end the work instead of recording a failed build attempt", async () => {
     const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
     const { steps, recordBuildFailureCalls, buildHost } = host([1], { sandboxDiesAfterGates: 1, sandboxDeathError: stall });

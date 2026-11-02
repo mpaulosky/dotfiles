@@ -39,6 +39,12 @@ export type CheckpointSteps = {
   // throw an UncountedStopError (a stalled sandbox), which runCheckpoint lets
   // propagate so the run ends on the stall instead of recording a failed attempt.
   alive?(): Promise<string | undefined>;
+  // Makes the first red run's output safe to log. When the checkpoint ends on
+  // an error rather than a result (a stall, a usage limit, a gate run that
+  // throws), that output has no other way out, so runCheckpoint logs its tail
+  // through this before rethrowing. Without it nothing is logged, since the
+  // output is written by agents and may hold a secret.
+  scrub?(text: string): string;
 };
 
 // The gate prints in colour, which only gets in the way of a prompt or an
@@ -190,7 +196,9 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 // fixer, with the reason appended to the output and `fixersRun` set to the
 // attempts that ran. A caller that passes no `alive` never gets `fixersRun` or
 // that early end, but still gets `firstOutput`. An `alive` that throws an
-// UncountedStopError ends the checkpoint with it.
+// UncountedStopError ends the checkpoint with it. Any error that ends it is
+// rethrown unchanged, after `scrub` has made the first red run's output safe to
+// log, when the steps have one.
 export async function runCheckpoint(
   checkpoint: Checkpoint,
   steps: CheckpointSteps,
@@ -201,21 +209,30 @@ export async function runCheckpoint(
   log(`${prefix} gate ${result.passed ? "passed" : "failed"}`);
 
   const firstOutput = result.output;
-  for (let attempt = 1; !result.passed && attempt <= GATE_FIXER_ATTEMPTS; attempt++) {
-    const label = `gate-fixer attempt ${attempt}/${GATE_FIXER_ATTEMPTS}`;
-    const down = await steps.alive?.();
-    if (down !== undefined) {
-      log(`${prefix} ${label} not run: ${down}`);
-      return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 && firstOutput !== result.output ? { firstOutput } : {}) };
+  try {
+    for (let attempt = 1; !result.passed && attempt <= GATE_FIXER_ATTEMPTS; attempt++) {
+      const label = `gate-fixer attempt ${attempt}/${GATE_FIXER_ATTEMPTS}`;
+      const down = await steps.alive?.();
+      if (down !== undefined) {
+        log(`${prefix} ${label} not run: ${down}`);
+        return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 && firstOutput !== result.output ? { firstOutput } : {}) };
+      }
+      try {
+        await steps.fix(checkpoint, result.output);
+      } catch (error) {
+        if (steps.uncounted?.(error)) throw error;
+        log(`${prefix} ${label} failed: ${error}`);
+      }
+      result = await steps.gate();
+      log(`${prefix} gate ${result.passed ? "passed" : "failed"} after ${label}`);
     }
-    try {
-      await steps.fix(checkpoint, result.output);
-    } catch (error) {
-      if (steps.uncounted?.(error)) throw error;
-      log(`${prefix} ${label} failed: ${error}`);
+  } catch (error) {
+    // An error that ends the checkpoint (a stall, a usage limit, a gate run that throws) never reaches the failure comment, so the first
+    // red run's output would be lost with it: log its scrubbed tail first. The error itself goes on unchanged.
+    if (steps.scrub !== undefined) {
+      log(`${prefix} the first red gate run's output, before this stopped the checkpoint:\n${tail(steps.scrub(firstOutput), GATE_COMMENT_LINES)}`);
     }
-    result = await steps.gate();
-    log(`${prefix} gate ${result.passed ? "passed" : "failed"} after ${label}`);
+    throw error;
   }
 
   return result.passed || firstOutput === result.output ? result : { ...result, firstOutput };

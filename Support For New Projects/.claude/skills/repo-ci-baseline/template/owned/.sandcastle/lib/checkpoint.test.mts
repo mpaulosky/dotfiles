@@ -85,6 +85,65 @@ describe("runCheckpoint", () => {
     assert.equal(passes.firstOutput, undefined);
   });
 
+  describe("when an error ends the checkpoint after a red run", () => {
+    const scrub = (text: string) => text.replaceAll("secret", "[withheld]");
+    const logged = (lines: string[]) => lines.filter((line) => line.includes("first red gate run's output"));
+
+    it("logs the scrubbed tail of the first red run, then rethrows a stall from the probe unchanged", async () => {
+      const stall = new StalledStepError("stalled");
+      // 149 lines and the secret make 150, so the last 100 start at line 51.
+      const long = Array.from({ length: 149 }, (_, i) => `line ${i + 1}`).join("\n");
+      const s = { ...steps([red(`${long}\nsecret`)]), scrub, alive: async () => Promise.reject(stall) };
+      const lines: string[] = [];
+
+      await assert.rejects(() => runCheckpoint(1, s, (line) => lines.push(line)), (error: unknown) => error === stall);
+
+      assert.equal(logged(lines).length, 1, lines.join("\n"));
+      assert.ok(logged(lines)[0]!.startsWith("checkpoint 1: the first red gate run's output, before this stopped the checkpoint:\n"));
+      assert.ok(logged(lines)[0]!.includes("line 51\n"));
+      assert.ok(!logged(lines)[0]!.includes("line 50\n"));
+      assert.ok(logged(lines)[0]!.endsWith("[withheld]"));
+      assert.ok(!lines.join("\n").includes("secret"));
+      assert.deepEqual(s.calls, ["gate"]);
+    });
+
+    it("logs it for an uncounted fixer error and for a later gate run that throws", async () => {
+      const stop = new Error("usage limit reached");
+      const fixer = { ...steps([red("secret one")], async () => { throw stop; }), scrub, uncounted: (error: unknown) => error === stop };
+      const fixerLines: string[] = [];
+      await assert.rejects(() => runCheckpoint(1, fixer, (line) => fixerLines.push(line)), (error: unknown) => error === stop);
+
+      const broken = new Error("the gate crashed");
+      const gate = { ...steps([red("first")]), scrub };
+      const gates = [red("first")];
+      gate.gate = async () => {
+        const next = gates.shift();
+        if (next === undefined) throw broken;
+        return next;
+      };
+      const gateLines: string[] = [];
+      await assert.rejects(() => runCheckpoint(1, gate, (line) => gateLines.push(line)), (error: unknown) => error === broken);
+
+      assert.match(logged(fixerLines)[0]!, /\[withheld\] one$/);
+      assert.match(logged(gateLines)[0]!, /:\nfirst$/);
+    });
+
+    it("logs nothing without a scrub, and nothing when the first gate run itself throws or the checkpoint ends normally", async () => {
+      const stall = new StalledStepError("stalled");
+      const unscrubbed = { ...steps([red("secret")]), alive: async () => Promise.reject(stall) };
+      const lines: string[] = [];
+      await assert.rejects(() => runCheckpoint(1, unscrubbed, (line) => lines.push(line)), (error: unknown) => error === stall);
+
+      const first = { ...steps([]), scrub };
+      await assert.rejects(() => runCheckpoint(1, first, (line) => lines.push(line)), /gate ran more often/);
+
+      await runCheckpoint(1, { ...steps([red("one"), red("two"), red("three")]), scrub }, (line) => lines.push(line));
+      await runCheckpoint(1, { ...steps([green]), scrub }, (line) => lines.push(line));
+
+      assert.deepEqual(logged(lines), []);
+    });
+  });
+
   describe("with a sandbox that can be asked whether it is down", () => {
     const withAlive = (gateResults: GateRun[], answers: (string | undefined)[]) => {
       const s = steps(gateResults);

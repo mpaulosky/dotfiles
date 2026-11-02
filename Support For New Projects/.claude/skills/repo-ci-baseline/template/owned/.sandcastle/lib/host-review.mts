@@ -490,6 +490,8 @@ async function runRounds(
           round,
           issue,
           hasFixes: prepared.fixes !== undefined,
+          // A reader patch is shorter than the whole one exactly when a verbatim mirror was left out of it.
+          mirrorsLeftOut: prepared.readPatch.length !== prepared.patch.length || (prepared.readFixes?.length ?? 0) !== (prepared.fixes?.length ?? 0),
         }) + (problem === undefined ? "" : retryNote(problem)),
       );
     // One after another, never together: each role run sets up the sandbox's global git config, and runs started together race for its lock

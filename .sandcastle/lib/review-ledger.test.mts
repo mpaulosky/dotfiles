@@ -3575,6 +3575,31 @@ describe("readerPatch", () => {
     assert.equal(read(tricky + modified("y.sh") + modified(`${MIRROR}y.sh`)), tricky + modified("y.sh"));
   });
 
+  it("matches the sections of a path by their order: a type change is two sections, deleted then created", () => {
+    const typeChange = (path: string) => deleted(path) + created(path, B, "120000");
+
+    assert.equal(read(typeChange("l.sh") + typeChange(`${MIRROR}l.sh`)), typeChange("l.sh"), "both mirror sections go");
+    const oneSide = typeChange("l.sh") + deleted(`${MIRROR}l.sh`);
+    assert.equal(read(oneSide), oneSide, "a mirror that only deletes differs from a root that also creates");
+    const otherMode = typeChange("l.sh") + deleted(`${MIRROR}l.sh`) + created(`${MIRROR}l.sh`, B, "100644");
+    assert.equal(read(otherMode), otherMode, "a mirror whose second section differs is kept whole");
+  });
+
+  it("leaves out a symlink or submodule mirror only when blob and mode both match", () => {
+    assert.equal(read(created("l", B, "120000") + created(`${MIRROR}l`, B, "120000")), created("l", B, "120000"));
+    assert.equal(read(created("m", B, "160000") + created(`${MIRROR}m`, B, "160000")), created("m", B, "160000"));
+    const drift = created("m", B, "160000") + created(`${MIRROR}m`, C, "160000");
+    assert.equal(read(drift), drift);
+  });
+
+  it("compares a created file with a modified one by the state it ends in", () => {
+    assert.equal(read(created("a.sh") + modified(`${MIRROR}a.sh`)), created("a.sh"), "same blob and mode: dropped");
+    const deletedRoot = deleted("a.sh") + modified(`${MIRROR}a.sh`);
+    assert.equal(read(deletedRoot), deletedRoot, "a deleted root against a modified mirror: kept");
+    const modeDrift = created("a.sh") + created(`${MIRROR}a.sh`, B, "100755");
+    assert.equal(read(modeDrift), modeDrift, "created with a different mode: kept");
+  });
+
   it("returns an empty patch for an empty patch, and keeps text before the first header", () => {
     assert.equal(read(""), "");
     assert.equal(read("preamble\n" + modified("a.ts")), "preamble\n" + modified("a.ts"));
@@ -3626,6 +3651,21 @@ describe("a branch that holds Template mirrors", () => {
     assert.doesNotMatch(round.readFixes!.toString("utf8"), /owned\/scripts\/a\.sh/);
     assert.match(round.readFixes!.toString("utf8"), /owned\/scripts\/only\.sh/);
     assert.match(round.fixes!.toString("utf8"), /owned\/scripts\/a\.sh/);
+  });
+
+  it("has prepare write the read fixes to fixes.patch and print the key of the whole diff", () => {
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    commitAt(`${MIRROR}scripts/only.sh`, "echo only\n", "a mirror alone");
+
+    const [key] = cli(["prepare", dir, head]).out.trim().split("\n") as [string];
+
+    const fixes = readFileSync(join(dir, "fixes.patch"), "utf8");
+    assert.doesNotMatch(fixes, /owned\/scripts\/a\.sh/);
+    assert.match(fixes, /owned\/scripts\/only\.sh/);
+    assert.equal(key, cli(["key"]).out.trim());
   });
 
   it("still asks for a new review when only a mirror changes", () => {

@@ -548,20 +548,29 @@ export const TEMPLATE_OWNED_PREFIX = "Support For New Projects/.claude/skills/re
 
 // The patch the reviewers read: `patch` without the sections of verbatim Template mirrors. A section is a mirror when its path is
 // TEMPLATE_OWNED_PREFIX + <P> and the same patch has a root section for <P> with the same final state (the same after-blob and the same
-// final mode, or both deleted). `test.sh` already fails when a copy drifts, so reading both only doubles the reading. Anything else stays:
-// a mirror with no root section, a mirror that differs from its root copy (drift), a quoted or unreadable header, a section with no after-blob.
-// The key is not computed from this: it stays that of the whole diff. The patch is read at LF only, byte for byte (latin1), so the kept
+// final mode, or both deleted). A path can have two sections (git writes a deletion and an addition for a type change, such as a symlink that
+// becomes a file): they are matched in order, the first of the mirror's with the first of the root's, so a type change on both sides leaves out
+// both of the mirror's sections and never one. `test.sh` already fails when a copy drifts, so reading both only doubles the reading. Anything else
+// stays: a mirror with no root section, a mirror that differs from its root copy (drift), a quoted or unreadable header, a section with no
+// after-blob. The key is not computed from this: it stays that of the whole diff. The patch is read at LF only, byte for byte (latin1), so the kept
 // sections are the input's own bytes; the same bytes are returned when nothing is left out.
 export function readerPatch(patch: Buffer): Buffer {
   const text = patch.toString("latin1");
   const parts = text.split(/(?<=\n)(?=diff --git )/);
+  // The lines before the first hunk are git's own header; a changed line can't start with `index `, and the lines are cut at LF only.
   const finalState = (part: string): string | undefined => {
-    const end = part.indexOf("\n@@ ");
-    const head = end === -1 ? part : part.slice(0, end);
-    if (/^deleted file mode /m.test(head)) return "deleted";
-    const blob = /^index [0-9a-f]+\.\.([0-9a-f]+)(?: (\d+))?$/m.exec(head);
-    if (blob === null) return undefined;
-    const mode = /^new mode (\d+)$/m.exec(head)?.[1] ?? /^new file mode (\d+)$/m.exec(head)?.[1] ?? blob[2];
+    const header: string[] = [];
+    for (const line of part.split("\n")) {
+      if (line.startsWith("@@ ")) break;
+      header.push(line);
+    }
+    if (header.some((line) => line.startsWith("deleted file mode "))) return "deleted";
+    const blob = header.map((line) => /^index [0-9a-f]+\.\.([0-9a-f]+)(?: (\d+))?$/.exec(line)).find((found) => found !== null && found !== undefined);
+    if (blob === undefined || blob === null) return undefined;
+    const mode =
+      header.map((line) => /^new mode (\d+)$/.exec(line)?.[1]).find((found) => found !== undefined) ??
+      header.map((line) => /^new file mode (\d+)$/.exec(line)?.[1]).find((found) => found !== undefined) ??
+      blob[2];
     return mode === undefined ? undefined : `${blob[1]}:${mode}`;
   };
   const pathOf = (part: string): string | undefined => {
@@ -570,23 +579,22 @@ export function readerPatch(patch: Buffer): Buffer {
     const path = patchPaths(header)[0];
     return path !== undefined && header === `diff --git a/${path} b/${path}` ? path : undefined;
   };
-  const roots = new Map<string, string | undefined>();
-  for (const part of parts) {
+  // The final states of a path's sections, in order (git writes two for a type change). A mirror is left out only when its whole sequence equals
+  // the root copy's, so a mirror that deletes while its root copy deletes and creates a symlink is kept.
+  const sections = parts.map((part) => {
     const path = pathOf(part);
-    if (path !== undefined && !path.startsWith(TEMPLATE_OWNED_PREFIX)) roots.set(path, finalState(part));
-  }
-  const kept = parts.filter((part) => {
-    const path = pathOf(part);
-    if (path === undefined || !path.startsWith(TEMPLATE_OWNED_PREFIX)) return true;
-    const root = roots.get(path.slice(TEMPLATE_OWNED_PREFIX.length));
-    const own = finalState(part);
-    return root === undefined || own === undefined || root !== own;
+    return { part, path, state: path === undefined ? undefined : finalState(part) };
   });
-  return kept.length === parts.length ? patch : Buffer.from(kept.join(""), "latin1");
+  const sequences = new Map<string, (string | undefined)[]>();
+  for (const { path, state } of sections) if (path !== undefined) sequences.set(path, [...(sequences.get(path) ?? []), state]);
+  const sameSequence = (mirror: string): boolean => {
+    const root = sequences.get(mirror.slice(TEMPLATE_OWNED_PREFIX.length));
+    const own = sequences.get(mirror);
+    return root !== undefined && own !== undefined && root.length === own.length && root.every((state, at) => state !== undefined && state === own[at]);
+  };
+  const kept = sections.filter(({ path }) => path === undefined || !path.startsWith(TEMPLATE_OWNED_PREFIX) || !sameSequence(path));
+  return kept.length === parts.length ? patch : Buffer.from(kept.map(({ part }) => part).join(""), "latin1");
 }
-
-// How big a branch a review is asked to cover is counted here, a file and its Template mirror once.
-const TEMPLATE_MIRROR_PREFIX = TEMPLATE_OWNED_PREFIX;
 
 // The files and lines (added plus deleted) a patch changes, from the hunks. The patch is read line by line at `\n` only: a lone carriage return,
 // or a Unicode line separator, inside a changed line is file content and starts nothing. Sections of the same path (git writes a deletion and an
@@ -612,7 +620,7 @@ export function branchSize(patch: Buffer | string): { files: number; lines: numb
   }
   const lines = new Map<string, number>();
   for (const [path, changed] of byPath) {
-    const key = path.startsWith(TEMPLATE_MIRROR_PREFIX) ? path.slice(TEMPLATE_MIRROR_PREFIX.length) : path;
+    const key = path.startsWith(TEMPLATE_OWNED_PREFIX) ? path.slice(TEMPLATE_OWNED_PREFIX.length) : path;
     lines.set(key, Math.max(lines.get(key) ?? 0, changed));
   }
   let total = 0;
@@ -802,7 +810,9 @@ export function takenIds(cwd: string, base: string, head: string = headCommit(cw
 
 // What one review round reads: the whole diff, the fixes since the round before (a later round only), the key the diff
 // has and the commits it was made between. Both the CLI's `prepare` and the host's review (lib/host-review.mts) call
-// prepareRound, so they cannot diverge.
+// prepareRound, so they cannot diverge. `patch` and `fixes` are whole: they feed the key and the size warning. `readPatch` and
+// `readFixes` leave out the verbatim Template mirrors (readerPatch) and are what the reviewers read, what the size limit and the lens choice
+// apply to, and what gets written to disk.
 export type PreparedRound = { patch: Buffer; fixes: Buffer | undefined; readPatch: Buffer; readFixes: Buffer | undefined; key: string; head: string; base: string };
 
 // The body of `prepare` without its file I/O: `head` (HEAD by default) against
@@ -1275,8 +1285,8 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
         // An absolute folder only: an empty shell variable would otherwise
         // write the diff somewhere no reviewer is told to look.
         if (rest[0] === undefined || !isAbsolute(rest[0])) return fail(USAGE);
-        // One read of the patch gives both, so the key names exactly the text
-        // the reviewers get.
+        // One prepareRound gives both: the key is that of the whole diff, and the files written below hold what the reviewers read (readPatch
+        // and readFixes), which leave out the verbatim Template mirrors.
         // A fixes patch is only ever this prepare's: an earlier round's would
         // have the reviewers read old fixes.
         rmSync(join(rest[0], "fixes.patch"), { force: true });

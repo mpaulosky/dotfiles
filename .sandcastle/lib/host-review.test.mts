@@ -2027,7 +2027,7 @@ describe("runHostReview's stops and failures", () => {
     assert.ok(written("diff.patch").length >= 2, "two rounds ran");
     assert.ok(written("diff.patch").every((text) => text === `${whole}# read\n`), written("diff.patch").join("|"));
     assert.ok(written("fixes.patch").length >= 1 && written("fixes.patch").every((text) => text === `${whole}# read fixes\n`), written("fixes.patch").join("|"));
-    assert.ok(run.prepared.every((round) => round.key.startsWith("key-")), "the key comes from the prepared round, which covers the whole diff");
+    assert.equal(run.records[0]!.input.reviewedKey, run.prepared.at(-1)!.key, "the key recorded is the prepared round's, which covers the whole diff");
     assert.equal(run.records.length, 1, "the review was recorded");
   });
 
@@ -2050,6 +2050,67 @@ describe("runHostReview's stops and failures", () => {
     await runHostReview(run.host, input(run.startHead));
 
     assert.deepEqual(run.lensesIn(1), [BAR_LENS, "Docs match the code", "Repo conventions"].sort());
+  });
+
+  it("returns the paths of the read patches, not of a mirror left out", async () => {
+    const run = fake({ patches: () => ({ patch: diffFor("src/app.ts", "mirror/app.ts"), readPatch: diffFor("src/app.ts") }) });
+
+    const result = recorded(await runHostReview(run.host, input(run.startHead)));
+
+    assert.deepEqual([...result.readPaths], ["src/app.ts"]);
+  });
+
+  it("applies the size limit to the read fixes of a later round, both ways", async () => {
+    const big = "x".repeat(MAX_REVIEW_PATCH_BYTES + 1);
+    const round2 = (fixes: string, readFixes: string) => (n: number) => ({ patch: diffFor("src/app.ts"), ...(n > 1 ? { fixes, readFixes } : {}) });
+    const fixer = () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] });
+    const reviewed = fake({ answers: only("Edge cases", [raw()]), fixer, patches: round2(big, diffFor("src/app.ts")) });
+    const refused = fake({ answers: only("Edge cases", [raw()]), fixer, patches: round2(diffFor("src/app.ts"), big) });
+
+    const ok = await runHostReview(reviewed.host, input(reviewed.startHead));
+    const result = await runHostReview(refused.host, input(refused.startHead));
+
+    assert.equal(ok.status, "recorded", JSON.stringify(ok));
+    assert.equal(result.status === "failed" && result.reason, "the diff is too large to review");
+  });
+
+  it("chooses a later round's lenses from the paths of its read fixes", async () => {
+    const run = fake({
+      answers: only("Edge cases", [raw()]),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+      patches: (n) => ({ patch: diffFor("src/app.ts", "README.md"), ...(n > 1 ? { fixes: diffFor("src/app.ts"), readFixes: diffFor("README.md") } : {}) }),
+    });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    assert.deepEqual(run.lensesIn(2), [BAR_LENS, "Docs match the code", "Repo conventions"].sort());
+  });
+
+  it("tells the reviewers that mirrors were left out only when a read patch is shorter than its patch", async () => {
+    const same = fake({ patches: () => ({ patch: diffFor("src/app.ts") }) });
+    const shorter = fake({ patches: () => ({ patch: diffFor("src/app.ts", "mirror/app.ts"), readPatch: diffFor("src/app.ts") }) });
+
+    await runHostReview(same.host, input(same.startHead));
+    await runHostReview(shorter.host, input(shorter.startHead));
+
+    for (const found of same.reviewerRuns) assert.doesNotMatch(found.prompt, /left out of the patch/, found.lens);
+    assert.ok(shorter.reviewerRuns.length > 0);
+    for (const found of shorter.reviewerRuns) assert.match(found.prompt, /left out of the patch/, found.lens);
+  });
+
+  it("says so in a later round when only its fixes had a mirror left out", async () => {
+    const run = fake({
+      answers: only("Edge cases", [raw()]),
+      fixer: () => ({ outcomes: [fixedWithTest("R1")], changed: ["src/app.ts", "tests/app.test.ts"] }),
+      patches: (n) => ({ patch: diffFor("src/app.ts"), ...(n > 1 ? { fixes: diffFor("src/app.ts", "mirror/app.ts"), readFixes: diffFor("src/app.ts") } : {}) }),
+    });
+
+    await runHostReview(run.host, input(run.startHead));
+
+    for (const found of run.reviewerRuns.filter((entry) => entry.round === 1)) assert.doesNotMatch(found.prompt, /left out of the patch/, found.lens);
+    const later = run.reviewerRuns.filter((entry) => entry.round === 2);
+    assert.ok(later.length > 0);
+    for (const found of later) assert.match(found.prompt, /left out of the patch/, found.lens);
   });
 
   it("fails the review, asking no reviewer, when a round's diff is past the size the sandbox command can carry", async () => {

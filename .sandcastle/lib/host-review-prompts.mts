@@ -4,7 +4,7 @@
 // ledger, a token or scripts/review.sh either, and names the ledger only as something its fixes must not change.
 
 import { textBlock } from "./checkpoint.mts";
-import { isSecurity, type Ledger, type ReviewInput } from "./review-ledger.mts";
+import { isSecurity, TEMPLATE_OWNED_PREFIX, type Ledger, type ReviewInput } from "./review-ledger.mts";
 import type { Reviewer, TriageFinding } from "./host-review.mts";
 
 type IssueText = { number: number; title: string; body: string };
@@ -20,9 +20,10 @@ function issueBlock(issue: IssueText): string {
   ].join("\n");
 }
 
-// Said in every round: the patch files leave these out, so a reviewer doesn't take a missing section for a missing change.
-const MIRRORS_LEFT_OUT =
-  "  Template mirror copies (under `Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/`) that are identical to the root copy are left out of the patch; read the root file.";
+// Said when the patch files left something out, so a reviewer doesn't take a missing section for a missing change. In a repository with no
+// Template mirrors nothing is ever left out, and the line isn't said.
+const mirrorsLeftOut = (leftOut: boolean) =>
+  leftOut ? [`  Template mirror copies (under \`${TEMPLATE_OWNED_PREFIX}\`) that are identical to the root copy are left out of the patch; read the root file.`] : [];
 
 // A reviewer's prompt: the agent file's body, the worktree, the files to read, the bar, its lens, the severities and the answer
 // format. A later round (`hasFixes`) names the fixes to review first and the whole diff as context.
@@ -36,6 +37,7 @@ export function reviewerPrompt({
   round,
   issue,
   hasFixes,
+  mirrorsLeftOut: leftOut,
 }: {
   agentBody: string;
   bar: string;
@@ -46,6 +48,8 @@ export function reviewerPrompt({
   round: number;
   issue: IssueText;
   hasFixes: boolean;
+  // Whether a patch file left out a verbatim Template mirror (the host knows from the read patch being shorter than the whole one).
+  mirrorsLeftOut: boolean;
 }): string {
   const isBar = lens.row === "";
   const toRead = hasFixes
@@ -54,9 +58,9 @@ export function reviewerPrompt({
         `- The fixes to review: \`${runDir}/fixes.patch\`. Report only problems on the lines they changed, or problems they cause elsewhere,`,
         "  such as a caller a changed function now breaks. Read the whole function around each changed line and its callers, not only the patch.",
         `- The branch's whole diff, as context: \`${runDir}/diff.patch\`.`,
-        MIRRORS_LEFT_OUT,
+        ...mirrorsLeftOut(leftOut),
       ]
-    : [`This is round ${round}, which reviews the whole branch.`, `- The branch's diff: \`${runDir}/diff.patch\`.`, MIRRORS_LEFT_OUT];
+    : [`This is round ${round}, which reviews the whole branch.`, `- The branch's diff: \`${runDir}/diff.patch\`.`, ...mirrorsLeftOut(leftOut)];
   return [
     agentBody.trim(),
     "",

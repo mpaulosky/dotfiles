@@ -35,23 +35,35 @@ export const hostExecFileSync = ((file: string, ...rest: unknown[]) => {
 // (lib/step-limit.mts), by name. Any of them may still hold a child process or socket that keeps Node alive after the run's work is
 // done: see exitAfterStall.
 const abandonedCalls: string[] = [];
+let warnedOfAbandonedCalls = false;
 
-// Records a call the host gave up on. `what` is shown in the log line exitAfterStall prints, with control characters removed.
+// The warning that names the abandoned calls. The process ends without closing a sandbox that a create the host gave up on makes later,
+// and an abandoned exec or close may still hold its container, so a person looks for a leftover container and worktree.
+const abandonedCallsWarning = (): string =>
+  `  ⚠ the host gave up on ${abandonedCalls.length} call${abandonedCalls.length === 1 ? "" : "s"} that may still be pending (${abandonedCalls.join("; ")}). ` +
+  "A sandbox one of them was creating is not closed once it arrives, and one still running holds its container, so look for a leftover container and worktree.";
+
+// Records a call the host gave up on. `what` is shown in the warning, with control, format and line-separator characters removed. The
+// warning is also printed when the process exits (once), so a run that crashes before exitAfterStall still names the calls.
 export function markHostCallAbandoned(what: string): void {
-  abandonedCalls.push(what.replace(/[\u0000-\u001f\u007f-\u009f]/g, " "));
+  abandonedCalls.push(what.replace(/[\p{C}\u2028\u2029]/gu, " "));
+  if (abandonedCalls.length === 1) {
+    process.once("exit", () => {
+      if (!warnedOfAbandonedCalls) console.error(abandonedCallsWarning());
+    });
+  }
 }
 
 // Whether the host has given up on a call this run.
-export const dockerCallHasStalled = (): boolean => abandonedCalls.length > 0;
+export const hostCallHasBeenAbandoned = (): boolean => abandonedCalls.length > 0;
 
 // How long the run may take to exit by itself after its cleanup, once the host has given up on a call, in seconds.
 export const STALL_EXIT_GRACE_SECONDS = 10;
 
 // Called once the run's reports and cleanup are done. When the host gave up on a call, whatever it left referenced may keep Node
 // running (process.exitCode doesn't force an exit), so the process is ended after `graceSeconds` with the code the run set (0 when it
-// set none). The abandoned calls are named in a warning first, since the process then ends without closing a sandbox one of them
-// creates later: a person looks for a leftover container and worktree. The timer is unref'd, so a process that does end by itself isn't
-// held for it. Does nothing when the host gave up on nothing. `exit` and `log` are for tests.
+// set none), after the warning that names the abandoned calls. The timer is unref'd, so a process that does end by itself isn't held
+// for it. Does nothing when the host gave up on nothing. `exit` and `log` are for tests.
 export function exitAfterStall(
   graceSeconds: number = STALL_EXIT_GRACE_SECONDS,
   exit: (code: number) => void = (code) => process.exit(code),
@@ -59,16 +71,16 @@ export function exitAfterStall(
 ): void {
   if (abandonedCalls.length === 0) return;
   setTimeout(() => {
-    log(
-      `  ⚠ ending the run ${graceSeconds}s after its cleanup: the host gave up on ${abandonedCalls.length} call${abandonedCalls.length === 1 ? "" : "s"} that may still be pending (${abandonedCalls.join("; ")}). A sandbox or worktree one of them creates later is not closed, so look for a leftover container and worktree.`,
-    );
+    warnedOfAbandonedCalls = true;
+    log(`  ⚠ ending the run ${graceSeconds}s after its cleanup.${abandonedCallsWarning().slice(1)}`);
     exit(Number(process.exitCode ?? 0));
   }, graceSeconds * 1000).unref();
 }
 
 // Waits for a Docker call (creating or closing a sandbox) for at most `minutes`, and throws StalledStepError when it hasn't
 // answered by then: the call itself can't be cancelled, so it is left running, and `onLate` gets whatever it returns if it
-// returns after all (the caller's `onLate` closes a sandbox created too late once its worktree passes the check). Giving up also marks the run as having abandoned a call (markHostCallAbandoned), which makes main.mts end the process after its cleanup (exitAfterStall). A call that fails inside the limit
+// returns after all (the caller's `onLate` closes a sandbox created too late once its worktree passes the check). Giving up also records the
+// call (markHostCallAbandoned), which makes main.mts end the process after its cleanup (exitAfterStall). A call that fails inside the limit
 // fails as it did.
 export async function withinDockerLimit<T>(
   what: string,

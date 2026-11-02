@@ -565,7 +565,8 @@ try {
     console.error(`\n✗ Intake stopped: ${reason}. First error: ${firstError}`);
   }
   process.exitCode = intakeStopExitCode(intakeStopReport.items());
-  // A Docker call the host gave up on may still hold something that keeps Node running; end the process after a grace period.
+  // A call the host gave up on (a Docker create or close, or a sandbox exec) may still hold something that keeps Node running; end the
+  // process after a grace period.
   exitAfterStall();
 }
 

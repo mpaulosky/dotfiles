@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
 import { spawn } from "node:child_process";
-import { DOCKER_CALL_LIMIT_MINUTES, STALL_EXIT_GRACE_SECONDS, dockerCallHasStalled, exitAfterStall, markHostCallAbandoned, HOST_COMMAND_LIMIT_MINUTES, closeAfterWork, closeWithinLimit, hostExecFileSync, hostExecOptions, withinDockerLimit } from "./host-limit.mts";
+import { DOCKER_CALL_LIMIT_MINUTES, STALL_EXIT_GRACE_SECONDS, hostCallHasBeenAbandoned, exitAfterStall, markHostCallAbandoned, HOST_COMMAND_LIMIT_MINUTES, closeAfterWork, closeWithinLimit, hostExecFileSync, hostExecOptions, withinDockerLimit } from "./host-limit.mts";
 
 const never = () => new Promise<never>(() => undefined);
 
@@ -327,7 +327,11 @@ const runChild = async (body: string, killAfterMs = 25_000) => {
   let stderr = "";
   child.stderr.on("data", (chunk) => (stderr += chunk));
   const killer = setTimeout(() => child.kill("SIGKILL"), killAfterMs);
-  const code = await new Promise<number | null>((resolve) => child.on("exit", resolve));
+  // "close", not "exit": stderr may still hold unread data when the child has exited.
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", resolve);
+  });
   clearTimeout(killer);
   return { code, stderr, elapsed: Date.now() - started };
 };
@@ -342,7 +346,7 @@ describe("exitAfterStall", () => {
   it("calls exit with the run's code after the grace period once the host gave up on a call, and names the call", async () => {
     await assert.rejects(() => withinDockerLimit("creating the sandbox", never(), 0.001), StalledStepError);
     markHostCallAbandoned("the sandbox exec \"git\u0007fetch\"");
-    assert.equal(dockerCallHasStalled(), true);
+    assert.equal(hostCallHasBeenAbandoned(), true);
     const before = process.exitCode;
     try {
       for (const [set, expected] of [[4, 4], [undefined, 0]] as const) {
@@ -354,13 +358,14 @@ describe("exitAfterStall", () => {
 
         assert.deepEqual(exits, [expected]);
         assert.match(logged.join("\n"), /gave up on \d+ calls?.*creating the sandbox.*the sandbox exec "git fetch"/);
+        assert.doesNotMatch(logged.join("\n"), /\u0007/);
       }
     } finally {
       process.exitCode = before;
     }
   });
 
-  it("ends a process that a referenced handle keeps running after a Docker call stalled, with the code the run set", async () => {
+  it("ends a process that a referenced handle keeps running after the host gave up on a Docker call, with the code the run set", async () => {
     const { code, stderr, elapsed } = await runChild([stallDockerCall, "setTimeout(() => undefined, 30_000);", "process.exitCode = 3;", "exitAfterStall(0.3);"].join("\n"));
 
     assert.equal(code, 3, stderr);
@@ -397,5 +402,23 @@ describe("exitAfterStall", () => {
     assert.equal(code, 0, stderr);
     assert.equal(stderr, "");
     assert.ok(elapsed >= 1800, `ended after ${elapsed} ms, before its own 2-second timer`);
+  });
+
+  it("removes format and line-separator characters from a call's name too", async () => {
+    const logged: string[] = [];
+    markHostCallAbandoned("bidi\u202Eand\u2028line\u200Bbreak");
+    exitAfterStall(0.01, () => undefined, (line) => void logged.push(line));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    assert.match(logged.join("\n"), /bidi and line break/);
+    assert.doesNotMatch(logged.join("\n"), /[\u202E\u2028\u200B]/);
+  });
+
+  it("names the abandoned calls when the process exits before exitAfterStall runs, such as on a crash", async () => {
+    const { code, stderr } = await runChild([stallDockerCall, 'throw new Error("crashed after the stall");'].join("\n"));
+
+    assert.equal(code, 1);
+    assert.match(stderr, /gave up on 1 call.*creating the sandbox/);
+    assert.equal((stderr.match(/gave up on/g) ?? []).length, 1, stderr);
   });
 });

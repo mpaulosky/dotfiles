@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { spawnSync, type execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { worktreePathFor } from "./host-safety.mts";
 import { join } from "node:path";
 import {
   buildIssue,
   createCheckedSandbox,
+  worktreeIsGone,
   designComment,
   designNoteIn,
   latestDesignNote,
@@ -3368,6 +3371,7 @@ describe("createCheckedSandbox's step limits", () => {
 
   it("closes a sandbox it makes too late when its worktree is gone, whatever the check says, since there is nothing to redirect", async () => {
     const { sandbox, wasClosed } = recordingSandbox(0);
+    Object.assign(sandbox, { worktreePath: worktreePathFor(process.cwd(), "feature") });
     assert.equal(existsSync(sandbox.worktreePath), false, "the sandbox's worktree should not exist for this test");
     let makeSandbox: (value: typeof sandbox) => void = () => undefined;
     const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
@@ -3380,6 +3384,27 @@ describe("createCheckedSandbox's step limits", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(wasClosed(), true);
+  });
+
+  it("checks and leaves a late sandbox whose worktree is gone from some other path than the one the host expects", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    for (const worktreePath of ["", "/nonexistent/elsewhere"]) {
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      Object.assign(sandbox, { worktreePath });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const checked: string[] = [];
+
+      await assert.rejects(
+        createCheckedSandbox("feature", create, () => identity, (path) => (path === worktreePath ? (checked.push(path), ["its .git is missing"]) : []), { dockerCallMinutes: 0.001 }),
+        StalledStepError,
+      );
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(checked, [worktreePath]);
+      assert.equal(wasClosed(), false, `a late sandbox at "${worktreePath}" was closed`);
+    }
   });
 
   it("leaves a sandbox it makes too late in place when its worktree fails the check, or the check throws", async (t) => {
@@ -3467,5 +3492,22 @@ describe("createCheckedSandbox's step limits", () => {
     );
 
     assert.equal(wasClosed(), false);
+  });
+});
+
+describe("worktreeIsGone", () => {
+  it("is true only for a path that lstat says doesn't exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gone-"));
+    try {
+      writeFileSync(join(dir, "file"), "x");
+      symlinkSync(join(dir, "nowhere"), join(dir, "dangling"));
+
+      assert.equal(worktreeIsGone(join(dir, "missing")), true);
+      assert.equal(worktreeIsGone(dir), false);
+      assert.equal(worktreeIsGone(join(dir, "dangling")), false, "a dangling symlink exists");
+      assert.equal(worktreeIsGone(join(dir, "file", "below")), false, "ENOTDIR isn't ENOENT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 });

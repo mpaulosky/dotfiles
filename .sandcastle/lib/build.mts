@@ -474,8 +474,9 @@ const tamperedWorktreeComment = (branch: string) =>
   `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
   "person to look at. Don't run git in it.";
 
-// Whether nothing exists at the path (not even a dangling symlink, which a worktree check must still see).
-const worktreeIsGone = (worktreePath: string): boolean => {
+// Whether nothing exists at the path: lstat says ENOENT. A dangling symlink exists, and any other lstat error (ENOTDIR, EACCES) is not "gone"
+// either, so the worktree check still sees them.
+export const worktreeIsGone = (worktreePath: string): boolean => {
   try {
     lstatSync(worktreePath);
     return false;
@@ -534,11 +535,12 @@ export async function createCheckedSandbox(
   // sound (see below).
   const sandbox = await withinDockerLimit("creating the sandbox", create(branch), stepLimits.dockerCallMinutes, (late) => {
     // Closing runs git in the worktree, which the create's hooks may have redirected, so it gets the check a normal cleanup gets. One that
-    // fails the check, or the check itself failing, leaves the sandbox and its worktree in place. A worktree that is gone has nothing
-    // to redirect, so its sandbox is closed: leaving it would only leak its container.
+    // fails the check, or the check itself failing, leaves the sandbox and its worktree in place. A worktree that is gone from the
+    // path the host expects has nothing to redirect, so its sandbox is closed: leaving it would only leak its container. Any other path (an
+    // empty one, one elsewhere) gets the check, which fails closed.
     let tampered: string[];
     try {
-      tampered = worktreeIsGone(late.worktreePath) ? [] : checkWorktree(late.worktreePath);
+      tampered = late.worktreePath === existing && worktreeIsGone(existing) ? [] : checkWorktree(late.worktreePath);
     } catch (checkError) {
       tampered = [`checking the worktree failed: ${checkError instanceof Error ? checkError.message : String(checkError)}`];
     }

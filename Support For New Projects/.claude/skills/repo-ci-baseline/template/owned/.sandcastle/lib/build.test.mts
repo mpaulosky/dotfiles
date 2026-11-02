@@ -20,6 +20,7 @@ import {
   PR_BODY_LIMIT,
   boundedCheckList,
   cutDescription,
+  logSafeGateOutput,
   PR_BODY_TOTAL_LIMIT,
   publicErrorText,
   prTitle,
@@ -752,6 +753,33 @@ describe("buildIssue", () => {
     const text = logs.join("\n");
     assert.match(text, /the first red gate run's output, before this stopped the checkpoint:\n.*looked like it held a secret/s);
     assert.ok(!text.includes("ghp_abc"), text);
+  });
+
+  it("logs the first red gate run with every line prefixed and cleaned for a terminal, so none starts with ::", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { logs, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: stall,
+      gateOutput: "plain line\r::stop-commands::tok\n::error::x\n\u001b]0;title\u0007after\n",
+    });
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    const entry = logs.find((line) => line.includes("the first red gate run's output"))!;
+    const [, ...body] = entry.split("\n");
+    assert.ok(body.length >= 3, entry);
+    for (const line of body) assert.ok(line.startsWith("    | "), JSON.stringify(line));
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(body.join("")), JSON.stringify(entry));
+  });
+
+  it("cleans each line before the secret check, so a hidden character can't hide a token that is rebuilt afterwards", () => {
+    const publicError = (text: string) => publicErrorText(text, (cleaned) => cleaned.includes("ghp_abc"));
+
+    const logged = logSafeGateOutput("fine\nghp_a\u200bbc leaked", publicError);
+
+    assert.ok(!logged.includes("ghp_abc"), logged);
+    assert.match(logged, /looked like it held a secret/);
+    assert.ok(logged.split("\n").every((line) => line.startsWith("    | ")), logged);
   });
 
   it("lets a stall on the sandbox probe end the work instead of recording a failed build attempt", async () => {

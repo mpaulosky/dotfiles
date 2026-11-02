@@ -128,6 +128,39 @@ describe("runCheckpoint", () => {
       assert.match(logged(gateLines)[0]!, /:\nfirst$/);
     });
 
+    it("logs the first red run, not the last, when the error comes in a later attempt, and logs it once", async () => {
+      const stall = new StalledStepError("stalled");
+      const answers: (string | undefined)[] = [undefined];
+      const s = {
+        ...steps([red("one"), red("two")], async () => {
+          throw new Error("a fixer failure that counts");
+        }),
+        scrub,
+        alive: async () => {
+          if (answers.length > 0) return answers.shift();
+          throw stall;
+        },
+      };
+      const lines: string[] = [];
+
+      await assert.rejects(() => runCheckpoint(1, s, (line) => lines.push(line)), (error: unknown) => error === stall);
+
+      assert.equal(logged(lines).length, 1, lines.join("\n"));
+      assert.ok(logged(lines)[0]!.endsWith(":\none"), lines.join("\n"));
+      assert.ok(!logged(lines)[0]!.includes("two"));
+    });
+
+    it("rethrows the original error when the scrub or the log throws", async () => {
+      const stall = new StalledStepError("stalled");
+      const failing = (scrubber: (text: string) => string) => ({ ...steps([red("one")]), scrub: scrubber, alive: async () => Promise.reject(stall) });
+
+      await assert.rejects(() => runCheckpoint(1, failing(() => { throw new Error("the scrub broke"); }), () => {}), (error: unknown) => error === stall);
+      await assert.rejects(
+        () => runCheckpoint(1, failing(scrub), (line) => { if (line.includes("first red gate run's output")) throw new Error("the log broke"); }),
+        (error: unknown) => error === stall,
+      );
+    });
+
     it("logs nothing without a scrub, and nothing when the first gate run itself throws or the checkpoint ends normally", async () => {
       const stall = new StalledStepError("stalled");
       const unscrubbed = { ...steps([red("secret")]), alive: async () => Promise.reject(stall) };

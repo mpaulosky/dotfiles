@@ -17,8 +17,9 @@ export type Checkpoint = 1 | 2 | 3;
 
 // A gate run, and on a pass the commit it passed on: the one the host pushes.
 // `firstOutput` is the output of the checkpoint's first red gate run, kept when
-// the checkpoint ended red after a fixer had run, since the last run's output
-// may be about something else (a dead sandbox, a different failure).
+// the checkpoint ended red after a fixer had run and that output differs from
+// the last run's, since the last run's output may be about something else (a
+// dead sandbox, a different failure).
 // `fixersRun` is how many gate-fixer attempts ran, set only when the checkpoint
 // ended early because the sandbox was down.
 export type GateRun = { passed: boolean; output: string; head?: string; firstOutput?: string; fixersRun?: number };
@@ -35,9 +36,10 @@ export type CheckpointSteps = {
   // Why the sandbox can't run a fixer, or undefined when it answers. Asked
   // before every fixer attempt: a fixer run into a dead sandbox only fails on
   // its first command and costs a whole attempt (a run's second gate-fixer died
-  // on `git config`, exit 128, and every git call after it did too). It may
-  // throw an UncountedStopError (a stalled sandbox), which runCheckpoint lets
-  // propagate so the run ends on the stall instead of recording a failed attempt.
+  // on `git config`, exit 128, and every git call after it did too: see
+  // mpaulosky/dotfiles#417). Any error it throws ends the checkpoint and is
+  // rethrown unchanged, in particular an UncountedStopError for a stalled
+  // sandbox, so the run ends on the stall instead of recording a failed attempt.
   alive?(): Promise<string | undefined>;
   // Makes the first red run's output safe to log. When the checkpoint ends on
   // an error rather than a result (a stall, a usage limit, a gate run that
@@ -191,7 +193,8 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 
 // Run the gate, and the gate-fixer while it's red and attempts are left.
 // Returns the last gate run. It carries the first red run's output
-// (`firstOutput`) when the checkpoint ended red after a fixer ran. When
+// (`firstOutput`) when the checkpoint ended red after a fixer ran and it differs
+// from the last run's output. When
 // `alive` reports the sandbox down, the checkpoint ends before that attempt's
 // fixer, with the reason appended to the output and `fixersRun` set to the
 // attempts that ran. A caller that passes no `alive` never gets `fixersRun` or
@@ -230,7 +233,11 @@ export async function runCheckpoint(
     // An error that ends the checkpoint (a stall, a usage limit, a gate run that throws) never reaches the failure comment, so the first
     // red run's output would be lost with it: log its scrubbed tail first. The error itself goes on unchanged.
     if (steps.scrub !== undefined) {
-      log(`${prefix} the first red gate run's output, before this stopped the checkpoint:\n${tail(steps.scrub(firstOutput), GATE_COMMENT_LINES)}`);
+      try {
+        log(`${prefix} the first red gate run's output, before this stopped the checkpoint:\n${tail(steps.scrub(firstOutput), GATE_COMMENT_LINES)}`);
+      } catch {
+        // Only a diagnostic: a scrub or a log that throws must not replace the error that ended the checkpoint.
+      }
     }
     throw error;
   }

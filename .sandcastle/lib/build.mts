@@ -911,6 +911,21 @@ export async function buildIssue(
 // What became of a build, for the run report (lib/report.mts).
 export type BuildOutcome = Extract<Outcome, "published" | "role failed" | "timed out" | "gate failed" | "not published">;
 
+// The first red gate run's output as lines safe for the host's log. The gate's
+// output is written by the branch's agents and the log is a terminal, and in
+// GitHub Actions a line that starts with `::` is a workflow command, so every
+// line is cleaned by terminalText first (before the secret check, so hidden
+// characters can't hide a token that is rebuilt afterwards), the whole text goes
+// through `publicError`, and each line gets a prefix no workflow command can
+// start with.
+export function logSafeGateOutput(text: string, publicError: (text: string) => string): string {
+  const cleaned = text.split("\n").map((line) => terminalText(line)).join("\n");
+  return publicError(cleaned)
+    .split("\n")
+    .map((line) => `    | ${terminalText(line)}`)
+    .join("\n");
+}
+
 // The detail of a build that ended because the branch holds no work to
 // publish.
 const NOTHING_AHEAD = "the branch holds nothing main doesn't";
@@ -1055,7 +1070,7 @@ async function buildMarkedIssue(
         },
         uncounted: (error) => error instanceof UncountedStopError,
         alive: () => sandboxDown(sandbox, host.publicError),
-        scrub: host.publicError,
+        scrub: (text) => logSafeGateOutput(text, host.publicError),
       },
       log,
     );

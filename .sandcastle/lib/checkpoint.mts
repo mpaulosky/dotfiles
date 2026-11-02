@@ -269,8 +269,17 @@ export function withoutRunnerCommands(text: string): string {
   return text.replaceAll("##[", "## [");
 }
 
+// `text` with each run of line breaks and tabs folded to a space and every other control, format (zero-width) and combining character
+// deleted, not turned into a space: a deleted character can't split a secret into a shape a scrub misses. status.mts's terminalText does more, but it
+// can't be imported here: status.mts imports this module, through the follow-up pass.
+function withoutHiddenCharacters(text: string): string {
+  return text.replace(/[\t\n\v\f\r\u0085\u2028\u2029]+/g, " ").replace(/[\p{Cc}\p{Cf}\p{M}]/gu, "");
+}
+
 // `value` (an error, for one) as a single printable line for the host's log or a
-// comment: the text is made safe by `scrub` first, so a secret in it can't be cut
+// comment: the text is cut to a generous bound (so an enormous message costs the
+// scrub little), cleaned by withoutHiddenCharacters (a hidden character dropped, so one can't
+// split a secret the scrub would match) and made safe by `scrub`, so a secret in it can't be cut
 // into a shape the scrub no longer recognises, then reduced to printable ASCII
 // (a newline, an escape and a hidden character become spaces, so the result is one
 // line, and a caller puts it after a prefix of its own so it can't start one with
@@ -286,7 +295,7 @@ export function printableLine(value: unknown, scrub: (text: string) => string = 
     return "an error that can't be printed";
   }
   try {
-    return withoutRunnerCommands(scrub(text).replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim() || "(no printable text)";
+    return withoutRunnerCommands(scrub(withoutHiddenCharacters(text.slice(0, limit * 20))).replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim() || "(no printable text)";
   } catch {
     return "text that couldn't be made safe to log";
   }

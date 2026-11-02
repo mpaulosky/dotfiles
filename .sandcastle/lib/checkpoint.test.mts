@@ -529,7 +529,7 @@ describe("printableLine", () => {
 
     assert.ok(!/[\r\n]/.test(line), line);
     assert.ok(!line.includes("##["), line);
-    assert.equal(line, "Error: x ::stop-commands::t ## [add-mask]y [31m");
+    assert.equal(line, "Error: x ::stop-commands::t ## [add-mask]y[31m");
   });
 
   it("applies the scrub before the cut, so a secret across the cut doesn't survive as a fragment", () => {
@@ -547,6 +547,20 @@ describe("printableLine", () => {
       assert.equal(printableLine("x".repeat(length)).length, kept, `${length} characters`);
     }
     assert.equal(printableLine("x".repeat(30), undefined, 10), "x".repeat(10));
+  });
+
+  it("drops a hidden character before the scrub, so it can't split a secret the scrub would match", () => {
+    const scrub = (value: string) => value.replace(/ghp_\w+/g, "[withheld]");
+
+    assert.equal(printableLine("token ghp_a\u200bbc here", scrub), "token [withheld] here");
+  });
+
+  it("cuts an enormous text before the scrub, so the scrub never sees more than a bounded part", () => {
+    let seen = 0;
+
+    printableLine("x".repeat(1_000_000), (value) => { seen = value.length; return value; }, 10);
+
+    assert.equal(seen, 200);
   });
 
   it("gives a fixed text when nothing printable is left", () => {
@@ -582,7 +596,7 @@ describe("sandboxDown", () => {
   it("says the sandbox can't run a command when the exec throws, with the error as printable ASCII, capped", async () => {
     const reason = (await sandboxDown(exec(new Error(`stalled\u001b[31m ${"x".repeat(300)}`)))) ?? "";
 
-    assert.match(reason, /^The sandbox can't run a command \(Error: stalled \[31m x+\), so no gate-fixer was run\.$/);
+    assert.match(reason, /^The sandbox can't run a command \(Error: stalled\[31m x+\), so no gate-fixer was run\.$/);
     assert.ok(reason.length < 300, String(reason.length));
   });
 

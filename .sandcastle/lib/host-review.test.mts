@@ -6,6 +6,7 @@ import { FIXED_ROLE_AGENTS, MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_W
 import { StalledStepError, TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import {
   applyOutcomes,
+  resolveRepeats,
   BAR_LENS,
   LENS_APPLIES,
   MAX_REVIEW_PATCH_BYTES,
@@ -1290,6 +1291,29 @@ describe("runHostReview's decisions file", () => {
     assert.equal(findings.find((found) => found.id === "R1")?.status, "fixed", "the earlier copy of a problem fixed later is fixed");
     assert.equal(findings.find((found) => found.id === "R1")?.test, "tests/app.test.ts::blank_name");
     assert.equal(findings.find((found) => found.id === "R2")?.status, "open", "a finding for a person stays open");
+  });
+
+  it("resolveRepeats clears only the same finding, and a Warning or security one only behind a test at no lower a grade", () => {
+    const base = { path: "src/app.ts", line: 10, lens: "Edge cases", summary: "Blank name.", severity: "critical", security: false, test: null, reason: null, fix: "Trim." } as const;
+    const open = (extra: object) => ({ ...base, id: "R1", status: "open", ...extra }) as ReviewInput["findings"][number];
+    const fixed = (extra: object) => ({ ...base, id: "R3", status: "fixed", test: "tests/a.test.ts::x", ...extra }) as ReviewInput["findings"][number];
+    const run = (earlier: object, later: object) => {
+      const list = [open(earlier)];
+      resolveRepeats(list, [fixed(later)], new Set());
+      return list[0]!.status;
+    };
+
+    assert.equal(run({}, {}), "fixed", "the same finding");
+    assert.equal(run({ summary: "BLANK   name." }, {}), "fixed", "case and spacing don't matter");
+    assert.equal(run({}, { line: 11 }), "open", "another line");
+    assert.equal(run({}, { lens: "Security" }), "open", "another lens");
+    assert.equal(run({}, { path: "src/b.ts" }), "open", "another path");
+    assert.equal(run({ severity: "warning", security: true }, { severity: "advisory", security: false, test: null, reason: "Reworded." }), "open", "a lower grade");
+    assert.equal(run({ severity: "warning" }, { severity: "warning", test: null, reason: "Reworded." }), "open", "a Warning needs a test");
+    assert.equal(run({ severity: "warning" }, { severity: "warning" }), "fixed", "a Warning behind a test");
+    const person = [open({})];
+    resolveRepeats(person, [fixed({})], new Set(["R1"]));
+    assert.equal(person[0]!.status, "open", "a finding for a person");
   });
 
   it("marks a finding left open to be raised again", async () => {

@@ -207,10 +207,12 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
 export type TriageFinding = ReviewInput["findings"][number] & { needsPerson: boolean; fixable: boolean };
 
 // A finding's path the way a diff names the file: without a leading `./` and without the worktree's absolute prefix.
+// A path that nothing is left of (`./`, or the worktree's own folder) is returned as written, since the ledger refuses an empty one.
 export function diffPath(path: string, worktree?: string): string {
   let out = path;
   if (worktree !== undefined && worktree !== "" && out.startsWith(`${worktree.replace(/\/+$/, "")}/`)) out = out.slice(worktree.replace(/\/+$/, "").length + 1);
-  return out.replace(/^(?:\.\/)+/, "");
+  out = out.replace(/^(?:\.\/)+/, "");
+  return out === "" ? path : out;
 }
 
 const RANK = { advisory: 0, critical: 1, warning: 2 } as const;

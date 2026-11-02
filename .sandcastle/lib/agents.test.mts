@@ -9,6 +9,7 @@ import {
   restrictedClaudeCode,
   REVIEWER_TOOLS,
   roleAgent,
+  backstopMsFor,
   roleBackstopMs,
   roleOptions,
   uiEnabled,
@@ -118,11 +119,18 @@ describe("runRoleInSandbox", () => {
     assert.equal(stalledStepOf(sandbox), undefined);
   });
 
-  it("waits for the role's timeoutMinutes plus ROLE_RUN_GRACE_MINUTES by default, never more than a timer can", () => {
+  it("waits for the role's timeoutMinutes plus ROLE_RUN_GRACE_MINUTES by default", () => {
     for (const role of ["backend", "pre-push-reviewer", "reviewer"] as const) {
       assert.equal(roleBackstopMs(role), (roleAgent(role).timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000);
-      assert.ok(roleBackstopMs(role) <= MAX_TIMER_MS);
     }
+  });
+
+  it("refuses a timeout the host can't wait for, instead of giving up on every run at once", () => {
+    assert.equal(backstopMsFor(45), (45 + ROLE_RUN_GRACE_MINUTES) * 60_000);
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 10 ** 9]) {
+      assert.throws(() => backstopMsFor(bad), /timeoutMinutes/, String(bad));
+    }
+    assert.ok(backstopMsFor(Math.floor(MAX_TIMER_MS / 60_000) - ROLE_RUN_GRACE_MINUTES) <= MAX_TIMER_MS);
   });
 
   it("lists a role that ran even when its run fails", async () => {

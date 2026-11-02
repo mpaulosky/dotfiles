@@ -289,6 +289,12 @@ describe("diffPath", () => {
     assert.equal(diffPath("/w/t/src/a.ts"), "/w/t/src/a.ts", "with no worktree given");
     assert.equal(diffPath("/w/t/./src/a.ts", "/w/t"), "src/a.ts");
   });
+
+  it("never returns an empty path, which the ledger refuses: ./ and the worktree's own folder come back as written", () => {
+    assert.equal(diffPath("./"), "./");
+    assert.equal(diffPath("././"), "././");
+    assert.equal(diffPath("/w/t/", "/w/t"), "/w/t/");
+  });
 });
 
 describe("triageRound", () => {

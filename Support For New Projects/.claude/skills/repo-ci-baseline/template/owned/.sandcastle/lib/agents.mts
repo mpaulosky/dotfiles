@@ -166,11 +166,17 @@ export async function runRoleInSandbox(
   return result;
 }
 
-// How long the host waits for a role's sandbox run: the role's timeoutMinutes and ROLE_RUN_GRACE_MINUTES. Never more than a timer can
-// wait (a longer delay fires at once, which would give up on every run).
-export function roleBackstopMs(role: AnyRole): number {
-  return Math.min((roleAgent(role).timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000, MAX_TIMER_MS);
+// How long the host waits for a role's sandbox run: the role's timeoutMinutes and ROLE_RUN_GRACE_MINUTES, in milliseconds. Throws for a
+// timeout that isn't a positive number the host can wait for: a longer or non-numeric delay fires at once, which would give up on every run.
+export function backstopMsFor(timeoutMinutes: number): number {
+  const ms = (timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000;
+  if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0 || ms > MAX_TIMER_MS) {
+    throw new Error(`a role's timeoutMinutes must be a positive number of minutes the host can wait for, not ${timeoutMinutes}`);
+  }
+  return ms;
 }
+
+export const roleBackstopMs = (role: AnyRole): number => backstopMsFor(roleAgent(role).timeoutMinutes);
 
 // Waits for a role's sandbox run for at most `ms`. The run's own AbortSignal ends one that answers it; a Docker exec that never answers
 // would hold the review until the job's cap. Giving up stalls the sandbox (stalledStepOf, so no later role or exec starts in a container

@@ -64,6 +64,14 @@ export function containsSecret(text: string, secrets: Iterable<string>): boolean
   return tokenShapes.some(({ pattern }) => pattern.test(text));
 }
 
+// Whether the text holds anything shaped like a token, ignoring where a word starts or ends. The shapes above
+// begin and end at a word boundary, which text taken apart and joined again (a token wrapped across lines, then
+// squeezed together with the words around it) no longer has: a `ghp_` token followed by `session_id` is one run
+// of word characters. The patterns are the shapes' own, minus their `\b`, so a shape added above is covered here too.
+export function containsTokenShapeAnywhere(text: string): boolean {
+  return tokenShapes.some(({ pattern }) => new RegExp(pattern.source.replaceAll("\\b", "")).test(text));
+}
+
 // containsSecret with the values .sandcastle/.env gives the sandbox.
 export function containsSandboxSecret(text: string): boolean {
   return containsSecret(text, sandboxSecrets().values());

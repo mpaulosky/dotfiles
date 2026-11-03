@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -85,18 +85,28 @@ describe("SANDBOX_PROBE", () => {
     assert.ok(!script.includes("'"));
   });
 
-  it("runs the script under a real sh: exits 0, prints every section, lists core and core.<pid> within 4 levels, nothing deeper, not core.js", () => {
-    const dir = mkdtempSync(join(tmpdir(), "probe-"));
+  it("runs the script under a real sh: exits 0 and prints every section", { skip: process.platform === "win32" && "needs sh" }, () => {
+    const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
+      assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
+    }
+  });
+
+  it("lists core and core.<pid> within 4 levels of the working directory, nothing deeper, and not core.js", { skip: process.platform === "win32" && "needs sh" }, () => {
+    // The script searches /, the working directory and /tmp and keeps ten lines, so a stray core file elsewhere on the machine
+    // could push a fixture out of the list: this runs its find over the fixture folder alone, with the bound and the cap unchanged.
+    assert.ok(PROBE_SCRIPT.includes('find / "$PWD" /tmp -xdev -maxdepth 4 '));
+    assert.ok(PROBE_SCRIPT.includes("| head -n 10"));
+    const here = PROBE_SCRIPT.replace('find / "$PWD" /tmp -xdev', 'find "$PWD" -xdev');
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "probe-")));
     try {
       for (const name of ["core", "core.123", "core.js", "a/b/c/core", "a/b/c/d/core"]) {
         mkdirSync(dirname(join(dir, name)), { recursive: true });
         writeFileSync(join(dir, name), "x");
       }
-      const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { cwd: dir, encoding: "utf8" });
+      const run = spawnSync("sh", ["-c", here], { cwd: dir, encoding: "utf8" });
       assert.equal(run.status, 0, run.stderr);
-      for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
-        assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
-      }
       const listed = run.stdout.slice(run.stdout.indexOf("== core files ==")).split("\n");
       for (const name of ["core", "core.123", "a/b/c/core"]) assert.ok(listed.includes(join(dir, name)), `${name} in ${listed.join("\n")}`);
       for (const name of ["core.js", "a/b/c/d/core"]) assert.ok(!listed.includes(join(dir, name)), `${name} in ${listed.join("\n")}`);
@@ -106,7 +116,7 @@ describe("SANDBOX_PROBE", () => {
     }
   });
 
-  it("runs through the sandbox's own wrapper under a real sh, so its re-quoting leaves the script whole", { skip: !hasTimeout && "needs GNU timeout" }, () => {
+  it("runs through the sandbox's own wrapper under a real sh, so its re-quoting leaves the script whole", { skip: (!hasTimeout || process.platform === "win32") && "needs GNU timeout and sh" }, () => {
     const run = spawnSync("sh", ["-c", limitedCommand(SANDBOX_PROBE, 1)], { encoding: "utf8" });
     assert.equal(run.status, 0, run.stderr);
     for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {

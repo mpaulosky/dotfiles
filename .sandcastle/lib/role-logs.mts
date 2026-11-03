@@ -7,7 +7,7 @@
 
 import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { containsSandboxSecret } from "./sandbox-env.mts";
+import { containsSandboxSecret, containsTokenShapeAnywhere } from "./sandbox-env.mts";
 
 // Where the copies go, under the logs directory the artifact step uploads.
 export const REPORT_LOG_DIR = "report";
@@ -23,15 +23,15 @@ export type RoleLogFs = {
   write(path: string, text: string): void;
 };
 
-// The text with ANSI escapes, whitespace and every control, format (zero-width) and combining character taken out,
-// so a secret an agent printed spaced out, wrapped across lines or between escape codes is whole again for the check.
-// Taking the whitespace out also joins a token to the word before it, and the token shapes in lib/sandbox-env.mts
-// start at a word boundary, so a space is put back in front of each token prefix.
+// The text with ANSI escapes, JSON or C escape sequences written out as text (`\n`, `\u001b`), whitespace and every
+// control, format (zero-width) and combining character taken out, so a secret an agent printed spaced out, wrapped
+// across lines (also as JSON) or between escape codes is whole again for the check. A real token holds no backslash.
 function squeezed(text: string): string {
   return text
     .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
-    .replace(/[\s\p{Cc}\p{Cf}\p{M}]/gu, "")
-    .replace(/(gh[pousr]_|github_pat_|sk-ant-)/g, " $1");
+    .replace(/\\(?:u001b|x1b|033|e)\[[0-9;?]*[ -\/]*[@-~]/gi, "")
+    .replace(/\\(?:[nrt]|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2})/g, "")
+    .replace(/[\s\p{Cc}\p{Cf}\p{M}]/gu, "");
 }
 
 // The last REPORT_LOG_LIMIT characters of `text`, never starting on half of a surrogate pair.
@@ -60,7 +60,10 @@ export function copyReviewerLogs(
     for (const name of names) {
       try {
         const text = fs.read(join(logsDir, name));
-        const held = secretIn(text) || secretIn(squeezed(text));
+        // The squeezed text has lost the word boundaries the token shapes need, so it is also checked without them. This leaves out a
+        // log that quotes a bare token prefix in prose (`ghp_ followed by the rest`): over-redacting beats publishing a credential.
+        const squeezedText = squeezed(text);
+        const held = secretIn(text) || secretIn(squeezedText) || containsTokenShapeAnywhere(squeezedText);
         fs.write(join(outDir, name), held ? "Left out: the log held something shaped like a secret.\n" : tailOf(text));
         copied.push(name);
       } catch (error) {

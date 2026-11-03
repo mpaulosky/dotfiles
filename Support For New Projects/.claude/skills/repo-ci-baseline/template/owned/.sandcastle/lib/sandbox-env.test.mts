@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { containsSecret, githubTokensIn, sandboxEnv, secretKindIn } from "./sandbox-env.mts";
+import { containsSecret, containsTokenShapeAnywhere, githubTokensIn, sandboxEnv, secretKindIn } from "./sandbox-env.mts";
 
 describe("githubTokensIn", () => {
   it("finds GitHub tokens the env file would pass into the sandbox", () => {
@@ -81,5 +81,31 @@ describe("secretKindIn", () => {
 
   it("finds nothing in ordinary code", () => {
     assert.equal(secretKindIn("const answer = 42;\n", new Map([["ANTHROPIC_API_KEY", "abcdefgh12345"]])), undefined);
+  });
+});
+
+describe("containsTokenShapeAnywhere", () => {
+  const samples = [`ghp_${"A".repeat(20)}`, `github_pat_${"B".repeat(20)}`, `sk-ant-oat01-${"C".repeat(16)}`];
+
+  it("finds each token shape that containsSecret finds", () => {
+    for (const sample of samples) {
+      assert.ok(containsSecret(sample, []), sample);
+      assert.ok(containsTokenShapeAnywhere(sample), sample);
+    }
+  });
+
+  it("finds a token shape joined to the word before it or the word after it, which the word-boundary shapes miss", () => {
+    for (const sample of samples) {
+      assert.ok(containsTokenShapeAnywhere(`the${sample}`), sample);
+      assert.ok(containsTokenShapeAnywhere(`${sample}session_id`), sample);
+    }
+    assert.ok(!containsSecret(`the${samples[0]!}`, []));
+    assert.ok(!containsSecret(`${samples[0]!}_session`, []));
+  });
+
+  it("leaves ordinary text and too-short tokens alone", () => {
+    assert.ok(!containsTokenShapeAnywhere("nothing secret here, just words and ghp_short"));
+    assert.ok(!containsTokenShapeAnywhere(`ghp_${"A".repeat(19)}`));
+    assert.ok(!containsTokenShapeAnywhere(`sk-ant-${"A".repeat(15)}`));
   });
 });

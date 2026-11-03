@@ -107,6 +107,19 @@ describe("copyReviewerLogs", () => {
     assert.equal(run("nothing secret here, just words\n"), "nothing secret here, just words\n");
   });
 
+  it("with the real secret check, leaves out a wrapped token followed by a word with an underscore, or wrapped as JSON text", () => {
+    const run = (text: string) => copy(text, containsSandboxSecret);
+    assert.match(run(`the token ghp_${"A".repeat(10)}\n${"A".repeat(16)}\nsession_id: 5`), /^Left out/);
+    assert.match(run(`ghp_${"A".repeat(10)}\\n${"A".repeat(16)}`), /^Left out/);
+    assert.match(run(`ghp_${"A".repeat(10)}\\u001b[0m${"A".repeat(16)}`), /^Left out/);
+    assert.match(run(`github_pat_${"B".repeat(10)}\\r\\n${"B".repeat(12)}`), /^Left out/);
+  });
+
+  it("leaves out a log that only quotes a bare token prefix in prose, as the price of the wrapped-token check", () => {
+    assert.match(copy("tokens starting with ghp_ followed by the rest of the string", containsSandboxSecret), /^Left out/);
+    assert.equal(copy("tokens start with ghp_ and sk-ant-", containsSandboxSecret), "tokens start with ghp_ and sk-ant-");
+  });
+
   it("warns and carries on when a log can't be read or the folder can't be listed", () => {
     const warnings: string[] = [];
     const { fs } = fakeFs({ "a-reviewer.log": "x", "b-reviewer.log": "y" }, "a-reviewer.log");

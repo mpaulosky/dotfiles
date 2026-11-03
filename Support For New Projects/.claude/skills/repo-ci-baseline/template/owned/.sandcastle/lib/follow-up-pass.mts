@@ -28,7 +28,7 @@ import {
   retryOnServerError,
 } from "./build.mts";
 import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel, releasePullRequestBuildingLabel } from "./building.mts";
-import { runCheckpoint, runGate, tail, type GateRun } from "./checkpoint.mts";
+import { runCheckpoint, runGate, sandboxDown, tail, type GateRun } from "./checkpoint.mts";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_LABEL,
@@ -1101,6 +1101,8 @@ async function passOnMarkedIssue(
             host.limits,
           ),
         uncounted: (error) => error instanceof UncountedStopError,
+        // As the build's checkpoint does: a sandbox that no longer answers git gets no gate-fixer run.
+        alive: () => sandboxDown(sandbox, host.publicError),
       },
       log,
     );
@@ -1109,10 +1111,17 @@ async function passOnMarkedIssue(
     // moved or can't be read, as a gate that didn't pass, so the reason names
     // each and the quoted output says which.
     if (!gate.passed || gate.head === undefined) {
+      // The first red run goes before the last, as gateFailureComment does: a fixer attempt can leave the last run showing a dead
+      // sandbox or a timeout, not the failure the pass began with. giveUp makes the whole text safe to post.
+      const detail =
+        gate.firstOutput === undefined
+          ? gate.output
+          : `The first red gate run, before a gate-fixer ran:\n${tail(gate.firstOutput, GATE_COMMENT_LINES)}\n\nThe last gate run:\n${tail(gate.output, GATE_COMMENT_LINES)}`;
+      const attempts = gate.fixersRun ?? GATE_FIXER_ATTEMPTS;
       return stop(
-        `\`${GATE_COMMAND}\` didn't pass on a known, clean commit after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts: it's ` +
+        `\`${GATE_COMMAND}\` didn't pass on a known, clean commit after ${attempts} gate-fixer ${attempts === 1 ? "attempt" : "attempts"}: it's ` +
           "red, the worktree isn't clean, or HEAD moved while it ran",
-        gate.output,
+        detail,
       );
     }
     const gated = gate.head;

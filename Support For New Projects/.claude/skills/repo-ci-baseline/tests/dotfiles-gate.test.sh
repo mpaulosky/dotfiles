@@ -84,6 +84,11 @@ first_before_second() { # the first pattern's line comes before the second's
   [[ -n "$a" && -n "$b" && "$a" -lt "$b" ]]
 }
 
+# The step headers carry the seconds since the script started (mpaulosky/dotfiles#417). The case that
+# after it runs the gate with SECONDS=500 in its environment: the gate's own reset to 0 must win.
+stamped() { grep -Eq -- "^── $1 \[\+[0-9]+s\]\$" <<< "$OUTPUT"; }
+started_at_zero() { grep -Eq -- "^── $1 \[\+[0-4]s\]\$" <<< "$OUTPUT"; }
+
 # A branch that changed only an unrelated file.
 git -C "$REPO" switch -q -c work origin/main
 echo change >> "$REPO/other/file.txt"
@@ -94,6 +99,15 @@ check "a passing review check lets the gate run test.sh" test $STATUS -eq 0
 check "the review check gets the merge base" called "review.sh check $MAIN"
 check "the review check runs before test.sh" first_before_second "review.sh" "test.sh"
 check "an unrelated change skips the Sandcastle check" not called "pnpm run check:sandcastle"
+check "the Local review header carries the seconds since the gate started" stamped "Local review"
+check "the test.sh header carries them too" stamped "test.sh"
+run_gate_with_seconds_exported() { # the gate's shell starts with SECONDS=500 in its environment
+  : > "$LOG"
+  OUTPUT="$(cd "$REPO" && env SECONDS=500 PATH="$STUBS:$PATH" bash scripts/gate.sh 2>&1)"
+  STATUS=$?
+}
+run_gate_with_seconds_exported
+check "an inherited SECONDS doesn't offset the headers" started_at_zero "Local review"
 
 FAIL_REVIEW=1 run_gate
 check "a failing review check refuses the push" test $STATUS -ne 0
@@ -128,7 +142,16 @@ for path in scripts/review.sh .claude/skills/pre-push-review/SKILL.md .claude/sk
   git -C "$REPO" commit -qam "touch $path"
   run_gate
   check "a change to $path runs the Sandcastle check" called "pnpm run check:sandcastle"
+  check "the Sandcastle check header carries the seconds too ($path)" stamped "Sandcastle check"
 done
+
+# test.sh's own step headers and closing lines: its body runs everything, so read its step() and closing lines from the file.
+TEST_SH="$SKILL_DIR/test.sh"
+step_header() { ( eval "$(grep -m1 '^step() ' "$TEST_SH")"; SECONDS=7; step "Some step" ); }
+check "test.sh's step() prints the seconds since test.sh started" test "$(step_header)" = "$(printf '\n── Some step [+7s]')"
+check "test.sh resets SECONDS before its first step" grep -qx 'SECONDS=0' "$TEST_SH"
+check "test.sh's pass line carries the seconds" grep -qF 'echo "test.sh: all checks passed [+${SECONDS}s]"' "$TEST_SH"
+check "test.sh's fail line carries the seconds" grep -qF 'echo "test.sh: $failures check(s) failed [+${SECONDS}s]"' "$TEST_SH"
 
 echo
 echo "$PASSED passed, $FAILED failed"

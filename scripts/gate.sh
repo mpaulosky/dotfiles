@@ -6,7 +6,9 @@
 # the Sandcastle check when .sandcastle/ or its packages changed. First of all,
 # the local review (/pre-push-review) must have passed the branch.
 set -euo pipefail
-# SECONDS counts from here: the headers below carry it, so a killed gate still shows which step was running and since when (#417).
+# SECONDS counts from here, and this script's own headers carry it. test.sh is a child process: its step headers count from its own start,
+# so a header of this script marks where test.sh began in the gate's time. A gate killed at its limit still shows which step was
+# running (the last header) and, with the next header's time, how long each earlier step took (#417).
 SECONDS=0
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -37,6 +39,8 @@ else
   scripts/review.sh check "$base"
 fi
 
+echo
+echo "── test.sh [+${SECONDS}s]"
 "$ROOT/Support For New Projects/.claude/skills/repo-ci-baseline/test.sh"
 
 # With no origin/main, the Sandcastle check runs.

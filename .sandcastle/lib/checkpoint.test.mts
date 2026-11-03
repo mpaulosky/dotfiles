@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
+import { publicErrorText } from "./build.mts";
 import { GATE_FIXER_ATTEMPTS } from "./config.mts";
 import { changedFiles, gateFailureComment, gateScriptChange, printableLine, runCheckpoint, runGate, sameGateOutput, sandboxDown, tail, withoutRunnerCommands, type Checkpoint, type GateRun } from "./checkpoint.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
@@ -693,6 +694,41 @@ describe("sandboxDown", () => {
 
     assert.ok(!reason.includes("ghp_"), reason);
     assert.ok(reason.includes("[x]"), reason);
+  });
+
+  // The host's publicError (lib/build.mts) withholds text that looks like it holds a secret. Only the scrubbed reason is logged or posted:
+  // the raw error is dropped, so a reason must not send a reader to a run log that doesn't hold it.
+  describe("when the probe's error looks like it holds a secret", () => {
+    const secret = `${"gh"}p_${"A".repeat(36)}`;
+    const scrub = (text: string) => publicErrorText(text, (cleaned) => cleaned.includes(secret));
+    const probe = () => exec(new Error(`exit 1: token ${secret} in the output`));
+
+    it("leaves the secret out of the reason", async () => {
+      const reason = (await sandboxDown(probe(), scrub)) ?? "";
+
+      assert.ok(!reason.includes(secret), reason);
+      assert.match(reason, /^The sandbox can't run a command \(.*\), so no gate-fixer was run\.$/);
+    });
+
+    it("says the error was withheld because it may hold a secret, and no longer points to the run log", async () => {
+      const reason = (await sandboxDown(probe(), scrub)) ?? "";
+
+      assert.doesNotMatch(reason, /run log/i, reason);
+      assert.match(reason, /withheld|isn't shown/i, reason);
+      assert.match(reason, /secret/i, reason);
+    });
+
+    it("writes the secret to neither the checkpoint's log nor its output, and the log doesn't point to a run log", async () => {
+      const logs: string[] = [];
+      const s = { ...steps([red("one")]), alive: () => sandboxDown(probe(), scrub), scrub };
+
+      const result = await runCheckpoint(2, s, (line) => logs.push(line));
+
+      const text = `${logs.join("\n")}\n${result.output}`;
+      assert.ok(!text.includes(secret), text);
+      assert.doesNotMatch(text, /run log/i, text);
+      assert.ok(logs.some((line) => line.includes("not run: The sandbox can't run a command")), logs.join("\n"));
+    });
   });
 
   it("reports an error that can't be turned into text without throwing", async () => {

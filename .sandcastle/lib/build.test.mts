@@ -739,6 +739,19 @@ describe("buildIssue", () => {
     assert.ok(logs.some((line) => line.includes("not run: The sandbox can't run a command")), logs.join("\n"));
   });
 
+  it("doesn't point to a run log for a probe error it withheld, since only the scrubbed reason is logged", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: new Error("exit 1: GH token ghp_abc in the output"),
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.doesNotMatch(logs.join("\n"), /run log/i);
+    assert.doesNotMatch(recordBuildFailureCalls[0]!.detail, /run log/i);
+  });
+
   it("logs a failed gate-fixer attempt's error on one line through the real scrub, without a prefix", async () => {
     const { logs, buildHost } = host([1, 1, 1], { failing: ["gate-fixer"], failWith: { "gate-fixer": new Error("boom\n##[add-mask]x") } });
 

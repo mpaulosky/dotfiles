@@ -5,6 +5,7 @@ import { createCheckedSandbox } from "./build.mts";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_MARKER,
+  GATE_FIXER_ATTEMPTS,
   FOLLOW_UP_PASS_CAP,
   FOLLOW_UP_REPLY_MARKER,
   GIVE_UP_MARKER,
@@ -714,6 +715,10 @@ function sandboxFake(
     // forwarded log commits nothing, unlike every other test's role,
     // which always commits to simulate a change.
     roleNoCommit?: string[];
+    // `git rev-parse HEAD` fails with exit 128, as it did in a sandbox whose gate was killed, once this many gate runs have printed.
+    sandboxDiesAfterGates?: number;
+    // What gate run `run` (counted from 1) prints, in place of "gate output, exit N".
+    gateOutput?: (run: number) => string;
   } = {},
 ) {
   const execCalls: string[] = [];
@@ -734,6 +739,7 @@ function sandboxFake(
     head = sha;
   };
   const gateExitCodes = [...(options.gateExitCodes ?? [0])];
+  let gateRuns = 0;
 
   const sandbox = {
     worktreePath: "/worktree",
@@ -746,7 +752,12 @@ function sandboxFake(
       steps.push(command);
       if (command.startsWith("rm -f")) return { stdout: "", stderr: "", exitCode: 0 };
       if (command.startsWith("git reset --hard")) return { stdout: "", stderr: "", exitCode: 0 };
-      if (command === "git rev-parse HEAD") return { stdout: `${head}\n`, stderr: "", exitCode: 0 };
+      if (command === "git rev-parse HEAD") {
+        if (options.sandboxDiesAfterGates !== undefined && gateRuns >= options.sandboxDiesAfterGates) {
+          return { stdout: "fatal: not a git repository\n", stderr: "", exitCode: 128 };
+        }
+        return { stdout: `${head}\n`, stderr: "", exitCode: 0 };
+      }
       const verify = /^git rev-parse --verify --quiet '([0-9a-f]+)\^\{commit\}'$/.exec(command);
       if (verify !== null) {
         const found = [...history.keys()].find((sha) => sha.startsWith(verify[1]!));
@@ -785,7 +796,8 @@ function sandboxFake(
       const exitCode = gateExitCodes.shift();
       if (exitCode === undefined) throw new Error("the gate ran more often than the test expected");
       if (options.gateCommits) commit(nextHead());
-      return { stdout: `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
+      gateRuns++;
+      return { stdout: options.gateOutput?.(gateRuns) ?? `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
     },
     run: async (opts: SandboxRunOptions) => {
       const role = opts.name!;
@@ -1109,6 +1121,53 @@ describe("runPass", () => {
     assert.equal(outcome.kind, "gave-up");
     assert.equal(calls.handBack.length, 1);
     assert.match(calls.handBack[0]!.body, /gate output, exit 1/);
+  });
+
+  // Acceptance criteria of mpaulosky/dotfiles#421 (R8): the follow-up pass gets the build's dead-sandbox handling.
+  it("runs no gate-fixer, and says the sandbox is down, when git stops answering after the first red gate", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], sandboxDiesAfterGates: 1 });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    const outcome = await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    assert.ok(!sandbox.runs.some((run) => run.name === "gate-fixer"), sandbox.steps.join(", "));
+    assert.deepEqual(calls.push, []);
+    assert.equal(outcome.kind, "gave-up");
+    assert.match(calls.handBack[0]!.body, /The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run\./);
+  });
+
+  it("quotes the first red gate run in the stop detail, before the last run that shows the dead sandbox", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], sandboxDiesAfterGates: 2, gateOutput: (run) => `run ${run} failed\n` });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    const body = calls.handBack[0]!.body;
+    assert.ok(body.includes("run 1 failed"), body);
+    assert.ok(body.includes("run 2 failed"), body);
+    assert.ok(body.indexOf("run 1 failed") < body.indexOf("run 2 failed"), body);
+  });
+
+  it("names the gate-fixer attempts that ran in the stop reason, not the most there could be", async () => {
+    assert.ok(GATE_FIXER_ATTEMPTS > 1, "this test needs a case where fewer attempts ran than the most");
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], sandboxDiesAfterGates: 2, gateOutput: (run) => `run ${run} failed\n` });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    assert.equal(sandbox.runs.filter((run) => run.name === "gate-fixer").length, 1);
+    const reason = calls.handBack[0]!.reason;
+    assert.match(reason, /after 1 gate-fixer attempt\b/);
+    assert.doesNotMatch(reason, new RegExp(`after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts`));
+  });
+
+  it("names every attempt in the stop reason when the gate stays red through all of them", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1] });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    assert.match(calls.handBack[0]!.reason, new RegExp(`after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts`));
   });
 
   it("gives up without running the gate when the branch has changed the gate script", async () => {

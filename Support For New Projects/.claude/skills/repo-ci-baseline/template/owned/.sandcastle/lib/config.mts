@@ -148,7 +148,8 @@ export const GATE_FIXER_ATTEMPTS = 2;
 export const MAX_GATE_RUNS = 2 * (GATE_FIXER_ATTEMPTS + 1) + 1;
 
 // How many lines of the last gate output, and of the first red run's when it
-// differs (see sameGateOutput in lib/checkpoint.mts), the issue comment quotes.
+// differs (see sameGateOutput in lib/checkpoint.mts), the issue comment and the follow-up pass's PR hand-back
+// (lib/follow-up-pass.mts#giveUpComment) quote.
 // runCheckpoint logs as many of the first red run's lines when an error ends a
 // checkpoint.
 export const GATE_COMMENT_LINES = 100;

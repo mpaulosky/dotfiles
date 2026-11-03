@@ -422,9 +422,12 @@ function rerunLog(pr: number, names: readonly string[], host: PassHost, log: (li
   }
 }
 
-// The most characters of the first red gate run a hand-back quotes, so a first run of very long lines can't crowd the last run out of
-// the comment: cutToLimit keeps the start of a comment that is too long, and the last run comes second.
+// The most characters of the first red gate run a hand-back quotes, so a first run of very long lines leaves the last run room in the
+// comment (giveUpComment cuts either further when the two together are still too long).
 const FIRST_RUN_CHARS = 20_000;
+
+// The most characters of a hand-back's reason, so a reason made of a PR's check names can't use up the comment.
+const REASON_CHARS = 2_000;
 
 // The PR hand-back comment for a pass that gave up (runPass's step 4, 9, 10,
 // 11): GIVE_UP_MARKER on a line of its own (so scripts/watch-pr.sh skips it),
@@ -433,42 +436,61 @@ const FIRST_RUN_CHARS = 20_000;
 // the PR (remove sandcastle:needs-human). `firstOutput`, when given, is the
 // gate's first red run, quoted in a fence of its own before the last run: a
 // gate-fixer attempt can leave the last run showing a dead sandbox or a timeout,
-// not the failure the pass began with, and each run is cut on its own so a long
-// last run can't push the first out of the comment. The first run is cut to its
-// last GATE_COMMENT_LINES lines and then to its last FIRST_RUN_CHARS characters,
-// and its header says both.
+// not the failure the pass began with. The first run is cut to its last
+// GATE_COMMENT_LINES lines and then to its last FIRST_RUN_CHARS characters, and
+// its header says both. The reason is cut to REASON_CHARS. When the comment is
+// still over COMMENT_LIMIT, the last run is cut at its front (endOf) as far as it
+// takes, and its header then says so; if the first run's fence alone is that long,
+// the first run is cut the same way. So the comment always ends with the last
+// run's failure message, its fence and the re-queue instructions, which a cut of
+// the finished comment would drop.
 export function giveUpComment(reason: string, output: string | undefined, firstOutput?: string): string {
-  const parts = [
-    `Sandcastle stopped its follow-up passes on this PR: ${reason}. It's labelled \`sandcastle:needs-human\` until a person ` +
-      "has looked at it.",
-  ];
-  const first = firstOutput !== undefined && firstOutput.trim() !== "";
-  if (first) {
-    const quoted = endOf(tail(firstOutput, GATE_COMMENT_LINES), FIRST_RUN_CHARS);
-    parts.push(
-      `The end of the first red gate run (at most ${GATE_COMMENT_LINES} lines and ${FIRST_RUN_CHARS} characters), before a gate-fixer ran:\n\n${textBlock(quoted)}`,
-    );
-  }
+  const why = reason.length > REASON_CHARS ? `${cutAtCharacter(reason, REASON_CHARS)}…` : reason;
   const requeue =
     "To have Sandcastle pick the PR up again, remove `sandcastle:needs-human`. That also starts its count of follow-up " +
     "passes again.";
-  const assemble = (lastRun: string | undefined, cut: boolean): string => {
-    const quoted = lastRun === undefined ? [] : [
-      (cut
-        ? `The end of the ${first ? "last gate output" : "output"} (at most ${GATE_COMMENT_LINES} lines, cut at the front to fit the comment):`
-        : `The last ${GATE_COMMENT_LINES} lines of the ${first ? "last gate output" : "output"}:`) + `\n\n${textBlock(lastRun)}`,
+  const first = firstOutput !== undefined && firstOutput.trim() !== "";
+  const hasLast = output !== undefined && output.trim() !== "";
+  const firstRun = first ? endOf(tail(firstOutput, GATE_COMMENT_LINES), FIRST_RUN_CHARS) : "";
+  const lastRun = hasLast ? tail(output, GATE_COMMENT_LINES) : "";
+  const assemble = (firstKeep: number, lastKeep: number): string => {
+    const parts = [
+      `Sandcastle stopped its follow-up passes on this PR: ${why}. It's labelled \`sandcastle:needs-human\` until a person ` +
+        "has looked at it.",
     ];
-    return `${GIVE_UP_MARKER}\n${[...parts, ...quoted, requeue].join("\n\n")}`;
+    if (first) {
+      const cut = firstKeep < firstRun.length;
+      parts.push(
+        `The end of the first red gate run (at most ${GATE_COMMENT_LINES} lines and ${FIRST_RUN_CHARS} characters${cut ? ", cut to fit the comment" : ""}), ` +
+          `before a gate-fixer ran:\n\n${textBlock(cut ? lastChars(firstRun, firstKeep) : firstRun)}`,
+      );
+    }
+    if (hasLast) {
+      const cut = lastKeep < lastRun.length;
+      const name = first ? "last gate output" : "output";
+      parts.push(
+        (cut
+          ? `The end of the ${name} (at most ${GATE_COMMENT_LINES} lines, cut at the front to fit the comment):`
+          : `The last ${GATE_COMMENT_LINES} lines of the ${name}:`) + `\n\n${textBlock(cut ? lastChars(lastRun, lastKeep) : lastRun)}`,
+      );
+    }
+    return `${GIVE_UP_MARKER}\n${[...parts, requeue].join("\n\n")}`;
   };
-  if (output === undefined || output.trim() === "") return cutToLimit(assemble(undefined, false));
-  // The last run is cut at the front, as far as it takes for the whole comment to fit: cutting the finished comment would drop the
-  // run's failure message, its closing fence and the re-queue instructions, which come last.
-  const lastRun = tail(output, GATE_COMMENT_LINES);
-  let comment = assemble(lastRun, false);
-  let keep = lastRun.length;
-  while (comment.length > COMMENT_LIMIT && keep > 0) {
-    keep = Math.max(0, keep - (comment.length - COMMENT_LIMIT) - 16);
-    comment = assemble(keep === 0 ? "" : endOf(lastRun, keep), true);
+  // Each run is cut at its front, the last first, only as far as it takes for the whole comment to fit: cutting the finished comment would
+  // drop the last run's failure message, its closing fence and the re-queue instructions, which come last. `keep` shrinks by at least the
+  // overage and 16 more (the header grows once a run is cut), so the loop ends; endOf(text, 0) would return the whole text, hence lastChars.
+  const lastChars = (text: string, keep: number) => (keep === 0 ? "" : endOf(text, keep));
+  const fitted = (keep: number, over: number) => Math.max(0, keep - over - 16);
+  let firstKeep = firstRun.length;
+  let lastKeep = lastRun.length;
+  let comment = assemble(firstKeep, lastKeep);
+  while (comment.length > COMMENT_LIMIT && lastKeep > 0) {
+    lastKeep = fitted(lastKeep, comment.length - COMMENT_LIMIT);
+    comment = assemble(firstKeep, lastKeep);
+  }
+  while (comment.length > COMMENT_LIMIT && firstKeep > 0) {
+    firstKeep = fitted(firstKeep, comment.length - COMMENT_LIMIT);
+    comment = assemble(firstKeep, lastKeep);
   }
   return cutToLimit(comment);
 }

@@ -663,6 +663,57 @@ describe("giveUpComment", () => {
       assert.doesNotMatch(giveUpComment("the gate is red", "short"), /cut at the front/);
     });
 
+    // The comment's length with a last run of `n` characters, uncut: the length is linear in n until the loop cuts.
+    const lengthWith = (n: number) => giveUpComment("the gate is red", "y".repeat(n)).length;
+    const requeueEnd = "That also starts its count of follow-up passes again.";
+
+    it("leaves a comment of exactly COMMENT_LIMIT characters whole, and cuts one a character longer", () => {
+      const fixed = lengthWith(1) - 1;
+      const exact = 65_000 - fixed;
+      for (const n of [exact - 1, exact]) {
+        const comment = giveUpComment("the gate is red", "y".repeat(n));
+        assert.equal(comment.length, fixed + n);
+        assert.match(comment, /The last \d+ lines of the output/, `${n} characters`);
+        assert.doesNotMatch(comment, /cut at the front/, `${n} characters`);
+      }
+      const over = giveUpComment("the gate is red", "y".repeat(exact + 1));
+      assert.ok(over.length <= 65_000, `${over.length}`);
+      assert.match(over, /cut at the front to fit the comment/);
+      assert.ok(over.endsWith(requeueEnd));
+    });
+
+    it("never starts the cut last run halfway through an emoji", () => {
+      const comment = giveUpComment("the gate is red", `${"😀".repeat(60_000)}\nthe failure message`);
+
+      assert.ok(comment.length <= 65_000);
+      assert.doesNotMatch(comment, /```text\n[\uDC00-\uDFFF]/);
+      assert.ok(comment.includes("\nthe failure message\n```\n"));
+    });
+
+    it("shortens the last run's fence when the cut removes the long backtick run from it", () => {
+      const comment = giveUpComment("the gate is red", `${"`".repeat(30)}\n${"y".repeat(70_000)}\nthe failure message`);
+
+      assert.ok(comment.length <= 65_000);
+      assert.ok(!comment.includes("`".repeat(31)), "a fence for the removed run");
+      assert.ok(comment.endsWith(requeueEnd));
+    });
+
+    it("keeps the last run and the re-queue instructions when the reason is far longer than the comment", () => {
+      const comment = giveUpComment("r".repeat(100_000), "the last run\nthe failure message");
+
+      assert.ok(comment.length <= 65_000);
+      assert.ok(comment.includes("\nthe failure message\n```\n"));
+      assert.ok(comment.endsWith(requeueEnd));
+    });
+
+    it("keeps the last run and the re-queue instructions when the first run's fence is as long as the first run", () => {
+      const comment = giveUpComment("the gate is red", "the last run\nthe failure message", "`".repeat(20_000));
+
+      assert.ok(comment.length <= 65_000, `${comment.length}`);
+      assert.ok(comment.includes("\nthe failure message\n```\n"));
+      assert.ok(comment.endsWith(requeueEnd));
+    });
+
     it("doesn't say it quotes the last lines of a first run it also cut by characters", () => {
       const comment = giveUpComment("the gate is red", "last", `${"x".repeat(200_000)}\nthe first run's end`);
 
@@ -821,6 +872,8 @@ function sandboxFake(
     roleNoCommit?: string[];
     // `git rev-parse HEAD` fails with exit 128, as it did in a sandbox whose gate was killed, once this many gate runs have printed.
     sandboxDiesAfterGates?: number;
+    // `git rev-parse HEAD` throws this once that many gate runs have printed, as an exec that stalls or Docker failing does.
+    probeThrowsAfterGates?: { gates: number; error: Error };
     // What gate run `run` (counted from 1) prints, in place of "gate output, exit N".
     gateOutput?: (run: number) => string;
   } = {},
@@ -857,6 +910,7 @@ function sandboxFake(
       if (command.startsWith("rm -f")) return { stdout: "", stderr: "", exitCode: 0 };
       if (command.startsWith("git reset --hard")) return { stdout: "", stderr: "", exitCode: 0 };
       if (command === "git rev-parse HEAD") {
+        if (options.probeThrowsAfterGates !== undefined && gateRuns >= options.probeThrowsAfterGates.gates) throw options.probeThrowsAfterGates.error;
         if (options.sandboxDiesAfterGates !== undefined && gateRuns >= options.sandboxDiesAfterGates) {
           return { stdout: "fatal: not a git repository\n", stderr: "", exitCode: 128 };
         }
@@ -1241,6 +1295,34 @@ describe("runPass", () => {
     // None ran, so the reason says so rather than claiming the most there could be.
     assert.match(calls.handBack[0]!.reason, /after 0 gate-fixer attempts\b/);
     assert.doesNotMatch(calls.handBack[0]!.reason, new RegExp(`after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts`));
+  });
+
+  it("rethrows a stall of the sandbox probe instead of handing the PR back", async () => {
+    const stop = new UncountedStopError("git rev-parse HEAD ran over its limit");
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], probeThrowsAfterGates: { gates: 1, error: stop } });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    await assert.rejects(() => runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost), (error: unknown) => error === stop);
+
+    assert.deepEqual(calls.handBack, []);
+    assert.ok(!sandbox.runs.some((run) => run.name === "gate-fixer"));
+    assert.deepEqual(calls.commentOnPullRequest, []);
+  });
+
+  it("hands the PR back, without the probe's secret and without pointing to the run log, when the probe throws an ordinary error", async () => {
+    const secret = "ghp_" + "a".repeat(36);
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], probeThrowsAfterGates: { gates: 1, error: new Error(`docker exec failed with token ${secret}`) } });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+    // As the real host's publicError does: a text holding the secret is withheld whole.
+    passHost.publicError = (text) => (String(text).includes(secret) ? "(withheld)" : String(text));
+
+    const outcome = await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    assert.equal(outcome.kind, "gave-up");
+    const body = calls.handBack[0]!.body;
+    assert.match(body, /The sandbox can't run a command \(\(withheld\)\)/);
+    assert.ok(!body.includes(secret), body);
+    assert.doesNotMatch(body, /run log/);
   });
 
   it("quotes the first red gate run in the stop detail, before the last run that shows the dead sandbox", async () => {

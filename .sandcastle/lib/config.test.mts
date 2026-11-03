@@ -26,12 +26,14 @@ import {
   REVIEWER_ATTEMPTS,
   ROLES,
   RunModeError,
+  SANDBOX_CPUS,
   SANDCASTLE_LABELS,
   SESSION_REPLY_MARKER,
   budgetMinutesFrom,
   isDefaultQueueScope,
   queueScopeFrom,
   runModeFrom,
+  sandboxCpus,
 } from "./config.mts";
 import { GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { COMMAND_LIMIT_MINUTES } from "./step-limit.mts";
@@ -91,6 +93,35 @@ describe("the host-side review's fixed role", () => {
   it("stops fixing after 3 rounds and asks each reviewer for a valid answer twice", () => {
     assert.equal(REVIEW_FIX_ROUNDS, 3);
     assert.equal(REVIEWER_ATTEMPTS, 2);
+  });
+});
+
+describe("sandboxCpus", () => {
+  it("gives a sandbox 4 CPUs at most (mpaulosky/dotfiles#423)", () => {
+    assert.equal(SANDBOX_CPUS, 4);
+  });
+
+  it("gives a daemon with fewer CPUs all of them, since docker refuses --cpus above its count", () => {
+    assert.equal(sandboxCpus(1), 1);
+    assert.equal(sandboxCpus(2), 2);
+    assert.equal(sandboxCpus(3), 3);
+    assert.equal(sandboxCpus(4), 4);
+    assert.equal(sandboxCpus(5), 4);
+    assert.equal(sandboxCpus(64), 4);
+  });
+
+  it("rounds a fractional count down", () => {
+    assert.equal(sandboxCpus(2.9), 2);
+    assert.equal(sandboxCpus(1.5), 1);
+  });
+
+  it("gives no limit (undefined) for a count that is not a count of CPUs", () => {
+    assert.equal(sandboxCpus(undefined), undefined);
+    assert.equal(sandboxCpus(0.5), undefined);
+    assert.equal(sandboxCpus(0), undefined);
+    assert.equal(sandboxCpus(-3), undefined);
+    assert.equal(sandboxCpus(Number.NaN), undefined);
+    assert.equal(sandboxCpus(Number.POSITIVE_INFINITY), undefined);
   });
 });
 

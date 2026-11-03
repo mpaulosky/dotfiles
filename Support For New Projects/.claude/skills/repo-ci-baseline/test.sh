@@ -459,7 +459,7 @@ run_skills() { # the list's text; sets skills_rc, skills_log, skills_home
   [[ $1 == "<none>" ]] || printf '%s' "$1" > "$ws/.github/ci/sandcastle-skills.txt"
   [[ -z ${skills_preexisting:-} ]] || mkdir -p "$md_tmp/skills-home/.claude/skills/$skills_preexisting"
   skills_home="$md_tmp/skills-home"; skills_rc=0; log="$md_tmp/skills.log"
-  (cd "$ws" && env -i PATH="$PATH" HOME="$skills_home" RUNNER_TEMP="$md_tmp/skills-runner" DOTFILES_URL="$skills_url" \
+  (cd "$ws" && env -i PATH="${skills_path_prefix:-}$PATH" HOME="$skills_home" RUNNER_TEMP="$md_tmp/skills-runner" DOTFILES_URL="$skills_url" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash --noprofile --norc -e "$skills_script") &>"$log" || skills_rc=$?
   skills_log="$(<"$log")"
   # No line of the list is ever run as a command, whatever the outcome.
@@ -504,9 +504,12 @@ for list in "${bad_lists[@]}"; do
   [[ $skills_rc -ne 0 && ! -e "$skills_home/.claude" ]] || fail "sandcastle.yml: a bad skills list must fail and install nothing (exit $skills_rc, list '$list')"
 done
 # The rules are the step's own, not git's or the file system's: each bad list is refused for its reason.
-check_refused() { # the list's text, the part of the error it must give
+refused_with() { # the list's text, the part of the error it must give, and optionally another wording of the same error
   run_skills "$1"
-  [[ $skills_rc -ne 0 && $skills_log == *"$2"* ]] || fail "sandcastle.yml: a skills list '$1' must be refused with '$2' (exit $skills_rc): $skills_log"
+  [[ $skills_rc -ne 0 && ( $skills_log == *"$2"* || ( -n ${3:-} && $skills_log == *"$3"* ) ) ]]
+}
+check_refused() { # the same arguments
+  refused_with "$@" || fail "sandcastle.yml: a skills list '$1' must be refused with '$2'${3:+ or $3} (exit $skills_rc): $skills_log"
 }
 check_refused "dotfiles-sha ${good_sha^^}"$'\nskill alpha' "40-digit"
 check_refused "dotfiles-sha ${good_sha:0:39}"$'\nskill alpha' "40-digit"
@@ -530,8 +533,35 @@ skills_url="file://$fixture2"
 check_refused "dotfiles-sha $ancestor_sha"$'\nskill alpha' "holds a symlink"
 skills_url="file://$fixture"
 skills_preexisting=alpha
-check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "File exists"
+check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists"
 [[ ! -e "$skills_home/.claude/skills/alpha/alpha" ]] || fail "sandcastle.yml: a skill linked itself inside an existing folder"
+# ubuntu-latest became ubuntu-26.04 on 2026-11-03, whose ln is uutils': it says "Already exists" where GNU's says "File exists"
+# (mpaulosky/dotfiles#423). The step must still refuse, and the check must read either wording, on any runner: a stub ln gives
+# the uutils wording here, and a stub whose message has neither wording must not pass for it.
+uutils_bin="$md_tmp/uutils-bin"; boom_bin="$md_tmp/boom-bin"; mkdir -p "$uutils_bin" "$boom_bin"
+cat > "$uutils_bin/ln" <<'STUB'
+#!/usr/bin/env bash
+echo "ln: failed to create symbolic link '${@: -1}': Already exists (uutils stub)" >&2
+exit 1
+STUB
+cat > "$boom_bin/ln" <<'STUB'
+#!/usr/bin/env bash
+echo "ln: boom" >&2
+exit 1
+STUB
+chmod +x "$uutils_bin/ln" "$boom_bin/ln"
+skills_path_prefix="$uutils_bin:"
+refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists" \
+  || fail "sandcastle.yml: a skill that exists already must be refused whichever way ln words it, GNU's 'File exists' or uutils' 'Already exists' (exit $skills_rc): $skills_log"
+# Only the stub ends its message with "(uutils stub)", whatever the runner's own ln is, so this shows the step ran it.
+[[ $skills_log == *"(uutils stub)"* ]] || fail "sandcastle.yml: the stub ln was not the one the skills step ran: $skills_log"
+skills_path_prefix="$boom_bin:"
+if refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists"; then
+  fail "sandcastle.yml: an ln error with neither wording must not pass for 'File exists' or 'Already exists'"
+fi
+# The control only counts when the step reached the stub: any other early failure would also have no wording.
+[[ $skills_rc -ne 0 && $skills_log == *"ln: boom"* ]] || fail "sandcastle.yml: the stub ln that says neither wording was not run by the skills step (exit $skills_rc): $skills_log"
+skills_path_prefix=
 skills_preexisting=
 # A line is never printed, whichever rule rejects it: one starting with :: would otherwise run as a workflow command from the log.
 for list in "::add-mask::secretvalue" "::add-mask::secretvalue x" "skill ::add-mask::secretvalue" "dotfiles-sha ::add-mask::secretvalue" \

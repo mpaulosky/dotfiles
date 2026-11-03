@@ -18,15 +18,16 @@ export type Checkpoint = 1 | 2 | 3;
 // A gate run, and on a pass the commit it passed on: the one the host pushes.
 // `firstOutput` is the output of the checkpoint's first red gate run, kept when
 // the checkpoint ended red after a fixer had run and that output differs from
-// the last run's (leaving out the seconds on its step headers, see sameGateOutput), since the last run's output may be about something else (a
-// dead sandbox, a different failure).
+// the last run's (see sameGateOutput for what counts as the same), since the last
+// run's output may be about something else (a dead sandbox, a different failure).
 // `fixersRun` is how many gate-fixer attempts ran, set only when the checkpoint
 // ended early because the sandbox was down.
 export type GateRun = { passed: boolean; output: string; head?: string; firstOutput?: string; fixersRun?: number };
 
-// Whether two gate outputs are the same failure. scripts/gate.sh ends its step headers with the seconds since it started (` [+312s]`),
-// which differ on every run, so a trailing one on a line is left out of the comparison: a gate-fixer that changed nothing
-// leaves the first red run the same as the last, and the failure comment quotes it once.
+// Whether two gate outputs are the same failure. A gate may end its step headers with the seconds since it started (dotfiles'
+// scripts/gate.sh and the test.sh it runs print ` [+312s]`), which differ on every run, so a ` [+Ns]` that ends a line is left out of
+// the comparison: a gate-fixer that changed nothing leaves the first red run the same as the last, and the failure comment
+// quotes it once.
 const STEP_SECONDS = / \[\+\d+s\]$/gm;
 export function sameGateOutput(a: string, b: string): boolean {
   return a.replace(STEP_SECONDS, "") === b.replace(STEP_SECONDS, "");
@@ -211,7 +212,7 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 // Run the gate, and the gate-fixer while it's red and attempts are left.
 // Returns the last gate run. It carries the first red run's output
 // (`firstOutput`) when the checkpoint ended red after a fixer ran and it differs
-// from the last run's output. When `alive` reports the sandbox down, the
+// from the last run's output (see sameGateOutput). When `alive` reports the sandbox down, the
 // checkpoint ends before that attempt's fixer, with the reason appended to the
 // output and `fixersRun` set to the attempts that ran. A caller that passes no
 // `alive` never gets `fixersRun` or that early end, but still gets
@@ -355,7 +356,7 @@ export function endOf(text: string, limit: number): string {
 
 // The issue comment for a checkpoint that stayed red past the fixer's attempts.
 // `firstOutput` is the checkpoint's first red run, quoted too when it differs
-// from the last: a gate-fixer attempt can leave the last run showing a dead
+// from the last (see sameGateOutput): a gate-fixer attempt can leave the last run showing a dead
 // sandbox or a timeout, not the failure the build began with. `fixersRun` is
 // how many attempts ran when that is fewer than GATE_FIXER_ATTEMPTS.
 export function gateFailureComment(

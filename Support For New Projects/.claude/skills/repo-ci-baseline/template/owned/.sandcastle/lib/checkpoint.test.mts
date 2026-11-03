@@ -104,6 +104,9 @@ describe("runCheckpoint", () => {
       assert.equal(sameGateOutput("a [-3s]", "a [-4s]"), false);
       assert.equal(sameGateOutput("a [+3m]", "a [+4m]"), false);
       assert.equal(sameGateOutput("a [+3s]x", "a [+4s]x"), false);
+      assert.equal(sameGateOutput("── a [+3s]\r\nx", "── a [+40s]\r\nx"), true);
+      assert.equal(sameGateOutput("a [+3s]\rx", "a [+4s]\rx"), true);
+      assert.equal(sameGateOutput("a [+3s] ", "a [+4s] "), false);
       assert.equal(sameGateOutput("one", "two"), false);
       assert.equal(sameGateOutput("", ""), true);
     });

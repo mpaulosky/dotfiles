@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { createCheckedSandbox } from "./build.mts";
@@ -14,6 +13,7 @@ import {
   SESSION_REPLY_MARKER,
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
+import { textBlock } from "./checkpoint.mts";
 import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import type { CheckState, HandOffTarget, PassTarget } from "./follow-up.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
@@ -646,11 +646,15 @@ describe("giveUpComment", () => {
       assert.match(comment, /20000 characters/);
     });
 
-    it("fences each run with checkpoint.mts's textBlock rather than a copy of its fence rule", () => {
-      const source = readFileSync(new URL("./follow-up-pass.mts", import.meta.url), "utf8");
+    it("fences both runs exactly as checkpoint.mts's textBlock does, whatever backtick runs they hold", () => {
+      for (const ticks of ["", "``", "```", "`````"]) {
+        const first = `first ${ticks} run`;
+        const last = `last ${ticks} run`;
+        const comment = giveUpComment("the gate is red", last, first);
 
-      assert.doesNotMatch(source, /"`"\.repeat/);
-      assert.match(source, /textBlock/);
+        assert.ok(comment.includes(textBlock(first)), `the first run, with "${ticks}" in it:\n${comment}`);
+        assert.ok(comment.includes(textBlock(last)), `the last run, with "${ticks}" in it:\n${comment}`);
+      }
     });
 
     it("fences the first run longer than any backtick run in it", () => {

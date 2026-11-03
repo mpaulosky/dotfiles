@@ -15,6 +15,8 @@
 # under the skill, and it's the check to run before committing a Template
 # change.
 set -euo pipefail
+# The step headers carry SECONDS: count from here, whatever SECONDS a caller exported (mpaulosky/dotfiles#417).
+SECONDS=0
 
 skill_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 owned="$skill_dir/template/owned"
@@ -30,7 +32,9 @@ md_tmp="$(mktemp -d)"
 trap 'command rm -rf "$GIT_TEMPLATE_DIR" "$md_tmp"' EXIT
 
 failures=0
-step() { echo; echo "── $1"; }
+# Each header carries the seconds since test.sh started (bash's SECONDS, reset at the top), so a log shows which step ran long
+# (a step's time is the next header's minus its own) even when the run is killed at a limit (mpaulosky/dotfiles#417).
+step() { echo; echo "── $1 [+${SECONDS}s]"; }
 fail() { echo "FAIL: $1" >&2; failures=$((failures + 1)); }
 need() {
   command -v "$1" &>/dev/null || { echo "test.sh: $1 is required" >&2; exit 2; }
@@ -981,7 +985,7 @@ step "reapply.sh smoke test"
 
 echo
 if [[ $failures -gt 0 ]]; then
-  echo "test.sh: $failures check(s) failed"
+  echo "test.sh: $failures check(s) failed [+${SECONDS}s]"
   exit 1
 fi
-echo "test.sh: all checks passed"
+echo "test.sh: all checks passed [+${SECONDS}s]"

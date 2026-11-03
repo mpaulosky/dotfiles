@@ -148,8 +148,9 @@ export const GATE_FIXER_ATTEMPTS = 2;
 export const MAX_GATE_RUNS = 2 * (GATE_FIXER_ATTEMPTS + 1) + 1;
 
 // How many lines of the last gate output, and of the first red run's when it
-// differs, the issue comment quotes. runCheckpoint logs as many of the first red
-// run's lines when an error ends a checkpoint.
+// differs (see sameGateOutput in lib/checkpoint.mts), the issue comment quotes.
+// runCheckpoint logs as many of the first red run's lines when an error ends a
+// checkpoint.
 export const GATE_COMMENT_LINES = 100;
 
 // The most CPUs a sandbox may use (`docker run --cpus`), the same in every Baseline repo. The gate's Sandcastle check is the one step

@@ -6,6 +6,10 @@
 # the Sandcastle check when .sandcastle/ or its packages changed. First of all,
 # the local review (/pre-push-review) must have passed the branch.
 set -euo pipefail
+# SECONDS counts from here, and this script's own headers carry it. test.sh is a child process: its step headers count from its own start,
+# so a header of this script marks where test.sh began in the gate's time. A gate killed at its limit still shows which step was
+# running (the last header) and, with the next header's time, how long each earlier step took (#417).
+SECONDS=0
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
@@ -25,7 +29,7 @@ base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
 # GATE_SKIP_REVIEW=1 skips it, for gate runs before the push (the review's own, and
 # while iterating), never for a push; Sandcastle's sandboxes set it (lib/skills.mts).
 echo
-echo "── Local review"
+echo "── Local review [+${SECONDS}s]"
 if [[ "${GATE_SKIP_REVIEW:-}" == "1" ]]; then
   echo "Local review check skipped (GATE_SKIP_REVIEW=1)."
 elif [[ -z "$base" ]]; then
@@ -35,6 +39,8 @@ else
   scripts/review.sh check "$base"
 fi
 
+echo
+echo "── test.sh [+${SECONDS}s]"
 "$ROOT/Support For New Projects/.claude/skills/repo-ci-baseline/test.sh"
 
 # With no origin/main, the Sandcastle check runs.
@@ -51,6 +57,6 @@ if [[ -z "$base" ]] || ! git diff --quiet --no-renames "$base" HEAD -- .sandcast
   scripts/review.sh .claude/skills/pre-push-review .claude/skills/hardening-review .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml \
   "$skill/template/owned/scripts/review.sh" "$skill/template/owned/.claude" "$skill/template/owned/.github/workflows/claude-review.yml"; then
   echo
-  echo "── Sandcastle check"
+  echo "── Sandcastle check [+${SECONDS}s]"
   pnpm run check:sandcastle
 fi

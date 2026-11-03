@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_FIXER_ATTEMPTS } from "./config.mts";
-import { changedFiles, gateFailureComment, gateScriptChange, printableLine, runCheckpoint, runGate, sandboxDown, tail, withoutRunnerCommands, type Checkpoint, type GateRun } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, gateScriptChange, printableLine, runCheckpoint, runGate, sameGateOutput, sandboxDown, tail, withoutRunnerCommands, type Checkpoint, type GateRun } from "./checkpoint.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
 import { StalledStepError } from "./errors.mts";
 import { limitSandboxExec } from "./step-limit.mts";
@@ -83,6 +83,33 @@ describe("runCheckpoint", () => {
     assert.equal(differs.firstOutput, "first");
     assert.equal(same.firstOutput, undefined);
     assert.equal(passes.firstOutput, undefined);
+  });
+
+  it("treats runs that differ only in the seconds on their step headers as the same (scripts/gate.sh prints [+Ns])", async () => {
+    const run = (n: number, tail = "FAIL: shellcheck") => red(`── Hook tests [+${n}s]\n${tail}\ntest.sh: 1 check(s) failed [+${n + 100}s]`);
+    const same = await runCheckpoint(1, steps([run(3), run(5), run(7)]), () => {});
+    const otherFailure = await runCheckpoint(1, steps([run(3), run(5, "FAIL: pytest"), run(7, "FAIL: pytest")]), () => {});
+
+    assert.equal(same.firstOutput, undefined);
+    assert.equal(otherFailure.firstOutput, run(3).output);
+  });
+
+  describe("sameGateOutput", () => {
+    it("ignores a [+Ns] that ends a line, and nothing else", () => {
+      assert.equal(sameGateOutput("── a [+3s]\nx", "── a [+40s]\nx"), true);
+      assert.equal(sameGateOutput("── a [+3s]\nx", "── a\nx"), true); // the stamp is left out, so a header without one is the same text
+      assert.equal(sameGateOutput("a [+3s] b", "a [+4s] b"), false);
+      assert.equal(sameGateOutput("a [+3s]", "a [+3s]"), true);
+      assert.equal(sameGateOutput("a [+s]", "a [+1s]"), false);
+      assert.equal(sameGateOutput("a [-3s]", "a [-4s]"), false);
+      assert.equal(sameGateOutput("a [+3m]", "a [+4m]"), false);
+      assert.equal(sameGateOutput("a [+3s]x", "a [+4s]x"), false);
+      assert.equal(sameGateOutput("── a [+3s]\r\nx", "── a [+40s]\r\nx"), true);
+      assert.equal(sameGateOutput("a [+3s]\rx", "a [+4s]\rx"), true);
+      assert.equal(sameGateOutput("a [+3s] ", "a [+4s] "), false);
+      assert.equal(sameGateOutput("one", "two"), false);
+      assert.equal(sameGateOutput("", ""), true);
+    });
   });
 
   describe("when an error ends the checkpoint after a red run", () => {
@@ -240,6 +267,14 @@ describe("runCheckpoint", () => {
 
       assert.equal(result.firstOutput, undefined);
       assert.equal(result.fixersRun, 1);
+    });
+
+    it("doesn't quote a first run that differs from the last only in its seconds when the sandbox goes down at attempt 2", async () => {
+      const s = withAlive([red("── Hook tests [+3s]\nFAIL"), red("── Hook tests [+8s]\nFAIL")], [undefined, "The sandbox is down."]);
+
+      const result = await runCheckpoint(1, s, () => {});
+
+      assert.equal(result.firstOutput, undefined);
     });
 
     it("counts a fixer that threw as a run, then stops when the sandbox is down at attempt 2", async () => {
@@ -709,6 +744,12 @@ describe("gateFailureComment", () => {
   it("doesn't repeat a first run that is the last", () => {
     assert.ok(!gateFailureComment(1, "feature/69-x", "same", { firstOutput: "same" }).includes("first red gate run"));
     assert.ok(!gateFailureComment(1, "feature/69-x", "same").includes("first red gate run"));
+  });
+
+  it("doesn't repeat a first run that differs from the last only in its step headers' seconds", () => {
+    const comment = gateFailureComment(1, "feature/69-x", "── Hook tests [+9s]\nFAIL", { firstOutput: "── Hook tests [+4s]\nFAIL" });
+
+    assert.ok(!comment.includes("first red gate run"));
   });
 
   it("quotes only the last 100 lines of the first run", () => {

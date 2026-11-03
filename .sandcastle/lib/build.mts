@@ -357,7 +357,7 @@ export type BuildHost = {
   // Records a failed build attempt (anything that stops the issue's
   // pipeline, see "When a role fails" in Blazor-Server's docs/plans/sandcastle-workflow.md):
   // posts the issue's `sandcastle:build-failed` comment with this attempt's
-  // number and `detail` (the tail of the last gate output and of the first red run's when it differs (see sameGateOutput in lib/checkpoint.mts), or the role's error),
+  // number and `detail` (the tail of the last gate output and of the first red run's when it differs, or the role's error; see sameGateOutput in lib/checkpoint.mts),
   // and once that's the BUILD_FAILURE_CAPth attempt since
   // `sandcastle:needs-human` was last removed, hands the issue back instead
   // (see lib/handback.mts#recordFailedAttempt). Never called for a role run

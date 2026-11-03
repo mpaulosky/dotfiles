@@ -682,12 +682,15 @@ describe("giveUpComment", () => {
       assert.ok(over.endsWith(requeueEnd));
     });
 
-    it("never starts the cut last run halfway through an emoji", () => {
-      const comment = giveUpComment("the gate is red", `${"😀".repeat(60_000)}\nthe failure message`);
+    it("never starts the cut last run halfway through an emoji, whatever the parity of the cut", () => {
+      // The cut keeps the end of the run, so its parity depends on the run's end: the failure line's length runs through all four.
+      for (const pad of ["", "a", "ab", "abc"]) {
+        const comment = giveUpComment("the gate is red", `${"😀".repeat(60_000)}\nthe failure message${pad}`);
 
-      assert.ok(comment.length <= 65_000);
-      assert.doesNotMatch(comment, /```text\n[\uDC00-\uDFFF]/);
-      assert.ok(comment.includes("\nthe failure message\n```\n"));
+        assert.ok(comment.length <= 65_000, `${comment.length} with pad "${pad}"`);
+        assert.doesNotMatch(comment, /```text\n[\uDC00-\uDFFF]/, `pad "${pad}"`);
+        assert.ok(comment.includes("\nthe failure message" + pad + "\n```\n"), `pad "${pad}"`);
+      }
     });
 
     it("shortens the last run's fence when the cut removes the long backtick run from it", () => {
@@ -695,6 +698,25 @@ describe("giveUpComment", () => {
 
       assert.ok(comment.length <= 65_000);
       assert.ok(!comment.includes("`".repeat(31)), "a fence for the removed run");
+      assert.ok(comment.endsWith(requeueEnd));
+    });
+
+    it("cuts a reason longer than 2,000 characters to 2,000 and an ellipsis, and leaves one of 2,000 or fewer whole", () => {
+      const reasonIn = (reason: string) => giveUpComment(reason, undefined).split("\n")[1]!;
+      for (const n of [1_999, 2_000]) assert.ok(reasonIn("r".repeat(n)).includes(`${"r".repeat(n)}. It's labelled`), `${n} characters`);
+      const cut = reasonIn("r".repeat(2_001));
+      assert.ok(cut.includes(`${"r".repeat(2_000)}…. It's labelled`), "2,001 characters");
+      // A surrogate pair straddling the cut is dropped whole, not split.
+      const astral = reasonIn(`${"r".repeat(1_999)}😀😀`);
+      assert.doesNotMatch(astral, /[\uD800-\uDBFF]…/);
+      assert.doesNotMatch(astral, /[\uDC00-\uDFFF]/);
+    });
+
+    it("keeps as much as fits of a last run made of one long run of backticks, whose fence grows with it", () => {
+      const comment = giveUpComment("the gate is red", "`".repeat(100_000));
+
+      assert.ok(comment.length <= 65_000, `${comment.length}`);
+      assert.ok(comment.length > 60_000, `the last run was dropped or cut far short: ${comment.length}`);
       assert.ok(comment.endsWith(requeueEnd));
     });
 
@@ -706,10 +728,11 @@ describe("giveUpComment", () => {
       assert.ok(comment.endsWith(requeueEnd));
     });
 
-    it("keeps the last run and the re-queue instructions when the first run's fence is as long as the first run", () => {
+    it("keeps a first run of 20,000 backticks whole, with the last run and the re-queue instructions, since even its fence fits the limit", () => {
       const comment = giveUpComment("the gate is red", "the last run\nthe failure message", "`".repeat(20_000));
 
       assert.ok(comment.length <= 65_000, `${comment.length}`);
+      assert.doesNotMatch(comment, /cut to fit the comment/);
       assert.ok(comment.includes("\nthe failure message\n```\n"));
       assert.ok(comment.endsWith(requeueEnd));
     });

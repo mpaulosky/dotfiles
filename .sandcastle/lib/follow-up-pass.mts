@@ -423,7 +423,7 @@ function rerunLog(pr: number, names: readonly string[], host: PassHost, log: (li
 }
 
 // The most characters of the first red gate run a hand-back quotes, so a first run of very long lines leaves the last run room in the
-// comment (giveUpComment cuts either further when the two together are still too long).
+// comment (giveUpComment cuts the last run further when the two together are still too long).
 const FIRST_RUN_CHARS = 20_000;
 
 // The most characters of a hand-back's reason, so a reason made of a PR's check names can't use up the comment.
@@ -439,9 +439,8 @@ const REASON_CHARS = 2_000;
 // not the failure the pass began with. The first run is cut to its last
 // GATE_COMMENT_LINES lines and then to its last FIRST_RUN_CHARS characters, and
 // its header says both. The reason is cut to REASON_CHARS. When the comment is
-// still over COMMENT_LIMIT, the last run is cut at its front (endOf) as far as it
-// takes, and its header then says so; if the first run's fence alone is that long,
-// the first run is cut the same way. So the comment always ends with the last
+// still over COMMENT_LIMIT, the last run is cut at its front (endOf) as far as
+// fits, and its header then says so. So the comment always ends with the last
 // run's failure message, its fence and the re-queue instructions, which a cut of
 // the finished comment would drop.
 export function giveUpComment(reason: string, output: string | undefined, firstOutput?: string): string {
@@ -453,46 +452,46 @@ export function giveUpComment(reason: string, output: string | undefined, firstO
   const hasLast = output !== undefined && output.trim() !== "";
   const firstRun = first ? endOf(tail(firstOutput, GATE_COMMENT_LINES), FIRST_RUN_CHARS) : "";
   const lastRun = hasLast ? tail(output, GATE_COMMENT_LINES) : "";
-  const assemble = (firstKeep: number, lastKeep: number): string => {
+  // The comment with the last `lastKeep` characters of the last run (all of it when lastKeep is its length, with the header saying so).
+  const assemble = (lastKeep: number): string => {
     const parts = [
       `Sandcastle stopped its follow-up passes on this PR: ${why}. It's labelled \`sandcastle:needs-human\` until a person ` +
         "has looked at it.",
     ];
     if (first) {
-      const cut = firstKeep < firstRun.length;
       parts.push(
-        `The end of the first red gate run (at most ${GATE_COMMENT_LINES} lines and ${FIRST_RUN_CHARS} characters${cut ? ", cut to fit the comment" : ""}), ` +
-          `before a gate-fixer ran:\n\n${textBlock(cut ? lastChars(firstRun, firstKeep) : firstRun)}`,
+        `The end of the first red gate run (at most ${GATE_COMMENT_LINES} lines and ${FIRST_RUN_CHARS} characters), ` +
+          `before a gate-fixer ran:\n\n${textBlock(firstRun)}`,
       );
     }
     if (hasLast) {
       const cut = lastKeep < lastRun.length;
       const name = first ? "last gate output" : "output";
+      // endOf(text, 0) would return the whole text, hence the check.
+      const kept = !cut ? lastRun : lastKeep === 0 ? "" : endOf(lastRun, lastKeep);
       parts.push(
         (cut
           ? `The end of the ${name} (at most ${GATE_COMMENT_LINES} lines, cut at the front to fit the comment):`
-          : `The last ${GATE_COMMENT_LINES} lines of the ${name}:`) + `\n\n${textBlock(cut ? lastChars(lastRun, lastKeep) : lastRun)}`,
+          : `The last ${GATE_COMMENT_LINES} lines of the ${name}:`) + `\n\n${textBlock(kept)}`,
       );
     }
     return `${GIVE_UP_MARKER}\n${[...parts, requeue].join("\n\n")}`;
   };
-  // Each run is cut at its front, the last first, only as far as it takes for the whole comment to fit: cutting the finished comment would
-  // drop the last run's failure message, its closing fence and the re-queue instructions, which come last. `keep` shrinks by at least the
-  // overage and 16 more (the header grows once a run is cut), so the loop ends; endOf(text, 0) would return the whole text, hence lastChars.
-  const lastChars = (text: string, keep: number) => (keep === 0 ? "" : endOf(text, keep));
-  const fitted = (keep: number, over: number) => Math.max(0, keep - over - 16);
-  let firstKeep = firstRun.length;
-  let lastKeep = lastRun.length;
-  let comment = assemble(firstKeep, lastKeep);
-  while (comment.length > COMMENT_LIMIT && lastKeep > 0) {
-    lastKeep = fitted(lastKeep, comment.length - COMMENT_LIMIT);
-    comment = assemble(firstKeep, lastKeep);
+  const whole = assemble(lastRun.length);
+  if (whole.length <= COMMENT_LIMIT || !hasLast) return cutToLimit(whole);
+  // The last run is cut at its front, as far as it takes for the whole comment to fit: cutting the finished comment would drop the last
+  // run's failure message, its closing fence and the re-queue instructions, which come last. The comment doesn't grow by one character
+  // per character kept (textBlock's fence grows with a backtick run in the kept text, and the header changes once the run is cut), so the
+  // most that fits is searched for, not computed. The first run (at most FIRST_RUN_CHARS, in a fence at most one character longer than
+  // its longest backtick run) and the reason (at most REASON_CHARS) together always fit the limit with an empty last run.
+  let fits = 0;
+  let over = lastRun.length;
+  while (fits < over - 1) {
+    const middle = Math.ceil((fits + over) / 2);
+    if (assemble(middle).length <= COMMENT_LIMIT) fits = middle;
+    else over = middle;
   }
-  while (comment.length > COMMENT_LIMIT && firstKeep > 0) {
-    firstKeep = fitted(firstKeep, comment.length - COMMENT_LIMIT);
-    comment = assemble(firstKeep, lastKeep);
-  }
-  return cutToLimit(comment);
+  return cutToLimit(assemble(fits));
 }
 
 // What one call to runPass decided or did:

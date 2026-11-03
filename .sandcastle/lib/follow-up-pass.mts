@@ -449,14 +449,28 @@ export function giveUpComment(reason: string, output: string | undefined, firstO
       `The end of the first red gate run (at most ${GATE_COMMENT_LINES} lines and ${FIRST_RUN_CHARS} characters), before a gate-fixer ran:\n\n${textBlock(quoted)}`,
     );
   }
-  if (output !== undefined && output.trim() !== "") {
-    parts.push(`The last ${GATE_COMMENT_LINES} lines of the ${first ? "last gate output" : "output"}:\n\n${textBlock(tail(output, GATE_COMMENT_LINES))}`);
-  }
-  parts.push(
+  const requeue =
     "To have Sandcastle pick the PR up again, remove `sandcastle:needs-human`. That also starts its count of follow-up " +
-      "passes again.",
-  );
-  return cutToLimit(`${GIVE_UP_MARKER}\n${parts.join("\n\n")}`);
+    "passes again.";
+  const assemble = (lastRun: string | undefined, cut: boolean): string => {
+    const quoted = lastRun === undefined ? [] : [
+      (cut
+        ? `The end of the ${first ? "last gate output" : "output"} (at most ${GATE_COMMENT_LINES} lines, cut at the front to fit the comment):`
+        : `The last ${GATE_COMMENT_LINES} lines of the ${first ? "last gate output" : "output"}:`) + `\n\n${textBlock(lastRun)}`,
+    ];
+    return `${GIVE_UP_MARKER}\n${[...parts, ...quoted, requeue].join("\n\n")}`;
+  };
+  if (output === undefined || output.trim() === "") return cutToLimit(assemble(undefined, false));
+  // The last run is cut at the front, as far as it takes for the whole comment to fit: cutting the finished comment would drop the
+  // run's failure message, its closing fence and the re-queue instructions, which come last.
+  const lastRun = tail(output, GATE_COMMENT_LINES);
+  let comment = assemble(lastRun, false);
+  let keep = lastRun.length;
+  while (comment.length > COMMENT_LIMIT && keep > 0) {
+    keep = Math.max(0, keep - (comment.length - COMMENT_LIMIT) - 16);
+    comment = assemble(keep === 0 ? "" : endOf(lastRun, keep), true);
+  }
+  return cutToLimit(comment);
 }
 
 // What one call to runPass decided or did:

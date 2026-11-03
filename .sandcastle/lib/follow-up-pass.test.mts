@@ -639,6 +639,30 @@ describe("giveUpComment", () => {
       assert.ok(!/\n[\uDC00-\uDFFF]/.test(comment));
     });
 
+    it("keeps the last run's failure message, both closing fences and the re-queue instructions when the two runs together are over the limit", () => {
+      const last = `${"y".repeat(50_000)}\nthe last run's failure message`;
+      const first = `${"x".repeat(30_000)}\nthe first run's end`;
+      const comment = giveUpComment("the gate is red", last, first);
+
+      assert.ok(comment.length <= 65_000, `the comment is ${comment.length} characters`);
+      assert.ok(comment.includes("the first run's end\n```"), "the first run's end and its fence");
+      assert.ok(comment.includes("\nthe last run's failure message\n```\n"), "the last run's failure message and its closing fence");
+      assert.ok(comment.endsWith("That also starts its count of follow-up passes again."), comment.slice(-200));
+    });
+
+    it("keeps the re-queue instructions when the last run alone is over the limit", () => {
+      const comment = giveUpComment("the gate is red", `${"y".repeat(400_000)}\nthe failure message`);
+
+      assert.ok(comment.length <= 65_000, `the comment is ${comment.length} characters`);
+      assert.ok(comment.includes("\nthe failure message\n```\n"));
+      assert.ok(comment.endsWith("That also starts its count of follow-up passes again."), comment.slice(-200));
+    });
+
+    it("says the last run was cut at the front when it was, and keeps the line count's wording when it was not", () => {
+      assert.match(giveUpComment("the gate is red", `${"y".repeat(400_000)}\nend`), /cut at the front to fit the comment/);
+      assert.doesNotMatch(giveUpComment("the gate is red", "short"), /cut at the front/);
+    });
+
     it("doesn't say it quotes the last lines of a first run it also cut by characters", () => {
       const comment = giveUpComment("the gate is red", "last", `${"x".repeat(200_000)}\nthe first run's end`);
 

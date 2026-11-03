@@ -5,20 +5,33 @@
 
 import type { Sandbox } from "@ai-hero/sandcastle";
 
-// One read-only shell command. Each part falls back to a plainer form (busybox has no `ps --sort`)
-// and the whole ends in `true`, so a missing tool shows as an empty section rather than a failed probe.
-export const SANDBOX_PROBE = [
-  "echo '== disk =='; df -h / /tmp . 2>&1",
-  "echo '== memory =='; free -m 2>&1 || head -n 5 /proc/meminfo 2>&1",
-  "echo '== processes =='; ps -e 2>/dev/null | wc -l",
-  "echo '== biggest processes (pid rss-kb elapsed command) =='; (ps -eo pid,rss,etime,comm --sort=-rss 2>/dev/null || ps -eo pid,rss,etime,comm 2>&1) | head -n 8",
-  "echo '== core files =='; find / -xdev -name 'core*' -type f -size +0 2>/dev/null | head -n 10",
+// The seconds the probe's own `timeout` allows. The sandbox's exec gives any command COMMAND_LIMIT_MINUTES
+// and marks the whole sandbox stalled when one runs over (lib/step-limit.mts), so a probe that hung in a
+// broken sandbox would end the run. This ends it far sooner, as a non-zero exit that is only logged.
+export const PROBE_SECONDS = 20;
+
+// The read-only script, with no single quote so it can sit inside `sh -c '...'`. Each part falls back to
+// a plainer form (busybox has no `ps --sort`) and the script ends in `true`, so a missing tool shows as an
+// empty section. The core-file search names the files a crash leaves (`core`, `core.<pid>`) and looks in
+// the current directory and /tmp as well as /, since -xdev stops at a mount and a crashing claude-code
+// writes its core to its working directory.
+const PROBE_SCRIPT = [
+  'echo "== disk =="; df -h / /tmp . 2>&1',
+  'echo "== memory =="; free -m 2>&1 || head -n 5 /proc/meminfo 2>&1',
+  'echo "== processes =="; ps -e 2>/dev/null | wc -l',
+  'echo "== biggest processes (pid rss-kb elapsed command) =="; (ps -eo pid,rss,etime,comm --sort=-rss 2>/dev/null || ps -eo pid,rss,etime,comm 2>&1) | head -n 8',
+  'echo "== core files =="; find / "$PWD" /tmp -xdev -maxdepth 4 -type f -size +0 \\( -name core -o -name "core.[0-9]*" \\) 2>/dev/null | head -n 10',
   "true",
 ].join("; ");
 
-// Log the sandbox's state under `reason`. Never throws: a probe that fails (the sandbox may be the
-// thing that is broken, and a stalled step throws again on every later exec) is logged and changes
-// nothing about the run. `scrub` makes the output safe to log, as it does the gate's.
+// The command the sandbox runs: the script under its own short limit.
+export const SANDBOX_PROBE = `timeout -k 2 ${PROBE_SECONDS} sh -c '${PROBE_SCRIPT}'`;
+
+// Log the sandbox's state under `reason`, which the host writes (a role's name, a checkpoint). Never
+// throws: a probe that fails (the sandbox may be the thing that is broken) is logged and changes nothing
+// about the run. `scrub` makes what the sandbox printed safe to log; its file and process names are
+// written by agents, so the build passes the gate output's cleaning (a line starting `::` is a workflow
+// command in Actions). Both streams are logged, since a shell that can't fork says so on stderr.
 export async function logSandboxState(
   sandbox: Pick<Sandbox, "exec">,
   reason: string,
@@ -26,10 +39,11 @@ export async function logSandboxState(
   scrub: (text: string) => string = (text) => text,
 ): Promise<void> {
   try {
-    const { stdout, exitCode } = await sandbox.exec(SANDBOX_PROBE);
-    const status = exitCode === 0 ? "" : ` (exit ${exitCode})`;
-    log(scrub(`sandbox state (${reason})${status}:\n${stdout.trimEnd()}`));
+    const { stdout, stderr, exitCode } = await sandbox.exec(SANDBOX_PROBE);
+    const status = exitCode === 0 ? "" : exitCode === 124 || exitCode === 137 ? ` (exit ${exitCode}: the probe timed out)` : ` (exit ${exitCode})`;
+    const printed = [stdout, stderr].map((text) => text.trimEnd()).filter((text) => text !== "").join("\n");
+    log(`sandbox state (${reason})${status}:\n${scrub(printed === "" ? "(no output)" : printed)}`);
   } catch (error) {
-    log(scrub(`sandbox state (${reason}): the probe failed: ${String(error).split("\n")[0]}`));
+    log(`sandbox state (${reason}): the probe failed:\n${scrub(String(error).split("\n")[0] ?? "")}`);
   }
 }

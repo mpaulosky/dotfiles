@@ -562,3 +562,37 @@ describe(".sandcastle/.env.example mode", () => {
     }
   });
 });
+
+// The reviewer logs reach the run report's artifact through two things that nothing else ties together: main.mts copies
+// them to REPORT_DIR/report/ after the report is written, and the Sandcastle workflow uploads that folder's reviewer logs.
+// If either drifts, the artifact silently carries no reviewer log (the upload step only warns when nothing at all matches).
+describe("main.mts's reviewer-log wiring", () => {
+  it("copies the reviewer logs from REPORT_DIR right after the run report is written, in the same finally", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const report = mainMts.indexOf("writeRunReport(summary, handBacks);");
+    const copy = mainMts.indexOf("copyReviewerLogs(REPORT_DIR);");
+
+    assert.notEqual(report, -1, "main.mts doesn't write the run report as expected");
+    assert.notEqual(copy, -1, "main.mts doesn't call copyReviewerLogs(REPORT_DIR)");
+    assert.ok(report < copy, "main.mts copies the reviewer logs before the run report is written");
+    assert.equal(mainMts.slice(report, copy).split("\n").length <= 2, true, "something sits between the report and the log copy");
+    assert.match(mainMts, /import \{ copyReviewerLogs \} from "\.\/lib\/role-logs\.mts";/);
+  });
+
+  it("uploads exactly the report, the hand-backs and the copied reviewer logs, in the workflow and the Template's copy", async () => {
+    const { REPORT_DIR } = await import("./lib/report.mts");
+    const { REPORT_LOG_DIR } = await import("./lib/role-logs.mts");
+    for (const path of [".github/workflows/sandcastle.yml", "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.github/workflows/sandcastle.yml"]) {
+      const workflow = read(path);
+      const step = workflow.slice(workflow.indexOf("- name: Upload the run report"));
+      const block = /path: \|\n((?: {12}\S.*\n)+)/.exec(step)?.[1];
+
+      assert.ok(block, `${path} has no upload path block`);
+      assert.deepEqual(
+        block.trim().split("\n").map((line) => line.trim()),
+        [`${REPORT_DIR}/summary.md`, `${REPORT_DIR}/handbacks.json`, `${REPORT_DIR}/${REPORT_LOG_DIR}/*-reviewer.log`],
+        `${path} uploads something else than the report, the hand-backs and the reviewer logs`,
+      );
+    }
+  });
+});

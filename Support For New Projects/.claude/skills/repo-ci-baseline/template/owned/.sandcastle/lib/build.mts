@@ -987,9 +987,11 @@ async function buildMarkedIssue(
   const unpublished = (outcome: BuildOutcome, detail: string): BuildResult =>
     ({ commits, prUrl: undefined, publishFailed: false, outcome, detail });
   const log = (line: string) => host.log(`  #${issue.number} ${line}`);
-  // The sandbox's disk, memory and process state in the log, after a role fails and before each gate. It never throws and
-  // changes nothing about the build, so a sandbox too broken to answer is only a logged line.
-  const probeSandbox = (reason: string) => logSandboxState(sandbox, reason, log, host.publicError);
+  // The sandbox's disk, memory and process state in the log, after a role fails and before each gate. It never throws, and
+  // it runs under a limit of its own far below the sandbox's command limit (lib/diagnostics.mts), so a sandbox too broken to
+  // answer is a logged line and not a stalled sandbox. File and process names in it are written by agents, so it is cleaned
+  // like the gate's output.
+  const probeSandbox = (reason: string) => logSandboxState(sandbox, reason, log, (text) => logSafeGateOutput(text, host.publicError));
   const designNotePath = `.sandcastle/work/${issue.number}/design.md`;
   const prBodyPath = `.sandcastle/work/${issue.number}/pr-body.md`;
 

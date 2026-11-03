@@ -20,7 +20,7 @@ LOG="$WORK/calls.log"
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
 # The caller may be iterating with the review check skipped; the cases set what they need.
-unset GATE_SKIP_REVIEW FAIL_REVIEW
+unset GATE_SKIP_REVIEW FAIL_REVIEW SLOW_REVIEW
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
@@ -37,6 +37,7 @@ cp "$GATE" "$REPO/scripts/gate.sh"
 cat > "$REPO/scripts/review.sh" <<EOF
 #!/usr/bin/env bash
 echo "review.sh \$*" >> "$LOG"
+[[ -z "\${SLOW_REVIEW:-}" ]] || sleep "\$SLOW_REVIEW"
 [[ -z "\${FAIL_REVIEW:-}" ]]
 EOF
 cat > "$REPO/$SKILL_REL/test.sh" <<EOF
@@ -87,11 +88,12 @@ first_before_second() { # the first pattern's line comes before the second's
 }
 
 # The step headers end with the seconds since the script started (mpaulosky/dotfiles#417).
-# stamped: the header is there with some number of seconds. started_at_zero: the number is 0 to 4
-# (the slack is for a slow git call), which a gate run with SECONDS=500 in its environment
-# shows only when the gate resets SECONDS itself.
+# stamped: the header is there with some number of seconds. started_at_zero: the number is 0 to 9
+# (the slack is for a slow git call on a loaded runner), which a gate run with SECONDS=500 in its
+# environment shows only when the gate resets SECONDS itself. stamp_of: that number.
 stamped() { grep -Eq -- "^── $1 \[\+[0-9]+s\]\$" <<< "$OUTPUT"; }
-started_at_zero() { grep -Eq -- "^── $1 \[\+[0-4]s\]\$" <<< "$OUTPUT"; }
+started_at_zero() { grep -Eq -- "^── $1 \[\+[0-9]s\]\$" <<< "$OUTPUT"; }
+stamp_of() { sed -nE "s/^── $1 \[\+([0-9]+)s\]\$/\1/p" <<< "$OUTPUT" | head -1; }
 
 # A branch that changed only an unrelated file.
 git -C "$REPO" switch -q -c work origin/main
@@ -112,6 +114,12 @@ run_gate_with_seconds_exported() { # the gate's shell starts with SECONDS=500 in
 }
 run_gate_with_seconds_exported
 check "an inherited SECONDS doesn't offset the headers" started_at_zero "Local review"
+
+# The numbers are elapsed time, not a constant: a review check that takes two seconds is in the headers after it, not before.
+SLOW_REVIEW=2 run_gate
+check "a header before the review check doesn't count its time" test "$(stamp_of 'Local review')" -lt 2
+check "the test.sh header counts the review check's two seconds" test "$(stamp_of 'test.sh')" -ge 2
+check "and no more than the whole run took" test "$(stamp_of 'test.sh')" -lt 12
 
 FAIL_REVIEW=1 run_gate
 check "a failing review check refuses the push" test $STATUS -ne 0

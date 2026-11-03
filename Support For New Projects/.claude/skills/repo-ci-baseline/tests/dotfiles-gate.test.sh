@@ -150,7 +150,9 @@ TEST_SH="$SKILL_DIR/test.sh"
 step_header() { ( eval "$(grep -m1 '^step() ' "$TEST_SH")"; SECONDS=7; step "Some step" ); }
 check "test.sh's step() prints the seconds since test.sh started" test "$(step_header)" = "$(printf '\n── Some step [+7s]')"
 check "test.sh resets SECONDS before its first step" grep -qx 'SECONDS=0' "$TEST_SH"
+# shellcheck disable=SC2016 # the text to find holds a literal ${SECONDS}; it must not expand here
 check "test.sh's pass line carries the seconds" grep -qF 'echo "test.sh: all checks passed [+${SECONDS}s]"' "$TEST_SH"
+# shellcheck disable=SC2016 # the text to find holds a literal ${SECONDS}; it must not expand here
 check "test.sh's fail line carries the seconds" grep -qF 'echo "test.sh: $failures check(s) failed [+${SECONDS}s]"' "$TEST_SH"
 
 echo

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { createCheckedSandbox } from "./build.mts";
@@ -610,7 +611,7 @@ describe("giveUpComment", () => {
       assert.ok(comment.includes("last 2\n"), comment);
       assert.ok(!comment.includes("last 1\n"), comment);
       assert.ok(comment.indexOf("first 2\n") < comment.indexOf("last 2\n"), comment);
-      assert.match(comment, new RegExp(`The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:`));
+      assert.match(comment, new RegExp(`The end of the first red gate run \\(at most ${GATE_COMMENT_LINES} lines and 20000 characters\\), before a gate-fixer ran:`));
       assert.match(comment, new RegExp(`The last ${GATE_COMMENT_LINES} lines of the last gate output:`));
     });
 
@@ -636,6 +637,20 @@ describe("giveUpComment", () => {
       const comment = giveUpComment("the gate is red", "last", `${"😀"}${"b".repeat(20_000 - 1)}`);
 
       assert.ok(!/\n[\uDC00-\uDFFF]/.test(comment));
+    });
+
+    it("doesn't say it quotes the last lines of a first run it also cut by characters", () => {
+      const comment = giveUpComment("the gate is red", "last", `${"x".repeat(200_000)}\nthe first run's end`);
+
+      assert.doesNotMatch(comment, /The last \d+ lines of the first red gate run/);
+      assert.match(comment, /20000 characters/);
+    });
+
+    it("fences each run with checkpoint.mts's textBlock rather than a copy of its fence rule", () => {
+      const source = readFileSync(new URL("./follow-up-pass.mts", import.meta.url), "utf8");
+
+      assert.doesNotMatch(source, /"`"\.repeat/);
+      assert.match(source, /textBlock/);
     });
 
     it("fences the first run longer than any backtick run in it", () => {

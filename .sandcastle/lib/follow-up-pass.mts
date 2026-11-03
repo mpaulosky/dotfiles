@@ -28,7 +28,7 @@ import {
   retryOnServerError,
 } from "./build.mts";
 import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel, releasePullRequestBuildingLabel } from "./building.mts";
-import { endOf, runCheckpoint, runGate, sandboxDown, tail, type GateRun } from "./checkpoint.mts";
+import { endOf, runCheckpoint, runGate, sandboxDown, tail, textBlock, type GateRun } from "./checkpoint.mts";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_LABEL,
@@ -426,22 +426,17 @@ function rerunLog(pr: number, names: readonly string[], host: PassHost, log: (li
 // the comment: cutToLimit keeps the start of a comment that is too long, and the last run comes second.
 const FIRST_RUN_CHARS = 20_000;
 
-// `text` in a fenced text block longer than any backtick run in it.
-function fencedText(text: string): string {
-  const longestRun = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
-  const fence = "`".repeat(Math.max(3, longestRun + 1));
-  return `${fence}text\n${text}\n${fence}`;
-}
-
 // The PR hand-back comment for a pass that gave up (runPass's step 4, 9, 10,
 // 11): GIVE_UP_MARKER on a line of its own (so scripts/watch-pr.sh skips it),
 // why, then the tail of the last gate output or the role's error (when given)
-// in a fence longer than any backtick run in it, and how to re-queue the PR
-// (remove sandcastle:needs-human). `firstOutput`, when given, is the gate's
-// first red run, quoted in a fence of its own before the last run: a gate-fixer
-// attempt can leave the last run showing a dead sandbox or a timeout, not the
-// failure the pass began with, and each run is cut on its own so a long last run
-// can't push the first out of the comment.
+// in a fence longer than any backtick run in it (textBlock), and how to re-queue
+// the PR (remove sandcastle:needs-human). `firstOutput`, when given, is the
+// gate's first red run, quoted in a fence of its own before the last run: a
+// gate-fixer attempt can leave the last run showing a dead sandbox or a timeout,
+// not the failure the pass began with, and each run is cut on its own so a long
+// last run can't push the first out of the comment. The first run is cut to its
+// last GATE_COMMENT_LINES lines and then to its last FIRST_RUN_CHARS characters,
+// and its header says both.
 export function giveUpComment(reason: string, output: string | undefined, firstOutput?: string): string {
   const parts = [
     `Sandcastle stopped its follow-up passes on this PR: ${reason}. It's labelled \`sandcastle:needs-human\` until a person ` +
@@ -450,10 +445,12 @@ export function giveUpComment(reason: string, output: string | undefined, firstO
   const first = firstOutput !== undefined && firstOutput.trim() !== "";
   if (first) {
     const quoted = endOf(tail(firstOutput, GATE_COMMENT_LINES), FIRST_RUN_CHARS);
-    parts.push(`The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:\n\n${fencedText(quoted)}`);
+    parts.push(
+      `The end of the first red gate run (at most ${GATE_COMMENT_LINES} lines and ${FIRST_RUN_CHARS} characters), before a gate-fixer ran:\n\n${textBlock(quoted)}`,
+    );
   }
   if (output !== undefined && output.trim() !== "") {
-    parts.push(`The last ${GATE_COMMENT_LINES} lines of the ${first ? "last gate output" : "output"}:\n\n${fencedText(tail(output, GATE_COMMENT_LINES))}`);
+    parts.push(`The last ${GATE_COMMENT_LINES} lines of the ${first ? "last gate output" : "output"}:\n\n${textBlock(tail(output, GATE_COMMENT_LINES))}`);
   }
   parts.push(
     "To have Sandcastle pick the PR up again, remove `sandcastle:needs-human`. That also starts its count of follow-up " +

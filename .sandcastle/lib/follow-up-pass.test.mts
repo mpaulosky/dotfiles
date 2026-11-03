@@ -732,7 +732,8 @@ describe("giveUpComment", () => {
       const comment = giveUpComment("the gate is red", "the last run\nthe failure message", "`".repeat(20_000));
 
       assert.ok(comment.length <= 65_000, `${comment.length}`);
-      assert.doesNotMatch(comment, /cut to fit the comment/);
+      assert.doesNotMatch(comment, /cut at the front/, "the last run is not cut");
+      assert.ok(comment.includes("`".repeat(20_000)), "the first run is whole");
       assert.ok(comment.includes("\nthe failure message\n```\n"));
       assert.ok(comment.endsWith(requeueEnd));
     });

@@ -36,6 +36,7 @@ import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.
 import { git, hostGitInvocation, runHostGit } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
+import { logSandboxState } from "./diagnostics.mts";
 import { closeAfterWork, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
 import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
@@ -986,6 +987,9 @@ async function buildMarkedIssue(
   const unpublished = (outcome: BuildOutcome, detail: string): BuildResult =>
     ({ commits, prUrl: undefined, publishFailed: false, outcome, detail });
   const log = (line: string) => host.log(`  #${issue.number} ${line}`);
+  // The sandbox's disk, memory and process state in the log, after a role fails and before each gate. It never throws and
+  // changes nothing about the build, so a sandbox too broken to answer is only a logged line.
+  const probeSandbox = (reason: string) => logSandboxState(sandbox, reason, log, host.publicError);
   const designNotePath = `.sandcastle/work/${issue.number}/design.md`;
   const prBodyPath = `.sandcastle/work/${issue.number}/pr-body.md`;
 
@@ -1050,6 +1054,7 @@ async function buildMarkedIssue(
         : unpublished("role failed", `the ${role} failed`);
     }
     console.error(`  ✗ #${issue.number}: ${terminalText(logged ?? failure)}, so ${branch} isn't published.`);
+    await probeSandbox(failure);
     host.recordBuildFailure(issue.number, branch, developerFailureComment(failure, branch, error));
     return result;
   }
@@ -1063,6 +1068,7 @@ async function buildMarkedIssue(
   // and no attempt is spent on a build that published.
   // A gate-fixer run that stopped with UncountedStopError is rethrown.
   async function gatePasses(checkpoint: Checkpoint, mergedMain?: string): Promise<string | undefined> {
+    await probeSandbox(`before checkpoint ${checkpoint}`);
     const result = await runCheckpoint(
       checkpoint,
       {
@@ -1463,6 +1469,7 @@ async function buildMarkedIssue(
       // say so in the PR, which gets a human review regardless.
       console.error(`  ⚠ #${issue.number}: reviewer failed, publishing unreviewed: ${terminalText(String(error))}`);
       reviewed = false;
+      await probeSandbox("the reviewer failed");
     }
 
     const checkpoint2 = await checkpoint2Passes();

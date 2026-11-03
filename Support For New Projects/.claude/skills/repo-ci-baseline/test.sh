@@ -288,7 +288,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
   .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
   .sandcastle/lib/building.test.mts .sandcastle/lib/checkpoint.mts .sandcastle/lib/checkpoint.test.mts .sandcastle/lib/config.mts \
-  .sandcastle/lib/config.test.mts .sandcastle/lib/critique.mts .sandcastle/lib/critique.test.mts .sandcastle/lib/errors.mts \
+  .sandcastle/lib/config.test.mts .sandcastle/lib/critique.mts .sandcastle/lib/critique.test.mts .sandcastle/lib/diagnostics.mts .sandcastle/lib/diagnostics.test.mts .sandcastle/lib/errors.mts \
   .sandcastle/lib/follow-up-pass.mts .sandcastle/lib/follow-up-pass.test.mts .sandcastle/lib/follow-up-run.mts .sandcastle/lib/follow-up-run.test.mts \
   .sandcastle/lib/follow-up.mts \
   .sandcastle/lib/follow-up.test.mts .sandcastle/lib/gate.mts .sandcastle/lib/gate.test.mts .sandcastle/lib/git-sandbox-fake.mts \
@@ -298,7 +298,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .sandcastle/lib/limits.mts .sandcastle/lib/limits.test.mts .sandcastle/lib/overlap.mts .sandcastle/lib/overlap.test.mts \
   .sandcastle/lib/plain-text.mts .sandcastle/lib/plain-text.test.mts .sandcastle/lib/plan.mts .sandcastle/lib/plan.test.mts .sandcastle/lib/pre-push-review-skill.test.mts .sandcastle/lib/prompts.mts .sandcastle/lib/prompts.test.mts \
   .sandcastle/lib/queue.mts .sandcastle/lib/queue.test.mts .sandcastle/lib/report.mts .sandcastle/lib/report.test.mts \
-  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts \
+  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/role-logs.mts .sandcastle/lib/role-logs.test.mts \
   .sandcastle/lib/round.mts .sandcastle/lib/round.test.mts .sandcastle/lib/sandbox-env.mts .sandcastle/lib/sandbox-env.test.mts \
   .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/security-record.mts .sandcastle/lib/security-record.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
   .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/status.mts .sandcastle/lib/status.test.mts .sandcastle/lib/step-limit.mts .sandcastle/lib/step-limit.test.mts .sandcastle/lib/ui-role-fixture.mts .sandcastle/lib/ui-role-fixture.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \

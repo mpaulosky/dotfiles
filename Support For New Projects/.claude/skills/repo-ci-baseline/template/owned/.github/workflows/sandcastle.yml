@@ -294,11 +294,13 @@ jobs:
           fi
           pnpm run sandcastle
 
-      # Only the run report and the hand-backs: the role transcripts stay on
-      # the runner. Artifacts of a public repository can be downloaded by any
-      # signed-in user, and GitHub masks secrets in step logs, not artifacts,
-      # so a transcript that printed the sandbox's Claude credential would
-      # publish it.
+      # Only the run report, the hand-backs and the reviewers' logs: the other
+      # role transcripts stay on the runner. Artifacts of a public repository
+      # can be downloaded by any signed-in user, and GitHub masks secrets in
+      # step logs, not artifacts, so a transcript that printed the sandbox's
+      # Claude credential would publish it. The reviewers' logs reach
+      # logs/report/ through lib/role-logs.mts, which keeps a log's end and
+      # leaves out one that holds anything shaped like a secret.
       - name: Upload the run report
         if: always() && steps.secrets.outputs.enabled == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -307,6 +309,7 @@ jobs:
           path: |
             .sandcastle/logs/summary.md
             .sandcastle/logs/handbacks.json
+            .sandcastle/logs/report/*-reviewer.log
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

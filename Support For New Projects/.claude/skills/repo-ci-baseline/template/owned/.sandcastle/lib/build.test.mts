@@ -47,6 +47,7 @@ import {
   type OptionalRole,
 } from "./config.mts";
 import { LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import type { HostReviewResult } from "./host-review.mts";
@@ -134,7 +135,10 @@ function host(
     checkFiles = "",
     checkFilesError,
     localReview,
+    probeError,
   }: {
+    // What the sandbox-state probe (lib/diagnostics.mts) throws, instead of printing a state.
+    probeError?: Error;
     ahead?: number | number[];
     statuses?: string[];
     failing?: string[];
@@ -255,6 +259,11 @@ function host(
     },
     exec: async (rawCommand: string) => {
       const command = asDefaultGate(rawCommand);
+      if (command === SANDBOX_PROBE) {
+        probes.push(`${runs.length} roles run`);
+        if (probeError !== undefined) throw probeError;
+        return { stdout: "disk 10% used\n", stderr: "", exitCode: 0 };
+      }
       if (command.startsWith("git status")) {
         const stdout = worktreeStatuses.shift() ?? "";
         return { stdout, stderr: "", exitCode: 0 };
@@ -324,6 +333,8 @@ function host(
       return {};
     },
   } as unknown as Sandbox;
+  // A note per probe of the sandbox's state.
+  const probes: string[] = [];
   const buildingCalls: number[] = [];
   const designNoteCalls: number[] = [];
   const gateGuardChecks: string[] = [];
@@ -454,7 +465,7 @@ function host(
     },
   };
   return {
-    steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
+    steps, runs, logs, probes, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, publishedCheckChanges, gateGuardChecks, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
     publishedReviewNotes, localReviewCalls,
@@ -523,8 +534,10 @@ describe("buildIssue", () => {
     assert.deepEqual(logs, [
       "  #69 tester finished",
       "  #69 backend finished",
+      "  #69 sandbox state (before checkpoint 1):\ndisk 10% used",
       "  #69 checkpoint 1: gate passed",
       "  #69 reviewer finished",
+      "  #69 sandbox state (before checkpoint 2):\ndisk 10% used",
       "  #69 checkpoint 2: gate passed",
     ]);
   });
@@ -656,6 +669,42 @@ describe("buildIssue", () => {
 
     assert.deepEqual(pushed, []);
     assert.deepEqual(recordBuildFailureCalls, []);
+  });
+
+  it("logs the sandbox's state when the reviewer fails, and still publishes unreviewed", async () => {
+    const { logs, probes, pushed, buildHost } = host([0, 0], { failing: ["reviewer"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(probes.length > 0);
+    assert.ok(logs.some((line) => /sandbox state \(the reviewer failed\):\ndisk 10% used/.test(line)), logs.join("\n"));
+    assert.equal(pushed.length, 1);
+  });
+
+  it("logs the sandbox's state when a developer role fails", async () => {
+    const { logs, buildHost } = host([], { failing: ["backend"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the backend failed\):/.test(line)), logs.join("\n"));
+  });
+
+  it("logs the sandbox's state before each checkpoint's gate", async () => {
+    const { logs, buildHost } = host([0, 0]);
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(before checkpoint 1\):/.test(line)), logs.join("\n"));
+    assert.ok(logs.some((line) => /sandbox state \(before checkpoint 2\):/.test(line)), logs.join("\n"));
+  });
+
+  it("builds the same when the probe of the sandbox's state fails", async () => {
+    const { logs, pushed, buildHost } = host([0, 0], { failing: ["reviewer"], probeError: new Error("docker exec failed") });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /the probe failed: Error: docker exec failed/.test(line)), logs.join("\n"));
+    assert.equal(pushed.length, 1);
   });
 
   it("treats a checkpoint that stays red after the gate-fixer's attempts as a failed build attempt", async () => {

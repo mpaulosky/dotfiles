@@ -184,6 +184,7 @@ import {
   type RunEnding,
 } from "./lib/report.mts";
 import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
+import { copyReviewerLogs } from "./lib/role-logs.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
 import { exitAfterStall } from "./lib/host-limit.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
@@ -561,6 +562,7 @@ try {
     stops: intakeStopReport.items(),
   });
   writeRunReport(summary, handBacks);
+  copyReviewerLogs(REPORT_DIR);
   console.log(`\nRun report: ${REPORT_DIR}/summary.md`);
 
   // Unlike a hand-back, an intake stop means the host couldn't run a role at

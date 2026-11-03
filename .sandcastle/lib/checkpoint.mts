@@ -53,7 +53,8 @@ export type CheckpointSteps = {
   // as `scrub` for text that has to stay a single line, since `scrub` may return
   // several. runCheckpoint logs a failed gate-fixer attempt's error through it. A
   // caller without one still gets that line cleaned (printableLine), but with
-  // any secret in it left in.
+  // any secret in it left in. Like printableLine's `scrub`, it must withhold
+  // the whole text when it finds a secret, not replace only the match.
   scrubLine?(text: string): string;
 };
 
@@ -286,7 +287,10 @@ function withoutHiddenCharacters(text: string): string {
 // longer recognises. Then the text is reduced to printable ASCII (what is left of
 // a non-ASCII character becomes a space, so the result is one line, and a caller
 // puts it after a prefix of its own so it can't start one with `::`), changed by
-// withoutRunnerCommands, cut to `limit` characters and trimmed.
+// withoutRunnerCommands, cut to `limit` characters and trimmed. The guarantee holds
+// for a `scrub` that withholds the whole text when it finds a secret, as the host's
+// publicError does: one that replaces only the match leaves the rest of a secret a
+// hidden character split, because the second pass works on the first's output.
 // A value that can't be printed, a scrub that throws, or a result with nothing
 // printable left gives a fixed text instead, so the caller's own error is never
 // replaced by this one and the message never reads as an empty pair of brackets.

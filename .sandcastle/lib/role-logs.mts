@@ -4,7 +4,7 @@
 // holds what an agent printed: model prose and command text anyone who can write an issue can steer.
 // So a log is never copied whole. Only an allowlisted view is: the host's own status lines (the last few, the start line without its
 // timestamp, since a forged line's digits are data), the name
-// of each tool call without its arguments (only a known tool's name), and the few lines that name an
+// of each of the last few tool calls without its arguments (only a known tool's name, an MCP tool as `mcp__(...)`), and the few lines that name an
 // error or an abort. An MCP tool is kept only as `mcp__(...)`. Those error lines are the one
 // place free text gets through, so they are cut short, limited in number, and left out when they hold a
 // long run of token characters (where an encoded secret would sit). Whatever the view still holds is
@@ -20,9 +20,6 @@ import { containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 // Where the copies go, under the logs directory the artifact step uploads.
 export const REPORT_LOG_DIR = "report";
 
-// The most of one view the artifact keeps: its end, where an abort shows.
-export const REPORT_LOG_LIMIT = 100_000;
-
 // The most of one kept error line, so a long line can't carry much.
 export const REPORT_LINE_LIMIT = 200;
 
@@ -33,6 +30,9 @@ export const REPORT_ERROR_LINES = 20;
 // The most host status lines one view keeps (the last ones): their numbers are the only data a line shaped like one can carry,
 // and a real run prints a few per iteration.
 export const REPORT_HOST_LINES = 30;
+
+// The most tool-call lines one view keeps (the last ones): which tool a line names is data a forged line can choose.
+export const REPORT_TOOL_LINES = 30;
 
 // A run of this many token characters in an error line (base64, hex, a key) leaves the line out.
 export const REPORT_TOKEN_RUN = 24;
@@ -91,8 +91,8 @@ function cut(text: string, limit: number): string {
   return /[\uD800-\uDBFF]$/.test(head) && text.length > limit ? head.slice(0, -1) : head;
 }
 
-// The allowlisted view of a reviewer log: its last REPORT_HOST_LINES host status lines and the names of its known tool calls, with a run
-// of `[... N lines left out]` where anything else was. Of the lines that name an error, the last REPORT_ERROR_LINES
+// The allowlisted view of a reviewer log: its last REPORT_HOST_LINES host status lines and the names of its last REPORT_TOOL_LINES known tool calls, with a
+// `[... lines left out]` marker (no count) for each run of lines it left out. Of the lines that name an error, the last REPORT_ERROR_LINES
 // are kept as free text cut to REPORT_LINE_LIMIT, unless one holds a run of REPORT_TOKEN_RUN token characters or
 // `held` says it looks like a secret. Model prose, tool arguments and tool output are what it leaves out.
 export function allowlistedView(text: string, held: (line: string) => boolean = () => false): string {
@@ -100,23 +100,26 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
   const keep = new Array<string | undefined>(lines.length).fill(undefined);
   const errors: number[] = [];
   const hosts: number[] = [];
+  const tools: number[] = [];
   lines.forEach((line, index) => {
     if (hostLine.test(line)) hosts.push(index);
     else {
       const tool = toolName(line);
-      if (tool !== undefined) keep[index] = tool;
+      if (tool !== undefined) tools.push(index);
       else if (errorLine.test(line) && !tokenRun.test(line) && !held(line)) errors.push(index);
     }
   });
   // The start line's timestamp is free digits, so it is kept without it.
   for (const index of hosts.slice(-REPORT_HOST_LINES)) keep[index] = lines[index]!.startsWith("--- Run started") ? "--- Run started ---" : lines[index];
+  for (const index of tools.slice(-REPORT_TOOL_LINES)) keep[index] = toolName(lines[index]!);
   for (const index of errors.slice(-REPORT_ERROR_LINES)) {
     keep[index] = cut(lines[index]!, REPORT_LINE_LIMIT);
   }
   const out: string[] = [];
   let left = 0;
   const flush = () => {
-    if (left > 0) out.push(`[... ${left} line${left === 1 ? "" : "s"} left out]`);
+    // No count: the number of lines an attacker printed between two kept lines would be data.
+    if (left > 0) out.push("[... lines left out]");
     left = 0;
   };
   keep.forEach((kept, index) => {
@@ -131,13 +134,6 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
   return `${out.join("\n")}\n`;
 }
 
-// The last REPORT_LOG_LIMIT characters of `text`, never starting on half of a surrogate pair.
-function tailOf(text: string): string {
-  if (text.length <= REPORT_LOG_LIMIT) return text;
-  const tail = text.slice(-REPORT_LOG_LIMIT);
-  return /^[\uDC00-\uDFFF]/.test(tail) ? tail.slice(1) : tail;
-}
-
 // Whether the view holds one of the secrets or a token shape, as written or with whitespace and control and format
 // characters taken out (and ANSI colour codes first), so a token an error line printed spaced out or wrapped is whole again for the check.
 function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
@@ -145,7 +141,7 @@ function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
   return [view, spaceless].some((form) => containsSecret(form, secrets) || looseTokenShape.test(form));
 }
 
-// Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `<logsDir>/report/`, keeping its end, with a short
+// Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `<logsDir>/report/`, with a short
 // note in place of a view that looks like it holds a secret. The pre-push review's own log, `*-pre-push-reviewer.log`,
 // is not a Sandcastle role's and is never copied. Never throws: it runs in the run's finally, and a missing log
 // directory or an unreadable file is a warning. `secrets` defaults to the values .sandcastle/.env gives the sandbox,
@@ -167,7 +163,7 @@ export function copyReviewerLogs(
     fs.mkdir(outDir);
     for (const name of names) {
       try {
-        const view = tailOf(allowlistedView(fs.read(join(logsDir, name)), (line) => looksLikeSecret(line, known)));
+        const view = allowlistedView(fs.read(join(logsDir, name)), (line) => looksLikeSecret(line, known));
         const held = looksLikeSecret(view, known);
         fs.write(join(outDir, name), held ? "Left out: the view held something shaped like a secret.\n" : view);
         copied.push(name);

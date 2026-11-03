@@ -83,7 +83,8 @@ guardrails keep agent-written code from running on the host. A change keeps ever
   get Read, Grep and Glob only (`restrictedClaudeCode`), and no agent's prompt names a shell on the ledger, a token or `.git/review`.
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
 - The run report artifact is downloadable by any signed-in user of a public repository and GitHub doesn't mask secrets in it, so it never holds a role's log whole:
-  `lib/role-logs.mts` copies only the reviewers' allowlisted view (host status lines, known tool names without arguments, the last few error lines), checked for the sandbox's secrets and token shapes.
+  `lib/role-logs.mts` copies only the reviewers' allowlisted view (the last host status lines, the last known tool names without arguments,
+  an MCP tool only as `mcp__(...)`, the last few error lines), checked for the sandbox's secrets and token shapes.
 - The host pushes the commit the gate passed on, after the secret scan (`lib/scan.mts`), and posts only
   `publicErrorText` on public issues.
 

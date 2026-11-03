@@ -8,8 +8,8 @@ import {
   copyReviewerLogs,
   REPORT_ERROR_LINES,
   REPORT_HOST_LINES,
+  REPORT_TOOL_LINES,
   REPORT_LINE_LIMIT,
-  REPORT_LOG_LIMIT,
   REPORT_TOKEN_RUN,
   type RoleLogFs,
 } from "./role-logs.mts";
@@ -67,7 +67,7 @@ describe("allowlistedView", () => {
     const lines = (count: number) => Array.from({ length: count }, (_, i) => `Iteration ${i}/99`);
     assert.equal(allowlistedView(lines(REPORT_HOST_LINES).join("\n")), `${lines(REPORT_HOST_LINES).join("\n")}\n`);
     const over = allowlistedView(lines(REPORT_HOST_LINES + 1).join("\n"));
-    assert.ok(over.startsWith("[... 1 line left out]\nIteration 1/99\n"));
+    assert.ok(over.startsWith("[... lines left out]\nIteration 1/99\n"));
     assert.ok(over.endsWith(`Iteration ${REPORT_HOST_LINES}/99\n`));
   });
 
@@ -80,18 +80,24 @@ describe("allowlistedView", () => {
     for (const template of templates) {
       const limit = template.includes("1.{n}") ? 2 : 3;
       const line = (digits: number) => template.replace("{n}", "7".repeat(digits));
-      assert.equal(allowlistedView(line(limit)), `${line(limit)}\n`, line(limit));
-      // This one's wording holds the error word "signal", so a malformed copy is still kept, as an error line.
-      if (template.includes("completion signal")) continue;
-      assert.equal(allowlistedView(line(limit + 1)), "[... 1 line left out]\n", line(limit + 1));
-      assert.equal(allowlistedView(line(0)), "[... 1 line left out]\n", line(0));
+      // `held` rejects every error line, so only a host line can be kept (one worded with an error word, as one is, would be kept as an error otherwise).
+      const view = (text: string) => allowlistedView(text, () => true);
+      assert.equal(view(line(limit)), `${line(limit)}\n`, line(limit));
+      assert.equal(view(line(limit + 1)), "[... lines left out]\n", line(limit + 1));
+      assert.equal(view(line(0)), "[... lines left out]\n", line(0));
     }
   });
 
   it("keeps a run-start line without its timestamp, and only a timestamp of the exact shape", () => {
     assert.equal(allowlistedView("--- Run started: 2026-10-19T01:38:45.498Z ---"), "--- Run started ---\n");
-    for (const bad of ["--- Run started: 2026-10-19T01:38:45.49Z ---", "--- Run started: 20261-10-19T01:38:45.498Z ---", "--- Run started: 104117110116 ---", "--- Run started:  ---"]) {
-      assert.equal(allowlistedView(bad), "[... 1 line left out]\n", bad);
+    const shape = ["2026", "10", "19", "01", "38", "45", "498"];
+    const bads = shape.flatMap((part, i) => [part.slice(1), `${part}0`].map((changed) => shape.map((p, j) => (j === i ? changed : p))));
+    const stamp = ([y, mo, d, h, mi, sec, ms]: string[]) => `--- Run started: ${y}-${mo}-${d}T${h}:${mi}:${sec}.${ms}Z ---`;
+    for (const bad of [
+      ...bads.map(stamp),
+      stamp(shape).replace("T", " "), stamp(shape).replace("Z", ""), "--- Run started: 104117110116 ---", "--- Run started:  ---",
+    ]) {
+      assert.equal(allowlistedView(bad), "[... lines left out]\n", bad);
     }
   });
 
@@ -100,6 +106,15 @@ describe("allowlistedView", () => {
     assert.match(view, /^Bash\(\.\.\.\)\n/);
     assert.ok(view.includes("Read(...)"));
     assert.ok(!/hidden|passwd|cat > f/.test(view));
+  });
+
+  it("keeps only the last REPORT_TOOL_LINES tool lines", () => {
+    assert.equal(REPORT_TOOL_LINES, 30);
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => `${i % 2 === 0 ? "Bash" : "Read"}(${i})`);
+    const kept = (count: number) => lines(count).map((line) => `${line.split("(")[0]}(...)`);
+    assert.equal(allowlistedView(lines(REPORT_TOOL_LINES).join("\n")), `${kept(REPORT_TOOL_LINES).join("\n")}\n`);
+    const over = allowlistedView(lines(REPORT_TOOL_LINES + 1).join("\n"));
+    assert.equal(over, `[... lines left out]\n${kept(REPORT_TOOL_LINES + 1).slice(1).join("\n")}\n`);
   });
 
   it("keeps each tool a role is given by name", () => {
@@ -112,13 +127,17 @@ describe("allowlistedView", () => {
     const mcp = (server: string, tool: string) => allowlistedView(`mcp__${server}__${tool}(a=1)`);
     assert.equal(mcp("x", "y"), "mcp__(...)\n");
     assert.equal(mcp("a".repeat(30), "b"), "mcp__(...)\n");
-    assert.equal(mcp("a".repeat(31), "b"), "[... 1 line left out]\n");
+    assert.equal(mcp("a".repeat(31), "b"), "[... lines left out]\n");
     assert.equal(mcp("a", "b".repeat(40)), "mcp__(...)\n");
     assert.equal(mcp("a".repeat(30), "b".repeat(40)), "mcp__(...)\n");
-    assert.equal(mcp("a", "b".repeat(41)), "[... 1 line left out]\n");
-    assert.equal(mcp("", "b"), "[... 1 line left out]\n");
-    assert.equal(mcp("a", ""), "[... 1 line left out]\n");
-    assert.equal(mcp("a_b", "c"), "[... 1 line left out]\n");
+    assert.equal(mcp("a", "b".repeat(41)), "[... lines left out]\n");
+    assert.equal(mcp("", "b"), "[... lines left out]\n");
+    assert.equal(mcp("a", ""), "[... lines left out]\n");
+    assert.equal(mcp("a_b", "c"), "[... lines left out]\n");
+    assert.equal(mcp("a-b", "create_issue"), "mcp__(...)\n");
+    assert.equal(mcp("a", "c-d"), "mcp__(...)\n");
+    assert.equal(mcp("a.b", "c"), "[... lines left out]\n");
+    assert.equal(mcp("a", "c.d"), "[... lines left out]\n");
     assert.ok(!mcp("aHVudGVy", "bnRlcjI").includes("aHVudGVy"));
   });
 
@@ -127,12 +146,12 @@ describe("allowlistedView", () => {
       "open(p).read()", "aHVudGVyMmh1bnRlcjI(", "Bash2(x)", "Bash.x(x)", "Read:x(x)", "bash(x)", "Bashful(x)", "mcp__a(x)",
       "aGVsbG8gd29ybGQ=(", "9Bash(x)", "Not a tool (x)", `Read${"x".repeat(56)}(x)`, "x".repeat(61) + "(x)", "x".repeat(62) + "(x)",
     ];
-    for (const line of lookalikes) assert.equal(allowlistedView(line), "[... 1 line left out]\n", line);
+    for (const line of lookalikes) assert.equal(allowlistedView(line), "[... lines left out]\n", line);
   });
 
-  it("drops model prose and says how many lines it left out, once per run of them, not counting blank ones", () => {
+  it("drops model prose and marks where lines were left out, once per run of them and without a count, blank lines being no run", () => {
     const view = allowlistedView("Agent started\nsome prose\nmore prose\n\nAgent stopped\nlast words");
-    assert.equal(view, "Agent started\n[... 2 lines left out]\nAgent stopped\n[... 1 line left out]\n");
+    assert.equal(view, "Agent started\n[... lines left out]\nAgent stopped\n[... lines left out]\n");
   });
 
   it("matches a host line whole: a prefix, a suffix, a malformed number or timestamp doesn't pass", () => {
@@ -141,7 +160,7 @@ describe("allowlistedView", () => {
       "Context window: 42kb", "Syncing 2 commits to host done (3.0s) extra", "Run complete: whatever", "Iteration 1234567/3",
       "--- Run started: 2026-11-03 10:00 ---", "Setting up sandbox done (x.5s)", "Reached max iterations (3)",
     ];
-    for (const line of near) assert.equal(allowlistedView(line), "[... 1 line left out]\n", line);
+    for (const line of near) assert.equal(allowlistedView(line), "[... lines left out]\n", line);
   });
 
   it("keeps the singular sync line, whole-second durations and every other host form", () => {
@@ -156,14 +175,14 @@ describe("allowlistedView", () => {
     ];
     for (const word of words) assert.equal(allowlistedView(`it ${word} now`), `it ${word} now\n`, word);
     for (const near of ["panicky", "fatally", "terrorism", "errorless", "exit codes", "unauthorizeds"]) {
-      assert.equal(allowlistedView(`it ${near} now`), "[... 1 line left out]\n", near);
+      assert.equal(allowlistedView(`it ${near} now`), "[... lines left out]\n", near);
     }
     assert.equal(allowlistedView("An ERROR happened"), "An ERROR happened\n");
   });
 
   it("keeps an error line, not the prose around it, and the host lines and tool names near it", () => {
     const view = allowlistedView("prose a\nBash(secret)\nthe claude-code process aborted\nAgent stopped\nprose b\n");
-    assert.equal(view, "[... 1 line left out]\nBash(...)\nthe claude-code process aborted\nAgent stopped\n[... 1 line left out]\n");
+    assert.equal(view, "[... lines left out]\nBash(...)\nthe claude-code process aborted\nAgent stopped\n[... lines left out]\n");
   });
 
   it("cuts an error line at the line limit exactly, and never in the middle of a surrogate pair", () => {
@@ -194,16 +213,16 @@ describe("allowlistedView", () => {
     assert.equal(REPORT_TOKEN_RUN, 24);
     const withRun = (length: number) => `error ${"A".repeat(length)}`;
     assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN - 1)), `${withRun(REPORT_TOKEN_RUN - 1)}\n`);
-    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN)), "[... 1 line left out]\n");
-    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN + 1)), "[... 1 line left out]\n");
-    for (const ch of ["+", "/", "_", "=", "-", "9", "z"]) assert.equal(allowlistedView(`error ${ch.repeat(REPORT_TOKEN_RUN)}`), "[... 1 line left out]\n", ch);
+    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN)), "[... lines left out]\n");
+    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN + 1)), "[... lines left out]\n");
+    for (const ch of ["+", "/", "_", "=", "-", "9", "z"]) assert.equal(allowlistedView(`error ${ch.repeat(REPORT_TOKEN_RUN)}`), "[... lines left out]\n", ch);
   });
 
   it("leaves out an error line the caller's check holds, before the line is cut", () => {
     const secret = `error ${"x ".repeat(98)}hunter2`;
     assert.ok(secret.length > REPORT_LINE_LIMIT);
-    assert.equal(allowlistedView(secret, (line) => line.includes("hunter2")), "[... 1 line left out]\n");
-    assert.notEqual(allowlistedView(secret), "[... 1 line left out]\n");
+    assert.equal(allowlistedView(secret, (line) => line.includes("hunter2")), "[... lines left out]\n");
+    assert.notEqual(allowlistedView(secret), "[... lines left out]\n");
   });
 
   it("keeps only the last REPORT_ERROR_LINES error lines", () => {
@@ -212,7 +231,7 @@ describe("allowlistedView", () => {
     assert.equal(allowlistedView(lines(REPORT_ERROR_LINES).join("\n")), `${lines(REPORT_ERROR_LINES).join("\n")}\n`);
     const over = allowlistedView(lines(REPORT_ERROR_LINES + 1).join("\n"));
     assert.ok(!over.includes("error number 0\n"));
-    assert.ok(over.startsWith("[... 1 line left out]\nerror number 1\n"));
+    assert.ok(over.startsWith("[... lines left out]\nerror number 1\n"));
     assert.ok(over.endsWith(`error number ${REPORT_ERROR_LINES}\n`));
   });
 
@@ -245,36 +264,11 @@ describe("copyReviewerLogs", () => {
     assert.equal(copy(""), "\n");
   });
 
-  // A log whose view is `length` characters: one error line starting with `prefix`, then tool lines of 10 characters each.
-  const logWithView = (length: number, prefix = "error") => {
-    for (let hosts = 0; ; hosts++) {
-      const errorLength = length - hosts * 10 - 1;
-      if (errorLength > 200) continue;
-      assert.ok(errorLength >= prefix.length, "no error line fits");
-      const errorLine = (prefix + " x".repeat(errorLength)).slice(0, errorLength);
-      const log = [errorLine, ...Array.from({ length: hosts }, () => "Bash(x)")].join("\n");
-      assert.equal(allowlistedView(log).length, length);
-      return log;
-    }
-  };
-
-  it("keeps a view of n-1 and n characters whole and drops only the first character of n+1", () => {
-    assert.equal(REPORT_LOG_LIMIT, 100_000);
-    for (const length of [REPORT_LOG_LIMIT - 1, REPORT_LOG_LIMIT]) {
-      const log = logWithView(length);
-      assert.equal(copy(log), allowlistedView(log));
-    }
-    const log = logWithView(REPORT_LOG_LIMIT + 1);
-    assert.equal(copy(log), allowlistedView(log).slice(1));
-  });
-
-  it("doesn't start the kept part on half of a surrogate pair, and drops that half", () => {
-    const log = logWithView(REPORT_LOG_LIMIT + 6, `error${String.fromCodePoint(0x1f600)}`);
-    const view = allowlistedView(log);
-    assert.match(view[6]!, /[\uDC00-\uDFFF]/, "the cut does not land inside the pair");
-    assert.equal(copy(log), view.slice(7));
-    const whole = logWithView(REPORT_LOG_LIMIT + 5, `error${String.fromCodePoint(0x1f600)}`);
-    assert.equal(copy(whole), allowlistedView(whole).slice(5));
+  it("keeps a view small by construction, whatever the log holds", () => {
+    const junk = Array.from({ length: 2000 }, (_, i) => [`Iteration ${i % 999}/999`, `Bash(${i})`, `error ${i} ${"x ".repeat(150)}`, `prose ${i}`]).flat();
+    const view = allowlistedView(junk.join("\n"));
+    assert.ok(view.length < 10_000, `${view.length} characters`);
+    assert.equal(copy(junk.join("\n")), view);
   });
 
   it("leaves out an error line that holds a secret value or a token shape", () => {
@@ -284,7 +278,7 @@ describe("copyReviewerLogs", () => {
       `error ghp_${"B".repeat(25)}`,
       `error github_pat_${"C".repeat(25)}`,
     ]) {
-      assert.equal(copy(leak, ["hunter2hunter2"]), "[... 1 line left out]\n", leak);
+      assert.equal(copy(leak, ["hunter2hunter2"]), "[... lines left out]\n", leak);
     }
   });
 
@@ -296,7 +290,7 @@ describe("copyReviewerLogs", () => {
       `error ${token.slice(0, 8)}\u001b[0m${token.slice(8)}`,
       `error ${token.slice(0, 8)}\u0301${token.slice(8)}`,
     ]) {
-      assert.equal(copy(leak), "[... 1 line left out]\n", JSON.stringify(leak));
+      assert.equal(copy(leak), "[... lines left out]\n", JSON.stringify(leak));
     }
   });
 
@@ -363,7 +357,7 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "logs", "b-reviewer.log"), "error plain\n");
       process.chdir(dir);
       assert.deepEqual(copyReviewerLogs("logs", undefined, () => undefined).sort(), ["a-reviewer.log", "b-reviewer.log"]);
-      assert.equal(readFileSync(join(dir, "logs", "report", "a-reviewer.log"), "utf8"), "[... 1 line left out]\n");
+      assert.equal(readFileSync(join(dir, "logs", "report", "a-reviewer.log"), "utf8"), "[... lines left out]\n");
       assert.equal(readFileSync(join(dir, "logs", "report", "b-reviewer.log"), "utf8"), "error plain\n");
     } finally {
       process.chdir(before);

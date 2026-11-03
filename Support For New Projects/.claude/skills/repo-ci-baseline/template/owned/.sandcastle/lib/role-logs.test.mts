@@ -7,6 +7,7 @@ import {
   allowlistedView,
   copyReviewerLogs,
   REPORT_ERROR_LINES,
+  REPORT_HOST_LINES,
   REPORT_LINE_LIMIT,
   REPORT_LOG_LIMIT,
   REPORT_TOKEN_RUN,
@@ -56,20 +57,76 @@ const hostLines = [
 ];
 
 describe("allowlistedView", () => {
-  it("keeps every host status line as written", () => {
-    assert.equal(allowlistedView(hostLines.join("\n")), `${hostLines.join("\n")}\n`);
+  it("keeps every host status line as written, but for the start line's timestamp", () => {
+    const kept = hostLines.map((line) => (line.startsWith("--- Run started") ? "--- Run started ---" : line));
+    assert.equal(allowlistedView(hostLines.join("\n")), `${kept.join("\n")}\n`);
+  });
+
+  it("keeps only the last REPORT_HOST_LINES host lines", () => {
+    assert.equal(REPORT_HOST_LINES, 30);
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => `Iteration ${i}/99`);
+    assert.equal(allowlistedView(lines(REPORT_HOST_LINES).join("\n")), `${lines(REPORT_HOST_LINES).join("\n")}\n`);
+    const over = allowlistedView(lines(REPORT_HOST_LINES + 1).join("\n"));
+    assert.ok(over.startsWith("[... 1 line left out]\nIteration 1/99\n"));
+    assert.ok(over.endsWith(`Iteration ${REPORT_HOST_LINES}/99\n`));
+  });
+
+  it("limits every number in a host line to three digits (two after a decimal point), and needs one", () => {
+    const templates = [
+      "Iteration {n}/1", "Iteration 1/{n}", "Syncing {n} commits to host", "Syncing {n} commit to host done (1s)", "Setting up sandbox done ({n}s)",
+      "Setting up sandbox done (1.{n}s)", "Agent signaled completion after {n} iteration(s).", "Context window: {n}k", "Reached max iterations ({n}).",
+      "Run complete: agent finished after {n} iteration(s).", "Run complete: reached {n} iteration(s) without completion signal.",
+    ];
+    for (const template of templates) {
+      const limit = template.includes("1.{n}") ? 2 : 3;
+      const line = (digits: number) => template.replace("{n}", "7".repeat(digits));
+      assert.equal(allowlistedView(line(limit)), `${line(limit)}\n`, line(limit));
+      // This one's wording holds the error word "signal", so a malformed copy is still kept, as an error line.
+      if (template.includes("completion signal")) continue;
+      assert.equal(allowlistedView(line(limit + 1)), "[... 1 line left out]\n", line(limit + 1));
+      assert.equal(allowlistedView(line(0)), "[... 1 line left out]\n", line(0));
+    }
+  });
+
+  it("keeps a run-start line without its timestamp, and only a timestamp of the exact shape", () => {
+    assert.equal(allowlistedView("--- Run started: 2026-10-19T01:38:45.498Z ---"), "--- Run started ---\n");
+    for (const bad of ["--- Run started: 2026-10-19T01:38:45.49Z ---", "--- Run started: 20261-10-19T01:38:45.498Z ---", "--- Run started: 104117110116 ---", "--- Run started:  ---"]) {
+      assert.equal(allowlistedView(bad), "[... 1 line left out]\n", bad);
+    }
   });
 
   it("keeps a known tool's name and drops its arguments, also over several lines", () => {
-    const view = allowlistedView('Bash(cat > f <<\'EOF\'\nthe hidden body\nEOF\n)\nRead(/etc/passwd)\nmcp__x__y(a=1)');
+    const view = allowlistedView('Bash(cat > f <<\'EOF\'\nthe hidden body\nEOF\n)\nRead(/etc/passwd)');
     assert.match(view, /^Bash\(\.\.\.\)\n/);
     assert.ok(view.includes("Read(...)"));
-    assert.ok(view.includes("mcp__x__y(...)"));
-    assert.ok(!/hidden|passwd|cat > f|a=1/.test(view));
+    assert.ok(!/hidden|passwd|cat > f/.test(view));
+  });
+
+  it("keeps each tool a role is given by name", () => {
+    for (const name of ["Bash", "Read", "Grep", "Glob", "Edit", "MultiEdit", "Write", "NotebookEdit", "Task", "Agent", "TodoWrite", "WebFetch", "WebSearch", "Skill"]) {
+      assert.equal(allowlistedView(`${name}(x)`), `${name}(...)\n`, name);
+    }
+  });
+
+  it("keeps an MCP tool only as mcp__(...), with no part of its name, within the name bounds", () => {
+    const mcp = (server: string, tool: string) => allowlistedView(`mcp__${server}__${tool}(a=1)`);
+    assert.equal(mcp("x", "y"), "mcp__(...)\n");
+    assert.equal(mcp("a".repeat(30), "b"), "mcp__(...)\n");
+    assert.equal(mcp("a".repeat(31), "b"), "[... 1 line left out]\n");
+    assert.equal(mcp("a", "b".repeat(40)), "mcp__(...)\n");
+    assert.equal(mcp("a".repeat(30), "b".repeat(40)), "mcp__(...)\n");
+    assert.equal(mcp("a", "b".repeat(41)), "[... 1 line left out]\n");
+    assert.equal(mcp("", "b"), "[... 1 line left out]\n");
+    assert.equal(mcp("a", ""), "[... 1 line left out]\n");
+    assert.equal(mcp("a_b", "c"), "[... 1 line left out]\n");
+    assert.ok(!mcp("aHVudGVy", "bnRlcjI").includes("aHVudGVy"));
   });
 
   it("drops a line that only looks like a tool call: another name, a code line, an encoded chunk", () => {
-    const lookalikes = ["open(p).read()", "aGVsbG8gd29ybGQ=(", "9Bash(x)", "Not a tool (x)", "bash(x)", "Bashful(x)", "mcp__a(x)", `Read${"x".repeat(60)}(x)`];
+    const lookalikes = [
+      "open(p).read()", "aHVudGVyMmh1bnRlcjI(", "Bash2(x)", "Bash.x(x)", "Read:x(x)", "bash(x)", "Bashful(x)", "mcp__a(x)",
+      "aGVsbG8gd29ybGQ=(", "9Bash(x)", "Not a tool (x)", `Read${"x".repeat(56)}(x)`, "x".repeat(61) + "(x)", "x".repeat(62) + "(x)",
+    ];
     for (const line of lookalikes) assert.equal(allowlistedView(line), "[... 1 line left out]\n", line);
   });
 
@@ -88,7 +145,7 @@ describe("allowlistedView", () => {
   });
 
   it("keeps the singular sync line, whole-second durations and every other host form", () => {
-    const forms = ["Syncing 1 commit to host", "Setting up sandbox done (3s)", "Reached max iterations (10).", "Capturing session", "Expanding shell expressions", "Iteration 123456/123456"];
+    const forms = ["Syncing 1 commit to host", "Setting up sandbox done (3s)", "Reached max iterations (10).", "Capturing session", "Expanding shell expressions", "Iteration 123/123"];
     for (const line of forms) assert.equal(allowlistedView(line), `${line}\n`, line);
   });
 
@@ -115,11 +172,22 @@ describe("allowlistedView", () => {
     assert.equal(allowlistedView(line(REPORT_LINE_LIMIT - 1)), `${line(REPORT_LINE_LIMIT - 1)}\n`);
     assert.equal(allowlistedView(line(REPORT_LINE_LIMIT)), `${line(REPORT_LINE_LIMIT)}\n`);
     assert.equal(allowlistedView(line(REPORT_LINE_LIMIT + 1)), `${line(REPORT_LINE_LIMIT)}\n`);
-    const emoji = `error${"a ".repeat(96)}${String.fromCodePoint(0x1f600)} tail`;
-    assert.equal(emoji.indexOf(String.fromCodePoint(0x1f600)), 197);
-    const cutAtPair = allowlistedView(`error ${"a ".repeat(96)}x${String.fromCodePoint(0x1f600)} tail`).trimEnd();
-    assert.ok(!/[\uD800-\uDBFF]$/.test(cutAtPair));
-    assert.ok(!/[\uD800-\uDBFF]$/.test(allowlistedView(`${"error ".repeat(32)}${String.fromCodePoint(0x1f600)}${"x".repeat(5)}`).trimEnd()));
+  });
+
+  it("drops a surrogate pair the cut would split, and keeps one that ends at the limit", () => {
+    const emoji = String.fromCodePoint(0x1f600);
+    const withPairAt = (index: number, tail: string) => `${`error${" x".repeat(100)}`.slice(0, index)}${emoji}${tail}`;
+    const split = withPairAt(REPORT_LINE_LIMIT - 1, "yyyy");
+    assert.equal(split.indexOf(emoji), REPORT_LINE_LIMIT - 1);
+    assert.equal(allowlistedView(split), `${split.slice(0, REPORT_LINE_LIMIT - 1)}\n`);
+    const whole = withPairAt(REPORT_LINE_LIMIT - 2, "yyyy");
+    assert.equal(whole.indexOf(emoji), REPORT_LINE_LIMIT - 2);
+    assert.equal(allowlistedView(whole), `${whole.slice(0, REPORT_LINE_LIMIT)}\n`);
+    const loneHigh = `${`error${" x".repeat(100)}`.slice(0, REPORT_LINE_LIMIT - 1)}\uD83D`;
+    assert.equal(allowlistedView(loneHigh), `${loneHigh}\n`);
+    const exact = withPairAt(REPORT_LINE_LIMIT - 2, "");
+    assert.equal(exact.length, REPORT_LINE_LIMIT);
+    assert.equal(allowlistedView(exact), `${exact}\n`);
   });
 
   it("leaves out an error line with a run of token characters, at n-1, n and n+1", () => {
@@ -177,14 +245,14 @@ describe("copyReviewerLogs", () => {
     assert.equal(copy(""), "\n");
   });
 
-  // A log whose view is `length` characters: one error line starting with `prefix`, then host lines of 14 characters each.
+  // A log whose view is `length` characters: one error line starting with `prefix`, then tool lines of 10 characters each.
   const logWithView = (length: number, prefix = "error") => {
     for (let hosts = 0; ; hosts++) {
-      const errorLength = length - hosts * 14 - 1;
+      const errorLength = length - hosts * 10 - 1;
       if (errorLength > 200) continue;
       assert.ok(errorLength >= prefix.length, "no error line fits");
       const errorLine = (prefix + " x".repeat(errorLength)).slice(0, errorLength);
-      const log = [errorLine, ...Array.from({ length: hosts }, () => "Agent started")].join("\n");
+      const log = [errorLine, ...Array.from({ length: hosts }, () => "Bash(x)")].join("\n");
       assert.equal(allowlistedView(log).length, length);
       return log;
     }

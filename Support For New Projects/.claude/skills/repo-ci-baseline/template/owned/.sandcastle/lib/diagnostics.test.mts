@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
-import { logSandboxState, PROBE_SECONDS, SANDBOX_PROBE } from "./diagnostics.mts";
+import { logSandboxState, PROBE_SCRIPT, PROBE_SECONDS, SANDBOX_PROBE } from "./diagnostics.mts";
+import { limitedCommand } from "./step-limit.mts";
 
 type Exec = Pick<Sandbox, "exec">["exec"];
 type Result = { stdout: string; stderr?: string; exitCode: number };
@@ -51,12 +52,15 @@ describe("logSandboxState", () => {
     assert.match(lines.join("\n"), /\(no output\)/);
   });
 
-  it("says the probe timed out on exit 124 and 137", async () => {
-    for (const exitCode of [124, 137]) {
+  it("says the probe timed out on exit 124, and only that it was killed on 137, which an out-of-memory kill returns too", async () => {
+    const say = async (exitCode: number) => {
       const lines: string[] = [];
       await logSandboxState(sandboxOf(async () => ({ stdout: "partial", exitCode })), "x", (line) => lines.push(line));
-      assert.match(lines.join("\n"), new RegExp(`exit ${exitCode}: the probe timed out`));
-    }
+      return lines.join("\n");
+    };
+    assert.match(await say(124), /exit 124: the probe timed out/);
+    assert.match(await say(137), /exit 137: the probe was killed, by its timeout or by the kernel/);
+    assert.ok(!/timed out/.test(await say(137)));
   });
 
   it("scrubs what the sandbox printed and the error text, not the host's reason", async () => {
@@ -81,21 +85,32 @@ describe("SANDBOX_PROBE", () => {
     assert.ok(!script.includes("'"));
   });
 
-  it("runs under a real sh: exits 0, prints every section, lists core and core.<pid> but not core.js", { skip: !hasTimeout && "needs GNU timeout" }, () => {
+  it("runs the script under a real sh: exits 0, prints every section, lists core and core.<pid> within 4 levels, nothing deeper, not core.js", () => {
     const dir = mkdtempSync(join(tmpdir(), "probe-"));
     try {
-      for (const name of ["core", "core.123", "core.js"]) writeFileSync(join(dir, name), "x");
-      const run = spawnSync("sh", ["-c", SANDBOX_PROBE], { cwd: dir, encoding: "utf8" });
+      for (const name of ["core", "core.123", "core.js", "a/b/c/core", "a/b/c/d/core"]) {
+        mkdirSync(dirname(join(dir, name)), { recursive: true });
+        writeFileSync(join(dir, name), "x");
+      }
+      const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { cwd: dir, encoding: "utf8" });
       assert.equal(run.status, 0, run.stderr);
       for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
         assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
       }
-      const cores = run.stdout.slice(run.stdout.indexOf("== core files =="));
-      assert.ok(cores.includes(join(dir, "core.123")), cores);
-      assert.ok(/\/core$/m.test(cores), cores);
-      assert.ok(!cores.includes("core.js"), cores);
+      const listed = run.stdout.slice(run.stdout.indexOf("== core files ==")).split("\n");
+      for (const name of ["core", "core.123", "a/b/c/core"]) assert.ok(listed.includes(join(dir, name)), `${name} in ${listed.join("\n")}`);
+      for (const name of ["core.js", "a/b/c/d/core"]) assert.ok(!listed.includes(join(dir, name)), `${name} in ${listed.join("\n")}`);
+      // -xdev (a core file on another mount is not searched) needs a second mount to test, which a unit test can't make.
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("runs through the sandbox's own wrapper under a real sh, so its re-quoting leaves the script whole", { skip: !hasTimeout && "needs GNU timeout" }, () => {
+    const run = spawnSync("sh", ["-c", limitedCommand(SANDBOX_PROBE, 1)], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
+      assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
     }
   });
 });

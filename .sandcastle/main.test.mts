@@ -575,7 +575,8 @@ describe("main.mts's reviewer-log wiring", () => {
     assert.notEqual(report, -1, "main.mts doesn't write the run report as expected");
     assert.notEqual(copy, -1, "main.mts doesn't call copyReviewerLogs(REPORT_DIR)");
     assert.ok(report < copy, "main.mts copies the reviewer logs before the run report is written");
-    assert.equal(mainMts.slice(report, copy).split("\n").length <= 2, true, "something sits between the report and the log copy");
+    const between = mainMts.slice(report + "writeRunReport(summary, handBacks);".length, copy);
+    assert.match(between, /^\n\s*$/, "something sits between the report and the log copy, so it may not run in the same block");
     assert.match(mainMts, /import \{ copyReviewerLogs \} from "\.\/lib\/role-logs\.mts";/);
   });
 

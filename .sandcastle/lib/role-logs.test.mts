@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { containsSandboxSecret } from "./sandbox-env.mts";
 import { copyReviewerLogs, REPORT_LOG_LIMIT, type RoleLogFs } from "./role-logs.mts";
 
 function fakeFs(files: Record<string, string>, failOn?: string) {
@@ -83,6 +84,29 @@ describe("copyReviewerLogs", () => {
     assert.match(copy(`SEC${String.fromCodePoint(0x200b)}RET-VALUE-123`, hasSecret), /^Left out/);
   });
 
+  it("leaves out a log whose secret was dropped in every kind of hidden or spacing character", () => {
+    const secret = "SECRET-VALUE-123";
+    const hasSecret = (t: string) => t.includes(secret);
+    const between = [0xfeff, 0x2060, 0x0085, 0x2028, 0x2029, 0x200c, 0x200d, 0x200e, 0x200f, 0x007f, 0x00ad, 0x202e, 0x0301].map((code) => String.fromCodePoint(code));
+    for (const hidden of [...between, "\t", "\u001b[?25l", "\u001b[1;31m"]) {
+      assert.match(copy(`SECRET-${hidden}VALUE-123`, hasSecret), /^Left out/, JSON.stringify(hidden));
+    }
+  });
+
+  it("still copies an ordinary log whose words are spaced and coloured", () => {
+    const text = "the reviewer \u001b[31mfailed\u001b[0m\n  at step 3\n";
+    assert.equal(copy(text, (t) => t.includes("SECRET-VALUE-123")), text);
+  });
+
+  it("with the real secret check, leaves out a token wrapped across lines or spaced out behind an ordinary word", () => {
+    const run = (text: string) => copy(text, containsSandboxSecret);
+    assert.match(run(`the token ghp_${"A".repeat(10)}\n${"A".repeat(16)}`), /^Left out/);
+    assert.match(run(`my token g h p _${"A".repeat(30)}`), /^Left out/);
+    assert.match(run(`see github_pat_${"B".repeat(12)}\n${"B".repeat(12)}`), /^Left out/);
+    assert.match(run(`key sk-ant-oat01-${"C".repeat(8)}\n${"C".repeat(12)}`), /^Left out/);
+    assert.equal(run("nothing secret here, just words\n"), "nothing secret here, just words\n");
+  });
+
   it("warns and carries on when a log can't be read or the folder can't be listed", () => {
     const warnings: string[] = [];
     const { fs } = fakeFs({ "a-reviewer.log": "x", "b-reviewer.log": "y" }, "a-reviewer.log");
@@ -97,8 +121,11 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
       writeFileSync(join(dir, "leak-reviewer.log"), `sk-ant-oat01-${"A".repeat(30)}\n`);
       writeFileSync(join(dir, "ok-backend.log"), "not copied\n");
+      writeFileSync(join(dir, "target.txt"), "a host file\n");
+      symlinkSync(join(dir, "target.txt"), join(dir, "link-reviewer.log"));
       mkdirSync(join(dir, "report"), { recursive: true });
-      assert.deepEqual(copyReviewerLogs(dir).sort(), ["leak-reviewer.log", "ok-reviewer.log"]);
+      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined).sort(), ["leak-reviewer.log", "ok-reviewer.log"]);
+      assert.ok(!existsSync(join(dir, "report", "link-reviewer.log")), "a symlinked log was copied");
       assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "the reviewer aborted\n");
       assert.match(readFileSync(join(dir, "report", "leak-reviewer.log"), "utf8"), /^Left out/);
       assert.ok(!existsSync(join(dir, "report", "ok-backend.log")));

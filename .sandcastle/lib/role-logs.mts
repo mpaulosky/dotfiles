@@ -5,7 +5,7 @@
 // codes and whitespace taken out, looks like a secret. A reviewer run the host gave up on may still be
 // writing its log, so a copy is a snapshot.
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { containsSandboxSecret } from "./sandbox-env.mts";
 
@@ -23,12 +23,15 @@ export type RoleLogFs = {
   write(path: string, text: string): void;
 };
 
-// The text with ANSI escapes, whitespace, control and zero-width characters taken out, so a secret an
-// agent printed spaced out, wrapped across lines or between escape codes is whole again for the check.
+// The text with ANSI escapes, whitespace and every control, format (zero-width) and combining character taken out,
+// so a secret an agent printed spaced out, wrapped across lines or between escape codes is whole again for the check.
+// Taking the whitespace out also joins a token to the word before it, and the token shapes in lib/sandbox-env.mts
+// start at a word boundary, so a space is put back in front of each token prefix.
 function squeezed(text: string): string {
   return text
     .replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
-    .replace(/[\s\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u2060\ufeff]/g, "");
+    .replace(/[\s\p{Cc}\p{Cf}\p{M}]/gu, "")
+    .replace(/(gh[pousr]_|github_pat_|sk-ant-)/g, " $1");
 }
 
 // The last REPORT_LOG_LIMIT characters of `text`, never starting on half of a surrogate pair.
@@ -71,9 +74,13 @@ export function copyReviewerLogs(
 }
 
 // The real filesystem, which copyReviewerLogs uses unless a test passes a stub.
+// A log that isn't a regular file (a symlink to a host file, say) is refused, not followed.
 export const liveRoleLogFs: RoleLogFs = {
   list: (dir) => readdirSync(dir),
-  read: (path) => readFileSync(path, "utf8"),
+  read: (path) => {
+    if (!lstatSync(path).isFile()) throw new Error("not a regular file");
+    return readFileSync(path, "utf8");
+  },
   mkdir: (path) => mkdirSync(path, { recursive: true }),
   write: (path, text) => writeFileSync(path, text),
 };

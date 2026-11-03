@@ -7,7 +7,8 @@ import type { Sandbox } from "@ai-hero/sandcastle";
 
 // The seconds the probe's own `timeout` allows. The sandbox's exec gives any command COMMAND_LIMIT_MINUTES
 // and marks the whole sandbox stalled when one runs over (lib/step-limit.mts), so a probe that hung in a
-// broken sandbox would end the run. This ends it far sooner, as a non-zero exit that is only logged.
+// broken sandbox would end the run. This ends it far sooner, as a non-zero exit that is only logged. It
+// covers a slow or hung probe, not a process stuck in uninterruptible I/O that keeps the exec's output pipe open.
 export const PROBE_SECONDS = 20;
 
 // The read-only script, with no single quote so it can sit inside `sh -c '...'`. Each part falls back to
@@ -15,7 +16,7 @@ export const PROBE_SECONDS = 20;
 // empty section. The core-file search names the files a crash leaves (`core`, `core.<pid>`) and looks in
 // the current directory and /tmp as well as /, since -xdev stops at a mount and a crashing claude-code
 // writes its core to its working directory.
-const PROBE_SCRIPT = [
+export const PROBE_SCRIPT = [
   'echo "== disk =="; df -h / /tmp . 2>&1',
   'echo "== memory =="; free -m 2>&1 || head -n 5 /proc/meminfo 2>&1',
   'echo "== processes =="; ps -e 2>/dev/null | wc -l',
@@ -40,7 +41,8 @@ export async function logSandboxState(
 ): Promise<void> {
   try {
     const { stdout, stderr, exitCode } = await sandbox.exec(SANDBOX_PROBE);
-    const status = exitCode === 0 ? "" : exitCode === 124 || exitCode === 137 ? ` (exit ${exitCode}: the probe timed out)` : ` (exit ${exitCode})`;
+    // 137 is a KILL after the timeout, and also what the kernel's out-of-memory kill returns, so it isn't called a timeout.
+    const status = exitCode === 0 ? "" : exitCode === 124 ? " (exit 124: the probe timed out)" : exitCode === 137 ? " (exit 137: the probe was killed, by its timeout or by the kernel)" : ` (exit ${exitCode})`;
     const printed = [stdout, stderr].map((text) => text.trimEnd()).filter((text) => text !== "").join("\n");
     log(`sandbox state (${reason})${status}:\n${scrub(printed === "" ? "(no output)" : printed)}`);
   } catch (error) {

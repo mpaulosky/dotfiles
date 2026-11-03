@@ -42,7 +42,7 @@ files change.
   in `createCheckedSandbox` runs under a one-minute limit of its own. `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils
   on this machine and skips those tests without it;
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
-- **Give the host's own waits a limit.** Every `gh` and `git` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
+- **Give the host's own waits a limit.** Every `gh`, `git` and `docker info` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
   one that runs past `HOST_COMMAND_LIMIT_MINUTES`, so it fails like any failed call. Only `lib/host-limit.mts` imports `node:child_process` as a value
   (a type import for `typeof execFileSync` is fine; only `git-sandbox-fake`, a test helper, is exempt, since `review-ledger` and `security-record` run on the host too), and a `run` parameter defaults
   to `hostExecFileSync`: `lib/host-limit.test.mts` scans for both. Creating and closing a sandbox go through `withinDockerLimit` and `closeWithinLimit`

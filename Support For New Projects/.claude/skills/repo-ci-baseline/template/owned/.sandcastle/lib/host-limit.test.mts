@@ -292,14 +292,14 @@ describe("usesChildProcessAsValue", () => {
 });
 
 describe("the host's calls", () => {
-  it("never use child_process as a value outside host-limit.mts, so every gh and git call the host makes has a time limit", async () => {
+  it("never use child_process as a value outside host-limit.mts, so every gh, git and docker info call the host makes has a time limit", async () => {
     const { readdirSync, readFileSync } = await import("node:fs");
     const dir = new URL(".", import.meta.url);
     const uses = readdirSync(dir)
       .filter((name) => name.endsWith(".mts") && !name.endsWith(".test.mts") && name !== "host-limit.mts")
       .filter((name) => usesChildProcessAsValue(readFileSync(new URL(name, dir), "utf8")));
 
-    // git-sandbox-fake.mts is a test helper that runs shell setup, not the host's gh or git. review-ledger.mts and security-record.mts
+    // git-sandbox-fake.mts is a test helper that runs shell setup, not the host's gh, git or docker info. review-ledger.mts and security-record.mts
     // also run on the host, in-process (lib/host-review.mts calls prepareRound and recordReview), so their git calls are limited too.
     assert.deepEqual(uses.filter((name) => !["git-sandbox-fake.mts"].includes(name)), []);
   });

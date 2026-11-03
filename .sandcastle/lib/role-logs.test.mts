@@ -17,7 +17,9 @@ import {
 function fakeFs(files: Record<string, string>, failOn?: string) {
   const written: Record<string, string> = {};
   const made: string[] = [];
+  const cleared: string[] = [];
   const fs: RoleLogFs = {
+    clear: (path) => void cleared.push(path),
     list: () => Object.keys(files),
     read: (path) => {
       if (failOn !== undefined && path.endsWith(failOn)) throw new Error("EACCES");
@@ -26,7 +28,7 @@ function fakeFs(files: Record<string, string>, failOn?: string) {
     mkdir: (path) => void made.push(path),
     write: (path, text) => void (written[path] = text),
   };
-  return { fs, written, made };
+  return { fs, written, made, cleared };
 }
 
 const none = () => undefined;
@@ -252,6 +254,58 @@ describe("copyReviewerLogs", () => {
     const { fs, written } = fakeFs({ "a-pre-push-reviewer.log": "aborted", "b-reviewer.log": "aborted" });
     assert.deepEqual(copyReviewerLogs("logs", fs, none, []), ["b-reviewer.log"]);
     assert.deepEqual(Object.keys(written), ["logs/report/b-reviewer.log"]);
+  });
+
+  it("empties the report folder first, also when there is no reviewer log, since an agent's sandbox may have written into it", () => {
+    const { fs, cleared } = fakeFs({ "a-reviewer.log": "aborted" });
+    copyReviewerLogs("logs", fs, none, []);
+    assert.deepEqual(cleared, ["logs/report"]);
+    const none2 = fakeFs({ "a-backend.log": "other" });
+    copyReviewerLogs("logs", none2.fs, none, []);
+    assert.deepEqual(none2.cleared, ["logs/report"]);
+  });
+
+  it("writes nothing and warns when the report folder can't be emptied, so nothing is trusted to be fresh", () => {
+    const warnings: string[] = [];
+    const { fs, written } = fakeFs({ "a-reviewer.log": "aborted" });
+    const stuck: RoleLogFs = { ...fs, clear: () => { throw new Error("EBUSY"); } };
+    assert.deepEqual(copyReviewerLogs("logs", stuck, (line) => warnings.push(line), []), []);
+    assert.deepEqual(written, {});
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /could not be emptied|EBUSY/);
+  });
+
+  it("removes a file an agent planted in the report folder, and a report folder that is a symlink, keeping only the fresh views", () => {
+    const dir = mkdtempSync(join(tmpdir(), "role-logs-planted-"));
+    try {
+      mkdirSync(join(dir, "report"));
+      writeFileSync(join(dir, "report", "planted-reviewer.log"), "sk-ant-planted\n");
+      writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
+      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
+      assert.ok(!existsSync(join(dir, "report", "planted-reviewer.log")), "a planted log survived");
+      assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "the reviewer aborted\n");
+      // With no reviewer log at all, a planted file is still removed.
+      rmSync(join(dir, "ok-reviewer.log"));
+      writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
+      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), []);
+      assert.ok(!existsSync(join(dir, "report", "planted-reviewer.log")));
+      // A report folder that is a link to somewhere else is unlinked, not followed.
+      const elsewhere = mkdtempSync(join(tmpdir(), "role-logs-elsewhere-"));
+      try {
+        writeFileSync(join(elsewhere, "keep-reviewer.log"), "outside\n");
+        rmSync(join(dir, "report"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        symlinkSync(elsewhere, join(dir, "report"));
+        writeFileSync(join(dir, "ok-reviewer.log"), "aborted again\n");
+        copyReviewerLogs(dir, undefined, () => undefined, []);
+        assert.ok(existsSync(join(elsewhere, "keep-reviewer.log")), "the link's target was emptied");
+        assert.ok(!existsSync(join(elsewhere, "ok-reviewer.log")), "a view was written through the link");
+        assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "aborted again\n");
+      } finally {
+        rmSync(elsewhere, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it("makes no folder when there is no reviewer log", () => {

@@ -11,9 +11,10 @@
 // checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
 // view that fails the check is replaced by a note. This narrows what can leave the sandbox in a log; it
 // can't promise that a steered reviewer cannot get a few words of its own onto an error line.
+// The report folder is emptied before it is written, since an agent's sandbox may have put files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot.
 
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 
@@ -39,6 +40,7 @@ export const REPORT_TOKEN_RUN = 24;
 
 // What copyReviewerLogs needs from the outside world; tests pass a stub.
 export type RoleLogFs = {
+  clear(path: string): void;
   list(dir: string): string[];
   read(path: string): string;
   mkdir(path: string): void;
@@ -154,12 +156,20 @@ export function copyReviewerLogs(
 ): string[] {
   const copied: string[] = [];
   try {
+    const outDir = join(logsDir, REPORT_LOG_DIR);
+    // The folder the artifact uploads from is emptied first, whether or not a reviewer ran: the sandboxes that mount the main checkout
+    // (the planner, critique and intake) can write into it, so a file there may be an agent's, uploaded with no check. If it can't be
+    // emptied nothing is written, and the warning says the folder may hold files this function didn't make.
+    try {
+      fs.clear(outDir);
+    } catch (error) {
+      throw new Error(`the report folder could not be emptied, so what is in it may be uploaded unchecked: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const names = fs
       .list(logsDir)
       .filter((name) => name.endsWith("-reviewer.log") && !name.endsWith("-pre-push-reviewer.log"));
     if (names.length === 0) return copied;
     const known = secrets ?? [...sandboxSecrets().values()];
-    const outDir = join(logsDir, REPORT_LOG_DIR);
     fs.mkdir(outDir);
     for (const name of names) {
       try {
@@ -180,6 +190,8 @@ export function copyReviewerLogs(
 // The real filesystem, which copyReviewerLogs uses unless a test passes a stub.
 // A log that isn't a regular file (a symlink to a host file, say) is refused, not followed.
 export const liveRoleLogFs: RoleLogFs = {
+  // A symlink at `path` is unlinked, not followed.
+  clear: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
   list: (dir) => readdirSync(dir),
   read: (path) => {
     if (!lstatSync(path).isFile()) throw new Error("not a regular file");

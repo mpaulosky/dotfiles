@@ -263,6 +263,7 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   (not the pre-push review's), the last host status lines (the start line without its timestamp),
   the last known tool calls' names without arguments (an MCP tool only as `mcp__(...)`) and the last few error lines
   (cut short, and left out when they hold a long run of token characters), and a note in place of a view that looks like a secret.
+  The report folder is emptied before it is written, because a head-mode sandbox mounts the main checkout and could plant a file there.
   This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails, or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes and core files

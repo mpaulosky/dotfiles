@@ -3071,6 +3071,13 @@ describe("publicErrorText", () => {
   it("withholds an error that holds a secret", () => {
     assert.match(publicErrorText("token abcdefgh12345 rejected", (text) => text.includes("abcdefgh12345")), /isn't shown/);
   });
+
+  // The raw error of a withheld text is dropped by most callers, so the text says it was withheld and doesn't point to a run log.
+  it("says a withheld error was withheld because it looked like it held a secret, without pointing to a run log", () => {
+    const text = publicErrorText("token abcdefgh12345 rejected", (cleaned) => cleaned.includes("abcdefgh12345"));
+
+    assert.equal(text, "(This text isn't shown: it looked like it held a secret. It was withheld.)");
+  });
 });
 
 // The architect's design note as the host posts it and reads it back

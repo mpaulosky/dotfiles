@@ -5,9 +5,10 @@ import { createCheckedSandbox } from "./build.mts";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_MARKER,
-  GATE_FIXER_ATTEMPTS,
   FOLLOW_UP_PASS_CAP,
   FOLLOW_UP_REPLY_MARKER,
+  GATE_COMMENT_LINES,
+  GATE_FIXER_ATTEMPTS,
   GIVE_UP_MARKER,
   SESSION_REPLY_MARKER,
   WORKTREE_TAMPERED_MARKER,
@@ -597,6 +598,66 @@ describe("giveUpComment", () => {
     assert.ok(comment.startsWith(`${GIVE_UP_MARKER}\n`));
   });
 
+  describe("with the first red run", () => {
+    const lines = (name: string, count: number) => Array.from({ length: count }, (_, i) => `${name} ${i + 1}`).join("\n");
+
+    it("quotes it in a fence of its own, before the last run, each cut to GATE_COMMENT_LINES lines", () => {
+      const comment = giveUpComment("the gate is red", lines("last", GATE_COMMENT_LINES + 1), lines("first", GATE_COMMENT_LINES + 1));
+
+      assert.ok(comment.includes(`first ${GATE_COMMENT_LINES + 1}\n`), comment);
+      assert.ok(comment.includes("first 2\n"), comment);
+      assert.ok(!comment.includes("first 1\n"), comment);
+      assert.ok(comment.includes("last 2\n"), comment);
+      assert.ok(!comment.includes("last 1\n"), comment);
+      assert.ok(comment.indexOf("first 2\n") < comment.indexOf("last 2\n"), comment);
+      assert.match(comment, new RegExp(`The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:`));
+      assert.match(comment, new RegExp(`The last ${GATE_COMMENT_LINES} lines of the last gate output:`));
+    });
+
+    it("keeps the last run when the first run's lines are very long", () => {
+      const comment = giveUpComment("the gate is red", "the last run's end", `${"x".repeat(200_000)}\nthe first run's end`);
+
+      assert.ok(comment.includes("the last run's end"), comment.slice(0, 200));
+      assert.ok(comment.includes("the first run's end"), comment.slice(0, 200));
+      assert.ok(comment.includes("To have Sandcastle pick the PR up again"), "the re-queue instruction is cut off");
+    });
+
+    it("quotes the last 20,000 characters of the first run: n - 1 and n whole, n + 1 loses its first character", () => {
+      const quoted = (count: number) => giveUpComment("the gate is red", "last", `${"a"}${"b".repeat(count - 1)}`);
+
+      assert.ok(quoted(20_000 - 1).includes(`a${"b".repeat(20_000 - 2)}\n`));
+      assert.ok(quoted(20_000).includes(`a${"b".repeat(20_000 - 1)}\n`));
+      const cut = quoted(20_000 + 1);
+      assert.ok(cut.includes(`\n${"b".repeat(20_000)}\n`), "the cut text starts with the first run's second character");
+      assert.ok(!cut.includes("a" + "b".repeat(20_000)), "the first run's first character is cut");
+    });
+
+    it("doesn't start the first run halfway through a surrogate pair when it cuts it", () => {
+      const comment = giveUpComment("the gate is red", "last", `${"😀"}${"b".repeat(20_000 - 1)}`);
+
+      assert.ok(!/\n[\uDC00-\uDFFF]/.test(comment));
+    });
+
+    it("fences the first run longer than any backtick run in it", () => {
+      const comment = giveUpComment("the gate is red", "last", "before\n````\nafter");
+
+      assert.ok(comment.includes("`````text\nbefore\n````\nafter\n`````"), comment);
+    });
+
+    it("quotes a first run alone when there is no last run", () => {
+      const comment = giveUpComment("the gate is red", undefined, "first run");
+
+      assert.ok(comment.includes("first run"), comment);
+    });
+
+    it("says nothing of a first run when it is blank", () => {
+      const comment = giveUpComment("the gate is red", "last run", "  \n");
+
+      assert.doesNotMatch(comment, /first red gate run/);
+      assert.match(comment, new RegExp(`The last ${GATE_COMMENT_LINES} lines of the output:`));
+    });
+  });
+
   it("keeps the text it had before the marker, after the marker line", () => {
     const comment = giveUpComment("a conflict couldn't be resolved", undefined);
 
@@ -1134,6 +1195,9 @@ describe("runPass", () => {
     assert.deepEqual(calls.push, []);
     assert.equal(outcome.kind, "gave-up");
     assert.match(calls.handBack[0]!.body, /The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run\./);
+    // None ran, so the reason says so rather than claiming the most there could be.
+    assert.match(calls.handBack[0]!.reason, /after 0 gate-fixer attempts\b/);
+    assert.doesNotMatch(calls.handBack[0]!.reason, new RegExp(`after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts`));
   });
 
   it("quotes the first red gate run in the stop detail, before the last run that shows the dead sandbox", async () => {
@@ -1146,6 +1210,41 @@ describe("runPass", () => {
     assert.ok(body.includes("run 1 failed"), body);
     assert.ok(body.includes("run 2 failed"), body);
     assert.ok(body.indexOf("run 1 failed") < body.indexOf("run 2 failed"), body);
+  });
+
+  // The hand-back used to tail the two runs as one text, so a last run of GATE_COMMENT_LINES lines or more cut the first run out.
+  it("keeps the first red gate run in the hand-back when the last run's output fills the comment's line limit", async () => {
+    const lines = (name: string, count: number) => Array.from({ length: count }, (_, i) => `${name} line ${i + 1}`).join("\n");
+    const sandbox = sandboxFake({
+      followUpJson: "[]",
+      gateExitCodes: [1, 1, 1],
+      sandboxDiesAfterGates: 2,
+      gateOutput: (run) => `${lines(run === 1 ? "first" : "last", GATE_COMMENT_LINES + 20)}\n`,
+    });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    const body = calls.handBack[0]!.body;
+    assert.ok(body.includes(`first line ${GATE_COMMENT_LINES + 20}`), body);
+    assert.ok(body.includes(`first line 21\n`), body);
+    assert.ok(!body.includes("first line 20\n"), body);
+    assert.ok(body.includes(`last line ${GATE_COMMENT_LINES + 20}`), body);
+    assert.ok(!body.includes("last line 1\n"), body);
+    assert.ok(body.indexOf("first line 21") < body.indexOf("last line 30"), body);
+  });
+
+  it("scrubs the first and the last gate run on their own, so a secret in the last run doesn't withhold the first", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], sandboxDiesAfterGates: 2, gateOutput: (run) => (run === 1 ? "run 1 failed\n" : "run 2 SECRET\n") });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+    passHost.publicError = (text) => (String(text).includes("SECRET") ? "(withheld)" : String(text));
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost);
+
+    const body = calls.handBack[0]!.body;
+    assert.ok(body.includes("run 1 failed"), body);
+    assert.ok(!body.includes("SECRET"), body);
+    assert.ok(body.includes("(withheld)"), body);
   });
 
   it("names the gate-fixer attempts that ran in the stop reason, not the most there could be", async () => {

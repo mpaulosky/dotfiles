@@ -28,7 +28,7 @@ import {
   retryOnServerError,
 } from "./build.mts";
 import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel, releasePullRequestBuildingLabel } from "./building.mts";
-import { runCheckpoint, runGate, sandboxDown, tail, type GateRun } from "./checkpoint.mts";
+import { endOf, runCheckpoint, runGate, sandboxDown, tail, type GateRun } from "./checkpoint.mts";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_LABEL,
@@ -422,21 +422,38 @@ function rerunLog(pr: number, names: readonly string[], host: PassHost, log: (li
   }
 }
 
+// The most characters of the first red gate run a hand-back quotes, so a first run of very long lines can't crowd the last run out of
+// the comment: cutToLimit keeps the start of a comment that is too long, and the last run comes second.
+const FIRST_RUN_CHARS = 20_000;
+
+// `text` in a fenced text block longer than any backtick run in it.
+function fencedText(text: string): string {
+  const longestRun = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return `${fence}text\n${text}\n${fence}`;
+}
+
 // The PR hand-back comment for a pass that gave up (runPass's step 4, 9, 10,
 // 11): GIVE_UP_MARKER on a line of its own (so scripts/watch-pr.sh skips it),
 // why, then the tail of the last gate output or the role's error (when given)
 // in a fence longer than any backtick run in it, and how to re-queue the PR
-// (remove sandcastle:needs-human).
-export function giveUpComment(reason: string, output: string | undefined): string {
+// (remove sandcastle:needs-human). `firstOutput`, when given, is the gate's
+// first red run, quoted in a fence of its own before the last run: a gate-fixer
+// attempt can leave the last run showing a dead sandbox or a timeout, not the
+// failure the pass began with, and each run is cut on its own so a long last run
+// can't push the first out of the comment.
+export function giveUpComment(reason: string, output: string | undefined, firstOutput?: string): string {
   const parts = [
     `Sandcastle stopped its follow-up passes on this PR: ${reason}. It's labelled \`sandcastle:needs-human\` until a person ` +
       "has looked at it.",
   ];
+  const first = firstOutput !== undefined && firstOutput.trim() !== "";
+  if (first) {
+    const quoted = endOf(tail(firstOutput, GATE_COMMENT_LINES), FIRST_RUN_CHARS);
+    parts.push(`The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:\n\n${fencedText(quoted)}`);
+  }
   if (output !== undefined && output.trim() !== "") {
-    const quoted = tail(output, GATE_COMMENT_LINES);
-    const longestRun = Math.max(0, ...[...quoted.matchAll(/`+/g)].map((match) => match[0].length));
-    const fence = "`".repeat(Math.max(3, longestRun + 1));
-    parts.push(`The last ${GATE_COMMENT_LINES} lines of the output:\n\n${fence}text\n${quoted}\n${fence}`);
+    parts.push(`The last ${GATE_COMMENT_LINES} lines of the ${first ? "last gate output" : "output"}:\n\n${fencedText(tail(output, GATE_COMMENT_LINES))}`);
   }
   parts.push(
     "To have Sandcastle pick the PR up again, remove `sandcastle:needs-human`. That also starts its count of follow-up " +
@@ -908,16 +925,28 @@ const tamperedWorktreeComment = (branch: string) =>
   "person to look at. Don't run git in it.";
 
 // Hands the PR back with sandcastle:needs-human (see giveUpComment), quoting
-// `output` once it's safe to post. `privateDetail`, when given, is added to
+// `output` and `firstOutput` once each is safe to post, scrubbed on its own so a
+// secret in one doesn't withhold the other. `privateDetail`, when given, is added to
 // the reason in the run log and the run report but left out of the PR comment,
 // for what's fine for the run's own records but not for the public PR, such as
 // where the secret scan matched. A hand-back that fails is logged: the
 // next round's sweep finds the PR again.
-function giveUp(target: PassTarget, host: PassHost, reason: string, output: string | undefined, privateDetail?: string): PassOutcome {
+function giveUp(
+  target: PassTarget,
+  host: PassHost,
+  reason: string,
+  output: string | undefined,
+  privateDetail?: string,
+  firstOutput?: string,
+): PassOutcome {
   const recorded = privateDetail === undefined ? reason : `${reason} (${privateDetail})`;
   host.log(`  ✋ PR #${target.number}: ${recorded}, so it's handed back.`);
   try {
-    host.handBack(target.number, recorded, giveUpComment(reason, output === undefined ? undefined : host.publicError(output)));
+    host.handBack(
+      target.number,
+      recorded,
+      giveUpComment(reason, output === undefined ? undefined : host.publicError(output), firstOutput === undefined ? undefined : host.publicError(firstOutput)),
+    );
   } catch (error) {
     console.error(`  ⚠ PR #${target.number}: handing it back failed, so the next round tries again: ${error}`);
   }
@@ -947,7 +976,8 @@ async function passOnMarkedIssue(
 ): Promise<PassOutcome> {
   const branch = target.headRefName;
   const log = (line: string) => host.log(`  PR #${target.number} ${line}`);
-  const stop = (reason: string, output?: string, privateDetail?: string) => giveUp(target, host, reason, output, privateDetail);
+  const stop = (reason: string, output?: string, privateDetail?: string, firstOutput?: string) =>
+    giveUp(target, host, reason, output, privateDetail, firstOutput);
   let sandbox: sandcastle.Sandbox;
   try {
     sandbox = await host.createSandbox(branch);
@@ -1111,17 +1141,13 @@ async function passOnMarkedIssue(
     // moved or can't be read, as a gate that didn't pass, so the reason names
     // each and the quoted output says which.
     if (!gate.passed || gate.head === undefined) {
-      // The first red run goes before the last, as gateFailureComment does: a fixer attempt can leave the last run showing a dead
-      // sandbox or a timeout, not the failure the pass began with. giveUp makes the whole text safe to post.
-      const detail =
-        gate.firstOutput === undefined
-          ? gate.output
-          : `The first red gate run, before a gate-fixer ran:\n${tail(gate.firstOutput, GATE_COMMENT_LINES)}\n\nThe last gate run:\n${tail(gate.output, GATE_COMMENT_LINES)}`;
       const attempts = gate.fixersRun ?? GATE_FIXER_ATTEMPTS;
       return stop(
         `\`${GATE_COMMAND}\` didn't pass on a known, clean commit after ${attempts} gate-fixer ${attempts === 1 ? "attempt" : "attempts"}: it's ` +
           "red, the worktree isn't clean, or HEAD moved while it ran",
-        detail,
+        gate.output,
+        undefined,
+        gate.firstOutput,
       );
     }
     const gated = gate.head;

@@ -714,7 +714,7 @@ describe("sandboxDown", () => {
       const reason = (await sandboxDown(probe(), scrub)) ?? "";
 
       assert.doesNotMatch(reason, /run log/i, reason);
-      assert.match(reason, /withheld|isn't shown/i, reason);
+      assert.match(reason, /withheld/i, reason);
       assert.match(reason, /secret/i, reason);
     });
 

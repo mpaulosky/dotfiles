@@ -115,11 +115,13 @@ run_gate_with_seconds_exported() { # the gate's shell starts with SECONDS=500 in
 run_gate_with_seconds_exported
 check "an inherited SECONDS doesn't offset the headers" started_at_zero "Local review"
 
-# The numbers are elapsed time, not a constant: a review check that takes two seconds is in the headers after it, not before.
+# The numbers are elapsed time, not a constant: a review check that takes two seconds sits between the Local review header and the
+# test.sh one, so the second is later than the first by at least those two seconds. Only the difference is checked, since how long the
+# gate's own git calls take before its first header depends on the machine.
 SLOW_REVIEW=2 run_gate
-check "a header before the review check doesn't count its time" test "$(stamp_of 'Local review')" -lt 2
-check "the test.sh header counts the review check's two seconds" test "$(stamp_of 'test.sh')" -ge 2
-check "and no more than the whole run took" test "$(stamp_of 'test.sh')" -lt 12
+review_to_test_sh() { echo $(( $(stamp_of 'test.sh') - $(stamp_of 'Local review') )); }
+check "the test.sh header counts the review check's two seconds after the Local review header" test "$(review_to_test_sh)" -ge 2
+check "and not much more than those two" test "$(review_to_test_sh)" -lt 12
 
 FAIL_REVIEW=1 run_gate
 check "a failing review check refuses the push" test $STATUS -ne 0

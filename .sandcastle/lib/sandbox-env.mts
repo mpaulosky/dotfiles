@@ -45,11 +45,13 @@ export function sandboxEnv(envFile: string, hostEnv: Record<string, string | und
 }
 
 // Token shapes worth catching even when they didn't come from the env file,
-// each with the name secretKindIn reports it by.
-const tokenShapes = [
-  { shape: "sk-ant-", pattern: /sk-ant-[A-Za-z0-9_-]{16,}/ },
-  { shape: "gh*_", pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/ },
-  { shape: "github_pat_", pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/ },
+// each with the name secretKindIn reports it by. `loose` is the same shape without its word
+// boundaries, for text taken apart and joined again (see containsTokenShapeAnywhere); a test
+// holds it to `pattern` minus its boundaries, so a shape added here can't miss one.
+export const tokenShapes = [
+  { shape: "sk-ant-", pattern: /sk-ant-[A-Za-z0-9_-]{16,}/, loose: /sk-ant-[A-Za-z0-9_-]{16,}/ },
+  { shape: "gh*_", pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/, loose: /gh[pousr]_[A-Za-z0-9]{20,}/ },
+  { shape: "github_pat_", pattern: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/, loose: /github_pat_[A-Za-z0-9_]{20,}/ },
 ] as const;
 
 // Shorter values are too likely to be ordinary words to look for.
@@ -64,17 +66,54 @@ export function containsSecret(text: string, secrets: Iterable<string>): boolean
   return tokenShapes.some(({ pattern }) => pattern.test(text));
 }
 
-// Whether the text holds anything shaped like a token, ignoring where a word starts or ends. The shapes above
+// Whether the text holds anything shaped like a token, ignoring where a word starts or ends. The shapes
 // begin and end at a word boundary, which text taken apart and joined again (a token wrapped across lines, then
 // squeezed together with the words around it) no longer has: a `ghp_` token followed by `session_id` is one run
-// of word characters. The patterns are the shapes' own, minus their `\b`, so a shape added above is covered here too.
+// of word characters.
 export function containsTokenShapeAnywhere(text: string): boolean {
-  return tokenShapes.some(({ pattern }) => new RegExp(pattern.source.replaceAll("\\b", "")).test(text));
+  return tokenShapes.some(({ loose }) => loose.test(text));
+}
+
+// The forms an agent could print `secret` in beyond the plain value: reversed, hex, URL-encoded, and base64 (standard and
+// URL-safe, without padding) at each of the three byte alignments it can take inside a longer encoded text, keeping only
+// the characters the secret alone decides. The sandbox's secrets are values the host knows, so they can be looked for in
+// these forms, which a pattern can't do.
+function secretForms(secret: string): string[] {
+  const forms = new Set<string>([[...secret].reverse().join("")]);
+  const bytes = Buffer.from(secret, "utf8");
+  forms.add(bytes.toString("hex"));
+  forms.add(bytes.toString("hex").toUpperCase());
+  const urlEncoded = encodeURIComponent(secret);
+  if (urlEncoded !== secret) forms.add(urlEncoded);
+  for (const lead of [0, 1, 2]) {
+    const padded = Buffer.concat([Buffer.alloc(lead, 0x78), bytes]);
+    const encoded = padded.toString("base64");
+    const form = encoded.slice([0, 2, 3][lead]!, encoded.length - [0, 3, 2][padded.length % 3]!);
+    if (form !== "") {
+      forms.add(form);
+      forms.add(form.replaceAll("+", "-").replaceAll("/", "_"));
+    }
+  }
+  return [...forms];
+}
+
+// Whether the text holds one of the secret values in a form secretForms lists (not the plain value, which containsSecret looks for).
+export function containsEncodedSecret(text: string, secrets: Iterable<string>): boolean {
+  for (const secret of secrets) {
+    if (secret.length < minimumSecretLength) continue;
+    if (secretForms(secret).some((form) => text.includes(form))) return true;
+  }
+  return false;
 }
 
 // containsSecret with the values .sandcastle/.env gives the sandbox.
 export function containsSandboxSecret(text: string): boolean {
   return containsSecret(text, sandboxSecrets().values());
+}
+
+// containsSandboxSecret, and the sandbox's secret values in the other forms secretForms lists.
+export function containsSandboxSecretInAnyForm(text: string): boolean {
+  return containsSandboxSecret(text) || containsEncodedSecret(text, sandboxSecrets().values());
 }
 
 // What kind of thing a match is: one of the sandbox's secret values, naming

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { containsSandboxSecret } from "./sandbox-env.mts";
+import { containsEncodedSecret, containsSandboxSecret } from "./sandbox-env.mts";
 import { copyReviewerLogs, REPORT_LOG_LIMIT, type RoleLogFs } from "./role-logs.mts";
 
 function fakeFs(files: Record<string, string>, failOn?: string) {
@@ -113,6 +113,58 @@ describe("copyReviewerLogs", () => {
     assert.match(run(`ghp_${"A".repeat(10)}\\n${"A".repeat(16)}`), /^Left out/);
     assert.match(run(`ghp_${"A".repeat(10)}\\u001b[0m${"A".repeat(16)}`), /^Left out/);
     assert.match(run(`github_pat_${"B".repeat(10)}\\r\\n${"B".repeat(12)}`), /^Left out/);
+  });
+
+  it("leaves out a token wrapped with extra backslashes or split by a colon-form colour code, as text or with the real escape", () => {
+    const run = (text: string) => copy(text, containsSandboxSecret);
+    const head = `ghp_${"A".repeat(10)}`;
+    const tail = "A".repeat(16);
+    const esc = String.fromCharCode(27);
+    assert.match(run(`${head}\\\\n${tail}`), /^Left out/);
+    assert.match(run(`${head}\\\\\\u001b[0m${tail}`), /^Left out/);
+    assert.match(run(`${head}${esc}[38:2::255:0:0m${tail}`), /^Left out/);
+    assert.match(run(`${head}\\u001b[38:2::255:0:0m${tail}`), /^Left out/);
+    assert.match(run(`${head}${esc}[?25l${tail}`), /^Left out/);
+  });
+
+  it("leaves out a wrapped token with an escape written right before it, which the escape strip would take a letter from", () => {
+    const run = (text: string) => copy(text, containsSandboxSecret);
+    const esc = String.fromCharCode(27);
+    assert.match(run(`${esc}[ghp_${"A".repeat(10)}\n${"A".repeat(16)}`), /^Left out/);
+    assert.match(run(`\\u001b[ghp_${"A".repeat(10)}\n${"A".repeat(16)}`), /^Left out/);
+    assert.match(run(`\\x1b[github_pat_${"B".repeat(10)}\n${"B".repeat(12)}`), /^Left out/);
+  });
+
+  it("leaves out a token split by each kind of text escape, and keeps one split by something that is not an escape", () => {
+    const run = (text: string) => copy(text, containsSandboxSecret);
+    const head = `ghp_${"Z".repeat(10)}`;
+    const tail = "Z".repeat(16);
+    const text = (escape: string) => escape.replaceAll("@", "\\");
+    const left = [
+      "@x1b[0m", "@033[1;32m", "@e[0m", "@E[0m", "@u001B[0m", "@x1B[0m",
+      "@u200b", "@u00a0", "@u00a0b", "@x41", "@x0a", "@t", "@r", "@n", "@b", "@f", "@v", "@0",
+    ];
+    for (const split of left.map(text)) assert.match(run(`${head}${split}${tail}`), /^Left out/, split);
+    // One hex digit short (u00a, x0), or not an escape at all (q, an underscore, a bar), splits the token for good.
+    for (const split of ["@u00a", "@x0", "@q", "@u12", "_", "|"].map(text)) {
+      assert.equal(run(`${head}${split}${tail}`), `${head}${split}${tail}`, split);
+    }
+  });
+
+  it("keeps an ordinary log with Windows paths and quoted regexes", () => {
+    const log = "see C:@users@x and the regex @n@d+ in @e[0-9] and @u12 failed@n".replaceAll("@", "\\");
+    assert.equal(copy(log, containsSandboxSecret), log);
+  });
+
+  it("leaves out a log holding the sandbox's secret reversed, in hex, URL-encoded or in base64, also wrapped across lines", () => {
+    const secret = "s3cr3t-Value/with+chars=1234";
+    const hasSecret = (t: string) => containsEncodedSecret(t, [secret]);
+    const base64 = Buffer.from(`token=${secret}`).toString("base64");
+    const wrapped = base64.match(/.{1,20}/g)!.join("\n");
+    for (const form of [[...secret].reverse().join(""), Buffer.from(secret).toString("hex"), encodeURIComponent(secret), base64, wrapped]) {
+      assert.match(copy(`the value was ${form} in the output`, hasSecret), /^Left out/, form);
+    }
+    assert.equal(copy("nothing to hide", hasSecret), "nothing to hide");
   });
 
   it("leaves out a log that only quotes a bare token prefix in prose, as the price of the wrapped-token check", () => {

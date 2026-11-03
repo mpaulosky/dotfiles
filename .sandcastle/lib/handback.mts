@@ -12,7 +12,8 @@ import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 // The comment for a failed build attempt under the cap: carries
 // BUILD_FAILED_MARKER, so a restart can still count it (see
 // lib/github.mts#markerCommentsSince), with the attempt number and `detail`
-// (the tail of the last gate output and of the first red run's when it differs,
+// (the tail of the last gate output and of the first red run's when it differs
+// (see sameGateOutput in lib/checkpoint.mts),
 // or the role's error).
 // `detail` is trimmed to fit GitHub's comment limit: a rejected comment saves
 // no marker, so the attempt would never count and the issue never reach the cap.

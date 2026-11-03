@@ -18,11 +18,19 @@ export type Checkpoint = 1 | 2 | 3;
 // A gate run, and on a pass the commit it passed on: the one the host pushes.
 // `firstOutput` is the output of the checkpoint's first red gate run, kept when
 // the checkpoint ended red after a fixer had run and that output differs from
-// the last run's, since the last run's output may be about something else (a
+// the last run's (leaving out the seconds on its step headers, see sameGateOutput), since the last run's output may be about something else (a
 // dead sandbox, a different failure).
 // `fixersRun` is how many gate-fixer attempts ran, set only when the checkpoint
 // ended early because the sandbox was down.
 export type GateRun = { passed: boolean; output: string; head?: string; firstOutput?: string; fixersRun?: number };
+
+// Whether two gate outputs are the same failure. scripts/gate.sh ends its step headers with the seconds since it started (` [+312s]`),
+// which differ on every run, so a trailing one on a line is left out of the comparison: a gate-fixer that changed nothing
+// leaves the first red run the same as the last, and the failure comment quotes it once.
+const STEP_SECONDS = / \[\+\d+s\]$/gm;
+export function sameGateOutput(a: string, b: string): boolean {
+  return a.replace(STEP_SECONDS, "") === b.replace(STEP_SECONDS, "");
+}
 
 // What a checkpoint does in the sandbox; tests pass stubs.
 export type CheckpointSteps = {
@@ -227,7 +235,7 @@ export async function runCheckpoint(
       const down = await steps.alive?.();
       if (down !== undefined) {
         log(`${prefix} ${label} not run: ${down}`);
-        return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 && firstOutput !== result.output ? { firstOutput } : {}) };
+        return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 && !sameGateOutput(firstOutput, result.output) ? { firstOutput } : {}) };
       }
       try {
         await steps.fix(checkpoint, result.output);
@@ -257,7 +265,7 @@ export async function runCheckpoint(
     throw error;
   }
 
-  return result.passed || firstOutput === result.output ? result : { ...result, firstOutput };
+  return result.passed || sameGateOutput(firstOutput, result.output) ? result : { ...result, firstOutput };
 }
 
 // `text` without the `##[` form of a GitHub Actions command. The runner can read
@@ -357,7 +365,7 @@ export function gateFailureComment(
   { firstOutput, fixersRun = GATE_FIXER_ATTEMPTS }: { firstOutput?: string; fixersRun?: number } = {},
 ): string {
   const first =
-    firstOutput === undefined || firstOutput === output
+    firstOutput === undefined || sameGateOutput(firstOutput, output)
       ? []
       : ["", `The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:`, "", textBlock(tail(firstOutput, GATE_COMMENT_LINES))];
   return [

@@ -549,10 +549,14 @@ chmod +x "$uutils_bin/ln" "$boom_bin/ln"
 skills_path_prefix="$uutils_bin:"
 refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists" \
   || fail "sandcastle.yml: a skill that exists already must be refused whichever way ln words it, GNU's 'File exists' or uutils' 'Already exists' (exit $skills_rc): $skills_log"
+# Only the stub says "Already exists" (GNU's ln can't), so this shows the step ran it.
+[[ $skills_log == *"Already exists"* ]] || fail "sandcastle.yml: the stub ln was not the one the skills step ran: $skills_log"
 skills_path_prefix="$boom_bin:"
 if refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists"; then
   fail "sandcastle.yml: an ln error with neither wording must not pass for 'File exists' or 'Already exists'"
 fi
+# The control only counts when the step reached the stub: any other early failure would also have no wording.
+[[ $skills_rc -ne 0 && $skills_log == *"ln: boom"* ]] || fail "sandcastle.yml: the stub ln that says neither wording was not run by the skills step (exit $skills_rc): $skills_log"
 skills_path_prefix=
 skills_preexisting=
 # A line is never printed, whichever rule rejects it: one starting with :: would otherwise run as a workflow command from the log.

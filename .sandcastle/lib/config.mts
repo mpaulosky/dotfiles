@@ -139,7 +139,7 @@ export const INTAKE_FAILED_RUNS_LIMIT = 8;
 export const INTAKE_REFUSED_BATCHES_LIMIT = 2;
 
 // Gate-fixer runs allowed at each gate checkpoint before the issue's round is
-// given up, and how much of the final gate output the issue comment quotes.
+// given up.
 export const GATE_FIXER_ATTEMPTS = 2;
 
 // The most gate runs a build makes outside the host-side review: each of checkpoints 1 and 2 runs it, then once more after each fixer attempt, and
@@ -147,6 +147,9 @@ export const GATE_FIXER_ATTEMPTS = 2;
 // build.test.mts checks buildIssue stays within it (its tests run no review), and config.test.mts sizes BUILDING_LABEL_MAX_AGE_MS from it.
 export const MAX_GATE_RUNS = 2 * (GATE_FIXER_ATTEMPTS + 1) + 1;
 
+// How many lines of the last gate output, and of the first red run's when it
+// differs, the issue comment quotes. runCheckpoint logs as many of the first red
+// run's lines when an error ends a checkpoint.
 export const GATE_COMMENT_LINES = 100;
 
 // Attempts allowed for a publish step (git push, gh pr create) that keeps

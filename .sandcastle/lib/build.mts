@@ -9,7 +9,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { isRoleTimeout, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
-import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, withoutRunnerCommands, type Checkpoint } from "./checkpoint.mts";
 import {
   BASE_BRANCH,
   BUILD_FAILED_MARKER,
@@ -357,7 +357,7 @@ export type BuildHost = {
   // Records a failed build attempt (anything that stops the issue's
   // pipeline, see "When a role fails" in Blazor-Server's docs/plans/sandcastle-workflow.md):
   // posts the issue's `sandcastle:build-failed` comment with this attempt's
-  // number and `detail` (the tail of the gate output, or the role's error),
+  // number and `detail` (the tail of the last gate output and of the first red run's when it differs, or the role's error),
   // and once that's the BUILD_FAILURE_CAPth attempt since
   // `sandcastle:needs-human` was last removed, hands the issue back instead
   // (see lib/handback.mts#recordFailedAttempt). Never called for a role run
@@ -911,6 +911,32 @@ export async function buildIssue(
 // What became of a build, for the run report (lib/report.mts).
 export type BuildOutcome = Extract<Outcome, "published" | "role failed" | "timed out" | "gate failed" | "not published">;
 
+// The most characters of one gate output line the host's log shows.
+const LOGGED_LINE_LIMIT = 500;
+
+// The first red gate run's output as lines safe for the host's log. The gate's
+// output is written by the branch's agents and the log is a terminal, and in
+// GitHub Actions a line that starts with `::` is a workflow command, so every
+// line is cleaned by terminalText first (before the secret check, so hidden
+// characters can't hide a token that is rebuilt afterwards), and the whole text
+// goes through `publicError`. Each line is then cleaned again, any `##[` in it is
+// changed (after the cleaning, so a hidden character can't split one that is
+// rebuilt, and before the cut, so the extra space is counted), and it is cut to
+// LOGGED_LINE_LIMIT characters (after the secret check, so the cut can't split a
+// token it has passed) and given a prefix no workflow command can start with.
+//
+// A final newline is dropped even when `publicError` doesn't trim, so the
+// caller's line count isn't spent on a blank line. terminalText folds runs of
+// whitespace into one space and trims each line, so the log is not byte for byte
+// what the gate printed.
+export function logSafeGateOutput(text: string, publicError: (text: string) => string): string {
+  const cleaned = text.replace(/\n$/, "").split("\n").map((line) => terminalText(line)).join("\n");
+  return publicError(cleaned)
+    .split("\n")
+    .map((line) => `    | ${[...withoutRunnerCommands(terminalText(line))].slice(0, LOGGED_LINE_LIMIT).join("")}`)
+    .join("\n");
+}
+
 // The detail of a build that ended because the branch holds no work to
 // publish.
 const NOTHING_AHEAD = "the branch holds nothing main doesn't";
@@ -1032,7 +1058,7 @@ async function buildMarkedIssue(
   // the commit the gate passed on. When it's still red past the fixer's
   // attempts at checkpoint 1 or 2, nothing is published: the branch keeps its
   // commits, and the issue's failed build attempt is recorded with the tail of
-  // the gate output. Checkpoint 3 (the review's) records nothing: the earlier
+  // the last gate output, and of the first red run's when it differs. Checkpoint 3 (the review's) records nothing: the earlier
   // checkpoints' commit is published, so no comment may say it wasn't pushed
   // and no attempt is spent on a build that published.
   // A gate-fixer run that stopped with UncountedStopError is rethrown.
@@ -1054,6 +1080,9 @@ async function buildMarkedIssue(
           commits.push(...fixer.commits);
         },
         uncounted: (error) => error instanceof UncountedStopError,
+        alive: () => sandboxDown(sandbox, host.publicError),
+        scrub: (text) => logSafeGateOutput(text, host.publicError),
+        scrubLine: host.publicError,
       },
       log,
     );
@@ -1066,8 +1095,9 @@ async function buildMarkedIssue(
       // The gate runs the branch's own scripts, which agents write, in the
       // sandbox that holds the Claude token, so its output is made safe to
       // post and its <!-- broken, like a role's error.
-      const output = host.publicError(result.output).replaceAll("<!--", BROKEN_COMMENT_OPEN);
-      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, output));
+      const safe = (text: string) => host.publicError(text).replaceAll("<!--", BROKEN_COMMENT_OPEN);
+      const first = result.firstOutput === undefined ? undefined : safe(result.firstOutput);
+      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, safe(result.output), { firstOutput: first, fixersRun: result.fixersRun }));
       return undefined;
     }
     return result.head;

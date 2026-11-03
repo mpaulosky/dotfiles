@@ -124,6 +124,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
       gateRuns * GATE_LIMIT_MINUTES +
       // A command other than the gate that runs over its limit stalls the sandbox: it throws, as does every later exec and
       // every role start (lib/step-limit.mts, lib/agents.mts), so one more limit is the most any build adds from them.
+      // The probe before each gate-fixer attempt (lib/checkpoint.mts#sandboxDown) is such a command.
       COMMAND_LIMIT_MINUTES +
       // A role run the host gave up on stalls its sandbox the same way, so a build adds this grace once.
       ROLE_RUN_GRACE_MINUTES +

@@ -10,12 +10,19 @@
 
 import type { Sandbox } from "@ai-hero/sandcastle";
 import { GATE_COMMENT_LINES, GATE_FIXER_ATTEMPTS } from "./config.mts";
+import { UncountedStopError } from "./errors.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
 
 export type Checkpoint = 1 | 2 | 3;
 
 // A gate run, and on a pass the commit it passed on: the one the host pushes.
-export type GateRun = { passed: boolean; output: string; head?: string };
+// `firstOutput` is the output of the checkpoint's first red gate run, kept when
+// the checkpoint ended red after a fixer had run and that output differs from
+// the last run's, since the last run's output may be about something else (a
+// dead sandbox, a different failure).
+// `fixersRun` is how many gate-fixer attempts ran, set only when the checkpoint
+// ended early because the sandbox was down.
+export type GateRun = { passed: boolean; output: string; head?: string; firstOutput?: string; fixersRun?: number };
 
 // What a checkpoint does in the sandbox; tests pass stubs.
 export type CheckpointSteps = {
@@ -26,6 +33,29 @@ export type CheckpointSteps = {
   // UncountedStopError in lib/errors.mts) would only stop every later fixer
   // run too, after another full gate run each.
   uncounted?(error: unknown): boolean;
+  // Why the sandbox can't run a fixer, or undefined when it answers. Asked
+  // before every fixer attempt: a fixer run into a dead sandbox only fails on
+  // its first command and costs a whole attempt (a run's second gate-fixer died
+  // on `git config`, exit 128, and every git call after it did too: see
+  // mpaulosky/dotfiles#417). Any error it throws ends the checkpoint and is
+  // rethrown unchanged, in particular an UncountedStopError for a stalled
+  // sandbox, so the run ends on the stall instead of recording a failed attempt.
+  alive?(): Promise<string | undefined>;
+  // Makes the first red run's output safe to log. When the checkpoint ends on
+  // an error rather than a result (a stall, a usage limit, a gate run that
+  // throws), that output has no other way out, so runCheckpoint logs its tail
+  // through this before rethrowing. Without it nothing is logged, since the
+  // output is written by agents and may hold a secret. A scrub that throws, or a
+  // log that does, doesn't replace the error that ended the checkpoint, and a
+  // line says the output couldn't be logged.
+  scrub?(text: string): string;
+  // Makes one line of text, such as an error's message, safe to log: the same job
+  // as `scrub` for text that has to stay a single line, since `scrub` may return
+  // several. runCheckpoint logs a failed gate-fixer attempt's error through it. A
+  // caller without one still gets that line cleaned (printableLine), but with
+  // any secret in it left in. Like printableLine's `scrub`, it must withhold
+  // the whole text when it finds a secret, not replace only the match.
+  scrubLine?(text: string): string;
 };
 
 // The gate prints in colour, which only gets in the way of a prompt or an
@@ -171,7 +201,16 @@ export async function runGate(sandbox: Pick<Sandbox, "exec">, guard?: GateGuard)
 }
 
 // Run the gate, and the gate-fixer while it's red and attempts are left.
-// Returns the last gate run.
+// Returns the last gate run. It carries the first red run's output
+// (`firstOutput`) when the checkpoint ended red after a fixer ran and it differs
+// from the last run's output. When `alive` reports the sandbox down, the
+// checkpoint ends before that attempt's fixer, with the reason appended to the
+// output and `fixersRun` set to the attempts that ran. A caller that passes no
+// `alive` never gets `fixersRun` or that early end, but still gets
+// `firstOutput`. An `alive` that throws an UncountedStopError ends the
+// checkpoint with it. Any error that ends it is rethrown unchanged. When the
+// steps have a `scrub`, the first red run's output is logged through it first;
+// a scrub or a log that throws is ignored, and a line says so.
 export async function runCheckpoint(
   checkpoint: Checkpoint,
   steps: CheckpointSteps,
@@ -181,19 +220,115 @@ export async function runCheckpoint(
   let result = await steps.gate();
   log(`${prefix} gate ${result.passed ? "passed" : "failed"}`);
 
-  for (let attempt = 1; !result.passed && attempt <= GATE_FIXER_ATTEMPTS; attempt++) {
-    const label = `gate-fixer attempt ${attempt}/${GATE_FIXER_ATTEMPTS}`;
-    try {
-      await steps.fix(checkpoint, result.output);
-    } catch (error) {
-      if (steps.uncounted?.(error)) throw error;
-      log(`${prefix} ${label} failed: ${error}`);
+  const firstOutput = result.output;
+  try {
+    for (let attempt = 1; !result.passed && attempt <= GATE_FIXER_ATTEMPTS; attempt++) {
+      const label = `gate-fixer attempt ${attempt}/${GATE_FIXER_ATTEMPTS}`;
+      const down = await steps.alive?.();
+      if (down !== undefined) {
+        log(`${prefix} ${label} not run: ${down}`);
+        return { ...result, output: `${result.output.replace(/\n$/, "")}\n❌ ${down}`, fixersRun: attempt - 1, ...(attempt > 1 && firstOutput !== result.output ? { firstOutput } : {}) };
+      }
+      try {
+        await steps.fix(checkpoint, result.output);
+      } catch (error) {
+        if (steps.uncounted?.(error)) throw error;
+        log(`${prefix} ${label} failed: ${printableLine(error, steps.scrubLine)}`);
+      }
+      result = await steps.gate();
+      log(`${prefix} gate ${result.passed ? "passed" : "failed"} after ${label}`);
     }
-    result = await steps.gate();
-    log(`${prefix} gate ${result.passed ? "passed" : "failed"} after ${label}`);
+  } catch (error) {
+    // An error that ends the checkpoint (a stall, a usage limit, a gate run that throws) never reaches the failure comment, so the first
+    // red run's output would be lost with it: log its scrubbed tail first. The error itself goes on unchanged.
+    if (steps.scrub !== undefined) {
+      try {
+        log(`${prefix} the first red gate run's output, before this stopped the checkpoint:\n${tail(steps.scrub(firstOutput), GATE_COMMENT_LINES)}`);
+      } catch {
+        // Only a diagnostic: a scrub or a log that throws must not replace the error that ended the checkpoint. A line says the output is
+        // missing, so a broken scrub isn't read as a checkpoint that never saw a red run.
+        try {
+          log(`${prefix} the first red gate run couldn't be logged`);
+        } catch {
+          // Nothing more can be done with a log that throws.
+        }
+      }
+    }
+    throw error;
   }
 
-  return result;
+  return result.passed || firstOutput === result.output ? result : { ...result, firstOutput };
+}
+
+// `text` without the `##[` form of a GitHub Actions command. The runner can read
+// that legacy form from anywhere in a log line, not only at its start
+// (`##[add-mask]` would hide the lines after it), so it is changed to `## [`,
+// which is not that form. The match is a literal one, so a caller removes hidden
+// characters first (terminalText, or the ASCII filter in printableLine), or a
+// `##` and a `[` could be rebuilt around them.
+export function withoutRunnerCommands(text: string): string {
+  return text.replaceAll("##[", "## [");
+}
+
+// `text` with colour codes removed, each run of line breaks and tabs folded to a space, and every other control, format (zero-width) and
+// combining character deleted, not turned into a space: a deleted character can't split a secret into a shape a scrub misses. status.mts's
+// terminalText does more, but it can't be imported here: status.mts imports this module, through the follow-up pass.
+function withoutHiddenCharacters(text: string): string {
+  return text.replace(ansiEscape, "").replace(/[\t\n\v\f\r\u0085\u2028\u2029]+/g, " ").replace(/[\p{Cc}\p{Cf}\p{M}]/gu, "");
+}
+
+// `value` (an error, for one) as a single printable line for the host's log or a
+// comment. The scrub runs on the text as it is first (a secret that holds a line
+// break or a mark is withheld whole, if it is within the first `limit * 500`
+// characters), then again after withoutHiddenCharacters and a cut to `limit * 20`
+// characters (so a hidden character can't split a secret the scrub would match,
+// padding can't push the rest of one past the cut, and an enormous message costs
+// the scrub little), so a secret in it can't be cut into a shape the scrub no
+// longer recognises. Then the text is reduced to printable ASCII (what is left of
+// a non-ASCII character becomes a space, so the result is one line, and a caller
+// puts it after a prefix of its own so it can't start one with `::`), changed by
+// withoutRunnerCommands, cut to `limit` characters and trimmed. The guarantee holds
+// for a `scrub` that withholds the whole text when it finds a secret, as the host's
+// publicError does: one that replaces only the match leaves the rest of a secret a
+// hidden character split, because the second pass works on the first's output.
+// A value that can't be printed, a scrub that throws, or a result with nothing
+// printable left gives a fixed text instead, so the caller's own error is never
+// replaced by this one and the message never reads as an empty pair of brackets.
+export function printableLine(value: unknown, scrub: (text: string) => string = (text) => text, limit = 200): string {
+  let text: string;
+  try {
+    text = String(value);
+  } catch {
+    return "an error that can't be printed";
+  }
+  try {
+    const first = scrub(text.slice(0, limit * 500));
+    const base = first === text.slice(0, limit * 500) ? text : first;
+    const safe = scrub(withoutHiddenCharacters(base).slice(0, limit * 20));
+    return withoutRunnerCommands(safe.replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim() || "(no printable text)";
+  } catch {
+    return "text that couldn't be made safe to log";
+  }
+}
+
+// Why the sandbox can't run a fixer, or undefined when `git rev-parse HEAD`
+// answers in it. A probe that throws counts as the sandbox being down, except a
+// stall (an UncountedStopError): that ends the run, and recording it as a
+// failed build attempt would hide it. The reason holds the error's text as
+// printableLine makes it, with `scrub` applied first. The default scrub does
+// nothing, so a caller that logs or posts the reason must pass one. The raw
+// error text is never logged: only that reason is.
+export async function sandboxDown(
+  sandbox: Pick<Sandbox, "exec">,
+  scrub: (text: string) => string = (text) => text,
+): Promise<string | undefined> {
+  try {
+    if ((await headOf(sandbox)) !== undefined) return undefined;
+    return "The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run.";
+  } catch (error) {
+    if (error instanceof UncountedStopError) throw error;
+    return `The sandbox can't run a command (${printableLine(error, scrub)}), so no gate-fixer was run.`;
+  }
 }
 
 // The last `lines` lines of the output.
@@ -211,12 +346,27 @@ export function endOf(text: string, limit: number): string {
 }
 
 // The issue comment for a checkpoint that stayed red past the fixer's attempts.
-export function gateFailureComment(checkpoint: Checkpoint, branch: string, output: string): string {
+// `firstOutput` is the checkpoint's first red run, quoted too when it differs
+// from the last: a gate-fixer attempt can leave the last run showing a dead
+// sandbox or a timeout, not the failure the build began with. `fixersRun` is
+// how many attempts ran when that is fewer than GATE_FIXER_ATTEMPTS.
+export function gateFailureComment(
+  checkpoint: Checkpoint,
+  branch: string,
+  output: string,
+  { firstOutput, fixersRun = GATE_FIXER_ATTEMPTS }: { firstOutput?: string; fixersRun?: number } = {},
+): string {
+  const first =
+    firstOutput === undefined || firstOutput === output
+      ? []
+      : ["", `The last ${GATE_COMMENT_LINES} lines of the first red gate run, before a gate-fixer ran:`, "", textBlock(tail(firstOutput, GATE_COMMENT_LINES))];
   return [
     `Sandcastle stopped building this issue: \`${GATE_COMMAND}\` is still red at checkpoint ${checkpoint} ` +
-      `after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts, so \`${branch}\` wasn't pushed. The branch keeps its commits.`,
+      `after ${fixersRun} gate-fixer ${fixersRun === 1 ? "attempt" : "attempts"}, so \`${branch}\` wasn't pushed. The branch keeps its commits.`,
+    // The first run goes before the last: an over-long comment loses its start, and the last run is the one to keep.
+    ...first,
     "",
-    `The last ${GATE_COMMENT_LINES} lines of the gate output:`,
+    `The last ${GATE_COMMENT_LINES} lines of the ${first.length === 0 ? "gate output" : "last gate output"}:`,
     "",
     textBlock(tail(output, GATE_COMMENT_LINES)),
   ].join("\n");

@@ -20,6 +20,7 @@ import {
   PR_BODY_LIMIT,
   boundedCheckList,
   cutDescription,
+  logSafeGateOutput,
   PR_BODY_TOTAL_LIMIT,
   publicErrorText,
   prTitle,
@@ -127,6 +128,8 @@ function host(
     baseExecError,
     baseIsAncestor = true,
     gateOutput,
+    sandboxDiesAfterGates,
+    sandboxDeathError,
     gateScriptChanged = "",
     checkFiles = "",
     checkFilesError,
@@ -157,8 +160,13 @@ function host(
     // a reviewer that finished writes, so a test that pins the log isn't
     // handed the fallback's line.
     prBodyFile?: string;
-    // What every gate run prints, instead of "gate output, exit <n>".
-    gateOutput?: string;
+    // What every gate run prints, or what gate run <n> prints (counting from 1) when this is a function, instead of "gate output, exit <exit code>".
+    gateOutput?: string | ((gateRun: number) => string);
+    // `git rev-parse HEAD` fails once this many gate runs have printed, as in a sandbox that was killed during or right after the gate,
+    // with exit 128, or by throwing `sandboxDeathError` when that is set.
+    sandboxDiesAfterGates?: number;
+    // What `git rev-parse HEAD` throws, instead of failing with exit 128, once `sandboxDiesAfterGates` gate runs have printed.
+    sandboxDeathError?: Error;
     // The commit latestMain() resolves origin/main to just before checkpoint
     // 2, whether the branch already contains it, how `git merge` of it and
     // `git merge --abort` exit, and an error latestMain() throws instead (a
@@ -252,6 +260,10 @@ function host(
         return { stdout, stderr: "", exitCode: 0 };
       }
       if (command === "git rev-parse HEAD") {
+        if (sandboxDiesAfterGates !== undefined && steps.filter((step) => step.startsWith("gate:")).length >= sandboxDiesAfterGates) {
+          if (sandboxDeathError !== undefined) throw sandboxDeathError;
+          return { stdout: "fatal: not a git repository\n", stderr: "", exitCode: 128 };
+        }
         return { stdout: `${head()}\n`, stderr: "", exitCode: 0 };
       }
       if (command.startsWith(`git merge-base --is-ancestor '${base}'`)) {
@@ -302,7 +314,9 @@ function host(
       steps.push(`gate: ${command}`);
       const exitCode = gateExitCodes.shift();
       if (exitCode === undefined) throw new Error("the gate ran more often than the test expected");
-      return { stdout: gateOutput ?? `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
+      const gateRun = steps.filter((step) => step.startsWith("gate:")).length;
+      const printed = typeof gateOutput === "function" ? gateOutput(gateRun) : gateOutput;
+      return { stdout: printed ?? `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
     },
     close: async () => {
       steps.push("close");
@@ -651,6 +665,169 @@ describe("buildIssue", () => {
 
     assert.equal(recordBuildFailureCalls.length, 1);
     assert.equal(recordBuildFailureCalls[0]!.issueNumber, 69);
+  });
+
+  it("runs no gate-fixer, and records the dead sandbox, when git stops answering after the first gate", async () => {
+    const { steps, recordBuildFailureCalls, buildHost } = host([1], { sandboxDiesAfterGates: 1 });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!steps.some((step) => step.startsWith("gate-fixer")), steps.join(", "));
+    assert.equal(recordBuildFailureCalls.length, 1);
+    assert.match(recordBuildFailureCalls[0]!.detail, /after 0 gate-fixer attempts/);
+    assert.match(recordBuildFailureCalls[0]!.detail, /gate output, exit 1\n❌ The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run\./);
+  });
+
+  it("quotes the first red gate run before the last when they differ, and counts the fixers that ran", async () => {
+    const { recordBuildFailureCalls, buildHost } = host([1, 1, 1], { gateOutput: (run) => `run ${run} failed\n` });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.match(detail, /after 2 gate-fixer attempts/);
+    assert.match(detail, /first red gate run, before a gate-fixer ran:\n\n```text\nrun 1 failed\n```\n\nThe last 100 lines of the last gate output:\n\n```text\nrun 3 failed\n```/);
+  });
+
+  it("withholds a first red gate run that looks like it holds a secret, as it does the last", async () => {
+    const { recordBuildFailureCalls, buildHost } = host([1, 1, 1], {
+      gateOutput: (run) => (run === 1 ? "FAIL: env dump\nCLAUDE_CODE_OAUTH_TOKEN=ghp_abc\n" : "later failure\n"),
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.ok(!detail.includes("ghp_abc"), detail);
+    assert.match(detail, /first red gate run, before a gate-fixer ran:\n\n```text\n.*looked like it held a secret.*```\n\nThe last 100 lines of the last gate output:\n\n```text\nlater failure/s);
+  });
+
+  it("breaks a host marker's <!-- in the first red gate run, as in the last", async () => {
+    const { recordBuildFailureCalls, buildHost } = host([1, 1, 1], {
+      gateOutput: (run) => (run === 1 ? "FAIL: expected <!-- sandcastle:build-failed --> in the comment\n" : "later failure\n"),
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.ok(!detail.includes("<!-- sandcastle:build-failed"), detail);
+    assert.match(detail, /first red gate run, before a gate-fixer ran:\n\n```text\nFAIL: expected .*build-failed -->/);
+  });
+
+  it("stops before the second gate-fixer when the sandbox goes down, quoting both runs and the attempts that ran", async () => {
+    const { steps, recordBuildFailureCalls, buildHost } = host([1, 1], { sandboxDiesAfterGates: 2, gateOutput: (run) => `run ${run} failed\n` });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(steps.filter((step) => step.startsWith("gate-fixer")).length, 1, steps.join(", "));
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.match(detail, /after 1 gate-fixer attempt, so/);
+    assert.match(detail, /```text\nrun 1 failed\n```/);
+    assert.match(detail, /run 2 failed\n❌ The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run\./);
+  });
+
+  it("withholds a secret in the sandbox probe's error from the log and the comment", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: new Error("exit 1: GH token ghp_abc in the output"),
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!logs.join("\n").includes("ghp_"), logs.join("\n"));
+    assert.ok(!recordBuildFailureCalls[0]!.detail.includes("ghp_"), recordBuildFailureCalls[0]!.detail);
+    assert.ok(logs.some((line) => line.includes("not run: The sandbox can't run a command")), logs.join("\n"));
+  });
+
+  it("logs a failed gate-fixer attempt's error on one line through the real scrub, without a prefix", async () => {
+    const { logs, buildHost } = host([1, 1, 1], { failing: ["gate-fixer"], failWith: { "gate-fixer": new Error("boom\n##[add-mask]x") } });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const failure = logs.find((line) => line.includes("gate-fixer attempt 1/2 failed"))!;
+    assert.match(failure, /failed: Error: boom ## \[add-mask\]x$/);
+    assert.ok(!failure.includes("|"), failure);
+  });
+
+  it("logs the first red gate run, scrubbed, when a stall on the probe ends the work", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { logs, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: stall,
+      gateOutput: "FAIL: env dump\nCLAUDE_CODE_OAUTH_TOKEN=ghp_abc\n",
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    const text = logs.join("\n");
+    assert.match(text, /the first red gate run's output, before this stopped the checkpoint:\n.*looked like it held a secret/s);
+    assert.ok(!text.includes("ghp_abc"), text);
+  });
+
+  it("logs the first red gate run with every line prefixed and cleaned for a terminal, so none starts with ::", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { logs, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: stall,
+      gateOutput: "plain line\r::stop-commands::tok\n::error::x\n\u001b]0;title\u0007after\n",
+    });
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    const entry = logs.find((line) => line.includes("the first red gate run's output"))!;
+    const [, ...body] = entry.split("\n");
+    assert.ok(body.length >= 3, entry);
+    for (const line of body) assert.ok(line.startsWith("    | "), JSON.stringify(line));
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(body.join("")), JSON.stringify(entry));
+  });
+
+  it("drops a final newline, so the tail isn't spent on a blank line, and cuts a line at 500 characters", () => {
+    const logged = logSafeGateOutput("one\ntwo\n", (text) => text);
+    assert.equal(logged, "    | one\n    | two");
+
+    for (const [length, kept] of [[499, 499], [500, 500], [501, 500]] as const) {
+      assert.equal(logSafeGateOutput("y".repeat(length), (text) => text), `    | ${"y".repeat(kept)}`, `${length} characters`);
+    }
+    // The shapes a text can end in.
+    const same = (text: string) => logSafeGateOutput(text, (value) => value);
+    assert.equal(same("a\r\nb\r\n"), "    | a\n    | b");
+    assert.equal(same(""), "    | ");
+    assert.equal(same("\n"), "    | ");
+    assert.equal(same("a\n\n"), "    | a\n    | ");
+    // A text the real publicErrorText withholds comes out as one prefixed line.
+    const withheld = logSafeGateOutput(`${"y".repeat(900)}\nghp_abc`, (value) => publicErrorText(value, (cleaned) => cleaned.includes("ghp_")));
+    assert.match(withheld, /^    \| \(This text isn't shown: it looked like it held a secret\./);
+    assert.ok(!withheld.includes("\n"), withheld);
+    // A character outside the basic plane counts once, so the cut can't split it.
+    assert.equal(logSafeGateOutput(`${"y".repeat(499)}\u{1F600}z`, (text) => text), `    | ${"y".repeat(499)}\u{1F600}`);
+  });
+
+  it("changes a ##[ so the runner's legacy command form isn't left in a logged line", () => {
+    const logged = logSafeGateOutput("##[add-mask]checkpoint\nsee ##[error]x\n##\u200b[group]y", (value) => value);
+
+    assert.ok(!logged.includes("##["), logged);
+    assert.equal(logged, "    | ## [add-mask]checkpoint\n    | see ## [error]x\n    | ## [group]y");
+  });
+
+  it("cleans each line before the secret check, so a hidden character can't hide a token that is rebuilt afterwards", () => {
+    const publicError = (text: string) => publicErrorText(text, (cleaned) => cleaned.includes("ghp_abc"));
+
+    const logged = logSafeGateOutput("fine\nghp_a\u200bbc leaked", publicError);
+
+    assert.ok(!logged.includes("ghp_abc"), logged);
+    assert.match(logged, /looked like it held a secret/);
+    assert.ok(logged.split("\n").every((line) => line.startsWith("    | ")), logged);
+  });
+
+  it("lets a stall on the sandbox probe end the work instead of recording a failed build attempt", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { steps, recordBuildFailureCalls, buildHost } = host([1], { sandboxDiesAfterGates: 1, sandboxDeathError: stall });
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    assert.ok(!steps.some((step) => step.startsWith("gate-fixer")), steps.join(", "));
+    assert.deepEqual(recordBuildFailureCalls, []);
   });
 
   it("doesn't treat a gate-fixer attempt as a failed build attempt when the checkpoint later passes", async () => {

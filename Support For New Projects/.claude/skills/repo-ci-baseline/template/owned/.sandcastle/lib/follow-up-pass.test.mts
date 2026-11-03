@@ -1362,12 +1362,14 @@ describe("runPass", () => {
     // As the real host's publicError does: a text holding the secret is withheld whole.
     passHost.publicError = (text) => (String(text).includes(secret) ? "(withheld)" : String(text));
 
+    // gateExitCodes holds one red run, so the checkpoint's second gate run throws ("the gate ran more often than the test expected"). That
+    // error ends the checkpoint, which makes it log the first red run's output; runPass's outcome isn't what this test is about.
     await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost).catch(() => undefined);
 
     const logged = calls.log.join("\n");
     assert.ok(sandbox.runs.some((run) => run.name === "gate-fixer"), "the gate-fixer never ran");
     assert.match(logged, /the first red gate run's output, before this stopped the checkpoint/);
-    assert.match(logged, /gate-fixer attempt 1\/2 failed: .*\(withheld\)/);
+    assert.match(logged, new RegExp(`gate-fixer attempt 1/${GATE_FIXER_ATTEMPTS} failed: .*\\(withheld\\)`));
     assert.ok(!logged.includes(secret), logged);
   });
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { availableParallelism, tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -26,12 +28,14 @@ import {
   REVIEWER_ATTEMPTS,
   ROLES,
   RunModeError,
+  SANDBOX_CPUS,
   SANDCASTLE_LABELS,
   SESSION_REPLY_MARKER,
   budgetMinutesFrom,
   isDefaultQueueScope,
   queueScopeFrom,
   runModeFrom,
+  sandboxCpus,
 } from "./config.mts";
 import { GATE_LIMIT_MINUTES } from "./repo-config.mts";
 import { COMMAND_LIMIT_MINUTES } from "./step-limit.mts";
@@ -91,6 +95,48 @@ describe("the host-side review's fixed role", () => {
   it("stops fixing after 3 rounds and asks each reviewer for a valid answer twice", () => {
     assert.equal(REVIEW_FIX_ROUNDS, 3);
     assert.equal(REVIEWER_ATTEMPTS, 2);
+  });
+});
+
+describe("sandboxCpus", () => {
+  it("gives a sandbox 4 CPUs (mpaulosky/dotfiles#423)", () => {
+    assert.equal(SANDBOX_CPUS, 4);
+  });
+
+  it("gives a host with fewer CPUs all of them, since docker refuses --cpus above the host's count", () => {
+    assert.equal(sandboxCpus(1), 1);
+    assert.equal(sandboxCpus(2), 2);
+    assert.equal(sandboxCpus(3), 3);
+    assert.equal(sandboxCpus(4), 4);
+    assert.equal(sandboxCpus(5), 4);
+    assert.equal(sandboxCpus(64), 4);
+  });
+
+  it("rounds a fractional count down, and gives 1 CPU for a count that is not a CPU count", () => {
+    assert.equal(sandboxCpus(2.9), 2);
+    assert.equal(sandboxCpus(1.5), 1);
+    assert.equal(sandboxCpus(0.5), 1);
+    assert.equal(sandboxCpus(0), 1);
+    assert.equal(sandboxCpus(-3), 1);
+    assert.equal(sandboxCpus(Number.NaN), 1);
+    assert.equal(sandboxCpus(Number.POSITIVE_INFINITY), 4);
+  });
+
+  it("reads this host's CPU count when it is not given one", () => {
+    assert.equal(sandboxCpus(), Math.min(SANDBOX_CPUS, availableParallelism()));
+  });
+
+  // Where this host has 4 CPUs or more the default can't be told from a fixed count, so a process limited to one CPU
+  // (taskset, Linux) reads it.
+  const hasTaskset = spawnSync("taskset", ["--version"]).status === 0;
+  it("reads the CPUs its process may use, not a fixed count", { skip: hasTaskset ? false : "taskset is not installed" }, () => {
+    const dir = mkdtempSync(join(tmpdir(), "cpus-"));
+    const script = join(dir, "cpus.mts");
+    writeFileSync(script, `import { sandboxCpus } from ${JSON.stringify(import.meta.resolve("./config.mts"))};\nconsole.log(sandboxCpus());\n`);
+    const run = spawnSync("taskset", ["-c", "0", process.execPath, ...process.execArgv, script], { encoding: "utf8" });
+
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.trim(), "1");
   });
 });
 

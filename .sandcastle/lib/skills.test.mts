@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { uiEnabled } from "./agents.mts";
+import { sandboxCpus } from "./config.mts";
 import { SANDBOX_SKILLS } from "./repo-config.mts";
 import { makeAgentSandbox, skillMounts, withCreateMounts, type SkillMount } from "./skills.mts";
 
@@ -59,7 +60,7 @@ describe("makeAgentSandbox", () => {
   type CreateOptions = { worktreePath: string; mounts: { hostPath: string; sandboxPath: string; readonly?: boolean }[] };
 
   function host(skillsDir: string) {
-    const dockerCalls: { mounts: SkillMount[]; env: Record<string, string> }[] = [];
+    const dockerCalls: { mounts: SkillMount[]; env: Record<string, string>; cpus: number }[] = [];
     const createCalls: CreateOptions[] = [];
     const logs: string[] = [];
     const provider = {
@@ -80,7 +81,7 @@ describe("makeAgentSandbox", () => {
           { hostPath: "/repo/.git/config", sandboxPath: "/repo/.git/config", readonly: true as const },
           { hostPath: "/empty", sandboxPath: "/repo/.git/review", readonly: true as const },
         ],
-        docker: (options: { mounts: SkillMount[]; env: Record<string, string> }) => {
+        docker: (options: { mounts: SkillMount[]; env: Record<string, string>; cpus: number }) => {
           dockerCalls.push(options);
           return provider;
         },
@@ -93,6 +94,17 @@ describe("makeAgentSandbox", () => {
     { hostPath: "/repo/.sandcastle/worktrees/fix-1", sandboxPath: "/home/agent/workspace" },
     { hostPath: "/repo/.git", sandboxPath: "/repo/.git" },
   ];
+
+  it("starts every Docker sandbox with sandboxCpus() CPUs (mpaulosky/dotfiles#423)", () => {
+    const stub = host(mkdtempSync(join(tmpdir(), "skills-")));
+    const sandbox = makeAgentSandbox(stub.host, []);
+
+    sandbox();
+    sandbox();
+
+    assert.deepEqual(stub.dockerCalls.map((call) => call.cpus), [sandboxCpus(), sandboxCpus()]);
+    assert.ok(stub.dockerCalls.every((call) => Number.isInteger(call.cpus) && call.cpus >= 1 && call.cpus <= 4));
+  });
 
   it("passes the found skills' mounts to every Docker sandbox it creates", () => {
     const skillsDir = mkdtempSync(join(tmpdir(), "skills-"));

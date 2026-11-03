@@ -16,6 +16,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { sandboxCpus } from "./config.mts";
 import { protectedGitMounts, protectedRecordMounts, repoGitDir, type ReadOnlyMount } from "./host-safety.mts";
 import { SANDBOX_SKILLS } from "./repo-config.mts";
 
@@ -49,7 +50,7 @@ export type SandboxHost<TProvider> = {
   // The read-only mounts over the shared .git directory's config, hooks and
   // review folder, and over the main checkout's .security folder.
   gitMounts(): ReadOnlyMount[];
-  docker(options: { mounts: ReadOnlyMount[]; env: Record<string, string> }): TProvider;
+  docker(options: { mounts: ReadOnlyMount[]; env: Record<string, string>; cpus: number }): TProvider;
   log(message: string): void;
 };
 
@@ -120,7 +121,7 @@ export function makeAgentSandbox<TProvider>(
       }
       hostSkills = mounts;
     }
-    return withCreateMounts(host.docker({ mounts: hostSkills, env: { ...SANDBOX_ENV } }), host.gitMounts());
+    return withCreateMounts(host.docker({ mounts: hostSkills, env: { ...SANDBOX_ENV }, cpus: sandboxCpus() }), host.gitMounts());
   };
 }
 

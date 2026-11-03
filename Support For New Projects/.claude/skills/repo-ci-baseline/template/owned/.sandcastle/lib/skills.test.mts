@@ -197,7 +197,7 @@ describe("makeAgentSandbox", () => {
       } finally {
         if (saved === undefined) delete process.env["PATH"];
         else process.env["PATH"] = saved;
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     }
     const printsSix = '[ "$1 $2 $3" = "info --format {{.NCPU}}" ] && echo 6 || exit 9';

@@ -299,8 +299,10 @@ jobs:
       # can be downloaded by any signed-in user, and GitHub masks secrets in
       # step logs, not artifacts, so a transcript that printed the sandbox's
       # Claude credential would publish it. The reviewers' logs reach
-      # logs/report/ through lib/role-logs.mts, which keeps a log's end and
-      # leaves out one that holds anything shaped like a secret.
+      # logs/report/ through lib/role-logs.mts, which writes an allowlisted
+      # view of each (host status lines, tool names without arguments, and the
+      # lines around an error) and leaves out a view shaped like a secret. The
+      # pre-push review's own log is never copied.
       - name: Upload the run report
         if: always() && steps.secrets.outputs.enabled == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

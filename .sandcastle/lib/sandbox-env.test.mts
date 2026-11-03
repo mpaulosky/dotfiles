@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { containsEncodedSecret, containsSecret, containsTokenShapeAnywhere, githubTokensIn, sandboxEnv, secretKindIn, tokenShapes } from "./sandbox-env.mts";
+import { containsSecret, githubTokensIn, sandboxEnv, secretKindIn } from "./sandbox-env.mts";
 
 describe("githubTokensIn", () => {
   it("finds GitHub tokens the env file would pass into the sandbox", () => {
@@ -81,97 +81,5 @@ describe("secretKindIn", () => {
 
   it("finds nothing in ordinary code", () => {
     assert.equal(secretKindIn("const answer = 42;\n", new Map([["ANTHROPIC_API_KEY", "abcdefgh12345"]])), undefined);
-  });
-});
-
-describe("containsTokenShapeAnywhere", () => {
-  const samples = [`ghp_${"A".repeat(20)}`, `github_pat_${"B".repeat(20)}`, `sk-ant-oat01-${"C".repeat(16)}`];
-
-  it("finds each token shape that containsSecret finds", () => {
-    for (const sample of samples) {
-      assert.ok(containsSecret(sample, []), sample);
-      assert.ok(containsTokenShapeAnywhere(sample), sample);
-    }
-  });
-
-  it("finds a token shape joined to the word before it or the word after it, which the word-boundary shapes miss", () => {
-    for (const sample of samples) {
-      assert.ok(containsTokenShapeAnywhere(`the${sample}`), sample);
-      assert.ok(containsTokenShapeAnywhere(`${sample}session_id`), sample);
-    }
-    assert.ok(!containsSecret(`the${samples[0]!}`, []));
-    assert.ok(!containsSecret(`${samples[0]!}_session`, []));
-  });
-
-  it("leaves ordinary text and too-short tokens alone", () => {
-    assert.ok(!containsTokenShapeAnywhere("nothing secret here, just words and ghp_short"));
-    assert.ok(!containsTokenShapeAnywhere(`ghp_${"A".repeat(19)}`));
-    assert.ok(!containsTokenShapeAnywhere(`sk-ant-${"A".repeat(15)}`));
-    assert.ok(!containsTokenShapeAnywhere(`github_pat_${"A".repeat(19)}`));
-    assert.ok(containsTokenShapeAnywhere(`github_pat_${"A".repeat(20)}`));
-  });
-
-  it("covers every prefix of the [pousr] class", () => {
-    for (const kind of "pousr") assert.ok(containsTokenShapeAnywhere(`x${"gh"}${kind}_${"A".repeat(20)}`), kind);
-    assert.ok(!containsTokenShapeAnywhere(`ghx_${"A".repeat(20)}`));
-  });
-
-  it("holds every shape's loose pattern to its own pattern minus the word boundaries, with the same flags", () => {
-    for (const { shape, pattern, loose } of tokenShapes) {
-      assert.equal(loose.source, pattern.source.replaceAll("\\b", ""), shape);
-      assert.equal(loose.flags, pattern.flags, shape);
-    }
-  });
-});
-
-describe("containsEncodedSecret", () => {
-  const secret = "s3cr3t-Value/with+chars=1234";
-  const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64");
-  const forms: Record<string, string> = {
-    reversed: [...secret].reverse().join(""),
-    hex: Buffer.from(secret).toString("hex"),
-    "upper hex": Buffer.from(secret).toString("hex").toUpperCase(),
-    "URL-encoded": encodeURIComponent(secret),
-  };
-
-  it("finds the secret reversed, in hex and URL-encoded", () => {
-    for (const [name, form] of Object.entries(forms)) {
-      assert.ok(containsEncodedSecret(`before ${form} after`, [secret]), name);
-    }
-  });
-
-  it("finds the secret in base64 whatever bytes come before and after it, standard or URL-safe", () => {
-    for (const before of ["", "a", "ab", "abc", "abcd", "token="]) {
-      for (const after of ["", "x", "xy", "xyz", " and more"]) {
-        const encoded = b64(`${before}${secret}${after}`);
-        assert.ok(containsEncodedSecret(encoded, [secret]), `${before}|${after}`);
-        assert.ok(containsEncodedSecret(encoded.replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", ""), [secret]), `url-safe ${before}|${after}`);
-      }
-    }
-  });
-
-  it("finds the URL-safe base64 form of a secret whose standard form holds + and /", () => {
-    const odd = ">>>>>>>>???????????????>>>>>>>>";
-    for (const before of ["", "a", "ab"]) {
-      const standard = b64(`${before}${odd}`);
-      assert.ok(/[+/]/.test(standard), standard);
-      const urlSafe = standard.replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-      assert.ok(containsEncodedSecret(urlSafe, [odd]), `url-safe ${before}`);
-      assert.ok(containsEncodedSecret(standard, [odd]), `standard ${before}`);
-    }
-  });
-
-  it("doesn't find the plain secret (containsSecret does), another secret, or a secret shorter than 8 characters", () => {
-    assert.ok(!containsEncodedSecret(secret, [secret]));
-    assert.ok(!containsEncodedSecret(b64("some other value entirely"), [secret]));
-    assert.ok(!containsEncodedSecret(b64("short"), ["short"]));
-    assert.ok(!containsEncodedSecret(b64("abcdefg"), ["abcdefg"]));
-    assert.ok(containsEncodedSecret(b64("abcdefgh"), ["abcdefgh"]));
-  });
-
-  it("finds a base64 secret that is one character short of whole only when it is whole", () => {
-    const whole = b64(secret);
-    assert.ok(containsEncodedSecret(whole, [secret]));
-    assert.ok(!containsEncodedSecret(whole.slice(2, -4), [secret]));
   });
 });

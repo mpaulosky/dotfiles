@@ -680,6 +680,7 @@ describe("buildIssue", () => {
     await buildIssue(issue, branch, base, buildHost);
 
     assert.ok(logs.some((line) => /sandbox state \(the reviewer failed\):\n    \| disk 10% used/.test(line)), logs.join("\n"));
+    assert.ok(probes.length >= 1, "the probe never ran");
     assert.equal(pushed.length, 1);
   });
 
@@ -689,6 +690,15 @@ describe("buildIssue", () => {
     await buildIssue(issue, branch, base, buildHost);
 
     assert.ok(logs.some((line) => /sandbox state \(the backend failed\):/.test(line)), logs.join("\n"));
+    assert.equal(recordBuildFailureCalls.length, 1);
+  });
+
+  it("logs the sandbox's state when a developer ran out of iterations unfinished, and records the failed attempt", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([], { unfinished: ["backend"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the backend ran out of iterations unfinished\):/.test(line)), logs.join("\n"));
     assert.equal(recordBuildFailureCalls.length, 1);
   });
 

@@ -21,7 +21,7 @@ export const PROBE_SCRIPT = [
   'echo "== memory =="; free -m 2>&1 || head -n 5 /proc/meminfo 2>&1',
   'echo "== processes =="; ps -e 2>/dev/null | wc -l',
   'echo "== biggest processes (pid rss-kb elapsed command) =="; (ps -eo pid,rss,etime,comm --sort=-rss 2>/dev/null || ps -eo pid,rss,etime,comm 2>&1) | head -n 8',
-  'echo "== core files =="; find / "$PWD" /tmp -xdev -maxdepth 4 -type f -size +0 \\( -name core -o -name "core.[0-9]*" \\) 2>/dev/null | head -n 10',
+  'echo "== core files =="; find / "$PWD" /tmp -xdev -maxdepth 4 -type f -size +0 \\( -name core -o -name "core.[0-9]*" \\) 2>/dev/null | sort -u | head -n 10',
   "true",
 ].join("; ");
 
@@ -46,6 +46,15 @@ export async function logSandboxState(
     const printed = [stdout, stderr].map((text) => text.trimEnd()).filter((text) => text !== "").join("\n");
     log(`sandbox state (${reason})${status}:\n${scrub(printed === "" ? "(no output)" : printed)}`);
   } catch (error) {
-    log(`sandbox state (${reason}): the probe failed:\n${scrub(String(error).split("\n")[0] ?? "")}`);
+    // The scrub or the log may be what threw, so this too is guarded, with a line that holds nothing from the sandbox.
+    try {
+      log(`sandbox state (${reason}): the probe failed:\n${scrub(String(error).split("\n")[0] ?? "")}`);
+    } catch {
+      try {
+        log(`sandbox state (${reason}): the probe failed, and its output could not be logged`);
+      } catch {
+        // Nothing left to log with; the probe never changes the run's outcome.
+      }
+    }
   }
 }

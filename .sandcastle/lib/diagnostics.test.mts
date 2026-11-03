@@ -74,6 +74,21 @@ describe("logSandboxState", () => {
   });
 });
 
+describe("logSandboxState when the scrub or the log throws", () => {
+  it("still returns, with a line that holds nothing from the sandbox, when the scrub throws", async () => {
+    const printed: string[] = [];
+    const scrub = () => { throw new Error("scrub broke"); };
+    await logSandboxState(sandboxOf(async () => ({ stdout: "x", stderr: "", exitCode: 0 })), "r", (line) => printed.push(line), scrub);
+    await logSandboxState(sandboxOf(async () => { throw new Error("exec broke"); }), "r", (line) => printed.push(line), scrub);
+    assert.equal(printed.length, 2);
+    for (const line of printed) assert.equal(line, "sandbox state (r): the probe failed, and its output could not be logged");
+  });
+
+  it("returns when the log itself throws", async () => {
+    await assert.doesNotReject(logSandboxState(sandboxOf(async () => ({ stdout: "x", stderr: "", exitCode: 0 })), "r", () => { throw new Error("log broke"); }));
+  });
+});
+
 describe("SANDBOX_PROBE", () => {
   it("runs under its own short timeout, far below the sandbox's command limit", () => {
     assert.ok(SANDBOX_PROBE.startsWith(`timeout -k 2 ${PROBE_SECONDS} sh -c '`));
@@ -97,19 +112,21 @@ describe("SANDBOX_PROBE", () => {
     // The script searches /, the working directory and /tmp and keeps ten lines, so a stray core file elsewhere on the machine
     // could push a fixture out of the list: this runs its find over the fixture folder alone, with the bound and the cap unchanged.
     assert.ok(PROBE_SCRIPT.includes('find / "$PWD" /tmp -xdev -maxdepth 4 '));
-    assert.ok(PROBE_SCRIPT.includes("| head -n 10"));
+    assert.ok(PROBE_SCRIPT.includes("| sort -u | head -n 10"));
     const here = PROBE_SCRIPT.replace('find / "$PWD" /tmp -xdev', 'find "$PWD" -xdev');
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "probe-")));
     try {
-      for (const name of ["core", "core.123", "core.js", "a/b/c/core", "a/b/c/d/core"]) {
+      for (const name of ["core", "core.123", "core.js", "empty/core", "a/b/c/core", "a/b/c/d/core"]) {
         mkdirSync(dirname(join(dir, name)), { recursive: true });
-        writeFileSync(join(dir, name), "x");
+        writeFileSync(join(dir, name), name === "empty/core" ? "" : "x");
       }
+      mkdirSync(join(dir, "dir", "core"), { recursive: true });
       const run = spawnSync("sh", ["-c", here], { cwd: dir, encoding: "utf8" });
       assert.equal(run.status, 0, run.stderr);
       const listed = run.stdout.slice(run.stdout.indexOf("== core files ==")).split("\n");
       for (const name of ["core", "core.123", "a/b/c/core"]) assert.ok(listed.includes(join(dir, name)), `${name} in ${listed.join("\n")}`);
-      for (const name of ["core.js", "a/b/c/d/core"]) assert.ok(!listed.includes(join(dir, name)), `${name} in ${listed.join("\n")}`);
+      for (const name of ["core.js", "empty/core", "dir/core", "a/b/c/d/core"]) assert.ok(!listed.includes(join(dir, name)), `${name} in ${listed.join("\n")}`);
+      assert.equal(listed.filter((line) => line === join(dir, "core")).length, 1, "a file listed twice");
       // -xdev (a core file on another mount is not searched) needs a second mount to test, which a unit test can't make.
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

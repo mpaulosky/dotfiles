@@ -586,11 +586,11 @@ describe("main.mts's reviewer-log wiring", () => {
     for (const path of [".github/workflows/sandcastle.yml", "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.github/workflows/sandcastle.yml"]) {
       const workflow = read(path);
       const step = workflow.slice(workflow.indexOf("- name: Upload the run report"));
-      const block = /path: \|\n((?: {12}\S.*\n)+)/.exec(step)?.[1];
+      const block = /path: \|\r?\n((?: {12}\S.*\r?\n)+)/.exec(step)?.[1];
 
       assert.ok(block, `${path} has no upload path block`);
       assert.deepEqual(
-        block.trim().split("\n").map((line) => line.trim()),
+        block.trim().split(/\r?\n/).map((line) => line.trim()),
         [`${REPORT_DIR}/summary.md`, `${REPORT_DIR}/handbacks.json`, `${REPORT_DIR}/${REPORT_LOG_DIR}/*-reviewer.log`],
         `${path} uploads something else than the report, the hand-backs and the reviewer logs`,
       );

@@ -730,9 +730,11 @@ describe("buildIssue", () => {
   it("runs no probe when a usage-limit or time-budget stop ends a developer role or the reviewer", async () => {
     for (const role of ["backend", "reviewer"]) {
       const stop = new UncountedStopError("usage limit reached");
-      const { logs, buildHost } = host([0], { failing: [role], failWith: { [role]: stop } });
+      const { logs, probes, buildHost } = host([0], { failing: [role], failWith: { [role]: stop } });
 
       await assert.rejects(() => buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stop);
+
+      assert.equal(probes.length, logs.filter((line) => line.includes("sandbox state (before checkpoint")).length, `${role}: a probe ran for the stop`);
 
       assert.ok(!logs.some((line) => line.includes(`(the ${role} failed)`)), `${role}: ${logs.join("\n")}`);
     }

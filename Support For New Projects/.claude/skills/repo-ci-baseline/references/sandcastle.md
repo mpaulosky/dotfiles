@@ -260,9 +260,12 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
   locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
 - **The run report artifact holds an allowlisted view of the reviewers' logs, never a whole log.** `lib/role-logs.mts` writes, for each `*-reviewer.log`
-  (not the pre-push review's), the host's status lines, each tool call's name without its arguments and the lines around an error, and a note in place of a view
-  that looks like a secret. An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it. After a role fails, or before a checkpoint's gate,
-  the host logs the sandbox's disk, memory, processes and core files (`lib/diagnostics.mts`); the probe runs under its own `timeout`, and a failed probe is only logged.
+  (not the pre-push review's), the host's status lines, each known tool call's name without its arguments and the last few error lines
+  (cut short, and left out when they hold a long run of token characters), and a note in place of a view that looks like a secret.
+  This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.
+  An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
+  After a role fails, or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes and core files
+  (`lib/diagnostics.mts`); the probe runs under its own `timeout`, and a failed probe is only logged.
 - **`.github/ci/sandcastle-skills.txt` lists the skills the run mounts (Seed).** A hosted runner has no `~/.claude/skills`, which `lib/skills.mts` mounts
   the `SANDBOX_SKILLS` from. The file is data: a `dotfiles-sha` line (the commit of mpaulosky/dotfiles' `main` to take them from, 40 lowercase hex digits, pinned like an action)
   and a `skill` line per skill name; the Seed has neither, and installs nothing.

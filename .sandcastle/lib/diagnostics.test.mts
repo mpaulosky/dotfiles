@@ -92,7 +92,20 @@ describe("logSandboxState when the scrub or the log throws", () => {
 describe("SANDBOX_PROBE", () => {
   it("runs under its own short timeout, far below the sandbox's command limit", () => {
     assert.ok(SANDBOX_PROBE.startsWith(`timeout -k 2 ${PROBE_SECONDS} sh -c '`));
-    assert.ok(PROBE_SECONDS <= 30);
+    assert.equal(PROBE_SECONDS, 20);
+  });
+
+  it("lists at most ten core files", { skip: process.platform === "win32" && "needs sh" }, () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "probe-cap-")));
+    try {
+      for (let n = 1; n <= 12; n++) writeFileSync(join(dir, `core.${n}`), "x");
+      const here = PROBE_SCRIPT.replace('find / "$PWD" /tmp -xdev', 'find "$PWD" -xdev');
+      const run = spawnSync("sh", ["-c", here], { cwd: dir, encoding: "utf8" });
+      const listed = run.stdout.slice(run.stdout.indexOf("== core files ==")).split("\n").filter((line) => line.startsWith(dir));
+      assert.equal(listed.length, 10);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it("holds no single quote inside the script, so it survives the sandbox's own quoting", () => {

@@ -3,9 +3,13 @@
 // downloaded by any signed-in user and GitHub masks secrets in step logs, not artifacts, and a log
 // holds what an agent printed: model prose and command text anyone who can write an issue can steer.
 // So a log is never copied whole. Only an allowlisted view is: the host's own status lines, the name
-// of each tool call without its arguments, and a few lines around any line that names an error or an
-// abort. Whatever the view still holds is checked for the sandbox's secret values and for token
-// shapes, also with its spacing taken out, and a view that fails the check is replaced by a note.
+// of each tool call without its arguments (only a known tool's name), and the few lines that name an
+// error or an abort, with the host's lines and tool names around them. Those error lines are the one
+// place free text gets through, so they are cut short, limited in number, and left out when they hold a
+// long run of token characters (where an encoded secret would sit). Whatever the view still holds is
+// checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
+// view that fails the check is replaced by a note. This narrows what can leave the sandbox in a log; it
+// can't promise that a steered reviewer cannot get a few words of its own onto an error line.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot.
 
 import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -21,8 +25,12 @@ export const REPORT_LOG_LIMIT = 100_000;
 // The most of one kept line, so a long line of prose around an error can't carry much.
 export const REPORT_LINE_LIMIT = 200;
 
-// How many lines before and after a line that names an error or an abort the view keeps.
-export const REPORT_ERROR_CONTEXT = 2;
+// The most error lines of free text one view keeps (the last ones, where an abort shows), so a steered
+// reviewer can't carry much out by printing the word `error` on many lines.
+export const REPORT_ERROR_LINES = 20;
+
+// A run of this many token characters in an error line (base64, hex, a key) leaves the line out.
+export const REPORT_TOKEN_RUN = 24;
 
 // What copyReviewerLogs needs from the outside world; tests pass a stub.
 export type RoleLogFs = {
@@ -36,47 +44,64 @@ export type RoleLogFs = {
 const hostLine = new RegExp(
   `^(?:${[
     String.raw`--- Run started: [0-9T:.Z-]+ ---`,
-    String.raw`Iteration \d+/\d+`,
-    String.raw`(?:Setting up sandbox|Collecting commits|Capturing session|Expanding shell expressions|No commits to sync out|Syncing \d+ commits? to host)(?: done \(\d+(?:\.\d+)?s\))?`,
+    String.raw`Iteration \d{1,6}/\d{1,6}`,
+    String.raw`(?:Setting up sandbox|Collecting commits|Capturing session|Expanding shell expressions|No commits to sync out|Syncing \d{1,6} commits? to host)(?: done \(\d{1,6}(?:\.\d{1,6})?s\))?`,
     String.raw`Agent (?:started|stopped)`,
-    String.raw`Agent signaled completion after \d+ iteration\(s\)\.`,
-    String.raw`Context window: \d+k`,
-    String.raw`Reached max iterations \(\d+\)\.`,
-    String.raw`Run complete: (?:agent finished after \d+ iteration\(s\)|reached \d+ iteration\(s\) without completion signal)\.`,
+    String.raw`Agent signaled completion after \d{1,6} iteration\(s\)\.`,
+    String.raw`Context window: \d{1,6}k`,
+    String.raw`Reached max iterations \(\d{1,6}\)\.`,
+    String.raw`Run complete: (?:agent finished after \d{1,6} iteration\(s\)|reached \d{1,6} iteration\(s\) without completion signal)\.`,
   ].join("|")})$`,
 );
+
+// The tools a role is given, and the shape of an MCP tool's name: the only names the view keeps.
+const knownTool =
+  /^(?:Bash|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit|Task|Agent|TodoWrite|WebFetch|WebSearch|Skill|mcp__[A-Za-z0-9-]{1,30}__[A-Za-z0-9_-]{1,40})$/;
 
 // A tool call, which Sandcastle writes as `Name(arguments`, the arguments running over as many lines as they have.
 const toolCall = /^([A-Za-z][A-Za-z0-9_:.-]{0,60})\(/;
 
-// A tool call line with its arguments left out.
-function toolName(line: string): string {
-  return `${toolCall.exec(line)![1]}(...)`;
+// A tool call line with its arguments left out, or undefined for a line that only looks like one (a code line in
+// a heredoc, a prose line, a chunk of an encoded secret followed by a parenthesis).
+function toolName(line: string): string | undefined {
+  const name = toolCall.exec(line)?.[1];
+  return name !== undefined && knownTool.test(name) ? `${name}(...)` : undefined;
 }
 
 // A line that says a run went wrong, which the view keeps with its neighbours whoever wrote it.
 const errorLine = /\b(?:abort(?:ed)?|error|errors|fail(?:ed|ure|ures)?|exception|fatal|panic|timed out|timeout|killed|terminated|exit(?:ed)? (?:code|with)|signal|crash(?:ed)?|unauthori[sz]ed|rate limit|overloaded)\b/i;
 
+// A run of token characters long enough to be an encoded secret.
+const tokenRun = new RegExp(`[A-Za-z0-9+/_=-]{${REPORT_TOKEN_RUN},}`);
+
 // A token shape without the word boundaries, for the view with its spacing taken out, where a boundary can't hold.
 const looseTokenShape = /sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/;
 
-// The allowlisted view of a reviewer log: its host status lines and the names of its tool calls, with a run of
-// `[... N lines left out]` where anything else was, and the lines around an error line cut to REPORT_LINE_LIMIT.
-// Model prose, tool arguments and tool output are what it leaves out, since those are what a secret could ride in on.
-export function allowlistedView(text: string): string {
+// `text` cut to `limit` characters, never ending on half of a surrogate pair.
+function cut(text: string, limit: number): string {
+  const head = text.slice(0, limit);
+  return /[\uD800-\uDBFF]$/.test(head) && text.length > limit ? head.slice(0, -1) : head;
+}
+
+// The allowlisted view of a reviewer log: its host status lines and the names of its known tool calls, with a run
+// of `[... N lines left out]` where anything else was. Of the lines that name an error, the last REPORT_ERROR_LINES
+// are kept as free text cut to REPORT_LINE_LIMIT, unless one holds a run of REPORT_TOKEN_RUN token characters or
+// `held` says it looks like a secret. Model prose, tool arguments and tool output are what it leaves out.
+export function allowlistedView(text: string, held: (line: string) => boolean = () => false): string {
   const lines = text.split(/\r?\n/);
   const keep = new Array<string | undefined>(lines.length).fill(undefined);
+  const errors: number[] = [];
   lines.forEach((line, index) => {
     if (hostLine.test(line)) keep[index] = line;
-    else if (toolCall.test(line)) keep[index] = toolName(line);
-    if (errorLine.test(line)) {
-      for (let near = Math.max(0, index - REPORT_ERROR_CONTEXT); near <= Math.min(lines.length - 1, index + REPORT_ERROR_CONTEXT); near++) {
-        const neighbour = lines[near]!;
-        if (neighbour.trim() === "") continue;
-        keep[near] = toolCall.test(neighbour) ? toolName(neighbour) : neighbour.slice(0, REPORT_LINE_LIMIT);
-      }
+    else {
+      const tool = toolName(line);
+      if (tool !== undefined) keep[index] = tool;
+      else if (errorLine.test(line) && !tokenRun.test(line) && !held(line)) errors.push(index);
     }
   });
+  for (const index of errors.slice(-REPORT_ERROR_LINES)) {
+    keep[index] = cut(lines[index]!, REPORT_LINE_LIMIT);
+  }
   const out: string[] = [];
   let left = 0;
   const flush = () => {
@@ -131,7 +156,7 @@ export function copyReviewerLogs(
     fs.mkdir(outDir);
     for (const name of names) {
       try {
-        const view = tailOf(allowlistedView(fs.read(join(logsDir, name))));
+        const view = tailOf(allowlistedView(fs.read(join(logsDir, name)), (line) => looksLikeSecret(line, known)));
         const held = looksLikeSecret(view, known);
         fs.write(join(outDir, name), held ? "Left out: the view held something shaped like a secret.\n" : view);
         copied.push(name);

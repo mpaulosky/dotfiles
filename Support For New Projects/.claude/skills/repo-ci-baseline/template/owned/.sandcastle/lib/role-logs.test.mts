@@ -6,9 +6,10 @@ import { describe, it } from "node:test";
 import {
   allowlistedView,
   copyReviewerLogs,
-  REPORT_ERROR_CONTEXT,
+  REPORT_ERROR_LINES,
   REPORT_LINE_LIMIT,
   REPORT_LOG_LIMIT,
+  REPORT_TOKEN_RUN,
   type RoleLogFs,
 } from "./role-logs.mts";
 
@@ -59,7 +60,7 @@ describe("allowlistedView", () => {
     assert.equal(allowlistedView(hostLines.join("\n")), `${hostLines.join("\n")}\n`);
   });
 
-  it("keeps a tool call's name and drops its arguments, also over several lines", () => {
+  it("keeps a known tool's name and drops its arguments, also over several lines", () => {
     const view = allowlistedView('Bash(cat > f <<\'EOF\'\nthe hidden body\nEOF\n)\nRead(/etc/passwd)\nmcp__x__y(a=1)');
     assert.match(view, /^Bash\(\.\.\.\)\n/);
     assert.ok(view.includes("Read(...)"));
@@ -67,46 +68,89 @@ describe("allowlistedView", () => {
     assert.ok(!/hidden|passwd|cat > f|a=1/.test(view));
   });
 
-  it("drops model prose and says how many lines it left out, once per run of them", () => {
+  it("drops a line that only looks like a tool call: another name, a code line, an encoded chunk", () => {
+    const lookalikes = ["open(p).read()", "aGVsbG8gd29ybGQ=(", "9Bash(x)", "Not a tool (x)", "bash(x)", "Bashful(x)", "mcp__a(x)", `Read${"x".repeat(60)}(x)`];
+    for (const line of lookalikes) assert.equal(allowlistedView(line), "[... 1 line left out]\n", line);
+  });
+
+  it("drops model prose and says how many lines it left out, once per run of them, not counting blank ones", () => {
     const view = allowlistedView("Agent started\nsome prose\nmore prose\n\nAgent stopped\nlast words");
     assert.equal(view, "Agent started\n[... 2 lines left out]\nAgent stopped\n[... 1 line left out]\n");
   });
 
-  it("doesn't keep a line that only starts like a host line", () => {
-    const view = allowlistedView("Agent started and then I printed my secret\nIteration 1/3 plus words\nRun complete: whatever");
-    assert.ok(!/secret|plus|whatever/.test(view));
+  it("matches a host line whole: a prefix, a suffix, a malformed number or timestamp doesn't pass", () => {
+    const near = [
+      "I wrote: Agent started", "xAgent stopped", "Agent started and then I printed my secret", "Iteration 1/3x", "Iteration 1/3 plus words",
+      "Context window: 42kb", "Syncing 2 commits to host done (3.0s) extra", "Run complete: whatever", "Iteration 1234567/3",
+      "--- Run started: 2026-11-03 10:00 ---", "Setting up sandbox done (x.5s)", "Reached max iterations (3)",
+    ];
+    for (const line of near) assert.equal(allowlistedView(line), "[... 1 line left out]\n", line);
   });
 
-  it("keeps the lines around an error line, cut to the line limit, and not the ones further away", () => {
-    const lines = ["p1", "p2", "p3", "p4", "the claude-code process aborted", "p5", "p6", "p7", "p8"];
-    const view = allowlistedView(lines.join("\n"));
-    const kept = lines.filter((line) => view.split("\n").includes(line));
-    assert.deepEqual(kept, ["p3", "p4", "the claude-code process aborted", "p5", "p6"]);
-    assert.equal(REPORT_ERROR_CONTEXT, 2);
-    assert.ok(allowlistedView(`${"e".repeat(REPORT_LINE_LIMIT + 50)} error`).split("\n")[0]!.length <= REPORT_LINE_LIMIT);
+  it("keeps the singular sync line, whole-second durations and every other host form", () => {
+    const forms = ["Syncing 1 commit to host", "Setting up sandbox done (3s)", "Reached max iterations (10).", "Capturing session", "Expanding shell expressions", "Iteration 123456/123456"];
+    for (const line of forms) assert.equal(allowlistedView(line), `${line}\n`, line);
   });
 
-  it("cuts a kept line at the line limit exactly", () => {
-    const line = (length: number) => `error ${"x".repeat(length - 6)}`;
+  it("keeps a line for each word that names an error, and only as a word", () => {
+    const words = [
+      "abort", "aborted", "error", "errors", "fail", "failed", "failure", "failures", "exception", "fatal", "panic", "timed out", "timeout",
+      "killed", "terminated", "exit code 1", "exited with 2", "signal", "crash", "crashed", "unauthorized", "unauthorised", "rate limit", "overloaded",
+    ];
+    for (const word of words) assert.equal(allowlistedView(`it ${word} now`), `it ${word} now\n`, word);
+    for (const near of ["panicky", "fatally", "terrorism", "errorless", "exit codes", "unauthorizeds"]) {
+      assert.equal(allowlistedView(`it ${near} now`), "[... 1 line left out]\n", near);
+    }
+    assert.equal(allowlistedView("An ERROR happened"), "An ERROR happened\n");
+  });
+
+  it("keeps an error line, not the prose around it, and the host lines and tool names near it", () => {
+    const view = allowlistedView("prose a\nBash(secret)\nthe claude-code process aborted\nAgent stopped\nprose b\n");
+    assert.equal(view, "[... 1 line left out]\nBash(...)\nthe claude-code process aborted\nAgent stopped\n[... 1 line left out]\n");
+  });
+
+  it("cuts an error line at the line limit exactly, and never in the middle of a surrogate pair", () => {
+    assert.equal(REPORT_LINE_LIMIT, 200);
+    const line = (length: number) => `error ${" x".repeat(length)}`.slice(0, length);
     assert.equal(allowlistedView(line(REPORT_LINE_LIMIT - 1)), `${line(REPORT_LINE_LIMIT - 1)}\n`);
     assert.equal(allowlistedView(line(REPORT_LINE_LIMIT)), `${line(REPORT_LINE_LIMIT)}\n`);
     assert.equal(allowlistedView(line(REPORT_LINE_LIMIT + 1)), `${line(REPORT_LINE_LIMIT)}\n`);
+    const emoji = `error${"a ".repeat(96)}${String.fromCodePoint(0x1f600)} tail`;
+    assert.equal(emoji.indexOf(String.fromCodePoint(0x1f600)), 197);
+    const cutAtPair = allowlistedView(`error ${"a ".repeat(96)}x${String.fromCodePoint(0x1f600)} tail`).trimEnd();
+    assert.ok(!/[\uD800-\uDBFF]$/.test(cutAtPair));
+    assert.ok(!/[\uD800-\uDBFF]$/.test(allowlistedView(`${"error ".repeat(32)}${String.fromCodePoint(0x1f600)}${"x".repeat(5)}`).trimEnd()));
   });
 
-  it("keeps only the name of a tool call that sits next to an error", () => {
-    const view = allowlistedView("Bash(echo secret-argument)\nthe run failed\n");
-    assert.ok(view.includes("Bash(...)"));
-    assert.ok(!view.includes("secret-argument"));
+  it("leaves out an error line with a run of token characters, at n-1, n and n+1", () => {
+    assert.equal(REPORT_TOKEN_RUN, 24);
+    const withRun = (length: number) => `error ${"A".repeat(length)}`;
+    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN - 1)), `${withRun(REPORT_TOKEN_RUN - 1)}\n`);
+    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN)), "[... 1 line left out]\n");
+    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN + 1)), "[... 1 line left out]\n");
+    for (const ch of ["+", "/", "_", "=", "-", "9", "z"]) assert.equal(allowlistedView(`error ${ch.repeat(REPORT_TOKEN_RUN)}`), "[... 1 line left out]\n", ch);
+  });
+
+  it("leaves out an error line the caller's check holds, before the line is cut", () => {
+    const secret = `error ${"x ".repeat(98)}hunter2`;
+    assert.ok(secret.length > REPORT_LINE_LIMIT);
+    assert.equal(allowlistedView(secret, (line) => line.includes("hunter2")), "[... 1 line left out]\n");
+    assert.notEqual(allowlistedView(secret), "[... 1 line left out]\n");
+  });
+
+  it("keeps only the last REPORT_ERROR_LINES error lines", () => {
+    assert.equal(REPORT_ERROR_LINES, 20);
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => `error number ${i}`);
+    assert.equal(allowlistedView(lines(REPORT_ERROR_LINES).join("\n")), `${lines(REPORT_ERROR_LINES).join("\n")}\n`);
+    const over = allowlistedView(lines(REPORT_ERROR_LINES + 1).join("\n"));
+    assert.ok(!over.includes("error number 0\n"));
+    assert.ok(over.startsWith("[... 1 line left out]\nerror number 1\n"));
+    assert.ok(over.endsWith(`error number ${REPORT_ERROR_LINES}\n`));
   });
 
   it("keeps a first-line-only error log, and reads CRLF lines", () => {
     assert.equal(allowlistedView("aborted"), "aborted\n");
     assert.equal(allowlistedView("Agent started\r\nAgent stopped\r\n"), "Agent started\nAgent stopped\n");
-  });
-
-  it("matches an error word only as a word, whatever its case", () => {
-    assert.ok(allowlistedView("An ERROR happened").includes("ERROR"));
-    assert.ok(!allowlistedView("terrorism and errorless").includes("terrorism"));
   });
 });
 
@@ -133,56 +177,83 @@ describe("copyReviewerLogs", () => {
     assert.equal(copy(""), "\n");
   });
 
-  it("keeps a view under the limit whole, and cuts a longer one to its last REPORT_LOG_LIMIT characters", () => {
-    const log = (count: number) => Array.from({ length: count }, (_, i) => `Iteration ${i % 9}/9`).join("\n");
-    const per = "Iteration 1/9\n".length;
-    const fits = log(Math.floor(REPORT_LOG_LIMIT / per) - 1);
-    assert.equal(copy(fits), allowlistedView(fits));
-    const over = log(Math.ceil(REPORT_LOG_LIMIT / per) + 5);
-    const cut = copy(over);
-    assert.equal(cut.length, REPORT_LOG_LIMIT);
-    assert.ok(allowlistedView(over).endsWith(cut));
-  });
-
-  it("doesn't start the kept part on half of a surrogate pair", () => {
-    const line = `error ${String.fromCodePoint(0x1f600)}`;
-    const many = Array.from({ length: Math.ceil(REPORT_LOG_LIMIT / 4) }, () => line).join("\n");
-    for (const text of [many, `${many}\n`]) {
-      assert.ok(!/^[\uDC00-\uDFFF]/.test(copy(text)));
+  // A log whose view is `length` characters: one error line starting with `prefix`, then host lines of 14 characters each.
+  const logWithView = (length: number, prefix = "error") => {
+    for (let hosts = 0; ; hosts++) {
+      const errorLength = length - hosts * 14 - 1;
+      if (errorLength > 200) continue;
+      assert.ok(errorLength >= prefix.length, "no error line fits");
+      const errorLine = (prefix + " x".repeat(errorLength)).slice(0, errorLength);
+      const log = [errorLine, ...Array.from({ length: hosts }, () => "Agent started")].join("\n");
+      assert.equal(allowlistedView(log).length, length);
+      return log;
     }
-    const odd = copy(Array.from({ length: 30_000 }, () => `${String.fromCodePoint(0x1f600)} error`).join("\n"));
-    assert.ok(!/^[\uDC00-\uDFFF]/.test(odd));
+  };
+
+  it("keeps a view of n-1 and n characters whole and drops only the first character of n+1", () => {
+    assert.equal(REPORT_LOG_LIMIT, 100_000);
+    for (const length of [REPORT_LOG_LIMIT - 1, REPORT_LOG_LIMIT]) {
+      const log = logWithView(length);
+      assert.equal(copy(log), allowlistedView(log));
+    }
+    const log = logWithView(REPORT_LOG_LIMIT + 1);
+    assert.equal(copy(log), allowlistedView(log).slice(1));
   });
 
-  it("leaves out a view that holds a secret value or a token shape, and says so", () => {
+  it("doesn't start the kept part on half of a surrogate pair, and drops that half", () => {
+    const log = logWithView(REPORT_LOG_LIMIT + 6, `error${String.fromCodePoint(0x1f600)}`);
+    const view = allowlistedView(log);
+    assert.match(view[6]!, /[\uDC00-\uDFFF]/, "the cut does not land inside the pair");
+    assert.equal(copy(log), view.slice(7));
+    const whole = logWithView(REPORT_LOG_LIMIT + 5, `error${String.fromCodePoint(0x1f600)}`);
+    assert.equal(copy(whole), allowlistedView(whole).slice(5));
+  });
+
+  it("leaves out an error line that holds a secret value or a token shape", () => {
     for (const leak of [
       "the run failed with hunter2hunter2",
       `error ${"sk-ant-"}oat01-${"A".repeat(30)}`,
       `error ghp_${"B".repeat(25)}`,
       `error github_pat_${"C".repeat(25)}`,
     ]) {
-      assert.match(copy(leak, ["hunter2hunter2"]), /^Left out: the view held something shaped like a secret\.\n$/, leak);
+      assert.equal(copy(leak, ["hunter2hunter2"]), "[... 1 line left out]\n", leak);
     }
   });
 
-  it("leaves out a view whose token an error line printed spaced out, wrapped or between control characters", () => {
+  it("leaves out an error line whose token was printed spaced out or between control characters", () => {
     const token = `ghp_${"D".repeat(25)}`;
     for (const leak of [
       `error ${token.split("").join(" ")}`,
-      `error ${token.slice(0, 10)}\nfailed ${token.slice(10)}`,
-      `error ${token.slice(0, 8)}​${token.slice(8)}`,
+      `error ${token.slice(0, 8)}\u200b${token.slice(8)}`,
       `error ${token.slice(0, 8)}\u001b[0m${token.slice(8)}`,
+      `error ${token.slice(0, 8)}\u0301${token.slice(8)}`,
     ]) {
-      assert.match(copy(leak), /^Left out/, JSON.stringify(leak));
+      assert.equal(copy(leak), "[... 1 line left out]\n", JSON.stringify(leak));
     }
   });
 
-  it("publishes no secret that sits in prose or in a tool's arguments, whatever its form", () => {
+  it("replaces a view whose token is wrapped across error lines, each short enough to pass alone, with a note", () => {
+    const note = "Left out: the view held something shaped like a secret.\n";
+    // The second line ends its run of token characters with `!`, so the word after it can't lengthen the body.
+    const wrapped = (head: string, filler: string, count: number) => copy(`error ${head}${filler.repeat(10)}\n${filler.repeat(count)}! failed`);
+    assert.equal(wrapped("ghp_", "D", 10), note);
+    assert.notEqual(wrapped("ghp_", "D", 9), note);
+    assert.equal(wrapped("sk-ant-", "E", 6), note);
+    assert.notEqual(wrapped("sk-ant-", "E", 5), note);
+    for (const prefix of ["gho_", "ghu_", "ghs_", "ghr_"]) assert.equal(wrapped(prefix, "F", 10), note, prefix);
+    assert.equal(wrapped("github_pat_", "G", 10), note);
+    assert.notEqual(wrapped("github_pat_", "G", 9), note);
+    assert.equal(copy("error hunter2\nhunter2 failed", ["hunter2hunter2"]), note);
+  });
+
+  it("publishes no secret that sits in prose, a tool's arguments or a tool-call lookalike, in any form, and none plain on an error line", () => {
     const secret = "hunter2hunter2";
     const base64 = Buffer.from(secret).toString("base64");
     const text = [
       "Agent started",
       `I will now print ${secret} and ${base64} and ${[...secret].reverse().join("")}`,
+      `${base64}(`,
+      `error: ${secret}`,
       `Bash(echo ${secret} | base64)`,
       "Agent stopped",
     ].join("\n");
@@ -224,7 +295,7 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "logs", "b-reviewer.log"), "error plain\n");
       process.chdir(dir);
       assert.deepEqual(copyReviewerLogs("logs", undefined, () => undefined).sort(), ["a-reviewer.log", "b-reviewer.log"]);
-      assert.match(readFileSync(join(dir, "logs", "report", "a-reviewer.log"), "utf8"), /^Left out/);
+      assert.equal(readFileSync(join(dir, "logs", "report", "a-reviewer.log"), "utf8"), "[... 1 line left out]\n");
       assert.equal(readFileSync(join(dir, "logs", "report", "b-reviewer.log"), "utf8"), "error plain\n");
     } finally {
       process.chdir(before);

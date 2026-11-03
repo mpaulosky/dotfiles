@@ -1349,6 +1349,28 @@ describe("runPass", () => {
     assert.doesNotMatch(body, /run log/);
   });
 
+  it("logs neither the first red run's secret nor the failed gate-fixer's, as the build's checkpoint doesn't", async () => {
+    const secret = "ghp_" + "b".repeat(36);
+    const sandbox = sandboxFake({
+      followUpJson: "[]",
+      gateExitCodes: [1],
+      gateOutput: () => `FAIL with token ${secret}\n`,
+      roleFailing: ["gate-fixer"],
+      roleFailWith: { "gate-fixer": new Error(`gate-fixer crashed with ${secret}`) },
+    });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+    // As the real host's publicError does: a text holding the secret is withheld whole.
+    passHost.publicError = (text) => (String(text).includes(secret) ? "(withheld)" : String(text));
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost).catch(() => undefined);
+
+    const logged = calls.log.join("\n");
+    assert.ok(sandbox.runs.some((run) => run.name === "gate-fixer"), "the gate-fixer never ran");
+    assert.match(logged, /the first red gate run's output, before this stopped the checkpoint/);
+    assert.match(logged, /gate-fixer attempt 1\/2 failed: .*\(withheld\)/);
+    assert.ok(!logged.includes(secret), logged);
+  });
+
   it("quotes the first red gate run in the stop detail, before the last run that shows the dead sandbox", async () => {
     const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], sandboxDiesAfterGates: 2, gateOutput: (run) => `run ${run} failed\n` });
     const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });

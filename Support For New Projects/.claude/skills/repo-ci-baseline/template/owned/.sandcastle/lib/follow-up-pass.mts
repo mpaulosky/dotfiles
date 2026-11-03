@@ -24,6 +24,7 @@ import {
   createCheckedSandbox,
   cutAtCharacter,
   isWorkflowPushRejection,
+  logSafeGateOutput,
   publicErrorText,
   retryOnServerError,
 } from "./build.mts";
@@ -1165,6 +1166,10 @@ async function passOnMarkedIssue(
         uncounted: (error) => error instanceof UncountedStopError,
         // As the build's checkpoint does: a sandbox that no longer answers git gets no gate-fixer run.
         alive: () => sandboxDown(sandbox, host.publicError),
+        // As the build's checkpoint does: the log goes to a public runner, so the first red run's output and a failed gate-fixer's error
+        // pass the host's secret check first.
+        scrub: (text) => logSafeGateOutput(text, host.publicError),
+        scrubLine: host.publicError,
       },
       log,
     );

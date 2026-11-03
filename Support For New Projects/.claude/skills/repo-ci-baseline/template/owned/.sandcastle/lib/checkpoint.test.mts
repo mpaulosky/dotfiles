@@ -524,12 +524,12 @@ describe("withoutRunnerCommands", () => {
 });
 
 describe("printableLine", () => {
-  it("gives one printable line: newlines, escapes and hidden characters become spaces and a ##[ is changed", () => {
+  it("gives one printable line: newlines become a space, escapes and hidden characters are deleted, and a ##[ is changed", () => {
     const line = printableLine(new Error("x\n::stop-commands::t\n##[add-mask]y\u001b[31m\u202e"));
 
     assert.ok(!/[\r\n]/.test(line), line);
     assert.ok(!line.includes("##["), line);
-    assert.equal(line, "Error: x ::stop-commands::t ## [add-mask]y[31m");
+    assert.equal(line, "Error: x ::stop-commands::t ## [add-mask]y");
   });
 
   it("applies the scrub before the cut, so a secret across the cut doesn't survive as a fragment", () => {
@@ -550,9 +550,29 @@ describe("printableLine", () => {
   });
 
   it("drops a hidden character before the scrub, so it can't split a secret the scrub would match", () => {
-    const scrub = (value: string) => value.replace(/ghp_\w+/g, "[withheld]");
+    const scrub = (value: string) => value.replaceAll("ghp_abc", "[withheld]");
 
     assert.equal(printableLine("token ghp_a\u200bbc here", scrub), "token [withheld] here");
+  });
+
+  it("deletes a combining mark, folds a run of line breaks to one space, and stops a line break from hiding a ##[", () => {
+    const scrub = (value: string) => value.replaceAll("ghp_abc", "[withheld]");
+
+    assert.equal(printableLine("ghp_a\u0301bc", scrub), "[withheld]");
+    assert.equal(printableLine("a\r\n\u2028\u0085b"), "a b");
+    assert.equal(printableLine("x ##\u0085[error]"), "x ## [error]");
+  });
+
+  it("strips a colour code before the scrub, so it neither splits a secret nor leaves its tail", () => {
+    assert.equal(printableLine("\u001b[31mred\u001b[0m ghp_a\u001b[1mbc", (value) => value.replaceAll("ghp_abc", "[withheld]")), "red [withheld]");
+  });
+
+  it("withholds a secret that is padded after, or holds a line break itself", () => {
+    const scrub = (value: string) => value.replaceAll("sec\nret", "[withheld]").replaceAll("ghp_abc", "[withheld]");
+
+    assert.equal(printableLine("a sec\nret b", scrub), "a [withheld] b");
+    const padded = `${"\u200b".repeat(3996)}ghp_\u200babc`;
+    assert.equal(printableLine(padded, scrub), "[withheld]");
   });
 
   it("cuts an enormous text before the scrub, so the scrub never sees more than a bounded part", () => {
@@ -596,15 +616,16 @@ describe("sandboxDown", () => {
   it("says the sandbox can't run a command when the exec throws, with the error as printable ASCII, capped", async () => {
     const reason = (await sandboxDown(exec(new Error(`stalled\u001b[31m ${"x".repeat(300)}`)))) ?? "";
 
-    assert.match(reason, /^The sandbox can't run a command \(Error: stalled\[31m x+\), so no gate-fixer was run\.$/);
+    assert.match(reason, /^The sandbox can't run a command \(Error: stalled x+\), so no gate-fixer was run\.$/);
     assert.ok(reason.length < 300, String(reason.length));
   });
 
-  it("changes a ##[ in the error text, and replaces a hidden character inside one with a space", async () => {
+  it("changes a ##[ in the error text, and deletes a hidden character inside one", async () => {
     const reason = (await sandboxDown(exec(new Error("failed ##[add-mask]x ##\u200b[error]y")))) ?? "";
 
     assert.ok(!reason.includes("##["), reason);
     assert.ok(reason.includes("## [add-mask]x"), reason);
+    assert.ok(reason.includes("## [error]y"), reason);
   });
 
   it("keeps exactly 200 characters of the error text", async () => {

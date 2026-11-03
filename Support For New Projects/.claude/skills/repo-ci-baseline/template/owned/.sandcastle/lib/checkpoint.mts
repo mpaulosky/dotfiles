@@ -269,21 +269,24 @@ export function withoutRunnerCommands(text: string): string {
   return text.replaceAll("##[", "## [");
 }
 
-// `text` with each run of line breaks and tabs folded to a space and every other control, format (zero-width) and combining character
-// deleted, not turned into a space: a deleted character can't split a secret into a shape a scrub misses. status.mts's terminalText does more, but it
-// can't be imported here: status.mts imports this module, through the follow-up pass.
+// `text` with colour codes removed, each run of line breaks and tabs folded to a space, and every other control, format (zero-width) and
+// combining character deleted, not turned into a space: a deleted character can't split a secret into a shape a scrub misses. status.mts's
+// terminalText does more, but it can't be imported here: status.mts imports this module, through the follow-up pass.
 function withoutHiddenCharacters(text: string): string {
-  return text.replace(/[\t\n\v\f\r\u0085\u2028\u2029]+/g, " ").replace(/[\p{Cc}\p{Cf}\p{M}]/gu, "");
+  return text.replace(ansiEscape, "").replace(/[\t\n\v\f\r\u0085\u2028\u2029]+/g, " ").replace(/[\p{Cc}\p{Cf}\p{M}]/gu, "");
 }
 
 // `value` (an error, for one) as a single printable line for the host's log or a
-// comment: the text is cut to a generous bound (so an enormous message costs the
-// scrub little), cleaned by withoutHiddenCharacters (a hidden character dropped, so one can't
-// split a secret the scrub would match) and made safe by `scrub`, so a secret in it can't be cut
-// into a shape the scrub no longer recognises, then reduced to printable ASCII
-// (a newline, an escape and a hidden character become spaces, so the result is one
-// line, and a caller puts it after a prefix of its own so it can't start one with
-// `::`), changed by withoutRunnerCommands, cut to `limit` characters and trimmed.
+// comment. The scrub runs on the text as it is first (a secret that holds a line
+// break or a mark is withheld whole, if it is within the first `limit * 500`
+// characters), then again after withoutHiddenCharacters and a cut to `limit * 20`
+// characters (so a hidden character can't split a secret the scrub would match,
+// padding can't push the rest of one past the cut, and an enormous message costs
+// the scrub little), so a secret in it can't be cut into a shape the scrub no
+// longer recognises. Then the text is reduced to printable ASCII (what is left of
+// a non-ASCII character becomes a space, so the result is one line, and a caller
+// puts it after a prefix of its own so it can't start one with `::`), changed by
+// withoutRunnerCommands, cut to `limit` characters and trimmed.
 // A value that can't be printed, a scrub that throws, or a result with nothing
 // printable left gives a fixed text instead, so the caller's own error is never
 // replaced by this one and the message never reads as an empty pair of brackets.
@@ -295,7 +298,10 @@ export function printableLine(value: unknown, scrub: (text: string) => string = 
     return "an error that can't be printed";
   }
   try {
-    return withoutRunnerCommands(scrub(withoutHiddenCharacters(text.slice(0, limit * 20))).replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim() || "(no printable text)";
+    const first = scrub(text.slice(0, limit * 500));
+    const base = first === text.slice(0, limit * 500) ? text : first;
+    const safe = scrub(withoutHiddenCharacters(base).slice(0, limit * 20));
+    return withoutRunnerCommands(safe.replace(/[^\x20-\x7e]/g, " ")).slice(0, limit).trim() || "(no printable text)";
   } catch {
     return "text that couldn't be made safe to log";
   }

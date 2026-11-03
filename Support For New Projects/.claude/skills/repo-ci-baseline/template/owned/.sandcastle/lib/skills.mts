@@ -16,6 +16,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { hostExecFileSync } from "./host-limit.mts";
 import { sandboxCpus } from "./config.mts";
 import { protectedGitMounts, protectedRecordMounts, repoGitDir, type ReadOnlyMount } from "./host-safety.mts";
 import { SANDBOX_SKILLS } from "./repo-config.mts";
@@ -44,13 +45,44 @@ export function skillMounts(
   return { mounts, missing };
 }
 
+// Compile-time: Sandcastle's docker() takes a `cpus` option. If a release renames or drops it, this stops compiling; otherwise
+// makeAgentSandbox's `cpus` would be an unknown key and every sandbox would start with no limit, with no test failing.
+const dockerTakesCpus: "cpus" extends keyof NonNullable<Parameters<typeof docker>[0]> ? true : never = true;
+void dockerTakesCpus;
+
+// How long `docker info` may take, in milliseconds. A hung daemon would otherwise hold the run's start for the host command limit.
+const DAEMON_INFO_TIMEOUT_MS = 30_000;
+
+// The CPU count `docker info --format {{.NCPU}}` prints: a whole number of one or more, else undefined.
+export function parseDaemonCpus(output: string): number | undefined {
+  const text = output.trim();
+  if (!/^\d+$/.test(text)) return undefined;
+  const count = Number(text);
+  return Number.isSafeInteger(count) && count >= 1 ? count : undefined;
+}
+
+// The CPUs of the Docker daemon the sandboxes run on, which is what `docker run --cpus` is checked against; undefined when the
+// call fails, runs past its limit or prints something that is not a count. `exec` is the host's time-limited execFileSync by default.
+export function readDaemonCpus(
+  exec: (file: string, args: string[], options: { encoding: "utf8"; timeout: number }) => string = (file, args, options) =>
+    hostExecFileSync(file, args, options),
+): number | undefined {
+  try {
+    return parseDaemonCpus(exec("docker", ["info", "--format", "{{.NCPU}}"], { encoding: "utf8", timeout: DAEMON_INFO_TIMEOUT_MS }));
+  } catch {
+    return undefined;
+  }
+}
+
 // What makeAgentSandbox needs from outside; tests pass stubs.
 export type SandboxHost<TProvider> = {
   skillsDir: string;
   // The read-only mounts over the shared .git directory's config, hooks and
   // review folder, and over the main checkout's .security folder.
   gitMounts(): ReadOnlyMount[];
-  docker(options: { mounts: ReadOnlyMount[]; env: Record<string, string>; cpus: number }): TProvider;
+  // The CPUs the Docker daemon reports (see readDaemonCpus), or undefined when they can't be read.
+  daemonCpus(): number | undefined;
+  docker(options: { mounts: ReadOnlyMount[]; env: Record<string, string>; cpus?: number }): TProvider;
   log(message: string): void;
 };
 
@@ -113,7 +145,15 @@ export function makeAgentSandbox<TProvider>(
   names: readonly string[] = SANDBOX_SKILLS,
 ): () => TProvider {
   let hostSkills: SkillMount[] | undefined;
+  let cpusRead = false;
+  let cpus: number | undefined;
   return () => {
+    // Asked of the daemon once, on the first sandbox, and an unknown count is not asked again: the sandboxes start with no limit.
+    if (!cpusRead) {
+      cpusRead = true;
+      cpus = sandboxCpus(host.daemonCpus());
+      if (cpus === undefined) host.log("  ⚠ Couldn't read Docker's CPU count, so sandboxes start with no CPU limit.");
+    }
     if (!hostSkills) {
       const { mounts, missing } = skillMounts(host.skillsDir, names);
       if (missing.length > 0) {
@@ -121,13 +161,14 @@ export function makeAgentSandbox<TProvider>(
       }
       hostSkills = mounts;
     }
-    return withCreateMounts(host.docker({ mounts: hostSkills, env: { ...SANDBOX_ENV }, cpus: sandboxCpus() }), host.gitMounts());
+    return withCreateMounts(host.docker({ mounts: hostSkills, env: { ...SANDBOX_ENV }, ...(cpus === undefined ? {} : { cpus }) }), host.gitMounts());
   };
 }
 
 export const agentSandbox = makeAgentSandbox({
   skillsDir: join(homedir(), ".claude", "skills"),
   gitMounts: () => [...protectedGitMounts(repoGitDir()), ...protectedRecordMounts(dirname(repoGitDir()))],
+  daemonCpus: () => readDaemonCpus(),
   docker,
   log: console.log,
 });

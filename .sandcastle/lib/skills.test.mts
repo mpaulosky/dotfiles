@@ -4,9 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { uiEnabled } from "./agents.mts";
-import { sandboxCpus } from "./config.mts";
 import { SANDBOX_SKILLS } from "./repo-config.mts";
-import { makeAgentSandbox, skillMounts, withCreateMounts, type SkillMount } from "./skills.mts";
+import { makeAgentSandbox, parseDaemonCpus, readDaemonCpus, skillMounts, withCreateMounts, type SkillMount } from "./skills.mts";
 
 function skill(dir: string): string {
   mkdirSync(dir, { recursive: true });
@@ -59,8 +58,10 @@ describe("withCreateMounts", () => {
 describe("makeAgentSandbox", () => {
   type CreateOptions = { worktreePath: string; mounts: { hostPath: string; sandboxPath: string; readonly?: boolean }[] };
 
-  function host(skillsDir: string) {
-    const dockerCalls: { mounts: SkillMount[]; env: Record<string, string>; cpus: number }[] = [];
+  // `daemon.cpus` is what the Docker daemon reports; undefined is "can't be read" (a default parameter would turn it into 8).
+  function host(skillsDir: string, daemon: { cpus: number | undefined } = { cpus: 8 }) {
+    const dockerCalls: { mounts: SkillMount[]; env: Record<string, string>; cpus?: number }[] = [];
+    let daemonCpusReads = 0;
     const createCalls: CreateOptions[] = [];
     const logs: string[] = [];
     const provider = {
@@ -73,6 +74,7 @@ describe("makeAgentSandbox", () => {
     };
     return {
       dockerCalls,
+      daemonCpusReads: () => daemonCpusReads,
       createCalls,
       logs,
       host: {
@@ -81,7 +83,11 @@ describe("makeAgentSandbox", () => {
           { hostPath: "/repo/.git/config", sandboxPath: "/repo/.git/config", readonly: true as const },
           { hostPath: "/empty", sandboxPath: "/repo/.git/review", readonly: true as const },
         ],
-        docker: (options: { mounts: SkillMount[]; env: Record<string, string>; cpus: number }) => {
+        daemonCpus: () => {
+          daemonCpusReads++;
+          return daemon.cpus;
+        },
+        docker: (options: { mounts: SkillMount[]; env: Record<string, string>; cpus?: number }) => {
           dockerCalls.push(options);
           return provider;
         },
@@ -95,15 +101,80 @@ describe("makeAgentSandbox", () => {
     { hostPath: "/repo/.git", sandboxPath: "/repo/.git" },
   ];
 
-  it("starts every Docker sandbox with sandboxCpus() CPUs (mpaulosky/dotfiles#423)", () => {
-    const stub = host(mkdtempSync(join(tmpdir(), "skills-")));
-    const sandbox = makeAgentSandbox(stub.host, []);
+  describe("the CPUs of a Docker sandbox (mpaulosky/dotfiles#423)", () => {
+    const callsFor = (daemonCpus: number | undefined, sandboxes = 2) => {
+      const stub = host(mkdtempSync(join(tmpdir(), "skills-")), { cpus: daemonCpus });
+      const sandbox = makeAgentSandbox(stub.host, []);
+      for (let i = 0; i < sandboxes; i++) sandbox();
+      return stub;
+    };
 
-    sandbox();
-    sandbox();
+    it("is 4 where the daemon has more, and all of the daemon's where it has fewer", () => {
+      assert.deepEqual(callsFor(64).dockerCalls.map((call) => call.cpus), [4, 4]);
+      assert.deepEqual(callsFor(4).dockerCalls.map((call) => call.cpus), [4, 4]);
+      assert.deepEqual(callsFor(3).dockerCalls.map((call) => call.cpus), [3, 3]);
+      assert.deepEqual(callsFor(2).dockerCalls.map((call) => call.cpus), [2, 2]);
+    });
 
-    assert.deepEqual(stub.dockerCalls.map((call) => call.cpus), [sandboxCpus(), sandboxCpus()]);
-    assert.ok(stub.dockerCalls.every((call) => Number.isInteger(call.cpus) && call.cpus >= 1 && call.cpus <= 4));
+    it("leaves the option out, so the sandbox is unlimited as before, when the daemon's count can't be read, and says so once", () => {
+      const stub = callsFor(undefined, 3);
+
+      assert.equal(stub.dockerCalls.length, 3);
+      assert.ok(stub.dockerCalls.every((call) => !("cpus" in call)), JSON.stringify(stub.dockerCalls));
+      assert.deepEqual(stub.logs.filter((line) => line.includes("CPU count")), ["  ⚠ Couldn't read Docker's CPU count, so sandboxes start with no CPU limit."]);
+    });
+
+    it("asks the daemon once, however many sandboxes it makes, even when it could not answer", () => {
+      assert.equal(callsFor(8, 3).daemonCpusReads(), 1);
+      assert.equal(callsFor(undefined, 3).daemonCpusReads(), 1);
+    });
+
+    it("asks the daemon only when a sandbox is made", () => {
+      const stub = host(mkdtempSync(join(tmpdir(), "skills-")));
+      makeAgentSandbox(stub.host, []);
+
+      assert.equal(stub.daemonCpusReads(), 0);
+    });
+  });
+
+  describe("parseDaemonCpus", () => {
+    it("reads the whole number `docker info --format {{.NCPU}}` prints", () => {
+      assert.equal(parseDaemonCpus("8\n"), 8);
+      assert.equal(parseDaemonCpus("  12  "), 12);
+      assert.equal(parseDaemonCpus("1"), 1);
+    });
+
+    it("gives undefined for anything else", () => {
+      for (const text of ["", "\n", "abc", "0", "-2", "4.5", "8 CPUs", "1e3", "0x10", "99999999999999999999", "NaN"]) {
+        assert.equal(parseDaemonCpus(text), undefined, JSON.stringify(text));
+      }
+    });
+  });
+
+  describe("readDaemonCpus", () => {
+    it("runs `docker info --format {{.NCPU}}` with a time limit of its own", () => {
+      const calls: { file: string; args: string[]; options: { encoding: string; timeout: number } }[] = [];
+
+      const cpus = readDaemonCpus((file, args, options) => {
+        calls.push({ file, args, options });
+        return "6\n";
+      });
+
+      assert.equal(cpus, 6);
+      assert.deepEqual(calls.map((call) => [call.file, call.args]), [["docker", ["info", "--format", "{{.NCPU}}"]]]);
+      assert.equal(calls[0]?.options.encoding, "utf8");
+      assert.ok(calls[0]!.options.timeout > 0 && calls[0]!.options.timeout <= 60_000, String(calls[0]?.options.timeout));
+    });
+
+    it("gives undefined when docker fails, hangs past its limit, or prints something that is not a count", () => {
+      const throwing = () => {
+        throw new Error("Cannot connect to the Docker daemon");
+      };
+
+      assert.equal(readDaemonCpus(throwing), undefined);
+      assert.equal(readDaemonCpus(() => ""), undefined);
+      assert.equal(readDaemonCpus(() => "unknown"), undefined);
+    });
   });
 
   it("passes the found skills' mounts to every Docker sandbox it creates", () => {

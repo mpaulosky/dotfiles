@@ -5,7 +5,6 @@
 // lib/repo-config.mts, which imports only types from here.
 // ---------------------------------------------------------------------------
 
-import { availableParallelism } from "node:os";
 import type { ClaudeCodeOptions } from "@ai-hero/sandcastle";
 
 // Every role Sandcastle runs. lib/repo-config.mts gives each one its agent
@@ -153,17 +152,19 @@ export const MAX_GATE_RUNS = 2 * (GATE_FIXER_ATTEMPTS + 1) + 1;
 // run's lines when an error ends a checkpoint.
 export const GATE_COMMENT_LINES = 100;
 
-// How many CPUs a sandbox may use (`docker run --cpus`). The gate's Sandcastle check is the one step that gets faster with more:
-// timed in the sandbox image, it took 162s on 1 CPU, 121s on 2 and 52s on 4, and every other step took the same on all three
-// (mpaulosky/dotfiles#423). Sandcastle starts a container with no limit at all when it's given none.
+// The most CPUs a sandbox may use (`docker run --cpus`), the same in every Baseline repo. The gate's Sandcastle check is the one step
+// that gets faster with more: timed in the sandbox image, it took 162s on 1 CPU, 121s on 2 and 52s on 4, and every other step took
+// the same on all three (mpaulosky/dotfiles#423). Sandcastle starts a container with no limit at all when it's given none.
 export const SANDBOX_CPUS = 4;
 
-// What a sandbox is given on a host with `hostCpus` CPUs: SANDBOX_CPUS, or all of the host's when it has fewer, since docker refuses
-// a `--cpus` above its count ("range of CPUs is from 0.01 to N") and the sandbox would not start. A count that isn't a whole CPU
-// or more gives 1.
-export function sandboxCpus(hostCpus: number = availableParallelism()): number {
-  const whole = Math.floor(hostCpus);
-  return whole >= 1 ? Math.min(SANDBOX_CPUS, whole) : 1;
+// What a sandbox is given on a Docker daemon that reports `daemonCpus` CPUs (lib/skills.mts#readDaemonCpus): SANDBOX_CPUS, or all of
+// the daemon's when it has fewer, since docker refuses a `--cpus` above its own count ("range of CPUs is from 0.01 to N") and the
+// sandbox would not start. It is the daemon's count, not this process's: they differ on Docker Desktop's VM and a remote DOCKER_HOST.
+// Undefined, meaning no limit, when the count is unknown or isn't one or more whole CPUs.
+export function sandboxCpus(daemonCpus: number | undefined): number | undefined {
+  if (daemonCpus === undefined || !Number.isFinite(daemonCpus)) return undefined;
+  const whole = Math.floor(daemonCpus);
+  return whole >= 1 ? Math.min(SANDBOX_CPUS, whole) : undefined;
 }
 
 // Attempts allowed for a publish step (git push, gh pr create) that keeps

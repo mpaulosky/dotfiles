@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { uiEnabled } from "./agents.mts";
 import { SANDBOX_SKILLS } from "./repo-config.mts";
-import { makeAgentSandbox, parseDaemonCpus, readDaemonCpus, skillMounts, withCreateMounts, type SkillMount } from "./skills.mts";
+import { agentSandboxHost, DAEMON_INFO_TIMEOUT_MS, makeAgentSandbox, parseDaemonCpus, readDaemonCpus, skillMounts, withCreateMounts, type SkillMount } from "./skills.mts";
 
 function skill(dir: string): string {
   mkdirSync(dir, { recursive: true });
@@ -163,17 +163,58 @@ describe("makeAgentSandbox", () => {
       assert.equal(cpus, 6);
       assert.deepEqual(calls.map((call) => [call.file, call.args]), [["docker", ["info", "--format", "{{.NCPU}}"]]]);
       assert.equal(calls[0]?.options.encoding, "utf8");
-      assert.ok(calls[0]!.options.timeout > 0 && calls[0]!.options.timeout <= 60_000, String(calls[0]?.options.timeout));
+      assert.equal(DAEMON_INFO_TIMEOUT_MS, 30_000);
+      assert.equal(calls[0]?.options.timeout, DAEMON_INFO_TIMEOUT_MS);
     });
 
-    it("gives undefined when docker fails, hangs past its limit, or prints something that is not a count", () => {
+    it("gives undefined when docker fails, times out (execFileSync throws ETIMEDOUT) or prints something that is not a count", () => {
       const throwing = () => {
         throw new Error("Cannot connect to the Docker daemon");
       };
+      const timedOut = () => {
+        throw Object.assign(new Error("spawnSync docker ETIMEDOUT"), { code: "ETIMEDOUT" });
+      };
 
       assert.equal(readDaemonCpus(throwing), undefined);
+      assert.equal(readDaemonCpus(timedOut), undefined);
       assert.equal(readDaemonCpus(() => ""), undefined);
       assert.equal(readDaemonCpus(() => "unknown"), undefined);
+    });
+  });
+
+  // The production path: readDaemonCpus() with no argument runs the host's time-limited execFileSync, and agentSandboxHost, which
+  // agentSandbox is made from, reads the daemon through it. A stub `docker` first on PATH stands in for the daemon.
+  describe("the real exec path, with a stub docker on PATH", { skip: process.platform === "win32" ? "needs sh" : false }, () => {
+    function withStubDocker<T>(script: string, body: () => T): T {
+      const dir = mkdtempSync(join(tmpdir(), "stub-docker-"));
+      const stub = join(dir, "docker");
+      writeFileSync(stub, `#!/bin/sh\n${script}\n`);
+      chmodSync(stub, 0o755);
+      const saved = process.env["PATH"];
+      process.env["PATH"] = `${dir}:${saved ?? ""}`;
+      try {
+        return body();
+      } finally {
+        if (saved === undefined) delete process.env["PATH"];
+        else process.env["PATH"] = saved;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    const printsSix = '[ "$1 $2 $3" = "info --format {{.NCPU}}" ] && echo 6 || exit 9';
+
+    it("reads the count the stub docker prints, through the exact arguments", () => {
+      assert.equal(withStubDocker(printsSix, () => readDaemonCpus()), 6);
+    });
+
+    it("gives undefined when the stub docker exits non-zero or prints a bad count", () => {
+      assert.equal(withStubDocker("exit 1", () => readDaemonCpus()), undefined);
+      assert.equal(withStubDocker("echo not-a-number", () => readDaemonCpus()), undefined);
+      assert.equal(withStubDocker("echo 0", () => readDaemonCpus()), undefined);
+    });
+
+    it("is what the production sandbox host reads the daemon's CPUs through", () => {
+      assert.equal(withStubDocker(printsSix, () => agentSandboxHost.daemonCpus()), 6);
+      assert.equal(withStubDocker("exit 1", () => agentSandboxHost.daemonCpus()), undefined);
     });
   });
 

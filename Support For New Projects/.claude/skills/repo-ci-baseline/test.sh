@@ -537,7 +537,7 @@ check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already ex
 uutils_bin="$md_tmp/uutils-bin"; boom_bin="$md_tmp/boom-bin"; mkdir -p "$uutils_bin" "$boom_bin"
 cat > "$uutils_bin/ln" <<'STUB'
 #!/usr/bin/env bash
-echo "ln: failed to create symbolic link '${@: -1}': Already exists" >&2
+echo "ln: failed to create symbolic link '${@: -1}': Already exists (uutils stub)" >&2
 exit 1
 STUB
 cat > "$boom_bin/ln" <<'STUB'
@@ -549,8 +549,8 @@ chmod +x "$uutils_bin/ln" "$boom_bin/ln"
 skills_path_prefix="$uutils_bin:"
 refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists" \
   || fail "sandcastle.yml: a skill that exists already must be refused whichever way ln words it, GNU's 'File exists' or uutils' 'Already exists' (exit $skills_rc): $skills_log"
-# Only the stub says "Already exists" (GNU's ln can't), so this shows the step ran it.
-[[ $skills_log == *"Already exists"* ]] || fail "sandcastle.yml: the stub ln was not the one the skills step ran: $skills_log"
+# Only the stub ends its message with "(uutils stub)", whatever the runner's own ln is, so this shows the step ran it.
+[[ $skills_log == *"(uutils stub)"* ]] || fail "sandcastle.yml: the stub ln was not the one the skills step ran: $skills_log"
 skills_path_prefix="$boom_bin:"
 if refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists"; then
   fail "sandcastle.yml: an ln error with neither wording must not pass for 'File exists' or 'Already exists'"

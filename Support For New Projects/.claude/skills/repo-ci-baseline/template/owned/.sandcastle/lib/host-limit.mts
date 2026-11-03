@@ -1,5 +1,5 @@
 // Time limits on the host's own waits that are not a command in a sandbox (that is lib/step-limit.mts): the synchronous
-// `gh` and `git` calls, and Docker's create and close of a sandbox. None of them has a timeout of its own, so one that never
+// `gh`, `git` and `docker info` calls, and Docker's create and close of a sandbox. None of them has a timeout of its own, so one that never
 // answered would hold the run until the job's cap. This module imports only lib/errors.mts, so the modules that make the
 // host's calls can import it without a cycle through lib/step-limit.mts (which imports lib/status.mts).
 import { execFileSync } from "node:child_process";
@@ -16,12 +16,12 @@ export const HOST_COMMAND_LIMIT_MINUTES = 5;
 // How long Docker may take to create or close a sandbox, in minutes. Both are Sandcastle calls with no timeout of their own.
 export const DOCKER_CALL_LIMIT_MINUTES = 5;
 
-// The options every host `gh` and `git` call gets: the host limit and KILL (a hung `gh` may ignore TERM). A caller's own values win.
+// The options every host `gh`, `git` and `docker info` call gets: the host limit and KILL (a hung `gh` may ignore TERM). A caller's own values win.
 export function hostExecOptions(given: object = {}): object {
   return { timeout: HOST_COMMAND_LIMIT_MINUTES * 60_000, killSignal: "SIGKILL", ...given };
 }
 
-// execFileSync with a time limit, for every `gh` and `git` call the host makes: the child is killed (KILL, since a hung `gh` may
+// execFileSync with a time limit, for every `gh`, `git` and `docker info` call the host makes: the child is killed (KILL, since a hung `gh` may
 // ignore TERM) when it runs past HOST_COMMAND_LIMIT_MINUTES, and the call throws like any failed one (code ETIMEDOUT), so each
 // caller's own handling of a failed call applies. A caller's own `timeout` or `killSignal` wins.
 export const hostExecFileSync = ((file: string, ...rest: unknown[]) => {

@@ -51,7 +51,7 @@ const dockerTakesCpus: "cpus" extends keyof NonNullable<Parameters<typeof docker
 void dockerTakesCpus;
 
 // How long `docker info` may take, in milliseconds. A hung daemon would otherwise hold the run's start for the host command limit.
-const DAEMON_INFO_TIMEOUT_MS = 30_000;
+export const DAEMON_INFO_TIMEOUT_MS = 30_000;
 
 // The CPU count `docker info --format {{.NCPU}}` prints: a whole number of one or more, else undefined.
 export function parseDaemonCpus(output: string): number | undefined {
@@ -165,10 +165,13 @@ export function makeAgentSandbox<TProvider>(
   };
 }
 
-export const agentSandbox = makeAgentSandbox({
+// What agentSandbox is made from, exported so a test can check the production wiring: the daemon's CPUs come through readDaemonCpus.
+export const agentSandboxHost = {
   skillsDir: join(homedir(), ".claude", "skills"),
   gitMounts: () => [...protectedGitMounts(repoGitDir()), ...protectedRecordMounts(dirname(repoGitDir()))],
   daemonCpus: () => readDaemonCpus(),
   docker,
   log: console.log,
-});
+};
+
+export const agentSandbox = makeAgentSandbox(agentSandboxHost);

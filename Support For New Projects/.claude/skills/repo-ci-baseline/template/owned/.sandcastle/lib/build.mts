@@ -478,7 +478,7 @@ export function publicErrorText(text: string, holdsSecret: (text: string) => boo
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
     .trim();
-  return holdsSecret(cleaned) ? "(This text isn't shown: it looked like it held a secret. See the run log.)" : cleaned;
+  return holdsSecret(cleaned) ? "(This text isn't shown: it looked like it held a secret. It was withheld.)" : cleaned;
 }
 
 // The git arguments listing the .github/workflows/ files each commit from

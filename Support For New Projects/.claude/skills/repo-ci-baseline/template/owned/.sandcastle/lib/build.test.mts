@@ -739,6 +739,19 @@ describe("buildIssue", () => {
     assert.ok(logs.some((line) => line.includes("not run: The sandbox can't run a command")), logs.join("\n"));
   });
 
+  it("doesn't point to a run log for a probe error it withheld, since only the scrubbed reason is logged", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: new Error("exit 1: GH token ghp_abc in the output"),
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.doesNotMatch(logs.join("\n"), /run log/i);
+    assert.doesNotMatch(recordBuildFailureCalls[0]!.detail, /run log/i);
+  });
+
   it("logs a failed gate-fixer attempt's error on one line through the real scrub, without a prefix", async () => {
     const { logs, buildHost } = host([1, 1, 1], { failing: ["gate-fixer"], failWith: { "gate-fixer": new Error("boom\n##[add-mask]x") } });
 
@@ -3057,6 +3070,13 @@ describe("publicErrorText", () => {
 
   it("withholds an error that holds a secret", () => {
     assert.match(publicErrorText("token abcdefgh12345 rejected", (text) => text.includes("abcdefgh12345")), /isn't shown/);
+  });
+
+  // The raw error of a withheld text is dropped by most callers, so the text says it was withheld and doesn't point to a run log.
+  it("says a withheld error was withheld because it looked like it held a secret, without pointing to a run log", () => {
+    const text = publicErrorText("token abcdefgh12345 rejected", (cleaned) => cleaned.includes("abcdefgh12345"));
+
+    assert.equal(text, "(This text isn't shown: it looked like it held a secret. It was withheld.)");
   });
 });
 

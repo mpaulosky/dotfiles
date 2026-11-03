@@ -347,7 +347,7 @@ export function tail(output: string, lines: number): string {
 
 // The last `limit` characters of `text`, never starting halfway through a
 // character: a CI log's error is at its end (lib/github.mts#failedCheckLogs,
-// lib/follow-up-pass.mts's CI_LOG_LIMIT).
+// lib/follow-up-pass.mts's CI_LOG_LIMIT), and so is a gate run's (giveUpComment).
 export function endOf(text: string, limit: number): string {
   if (text.length <= limit) return text;
   const end = text.slice(-limit);

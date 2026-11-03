@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   allowlistedView,
   copyReviewerLogs,
+  reportLogsDir,
+  REPORT_LOGS_NAME,
   REPORT_ERROR_LINES,
   REPORT_HOST_LINES,
   REPORT_TOOL_LINES,
@@ -34,7 +36,7 @@ function fakeFs(files: Record<string, string>, failOn?: string) {
 const none = () => undefined;
 const copy = (text: string, secrets: readonly string[] = []) => {
   const { fs, written } = fakeFs({ "a-reviewer.log": text });
-  copyReviewerLogs("logs", fs, none, secrets);
+  copyTo("logs", fs, none, secrets);
   return written["logs/report/a-reviewer.log"]!;
 };
 
@@ -57,6 +59,10 @@ const hostLines = [
   "Run complete: agent finished after 2 iteration(s).",
   "Run complete: reached 3 iteration(s) without completion signal.",
 ];
+
+// copyReviewerLogs with the views going to <logsDir>/report, as most tests below read them from there.
+const copyTo = (logsDir: string, fs?: RoleLogFs, warn?: (line: string) => void, secrets?: readonly string[]) =>
+  copyReviewerLogs(logsDir, fs, warn, secrets, join(logsDir, "report"));
 
 describe("allowlistedView", () => {
   it("keeps every host status line as written, but for the start line's timestamp", () => {
@@ -246,48 +252,77 @@ describe("allowlistedView", () => {
 describe("copyReviewerLogs", () => {
   it("copies only the reviewer logs, as their view, into the report folder", () => {
     const { fs, written } = fakeFs({ "a-reviewer.log": "aborted", "a-backend.log": "other" });
-    assert.deepEqual(copyReviewerLogs("logs", fs, none, []), ["a-reviewer.log"]);
+    assert.deepEqual(copyTo("logs", fs, none, []), ["a-reviewer.log"]);
     assert.deepEqual(written, { "logs/report/a-reviewer.log": "aborted\n" });
   });
 
   it("never copies the pre-push review's log", () => {
     const { fs, written } = fakeFs({ "a-pre-push-reviewer.log": "aborted", "b-reviewer.log": "aborted" });
-    assert.deepEqual(copyReviewerLogs("logs", fs, none, []), ["b-reviewer.log"]);
+    assert.deepEqual(copyTo("logs", fs, none, []), ["b-reviewer.log"]);
     assert.deepEqual(Object.keys(written), ["logs/report/b-reviewer.log"]);
   });
 
-  it("empties the report folder first, also when there is no reviewer log, since an agent's sandbox may have written into it", () => {
+  it("puts the views under RUNNER_TEMP, outside the checkout, or under the temp directory when it isn't set", () => {
+    assert.equal(REPORT_LOGS_NAME, "sandcastle-reviewer-logs");
+    assert.equal(reportLogsDir({ RUNNER_TEMP: join("runner", "tmp") }, "fallback"), join("runner", "tmp", REPORT_LOGS_NAME));
+    assert.equal(reportLogsDir({}, "fallback"), join("fallback", REPORT_LOGS_NAME));
+    assert.equal(reportLogsDir({ RUNNER_TEMP: "" }, "fallback"), join("fallback", REPORT_LOGS_NAME));
+    assert.equal(reportLogsDir({}), join(tmpdir(), REPORT_LOGS_NAME));
+  });
+
+  it("by default writes the views to RUNNER_TEMP and nothing under the logs folder, which sandboxes mount", () => {
+    const dir = mkdtempSync(join(tmpdir(), "role-logs-default-"));
+    const runnerTemp = mkdtempSync(join(tmpdir(), "role-logs-runner-"));
+    const before = process.env.RUNNER_TEMP;
+    try {
+      writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
+      // A file left by an earlier run is removed, and a file in the checkout's own report folder is neither read nor uploaded from.
+      mkdirSync(join(runnerTemp, REPORT_LOGS_NAME));
+      writeFileSync(join(runnerTemp, REPORT_LOGS_NAME, "old-reviewer.log"), "left over\n");
+      process.env.RUNNER_TEMP = runnerTemp;
+      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
+      assert.deepEqual(readdirSync(join(runnerTemp, REPORT_LOGS_NAME)), ["ok-reviewer.log"]);
+      assert.ok(!existsSync(join(dir, "report")), "something was written under the logs folder");
+    } finally {
+      if (before === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = before;
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      rmSync(runnerTemp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("empties the output folder first, also when there is no reviewer log, so nothing an earlier run left is uploaded", () => {
     const { fs, cleared } = fakeFs({ "a-reviewer.log": "aborted" });
-    copyReviewerLogs("logs", fs, none, []);
+    copyTo("logs", fs, none, []);
     assert.deepEqual(cleared, ["logs/report"]);
     const none2 = fakeFs({ "a-backend.log": "other" });
-    copyReviewerLogs("logs", none2.fs, none, []);
+    copyTo("logs", none2.fs, none, []);
     assert.deepEqual(none2.cleared, ["logs/report"]);
   });
 
-  it("writes nothing and warns when the report folder can't be emptied, so nothing is trusted to be fresh", () => {
+  it("writes nothing and warns when the output folder can't be emptied", () => {
     const warnings: string[] = [];
     const { fs, written } = fakeFs({ "a-reviewer.log": "aborted" });
     const stuck: RoleLogFs = { ...fs, clear: () => { throw new Error("EBUSY"); } };
-    assert.deepEqual(copyReviewerLogs("logs", stuck, (line) => warnings.push(line), []), []);
+    assert.deepEqual(copyTo("logs", stuck, (line) => warnings.push(line), []), []);
     assert.deepEqual(written, {});
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0]!, /could not be emptied|EBUSY/);
+    assert.match(warnings[0]!, /could not be emptied/);
   });
 
-  it("removes a file an agent planted in the report folder, and a report folder that is a symlink, keeping only the fresh views", () => {
+  it("removes a file left in the output folder, and an output folder that is a symlink, keeping only the fresh views", () => {
     const dir = mkdtempSync(join(tmpdir(), "role-logs-planted-"));
     try {
       mkdirSync(join(dir, "report"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "sk-ant-planted\n");
       writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
-      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
+      assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
       assert.ok(!existsSync(join(dir, "report", "planted-reviewer.log")), "a planted log survived");
       assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "the reviewer aborted\n");
       // With no reviewer log at all, a planted file is still removed.
       rmSync(join(dir, "ok-reviewer.log"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
-      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), []);
+      assert.deepEqual(copyTo(dir, undefined, () => undefined, []), []);
       assert.ok(!existsSync(join(dir, "report", "planted-reviewer.log")));
       // A report folder that is a link to somewhere else is unlinked, not followed.
       const elsewhere = mkdtempSync(join(tmpdir(), "role-logs-elsewhere-"));
@@ -296,7 +331,7 @@ describe("copyReviewerLogs", () => {
         rmSync(join(dir, "report"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
         symlinkSync(elsewhere, join(dir, "report"));
         writeFileSync(join(dir, "ok-reviewer.log"), "aborted again\n");
-        copyReviewerLogs(dir, undefined, () => undefined, []);
+        copyTo(dir, undefined, () => undefined, []);
         assert.ok(existsSync(join(elsewhere, "keep-reviewer.log")), "the link's target was emptied");
         assert.ok(!existsSync(join(elsewhere, "ok-reviewer.log")), "a view was written through the link");
         assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "aborted again\n");
@@ -310,7 +345,7 @@ describe("copyReviewerLogs", () => {
 
   it("makes no folder when there is no reviewer log", () => {
     const { fs, made } = fakeFs({ "a-backend.log": "other", "empty.txt": "" });
-    assert.deepEqual(copyReviewerLogs("logs", fs, none, []), []);
+    assert.deepEqual(copyTo("logs", fs, none, []), []);
     assert.deepEqual(made, []);
   });
 
@@ -387,15 +422,15 @@ describe("copyReviewerLogs", () => {
   it("warns and carries on when a log can't be read or the folder can't be listed", () => {
     const warnings: string[] = [];
     const { fs } = fakeFs({ "a-reviewer.log": "x", "b-reviewer.log": "y" }, "a-reviewer.log");
-    assert.deepEqual(copyReviewerLogs("logs", fs, (line) => warnings.push(line), []), ["b-reviewer.log"]);
-    copyReviewerLogs("logs", { ...fs, list: () => { throw new Error("ENOENT"); } }, (line) => warnings.push(line), []);
+    assert.deepEqual(copyTo("logs", fs, (line) => warnings.push(line), []), ["b-reviewer.log"]);
+    copyTo("logs", { ...fs, list: () => { throw new Error("ENOENT"); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 2);
   });
 
   it("ignores a directory named like a log, which it can't read", () => {
     const warnings: string[] = [];
     const { fs, written } = fakeFs({ "dir-reviewer.log": "x" });
-    copyReviewerLogs("logs", { ...fs, read: () => { throw new Error("EISDIR"); } }, (line) => warnings.push(line), []);
+    copyTo("logs", { ...fs, read: () => { throw new Error("EISDIR"); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 1);
     assert.deepEqual(written, {});
   });
@@ -410,7 +445,7 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "logs", "a-reviewer.log"), "error swordfish-in-the-env\n");
       writeFileSync(join(dir, "logs", "b-reviewer.log"), "error plain\n");
       process.chdir(dir);
-      assert.deepEqual(copyReviewerLogs("logs", undefined, () => undefined).sort(), ["a-reviewer.log", "b-reviewer.log"]);
+      assert.deepEqual(copyTo("logs", undefined, () => undefined).sort(), ["a-reviewer.log", "b-reviewer.log"]);
       assert.equal(readFileSync(join(dir, "logs", "report", "a-reviewer.log"), "utf8"), "[... lines left out]\n");
       assert.equal(readFileSync(join(dir, "logs", "report", "b-reviewer.log"), "utf8"), "error plain\n");
     } finally {
@@ -427,7 +462,7 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "target.txt"), "a host file\n");
       symlinkSync(join(dir, "target.txt"), join(dir, "link-reviewer.log"));
       mkdirSync(join(dir, "report"), { recursive: true });
-      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
+      assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
       assert.ok(!existsSync(join(dir, "report", "link-reviewer.log")), "a symlinked log was copied");
       assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "the reviewer aborted\n");
       assert.ok(!existsSync(join(dir, "report", "ok-backend.log")));

@@ -11,15 +11,24 @@
 // checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
 // view that fails the check is replaced by a note. This narrows what can leave the sandbox in a log; it
 // can't promise that a steered reviewer cannot get a few words of its own onto an error line.
-// The report folder is emptied before it is written, since an agent's sandbox may have put files in it.
+// The output folder is emptied before it is written, in case an earlier run left files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot.
 
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 
-// Where the copies go, under the logs directory the artifact step uploads.
-export const REPORT_LOG_DIR = "report";
+// The folder, under the runner's temp directory, that the artifact step uploads the views from. It is outside the checkout so that no
+// sandbox mounts it: the planner, critique and intake sandboxes mount the main checkout read-write and one the host gave up on may keep
+// running, so anything under .sandcastle/logs/ could be written by an agent between the copy and the upload.
+export const REPORT_LOGS_NAME = "sandcastle-reviewer-logs";
+
+// Where the views go: REPORT_LOGS_NAME under RUNNER_TEMP, which Actions sets for every step of a job (the workflow's upload path is
+// `${{ runner.temp }}/REPORT_LOGS_NAME`), or under the machine's temp directory when it isn't set, as in a run on a person's machine.
+export function reportLogsDir(env: Record<string, string | undefined> = process.env, fallback: string = tmpdir()): string {
+  return join(env.RUNNER_TEMP || fallback, REPORT_LOGS_NAME);
+}
 
 // The most of one kept error line, so a long line can't carry much.
 export const REPORT_LINE_LIMIT = 200;
@@ -143,7 +152,7 @@ function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
   return [view, spaceless].some((form) => containsSecret(form, secrets) || looseTokenShape.test(form));
 }
 
-// Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `<logsDir>/report/`, with a short
+// Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `outDir` (see reportLogsDir), with a short
 // note in place of a view that looks like it holds a secret. The pre-push review's own log, `*-pre-push-reviewer.log`,
 // is not a Sandcastle role's and is never copied. Never throws: it runs in the run's finally, and a missing log
 // directory or an unreadable file is a warning. `secrets` defaults to the values .sandcastle/.env gives the sandbox,
@@ -153,17 +162,16 @@ export function copyReviewerLogs(
   fs: RoleLogFs = liveRoleLogFs,
   warn: (line: string) => void = console.error,
   secrets?: readonly string[],
+  outDir: string = reportLogsDir(),
 ): string[] {
   const copied: string[] = [];
   try {
-    const outDir = join(logsDir, REPORT_LOG_DIR);
-    // The folder the artifact uploads from is emptied first, whether or not a reviewer ran: the sandboxes that mount the main checkout
-    // (the planner, critique and intake) can write into it, so a file there may be an agent's, uploaded with no check. If it can't be
-    // emptied nothing is written, and the warning says the folder may hold files this function didn't make.
+    // The folder the artifact uploads from is emptied first, whether or not a reviewer ran. It is outside the checkout, so no sandbox
+    // can write into it; this only removes what an earlier run on the same machine left. If it can't be emptied nothing is written.
     try {
       fs.clear(outDir);
     } catch (error) {
-      throw new Error(`the report folder could not be emptied, so what is in it may be uploaded unchecked: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`the output folder could not be emptied, so nothing was written to it: ${error instanceof Error ? error.message : String(error)}`);
     }
     const names = fs
       .list(logsDir)

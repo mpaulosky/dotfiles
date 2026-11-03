@@ -299,7 +299,8 @@ jobs:
       # can be downloaded by any signed-in user, and GitHub masks secrets in
       # step logs, not artifacts, so a transcript that printed the sandbox's
       # Claude credential would publish it. The reviewers' logs reach
-      # logs/report/ through lib/role-logs.mts, which writes an allowlisted
+      # $RUNNER_TEMP/sandcastle-reviewer-logs/ (outside the checkout, which no
+      # sandbox mounts) through lib/role-logs.mts, which writes an allowlisted
       # view of each (the last host status lines, the last known tool names without
       # arguments, and the last few error lines) and leaves out a view shaped like a secret.
       # The view narrows what a steered reviewer can print into the artifact; it
@@ -313,7 +314,7 @@ jobs:
           path: |
             .sandcastle/logs/summary.md
             .sandcastle/logs/handbacks.json
-            .sandcastle/logs/report/*-reviewer.log
+            ${{ runner.temp }}/sandcastle-reviewer-logs/*-reviewer.log
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14

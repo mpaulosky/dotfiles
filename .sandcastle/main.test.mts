@@ -580,9 +580,9 @@ describe("main.mts's reviewer-log wiring", () => {
     assert.match(mainMts, /import \{ copyReviewerLogs \} from "\.\/lib\/role-logs\.mts";/);
   });
 
-  it("uploads exactly the report, the hand-backs and the copied reviewer logs, in the workflow and the Template's copy", async () => {
+  it("uploads exactly the report, the hand-backs and the reviewer logs from outside the checkout, in the workflow and the Template's copy", async () => {
     const { REPORT_DIR } = await import("./lib/report.mts");
-    const { REPORT_LOG_DIR } = await import("./lib/role-logs.mts");
+    const { REPORT_LOGS_NAME } = await import("./lib/role-logs.mts");
     for (const path of [".github/workflows/sandcastle.yml", "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.github/workflows/sandcastle.yml"]) {
       const workflow = read(path);
       const step = workflow.slice(workflow.indexOf("- name: Upload the run report"));
@@ -591,7 +591,7 @@ describe("main.mts's reviewer-log wiring", () => {
       assert.ok(block, `${path} has no upload path block`);
       assert.deepEqual(
         block.trim().split(/\r?\n/).map((line) => line.trim()),
-        [`${REPORT_DIR}/summary.md`, `${REPORT_DIR}/handbacks.json`, `${REPORT_DIR}/${REPORT_LOG_DIR}/*-reviewer.log`],
+        [`${REPORT_DIR}/summary.md`, `${REPORT_DIR}/handbacks.json`, "${{ runner.temp }}/" + REPORT_LOGS_NAME + "/*-reviewer.log"],
         `${path} uploads something else than the report, the hand-backs and the reviewer logs`,
       );
     }

@@ -317,9 +317,11 @@ export function applyOutcomes(
       const testFile = (test.split("::")[0] ?? "").replace(/^\.\//, "");
       return changed.has(testFile) && looksLikeTest(testFile) ? { ...open, status: "fixed", test, reason, fix: null } : open;
     }
-    // A non-security Critical or Advisory finding is recorded fixed on a reason alone, with no test: an accepted trade-off. Such a finding is
-    // prose or workflow (a doc, a comment, a workflow step) that has no test to point at, so the reason says what changed. A Warning or a
-    // security finding never clears this way: it needs the code at its path to have changed (above).
+    // A non-security Critical or Advisory finding is recorded fixed on a reason alone, with no test: an accepted trade-off. The host can't
+    // tell a prose or workflow finding (a doc, a comment, a workflow step), which has no test to point at, from a code defect, so a
+    // Critical code bug clears on the backend's reason too, and the host can't check that the reason is true. A Warning or a security
+    // finding never clears this way: it needs both a changed test file (the `test !== null` branch above) and a change to the file at
+    // its path (the check above); with no test it stays open here.
     return !open.security && open.severity !== "warning" && reason !== null ? { ...open, status: "fixed", test: null, reason, fix: null } : open;
   });
 }

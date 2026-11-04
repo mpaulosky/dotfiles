@@ -5,7 +5,7 @@
 // So a log is never copied whole. Only an allowlisted view is: the host's own status lines (the last few, the start line without its
 // timestamp, since a forged line's digits are data), the name
 // of each of the last few tool calls without its arguments (only a known tool's name, an MCP tool as `mcp__(...)`), and the few lines that name an
-// error or an abort. An MCP tool is kept only as `mcp__(...)`. Those error lines are the one
+// error or an abort. Those error lines are the one
 // place free text gets through, so they are cut short, limited in number, and left out when they hold a
 // long run of token characters (where an encoded secret would sit). Whatever the view still holds is
 // checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
@@ -148,17 +148,48 @@ function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
   return [view, spaceless].some((form) => containsSecret(form, secrets) || looseTokenShape.test(form));
 }
 
+// The file in the reviewers' folder that says which build each `reviewer-<n>.log` is, since the numbers carry no name.
+export const REVIEWER_LOG_INDEX = "index.txt";
+
+// The name Sandcastle gives a reviewer's log for a build's branch: the branch with the characters a file name can't hold replaced by a
+// hyphen, then `-reviewer.log` (its buildLogFilename). A name that no longer matches this only leaves a log unlabelled in the index.
+export function reviewerLogFileName(branch: string): string {
+  return `${branch.replace(/[/\\:*?"<>|]/g, "-")}-reviewer.log`;
+}
+
+// The builds this run started, by the name of the reviewer log each one writes, so the index can say which build a numbered view is.
+// Only the host's own issue numbers and branches go in, and only an issue number comes out: a log's name in the folder is whatever an
+// agent that can write there chose, so it is looked up here and never printed. That lookup is by name, so an agent could name a file
+// for another build's log and take its label: the label is a hint for a person reading a diagnostic, not proof of where a log came from.
+export class BuildLogs {
+  private readonly byFile = new Map<string, number>();
+
+  add(issueNumber: number, branch: string): void {
+    this.byFile.set(reviewerLogFileName(branch), issueNumber);
+  }
+
+  issueOf(fileName: string): number | undefined {
+    return this.byFile.get(fileName);
+  }
+}
+
+// The one record every build adds itself to.
+export const buildLogs = new BuildLogs();
+
 // Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `outDir`, as `reviewer-<n>.log` (reviewerLogsDir of the run report's folder, which is outside the checkout on Actions), with a short
 // note in place of a view that looks like it holds a secret. The pre-push review's own log, `*-pre-push-reviewer.log`,
 // is not a Sandcastle role's and is never copied. Never throws: it runs in the run's finally, and a missing log
 // directory or an unreadable file is a warning. `secrets` defaults to the values .sandcastle/.env gives the sandbox,
-// read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for.
+// read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
+// REVIEWER_LOG_INDEX, which says for each number the issue whose build wrote the log (from `builds`), or that the host started no build
+// for it, and whether the view couldn't be copied.
 export function copyReviewerLogs(
   logsDir: string,
   outDir: string,
   fs: RoleLogFs = liveRoleLogFs,
   warn: (line: string) => void = console.error,
   secrets?: readonly string[],
+  builds: BuildLogs = buildLogs,
 ): string[] {
   const copied: string[] = [];
   try {
@@ -181,19 +212,31 @@ export function copyReviewerLogs(
     // folder chose, and the content checks don't see it, so a file named for the sandbox's credential would put the credential in the
     // artifact's file list. The same goes for the warnings below, which reach the runner's public log. The number is the file's place
     // among the sorted names, and a log that can't be copied still takes its number.
-    names.forEach((name, index) => {
-      const outName = `reviewer-${index + 1}.log`;
+    const index: string[] = [];
+    names.forEach((name, position) => {
+      const outName = `reviewer-${position + 1}.log`;
+      const issue = builds.issueOf(name);
+      const label = issue === undefined ? "a build this run did not start" : `issue #${issue}`;
       try {
         const view = allowlistedView(fs.read(join(logsDir, name)), (line) => looksLikeSecret(line, known));
         const held = looksLikeSecret(view, known);
         fs.write(join(outDir, outName), held ? "Left out: the view held something shaped like a secret.\n" : view);
         copied.push(outName);
+        index.push(`${outName}: ${label}`);
       } catch (error) {
         // Only the error's code: its message names the path, and so the source file.
         const code = typeof (error as { code?: unknown })?.code === "string" ? ` (${(error as { code: string }).code})` : "";
-        warn(`Couldn't copy reviewer log ${index + 1} to the report${code}`);
+        warn(`Couldn't copy reviewer log ${position + 1} to the report${code}`);
+        index.push(`${outName}: ${label} (not copied)`);
       }
     });
+    try {
+      fs.write(join(outDir, REVIEWER_LOG_INDEX), `${index.join("\n")}\n`);
+    } catch (error) {
+      // Only the error's code, as for a view: its message names the path.
+      const code = (error as { code?: unknown } | null)?.code;
+      warn(`Couldn't write the index of the reviewer logs: ${typeof code === "string" ? code : "an error"}`);
+    }
   } catch (error) {
     warn(`Couldn't copy the reviewer logs to the report: ${error instanceof Error ? error.message : String(error)}`);
   }

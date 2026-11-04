@@ -28,6 +28,7 @@ import {
   publicErrorText,
   retryOnServerError,
 } from "./build.mts";
+import { logSandboxState } from "./diagnostics.mts";
 import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel, releasePullRequestBuildingLabel } from "./building.mts";
 import { endOf, runCheckpoint, runGate, sandboxDown, tail, textBlock, type GateRun } from "./checkpoint.mts";
 import {
@@ -714,6 +715,8 @@ async function followUpVerdicts(
     );
   } catch (error) {
     if (error instanceof UncountedStopError) throw error;
+    // The sandbox's state after the failed run, as a build logs it (lib/diagnostics.mts); it never throws.
+    await logSandboxState(sandbox, "the follow-up run failed", (line) => host.log(`  PR #${target.number} ${line}`), (text) => logSafeGateOutput(text, host.publicError));
     return stop("the follow-up run failed", String(error));
   }
   if (run.completionSignal === undefined) return stop("the follow-up run ended unfinished");
@@ -1156,13 +1159,20 @@ async function passOnMarkedIssue(
           unchangedGate = undefined;
           return known ?? (await runGate(sandbox, { base }));
         },
-        fix: (at, gateOutput) =>
-          runRoleInSandbox(
-            sandbox,
-            "gate-fixer",
-            { promptFile: "./.sandcastle/roles/gate-fixer.md", promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput) },
-            host.limits,
-          ),
+        fix: async (at, gateOutput) => {
+          try {
+            return await runRoleInSandbox(
+              sandbox,
+              "gate-fixer",
+              { promptFile: "./.sandcastle/roles/gate-fixer.md", promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput) },
+              host.limits,
+            );
+          } catch (error) {
+            // As the build's gate-fixer does: the sandbox's state, but not for the run's own stop.
+            if (!(error instanceof UncountedStopError)) await logSandboxState(sandbox, "the gate-fixer failed", log, (text) => logSafeGateOutput(text, host.publicError));
+            throw error;
+          }
+        },
         uncounted: (error) => error instanceof UncountedStopError,
         // As the build's checkpoint does: a sandbox that no longer answers git gets no gate-fixer run.
         alive: () => sandboxDown(sandbox, host.publicError),

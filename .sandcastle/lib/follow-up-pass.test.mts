@@ -41,6 +41,7 @@ import {
 import type { HeadCheck, ReviewThread, SandcastleIssue } from "./github.mts";
 import type { IsOwner } from "./queue.mts";
 import { IntakeStopReport, intakeStopExitCode, intakeStopReport, OutcomeReport, runEnding, STALL_STOP_REASON, type HumanThreadEntry } from "./report.mts";
+import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { RunLimits } from "./limits.mts";
 import type { SecretMatch } from "./scan.mts";
 import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
@@ -931,6 +932,7 @@ function sandboxFake(
       // compare an exec's position against a role's in one timeline instead
       // of mixing this array with execCalls, which only ever grows.
       steps.push(command);
+      if (command === SANDBOX_PROBE) return { stdout: "disk 10% used\n", stderr: "", exitCode: 0 };
       if (command.startsWith("rm -f")) return { stdout: "", stderr: "", exitCode: 0 };
       if (command.startsWith("git reset --hard")) return { stdout: "", stderr: "", exitCode: 0 };
       if (command === "git rev-parse HEAD") {
@@ -1645,6 +1647,41 @@ describe("runPass", () => {
 
     assert.equal(outcome.kind, "skipped");
     assert.deepEqual(calls.createSandbox, []);
+  });
+
+  // The sandbox's state after a role fails (mpaulosky/dotfiles#428), as a build logs it: the pass's roles run in a sandbox of their own that a crash can break too.
+  const probed = (steps: string[]) => steps.includes(SANDBOX_PROBE);
+
+  it("probes the sandbox, and logs under the reason, when the follow-up role fails", async () => {
+    const sandbox = sandboxFake({ roleFailing: ["follow-up"] });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    await runPass(passTarget(), issue, BASE, passHost);
+
+    assert.ok(probed(sandbox.steps), sandbox.steps.join("\n"));
+    assert.ok(calls.log.some((line) => /sandbox state \(the follow-up run failed\):\n    \| disk 10% used/.test(line)), calls.log.join("\n"));
+  });
+
+  it("probes the sandbox when the gate-fixer fails", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], roleFailing: ["gate-fixer"] });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost).catch(() => undefined);
+
+    assert.ok(probed(sandbox.steps), sandbox.steps.join("\n"));
+    assert.ok(calls.log.some((line) => /sandbox state \(the gate-fixer failed\):\n    \| disk 10% used/.test(line)), calls.log.join("\n"));
+  });
+
+  it("runs no probe for a usage-limit or time-budget stop of the follow-up role or the gate-fixer", async () => {
+    for (const role of ["follow-up", "gate-fixer"]) {
+      const stop = new UncountedStopError("usage limit reached");
+      const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1], roleFailing: [role], roleFailWith: { [role]: stop } });
+      const { passHost } = passHostFake({ threads: role === "follow-up" ? [botThread()] : [], containsBase: role === "follow-up", sandbox });
+
+      await runPass(passTarget(role === "follow-up" ? {} : { conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost).catch(() => undefined);
+
+      assert.ok(!probed(sandbox.steps), `${role}: ${sandbox.steps.join("\n")}`);
+    }
   });
 
   it("rethrows an UncountedStopError from the follow-up role instead of giving up", async () => {

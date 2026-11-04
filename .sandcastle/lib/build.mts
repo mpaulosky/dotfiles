@@ -37,6 +37,7 @@ import { git, hostGitInvocation, runHostGit } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
 import { logSandboxState } from "./diagnostics.mts";
+import { buildLogs } from "./role-logs.mts";
 import { closeAfterWork, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
 import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
@@ -992,6 +993,8 @@ async function buildMarkedIssue(
   // answer is a logged line and not a stalled sandbox. File and process names in it are written by agents, so it is cleaned
   // like the gate's output.
   const probeSandbox = (reason: string) => logSandboxState(sandbox, reason, log, (text) => logSafeGateOutput(text, host.publicError));
+  // The reviewer's log for this branch, so the run report's index of reviewer logs can say it belongs to this issue (lib/role-logs.mts).
+  buildLogs.add(issue.number, branch);
   const designNotePath = `.sandcastle/work/${issue.number}/design.md`;
   const prBodyPath = `.sandcastle/work/${issue.number}/pr-body.md`;
 
@@ -1076,15 +1079,23 @@ async function buildMarkedIssue(
       {
         gate: () => runGate(sandbox, { base, ...(mergedMain === undefined ? {} : { mergedMain }) }),
         fix: async (at, gateOutput) => {
-          const fixer = await runRoleInSandbox(
-            sandbox,
-            "gate-fixer",
-            {
-              promptFile: "./.sandcastle/roles/gate-fixer.md",
-              promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput),
-            },
-            host.limits,
-          );
+          let fixer: sandcastle.SandboxRunResult;
+          try {
+            fixer = await runRoleInSandbox(
+              sandbox,
+              "gate-fixer",
+              {
+                promptFile: "./.sandcastle/roles/gate-fixer.md",
+                promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput),
+              },
+              host.limits,
+            );
+          } catch (error) {
+            // The state of the sandbox the failed gate-fixer leaves, as after any other role; runCheckpoint logs the error itself.
+            // Not for the run's own stop (usage or time), which says nothing about the sandbox.
+            if (!(error instanceof UncountedStopError)) await probeSandbox("the gate-fixer failed");
+            throw error;
+          }
           commits.push(...fixer.commits);
         },
         uncounted: (error) => error instanceof UncountedStopError,
@@ -1206,6 +1217,7 @@ async function buildMarkedIssue(
     } catch (error) {
       if (error instanceof UncountedStopError) throw error;
       console.error(`  ⚠ #${issue.number}: scribe failed, publishing with a note: ${terminalText(String(error))}`);
+      await probeSandbox("the scribe failed");
     }
     return false;
   }

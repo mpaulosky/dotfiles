@@ -155,10 +155,16 @@ describe("timedProvider", () => {
     assert.ok(!report.lines().join("\n").includes("secret"));
   });
 
-  it("doesn't parse a line that can't hold a tool call, and still names the calls of one that can", () => {
+  it("doesn't parse a line that can't hold a tool call, and still names the calls of one that can", (t) => {
+    const parse = t.mock.method(JSON, "parse");
     const user = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "x".repeat(2_000_000) }] } });
+    parse.mock.resetCalls();
     assert.deepEqual(toolNamesInLine(user), []);
+    assert.deepEqual(toolNamesInLine("plain text"), []);
+    assert.equal(parse.mock.callCount(), 0, "a line with no tool_use was parsed");
+
     assert.deepEqual(toolNamesInLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } })), ["Bash"]);
+    assert.equal(parse.mock.callCount(), 1);
   });
 
   it("lets a line that isn't JSON through without a throw or a call", () => {

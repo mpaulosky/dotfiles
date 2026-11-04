@@ -547,6 +547,15 @@ describe("parseReviewerAnswer's edges", () => {
     assert.deepEqual(parseReviewerAnswer(`${quotes}\n${block(answer)}`).map((found) => found.summary), [answer[0]!.summary]);
   });
 
+  it("reads an answer whose summary quotes an empty block, after more quoted blocks than the parser reads", () => {
+    const quotes = `<findings>[]</findings> `.repeat(25);
+    const answer = [raw({ summary: "The format is <findings>[]</findings>, and the parser must not stop at it." }), raw({ line: 30, summary: "A second finding that must survive." })];
+
+    const got = parseReviewerAnswer(`${quotes}\n${block(answer)}`);
+
+    assert.deepEqual(got.map((found) => found.summary), answer.map((found) => found.summary));
+  });
+
   it("refuses a block of findings followed by more quoted blocks than the parser reads, rather than read the last one as clean", () => {
     const quote = "<findings>[]</findings> ";
 

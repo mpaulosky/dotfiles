@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { StalledStepError, UncountedStopError } from "./errors.mts";
 import {
@@ -6,7 +7,10 @@ import {
   intakeStopExitCode,
   IntakeStopReport,
   OutcomeReport,
+  LOGS_DIR,
   REPORT_DIR,
+  REPORT_DIR_NAME,
+  reportDir,
   renderSummary,
   runEnding,
   STALL_STOP_REASON,
@@ -525,5 +529,15 @@ describe("writeRunReport", () => {
     );
 
     assert.ok(warnings.length > 0);
+  });
+});
+
+describe("reportDir", () => {
+  it("is a folder under RUNNER_TEMP, outside the checkout, on Actions, and the logs folder anywhere else", () => {
+    assert.equal(LOGS_DIR, ".sandcastle/logs");
+    assert.equal(REPORT_DIR_NAME, "sandcastle-report");
+    assert.equal(reportDir({ RUNNER_TEMP: join("runner", "_temp") }), join("runner", "_temp", "sandcastle-report"));
+    assert.equal(reportDir({}), LOGS_DIR);
+    assert.equal(reportDir({ RUNNER_TEMP: "" }), LOGS_DIR);
   });
 });

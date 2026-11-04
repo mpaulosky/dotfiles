@@ -175,6 +175,7 @@ import {
   intakeStopReport,
   outcomeReport,
   renderSummary,
+  LOGS_DIR,
   REPORT_DIR,
   runEnding,
   stallStop,
@@ -184,7 +185,7 @@ import {
   type RunEnding,
 } from "./lib/report.mts";
 import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
-import { copyReviewerLogs } from "./lib/role-logs.mts";
+import { copyReviewerLogs, reviewerLogsDir } from "./lib/role-logs.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
 import { exitAfterStall } from "./lib/host-limit.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
@@ -528,7 +529,7 @@ try {
 
   // Only logged and written here. Ending the run red on a hand-back is the
   // trigger workflow's final step, reading the list written to
-  // .sandcastle/logs/handbacks.json below; exiting non-zero here would make a
+  // handbacks.json (in the report folder) below; exiting non-zero here would make a
   // local run that hands something back look like a crash.
   const handBacks = handBackReport.items();
   if (handBacks.length > 0) {
@@ -562,7 +563,7 @@ try {
     stops: intakeStopReport.items(),
   });
   writeRunReport(summary, handBacks);
-  copyReviewerLogs(REPORT_DIR);
+  copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR));
   console.log(`\nRun report: ${REPORT_DIR}/summary.md`);
 
   // Unlike a hand-back, an intake stop means the host couldn't run a role at

@@ -4,6 +4,7 @@
 // "Observability" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { IterationUsage } from "@ai-hero/sandcastle";
 import { StalledStepError } from "./errors.mts";
 
@@ -229,7 +230,7 @@ export type SummaryInput = {
   stops: readonly IntakeStopEntry[];
 };
 
-// The run's report as Markdown, for .sandcastle/logs/summary.md and (when set)
+// The run's report as Markdown, for summary.md in the report folder and (when set)
 // $GITHUB_STEP_SUMMARY: the queue and ending sentence, a table of every touched
 // issue and PR with its outcome (plus one row per hand-back), the hand-backs
 // themselves with links, the PRs waiting on a person, any round where intake
@@ -392,8 +393,21 @@ export function handBacksJson(handBacks: readonly HandBackEntry[]): string {
   return `${JSON.stringify(handBacks, null, 2)}\n`;
 }
 
-// Where writeRunReport writes summary.md and handbacks.json.
-export const REPORT_DIR = ".sandcastle/logs";
+// Where Sandcastle writes the roles' logs. Sandboxes mount the checkout this sits in.
+export const LOGS_DIR = ".sandcastle/logs";
+
+// The report folder's name under the runner's temp folder, which the workflow uploads and reads hand-backs from.
+export const REPORT_DIR_NAME = "sandcastle-report";
+
+// Where writeRunReport writes summary.md and handbacks.json. On Actions (RUNNER_TEMP is set) that is a folder under the runner's temp
+// folder, outside the checkout: the planner, critique and intake sandboxes mount the checkout read-write and one the host gave up on
+// can keep running, so a file under .sandcastle/logs/ could be rewritten between the host's write and the workflow's upload, or its
+// read of handbacks.json to fail the run. Anywhere else it stays beside the logs, where a person looks for it.
+export function reportDir(env: Record<string, string | undefined> = process.env): string {
+  return env.RUNNER_TEMP ? join(env.RUNNER_TEMP, REPORT_DIR_NAME) : LOGS_DIR;
+}
+
+export const REPORT_DIR = reportDir();
 
 // The filesystem writeRunReport needs; tests pass a stub that records calls.
 export type ReportFs = {

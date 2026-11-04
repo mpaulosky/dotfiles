@@ -568,22 +568,21 @@ describe(".sandcastle/.env.example mode", () => {
 // Sandcastle workflow uploads that folder's reviewer logs.
 // If either drifts, the artifact silently carries no reviewer log (the upload step only warns when nothing at all matches).
 describe("main.mts's reviewer-log wiring", () => {
-  it("copies the reviewer logs from REPORT_DIR right after the run report is written, in the same finally", () => {
+  it("copies the reviewer logs into the report folder right after the run report is written, in the same finally", () => {
     const mainMts = read(".sandcastle/main.mts");
     const report = mainMts.indexOf("writeRunReport(summary, handBacks);");
-    const copy = mainMts.indexOf("copyReviewerLogs(REPORT_DIR);");
+    const copy = mainMts.indexOf("copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR));");
 
     assert.notEqual(report, -1, "main.mts doesn't write the run report as expected");
-    assert.notEqual(copy, -1, "main.mts doesn't call copyReviewerLogs(REPORT_DIR)");
+    assert.notEqual(copy, -1, "main.mts doesn't call copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR))");
     assert.ok(report < copy, "main.mts copies the reviewer logs before the run report is written");
     const between = mainMts.slice(report + "writeRunReport(summary, handBacks);".length, copy);
     assert.match(between, /^\r?\n\s*$/, "something sits between the report and the log copy, so it may not run in the same block");
-    assert.match(mainMts, /import \{ copyReviewerLogs \} from "\.\/lib\/role-logs\.mts";/);
+    assert.match(mainMts, /import \{ copyReviewerLogs, reviewerLogsDir \} from "\.\/lib\/role-logs\.mts";/);
   });
 
-  it("uploads exactly the report, the hand-backs and the reviewer logs from outside the checkout, in the workflow and the Template's copy", async () => {
-    const { REPORT_DIR } = await import("./lib/report.mts");
-    const { REPORT_LOGS_NAME } = await import("./lib/role-logs.mts");
+  it("uploads the report folder the host writes outside the checkout, and reads hand-backs from it, in the workflow and the Template's copy", async () => {
+    const { REPORT_DIR_NAME } = await import("./lib/report.mts");
     for (const path of [".github/workflows/sandcastle.yml", "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.github/workflows/sandcastle.yml"]) {
       const workflow = read(path);
       const step = workflow.slice(workflow.indexOf("- name: Upload the run report"));
@@ -592,9 +591,12 @@ describe("main.mts's reviewer-log wiring", () => {
       assert.ok(block, `${path} has no upload path block`);
       assert.deepEqual(
         block.trim().split(/\r?\n/).map((line) => line.trim()),
-        [`${REPORT_DIR}/summary.md`, `${REPORT_DIR}/handbacks.json`, "${{ runner.temp }}/" + REPORT_LOGS_NAME + "/*-reviewer.log"],
-        `${path} uploads something else than the report, the hand-backs and the reviewer logs`,
+        ["${{ runner.temp }}/" + REPORT_DIR_NAME],
+        `${path} uploads something else than the report folder, which the host writes outside the checkout`,
       );
+      // The step that fails the run on a hand-back reads the same copy, not a file under the checkout a sandbox could have rewritten.
+      assert.ok(workflow.includes(`handbacks="$RUNNER_TEMP/${REPORT_DIR_NAME}/handbacks.json"`), `${path} reads handbacks.json from somewhere else`);
+      assert.ok(!workflow.includes(".sandcastle/logs/handbacks.json") && !workflow.includes(".sandcastle/logs/summary.md"), `${path} still names a report file under the checkout`);
     }
   });
 });

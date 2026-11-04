@@ -6,8 +6,8 @@ import { describe, it } from "node:test";
 import {
   allowlistedView,
   copyReviewerLogs,
-  reportLogsDir,
-  REPORT_LOGS_NAME,
+  reviewerLogsDir,
+  REVIEWER_LOGS_NAME,
   REPORT_ERROR_LINES,
   REPORT_HOST_LINES,
   REPORT_TOOL_LINES,
@@ -62,7 +62,7 @@ const hostLines = [
 
 // copyReviewerLogs with the views going to <logsDir>/report, as most tests below read them from there.
 const copyTo = (logsDir: string, fs?: RoleLogFs, warn?: (line: string) => void, secrets?: readonly string[]) =>
-  copyReviewerLogs(logsDir, fs, warn, secrets, join(logsDir, "report"));
+  copyReviewerLogs(logsDir, join(logsDir, "report"), fs, warn, secrets);
 
 describe("allowlistedView", () => {
   it("keeps every host status line as written, but for the start line's timestamp", () => {
@@ -262,35 +262,27 @@ describe("copyReviewerLogs", () => {
     assert.deepEqual(Object.keys(written), ["logs/report/b-reviewer.log"]);
   });
 
-  it("puts the views under RUNNER_TEMP, outside the checkout, or under the temp directory when it isn't set", () => {
-    assert.equal(REPORT_LOGS_NAME, "sandcastle-reviewer-logs");
-    assert.equal(reportLogsDir({ RUNNER_TEMP: join("runner", "tmp") }, "fallback"), join("runner", "tmp", REPORT_LOGS_NAME));
-    assert.equal(reportLogsDir({}, "fallback"), join("fallback", REPORT_LOGS_NAME));
-    assert.equal(reportLogsDir({ RUNNER_TEMP: "" }, "fallback"), join("fallback", REPORT_LOGS_NAME));
-    assert.equal(reportLogsDir({}), join(tmpdir(), REPORT_LOGS_NAME));
+  it("puts the views in a subfolder of the report folder, so emptying it leaves the report alone", () => {
+    assert.equal(REVIEWER_LOGS_NAME, "reviewer-logs");
+    assert.equal(reviewerLogsDir(join("runner", "sandcastle-report")), join("runner", "sandcastle-report", "reviewer-logs"));
   });
 
-  it("by default writes the views to RUNNER_TEMP and nothing under the logs folder, which sandboxes mount", () => {
+  it("writes the views to the folder it is given and nothing under the logs folder, which sandboxes mount", () => {
     const dir = mkdtempSync(join(tmpdir(), "role-logs-default-"));
-    const runnerTemp = mkdtempSync(join(tmpdir(), "role-logs-runner-"));
-    const before = process.env.RUNNER_TEMP;
+    const out = mkdtempSync(join(tmpdir(), "role-logs-out-"));
     try {
       writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
-      // A file left by an earlier run is removed, and a file in the checkout's own report folder stays where it is, untouched.
+      // A file left in the output folder is removed, and a file in the checkout's own report folder stays where it is, untouched.
+      writeFileSync(join(out, "old-reviewer.log"), "left over\n");
       mkdirSync(join(dir, "report"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
-      mkdirSync(join(runnerTemp, REPORT_LOGS_NAME));
-      writeFileSync(join(runnerTemp, REPORT_LOGS_NAME, "old-reviewer.log"), "left over\n");
-      process.env.RUNNER_TEMP = runnerTemp;
-      assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
-      assert.deepEqual(readdirSync(join(runnerTemp, REPORT_LOGS_NAME)), ["ok-reviewer.log"]);
+      assert.deepEqual(copyReviewerLogs(dir, out, undefined, () => undefined, []), ["ok-reviewer.log"]);
+      assert.deepEqual(readdirSync(out), ["ok-reviewer.log"]);
       assert.deepEqual(readdirSync(join(dir, "report")), ["planted-reviewer.log"], "the checkout's report folder was touched");
       assert.deepEqual(readdirSync(dir).sort(), ["ok-reviewer.log", "report"], "something was written under the logs folder");
     } finally {
-      if (before === undefined) delete process.env.RUNNER_TEMP;
-      else process.env.RUNNER_TEMP = before;
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-      rmSync(runnerTemp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

@@ -148,11 +148,11 @@ function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
   return [view, spaceless].some((form) => containsSecret(form, secrets) || looseTokenShape.test(form));
 }
 
-// Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `outDir` (reviewerLogsDir of the run report's folder, which is outside the checkout on Actions), with a short
+// Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `outDir`, as `reviewer-<n>.log` (reviewerLogsDir of the run report's folder, which is outside the checkout on Actions), with a short
 // note in place of a view that looks like it holds a secret. The pre-push review's own log, `*-pre-push-reviewer.log`,
 // is not a Sandcastle role's and is never copied. Never throws: it runs in the run's finally, and a missing log
 // directory or an unreadable file is a warning. `secrets` defaults to the values .sandcastle/.env gives the sandbox,
-// read once per call. Returns the names it wrote, including a log it wrote the note for.
+// read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for.
 export function copyReviewerLogs(
   logsDir: string,
   outDir: string,
@@ -169,22 +169,31 @@ export function copyReviewerLogs(
     } catch (error) {
       throw new Error(`the output folder could not be emptied, so nothing was written to it: ${error instanceof Error ? error.message : String(error)}`);
     }
+    // Sorted, so the numbers below don't depend on the order the filesystem lists in.
     const names = fs
       .list(logsDir)
-      .filter((name) => name.endsWith("-reviewer.log") && !name.endsWith("-pre-push-reviewer.log"));
+      .filter((name) => name.endsWith("-reviewer.log") && !name.endsWith("-pre-push-reviewer.log"))
+      .sort();
     if (names.length === 0) return copied;
     const known = secrets ?? [...sandboxSecrets().values()];
     fs.mkdir(outDir);
-    for (const name of names) {
+    // A view is written under a name the host makes, never the source's: the source name is whatever an agent that can write the logs
+    // folder chose, and the content checks don't see it, so a file named for the sandbox's credential would put the credential in the
+    // artifact's file list. The same goes for the warnings below, which reach the runner's public log. The number is the file's place
+    // among the sorted names, and a log that can't be copied still takes its number.
+    names.forEach((name, index) => {
+      const outName = `reviewer-${index + 1}.log`;
       try {
         const view = allowlistedView(fs.read(join(logsDir, name)), (line) => looksLikeSecret(line, known));
         const held = looksLikeSecret(view, known);
-        fs.write(join(outDir, name), held ? "Left out: the view held something shaped like a secret.\n" : view);
-        copied.push(name);
+        fs.write(join(outDir, outName), held ? "Left out: the view held something shaped like a secret.\n" : view);
+        copied.push(outName);
       } catch (error) {
-        warn(`Couldn't copy ${name} to the report: ${error instanceof Error ? error.message : String(error)}`);
+        // Only the error's code: its message names the path, and so the source file.
+        const code = typeof (error as { code?: unknown })?.code === "string" ? ` (${(error as { code: string }).code})` : "";
+        warn(`Couldn't copy reviewer log ${index + 1} to the report${code}`);
       }
-    }
+    });
   } catch (error) {
     warn(`Couldn't copy the reviewer logs to the report: ${error instanceof Error ? error.message : String(error)}`);
   }

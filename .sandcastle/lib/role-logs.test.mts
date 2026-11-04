@@ -37,7 +37,7 @@ const none = () => undefined;
 const copy = (text: string, secrets: readonly string[] = []) => {
   const { fs, written } = fakeFs({ "a-reviewer.log": text });
   copyTo("logs", fs, none, secrets);
-  return written["logs/report/a-reviewer.log"]!;
+  return written["logs/report/reviewer-1.log"]!;
 };
 
 const hostLines = [
@@ -252,14 +252,14 @@ describe("allowlistedView", () => {
 describe("copyReviewerLogs", () => {
   it("copies only the reviewer logs, as their view, into the report folder", () => {
     const { fs, written } = fakeFs({ "a-reviewer.log": "aborted", "a-backend.log": "other" });
-    assert.deepEqual(copyTo("logs", fs, none, []), ["a-reviewer.log"]);
-    assert.deepEqual(written, { "logs/report/a-reviewer.log": "aborted\n" });
+    assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);
+    assert.deepEqual(written, { "logs/report/reviewer-1.log": "aborted\n" });
   });
 
   it("never copies the pre-push review's log", () => {
     const { fs, written } = fakeFs({ "a-pre-push-reviewer.log": "aborted", "b-reviewer.log": "aborted" });
-    assert.deepEqual(copyTo("logs", fs, none, []), ["b-reviewer.log"]);
-    assert.deepEqual(Object.keys(written), ["logs/report/b-reviewer.log"]);
+    assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);
+    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-1.log"]);
   });
 
   it("puts the views in a subfolder of the report folder, so emptying it leaves the report alone", () => {
@@ -276,8 +276,8 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(out, "old-reviewer.log"), "left over\n");
       mkdirSync(join(dir, "report"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
-      assert.deepEqual(copyReviewerLogs(dir, out, undefined, () => undefined, []), ["ok-reviewer.log"]);
-      assert.deepEqual(readdirSync(out), ["ok-reviewer.log"]);
+      assert.deepEqual(copyReviewerLogs(dir, out, undefined, () => undefined, []), ["reviewer-1.log"]);
+      assert.deepEqual(readdirSync(out), ["reviewer-1.log"]);
       assert.deepEqual(readdirSync(join(dir, "report")), ["planted-reviewer.log"], "the checkout's report folder was touched");
       assert.deepEqual(readdirSync(dir).sort(), ["ok-reviewer.log", "report"], "something was written under the logs folder");
     } finally {
@@ -311,9 +311,9 @@ describe("copyReviewerLogs", () => {
       mkdirSync(join(dir, "report"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "sk-ant-planted\n");
       writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
-      assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
+      assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["reviewer-1.log"]);
       assert.ok(!existsSync(join(dir, "report", "planted-reviewer.log")), "a planted log survived");
-      assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "the reviewer aborted\n");
+      assert.equal(readFileSync(join(dir, "report", "reviewer-1.log"), "utf8"), "the reviewer aborted\n");
       // With no reviewer log at all, a planted file is still removed.
       rmSync(join(dir, "ok-reviewer.log"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
@@ -328,8 +328,8 @@ describe("copyReviewerLogs", () => {
         writeFileSync(join(dir, "ok-reviewer.log"), "aborted again\n");
         copyTo(dir, undefined, () => undefined, []);
         assert.ok(existsSync(join(elsewhere, "keep-reviewer.log")), "the link's target was emptied");
-        assert.ok(!existsSync(join(elsewhere, "ok-reviewer.log")), "a view was written through the link");
-        assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "aborted again\n");
+        assert.ok(!existsSync(join(elsewhere, "reviewer-1.log")), "a view was written through the link");
+        assert.equal(readFileSync(join(dir, "report", "reviewer-1.log"), "utf8"), "aborted again\n");
       } finally {
         rmSync(elsewhere, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
@@ -417,9 +417,30 @@ describe("copyReviewerLogs", () => {
   it("warns and carries on when a log can't be read or the folder can't be listed", () => {
     const warnings: string[] = [];
     const { fs } = fakeFs({ "a-reviewer.log": "x", "b-reviewer.log": "y" }, "a-reviewer.log");
-    assert.deepEqual(copyTo("logs", fs, (line) => warnings.push(line), []), ["b-reviewer.log"]);
+    assert.deepEqual(copyTo("logs", fs, (line) => warnings.push(line), []), ["reviewer-2.log"]);
     copyTo("logs", { ...fs, list: () => { throw new Error("ENOENT"); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 2);
+  });
+
+  it("names the views itself and keeps a source name and fs error paths out of the output and the warnings", () => {
+    const token = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUv";
+    const warnings: string[] = [];
+    const { fs, written } = fakeFs({ [`${token}-reviewer.log`]: "Agent stopped", "z-reviewer.log": "x" });
+    const broken: RoleLogFs = {
+      ...fs,
+      read: (path) => {
+        if (path.includes(token)) throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: "EACCES" });
+        return fs.read(path);
+      },
+    };
+    assert.deepEqual(copyTo("logs", broken, (line) => warnings.push(line), []), ["reviewer-2.log"]);
+    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-2.log"]);
+    assert.deepEqual(warnings, ["Couldn't copy reviewer log 1 to the report (EACCES)"]);
+    // A readable one is written under a number as well.
+    const ok = fakeFs({ [`${token}-reviewer.log`]: "Agent stopped" });
+    copyTo("logs", ok.fs, none, []);
+    assert.deepEqual(Object.keys(ok.written), ["logs/report/reviewer-1.log"]);
+    assert.ok(!JSON.stringify([ok.written, written, warnings]).includes(token));
   });
 
   it("ignores a directory named like a log, which it can't read", () => {
@@ -440,9 +461,9 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "logs", "a-reviewer.log"), "error swordfish-in-the-env\n");
       writeFileSync(join(dir, "logs", "b-reviewer.log"), "error plain\n");
       process.chdir(dir);
-      assert.deepEqual(copyTo("logs", undefined, () => undefined).sort(), ["a-reviewer.log", "b-reviewer.log"]);
-      assert.equal(readFileSync(join(dir, "logs", "report", "a-reviewer.log"), "utf8"), "[... lines left out]\n");
-      assert.equal(readFileSync(join(dir, "logs", "report", "b-reviewer.log"), "utf8"), "error plain\n");
+      assert.deepEqual(copyTo("logs", undefined, () => undefined).sort(), ["reviewer-1.log", "reviewer-2.log"]);
+      assert.equal(readFileSync(join(dir, "logs", "report", "reviewer-1.log"), "utf8"), "[... lines left out]\n");
+      assert.equal(readFileSync(join(dir, "logs", "report", "reviewer-2.log"), "utf8"), "error plain\n");
     } finally {
       process.chdir(before);
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -457,9 +478,9 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "target.txt"), "a host file\n");
       symlinkSync(join(dir, "target.txt"), join(dir, "link-reviewer.log"));
       mkdirSync(join(dir, "report"), { recursive: true });
-      assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
-      assert.ok(!existsSync(join(dir, "report", "link-reviewer.log")), "a symlinked log was copied");
-      assert.equal(readFileSync(join(dir, "report", "ok-reviewer.log"), "utf8"), "the reviewer aborted\n");
+      assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["reviewer-2.log"]);
+      assert.deepEqual(readdirSync(join(dir, "report")), ["reviewer-2.log"], "a symlinked log was copied");
+      assert.equal(readFileSync(join(dir, "report", "reviewer-2.log"), "utf8"), "the reviewer aborted\n");
       assert.ok(!existsSync(join(dir, "report", "ok-backend.log")));
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

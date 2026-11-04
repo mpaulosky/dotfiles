@@ -52,7 +52,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.sandcastle/roles/shared-rules.md` | The repo's paragraph, its stacks and test commands; the one file every role reads about the repo |
 | `.sandcastle/plan-prompt.md`, `.sandcastle/review-prompt.md` | The optional roles' rules and the docs the review follows |
 | `.sandcastle/CODING_STANDARDS.md` | The repo's code and test standards, which every role and the review follow |
-| `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`), and optional Chromium libraries for Playwright (`INSTALL_PLAYWRIGHT_DEPS`, `PLAYWRIGHT_VERSION`) |
+| `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`), optional Chromium libraries for Playwright (`INSTALL_PLAYWRIGHT_DEPS`, `PLAYWRIGHT_VERSION`), and `tini` as PID 1 (`ENTRYPOINT ["tini", "--", "sleep", "infinity"]`) |
 | `.sandcastle/check.sh` | Sandcastle's check, which the Seed `.github/ci/gate-checks.sh` runs when it's there |
 | `package.json`, `pnpm-workspace.yaml` | Sandcastle's packages and scripts; a repo with its own Node tooling merges them |
 | `.github/ci/sandcastle-skills.txt` | The skills the Sandcastle workflow installs on the runner for the run (a pinned dotfiles commit and skill names, read as data); empty until filled ([The workflow](#the-workflow)) |
@@ -65,6 +65,9 @@ so its E2E tests find Chromium's system libraries in the sandbox. The step runs 
 keep `PLAYWRIGHT_VERSION` near the repo's `Microsoft.Playwright` version. It installs only the libraries: the browser itself is left to the test fixture at run time,
 so a Playwright bump needs no image change.
 A Seed file is written once, so an existing repo keeps its own Dockerfile and adds the step by hand.
+A repo that already has a Dockerfile adds `tini` to its `apt-get install` list and ends the file with `ENTRYPOINT ["tini", "--", "sleep", "infinity"]`: with `sleep` as PID 1,
+nothing reaps the processes the gate orphans, they stay zombies holding their PIDs, and a long build ends unable to fork (the gate fails with `Resource temporarily unavailable`,
+claude-code aborts with exit 134, git stops answering). Sandcastle's `docker()` has no `--init` option, so the image has to do it. `lib/dockerfile.test.mts` pins it in dotfiles' and the Seed's Dockerfile.
 `roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo that gets `.sandcastle/`, where it stays unused. To opt in, add a `ui` entry to
 `ROLE_AGENTS` in `lib/repo-config.mts` (the Seed carries it commented out) and add this bullet to `plan-prompt.md`'s ROLES list, so the planner can pick the role:
 `` - `ui`: the issue adds or changes Blazor components or pages (`.razor` files, their code-behind, layout or styling). Leave it out when the issue changes no markup. ``
@@ -271,8 +274,8 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit
-  or time-budget stop), or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes and core files
-  (`lib/diagnostics.mts`); the probe runs under its own `timeout`, and a failed probe is only logged.
+  or time-budget stop), or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes, zombies, the limits on forking
+  (`Max processes` and the cgroup's `pids.current` and `pids.max`) and core files (`lib/diagnostics.mts`); the probe runs under its own `timeout`, and a failed probe is only logged.
   The host also times each role's tool calls from the agent's stream (`lib/role-timeline.mts`; it reads the stream's own lines, since Sandcastle's parser reports only Bash,
   web and Agent calls), and `summary.md` lists, for each role, its runs, tool calls, total time and the longest stretches between calls, each named for
   the call before it (a tool's name only, never its arguments, and only a name in `KNOWN_TOOLS`, else `other`). A stretch is that call running plus the model

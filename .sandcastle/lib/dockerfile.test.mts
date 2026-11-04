@@ -40,3 +40,18 @@ describe("the sandbox image's linters", () => {
     });
   }
 });
+
+// The sandbox's PID 1. `sleep infinity` never waits for a child, so every process the gate orphans stays a zombie holding its PID
+// (the build of issue #433 in mpaulosky/dotfiles counted 4,937 processes before its first checkpoint and 17,386 after the second,
+// then could no longer fork). An init as PID 1 reaps them. Sandcastle's docker() takes no `--init`, so it is the image's entrypoint.
+describe("the sandbox image's PID 1", () => {
+  for (const path of [".sandcastle/Dockerfile", "Support For New Projects/.claude/skills/repo-ci-baseline/template/seed/.sandcastle/Dockerfile"]) {
+    it(`reaps orphaned processes in ${path}: tini is installed and runs sleep`, () => {
+      const dockerfile = read(path);
+      const entrypoints = [...dockerfile.matchAll(/^ENTRYPOINT (.*)$/gm)].map((match) => match[1]);
+
+      assert.deepEqual(entrypoints, ['["tini", "--", "sleep", "infinity"]']);
+      assert.match(dockerfile, /apt-get install -y \\\n(?:  [\w.+-]+ \\\n)*  tini \\\n/, "tini is not in the first apt-get install");
+    });
+  }
+});

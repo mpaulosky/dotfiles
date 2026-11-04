@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -116,7 +116,7 @@ describe("SANDBOX_PROBE", () => {
   it("runs the script under a real sh: exits 0 and prints every section", { skip: process.platform === "win32" && "needs sh" }, () => {
     const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
     assert.equal(run.status, 0, run.stderr);
-    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
+    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== zombies ==", "== process limits ==", "== biggest processes", "== core files =="]) {
       assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
     }
   });
@@ -146,10 +146,30 @@ describe("SANDBOX_PROBE", () => {
     }
   });
 
+  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: process.platform !== "linux" && "needs Linux ps" }, async () => {
+    // The shell backgrounds a subshell that exits at once, then becomes `sleep`, which never waits: the subshell stays a zombie while it runs.
+    const parent = spawn("sh", ["-c", "(true) & exec sleep 5"], { stdio: "ignore" });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+      assert.equal(run.status, 0, run.stderr);
+      const count = Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
+      assert.ok(count >= 1, `zombies counted: ${count} in ${run.stdout}`);
+    } finally {
+      parent.kill();
+    }
+  });
+
+  it("prints the limits that decide whether a fork can succeed", { skip: process.platform !== "linux" && "needs /proc" }, () => {
+    const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /== process limits ==\nMax processes +\S+ +\S+ +processes *\n/);
+  });
+
   it("runs through the sandbox's own wrapper under a real sh, so its re-quoting leaves the script whole", { skip: (!hasTimeout || process.platform === "win32") && "needs GNU timeout and sh" }, () => {
     const run = spawnSync("sh", ["-c", limitedCommand(SANDBOX_PROBE, 1)], { encoding: "utf8" });
     assert.equal(run.status, 0, run.stderr);
-    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
+    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== zombies ==", "== process limits ==", "== biggest processes", "== core files =="]) {
       assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
     }
   });

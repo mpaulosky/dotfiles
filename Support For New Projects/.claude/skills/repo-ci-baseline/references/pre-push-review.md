@@ -182,8 +182,10 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   public-text check would change, or that reads like a `## Review notes` section, is left out on its own. The rest, and any security finding, are only counted.
 - Open Critical or Warning findings (and any open security finding, whatever its grade) hold the PR as a draft: the host opens it with `gh pr create --draft`, and its body says why and what a
   person does. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready, and so is
-  one whose review didn't finish (its note says so). A PR that already exists for the branch (a rerun) is turned into a draft with `gh pr ready --undo` first and then given the new body, but only while its body still carries the host's `sandcastle:pr` marker and reads no `## Review notes`;
-  otherwise the body (a person's acceptances, or text written by hand) is kept and the draft note added to it. A body edited by hand with the marker left in is rewritten. A held
+  one whose review didn't finish (its note says so). A PR that already exists for the branch (a rerun)
+  is turned into a draft with `gh pr ready --undo` first and then given the new body, but only while its body still carries the host's
+  `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the draft note added to it.
+  A body edited by hand with the marker left in is rewritten. A held
   PR is a draft, so Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or review feedback on it needs a person.
 - The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the generic one.
 - The review's open Advisory findings go in one follow-up issue titled `chore(review): Advisory review findings: <branch>`, whose body is `renderAdvisories`' list (a security finding is left out, the

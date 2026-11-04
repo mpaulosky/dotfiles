@@ -211,6 +211,19 @@ describe("renderSummary", () => {
     stops: [],
   };
 
+  it("lists each role's tool-call timing when there is some, and has no such section when there is none", () => {
+    const withTiming = renderSummary({ ...fullInput, timeline: ["backend: 1 run, 3 tool calls, 129 s in all; longest stretches between calls: 120 s after Bash"] });
+    assert.match(withTiming, /### Tool-call timing by role\n\n- backend: 1 run, 3 tool calls, 129 s in all; longest stretches between calls: 120 s after Bash\n/);
+    assert.ok(!renderSummary(fullInput).includes("Tool-call timing"));
+    assert.ok(!renderSummary({ ...fullInput, timeline: [] }).includes("Tool-call timing"));
+  });
+
+  it("keeps a table-breaking character in a timing line from breaking the report", () => {
+    const summary = renderSummary({ ...fullInput, timeline: ["a|b\nc"] });
+    assert.ok(!summary.includes("a|b"));
+    assert.ok(!summary.includes("b\nc"));
+  });
+
   it("names the queue and says the run finished", () => {
     const summary = renderSummary(fullInput);
 

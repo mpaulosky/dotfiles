@@ -22,6 +22,7 @@ import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
+import { timelineReport } from "./role-timeline.mts";
 import { hostCallHasBeenAbandoned, MAX_TIMER_MS } from "./host-limit.mts";
 import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
@@ -440,5 +441,58 @@ describe("runRoleInSandbox with restrictions", () => {
     await runRoleInSandbox(sandboxRecording(runs), "backend", { prompt: "build" });
 
     assert.doesNotMatch(commandOf(runs[0]!), /--tools|--disallowedTools|--strict-mcp-config/);
+  });
+});
+
+// The role's tool calls are timed as the agent's stream reports them (lib/role-timeline.mts), so the run report can say where a role's time went.
+describe("runRoleInSandbox timing", () => {
+  // Claude Code's parser reports a tool call only with the input that tool takes, and Bash takes a command.
+  const toolLine = (name: string) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name, input: { command: "ls" } }] } });
+  const callsOf = (role: string): number => {
+    const line = timelineReport.lines().find((entry) => entry.startsWith(`${role}:`));
+    return line === undefined ? 0 : Number(/(\d+) tool calls/.exec(line)![1]);
+  };
+  const runsOf = (role: string): number => {
+    const line = timelineReport.lines().find((entry) => entry.startsWith(`${role}:`));
+    return line === undefined ? 0 : Number(/(\d+) runs?,/.exec(line)![1]);
+  };
+
+  it("counts the tool calls of a role's run, and its run, in the timeline report", async () => {
+    const calls = callsOf("scribe");
+    const runs = runsOf("scribe");
+    const sandbox = {
+      run: async (options: SandboxRunOptions) => {
+        options.agent.parseStreamLine(toolLine("Bash"));
+        options.agent.parseStreamLine(toolLine("Bash"));
+        return { iterations: [], commits: [] };
+      },
+    } as unknown as Sandbox;
+
+    await runRoleInSandbox(sandbox, "scribe", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 1000 });
+
+    assert.equal(callsOf("scribe"), calls + 2);
+    assert.equal(runsOf("scribe"), runs + 1);
+  });
+
+  it("times a restricted role too, and a run that fails", async () => {
+    const calls = callsOf("pre-push-reviewer");
+    const sandbox = {
+      run: async (options: SandboxRunOptions) => {
+        options.agent.parseStreamLine(toolLine("Bash"));
+        throw new Error("the agent failed");
+      },
+    } as unknown as Sandbox;
+
+    await assert.rejects(
+      runRoleInSandbox(sandbox, "pre-push-reviewer", { prompt: "" }, new RunLimits(), { tools: REVIEWER_TOOLS }, { backstopMs: 1000 }),
+      /the agent failed/,
+    );
+
+    assert.equal(callsOf("pre-push-reviewer"), calls + 1);
+  });
+
+  it("gives roleOptions' agent no timing when it is given no run", () => {
+    const provider = roleOptions("tester").agent;
+    assert.deepEqual(provider.parseStreamLine(toolLine("Bash")), [{ type: "tool_call", name: "Bash", args: "ls" }]);
   });
 });

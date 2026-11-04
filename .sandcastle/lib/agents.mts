@@ -16,6 +16,7 @@ import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { markSandboxStalled, stalledStepOf } from "./step-limit.mts";
 import { MAX_CAUSE_DEPTH, RunLimits, runLimits, usageLimitLine } from "./limits.mts";
 import { usageReport } from "./report.mts";
+import { RoleRun, timedProvider, timelineReport } from "./role-timeline.mts";
 
 // ROLE_AGENTS as every repo may write it: a repo-config.mts written before the
 // `ui` role existed names none, and ROLE_AGENTS' own type then has no `ui` key.
@@ -94,11 +95,13 @@ export function restrictedClaudeCode(
   return { ...provider, buildPrintCommand: (options) => restricted(provider.buildPrintCommand(options)) };
 }
 
-export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout, restrictions?: AgentRestrictions) {
+export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout, restrictions?: AgentRestrictions, run?: RoleRun) {
   const { model, effort, maxIterations, timeoutMinutes } = roleAgent(role);
+  const agent = restrictions === undefined ? sandcastle.claudeCode(model, { effort }) : restrictedClaudeCode(model, effort, restrictions);
   return {
     name: role,
-    agent: restrictions === undefined ? sandcastle.claudeCode(model, { effort }) : restrictedClaudeCode(model, effort, restrictions),
+    // Timed when the caller gave the run's clock (lib/role-timeline.mts), so the report can say where the role's time went.
+    agent: run === undefined ? agent : timedProvider(agent, run),
     maxIterations,
     signal: timeout(timeoutMinutes * 60_000),
   };
@@ -132,13 +135,18 @@ export async function runRole(
   limits: RunLimits = runLimits,
 ): Promise<sandcastle.RunResult> {
   usageReport.record(role, []);
-  const result = await runWithinLimits(
-    role,
-    () => sandcastle.run({ ...withSharedRules(options), ...roleOptions(role) }),
-    limits,
-  );
-  usageReport.record(role, result.iterations);
-  return result;
+  const timing = timelineReport.begin(role);
+  try {
+    const result = await runWithinLimits(
+      role,
+      () => sandcastle.run({ ...withSharedRules(options), ...roleOptions(role, undefined, undefined, timing) }),
+      limits,
+    );
+    usageReport.record(role, result.iterations);
+    return result;
+  } finally {
+    timing.end(Date.now());
+  }
 }
 
 export async function runRoleInSandbox(
@@ -158,13 +166,18 @@ export async function runRoleInSandbox(
   // Before the usage record: a timeout the host can't wait for throws here, and a role that never started must not be listed as one that ran.
   const backstopMs = backstop.backstopMs ?? roleBackstopMs(role);
   usageReport.record(role, []);
-  const result = await runWithinLimits(
-    role,
-    () => withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions) })),
-    limits,
-  );
-  usageReport.record(role, result.iterations);
-  return result;
+  const timing = timelineReport.begin(role);
+  try {
+    const result = await runWithinLimits(
+      role,
+      () => withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions, timing) })),
+      limits,
+    );
+    usageReport.record(role, result.iterations);
+    return result;
+  } finally {
+    timing.end(Date.now());
+  }
 }
 
 // How long the host waits for a role's sandbox run: the role's timeoutMinutes and ROLE_RUN_GRACE_MINUTES, in milliseconds. Throws for a

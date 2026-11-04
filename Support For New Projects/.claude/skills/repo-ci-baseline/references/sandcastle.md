@@ -269,6 +269,9 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails, or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes and core files
   (`lib/diagnostics.mts`); the probe runs under its own `timeout`, and a failed probe is only logged.
+  The host also times each role's tool calls as the agent's stream reports them (`lib/role-timeline.mts`), and `summary.md` lists, for each role, its runs,
+  tool calls, total time and the longest stretches between calls, each named for the call running when it began (tool names only, never arguments;
+  a name that isn't plain is `other`). A long stretch after a `Bash` call is a command that ran long, such as a gate.
 - **`.github/ci/sandcastle-skills.txt` lists the skills the run mounts (Seed).** A hosted runner has no `~/.claude/skills`, which `lib/skills.mts` mounts
   the `SANDBOX_SKILLS` from. The file is data: a `dotfiles-sha` line (the commit of mpaulosky/dotfiles' `main` to take them from, 40 lowercase hex digits, pinned like an action)
   and a `skill` line per skill name; the Seed has neither, and installs nothing.

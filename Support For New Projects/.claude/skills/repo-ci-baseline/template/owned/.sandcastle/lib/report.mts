@@ -228,6 +228,8 @@ export type SummaryInput = {
   humanThreads: readonly HumanThreadEntry[];
   usage: ReadonlyMap<string, IterationUsage>;
   stops: readonly IntakeStopEntry[];
+  // One line per role (lib/role-timeline.mts#TimelineReport.lines). Left out of the report when there are none.
+  timeline?: readonly string[];
 };
 
 // The run's report as Markdown, for summary.md in the report folder and (when set)
@@ -261,7 +263,15 @@ export function renderSummary(input: SummaryInput): string {
     "",
     ...usageLines(input.usage),
     "",
+    ...timelineSection(input.timeline ?? []),
   ].join("\n");
+}
+
+// Where each role's time went: its run count, tool calls, total time and longest stretches between calls. Nothing at all when no
+// role ran (a run that found no work), so such a report reads as it always did.
+function timelineSection(timeline: readonly string[]): string[] {
+  if (timeline.length === 0) return [];
+  return ["### Tool-call timing by role", "", ...timeline.map((line) => `- ${cell(line)}`), ""];
 }
 
 function targetName(target: ReportTarget): string {

@@ -16,6 +16,7 @@ import {
   REPORT_TOOL_LINES,
   REPORT_LINE_LIMIT,
   REPORT_TOKEN_RUN,
+  liveRoleLogFs,
   type RoleLogFs,
 } from "./role-logs.mts";
 
@@ -423,6 +424,21 @@ describe("copyReviewerLogs", () => {
     assert.deepEqual(copyTo("logs", fs, (line) => warnings.push(line), []), ["reviewer-2.log"]);
     copyTo("logs", { ...fs, list: () => { throw new Error("ENOENT"); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 2);
+  });
+
+  it("says nothing when the logs folder doesn't exist, as in a run that started no role, but still warns when it can't be listed", () => {
+    const root = mkdtempSync(join(tmpdir(), "role-logs-missing-"));
+    try {
+      const warnings: string[] = [];
+      assert.deepEqual(copyReviewerLogs(join(root, "no-such-logs"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []), []);
+      assert.deepEqual(warnings, []);
+      // A path that is a file, not a folder, is a real fault (ENOTDIR), not an empty run.
+      writeFileSync(join(root, "file"), "x");
+      copyReviewerLogs(join(root, "file"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []);
+      assert.equal(warnings.length, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("names the views itself and keeps a source name and fs error paths out of the output and the warnings", () => {

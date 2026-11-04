@@ -100,7 +100,8 @@ export const reviewerFindingSchema = z
 export type ReviewerFinding = z.infer<typeof reviewerFindingSchema>;
 
 // How many opening tags (from each end of the output) and closing tags (the last ones) the parser tries, so tags a reviewer quotes
-// from a file the branch planted can't make it quadratic, and a real answer is never out of reach: it is among the last ones.
+// from a file the branch planted can't make it quadratic. A real answer is normally among the last tags, but one that holds a block of
+// findings among more tags than are read is refused (see parseReviewerAnswer), not read from the tags in reach.
 const MAX_TAG_CANDIDATES = 10;
 
 // Whether the text from `at` is `[` (after any whitespace, as JSON.parse takes it), and whether it is `[` and then `{`: an array of findings.
@@ -168,6 +169,8 @@ export function parseReviewerAnswer(stdout: string): ReviewerFinding[] {
       }
     }
   }
+  // Only the first span is the answer; the later ones (found for earlier closing tags) are read only by the two-blocks check below, so
+  // the parses that never become the answer are an accepted cost, not worth restructuring the loop.
   const chosen = spans[0];
   if (chosen === undefined) {
     if (value === undefined) throw new ReviewerAnswerError(`the findings block is not valid JSON: ${(jsonError as Error).message}`);
@@ -245,7 +248,8 @@ export function triageRound({
   return [...merged.values()].map((found, index) => {
     // A reviewer's own mark counts: a finding is non-security only when it said so, since the PR note publishes non-security ones. A
     // finding that is security, or not marked otherwise, is graded Warning whatever its reviewer graded it (the review bar: a security
-    // weakness is always a Warning, and a Warning when in doubt), so it never clears on a reason alone.
+    // weakness is always a Warning, and a Warning when in doubt), so it never clears on a reason alone. This collapses a reviewer's own
+    // grade into the mark, an accepted trade-off: the grade isn't kept apart from the mark, so a finding with `security` omitted or true is a Warning.
     const security = found.severity === "warning" || /security/i.test(found.lens) || found.security !== false;
     return {
       id: `R${firstId + index}`,
@@ -313,6 +317,9 @@ export function applyOutcomes(
       const testFile = (test.split("::")[0] ?? "").replace(/^\.\//, "");
       return changed.has(testFile) && looksLikeTest(testFile) ? { ...open, status: "fixed", test, reason, fix: null } : open;
     }
+    // A non-security Critical or Advisory finding is recorded fixed on a reason alone, with no test: an accepted trade-off. Such a finding is
+    // prose or workflow (a doc, a comment, a workflow step) that has no test to point at, so the reason says what changed. A Warning or a
+    // security finding never clears this way: it needs the code at its path to have changed (above).
     return !open.security && open.severity !== "warning" && reason !== null ? { ...open, status: "fixed", test: null, reason, fix: null } : open;
   });
 }

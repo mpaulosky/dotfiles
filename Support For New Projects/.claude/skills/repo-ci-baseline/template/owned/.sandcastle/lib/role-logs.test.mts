@@ -439,7 +439,7 @@ describe("copyReviewerLogs", () => {
       copyReviewerLogs(join(root, "file"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []);
       assert.equal(warnings.length, 1);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

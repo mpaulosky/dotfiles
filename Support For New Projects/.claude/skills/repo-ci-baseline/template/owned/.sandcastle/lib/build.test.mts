@@ -53,7 +53,7 @@ import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import type { HostReviewResult } from "./host-review.mts";
 import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
-import { ledgerGitEnv, type Ledger } from "./review-ledger.mts";
+import { ledgerGitEnv, renderAdvisories, type Ledger } from "./review-ledger.mts";
 import type { SecretMatch } from "./scan.mts";
 import { buildLogs, reviewerLogFileName } from "./role-logs.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
@@ -350,6 +350,10 @@ function host(
   const publishedPrBodies: (string | undefined)[] = [];
   // The reviewNote argument buildMarkedIssue passed to host.publish (its 11th), one entry per call.
   const publishedReviewNotes: (string | undefined)[] = [];
+  // The holdAsDraft argument buildMarkedIssue passed to host.publish (its 12th), one entry per call.
+  const publishedDrafts: (boolean | undefined)[] = [];
+  // Every follow-up issue the build filed for the review's open Advisory findings.
+  const advisoryIssues: { title: string; body: string }[] = [];
   // Every localReview call's arguments.
   const localReviewCalls: LocalReviewArgs[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
@@ -411,17 +415,19 @@ function host(
       scannedExclusions.push(mergedMain);
       return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
-    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote) => {
+    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote, holdAsDraft) => {
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
       publishEvents.push("publish");
       publishCalls.push({ reviewed, docsFailed });
       publishedPrBodies.push(prBody);
       publishedReviewNotes.push(reviewNote);
+      publishedDrafts.push(holdAsDraft);
       publishedCheckChanges.push(checkChanges);
       steps.push(`publish${reviewed ? "" : " unreviewed"}${docsFailed ? " docs-failed" : ""}`);
       return "https://github.com/o/r/pull/1";
     },
+    fileAdvisoryIssue: (title, body) => void advisoryIssues.push({ title, body }),
     latestMain: () => {
       if (latestMainError !== undefined) throw new Error(latestMainError);
       return latestMain;
@@ -472,7 +478,7 @@ function host(
     steps, runs, logs, probes, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, publishedCheckChanges, gateGuardChecks, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
-    publishedReviewNotes, localReviewCalls,
+    publishedReviewNotes, localReviewCalls, publishedDrafts, advisoryIssues,
   };
 }
 
@@ -4759,5 +4765,177 @@ describe("liveReviewHost", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }
+  });
+});
+
+// Open Critical or Warning findings hold a built branch's PR as a draft until a person accepts them (`scripts/review.sh accept`) and marks it ready
+// (`gh pr ready`); a PR with none open is opened ready. Only a person accepts: the host never does.
+describe("buildIssue's PR state after the local review", () => {
+  const reviewed = "c".repeat(40);
+  const recorded = (findings: Ledger["findings"]) => async () =>
+    ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["src/app.ts", "src/log.ts"]) }) as const;
+  const warning = () => openFinding({ id: "R2", lens: "Security", severity: "warning", security: true, summary: "The token reaches the log line.", path: "src/log.ts" });
+
+  it("holds the PR as a draft when a Critical finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+  });
+
+  it("holds the PR as a draft when a Warning finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([warning()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+  });
+
+  it("opens the PR ready when the review left nothing open", async () => {
+    const run = host([0, 0], { localReview: recorded([]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [false]);
+  });
+
+  it("opens the PR ready when only fixed, dismissed or accepted findings and open Advisory ones remain", async () => {
+    const run = host([0, 0], {
+      localReview: recorded([
+        openFinding({ id: "R1", status: "fixed", test: "tests/a.test.ts::blank" }),
+        openFinding({ id: "R2", status: "dismissed", reason: "src/app.ts:12 is guarded." }),
+        openFinding({ id: "R3", status: "accepted", reason: "A person accepted it." }),
+        openFinding({ id: "R4", severity: "advisory", path: "docs/a.md", summary: "A stale sentence." }),
+      ]),
+    });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [false]);
+  });
+
+  it("opens the PR ready, as before, when the review didn't finish and recorded nothing", async () => {
+    const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [false]);
+  });
+
+  it("never writes a Review notes section: only a person's acceptances make one", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding(), warning()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /Review.{0,6}notes/i);
+    assert.doesNotMatch(run.publishedPrBodies[0] ?? "", /Review.{0,6}notes/i);
+  });
+});
+
+// The follow-up issue holds the open Advisory findings of the review, as the skill's step 9 files it (`scripts/review.sh advisory`).
+describe("buildIssue's follow-up issue for open Advisory findings", () => {
+  const reviewed = "c".repeat(40);
+  const advisory = (overrides: Partial<Ledger["findings"][number]> = {}) =>
+    openFinding({ id: "R5", severity: "advisory", path: "docs/a.md", line: 4, summary: "A stale sentence.", fix: "Reword it.", ...overrides });
+  const recorded = (findings: Ledger["findings"]) => async () =>
+    ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["docs/a.md"]) }) as const;
+
+  it("files one issue titled for the branch, whose body is the ledger's list of the open Advisory findings", async () => {
+    const ledger = ledgerWith(reviewed, [advisory(), advisory({ id: "R6", line: 9, summary: "A stale comment." })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/a.md"]) }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.equal(run.advisoryIssues[0]?.title, `chore(review): Advisory review findings: ${branch}`);
+    assert.equal(run.advisoryIssues[0]?.body, renderAdvisories(ledger));
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R6/);
+  });
+
+  it("files nothing when no Advisory finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding(), advisory({ status: "fixed", test: null, reason: "Reworded." })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a security finding out of the public issue, whatever its grade", async () => {
+    const run = host([0, 0], { localReview: recorded([advisory(), advisory({ id: "R7", security: true, summary: "The token reaches the log line." })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R7|token reaches/);
+  });
+
+  it("files nothing when the review didn't finish", async () => {
+    const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("still publishes the PR when filing the issue fails", async () => {
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.fileAdvisoryIssue = () => {
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+  });
+});
+
+describe("publish with the review holding the PR as a draft", () => {
+  const create = () => {
+    const calls: { body: string; draft: boolean | undefined }[] = [];
+    return { calls, createPullRequest: (_branch: string, _title: string, body: string, draft?: boolean) => (calls.push({ body, draft }), "https://github.com/o/r/pull/1") };
+  };
+  const note = "The local review left these findings open (their details are in the local review record):\n\n- R1 critical src/app.ts:12";
+
+  it("opens the PR as a draft and says why in its body, naming what a person does", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, note, true);
+
+    assert.equal(calls[0]?.draft, true);
+    const body = calls[0]?.body ?? "";
+    assert.match(body, /draft/i);
+    assert.match(body, /scripts\/review\.sh accept/);
+    assert.match(body, /gh pr ready/);
+    assert.ok(body.includes(note), "the note of the open findings stays in the body");
+  });
+
+  it("opens the PR ready, with no draft wording, when nothing holds it", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, "", false);
+
+    assert.equal(calls[0]?.draft, false);
+    assert.doesNotMatch(calls[0]?.body ?? "", /draft|gh pr ready/i);
+  });
+
+  it("opens the PR ready by default", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {});
+
+    assert.equal(calls[0]?.draft, false);
+  });
+
+  it("keeps the marker, Closes and the reason whole when the description is cut to fit", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, `## Why\n\n${"x".repeat(80_000)}`, [], () => {}, createPullRequest, async () => {}, note, true);
+
+    const body = calls[0]?.body ?? "";
+    assert.ok(body.length <= 65_536, String(body.length));
+    assert.match(body, /^<!-- sandcastle:pr -->\nCloses #69\n/);
+    assert.match(body, /gh pr ready/);
   });
 });

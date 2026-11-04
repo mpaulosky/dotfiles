@@ -113,10 +113,13 @@ export async function publish(
   checkChanges: readonly string[] = [],
   push: (branch: string, commit: string) => void = (pushBranch, pushCommit) =>
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
-  createPullRequest: (branch: string, title: string, body: string) => string = openPullRequest,
+  createPullRequest: (branch: string, title: string, body: string, draft?: boolean) => string = (pushBranch, title, body, draft) =>
+    openPullRequest(pushBranch, title, body, undefined, undefined, draft),
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
   reviewNote = "",
+  holdAsDraft = false,
 ): Promise<string> {
+  void holdAsDraft;
   await retryOnServerError(() => push(branch, commit), wait);
   const reviewFailedNote = "⚠️ The review step failed, so no agent has reviewed this PR.";
   let description: string;
@@ -396,6 +399,8 @@ export type BuildHost = {
   // (handing it back first) or a ref can't be deleted.
   startFromMain(issueNumber: number, branch: string, base: string): { pr: number; deleted: string[] } | undefined;
   publish: typeof publish;
+  // Files the follow-up issue for the review's open Advisory findings (its title and body), or reuses the open one with that title. Not implemented yet.
+  fileAdvisoryIssue(title: string, body: string): void;
   // Fetches origin/main and returns the commit it now names (see
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main
   // while it ran. Throws when the fetch fails.
@@ -716,6 +721,9 @@ const liveHost: BuildHost = {
   startFromMain: (issueNumber, branch, base) => sweepStartFromMain(issueNumber, branch, base),
   publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), containsSandboxSecret),
   publish,
+  fileAdvisoryIssue: () => {
+    throw new Error("Not implemented");
+  },
   latestMain: fetchMain,
   isRemoteMain: (commit) => remoteMainIs(commit),
   worktreeProblems,

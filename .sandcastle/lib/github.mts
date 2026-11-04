@@ -281,7 +281,9 @@ export function openPullRequest(
   body: string,
   run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
+  draft: boolean = false,
 ): string {
+  void draft;
   const listed = JSON.parse(
     ghWithStderr(run, [
       "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,url",

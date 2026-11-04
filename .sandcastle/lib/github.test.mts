@@ -451,6 +451,19 @@ describe("openPullRequest", () => {
     ]);
     assert.equal(calls[1]!.input, "Closes #4");
   });
+
+  it("opens the PR as a draft when asked to, and as a ready one otherwise", () => {
+    const draft = gh([]);
+    const ready = gh([]);
+
+    openPullRequest(branch, "Add search", "Closes #4", draft.run, "o/r", true);
+    openPullRequest(branch, "Add search", "Closes #4", ready.run, "o/r");
+
+    assert.deepEqual(draft.calls[1]!.args, [
+      "pr", "create", "--repo", "o/r", "--base", "main", "--head", branch, "--title", "Add search", "--body-file", "-", "--draft",
+    ]);
+    assert.ok(!ready.calls[1]!.args.includes("--draft"), ready.calls[1]!.args.join(" "));
+  });
 });
 
 // A gh stub recording every call's args and stdin input, answering `output`

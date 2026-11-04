@@ -16,6 +16,7 @@ import {
   REPORT_TOOL_LINES,
   REPORT_LINE_LIMIT,
   REPORT_TOKEN_RUN,
+  liveRoleLogFs,
   type RoleLogFs,
 } from "./role-logs.mts";
 
@@ -421,8 +422,25 @@ describe("copyReviewerLogs", () => {
     const warnings: string[] = [];
     const { fs } = fakeFs({ "a-reviewer.log": "x", "b-reviewer.log": "y" }, "a-reviewer.log");
     assert.deepEqual(copyTo("logs", fs, (line) => warnings.push(line), []), ["reviewer-2.log"]);
-    copyTo("logs", { ...fs, list: () => { throw new Error("ENOENT"); } }, (line) => warnings.push(line), []);
+    copyTo("logs", { ...fs, list: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 2);
+  });
+
+  it("says nothing when the logs folder doesn't exist, as in a run that started no role, but still warns when it can't be listed", () => {
+    const root = mkdtempSync(join(tmpdir(), "role-logs-missing-"));
+    try {
+      const warnings: string[] = [];
+      assert.deepEqual(copyReviewerLogs(join(root, "no-such-logs"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []), []);
+      assert.equal(warnings.length, 0);
+      // No logs means nothing is written, the index included.
+      assert.equal(existsSync(join(root, "out")), false);
+      // A path that is a file, not a folder, is a real fault (ENOTDIR), not an empty run.
+      writeFileSync(join(root, "file"), "x");
+      copyReviewerLogs(join(root, "file"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []);
+      assert.equal(warnings.length, 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it("names the views itself and keeps a source name and fs error paths out of the output and the warnings", () => {

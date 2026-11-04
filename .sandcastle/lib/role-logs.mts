@@ -178,9 +178,9 @@ export const buildLogs = new BuildLogs();
 
 // Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `outDir`, as `reviewer-<n>.log` (reviewerLogsDir of the run report's folder, which is outside the checkout on Actions), with a short
 // note in place of a view that looks like it holds a secret. The pre-push review's own log, `*-pre-push-reviewer.log`,
-// is not a Sandcastle role's and is never copied. Never throws: it runs in the run's finally, and a missing log
-// directory or an unreadable file is a warning. `secrets` defaults to the values .sandcastle/.env gives the sandbox,
-// read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
+// is not a Sandcastle role's and is never copied. Never throws: it runs in the run's finally, and an unreadable file
+// or log directory is a warning (a directory that doesn't exist is no logs, and no warning).
+// `secrets` defaults to the values .sandcastle/.env gives the sandbox, read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
 // REVIEWER_LOG_INDEX, which says for each number the issue whose build wrote the log (from `builds`), or that the host started no build
 // for it, and whether the view couldn't be copied.
 export function copyReviewerLogs(
@@ -248,7 +248,15 @@ export function copyReviewerLogs(
 export const liveRoleLogFs: RoleLogFs = {
   // A symlink at `path` is unlinked, not followed.
   clear: (path) => rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
-  list: (dir) => readdirSync(dir),
+  // A folder that isn't there is a run that started no role (the planner alone, say), so no logs, not a fault.
+  list: (dir) => {
+    try {
+      return readdirSync(dir);
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "ENOENT") return [];
+      throw error;
+    }
+  },
   read: (path) => {
     if (!lstatSync(path).isFile()) throw new Error("not a regular file");
     return readFileSync(path, "utf8");

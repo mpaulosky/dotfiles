@@ -564,9 +564,9 @@ describe(".sandcastle/.env.example mode", () => {
 });
 
 // The reviewer logs reach the run report's artifact through two things that nothing else ties together: main.mts writes
-// their views to reportLogsDir() (RUNNER_TEMP/sandcastle-reviewer-logs, outside the checkout) after the report is written, and the
-// Sandcastle workflow uploads that folder's reviewer logs.
-// If either drifts, the artifact silently carries no reviewer log (the upload step only warns when nothing at all matches).
+// their views to reviewer-logs/ in the report folder (reviewerLogsDir(REPORT_DIR)) after the report is written, and the Sandcastle
+// workflow uploads and reads that whole folder. If either drifts, the artifact silently carries no reviewer log: summary.md always
+// matches the upload, so its `if-no-files-found: warn` no longer says so.
 describe("main.mts's reviewer-log wiring", () => {
   it("copies the reviewer logs into the report folder right after the run report is written, in the same finally", () => {
     const mainMts = read(".sandcastle/main.mts");

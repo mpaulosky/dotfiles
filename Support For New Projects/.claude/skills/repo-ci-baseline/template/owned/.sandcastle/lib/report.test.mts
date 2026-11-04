@@ -540,4 +540,10 @@ describe("reportDir", () => {
     assert.equal(reportDir({}), LOGS_DIR);
     assert.equal(reportDir({ RUNNER_TEMP: "" }), LOGS_DIR);
   });
+
+  it("is what REPORT_DIR, the folder writeRunReport writes to and main.mts reads, is built from", () => {
+    assert.equal(REPORT_DIR, reportDir(process.env));
+    if (process.env.RUNNER_TEMP) assert.equal(REPORT_DIR, join(process.env.RUNNER_TEMP, REPORT_DIR_NAME));
+    else assert.equal(REPORT_DIR, LOGS_DIR);
+  });
 });

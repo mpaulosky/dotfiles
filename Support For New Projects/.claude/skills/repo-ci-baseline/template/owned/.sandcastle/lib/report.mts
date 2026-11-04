@@ -1,6 +1,6 @@
 // The run's report: token usage per role, what became of each issue and PR it
 // touched, its hand-backs and the PRs waiting on people — collected during the
-// run and written at its end to .sandcastle/logs/ and the job summary (see
+// run and written at its end to the report folder (REPORT_DIR) and the job summary (see
 // "Observability" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";

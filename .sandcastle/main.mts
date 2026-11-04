@@ -248,7 +248,7 @@ let startedUp = false;
 // stalled: the catch below ends the run rather than crash, cleanly for the first
 // two (the next run picks the work up) and red for a stall.
 // The try starts this early so its finally writes the run report
-// (.sandcastle/logs/) after every run that got past reading its arguments,
+// (the report folder, lib/report.mts#REPORT_DIR) after every run that got past reading its arguments,
 // even one that fails a startup check: a workflow step reads handbacks.json.
 try {
   const envFile = ".sandcastle/.env";

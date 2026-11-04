@@ -28,9 +28,10 @@ and clear departures from the repository's conventions. Don't report style nits,
 praise, or the PR's scope (what it bundles together is the author's call).
 
 **Earlier decisions.** Your prompt lists the findings earlier reviews of this branch raised and what became of them: fixed,
-dismissed with evidence, or accepted by a person with a reason. Don't report again a problem an earlier review fixed or
-dismissed, unless the code has changed since in a way that brings it back; then name the earlier finding and say what
-changed. A problem a person accepted is still in the code: report it again, naming the earlier finding and its reason, so
+dismissed with evidence, or accepted by a person with a reason. Don't report again a problem an earlier review dismissed,
+unless the code has changed since in a way that brings it back; then name the earlier finding and say what changed. A
+problem an earlier review marks fixed is not settled on that word: read the code at its `path:line`, and when the problem
+is still there, report it again and name the earlier finding. A problem a person accepted is still in the code: report it again, naming the earlier finding and its reason, so
 the person can accept it for this code. The same goes for a problem the repository owner declined on a PR thread, and for
 one an earlier review left open for a person: report it again, naming it, unless the code now fixes it. A fix that doesn't
 fix its problem is still a finding: say what still goes wrong.

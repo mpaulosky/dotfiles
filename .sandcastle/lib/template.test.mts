@@ -6,6 +6,7 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { TEMPLATE_OWNED_DIR } from "./repo-config.mts";
+import { copyReviewerLogs, liveRoleLogFs } from "./role-logs.mts";
 
 // The Template's .sandcastle/ as Apply writes it into a repo that isn't dotfiles: the Owned files, plus each Seed file Owned lacks.
 // The Owned modules must type-check and pass their own tests there, with the Seed's lib/repo-config.mts, so an Owned module that reads a
@@ -289,5 +290,60 @@ describe("the combining-mark cap and ADR 0010's wording", () => {
     assert.match(adr, /variation selector right after an assigned pictograph/);
     assert.doesNotMatch(adr, /between two pictographs/);
     assert.doesNotMatch(adr, /right after a pictograph/);
+  });
+});
+
+// A run that starts no role (the planner alone) has no .sandcastle/logs, so the report holds no reviewer-logs/ folder and no index.txt, and the
+// copy step says nothing (liveRoleLogFs.list treats a missing folder as no logs: mpaulosky/dotfiles#432). The reference's bullet on the reviewers' logs
+// has to say so, or a reader of the artifact can't tell that an absent folder is normal (mpaulosky/dotfiles#433).
+describe("references/sandcastle.md's bullet on the reviewers' logs, for a run that starts no role", () => {
+  const reference = readFileSync(join(skill, "references/sandcastle.md"), "utf8").replace(/\s+/g, " ");
+  const start = reference.indexOf("The run report artifact holds an allowlisted view of the reviewers' logs");
+  const next = reference.indexOf(" - **", start + 1);
+  const bullet = start === -1 ? "" : reference.slice(start, next === -1 ? undefined : next);
+  const sentences = bullet.split(/(?<=\.)\s+(?=[A-Z`])/);
+  const noRole = sentences.filter((sentence) => /\bno role\b/i.test(sentence));
+
+  it("is found, and keeps its existing description of the view", () => {
+    assert.notEqual(start, -1, "the bullet on the reviewers' logs is not in the reference");
+    assert.match(bullet, /`index\.txt`/);
+    assert.match(bullet, /`reviewer-<n>\.log`/);
+  });
+
+  it("has a sentence about a run that starts no role", () => {
+    assert.notEqual(noRole.length, 0, "no sentence in the bullet mentions a run with no role");
+  });
+
+  it("says such a run has no .sandcastle/logs folder, as copyReviewerLogs' listing finds", () => {
+    assert.ok(noRole.some((sentence) => sentence.includes(".sandcastle/logs")), `the sentence doesn't name .sandcastle/logs: ${noRole.join(" | ")}`);
+  });
+
+  it("says such a run leaves no reviewer-logs/ folder and no index.txt", () => {
+    assert.ok(
+      noRole.some((sentence) => /no `reviewer-logs\/` folder/.test(sentence) && /no `index\.txt`/.test(sentence)),
+      `the sentence doesn't say "no \`reviewer-logs/\` folder" and "no \`index.txt\`": ${noRole.join(" | ")}`,
+    );
+  });
+
+  it("says the copy step warns about nothing", () => {
+    assert.ok(
+      noRole.some((sentence) => /\b(says nothing|warns? (about )?nothing|prints no warning|no warning|without (a )?warning)\b/i.test(sentence)),
+      `the sentence doesn't say that nothing is warned about: ${noRole.join(" | ")}`,
+    );
+  });
+
+  it("is true of the code: a missing logs folder gives no warning and writes no folder and no index", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "no-role-logs-"));
+    try {
+      const out = join(scratch, "report", "reviewer-logs");
+      const warnings: string[] = [];
+      const copied = copyReviewerLogs(join(scratch, ".sandcastle", "logs"), out, liveRoleLogFs, (line) => warnings.push(line), []);
+
+      assert.deepEqual(copied, []);
+      assert.deepEqual(warnings, []);
+      assert.equal(existsSync(out), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });

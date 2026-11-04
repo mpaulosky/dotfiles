@@ -39,7 +39,9 @@ files change.
   (`runRoleInSandbox`), never an exit code a caller could read as a git answer. `main.mts` ends the run red on one (`stallStop`).
   A follow-up pass that stalls is only that PR's failed pass: the phase records the stall and carries on, and later rounds skip that PR, so one stalled PR cannot stop the run.
   After a timeout the command's process group is killed, so a descendant that ignores TERM can't run beside the next step. The `timeout` probe
-  in `createCheckedSandbox` runs under a one-minute limit of its own. `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils
+  in `createCheckedSandbox` runs under a one-minute limit of its own.
+  So does the sandbox-state probe (`lib/diagnostics.mts`, `PROBE_SECONDS`), since a probe that hung would otherwise stall the sandbox for `COMMAND_LIMIT_MINUTES`.
+  `lib/step-limit.test.mts` also runs the real `timeout` and `sh`, so it needs GNU coreutils
   on this machine and skips those tests without it;
   the sandbox image needs `timeout` too, which `createCheckedSandbox` checks.
 - **Give the host's own waits a limit.** Every `gh`, `git` and `docker info` call the host makes goes through `hostExecFileSync` (`lib/host-limit.mts`), which kills
@@ -80,6 +82,13 @@ guardrails keep agent-written code from running on the host. A change keeps ever
   (`lib/host-review.mts`), recording in the main checkout through `prepareRound` and `recordReview`, never by running the worktree's `scripts/review.sh`. The reviewers
   get Read, Grep and Glob only (`restrictedClaudeCode`), and no agent's prompt names a shell on the ledger, a token or `.git/review`.
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
+- The run report artifact is downloadable by any signed-in user of a public repository and GitHub doesn't mask secrets in it, so it never holds a role's log whole:
+  `lib/role-logs.mts` copies only the reviewers' allowlisted view (the last host status lines, the last known tool names without arguments,
+  an MCP tool only as `mcp__(...)`, the last few error lines), written as `reviewer-<n>.log`
+  (never under the source's name, which an agent chose), checked for the sandbox's secrets and token shapes. On Actions the whole report folder
+  (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/` (`lib/report.mts#reportDir`), outside the checkout: a head-mode
+  sandbox mounts the checkout read-write and one the host gave up on may still run, so a file under `.sandcastle/logs/` could be rewritten before the upload
+  or before the `Fail on hand-backs` step reads `handbacks.json`. The workflow uploads and reads from that folder.
 - The host pushes the commit the gate passed on, after the secret scan (`lib/scan.mts`), and posts only
   `publicErrorText` on public issues.
 

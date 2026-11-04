@@ -175,6 +175,7 @@ import {
   intakeStopReport,
   outcomeReport,
   renderSummary,
+  LOGS_DIR,
   REPORT_DIR,
   runEnding,
   stallStop,
@@ -184,6 +185,7 @@ import {
   type RunEnding,
 } from "./lib/report.mts";
 import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
+import { copyReviewerLogs, reviewerLogsDir } from "./lib/role-logs.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
 import { exitAfterStall } from "./lib/host-limit.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
@@ -246,7 +248,7 @@ let startedUp = false;
 // stalled: the catch below ends the run rather than crash, cleanly for the first
 // two (the next run picks the work up) and red for a stall.
 // The try starts this early so its finally writes the run report
-// (.sandcastle/logs/) after every run that got past reading its arguments,
+// (the report folder, lib/report.mts#REPORT_DIR) after every run that got past reading its arguments,
 // even one that fails a startup check: a workflow step reads handbacks.json.
 try {
   const envFile = ".sandcastle/.env";
@@ -527,7 +529,7 @@ try {
 
   // Only logged and written here. Ending the run red on a hand-back is the
   // trigger workflow's final step, reading the list written to
-  // .sandcastle/logs/handbacks.json below; exiting non-zero here would make a
+  // handbacks.json (in the report folder) below; exiting non-zero here would make a
   // local run that hands something back look like a crash.
   const handBacks = handBackReport.items();
   if (handBacks.length > 0) {
@@ -561,6 +563,7 @@ try {
     stops: intakeStopReport.items(),
   });
   writeRunReport(summary, handBacks);
+  copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR));
   console.log(`\nRun report: ${REPORT_DIR}/summary.md`);
 
   // Unlike a hand-back, an intake stop means the host couldn't run a role at

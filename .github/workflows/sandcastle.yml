@@ -294,19 +294,29 @@ jobs:
           fi
           pnpm run sandcastle
 
-      # Only the run report and the hand-backs: the role transcripts stay on
-      # the runner. Artifacts of a public repository can be downloaded by any
-      # signed-in user, and GitHub masks secrets in step logs, not artifacts,
-      # so a transcript that printed the sandbox's Claude credential would
-      # publish it.
+      # Only the run report, the hand-backs and the reviewers' logs: the other
+      # role transcripts stay on the runner. Artifacts of a public repository
+      # can be downloaded by any signed-in user, and GitHub masks secrets in
+      # step logs, not artifacts, so a transcript that printed the sandbox's
+      # Claude credential would publish it. The host writes the report folder
+      # under the runner's temp folder, outside the checkout, so no sandbox
+      # (some mount the checkout read-write, and one the host gave up on can
+      # keep running) can change a file in it before this step uploads it or
+      # the next step reads handbacks.json. The reviewers' logs reach its
+      # reviewer-logs/ folder through lib/role-logs.mts, which writes an
+      # allowlisted view of each (the last host status lines, the last known
+      # tool names without arguments, and the last few error lines), named
+      # reviewer-<n>.log and never for the source file, and leaves
+      # out a view shaped like a secret. The view narrows what a steered
+      # reviewer can print into the artifact; it can't promise a few words on
+      # an error line stay out. The pre-push review's own log is never copied.
       - name: Upload the run report
         if: always() && steps.secrets.outputs.enabled == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sandcastle-report
           path: |
-            .sandcastle/logs/summary.md
-            .sandcastle/logs/handbacks.json
+            ${{ runner.temp }}/sandcastle-report
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
@@ -317,7 +327,7 @@ jobs:
       - name: Fail on hand-backs
         if: steps.secrets.outputs.enabled == 'true'
         run: |
-          handbacks=.sandcastle/logs/handbacks.json
+          handbacks="$RUNNER_TEMP/sandcastle-report/handbacks.json"
           if [ ! -f "$handbacks" ]; then
             echo "::error::$handbacks is missing, so this run's hand-backs are unknown."
             exit 1

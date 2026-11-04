@@ -47,6 +47,7 @@ import {
   type OptionalRole,
 } from "./config.mts";
 import { LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import type { HostReviewResult } from "./host-review.mts";
@@ -134,7 +135,13 @@ function host(
     checkFiles = "",
     checkFilesError,
     localReview,
+    probeError,
+    probeOutput = "disk 10% used\n",
   }: {
+    // What the sandbox-state probe (lib/diagnostics.mts) throws, instead of printing a state.
+    probeError?: Error;
+    // What the probe prints.
+    probeOutput?: string;
     ahead?: number | number[];
     statuses?: string[];
     failing?: string[];
@@ -255,6 +262,11 @@ function host(
     },
     exec: async (rawCommand: string) => {
       const command = asDefaultGate(rawCommand);
+      if (command === SANDBOX_PROBE) {
+        probes.push(`${runs.length} roles run`);
+        if (probeError !== undefined) throw probeError;
+        return { stdout: probeOutput, stderr: "", exitCode: 0 };
+      }
       if (command.startsWith("git status")) {
         const stdout = worktreeStatuses.shift() ?? "";
         return { stdout, stderr: "", exitCode: 0 };
@@ -324,6 +336,8 @@ function host(
       return {};
     },
   } as unknown as Sandbox;
+  // A note per probe of the sandbox's state.
+  const probes: string[] = [];
   const buildingCalls: number[] = [];
   const designNoteCalls: number[] = [];
   const gateGuardChecks: string[] = [];
@@ -454,7 +468,7 @@ function host(
     },
   };
   return {
-    steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
+    steps, runs, logs, probes, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, publishedCheckChanges, gateGuardChecks, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
     publishedReviewNotes, localReviewCalls,
@@ -523,8 +537,10 @@ describe("buildIssue", () => {
     assert.deepEqual(logs, [
       "  #69 tester finished",
       "  #69 backend finished",
+      "  #69 sandbox state (before checkpoint 1):\n    | disk 10% used",
       "  #69 checkpoint 1: gate passed",
       "  #69 reviewer finished",
+      "  #69 sandbox state (before checkpoint 2):\n    | disk 10% used",
       "  #69 checkpoint 2: gate passed",
     ]);
   });
@@ -656,6 +672,90 @@ describe("buildIssue", () => {
 
     assert.deepEqual(pushed, []);
     assert.deepEqual(recordBuildFailureCalls, []);
+  });
+
+  it("logs the sandbox's state when the reviewer fails, and still publishes unreviewed", async () => {
+    const { logs, probes, pushed, buildHost } = host([0, 0], { failing: ["reviewer"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the reviewer failed\):\n    \| disk 10% used/.test(line)), logs.join("\n"));
+    assert.ok(probes.length >= 1, "the probe never ran");
+    assert.equal(pushed.length, 1);
+  });
+
+  it("logs the sandbox's state when a developer role fails, and still records the failed attempt", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([], { failing: ["backend"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the backend failed\):/.test(line)), logs.join("\n"));
+    assert.equal(recordBuildFailureCalls.length, 1);
+  });
+
+  it("logs the sandbox's state when a developer ran out of iterations unfinished, and records the failed attempt", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([], { unfinished: ["backend"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the backend ran out of iterations unfinished\):/.test(line)), logs.join("\n"));
+    assert.equal(recordBuildFailureCalls.length, 1);
+  });
+
+  it("records the same failed attempt when a developer role fails and the probe fails too", async () => {
+    const healthy = host([], { failing: ["backend"] });
+    await buildIssue(issue, branch, base, healthy.buildHost);
+    const broken = host([], { failing: ["backend"], probeError: new Error("docker exec failed") });
+
+    const result = await buildIssue(issue, branch, base, broken.buildHost);
+
+    assert.equal(result.outcome, "role failed");
+    assert.deepEqual(broken.recordBuildFailureCalls, healthy.recordBuildFailureCalls);
+    assert.ok(broken.logs.some((line) => /the probe failed/.test(line)), broken.logs.join("\n"));
+  });
+
+  it("cleans the probe's output like the gate's: every logged line is prefixed, and no ##[ command is left", async () => {
+    const { logs, buildHost } = host([0, 0], { probeOutput: "== core files ==\n::add-mask::secret\n::stop-commands::x\n##[error]y\n" });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const state = logs.filter((line) => line.includes("sandbox state"));
+    assert.ok(state.length > 0);
+    for (const line of state.flatMap((entry) => entry.split("\n").slice(1))) {
+      assert.ok(line.startsWith("    | "), line);
+      assert.ok(!line.includes("##["), line);
+    }
+  });
+
+  it("runs no probe when a usage-limit or time-budget stop ends a developer role or the reviewer", async () => {
+    for (const role of ["backend", "reviewer"]) {
+      const stop = new UncountedStopError("usage limit reached");
+      const { logs, probes, buildHost } = host([0], { failing: [role], failWith: { [role]: stop } });
+
+      await assert.rejects(() => buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stop);
+
+      assert.equal(probes.length, logs.filter((line) => line.includes("sandbox state (before checkpoint")).length, `${role}: a probe ran for the stop`);
+
+      assert.ok(!logs.some((line) => line.includes(`(the ${role} failed)`)), `${role}: ${logs.join("\n")}`);
+    }
+  });
+
+  it("logs the sandbox's state before each checkpoint's gate", async () => {
+    const { logs, buildHost } = host([0, 0]);
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(before checkpoint 1\):/.test(line)), logs.join("\n"));
+    assert.ok(logs.some((line) => /sandbox state \(before checkpoint 2\):/.test(line)), logs.join("\n"));
+  });
+
+  it("builds the same when the probe of the sandbox's state fails", async () => {
+    const { logs, pushed, buildHost } = host([0, 0], { failing: ["reviewer"], probeError: new Error("docker exec failed") });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /the probe failed:\n    \| Error: docker exec failed/.test(line)), logs.join("\n"));
+    assert.equal(pushed.length, 1);
   });
 
   it("treats a checkpoint that stays red after the gate-fixer's attempts as a failed build attempt", async () => {

@@ -422,7 +422,7 @@ describe("copyReviewerLogs", () => {
     const warnings: string[] = [];
     const { fs } = fakeFs({ "a-reviewer.log": "x", "b-reviewer.log": "y" }, "a-reviewer.log");
     assert.deepEqual(copyTo("logs", fs, (line) => warnings.push(line), []), ["reviewer-2.log"]);
-    copyTo("logs", { ...fs, list: () => { throw new Error("ENOENT"); } }, (line) => warnings.push(line), []);
+    copyTo("logs", { ...fs, list: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 2);
   });
 
@@ -432,6 +432,8 @@ describe("copyReviewerLogs", () => {
       const warnings: string[] = [];
       assert.deepEqual(copyReviewerLogs(join(root, "no-such-logs"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []), []);
       assert.deepEqual(warnings, []);
+      // No logs means nothing is written, the index included.
+      assert.equal(existsSync(join(root, "out")), false);
       // A path that is a file, not a folder, is a real fault (ENOTDIR), not an empty run.
       writeFileSync(join(root, "file"), "x");
       copyReviewerLogs(join(root, "file"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []);

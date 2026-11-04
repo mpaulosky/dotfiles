@@ -179,8 +179,8 @@ export const buildLogs = new BuildLogs();
 // Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `outDir`, as `reviewer-<n>.log` (reviewerLogsDir of the run report's folder, which is outside the checkout on Actions), with a short
 // note in place of a view that looks like it holds a secret. The pre-push review's own log, `*-pre-push-reviewer.log`,
 // is not a Sandcastle role's and is never copied. Never throws: it runs in the run's finally, and an unreadable file
-// or log directory is a warning (a directory that doesn't exist is no logs, and no warning). `secrets` defaults to the values .sandcastle/.env gives the sandbox,
-// read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
+// or log directory is a warning (a directory that doesn't exist is no logs, and no warning).
+// `secrets` defaults to the values .sandcastle/.env gives the sandbox, read once per call. Returns the names it wrote (`reviewer-<n>.log`), including a log it wrote the note for. Beside them it writes
 // REVIEWER_LOG_INDEX, which says for each number the issue whose build wrote the log (from `builds`), or that the host started no build
 // for it, and whether the view couldn't be copied.
 export function copyReviewerLogs(

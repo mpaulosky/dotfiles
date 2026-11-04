@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import type * as sandcastle from "@ai-hero/sandcastle";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { AgentProvider } from "@ai-hero/sandcastle";
 import {
@@ -12,6 +13,7 @@ import {
   backstopMsFor,
   roleBackstopMs,
   roleOptions,
+  runRole,
   uiEnabled,
   runRoleInSandbox,
   runWithinLimits,
@@ -22,6 +24,7 @@ import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
+import { timedProvider, timelineReport } from "./role-timeline.mts";
 import { hostCallHasBeenAbandoned, MAX_TIMER_MS } from "./host-limit.mts";
 import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
@@ -440,5 +443,126 @@ describe("runRoleInSandbox with restrictions", () => {
     await runRoleInSandbox(sandboxRecording(runs), "backend", { prompt: "build" });
 
     assert.doesNotMatch(commandOf(runs[0]!), /--tools|--disallowedTools|--strict-mcp-config/);
+  });
+});
+
+// The role's tool calls are timed from the agent's stream (lib/role-timeline.mts), so the run report can say where a role's time went.
+describe("role timing", () => {
+  const toolLine = (...names: string[]) =>
+    JSON.stringify({ type: "assistant", message: { content: names.map((name) => ({ type: "tool_use", name, input: { command: "ls", file_path: "/a" } })) } });
+  // The stretches a role's line names, sorted: with the end of the run, a run with n calls has n + 1.
+  // runRole's options need a sandbox provider; the stubbed run never looks at it.
+  const hostOptions = { prompt: "" } as unknown as Parameters<typeof runRole>[1];
+  const stretchesOf = (role: string): string[] => {
+    const line = timelineReport.lines().find((entry) => entry.startsWith(`${role}:`)) ?? "";
+    return [...line.matchAll(/ s after (\w+)/g)].map((match) => match[1]!).sort();
+  };
+
+  it("times the tool calls of a role run in a sandbox, also the ones Sandcastle's parser doesn't report, and ends the run", async () => {
+    timelineReport.reset();
+    const sandbox = {
+      run: async (options: SandboxRunOptions) => {
+        options.agent.parseStreamLine(toolLine("Bash"));
+        options.agent.parseStreamLine(toolLine("Read"));
+        return { iterations: [], commits: [] };
+      },
+    } as unknown as Sandbox;
+
+    await runRoleInSandbox(sandbox, "scribe", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 1000 });
+
+    assert.match(timelineReport.lines()[0]!, /^scribe: 1 run, 2 tool calls, /);
+    // The end of the run closes the stretch after the last call: without it there would be two stretches, not three.
+    assert.deepEqual(stretchesOf("scribe"), ["Bash", "Read", "start"]);
+  });
+
+  it("ends the timing of a run that fails, and times a restricted role", async () => {
+    timelineReport.reset();
+    const sandbox = {
+      run: async (options: SandboxRunOptions) => {
+        options.agent.parseStreamLine(toolLine("Read"));
+        throw new Error("the agent failed");
+      },
+    } as unknown as Sandbox;
+
+    await assert.rejects(
+      runRoleInSandbox(sandbox, "pre-push-reviewer", { prompt: "" }, new RunLimits(), { tools: REVIEWER_TOOLS }, { backstopMs: 1000 }),
+      /the agent failed/,
+    );
+
+    assert.match(timelineReport.lines()[0]!, /^pre-push-reviewer: 1 run, 1 tool calls, /);
+    assert.deepEqual(stretchesOf("pre-push-reviewer"), ["Read", "start"]);
+  });
+
+  it("lists no run for a role the run's limits refuse to start", async () => {
+    timelineReport.reset();
+    const limits = new RunLimits();
+    limits.hitUsageLimit("Claude usage limit reached");
+    let ran = 0;
+    const sandbox = { run: async () => (ran++, { iterations: [], commits: [] }) } as unknown as Sandbox;
+
+    await assert.rejects(runRoleInSandbox(sandbox, "tester", { prompt: "" }, limits, undefined, { backstopMs: 1000 }));
+    await assert.rejects(runRole("planner", hostOptions, limits, (async () => (ran++, { iterations: [], commits: [] })) as unknown as typeof sandcastle.run));
+
+    assert.equal(ran, 0);
+    assert.deepEqual(timelineReport.lines(), []);
+  });
+
+  it("ignores the events of a run the host gave up on", async () => {
+    timelineReport.reset();
+    let agent: SandboxRunOptions["agent"] | undefined;
+    const sandbox = { run: (options: SandboxRunOptions) => ((agent = options.agent), new Promise<never>(() => undefined)) } as unknown as Sandbox;
+
+    await assert.rejects(runRoleInSandbox(sandbox, "backend", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 20 }), StalledStepError);
+    const before = timelineReport.lines();
+    agent!.parseStreamLine(toolLine("Bash"));
+
+    assert.deepEqual(timelineReport.lines(), before);
+    assert.match(before[0]!, /^backend: 1 run, 0 tool calls, /);
+  });
+
+  it("times a host-side role run through runRole, and ends it when the run throws", async () => {
+    timelineReport.reset();
+    const ok = (async (options: { agent: { parseStreamLine(line: string): unknown } }) => {
+      options.agent.parseStreamLine(toolLine("Grep"));
+      return { iterations: [], commits: [] };
+    }) as unknown as typeof sandcastle.run;
+    await runRole("planner", hostOptions, new RunLimits(), ok);
+    assert.match(timelineReport.lines()[0]!, /^planner: 1 run, 1 tool calls, /);
+    assert.deepEqual(stretchesOf("planner"), ["Grep", "start"]);
+
+    timelineReport.reset();
+    const failing = (async (options: { agent: { parseStreamLine(line: string): unknown } }) => {
+      options.agent.parseStreamLine(toolLine("Glob"));
+      throw new Error("the run failed");
+    }) as unknown as typeof sandcastle.run;
+    await assert.rejects(runRole("planner", hostOptions, new RunLimits(), failing), /the run failed/);
+    assert.deepEqual(stretchesOf("planner"), ["Glob", "start"]);
+  });
+
+  it("lists no run for a role whose options can't be built", async () => {
+    timelineReport.reset();
+    let ran = 0;
+    const sandbox = { run: async () => (ran++, { iterations: [], commits: [] }) } as unknown as Sandbox;
+
+    await withUiRole(false, async () => {
+      await assert.rejects(runRoleInSandbox(sandbox, "ui", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 1000 }), /no ui entry/);
+      await assert.rejects(runRole("ui", hostOptions, new RunLimits(), (async () => (ran++, { iterations: [], commits: [] })) as unknown as typeof sandcastle.run), /no ui entry/);
+    });
+
+    assert.equal(ran, 0);
+    assert.deepEqual(timelineReport.lines(), []);
+  });
+
+  it("leaves roleOptions' agent alone, and the wrapper changes neither its events nor its restricted command", () => {
+    timelineReport.reset();
+    const events = roleOptions("tester").agent.parseStreamLine(toolLine("Bash"));
+    assert.deepEqual(events, [{ type: "tool_call", name: "Bash", args: "ls" }]);
+    assert.deepEqual(timelineReport.lines(), [], "roleOptions timed a call with no run to time it");
+
+    const restrictions = { tools: REVIEWER_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true };
+    const print = { prompt: "p", dangerouslySkipPermissions: true };
+    const plain = roleOptions("pre-push-reviewer", undefined, restrictions).agent;
+    const timed = timedProvider(plain, timelineReport.begin("pre-push-reviewer"));
+    assert.deepEqual(timed.buildPrintCommand(print), plain.buildPrintCommand(print));
   });
 });

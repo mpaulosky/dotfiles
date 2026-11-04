@@ -228,13 +228,15 @@ export type SummaryInput = {
   humanThreads: readonly HumanThreadEntry[];
   usage: ReadonlyMap<string, IterationUsage>;
   stops: readonly IntakeStopEntry[];
+  // One line per role (lib/role-timeline.mts#TimelineReport.lines). Left out of the report when there are none.
+  timeline?: readonly string[];
 };
 
 // The run's report as Markdown, for summary.md in the report folder and (when set)
 // $GITHUB_STEP_SUMMARY: the queue and ending sentence, a table of every touched
 // issue and PR with its outcome (plus one row per hand-back), the hand-backs
 // themselves with links, the PRs waiting on a person, any round where intake
-// stopped, and a token-usage table by role with a total row.
+// stopped, a token-usage table by role with a total row, and, when any role ran, a section on each role's tool-call timing.
 export function renderSummary(input: SummaryInput): string {
   const { repo } = input;
   const link = (target: ReportTarget): string =>
@@ -261,7 +263,15 @@ export function renderSummary(input: SummaryInput): string {
     "",
     ...usageLines(input.usage),
     "",
+    ...timelineSection(input.timeline ?? []),
   ].join("\n");
+}
+
+// Where each role's time went: its run count, tool calls, total time and longest stretches between calls. Nothing at all when no
+// role ran (a run that found no work), so such a report reads as it always did.
+function timelineSection(timeline: readonly string[]): string[] {
+  if (timeline.length === 0) return [];
+  return ["### Tool-call timing by role", "", ...timeline.map((line) => `- ${cell(line)}`), ""];
 }
 
 function targetName(target: ReportTarget): string {

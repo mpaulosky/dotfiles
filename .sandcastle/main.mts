@@ -186,6 +186,7 @@ import {
 } from "./lib/report.mts";
 import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
 import { copyReviewerLogs, reviewerLogsDir } from "./lib/role-logs.mts";
+import { timelineReport } from "./lib/role-timeline.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
 import { exitAfterStall } from "./lib/host-limit.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
@@ -561,6 +562,7 @@ try {
     humanThreads,
     usage: usageReport.totals(),
     stops: intakeStopReport.items(),
+    timeline: timelineReport.lines(),
   });
   writeRunReport(summary, handBacks);
   copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR));

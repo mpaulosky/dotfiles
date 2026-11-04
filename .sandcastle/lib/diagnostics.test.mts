@@ -147,32 +147,34 @@ describe("SANDBOX_PROBE", () => {
     }
   });
 
-  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: (process.platform !== "linux" || !hasPs) && "needs procps ps on Linux" }, async () => {
-    // The count is system-wide, so the test compares it before and after it makes one zombie: the subshell the shell backgrounds
-    // exits at once, and the shell becomes `sleep`, which never waits, so the subshell stays a zombie while it runs.
-    // The test's own count of zombies, from `ps` alone. The probe's count must lie between two of these taken around it, which a count of
-    // some other state (a sleeping `sleep` is also new while the test runs) does not.
-    const counted = () => spawnSync("ps", ["-eo", "stat="], { encoding: "utf8" }).stdout.split("\n").filter((line) => line.startsWith("Z")).length;
-    const zombies = () => {
-      const low = counted();
-      const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
-      const high = counted();
-      assert.equal(run.status, 0, run.stderr);
-      const probed = Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
-      assert.ok(probed >= Math.min(low, high) && probed <= Math.max(low, high), `the probe counted ${probed} zombies, ps counted ${low} before and ${high} after`);
-      return probed;
-    };
-    const before = zombies();
-    assert.ok(Number.isInteger(before), "no zombie count in the probe's output");
+  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: (process.platform !== "linux" || !hasPs) && "needs ps on Linux" }, async () => {
+    // The shell backgrounds a subshell that exits at once, then becomes `sleep`, which never waits for it: the subshell stays a
+    // zombie, a child of `sleep`, for the five seconds `sleep` runs.
     const parent = spawn("sh", ["-c", "(true) & exec sleep 5"], { stdio: "ignore" });
     try {
-      // The zombie exists once the backgrounded subshell has exited, which a slow machine can take longer than a fixed wait: poll for it.
-      let after = before;
-      for (const deadline = Date.now() + 5_000; after < before + 1 && Date.now() < deadline; ) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        after = zombies();
+      // The test's own zombie, found by its parent, so the wait is for what the test made and not for the machine's count to change.
+      const ownZombies = () =>
+        spawnSync("ps", ["-eo", "ppid=,stat="], { encoding: "utf8" })
+          .stdout.split("\n")
+          .map((line) => line.trim().split(/\s+/))
+          .filter(([ppid, stat]) => Number(ppid) === parent.pid && stat?.startsWith("Z")).length;
+      for (const deadline = Date.now() + 4_000; ownZombies() < 1 && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(ownZombies(), 1, "the test's own zombie never appeared");
+
+      // The test's count of every zombie, from `ps` alone. The probe's count must lie between two of these taken around it, which a count of
+      // some other state (a sleeping `sleep` is also running now) does not. Other zombies can come and go meanwhile, so a miss is tried again.
+      const counted = () => spawnSync("ps", ["-eo", "stat="], { encoding: "utf8" }).stdout.split("\n").filter((line) => line.startsWith("Z")).length;
+      let last = "";
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const low = counted();
+        const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+        const high = counted();
+        assert.equal(run.status, 0, run.stderr);
+        const probed = Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
+        if (probed >= 1 && probed >= Math.min(low, high) && probed <= Math.max(low, high)) return;
+        last = `the probe counted ${probed} zombies, ps counted ${low} before and ${high} after`;
       }
-      assert.ok(after >= before + 1, `zombies went from ${before} to ${after}`);
+      assert.fail(last);
     } finally {
       parent.kill();
     }

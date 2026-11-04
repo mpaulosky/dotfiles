@@ -1,5 +1,5 @@
 // What the sandbox looks like after a role fails and before a checkpoint's gate: free disk, free
-// memory, the process count, the biggest processes and any core files. A reviewer whose claude-code
+// memory, the process count, the zombies, the limits on forking, the biggest processes and any core files. A reviewer whose claude-code
 // aborted with a core dump, followed by a sandbox that could no longer fork, left logs that named
 // no cause; this puts the sandbox's state in the host's log so the next failure does.
 
@@ -20,6 +20,10 @@ export const PROBE_SCRIPT = [
   'echo "== disk =="; df -h / /tmp . 2>&1',
   'echo "== memory =="; free -m 2>&1 || head -n 5 /proc/meminfo 2>&1',
   'echo "== processes =="; ps -e 2>/dev/null | wc -l',
+  // Zombies are counted apart: a PID 1 that never waits leaves one per orphan, and they hold PIDs until a fork fails.
+  'echo "== zombies =="; if command -v ps >/dev/null 2>&1; then ps -eo stat= 2>/dev/null | grep -c "^Z"; else echo "n/a (no ps)"; fi',
+  // What decides whether a fork succeeds (CGROUP_ROOT is for the test's fixture folder; the sandbox leaves it unset): the per-user limit (`ulimit -u`, which dash lacks, so read from /proc; threads count, on the whole host) and the container's cgroup.
+  'echo "== process limits =="; grep "Max processes" /proc/self/limits 2>&1; for f in pids.current pids.max pids/pids.current pids/pids.max; do [ -r "${CGROUP_ROOT:-/sys/fs/cgroup}/$f" ] && echo "$f: $(cat "${CGROUP_ROOT:-/sys/fs/cgroup}/$f" 2>&1)"; done',
   'echo "== biggest processes (pid rss-kb elapsed command) =="; (ps -eo pid,rss,etime,comm --sort=-rss 2>/dev/null || ps -eo pid,rss,etime,comm 2>&1) | head -n 8',
   'echo "== core files =="; find / "$PWD" /tmp -xdev -maxdepth 4 -type f -size +0 \\( -name core -o -name "core.[0-9]*" \\) 2>/dev/null | sort -u | head -n 10',
   "true",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -15,6 +15,7 @@ const sandboxOf = (exec: (command: string) => Promise<Result>) =>
   ({ exec: (async (command: string) => ({ stderr: "", ...(await exec(command)) })) as unknown as Exec }) as Pick<Sandbox, "exec">;
 
 const hasTimeout = spawnSync("timeout", ["--version"]).status === 0;
+const hasPs = spawnSync("ps", ["-e"]).error === undefined;
 
 describe("logSandboxState", () => {
   it("logs the probe's output under the reason", async () => {
@@ -116,7 +117,7 @@ describe("SANDBOX_PROBE", () => {
   it("runs the script under a real sh: exits 0 and prints every section", { skip: process.platform === "win32" && "needs sh" }, () => {
     const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
     assert.equal(run.status, 0, run.stderr);
-    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
+    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== zombies ==", "== process limits ==", "== biggest processes", "== core files =="]) {
       assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
     }
   });
@@ -146,10 +147,81 @@ describe("SANDBOX_PROBE", () => {
     }
   });
 
+  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: (process.platform !== "linux" || !hasPs) && "needs ps on Linux" }, async () => {
+    // The shell backgrounds a subshell that exits at once, then becomes `sleep`, which never waits for it: the subshell stays a
+    // zombie, a child of `sleep`, for the five seconds `sleep` runs.
+    const parent = spawn("sh", ["-c", "(true) & exec sleep 5"], { stdio: "ignore" });
+    try {
+      // The test's own zombie, found by its parent, so the wait is for what the test made and not for the machine's count to change.
+      const ownZombies = () =>
+        spawnSync("ps", ["-eo", "ppid=,stat="], { encoding: "utf8" })
+          .stdout.split("\n")
+          .map((line) => line.trim().split(/\s+/))
+          .filter(([ppid, stat]) => Number(ppid) === parent.pid && stat?.startsWith("Z")).length;
+      for (const deadline = Date.now() + 4_000; ownZombies() < 1 && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(ownZombies(), 1, "the test's own zombie never appeared");
+
+      // The test's count of every zombie, from `ps` alone. The probe's count must lie between two of these taken around it, which a count of
+      // some other state (a sleeping `sleep` is also running now) does not. Other zombies can come and go meanwhile, so a miss is tried again.
+      const counted = () => spawnSync("ps", ["-eo", "stat="], { encoding: "utf8" }).stdout.split("\n").filter((line) => line.startsWith("Z")).length;
+      let last = "";
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const low = counted();
+        const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+        const high = counted();
+        assert.equal(run.status, 0, run.stderr);
+        const probed = Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
+        if (probed >= 1 && probed >= Math.min(low, high) && probed <= Math.max(low, high)) return;
+        last = `the probe counted ${probed} zombies, ps counted ${low} before and ${high} after`;
+      }
+      assert.fail(last);
+    } finally {
+      parent.kill();
+    }
+  });
+
+  it("says so when ps is missing, not that there are no zombies", { skip: process.platform !== "linux" && "needs /bin/sh" }, () => {
+    const run = spawnSync("/bin/sh", ["-c", PROBE_SCRIPT], { encoding: "utf8", env: { PATH: "/nonexistent" } });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /== zombies ==\nn\/a \(no ps\)\n/);
+  });
+
+  it("prints the limits that decide whether a fork can succeed", { skip: process.platform !== "linux" && "needs /proc" }, () => {
+    const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /== process limits ==\nMax processes +\S+ +\S+ +processes *\n/);
+  });
+
+  it("prints each cgroup pids file that exists, under its own name, and nothing for one it lacks", { skip: process.platform === "win32" && "needs sh" }, () => {
+    const root = mkdtempSync(join(tmpdir(), "probe-cgroup-"));
+    try {
+      const dir = join(root, "all");
+      mkdirSync(join(dir, "pids"), { recursive: true });
+      writeFileSync(join(dir, "pids.current"), "17386\n");
+      writeFileSync(join(dir, "pids.max"), "max\n");
+      writeFileSync(join(dir, "pids", "pids.current"), "3\n");
+      writeFileSync(join(dir, "pids", "pids.max"), "4194304\n");
+      // A machine can have only some of the files (v1 has the pids folder, v2 the top-level two), here just one.
+      const some = join(root, "some");
+      mkdirSync(join(some, "pids"), { recursive: true });
+      writeFileSync(join(some, "pids", "pids.max"), "max\n");
+      const section = (cgroupRoot: string) => {
+        const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8", env: { ...process.env, CGROUP_ROOT: cgroupRoot } });
+        assert.equal(run.status, 0, run.stderr);
+        return run.stdout.slice(run.stdout.indexOf("== process limits =="), run.stdout.indexOf("== biggest processes")).split("\n").filter((line) => line.startsWith("pids"));
+      };
+      assert.deepEqual(section(dir), ["pids.current: 17386", "pids.max: max", "pids/pids.current: 3", "pids/pids.max: 4194304"]);
+      assert.deepEqual(section(some), ["pids/pids.max: max"]);
+      assert.deepEqual(section(join(root, "none")), []);
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
   it("runs through the sandbox's own wrapper under a real sh, so its re-quoting leaves the script whole", { skip: (!hasTimeout || process.platform === "win32") && "needs GNU timeout and sh" }, () => {
     const run = spawnSync("sh", ["-c", limitedCommand(SANDBOX_PROBE, 1)], { encoding: "utf8" });
     assert.equal(run.status, 0, run.stderr);
-    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== biggest processes", "== core files =="]) {
+    for (const header of ["== disk ==", "== memory ==", "== processes ==", "== zombies ==", "== process limits ==", "== biggest processes", "== core files =="]) {
       assert.ok(run.stdout.includes(header), `${header} in ${run.stdout}`);
     }
   });

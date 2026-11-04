@@ -431,7 +431,7 @@ describe("copyReviewerLogs", () => {
     try {
       const warnings: string[] = [];
       assert.deepEqual(copyReviewerLogs(join(root, "no-such-logs"), join(root, "out"), liveRoleLogFs, (line) => warnings.push(line), []), []);
-      assert.deepEqual(warnings, []);
+      assert.equal(warnings.length, 0);
       // No logs means nothing is written, the index included.
       assert.equal(existsSync(join(root, "out")), false);
       // A path that is a file, not a folder, is a real fault (ENOTDIR), not an empty run.

@@ -7,8 +7,9 @@
 import type { execFileSync } from "node:child_process";
 import { hostExecFileSync } from "./host-limit.mts";
 import { endOf } from "./checkpoint.mts";
-import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, PR_MARKER, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
+import { visibleLetters } from "./plain-text.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 
 let repo: string | undefined;
@@ -275,8 +276,13 @@ export function ghWithStderr(run: typeof execFileSync, args: string[], input?: s
 // The open pull request from this repository's `branch`, or a new one for it
 // with the title and body, as its URL. A fork's PR from a branch of the same
 // name doesn't count. With `draft`, the review holds the PR: a new one is created as a draft, and one that already exists (a rerun, or an
-// earlier build's PR opened ready before this review's findings) is turned into a draft with the new body, so the hold and its note never depend
-// on the PR being new. A failure to do so throws rather than leave a ready PR standing for blocking findings.
+// earlier build's PR opened ready before this review's findings) is turned into a draft, so the hold never depends on the PR being new. A failure
+// to do so throws rather than leave a ready PR standing for blocking findings; the hold comes before the body, so a failed edit leaves a draft.
+//
+// An existing PR's body is a person's too: a `## Review notes` section is their acceptances (Claude Review reads it as the owner's decisions), and
+// replacing the body would silently delete them. So the body is replaced by `body` only when it still carries PR_MARKER (the host wrote it) and
+// nothing in it reads as Review notes, in any form a reader sees; otherwise it is kept as it is, with `heldNote` (why the PR is a draft) added when it
+// isn't there yet. A body edited by hand in some other way, with the marker left in, is rewritten on a rerun that holds the PR.
 export function openPullRequest(
   branch: string,
   title: string,
@@ -284,17 +290,19 @@ export function openPullRequest(
   run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   draft: boolean = false,
+  heldNote: string = "",
 ): string {
   const listed = JSON.parse(
     ghWithStderr(run, [
-      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url",
+      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url,body",
     ]),
-  ) as (ListedPullRequest & { number: number; isDraft?: boolean })[];
+  ) as (ListedPullRequest & { number: number; isDraft?: boolean; body?: string })[];
   const existing = sameRepository(listed).find((pr) => pr.headRefName === branch);
   if (existing?.url) {
     if (draft) {
       if (existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
-      ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], body);
+      const next = bodyForHeldPullRequest(existing.body ?? "", body, heldNote);
+      if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
     }
     return existing.url;
   }
@@ -303,6 +311,16 @@ export function openPullRequest(
     ["pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", title, "--body-file", "-", ...(draft ? ["--draft"] : [])],
     body,
   ).trim();
+}
+
+// The body a PR the review holds should end with, or undefined when it needs no edit (see openPullRequest). GitHub stores the body with CRLF line endings
+// and may trim it, so the comparisons ignore both.
+function bodyForHeldPullRequest(current: string, next: string, heldNote: string): string | undefined {
+  const same = (text: string) => text.replace(/\r\n?/g, "\n").trim();
+  const hostWrote = current.includes(PR_MARKER) && !visibleLetters(current).includes("reviewnotes");
+  if (hostWrote) return same(current) === same(next) ? undefined : next;
+  if (heldNote === "" || same(current).includes(same(heldNote))) return undefined;
+  return `${current.replace(/\s+$/, "")}\n\n${heldNote}`;
 }
 
 // The fields the follow-up sweep (lib/follow-up.mts) checks on every PR it

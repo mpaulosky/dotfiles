@@ -114,7 +114,7 @@ export async function publish(
   push: (branch: string, commit: string) => void = (pushBranch, pushCommit) =>
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
   createPullRequest: (branch: string, title: string, body: string, draft?: boolean) => string = (pushBranch, title, body, draft) =>
-    openPullRequest(pushBranch, title, body, undefined, undefined, draft),
+    openPullRequest(pushBranch, title, body, undefined, undefined, draft, DRAFT_NOTE),
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
   reviewNote = "",
   holdAsDraft = false,

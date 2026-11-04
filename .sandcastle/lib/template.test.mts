@@ -332,6 +332,35 @@ describe("references/sandcastle.md's bullet on the reviewers' logs, for a run th
     );
   });
 
+  // copyReviewerLogs returns at `names.length === 0`, before the mkdir and the index, so what decides the folder is a `*-reviewer.log`, not whether
+  // .sandcastle/logs exists (off Actions the summary and hand-backs create it with no role run).
+  it("names the condition the code uses: no *-reviewer.log to copy, which a run with other logs only also has", () => {
+    assert.ok(noRole.some((sentence) => sentence.includes("`*-reviewer.log`")), `the sentence doesn't name \`*-reviewer.log\`: ${noRole.join(" | ")}`);
+    assert.ok(
+      noRole.some((sentence) => /pre-push review/i.test(sentence) && /non-reviewer|other role/i.test(sentence)),
+      `the sentence doesn't say that a logs folder with only other logs also leaves no folder: ${noRole.join(" | ")}`,
+    );
+  });
+
+  it("is true of the code: a logs folder with no reviewer log (other roles' and the pre-push review's only) gives no warning, folder or index", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "other-role-logs-"));
+    try {
+      const logs = join(scratch, ".sandcastle", "logs");
+      mkdirSync(logs, { recursive: true });
+      writeFileSync(join(logs, "feature-1-developer.log"), "a developer log\n");
+      writeFileSync(join(logs, "feature-1-pre-push-reviewer.log"), "the pre-push review's log\n");
+      const out = join(scratch, "report", "reviewer-logs");
+      const warnings: string[] = [];
+      const copied = copyReviewerLogs(logs, out, liveRoleLogFs, (line) => warnings.push(line), []);
+
+      assert.deepEqual(copied, []);
+      assert.deepEqual(warnings, []);
+      assert.equal(existsSync(out), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it("is true of the code: a missing logs folder gives no warning and writes no folder and no index", () => {
     const scratch = mkdtempSync(join(tmpdir(), "no-role-logs-"));
     try {

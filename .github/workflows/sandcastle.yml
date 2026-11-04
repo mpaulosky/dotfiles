@@ -305,7 +305,8 @@ jobs:
       # the next step reads handbacks.json. The reviewers' logs reach its
       # reviewer-logs/ folder through lib/role-logs.mts, which writes an
       # allowlisted view of each (the last host status lines, the last known
-      # tool names without arguments, and the last few error lines) and leaves
+      # tool names without arguments, and the last few error lines), named
+      # reviewer-<n>.log and never for the source file, and leaves
       # out a view shaped like a secret. The view narrows what a steered
       # reviewer can print into the artifact; it can't promise a few words on
       # an error line stay out. The pre-push review's own log is never copied.

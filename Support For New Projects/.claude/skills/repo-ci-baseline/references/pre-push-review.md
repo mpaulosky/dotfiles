@@ -180,7 +180,13 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
   A finding is listed only when its path is a file the review's diffs touched and is made of plain file-name characters (never a link, an image or a `www.` address), and a line the host's
   public-text check would change, or that reads like a `## Review notes` section, is left out on its own. The rest, and any security finding, are only counted.
-- Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed.
+- Open Critical or Warning findings (and any open security finding, whatever its grade) hold the PR as a draft: the host opens it with `gh pr create --draft`, and its body says why and what a
+  person does. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready, and so is
+  one whose review didn't finish (its note says so).
+- The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the generic one.
+- The review's open Advisory findings go in one follow-up issue titled `chore(review): Advisory review findings: <branch>`, whose body is `renderAdvisories`' list (a security finding is left out, the
+  issue being public), as the skill's step 9 files it. The host reuses the open issue with that title, files none for a review that didn't finish, and a failed filing is only logged: the PR still publishes.
+- Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
   global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run,
   an Actions run included, holds its issue that long). A change to how the host runs the reviewers needs a run

@@ -49,6 +49,8 @@ _Avoid_: Security log, findings database
 **Host-side review**:
 The pre-push review's rounds as the Sandcastle host runs them on a branch it built, after the reviewer role and a passing checkpoint 2. The host starts the skill's own reviewers,
 the backend role fixes each fixable finding behind a failing test, and only the host records the ledger; no agent gets a shell, a token or `.git/review`.
+Open Critical or Warning findings hold the branch's PR as a draft until a person accepts them (`scripts/review.sh accept`)
+and marks it ready (`gh pr ready`); open Advisory findings go in a follow-up issue.
 Described in [references/pre-push-review.md](references/pre-push-review.md#sandcastle-runs-the-review-on-the-host).
 _Avoid_: Sandbox review, reviewer role (the sandbox's own, lighter review)
 

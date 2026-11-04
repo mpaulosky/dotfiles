@@ -283,7 +283,6 @@ export function openPullRequest(
   repo: string = repoName(),
   draft: boolean = false,
 ): string {
-  void draft;
   const listed = JSON.parse(
     ghWithStderr(run, [
       "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,url",
@@ -293,7 +292,7 @@ export function openPullRequest(
   if (existing) return existing;
   return ghWithStderr(
     run,
-    ["pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", title, "--body-file", "-"],
+    ["pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", title, "--body-file", "-", ...(draft ? ["--draft"] : [])],
     body,
   ).trim();
 }
@@ -951,6 +950,24 @@ export function createIssue(
   );
   if (!Number.isInteger(number) || number <= 0) throw new Error(`gh api didn't answer the new issue's number for "${title}"`);
   return number;
+}
+
+// Files an issue with no labels, or reuses the open one with exactly this title, as its number. The local review's follow-up issue for the open
+// Advisory findings (lib/build.mts) goes through it: a later build of the same branch, or a rerun, finds the issue it already filed rather than
+// open a second. The search is by words, so the listed titles are compared whole.
+export function fileIssueOnce(
+  title: string,
+  body: string,
+  run: typeof execFileSync = hostExecFileSync,
+  repo: string = repoName(),
+): number {
+  const listed = JSON.parse(
+    ghWithStderr(run, [
+      "issue", "list", "--repo", repo, "--state", "open", "--search", `${JSON.stringify(title)} in:title`, "--limit", "100", "--json", "number,title",
+    ]),
+  ) as { number: number; title: string }[];
+  const existing = listed.find((issue) => issue.title === title);
+  return existing === undefined ? createIssue(title, body, [], run, repo) : existing.number;
 }
 
 // Adds the native "parent has sub-issue child" relationship GitHub shows as a

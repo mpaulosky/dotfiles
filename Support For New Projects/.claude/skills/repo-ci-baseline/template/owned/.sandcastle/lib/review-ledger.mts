@@ -268,8 +268,8 @@ export const isSecurity = (finding: Finding) =>
   finding.severity === "warning" || finding.security !== false || /security/i.test(finding.lens);
 
 // Whether a finding blocks the push: open, and not Advisory, or a security
-// finding whatever its grade.
-const isBlocking = (finding: Finding) => finding.status === "open" && (severityOf(finding) !== "advisory" || isSecurity(finding));
+// finding whatever its grade. The host-side review holds a PR as a draft while one is open (lib/build.mts), as the gate's check refuses the push.
+export const isBlocking = (finding: Finding) => finding.status === "open" && (severityOf(finding) !== "advisory" || isSecurity(finding));
 
 // An agent type name, with the optional plugin namespace (plugin:agent). No dot: www.example would autolink in the PR body.
 const reviewerAgentSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9_-]{0,63})?$/, "reviewerAgent is an agent type name");

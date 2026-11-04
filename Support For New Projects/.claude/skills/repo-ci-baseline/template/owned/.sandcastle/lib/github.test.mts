@@ -34,6 +34,7 @@ import {
   markerComments,
   markerCommentsSince,
   openIssuesWithComment,
+  fileIssueOnce,
   openPullRequest,
   openPullRequests,
   openPullRequestsIntoMain,
@@ -463,6 +464,31 @@ describe("openPullRequest", () => {
       "pr", "create", "--repo", "o/r", "--base", "main", "--head", branch, "--title", "Add search", "--body-file", "-", "--draft",
     ]);
     assert.ok(!ready.calls[1]!.args.includes("--draft"), ready.calls[1]!.args.join(" "));
+  });
+});
+
+describe("fileIssueOnce", () => {
+  const stub = (listed: object[]) => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      return args[0] === "issue" ? JSON.stringify(listed) : "17\n";
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+
+  it("reuses the open issue with exactly this title", () => {
+    const { calls, run } = stub([{ number: 5, title: "chore(review): Advisory review findings: fix/1-a-b" }, { number: 6, title: "other" }]);
+
+    assert.equal(fileIssueOnce("chore(review): Advisory review findings: fix/1-a-b", "body", run, "o/r"), 5);
+    assert.equal(calls.length, 1);
+  });
+
+  it("creates the issue, with no labels, when none has the title", () => {
+    const { calls, run } = stub([{ number: 6, title: "chore(review): Advisory review findings: fix/1-a-b-c" }]);
+
+    assert.equal(fileIssueOnce("chore(review): Advisory review findings: fix/1-a-b", "body", run, "o/r"), 17);
+    assert.deepEqual(JSON.parse(String(calls[1]!.input)), { title: "chore(review): Advisory review findings: fix/1-a-b", body: "body", labels: [] });
   });
 });
 

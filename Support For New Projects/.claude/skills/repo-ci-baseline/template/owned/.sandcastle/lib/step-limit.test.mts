@@ -274,6 +274,9 @@ describe("limitSandboxExec against a real timeout", { skip: !hasTimeout && "GNU 
             const exitCode = error === null ? 0 : typeof error.code === "number" ? error.code : error.signal === "SIGKILL" ? 137 : 1;
             resolve({ stdout, stderr, exitCode });
           });
+          // A command that exits before it reads its stdin (`echo out; exit 3`) closes the pipe under the write: that is
+          // EPIPE here, and docker exec ignores it too. Without a handler it is an uncaught exception under load.
+          child.stdin?.on("error", () => undefined);
           child.stdin?.end(options?.stdin ?? "");
         }),
     } as unknown as Sandbox;

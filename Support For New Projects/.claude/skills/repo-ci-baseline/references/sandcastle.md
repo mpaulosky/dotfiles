@@ -270,6 +270,9 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   Beside them it writes `index.txt`: for each number, the issue whose build wrote the log, or that the run started no build for it, and whether the view could
   not be copied. Only an issue number and fixed words go in, never a file name; a log is matched to a build by its name, which an agent that can write the logs
   could choose, so the label is a hint and not proof of where a log came from.
+  A run with no `*-reviewer.log` to copy has no `reviewer-logs/` folder and no `index.txt` in its report, and the copy step says nothing:
+  a run that starts no role (the planner alone) leaves none, with no `.sandcastle/logs` at all on Actions,
+  and so does one whose logs are only a non-reviewer role's and the pre-push review's. An absent folder is normal.
   On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
   the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
   This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.

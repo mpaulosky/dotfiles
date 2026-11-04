@@ -1,16 +1,47 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { AgentProvider } from "@ai-hero/sandcastle";
-import { TIMELINE_GAPS, TimelineReport, reportedToolName, timedProvider } from "./role-timeline.mts";
+import { KNOWN_TOOLS, TIMELINE_GAPS, TimelineReport, reportedToolName, timedProvider, toolNamesInLine } from "./role-timeline.mts";
 
 describe("reportedToolName", () => {
-  it("keeps a plain tool name and reports anything else as other", () => {
-    assert.equal(reportedToolName("Bash"), "Bash");
-    assert.equal(reportedToolName("a".repeat(24)), "a".repeat(24));
-    assert.equal(reportedToolName("a".repeat(25)), "other");
+  it("keeps the name of a known tool and reports anything else as other", () => {
+    for (const name of KNOWN_TOOLS) assert.equal(reportedToolName(name), name);
+    // A plain word of any length is not a known tool, so an agent can't choose what the report prints.
+    assert.equal(reportedToolName("Bashh"), "other");
+    assert.equal(reportedToolName("bash"), "other");
+    assert.equal(reportedToolName("a".repeat(24)), "other");
     assert.equal(reportedToolName("mcp__server__tool"), "other");
     assert.equal(reportedToolName("sk-ant-oat01-secret"), "other");
     assert.equal(reportedToolName(""), "other");
+  });
+});
+
+describe("toolNamesInLine", () => {
+  const line = (...blocks: unknown[]) => JSON.stringify({ type: "assistant", message: { content: blocks } });
+
+  it("names every tool_use block of an assistant line, whatever the tool", () => {
+    assert.deepEqual(
+      toolNamesInLine(line({ type: "text", text: "hi" }, { type: "tool_use", name: "Read", input: { file_path: "/a" } }, { type: "tool_use", name: "Edit", input: {} }, { type: "tool_use", name: "Grep", input: { pattern: "x" } })),
+      ["Read", "Edit", "Grep"],
+    );
+  });
+
+  it("names nothing for a line that isn't an assistant message with content, and never throws", () => {
+    for (const text of [
+      "",
+      "plain text",
+      "{",
+      "{not json",
+      "null",
+      "[]",
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_use", name: "Bash" }] } }),
+      JSON.stringify({ type: "assistant" }),
+      JSON.stringify({ type: "assistant", message: null }),
+      JSON.stringify({ type: "assistant", message: { content: "text" } }),
+      line(null, 7, "x", { type: "tool_use" }, { type: "tool_use", name: 5 }, { type: "tool_result", name: "Bash" }),
+    ]) {
+      assert.deepEqual(toolNamesInLine(text), [], text);
+    }
   });
 });
 
@@ -31,10 +62,10 @@ describe("TimelineReport", () => {
     assert.equal(TIMELINE_GAPS, 3);
     const report = new TimelineReport();
     const run = report.begin("tester", 0);
-    for (const [name, at] of [["A", 1_000], ["B", 3_000], ["C", 6_000], ["D", 10_000]] as const) run.call(name, at);
+    for (const [name, at] of [["Bash", 1_000], ["Read", 3_000], ["Edit", 6_000], ["Grep", 10_000]] as const) run.call(name, at);
     run.end(15_000);
-    // Stretches: start 1, A 2, B 3, C 4, D 5.
-    assert.match(report.lines()[0]!, /longest stretches between calls: 5 s after D, 4 s after C, 3 s after B$/);
+    // Stretches: start 1, Bash 2, Read 3, Edit 4, Grep 5.
+    assert.match(report.lines()[0]!, /longest stretches between calls: 5 s after Grep, 4 s after Edit, 3 s after Read$/);
   });
 
   it("adds a second run of a role to the first, and keeps two runs at once apart", () => {
@@ -69,7 +100,7 @@ describe("TimelineReport", () => {
     assert.equal(report.lines()[1], "reviewer: 1 run, 1 tool calls, 0 s in all; longest stretches between calls: 1 s after Read, 0 s after start");
   });
 
-  it("prints a tool name that isn't plain as other", () => {
+  it("prints a tool name that isn't known as other", () => {
     const report = new TimelineReport();
     const run = report.begin("backend", 0);
     run.call("mcp__github__create_issue", 1_000);
@@ -78,41 +109,57 @@ describe("TimelineReport", () => {
     assert.match(report.lines()[0]!, /1 s after other/);
   });
 
+  it("forgets every role on reset", () => {
+    const report = new TimelineReport();
+    report.begin("backend", 0);
+    report.reset();
+    assert.deepEqual(report.lines(), []);
+  });
+
   it("has no lines before a role starts", () => {
     assert.deepEqual(new TimelineReport().lines(), []);
   });
 });
 
 describe("timedProvider", () => {
+  const assistantLine = (...names: string[]) =>
+    JSON.stringify({ type: "assistant", message: { content: names.map((name) => ({ type: "tool_use", name, input: { command: "secret --token sk-ant-xxxxxxxx" } })) } });
   const base = (): AgentProvider => ({
     name: "test",
     env: {},
     captureSessions: false,
     buildPrintCommand: () => ({ command: "claude --print x" }),
-    parseStreamLine: (line) =>
-      line === "tool" ? [{ type: "tool_call", name: "Bash", args: "secret --token sk-ant-xxxxxxxx" }] : line === "text" ? [{ type: "text", text: "hi" }] : [],
+    parseStreamLine: (line) => (line.includes("Bash") ? [{ type: "tool_call", name: "Bash", args: "secret --token sk-ant-xxxxxxxx" }] : line === "text" ? [{ type: "text", text: "hi" }] : []),
   });
 
-  it("passes the tool calls of the stream to the run and returns the events unchanged", () => {
+  it("times every tool call of the stream, also those the provider's parser doesn't report, and returns its events unchanged", () => {
     const report = new TimelineReport();
     const run = report.begin("backend", 0);
     let clock = 0;
     const provider = timedProvider(base(), run, () => (clock += 4_000));
-    assert.deepEqual(provider.parseStreamLine("tool"), [{ type: "tool_call", name: "Bash", args: "secret --token sk-ant-xxxxxxxx" }]);
+    assert.deepEqual(provider.parseStreamLine(assistantLine("Read", "Bash")), [{ type: "tool_call", name: "Bash", args: "secret --token sk-ant-xxxxxxxx" }]);
     assert.deepEqual(provider.parseStreamLine("text"), [{ type: "text", text: "hi" }]);
-    assert.deepEqual(provider.parseStreamLine("other"), []);
-    run.end(10_000);
-    assert.equal(report.lines()[0], "backend: 1 run, 1 tool calls, 10 s in all; longest stretches between calls: 6 s after Bash, 4 s after start");
+    assert.deepEqual(provider.parseStreamLine(assistantLine("Edit")), []);
+    run.end(20_000);
+    // Read at 4 s, Bash at 8 s, Edit at 12 s: stretches 4 (start), 4 (Read), 4 (Bash), 8 (Edit, to the end).
+    assert.equal(report.lines()[0], "backend: 1 run, 3 tool calls, 20 s in all; longest stretches between calls: 8 s after Edit, 4 s after start, 4 s after Read");
   });
 
   it("never puts a call's arguments in the report", () => {
     const report = new TimelineReport();
     const run = report.begin("backend", 0);
     const provider = timedProvider(base(), run, () => 1_000);
-    provider.parseStreamLine("tool");
+    provider.parseStreamLine(assistantLine("Bash"));
     run.end(2_000);
     assert.ok(!report.lines().join("\n").includes("sk-ant"));
     assert.ok(!report.lines().join("\n").includes("secret"));
+  });
+
+  it("lets a line that isn't JSON through without a throw or a call", () => {
+    const report = new TimelineReport();
+    const provider = timedProvider(base(), report.begin("backend", 0), () => 1_000);
+    assert.deepEqual(provider.parseStreamLine("{ not json"), []);
+    assert.match(report.lines()[0]!, /0 tool calls/);
   });
 
   it("keeps the rest of the provider as it was", () => {

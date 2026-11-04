@@ -123,29 +123,37 @@ export function runRole<T>(
   role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed | "output"> & { output: sandcastle.OutputObjectDefinition<T> },
   limits?: RunLimits,
+  execute?: typeof sandcastle.run,
 ): Promise<sandcastle.RunResult & { output: T }>;
 export function runRole(
   role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed>,
   limits?: RunLimits,
+  execute?: typeof sandcastle.run,
 ): Promise<sandcastle.RunResult>;
 export async function runRole(
   role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
+  // Starts the run; for tests.
+  execute: typeof sandcastle.run = sandcastle.run,
 ): Promise<sandcastle.RunResult> {
   usageReport.record(role, []);
-  const timing = timelineReport.begin(role);
+  // Timed from the moment the role starts: a role the run's limits refuse never does, and must not be listed as one that ran.
+  let timing: RoleRun | undefined;
   try {
     const result = await runWithinLimits(
       role,
-      () => sandcastle.run({ ...withSharedRules(options), ...roleOptions(role, undefined, undefined, timing) }),
+      () => {
+        timing = timelineReport.begin(role);
+        return execute({ ...withSharedRules(options), ...roleOptions(role, undefined, undefined, timing) });
+      },
       limits,
     );
     usageReport.record(role, result.iterations);
     return result;
   } finally {
-    timing.end(Date.now());
+    timing?.end(Date.now());
   }
 }
 
@@ -166,17 +174,21 @@ export async function runRoleInSandbox(
   // Before the usage record: a timeout the host can't wait for throws here, and a role that never started must not be listed as one that ran.
   const backstopMs = backstop.backstopMs ?? roleBackstopMs(role);
   usageReport.record(role, []);
-  const timing = timelineReport.begin(role);
+  // Timed from the moment the role starts (see runRole); a run the host gives up on ends here too, and the late events of its stream are ignored.
+  let timing: RoleRun | undefined;
   try {
     const result = await runWithinLimits(
       role,
-      () => withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions, timing) })),
+      () => {
+        timing = timelineReport.begin(role);
+        return withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions, timing) }));
+      },
       limits,
     );
     usageReport.record(role, result.iterations);
     return result;
   } finally {
-    timing.end(Date.now());
+    timing?.end(Date.now());
   }
 }
 

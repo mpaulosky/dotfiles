@@ -1,22 +1,62 @@
 // Where a role's time goes. Sandcastle's role logs carry no timestamps, so a role that ran for sixteen minutes (a build's
 // backend did, in two Actions runs) left nothing to say whether it spent them on commands or on the model. The host times each
-// tool call as the agent's stream reports it (`timedProvider`), and the run report (lib/report.mts) prints, for each role, how
-// many calls it made, how long it ran, and the longest stretches between one call and the next. The time between two calls is
-// the first call running plus the model's thinking after it, so a gate or a test run shows up as a long stretch after a `Bash`
-// call. Only a call's name is kept, never its arguments, and only when it is a plain tool name: the report is a public
-// artifact (lib/role-logs.mts).
+// tool call in the agent's stream (`timedProvider`), and the run report (lib/report.mts) prints, for each role, how many calls it
+// made, how long it ran, and the longest stretches between one call and the next. A stretch is the call before it running plus
+// the model producing the next call, so a gate or a test run shows up as a long stretch after a `Bash` call; calls the model
+// makes together arrive together and leave a 0 s stretch. The first stretch (after `start`) also holds the sandbox and agent
+// starting, and the last holds the closing message. The calls are read from the stream's own lines, not from Sandcastle's
+// parser, which reports only Bash, WebSearch, WebFetch and Agent calls and so would leave out every Read and Edit. Only a call's
+// name is kept, never its arguments, and only a name in KNOWN_TOOLS: the report is a public artifact (lib/role-logs.mts).
 
 import type { AgentProvider } from "@ai-hero/sandcastle";
 
 // How many of a role's longest stretches the report names.
 export const TIMELINE_GAPS = 3;
 
-// A tool name as the report prints it: a plain one (`Bash`, `Read`), else `other`, which keeps an MCP tool's server and
-// tool names and anything an agent-chosen name could carry out of a public artifact.
-const PLAIN_TOOL_NAME = /^[A-Za-z]{1,24}$/;
+// The tools the report names. A fixed set, not a pattern: a pattern lets any word through, and what reaches a public artifact
+// should not depend on what the agent, or a future Sandcastle, calls a tool.
+export const KNOWN_TOOLS: ReadonlySet<string> = new Set([
+  "Bash",
+  "Read",
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+  "Grep",
+  "Glob",
+  "WebSearch",
+  "WebFetch",
+  "Agent",
+  "Task",
+  "Skill",
+  "TodoWrite",
+  "ToolSearch",
+]);
 
+// A tool name as the report prints it: one of KNOWN_TOOLS, else `other`, which also covers an MCP tool, whose server and tool
+// names are the repo's own.
 export function reportedToolName(name: string): string {
-  return PLAIN_TOOL_NAME.test(name) ? name : "other";
+  return KNOWN_TOOLS.has(name) ? name : "other";
+}
+
+// The names of the tools a stream line has the assistant call. Claude Code prints one JSON object per line, and an `assistant`
+// message holds `tool_use` blocks; any other line, malformed JSON included, holds none. Never throws: it runs inside
+// Sandcastle's stream handling, which a throw would disturb.
+export function toolNamesInLine(line: string): string[] {
+  if (!line.startsWith("{")) return [];
+  try {
+    const parsed: unknown = JSON.parse(line);
+    const message = (parsed as { type?: unknown; message?: { content?: unknown } } | null);
+    if (message?.type !== "assistant" || !Array.isArray(message.message?.content)) return [];
+    const names: string[] = [];
+    for (const block of message.message.content as unknown[]) {
+      const entry = block as { type?: unknown; name?: unknown } | null;
+      if (entry?.type === "tool_use" && typeof entry.name === "string") names.push(entry.name);
+    }
+    return names;
+  } catch {
+    return [];
+  }
 }
 
 type Gap = { readonly ms: number; readonly after: string };
@@ -75,6 +115,11 @@ export class TimelineReport {
     return new RoleRun(timing, atMs);
   }
 
+  // Forgets every role. For tests: a run keeps one report for its whole life.
+  reset(): void {
+    this.byRole.clear();
+  }
+
   // One line per role: runs, tool calls, the time the runs took in total, and the longest stretches, each named for the call
   // that was running when it began.
   lines(): string[] {
@@ -94,16 +139,14 @@ function seconds(ms: number): string {
   return `${Math.round(ms / 1000)} s`;
 }
 
-// `provider` with each tool call its stream reports passed to `run.call`. The provider itself is returned unchanged in what it
-// parses and how it builds its command: this only watches.
+// `provider` with each tool call in its stream passed to `run.call`. The provider itself is returned unchanged in what it parses
+// and how it builds its command: this only watches.
 export function timedProvider<P extends AgentProvider>(provider: P, run: RoleRun, now: () => number = Date.now): P {
   return {
     ...provider,
     parseStreamLine: (line: string) => {
       const events = provider.parseStreamLine(line);
-      for (const event of events) {
-        if (event.type === "tool_call") run.call(event.name, now());
-      }
+      for (const name of toolNamesInLine(line)) run.call(name, now());
       return events;
     },
   };

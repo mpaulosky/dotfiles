@@ -236,7 +236,7 @@ export type SummaryInput = {
 // $GITHUB_STEP_SUMMARY: the queue and ending sentence, a table of every touched
 // issue and PR with its outcome (plus one row per hand-back), the hand-backs
 // themselves with links, the PRs waiting on a person, any round where intake
-// stopped, and a token-usage table by role with a total row.
+// stopped, a token-usage table by role with a total row, and, when any role ran, a section on each role's tool-call timing.
 export function renderSummary(input: SummaryInput): string {
   const { repo } = input;
   const link = (target: ReportTarget): string =>

@@ -69,7 +69,8 @@ pass its tests.
 
 ### 3. Gather earlier decisions
 
-Earlier reviews of this branch are context. What they fixed or dismissed isn't raised again; what a person accepted, and
+Earlier reviews of this branch are context. What they dismissed isn't raised again; a fixed item isn't proof it is fixed, so
+the reviewers read the code at its `path:line` and raise it again if the problem is still there; what a person accepted, and
 what was left open, is raised again for the person to decide for this code:
 
 - `scripts/review.sh latest`: the nearest earlier review of this branch's own commits, whatever the branch was called
@@ -126,7 +127,8 @@ the sections must match in order), and prints two lines on stdout, the diff's
 key and HEAD: keep both, since they name exactly the code this round reviews. The key is that of the whole diff, mirrors included, so a change in a
 mirror alone still needs a new review. In a later round, run `scripts/review.sh prepare <run> <HEAD the round before printed>`: it also writes the
 diff of that round's fixes to `<run>/fixes.patch`, filtered the same way. Write to `<run>/decisions.md` the earlier decisions from step 3 and every finding this run's earlier rounds
-raised, each with its id, outcome and reason, so no round raises again what an earlier one fixed or dismissed. Label
+raised, each with its id, outcome and reason, so no round raises again what an earlier one dismissed. A fixed item stays settled only until
+a reviewer reads the code at its `path:line` and finds the problem still there, then it is raised again. Label
 accepted and open ones "raise again if still in the code". Give a security finding (every finding the report marks
 `(security)`: a Warning, one whose lens names security, or any not marked `security: false`) whose
 weakness is still in the code (open, accepted, or decided as part of another), from `latest` or from this run's earlier

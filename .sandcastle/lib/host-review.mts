@@ -10,7 +10,7 @@ import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, 
 import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
-import { FINDING_PATH_SHAPE, isSecurity, patchPaths, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
+import { FINDING_PATH_SHAPE, isSecurity, patchPaths, renderAdvisories, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
 
 // One row of lenses.md's table (or of a repo's own lenses table).
 export type Lens = { name: string; appliesTo: string; row: string };
@@ -690,4 +690,34 @@ export function openFindingsNote(ledger: Ledger, readPaths: ReadonlySet<string>,
     ...(more > 0 ? [...(lines.length > 0 ? [""] : []), `${more} more open finding${more === 1 ? " is" : "s are"} in the local review record and aren't listed here.`] : []),
     ...(hidden > 0 ? [...(lines.length > 0 ? [""] : []), `${hidden} security finding${hidden === 1 ? " is" : "s are"} left open in the local review record and aren't listed here.`] : []),
   ].join("\n");
+}
+
+// The most findings the follow-up issue lists, and the longest line it keeps. The issue is public, so a reviewer's text is bounded.
+const ADVISORY_ISSUE_FINDINGS = 20;
+const ADVISORY_LINE_LIMIT = 2000;
+const ADVISORY_MARKER = "<!-- claude-session -->";
+
+// The public follow-up issue's body for the review's open Advisory findings (review-ledger.mts#renderAdvisories), held to the PR note's rules: a
+// finding is listed only when its path is one of the files the review read and is made of plain file-name characters, its line is no longer than
+// ADVISORY_LINE_LIMIT, and `publishable` leaves its whole rendering as it is (the host's public-text check: a reviewer that read untrusted text can quote a
+// secret in a summary or fix). At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and stay in the local review record.
+// Empty when nothing can be listed.
+export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>, publishable: (text: string) => boolean = () => true): string {
+  const rendered = ledger.findings
+    .map((finding) => ({ finding, text: renderAdvisories({ ...ledger, findings: [finding] }) }))
+    .filter((entry) => entry.text !== "");
+  const listed = rendered
+    .filter(({ finding, text }) => {
+      const path = diffPath(finding.path);
+      const line = text.split("\n").find((candidate) => candidate.startsWith("- ")) ?? "";
+      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && !/www\./i.test(path) && line.length <= ADVISORY_LINE_LIMIT && publishable(text.trim());
+    })
+    .slice(0, ADVISORY_ISSUE_FINDINGS)
+    .map((entry) => entry.finding);
+  // With nothing listed renderAdvisories answers "", which the caller reads as no issue to file.
+  const body = renderAdvisories({ ...ledger, findings: listed });
+  const left = rendered.length - listed.length;
+  if (left === 0) return body;
+  const note = `${left} more open Advisory finding${left === 1 ? " is" : "s are"} in the local review record and ${left === 1 ? "isn't" : "aren't"} listed here.`;
+  return body.replace(`\n${ADVISORY_MARKER}`, `\n${note}\n\n${ADVISORY_MARKER}`);
 }

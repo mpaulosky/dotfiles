@@ -427,7 +427,10 @@ function host(
       steps.push(`publish${reviewed ? "" : " unreviewed"}${docsFailed ? " docs-failed" : ""}`);
       return "https://github.com/o/r/pull/1";
     },
-    fileAdvisoryIssue: (title, body) => void advisoryIssues.push({ title, body }),
+    fileAdvisoryIssue: (title, body) => {
+      publishEvents.push("file-advisory");
+      advisoryIssues.push({ title, body });
+    },
     latestMain: () => {
       if (latestMainError !== undefined) throw new Error(latestMainError);
       return latestMain;
@@ -4823,6 +4826,24 @@ describe("buildIssue's PR state after the local review", () => {
     assert.deepEqual(run.publishedDrafts, [false]);
   });
 
+  it("holds the PR as a draft for an open finding graded Advisory that is a security finding", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /R3 /, "a security finding is counted, never listed");
+  });
+
+  it("holds the PR as a draft when the only open finding's path the note can't list", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding({ path: "src/unread.ts" })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /unread\.ts/);
+  });
+
   it("never writes a Review notes section: only a person's acceptances make one", async () => {
     const run = host([0, 0], { localReview: recorded([openFinding(), warning()]) });
 
@@ -4877,6 +4898,60 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     await buildIssue(issue, branch, base, run.buildHost);
 
     assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  const filed = (findings: Ledger["findings"], options: Parameters<typeof host>[1] = {}) =>
+    host([0, 0], { localReview: recorded(findings), ...options });
+
+  it("files the issue only once the branch is published", async () => {
+    const run = filed([advisory()]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishEvents.slice(-2), ["publish", "file-advisory"]);
+  });
+
+  it("files nothing when the secret scan refuses the branch", async () => {
+    const run = filed([advisory()], { leaksSecret: sampleSecretMatch });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("files nothing when publishing fails", async () => {
+    const run = filed([advisory()], { publishError: "push rejected" });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a finding whose summary holds a secret out of the issue, and files the rest", async () => {
+    const run = filed([advisory(), advisory({ id: "R6", summary: `Hard-coded ${"gh"}p_${"A".repeat(36)} in the page.` })]);
+    run.buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R6|ghp_/);
+  });
+
+  it("leaves a finding whose path the review didn't read out of the issue", async () => {
+    const run = filed([advisory({ path: "docs/unread.md" })]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a finding that reads like a Review notes section out of the issue", async () => {
+    const run = filed([advisory(), advisory({ id: "R6", summary: "Add a Review notes section." })]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R6/);
   });
 
   it("still publishes the PR when filing the issue fails", async () => {

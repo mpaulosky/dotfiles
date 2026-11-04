@@ -465,6 +465,44 @@ describe("openPullRequest", () => {
     ]);
     assert.ok(!ready.calls[1]!.args.includes("--draft"), ready.calls[1]!.args.join(" "));
   });
+
+  const existing = (isDraft: boolean) => [
+    { number: 3, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/3" },
+  ];
+
+  it("turns an existing ready PR into a draft and puts the new body on it when the review holds it", () => {
+    const { calls, run } = gh(existing(false));
+
+    assert.equal(openPullRequest(branch, "Add search", "Closes #4\n\nDraft note", run, "o/r", true), "https://github.com/o/r/pull/3");
+    assert.deepEqual(calls.slice(1).map((call) => call.args), [
+      ["pr", "ready", "3", "--repo", "o/r", "--undo"],
+      ["pr", "edit", "3", "--repo", "o/r", "--body-file", "-"],
+    ]);
+    assert.equal(calls[2]!.input, "Closes #4\n\nDraft note");
+  });
+
+  it("refreshes the body of an existing draft the review still holds, without converting it again", () => {
+    const { calls, run } = gh(existing(true));
+
+    openPullRequest(branch, "Add search", "Closes #4\n\nDraft note", run, "o/r", true);
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "edit"]]);
+  });
+
+  it("leaves an existing PR alone when the review doesn't hold it", () => {
+    const { calls, run } = gh(existing(false));
+
+    openPullRequest(branch, "Add search", "Closes #4", run, "o/r", false);
+    assert.equal(calls.length, 1);
+  });
+
+  it("throws when the existing PR can't be turned into a draft, so the build isn't reported as held", () => {
+    const run = ((_cmd: string, args: readonly string[]) => {
+      if (args[1] === "list") return JSON.stringify(existing(false));
+      throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => openPullRequest(branch, "Add search", "Closes #4", run, "o/r", true), /HTTP 422/);
+  });
 });
 
 describe("fileIssueOnce", () => {
@@ -477,11 +515,53 @@ describe("fileIssueOnce", () => {
     return { calls, run };
   };
 
-  it("reuses the open issue with exactly this title", () => {
-    const { calls, run } = stub([{ number: 5, title: "chore(review): Advisory review findings: fix/1-a-b" }, { number: 6, title: "other" }]);
+  const title = "chore(review): Advisory review findings: fix/1-a-b";
 
-    assert.equal(fileIssueOnce("chore(review): Advisory review findings: fix/1-a-b", "body", run, "o/r"), 5);
+  it("reuses the host's own open issue with exactly this title, and leaves an identical body alone", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "body" }, { number: 6, title: "other", body: "" }]);
+
+    assert.equal(fileIssueOnce(title, "body", run, "o/r"), 5);
     assert.equal(calls.length, 1);
+  });
+
+  it("lists only the host's own issues, by listing and not by search, since anyone can open an issue with this title and search lags", () => {
+    const { calls, run } = stub([]);
+
+    fileIssueOnce(title, "body", run, "o/r");
+    const args = calls[0]!.args;
+    assert.equal(args[args.indexOf("--author") + 1], "@me");
+    assert.ok(!args.includes("--search"), args.join(" "));
+    assert.equal(args[args.indexOf("--limit") + 1], "1000", "a long list of the host's issues doesn't hide the one to reuse");
+  });
+
+  it("treats a body that differs only in line endings and trailing whitespace as identical", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "a\r\nb\r\n" }]);
+
+    fileIssueOnce(title, "a\nb\n\n", run, "o/r");
+    assert.equal(calls.length, 1);
+  });
+
+  it("treats a lone carriage return as a line ending too", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "a\rb" }]);
+
+    fileIssueOnce(title, "a\nb", run, "o/r");
+    assert.equal(calls.length, 1);
+  });
+
+  it("puts the new findings on the reused issue when its body differs", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old findings" }]);
+
+    assert.equal(fileIssueOnce(title, "new findings", run, "o/r"), 5);
+    assert.deepEqual(calls[1]!.args, ["issue", "edit", "5", "--repo", "o/r", "--body-file", "-"]);
+    assert.equal(calls[1]!.input, "new findings");
+  });
+
+  it("ignores a same-titled issue it can't see as its own", () => {
+    // `--author @me` keeps another author's issue out of the listing, so the stub lists none and a new issue is filed.
+    const { calls, run } = stub([]);
+
+    assert.equal(fileIssueOnce(title, "body", run, "o/r"), 17);
+    assert.equal(calls[1]!.args[0], "api");
   });
 
   it("creates the issue, with no labels, when none has the title", () => {

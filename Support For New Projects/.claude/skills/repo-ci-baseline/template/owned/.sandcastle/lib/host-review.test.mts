@@ -11,6 +11,7 @@ import {
   LENS_APPLIES,
   MAX_REVIEW_PATCH_BYTES,
   diffPath,
+  advisoryIssueBody,
   openFindingsNote,
   parseLensTable,
   parseReviewerAnswer,
@@ -2361,5 +2362,98 @@ describe("openFindingsNote", () => {
     const note = openFindingsNote(ledgerOf([found({ summary, fix: summary })]), APP);
 
     assert.doesNotMatch(note, /octocat|#12|aGVsbG8/);
+  });
+});
+
+// The follow-up issue for the open Advisory findings is public, and its text is a reviewer's, so it is held to the PR note's rules.
+describe("advisoryIssueBody", () => {
+  const DOCS = new Set(["docs/a.md"]);
+  const ledgerOf = (findings: Ledger["findings"]): Ledger => ({
+    version: 1,
+    key: "k",
+    branch: "feature/388-x",
+    base: BASE,
+    head: hex(2),
+    recordedAt: "2026-01-01T00:00:00.000Z",
+    rounds: 1,
+    findings,
+  });
+  const advisory = (overrides: Partial<Ledger["findings"][number]> = {}): Ledger["findings"][number] => ({
+    id: "R5",
+    lens: "Docs match the code",
+    path: "docs/a.md",
+    line: 4,
+    summary: "A stale sentence.",
+    severity: "advisory",
+    security: false,
+    status: "open",
+    test: null,
+    reason: null,
+    fix: "Reword it.",
+    ...overrides,
+  });
+  const token = `${"gh"}p_${"A".repeat(36)}`;
+  const clean = (line: string) => !line.includes("ghp_");
+
+  it("is empty when no Advisory finding is open", () => {
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ status: "fixed", reason: "Reworded." })]), DOCS), "");
+  });
+
+  it("lists an open Advisory finding with its summary and fix", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory()]), DOCS);
+    assert.match(body, /R5 docs\/a\.md:4: A stale sentence\. Suggested fix: Reword it\./);
+  });
+
+  it("leaves out a finding whose path the review didn't read", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: "docs/other.md" })]), DOCS);
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /R6 docs/);
+    assert.match(body, /1 more open Advisory finding is in the local review record/);
+  });
+
+  it("leaves out a finding whose path is not made of plain file-name characters", () => {
+    const odd = "docs/[x](http://e.example).md";
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: odd })]), new Set(["docs/a.md", odd]));
+    assert.doesNotMatch(body, /R6 /);
+    assert.match(body, /1 more open Advisory finding is in/);
+  });
+
+  it("leaves out a finding whose text the caller's public-text check refuses, and only that one", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", summary: `The token ${token} is hard-coded.` })]), DOCS, clean);
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /R6|ghp_/);
+    assert.match(body, /1 more open Advisory finding is in/);
+  });
+
+  it("leaves out a suggested fix that holds a secret, not only a summary", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ fix: `Use ${token}.` })]), DOCS, clean);
+    assert.equal(body, "");
+  });
+
+  it("is empty when every finding is left out", () => {
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ path: "docs/other.md" })]), DOCS), "");
+  });
+
+  it("lists at most 20 findings and counts the rest", () => {
+    const many = Array.from({ length: 21 }, (_, i) => advisory({ id: `R${i + 1}`, line: i + 1 }));
+    const body = advisoryIssueBody(ledgerOf(many), DOCS);
+    assert.equal(body.split("\n").filter((line) => line.startsWith("- R")).length, 20);
+    assert.match(body, /1 more open Advisory finding is in/);
+    assert.equal(advisoryIssueBody(ledgerOf(many.slice(0, 20)), DOCS).includes("more open"), false);
+  });
+
+  it("leaves out a finding whose line is over the length bound, and keeps one at the bound", () => {
+    const at = (summary: string) => advisoryIssueBody(ledgerOf([advisory({ fix: null, summary })]), DOCS);
+    const fits = at("x".repeat(1900));
+    assert.match(fits, /R5/);
+    const lineLength = fits.split("\n").find((line) => line.startsWith("- R5"))!.length;
+    const room = 2000 - (lineLength - 1900);
+    assert.match(at("x".repeat(room)), /R5/, "a line of exactly the bound stays");
+    assert.equal(at("x".repeat(room + 1)), "", "a line one over is left out");
+  });
+
+  it("ends with the session marker and keeps the 'more' note above it", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: "docs/other.md" })]), DOCS);
+    assert.match(body, /isn't listed here\.\n\n<!-- claude-session -->\n$/);
   });
 });

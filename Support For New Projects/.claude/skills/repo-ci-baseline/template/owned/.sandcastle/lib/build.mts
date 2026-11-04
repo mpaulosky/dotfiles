@@ -24,13 +24,13 @@ import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./e
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, fileIssueOnce, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
-import { openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
+import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs, reviewerPromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
-import { isBlocking, mergeBase, pinLedgerGit, prepareRound, recordReview, renderAdvisories, takenIds } from "./review-ledger.mts";
+import { isBlocking, mergeBase, pinLedgerGit, prepareRound, recordReview, takenIds } from "./review-ledger.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git, hostGitInvocation, runHostGit } from "./shell.mts";
@@ -1508,6 +1508,7 @@ async function buildMarkedIssue(
     // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note.
     let reviewNote = "";
     let holdAsDraft = false;
+    let advisories = "";
     const review = await host.localReview({
       sandbox,
       issue: { number: issue.number, title: issue.title, body: issue.body },
@@ -1535,15 +1536,13 @@ async function buildMarkedIssue(
       }
       // Only a person accepts a finding (scripts/review.sh accept) and marks the PR ready, so a blocking finding left open holds it as a draft.
       holdAsDraft = review.ledger.findings.some(isBlocking);
-      // The open Advisory findings go to a follow-up issue, as the skill's step 9 files them. A failed filing never stops the PR.
-      const advisories = renderAdvisories(review.ledger);
-      if (advisories !== "") {
-        try {
-          host.fileAdvisoryIssue(`chore(review): Advisory review findings: ${branch}`, advisories);
-        } catch (error) {
-          console.error(`  ⚠ #${issue.number}: filing the follow-up issue for the Advisory findings failed: ${terminalText(String(error))}`);
-        }
-      }
+      // The open Advisory findings go to a follow-up issue, as the skill's step 9 files them, but only once the branch is published (below):
+      // the issue is public, so a branch the secret scan refuses or whose push fails gets none. Its text is a reviewer's, so it is held to the PR note's rules.
+      advisories = advisoryIssueBody(
+        review.ledger,
+        review.readPaths,
+        (text) => host.publicError(text) === text && !visibleLetters(text).includes("reviewnotes"),
+      );
     }
     // Claude Review reads a "Review notes" section as the owner's accepted findings, so no note may pass for one, in any form.
     if (visibleLetters(reviewNote).includes("reviewnotes")) {
@@ -1602,6 +1601,14 @@ async function buildMarkedIssue(
         reviewNote,
         holdAsDraft,
       );
+      // A failed filing never undoes the published PR.
+      if (advisories !== "") {
+        try {
+          host.fileAdvisoryIssue(`chore(review): Advisory review findings: ${branch}`, advisories);
+        } catch (error) {
+          console.error(`  ⚠ #${issue.number}: filing the follow-up issue for the Advisory findings failed: ${terminalText(String(error))}`);
+        }
+      }
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
     } catch (error) {
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${terminalText(String(error))}`);

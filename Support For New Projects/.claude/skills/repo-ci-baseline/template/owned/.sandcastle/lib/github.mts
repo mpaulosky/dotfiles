@@ -274,7 +274,9 @@ export function ghWithStderr(run: typeof execFileSync, args: string[], input?: s
 
 // The open pull request from this repository's `branch`, or a new one for it
 // with the title and body, as its URL. A fork's PR from a branch of the same
-// name doesn't count.
+// name doesn't count. With `draft`, the review holds the PR: a new one is created as a draft, and one that already exists (a rerun, or an
+// earlier build's PR opened ready before this review's findings) is turned into a draft with the new body, so the hold and its note never depend
+// on the PR being new. A failure to do so throws rather than leave a ready PR standing for blocking findings.
 export function openPullRequest(
   branch: string,
   title: string,
@@ -285,11 +287,17 @@ export function openPullRequest(
 ): string {
   const listed = JSON.parse(
     ghWithStderr(run, [
-      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,url",
+      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url",
     ]),
-  ) as ListedPullRequest[];
-  const existing = sameRepository(listed).find((pr) => pr.headRefName === branch)?.url;
-  if (existing) return existing;
+  ) as (ListedPullRequest & { number: number; isDraft?: boolean })[];
+  const existing = sameRepository(listed).find((pr) => pr.headRefName === branch);
+  if (existing?.url) {
+    if (draft) {
+      if (existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
+      ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], body);
+    }
+    return existing.url;
+  }
   return ghWithStderr(
     run,
     ["pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", title, "--body-file", "-", ...(draft ? ["--draft"] : [])],
@@ -952,9 +960,11 @@ export function createIssue(
   return number;
 }
 
-// Files an issue with no labels, or reuses the open one with exactly this title, as its number. The local review's follow-up issue for the open
+// Files an issue with no labels, or reuses the host's own open one with exactly this title, as its number. The local review's follow-up issue for the open
 // Advisory findings (lib/build.mts) goes through it: a later build of the same branch, or a rerun, finds the issue it already filed rather than
-// open a second. The search is by words, so the listed titles are compared whole.
+// open a second, and puts its current findings on it when they differ, so a later build's new findings aren't lost. Only the host's own issues count
+// (`--author @me`): the title is predictable from the branch name, so anyone could open an issue with it first and keep the findings from the
+// maintainers. The issues are listed, not searched, since GitHub's search index lags and would let a quick rerun file a duplicate.
 export function fileIssueOnce(
   title: string,
   body: string,
@@ -963,11 +973,15 @@ export function fileIssueOnce(
 ): number {
   const listed = JSON.parse(
     ghWithStderr(run, [
-      "issue", "list", "--repo", repo, "--state", "open", "--search", `${JSON.stringify(title)} in:title`, "--limit", "100", "--json", "number,title",
+      "issue", "list", "--repo", repo, "--state", "open", "--author", "@me", "--limit", "1000", "--json", "number,title,body",
     ]),
-  ) as { number: number; title: string }[];
+  ) as { number: number; title: string; body?: string }[];
   const existing = listed.find((issue) => issue.title === title);
-  return existing === undefined ? createIssue(title, body, [], run, repo) : existing.number;
+  if (existing === undefined) return createIssue(title, body, [], run, repo);
+  // GitHub stores the body with CRLF line endings and may trim it, so the comparison ignores both.
+  const same = (text: string) => text.replace(/\r\n?/g, "\n").trim();
+  if (same(existing.body ?? "") !== same(body)) ghWithStderr(run, ["issue", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], body);
+  return existing.number;
 }
 
 // Adds the native "parent has sub-issue child" relationship GitHub shows as a

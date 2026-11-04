@@ -147,20 +147,31 @@ describe("SANDBOX_PROBE", () => {
     }
   });
 
-  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: !hasPs && "needs ps" }, async () => {
+  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: (process.platform !== "linux" || !hasPs) && "needs procps ps on Linux" }, async () => {
     // The count is system-wide, so the test compares it before and after it makes one zombie: the subshell the shell backgrounds
     // exits at once, and the shell becomes `sleep`, which never waits, so the subshell stays a zombie while it runs.
+    // The test's own count of zombies, from `ps` alone. The probe's count must lie between two of these taken around it, which a count of
+    // some other state (a sleeping `sleep` is also new while the test runs) does not.
+    const counted = () => spawnSync("ps", ["-eo", "stat="], { encoding: "utf8" }).stdout.split("\n").filter((line) => line.startsWith("Z")).length;
     const zombies = () => {
+      const low = counted();
       const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+      const high = counted();
       assert.equal(run.status, 0, run.stderr);
-      return Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
+      const probed = Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
+      assert.ok(probed >= Math.min(low, high) && probed <= Math.max(low, high), `the probe counted ${probed} zombies, ps counted ${low} before and ${high} after`);
+      return probed;
     };
     const before = zombies();
     assert.ok(Number.isInteger(before), "no zombie count in the probe's output");
     const parent = spawn("sh", ["-c", "(true) & exec sleep 5"], { stdio: "ignore" });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const after = zombies();
+      // The zombie exists once the backgrounded subshell has exited, which a slow machine can take longer than a fixed wait: poll for it.
+      let after = before;
+      for (const deadline = Date.now() + 5_000; after < before + 1 && Date.now() < deadline; ) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        after = zombies();
+      }
       assert.ok(after >= before + 1, `zombies went from ${before} to ${after}`);
     } finally {
       parent.kill();
@@ -180,16 +191,17 @@ describe("SANDBOX_PROBE", () => {
   });
 
   it("prints each cgroup pids file that exists, under its own name, and nothing for one it lacks", { skip: process.platform === "win32" && "needs sh" }, () => {
-    const dir = mkdtempSync(join(tmpdir(), "probe-cgroup-"));
+    const root = mkdtempSync(join(tmpdir(), "probe-cgroup-"));
     try {
-      mkdirSync(join(dir, "pids"));
+      const dir = join(root, "all");
+      mkdirSync(join(dir, "pids"), { recursive: true });
       writeFileSync(join(dir, "pids.current"), "17386\n");
       writeFileSync(join(dir, "pids.max"), "max\n");
       writeFileSync(join(dir, "pids", "pids.current"), "3\n");
       writeFileSync(join(dir, "pids", "pids.max"), "4194304\n");
       // A machine can have only some of the files (v1 has the pids folder, v2 the top-level two), here just one.
-      const some = mkdtempSync(join(tmpdir(), "probe-cgroup-some-"));
-      mkdirSync(join(some, "pids"));
+      const some = join(root, "some");
+      mkdirSync(join(some, "pids"), { recursive: true });
       writeFileSync(join(some, "pids", "pids.max"), "max\n");
       const section = (cgroupRoot: string) => {
         const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8", env: { ...process.env, CGROUP_ROOT: cgroupRoot } });
@@ -198,10 +210,9 @@ describe("SANDBOX_PROBE", () => {
       };
       assert.deepEqual(section(dir), ["pids.current: 17386", "pids.max: max", "pids/pids.current: 3", "pids/pids.max: 4194304"]);
       assert.deepEqual(section(some), ["pids/pids.max: max"]);
-      assert.deepEqual(section(join(dir, "none")), []);
-      rmSync(some, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      assert.deepEqual(section(join(root, "none")), []);
     } finally {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 

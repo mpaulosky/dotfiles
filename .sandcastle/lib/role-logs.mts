@@ -158,8 +158,9 @@ export function reviewerLogFileName(branch: string): string {
 }
 
 // The builds this run started, by the name of the reviewer log each one writes, so the index can say which build a numbered view is.
-// Only the host's own issue numbers and branches go in: a log's name in the folder is whatever an agent that can write there chose,
-// and is looked up here, never printed.
+// Only the host's own issue numbers and branches go in, and only an issue number comes out: a log's name in the folder is whatever an
+// agent that can write there chose, so it is looked up here and never printed. That lookup is by name, so an agent could name a file
+// for another build's log and take its label: the label is a hint for a person reading a diagnostic, not proof of where a log came from.
 export class BuildLogs {
   private readonly byFile = new Map<string, number>();
 

@@ -556,6 +556,22 @@ describe("reviewer log index", () => {
     assert.deepEqual(Object.keys(written), ["logs/report/reviewer-1.log"]);
   });
 
+  it("warns without the error's message, which names the path, when the index write throws something with no code", () => {
+    for (const thrown of [new Error("open '/secret/path/index.txt'"), "a string", null]) {
+      const warnings: string[] = [];
+      const { fs } = fakeFs({ "a-reviewer.log": "x" });
+      const noIndex: RoleLogFs = {
+        ...fs,
+        write: (path, text) => {
+          if (path.endsWith(REVIEWER_LOG_INDEX)) throw thrown;
+          fs.write(path, text);
+        },
+      };
+      copyReviewerLogs("logs", "logs/report", noIndex, (line) => warnings.push(line), []);
+      assert.deepEqual(warnings, ["Couldn't write the index of the reviewer logs: an error"]);
+    }
+  });
+
   it("indexes the real files of a real folder too", () => {
     const dir = mkdtempSync(join(tmpdir(), "role-logs-index-"));
     try {

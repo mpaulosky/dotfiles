@@ -85,7 +85,8 @@ guardrails keep agent-written code from running on the host. A change keeps ever
 - The run report artifact is downloadable by any signed-in user of a public repository and GitHub doesn't mask secrets in it, so it never holds a role's log whole:
   `lib/role-logs.mts` copies only the reviewers' allowlisted view (the last host status lines, the last known tool names without arguments,
   an MCP tool only as `mcp__(...)`, the last few error lines), written as `reviewer-<n>.log`
-  (never under the source's name, which an agent chose), checked for the sandbox's secrets and token shapes. `summary.md`'s tool-call timing
+  (never under the source's name, which an agent chose), checked for the sandbox's secrets and token shapes. Beside them `index.txt` says which issue's build wrote
+  each numbered log, in host-made text only (an issue number and fixed words, never a name taken from a log). `summary.md`'s tool-call timing
   (`lib/role-timeline.mts`) is allowlisted the same way: counts, seconds and a tool's name only when it is in `KNOWN_TOOLS`, never its arguments. On Actions the whole report folder
   (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/` (`lib/report.mts#reportDir`), outside the checkout: a head-mode
   sandbox mounts the checkout read-write and one the host gave up on may still run, so a file under `.sandcastle/logs/` could be rewritten before the upload

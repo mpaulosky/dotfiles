@@ -55,6 +55,7 @@ import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
 import { ledgerGitEnv, type Ledger } from "./review-ledger.mts";
 import type { SecretMatch } from "./scan.mts";
+import { buildLogs, reviewerLogFileName } from "./role-logs.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
 import { KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, markSandboxStalled, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
@@ -738,6 +739,44 @@ describe("buildIssue", () => {
 
       assert.ok(!logs.some((line) => line.includes(`(the ${role} failed)`)), `${role}: ${logs.join("\n")}`);
     }
+  });
+
+  // The state of the sandbox after the other roles fail too (mpaulosky/dotfiles#428): a gate-fixer or a scribe that dies can leave it as broken as a reviewer.
+  it("logs the sandbox's state when the gate-fixer fails, and carries on with the checkpoint's own handling", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([1, 1, 1], { failing: ["gate-fixer"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the gate-fixer failed\):/.test(line)), logs.join("\n"));
+    assert.equal(recordBuildFailureCalls.length, 1);
+  });
+
+  it("logs the sandbox's state when the scribe fails, and still publishes with a note", async () => {
+    const { logs, pushed, buildHost } = host([0, 0], { failing: ["scribe"] });
+
+    await buildIssue(withRoles(["scribe"]), branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the scribe failed\):/.test(line)), logs.join("\n"));
+    assert.equal(pushed.length, 1);
+  });
+
+  it("runs no probe when a usage-limit or time-budget stop ends the gate-fixer or the scribe", async () => {
+    for (const role of ["gate-fixer", "scribe"]) {
+      const stop = new UncountedStopError("usage limit reached");
+      const { logs, buildHost } = host(role === "gate-fixer" ? [1] : [0, 0], { failing: [role], failWith: { [role]: stop } });
+
+      await assert.rejects(() => buildIssue(withRoles(["scribe"]), branch, base, buildHost), (error: unknown) => error === stop);
+
+      assert.ok(!logs.some((line) => line.includes(`(the ${role} failed)`)), `${role}: ${logs.join("\n")}`);
+    }
+  });
+
+  it("adds the build to the record the reviewer-log index reads", async () => {
+    const { buildHost } = host([0, 0]);
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(buildLogs.issueOf(reviewerLogFileName(branch)), issue.number);
   });
 
   it("logs the sandbox's state before each checkpoint's gate", async () => {

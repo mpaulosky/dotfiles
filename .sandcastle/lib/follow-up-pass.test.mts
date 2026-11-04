@@ -1647,6 +1647,41 @@ describe("runPass", () => {
     assert.deepEqual(calls.createSandbox, []);
   });
 
+  // The sandbox's state after a role fails (mpaulosky/dotfiles#428), as a build logs it: the pass's roles run in a sandbox of their own that a crash can break too.
+  const probed = (steps: string[]) => steps.some((step) => step.startsWith("timeout -k 2 20 sh -c"));
+
+  it("probes the sandbox, and logs under the reason, when the follow-up role fails", async () => {
+    const sandbox = sandboxFake({ roleFailing: ["follow-up"] });
+    const { passHost, calls } = passHostFake({ threads: [botThread()], containsBase: true, sandbox });
+
+    await runPass(passTarget(), issue, BASE, passHost);
+
+    assert.ok(probed(sandbox.steps), sandbox.steps.join("\n"));
+    assert.ok(calls.log.some((line) => line.includes("the follow-up run failed")), calls.log.join("\n"));
+  });
+
+  it("probes the sandbox when the gate-fixer fails", async () => {
+    const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1, 1, 1], roleFailing: ["gate-fixer"] });
+    const { passHost, calls } = passHostFake({ threads: [], containsBase: false, sandbox });
+
+    await runPass(passTarget({ conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost).catch(() => undefined);
+
+    assert.ok(probed(sandbox.steps), sandbox.steps.join("\n"));
+    assert.ok(calls.log.some((line) => line.includes("the gate-fixer failed")), calls.log.join("\n"));
+  });
+
+  it("runs no probe for a usage-limit or time-budget stop of the follow-up role or the gate-fixer", async () => {
+    for (const role of ["follow-up", "gate-fixer"]) {
+      const stop = new UncountedStopError("usage limit reached");
+      const sandbox = sandboxFake({ followUpJson: "[]", gateExitCodes: [1], roleFailing: [role], roleFailWith: { [role]: stop } });
+      const { passHost } = passHostFake({ threads: role === "follow-up" ? [botThread()] : [], containsBase: role === "follow-up", sandbox });
+
+      await runPass(passTarget(role === "follow-up" ? {} : { conflicted: true, reasons: ["it has merge conflicts"] }), issue, BASE, passHost).catch(() => undefined);
+
+      assert.ok(!probed(sandbox.steps), `${role}: ${sandbox.steps.join("\n")}`);
+    }
+  });
+
   it("rethrows an UncountedStopError from the follow-up role instead of giving up", async () => {
     const stop = new UncountedStopError("usage limit reached");
     const sandbox = sandboxFake({ roleFailing: ["follow-up"], roleFailWith: { "follow-up": stop } });

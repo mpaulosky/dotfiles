@@ -260,14 +260,16 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
   locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
 - **The run report artifact holds an allowlisted view of the reviewers' logs, never a whole log.** `lib/role-logs.mts` writes, for each `*-reviewer.log`
-  (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), the last host status lines (the start line without its timestamp),
+  (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), with an `index.txt` beside them that says which
+  issue's build each number is (from the branch the host built, never from the file's name), the last host status lines (the start line without its timestamp),
   the last known tool calls' names without arguments (an MCP tool only as `mcp__(...)`) and the last few error lines
   (cut short, and left out when they hold a long run of token characters), and a note in place of a view that looks like a secret.
   On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
   the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
   This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
-  After a role fails, or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes and core files
+  After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit
+  or time-budget stop), or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes and core files
   (`lib/diagnostics.mts`); the probe runs under its own `timeout`, and a failed probe is only logged.
   The host also times each role's tool calls from the agent's stream (`lib/role-timeline.mts`; it reads the stream's own lines, since Sandcastle's parser reports only Bash,
   web and Agent calls), and `summary.md` lists, for each role, its runs, tool calls, total time and the longest stretches between calls, each named for

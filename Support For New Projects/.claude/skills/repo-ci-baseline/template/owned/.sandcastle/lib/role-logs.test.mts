@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   allowlistedView,
+  BuildLogs,
   copyReviewerLogs,
+  REVIEWER_LOG_INDEX,
+  reviewerLogFileName,
   reviewerLogsDir,
   REVIEWER_LOGS_NAME,
   REPORT_ERROR_LINES,
@@ -253,13 +256,13 @@ describe("copyReviewerLogs", () => {
   it("copies only the reviewer logs, as their view, into the report folder", () => {
     const { fs, written } = fakeFs({ "a-reviewer.log": "aborted", "a-backend.log": "other" });
     assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);
-    assert.deepEqual(written, { "logs/report/reviewer-1.log": "aborted\n" });
+    assert.deepEqual(written, { "logs/report/reviewer-1.log": "aborted\n", "logs/report/index.txt": "reviewer-1.log: a build this run did not start\n" });
   });
 
   it("never copies the pre-push review's log", () => {
     const { fs, written } = fakeFs({ "a-pre-push-reviewer.log": "aborted", "b-reviewer.log": "aborted" });
     assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);
-    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-1.log"]);
+    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-1.log", "logs/report/index.txt"]);
   });
 
   it("puts the views in a subfolder of the report folder, so emptying it leaves the report alone", () => {
@@ -277,7 +280,7 @@ describe("copyReviewerLogs", () => {
       mkdirSync(join(dir, "report"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
       assert.deepEqual(copyReviewerLogs(dir, out, undefined, () => undefined, []), ["reviewer-1.log"]);
-      assert.deepEqual(readdirSync(out), ["reviewer-1.log"]);
+      assert.deepEqual(readdirSync(out).sort(), ["index.txt", "reviewer-1.log"]);
       assert.deepEqual(readdirSync(join(dir, "report")), ["planted-reviewer.log"], "the checkout's report folder was touched");
       assert.deepEqual(readdirSync(dir).sort(), ["ok-reviewer.log", "report"], "something was written under the logs folder");
     } finally {
@@ -434,12 +437,12 @@ describe("copyReviewerLogs", () => {
       },
     };
     assert.deepEqual(copyTo("logs", broken, (line) => warnings.push(line), []), ["reviewer-2.log"]);
-    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-2.log"]);
+    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-2.log", "logs/report/index.txt"]);
     assert.deepEqual(warnings, ["Couldn't copy reviewer log 1 to the report (EACCES)"]);
     // A readable one is written under a number as well.
     const ok = fakeFs({ [`${token}-reviewer.log`]: "Agent stopped" });
     copyTo("logs", ok.fs, none, []);
-    assert.deepEqual(Object.keys(ok.written), ["logs/report/reviewer-1.log"]);
+    assert.deepEqual(Object.keys(ok.written), ["logs/report/reviewer-1.log", "logs/report/index.txt"]);
     assert.ok(!JSON.stringify([ok.written, written, warnings]).includes(token));
   });
 
@@ -448,7 +451,7 @@ describe("copyReviewerLogs", () => {
     const { fs, written } = fakeFs({ "dir-reviewer.log": "x" });
     copyTo("logs", { ...fs, read: () => { throw new Error("EISDIR"); } }, (line) => warnings.push(line), []);
     assert.equal(warnings.length, 1);
-    assert.deepEqual(written, {});
+    assert.deepEqual(written, { "logs/report/index.txt": "reviewer-1.log: a build this run did not start (not copied)\n" });
   });
 
   it("reads the sandbox's secrets from .sandcastle/.env by default", () => {
@@ -479,9 +482,88 @@ describe("copyReviewerLogs", () => {
       symlinkSync(join(dir, "target.txt"), join(dir, "link-reviewer.log"));
       mkdirSync(join(dir, "report"), { recursive: true });
       assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["reviewer-2.log"]);
-      assert.deepEqual(readdirSync(join(dir, "report")), ["reviewer-2.log"], "a symlinked log was copied");
+      assert.deepEqual(readdirSync(join(dir, "report")).sort(), ["index.txt", "reviewer-2.log"], "a symlinked log was copied");
       assert.equal(readFileSync(join(dir, "report", "reviewer-2.log"), "utf8"), "the reviewer aborted\n");
       assert.ok(!existsSync(join(dir, "report", "ok-backend.log")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+});
+
+// The numbered views carry no name, so the host says which build each one is (mpaulosky/dotfiles#428).
+describe("reviewer log index", () => {
+  it("names a log the way Sandcastle does: the branch with the characters a file name can't hold as hyphens", () => {
+    assert.equal(reviewerLogFileName("feature/214-say-in-pr-auto-merges"), "feature-214-say-in-pr-auto-merges-reviewer.log");
+    assert.equal(reviewerLogFileName('a\\b:c*d?e"f<g>h|i/j'), "a-b-c-d-e-f-g-h-i-j-reviewer.log");
+    assert.equal(reviewerLogFileName("fix/421-x"), "fix-421-x-reviewer.log");
+  });
+
+  it("looks a log up by the name its build's branch gives it", () => {
+    const builds = new BuildLogs();
+    builds.add(421, "fix/421-gate");
+    builds.add(7, "feature/7-seven");
+    assert.equal(builds.issueOf("fix-421-gate-reviewer.log"), 421);
+    assert.equal(builds.issueOf("feature-7-seven-reviewer.log"), 7);
+    assert.equal(builds.issueOf("fix-421-gate-tester.log"), undefined);
+    assert.equal(builds.issueOf("other-reviewer.log"), undefined);
+  });
+
+  it("says in the index which issue each numbered view is, in the order of the numbers", () => {
+    const builds = new BuildLogs();
+    builds.add(421, "fix/421-gate");
+    builds.add(7, "feature/7-seven");
+    const { fs, written } = fakeFs({ "fix-421-gate-reviewer.log": "x", "feature-7-seven-reviewer.log": "y", "unknown-reviewer.log": "z" });
+
+    assert.equal(REVIEWER_LOG_INDEX, "index.txt");
+    copyReviewerLogs("logs", "logs/report", fs, none, [], builds);
+
+    // Sorted names: feature-7..., fix-421..., unknown...
+    assert.equal(
+      written["logs/report/index.txt"],
+      "reviewer-1.log: issue #7\nreviewer-2.log: issue #421\nreviewer-3.log: a build this run did not start\n",
+    );
+  });
+
+  it("marks a view that couldn't be copied, and never prints a source name", () => {
+    const token = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUv";
+    const builds = new BuildLogs();
+    builds.add(5, "fix/5-five");
+    const { fs, written } = fakeFs({ "fix-5-five-reviewer.log": "x", [`${token}-reviewer.log`]: "y" }, "fix-5-five-reviewer.log");
+
+    copyReviewerLogs("logs", "logs/report", fs, none, [], builds);
+
+    assert.equal(written["logs/report/index.txt"], `reviewer-1.log: issue #5 (not copied)\nreviewer-2.log: a build this run did not start\n`);
+    assert.ok(!JSON.stringify(written).includes(token));
+  });
+
+  it("writes no index when there is no reviewer log, and warns when the index can't be written", () => {
+    const none2 = fakeFs({ "a-backend.log": "other" });
+    copyReviewerLogs("logs", "logs/report", none2.fs, none, []);
+    assert.deepEqual(none2.written, {});
+
+    const warnings: string[] = [];
+    const { fs, written } = fakeFs({ "a-reviewer.log": "x" });
+    const noIndex: RoleLogFs = {
+      ...fs,
+      write: (path, text) => {
+        if (path.endsWith(REVIEWER_LOG_INDEX)) throw Object.assign(new Error(`EACCES: open '${path}'`), { code: "EACCES" });
+        fs.write(path, text);
+      },
+    };
+    assert.deepEqual(copyReviewerLogs("logs", "logs/report", noIndex, (line) => warnings.push(line), []), ["reviewer-1.log"]);
+    assert.deepEqual(warnings, ["Couldn't write the index of the reviewer logs: EACCES"]);
+    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-1.log"]);
+  });
+
+  it("indexes the real files of a real folder too", () => {
+    const dir = mkdtempSync(join(tmpdir(), "role-logs-index-"));
+    try {
+      const builds = new BuildLogs();
+      builds.add(9, "fix/9-nine");
+      writeFileSync(join(dir, "fix-9-nine-reviewer.log"), "the reviewer aborted\n");
+      copyReviewerLogs(dir, join(dir, "report"), undefined, () => undefined, [], builds);
+      assert.equal(readFileSync(join(dir, "report", "index.txt"), "utf8"), "reviewer-1.log: issue #9\n");
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }

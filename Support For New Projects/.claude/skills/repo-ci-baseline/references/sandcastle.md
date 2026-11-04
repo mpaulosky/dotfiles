@@ -65,7 +65,8 @@ so its E2E tests find Chromium's system libraries in the sandbox. The step runs 
 keep `PLAYWRIGHT_VERSION` near the repo's `Microsoft.Playwright` version. It installs only the libraries: the browser itself is left to the test fixture at run time,
 so a Playwright bump needs no image change.
 A Seed file is written once, so an existing repo keeps its own Dockerfile and adds the step by hand.
-A repo that already has a Dockerfile adds `tini` to its `apt-get install` list and ends the file with `ENTRYPOINT ["tini", "--", "sleep", "infinity"]`: with `sleep` as PID 1,
+A repo that already has a Dockerfile adds `tini` to its `apt-get install` list and replaces its `ENTRYPOINT ["sleep", "infinity"]`
+with `ENTRYPOINT ["tini", "--", "sleep", "infinity"]`: with `sleep` as PID 1,
 nothing reaps the processes the gate orphans, they stay zombies holding their PIDs, and a long build ends unable to fork (the gate fails with `Resource temporarily unavailable`,
 claude-code aborts with exit 134, git stops answering). Sandcastle's `docker()` has no `--init` option, so the image has to do it. `lib/dockerfile.test.mts` pins it in dotfiles' and the Seed's Dockerfile.
 `roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo that gets `.sandcastle/`, where it stays unused. To opt in, add a `ui` entry to

@@ -51,7 +51,10 @@ describe("the sandbox image's PID 1", () => {
       const entrypoints = [...dockerfile.matchAll(/^ENTRYPOINT (.*)$/gm)].map((match) => match[1]);
 
       assert.deepEqual(entrypoints, ['["tini", "--", "sleep", "infinity"]']);
-      assert.match(dockerfile, /apt-get install -y \\\n(?:  [\w.+-]+ \\\n)*  tini \\\n/, "tini is not in the first apt-get install");
+      // The first install list, which runs to the `&& rm -rf` that ends its layer: a later list holding tini would not do.
+      const fromFirst = dockerfile.slice(dockerfile.indexOf("apt-get install -y"));
+      const list = fromFirst.slice(0, fromFirst.indexOf("&& rm -rf"));
+      assert.match(list, /^ {2}tini( \\)?$/m, "tini is not in the first apt-get install list");
     });
   }
 });

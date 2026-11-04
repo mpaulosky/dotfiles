@@ -15,6 +15,7 @@ const sandboxOf = (exec: (command: string) => Promise<Result>) =>
   ({ exec: (async (command: string) => ({ stderr: "", ...(await exec(command)) })) as unknown as Exec }) as Pick<Sandbox, "exec">;
 
 const hasTimeout = spawnSync("timeout", ["--version"]).status === 0;
+const hasPs = spawnSync("ps", ["-e"]).error === undefined;
 
 describe("logSandboxState", () => {
   it("logs the probe's output under the reason", async () => {
@@ -146,24 +147,62 @@ describe("SANDBOX_PROBE", () => {
     }
   });
 
-  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: process.platform !== "linux" && "needs Linux ps" }, async () => {
-    // The shell backgrounds a subshell that exits at once, then becomes `sleep`, which never waits: the subshell stays a zombie while it runs.
+  it("counts a zombie, which a PID 1 that never waits leaves for every orphan", { skip: !hasPs && "needs ps" }, async () => {
+    // The count is system-wide, so the test compares it before and after it makes one zombie: the subshell the shell backgrounds
+    // exits at once, and the shell becomes `sleep`, which never waits, so the subshell stays a zombie while it runs.
+    const zombies = () => {
+      const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
+      assert.equal(run.status, 0, run.stderr);
+      return Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
+    };
+    const before = zombies();
+    assert.ok(Number.isInteger(before), "no zombie count in the probe's output");
     const parent = spawn("sh", ["-c", "(true) & exec sleep 5"], { stdio: "ignore" });
     try {
       await new Promise((resolve) => setTimeout(resolve, 500));
-      const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
-      assert.equal(run.status, 0, run.stderr);
-      const count = Number(/== zombies ==\n(\d+)\n/.exec(run.stdout)?.[1]);
-      assert.ok(count >= 1, `zombies counted: ${count} in ${run.stdout}`);
+      const after = zombies();
+      assert.ok(after >= before + 1, `zombies went from ${before} to ${after}`);
     } finally {
       parent.kill();
     }
+  });
+
+  it("says so when ps is missing, not that there are no zombies", { skip: process.platform !== "linux" && "needs /bin/sh" }, () => {
+    const run = spawnSync("/bin/sh", ["-c", PROBE_SCRIPT], { encoding: "utf8", env: { PATH: "/nonexistent" } });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /== zombies ==\nn\/a \(no ps\)\n/);
   });
 
   it("prints the limits that decide whether a fork can succeed", { skip: process.platform !== "linux" && "needs /proc" }, () => {
     const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8" });
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, /== process limits ==\nMax processes +\S+ +\S+ +processes *\n/);
+  });
+
+  it("prints each cgroup pids file that exists, under its own name, and nothing for one it lacks", { skip: process.platform === "win32" && "needs sh" }, () => {
+    const dir = mkdtempSync(join(tmpdir(), "probe-cgroup-"));
+    try {
+      mkdirSync(join(dir, "pids"));
+      writeFileSync(join(dir, "pids.current"), "17386\n");
+      writeFileSync(join(dir, "pids.max"), "max\n");
+      writeFileSync(join(dir, "pids", "pids.current"), "3\n");
+      writeFileSync(join(dir, "pids", "pids.max"), "4194304\n");
+      // A machine can have only some of the files (v1 has the pids folder, v2 the top-level two), here just one.
+      const some = mkdtempSync(join(tmpdir(), "probe-cgroup-some-"));
+      mkdirSync(join(some, "pids"));
+      writeFileSync(join(some, "pids", "pids.max"), "max\n");
+      const section = (cgroupRoot: string) => {
+        const run = spawnSync("sh", ["-c", PROBE_SCRIPT], { encoding: "utf8", env: { ...process.env, CGROUP_ROOT: cgroupRoot } });
+        assert.equal(run.status, 0, run.stderr);
+        return run.stdout.slice(run.stdout.indexOf("== process limits =="), run.stdout.indexOf("== biggest processes")).split("\n").filter((line) => line.startsWith("pids"));
+      };
+      assert.deepEqual(section(dir), ["pids.current: 17386", "pids.max: max", "pids/pids.current: 3", "pids/pids.max: 4194304"]);
+      assert.deepEqual(section(some), ["pids/pids.max: max"]);
+      assert.deepEqual(section(join(dir, "none")), []);
+      rmSync(some, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it("runs through the sandbox's own wrapper under a real sh, so its re-quoting leaves the script whole", { skip: (!hasTimeout || process.platform === "win32") && "needs GNU timeout and sh" }, () => {

@@ -980,9 +980,12 @@ export function createIssue(
 
 // Files an issue with no labels, or reuses the host's own open one with exactly this title, as its number. The local review's follow-up issue for the open
 // Advisory findings (lib/build.mts) goes through it: a later build of the same branch, or a rerun, finds the issue it already filed rather than
-// open a second, and puts its current findings on it when they differ, so a later build's new findings aren't lost. Only the host's own issues count
-// (`--author @me`): the title is predictable from the branch name, so anyone could open an issue with it first and keep the findings from the
-// maintainers. The issues are listed, not searched, since GitHub's search index lags and would let a quick rerun file a duplicate.
+// open a second, and adds its current findings to it as a comment when neither the body nor an earlier comment already holds them, as the skill's step 9
+// does, so a later build's new findings aren't lost and what a person wrote in the issue's body is never replaced. A later build with no Advisory findings
+// files nothing, so the earlier issue keeps findings that may since be fixed: a person closes it. Only the host's own issues count (`--author` with the
+// login it is signed in as, since `@me` needs a user token): the title is predictable from the branch name, so anyone could open an issue with it first
+// and keep the findings from the maintainers. The issues are listed, not searched, since GitHub's search index lags and would let a quick rerun file a
+// duplicate. Two overlapping runs on one branch can still both file one; the building label keeps a branch to one run at a time.
 export function fileIssueOnce(
   title: string,
   body: string,
@@ -991,14 +994,17 @@ export function fileIssueOnce(
 ): number {
   const listed = JSON.parse(
     ghWithStderr(run, [
-      "issue", "list", "--repo", repo, "--state", "open", "--author", "@me", "--limit", "1000", "--json", "number,title,body",
+      "issue", "list", "--repo", repo, "--state", "open", "--author", signedInHostLogin(run), "--limit", "1000", "--json", "number,title,body",
     ]),
   ) as { number: number; title: string; body?: string }[];
   const existing = listed.find((issue) => issue.title === title);
   if (existing === undefined) return createIssue(title, body, [], run, repo);
   // GitHub stores the body with CRLF line endings and may trim it, so the comparison ignores both.
   const same = (text: string) => text.replace(/\r\n?/g, "\n").trim();
-  if (same(existing.body ?? "") !== same(body)) ghWithStderr(run, ["issue", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], body);
+  const comments = jsonLines(
+    ghWithStderr(run, ["api", "--paginate", `repos/${repo}/issues/${existing.number}/comments`, "--jq", ".[] | .body | @json"]),
+  ) as string[];
+  if (![existing.body ?? "", ...comments].some((text) => same(text) === same(body))) commentOnIssue(existing.number, body, run, repo);
   return existing.number;
 }
 

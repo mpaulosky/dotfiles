@@ -405,7 +405,8 @@ export type BuildHost = {
   // (handing it back first) or a ref can't be deleted.
   startFromMain(issueNumber: number, branch: string, base: string): { pr: number; deleted: string[] } | undefined;
   publish: typeof publish;
-  // Files the follow-up issue for the review's open Advisory findings (its title and body), or reuses the open one with that title.
+  // Files the follow-up issue for the review's open Advisory findings (its title and body), or reuses the host's own open one with that title and
+  // adds the body to it as a comment when neither its body nor a comment holds it yet (lib/github.mts#fileIssueOnce); a body a person edited is never replaced.
   fileAdvisoryIssue(title: string, body: string): void;
   // Fetches origin/main and returns the commit it now names (see
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main

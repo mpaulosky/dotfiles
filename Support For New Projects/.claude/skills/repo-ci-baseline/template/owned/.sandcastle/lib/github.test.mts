@@ -580,69 +580,93 @@ describe("openPullRequest", () => {
 });
 
 describe("fileIssueOnce", () => {
-  const stub = (listed: object[]) => {
+  // A gh stub: `api user` answers the login, an issue listing answers `listed` for the author it was asked for only, the comments API answers
+  // `comments`, and anything else answers 17.
+  const stub = (listed: { number: number; title: string; body?: string; author?: string }[], comments: string[] = [], login = "the-host") => {
     const calls: { args: readonly string[]; input: unknown }[] = [];
     const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
       calls.push({ args, input: options.input });
-      return args[0] === "issue" ? JSON.stringify(listed) : "17\n";
+      if (args[0] === "api" && args[1] === "user") return `${login}\n`;
+      if (args[0] === "issue" && args[1] === "list") {
+        const author = args[args.indexOf("--author") + 1];
+        return JSON.stringify(listed.filter((issue) => issue.author === undefined || issue.author === author));
+      }
+      if (args[0] === "api" && String(args[1]).startsWith("--paginate")) return comments.map((body) => JSON.stringify(body)).join("\n");
+      return "17\n";
     }) as unknown as typeof execFileSync;
-    return { calls, run };
+    return { calls, run, writes: () => calls.filter((call) => call.args[0] === "issue" && call.args[1] !== "list" || call.args.includes("POST")) };
   };
 
   const title = "chore(review): Advisory review findings: fix/1-a-b";
 
   it("reuses the host's own open issue with exactly this title, and leaves an identical body alone", () => {
-    const { calls, run } = stub([{ number: 5, title, body: "body" }, { number: 6, title: "other", body: "" }]);
+    const { writes, run } = stub([{ number: 5, title, body: "body" }, { number: 6, title: "other", body: "" }]);
 
     assert.equal(fileIssueOnce(title, "body", run, "o/r"), 5);
-    assert.equal(calls.length, 1);
+    assert.equal(writes().length, 0);
   });
 
-  it("lists only the host's own issues, by listing and not by search, since anyone can open an issue with this title and search lags", () => {
+  it("lists only the issues of the login the host is signed in as, by listing and not by search, since anyone can open an issue with this title and search lags", () => {
     const { calls, run } = stub([]);
 
     fileIssueOnce(title, "body", run, "o/r");
-    const args = calls[0]!.args;
-    assert.equal(args[args.indexOf("--author") + 1], "@me");
+    const args = calls.find((call) => call.args[1] === "list")!.args;
+    assert.equal(args[args.indexOf("--author") + 1], "the-host", "an explicit login: @me needs a user token");
     assert.ok(!args.includes("--search"), args.join(" "));
     assert.equal(args[args.indexOf("--limit") + 1], "1000", "a long list of the host's issues doesn't hide the one to reuse");
   });
 
+  it("files a new issue when only another author has one with the title", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old", author: "someone-else" }]);
+
+    assert.equal(fileIssueOnce(title, "body", run, "o/r"), 17);
+    assert.ok(calls.some((call) => call.args.includes("POST")));
+  });
+
   it("treats a body that differs only in line endings and trailing whitespace as identical", () => {
-    const { calls, run } = stub([{ number: 5, title, body: "a\r\nb\r\n" }]);
+    const { writes, run } = stub([{ number: 5, title, body: "a\r\nb\r\n" }]);
 
     fileIssueOnce(title, "a\nb\n\n", run, "o/r");
-    assert.equal(calls.length, 1);
+    assert.equal(writes().length, 0);
   });
 
   it("treats a lone carriage return as a line ending too", () => {
-    const { calls, run } = stub([{ number: 5, title, body: "a\rb" }]);
+    const { writes, run } = stub([{ number: 5, title, body: "a\rb" }]);
 
     fileIssueOnce(title, "a\nb", run, "o/r");
-    assert.equal(calls.length, 1);
+    assert.equal(writes().length, 0);
   });
 
-  it("puts the new findings on the reused issue when its body differs", () => {
-    const { calls, run } = stub([{ number: 5, title, body: "old findings" }]);
+  it("adds new findings as a comment and leaves the issue's body, which a person may have edited, alone", () => {
+    const { calls, writes, run } = stub([{ number: 5, title, body: "old findings, with a note from the owner" }]);
 
     assert.equal(fileIssueOnce(title, "new findings", run, "o/r"), 5);
-    assert.deepEqual(calls[1]!.args, ["issue", "edit", "5", "--repo", "o/r", "--body-file", "-"]);
-    assert.equal(calls[1]!.input, "new findings");
+    assert.equal(writes().length, 1);
+    assert.deepEqual(writes()[0]!.args, ["issue", "comment", "5", "--repo", "o/r", "--body-file", "-"]);
+    assert.equal(writes()[0]!.input, "new findings");
+    assert.ok(!calls.some((call) => call.args[1] === "edit"), "the body is not replaced");
   });
 
-  it("ignores a same-titled issue it can't see as its own", () => {
-    // `--author @me` keeps another author's issue out of the listing, so the stub lists none and a new issue is filed.
-    const { calls, run } = stub([]);
+  it("does not comment the same findings again on a rerun", () => {
+    const { writes, run } = stub([{ number: 5, title, body: "old findings" }], ["new findings\r\n"]);
 
-    assert.equal(fileIssueOnce(title, "body", run, "o/r"), 17);
-    assert.equal(calls[1]!.args[0], "api");
+    fileIssueOnce(title, "new findings", run, "o/r");
+    assert.equal(writes().length, 0);
+  });
+
+  it("reads the issue's comments from the issue it reuses", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old" }]);
+
+    fileIssueOnce(title, "new", run, "o/r");
+    assert.ok(calls.some((call) => call.args.some((arg) => arg === "repos/o/r/issues/5/comments")), JSON.stringify(calls.map((call) => call.args)));
   });
 
   it("creates the issue, with no labels, when none has the title", () => {
     const { calls, run } = stub([{ number: 6, title: "chore(review): Advisory review findings: fix/1-a-b-c" }]);
 
     assert.equal(fileIssueOnce("chore(review): Advisory review findings: fix/1-a-b", "body", run, "o/r"), 17);
-    assert.deepEqual(JSON.parse(String(calls[1]!.input)), { title: "chore(review): Advisory review findings: fix/1-a-b", body: "body", labels: [] });
+    const create = calls.find((call) => call.args.includes("POST"))!;
+    assert.deepEqual(JSON.parse(String(create.input)), { title: "chore(review): Advisory review findings: fix/1-a-b", body: "body", labels: [] });
   });
 });
 

@@ -332,9 +332,6 @@ describe("main.mts's reportRepo wiring", () => {
   });
 });
 
-// #320: a run whose intake stopped (a repeated failure, such as the missing
-// Docker image in the first automatic runs) must end red, whatever hand-backs
-// it also made, rather than exit 0 and leave the queue stuck with no signal.
 // The run report lists each role's tool-call timing (lib/role-timeline.mts), which only main.mts hands to renderSummary.
 describe("main.mts's tool-call timing", () => {
   it("passes timelineReport.lines() to the run report's summary", () => {
@@ -348,6 +345,9 @@ describe("main.mts's tool-call timing", () => {
   });
 });
 
+// #320: a run whose intake stopped (a repeated failure, such as the missing
+// Docker image in the first automatic runs) must end red, whatever hand-backs
+// it also made, rather than exit 0 and leave the queue stuck with no signal.
 describe("main.mts's intake-stop exit code", () => {
   it("sets the exit code from intakeStopExitCode(intakeStopReport.items()) after writing the run report", () => {
     const mainMts = read(".sandcastle/main.mts");

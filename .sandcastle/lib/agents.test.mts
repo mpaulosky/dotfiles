@@ -24,7 +24,7 @@ import { StalledStepError, UncountedStopError } from "./errors.mts";
 import { RunLimits } from "./limits.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
 import { usageReport } from "./report.mts";
-import { timelineReport } from "./role-timeline.mts";
+import { timedProvider, timelineReport } from "./role-timeline.mts";
 import { hostCallHasBeenAbandoned, MAX_TIMER_MS } from "./host-limit.mts";
 import { limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
@@ -539,16 +539,30 @@ describe("role timing", () => {
     assert.deepEqual(stretchesOf("planner"), ["Glob", "start"]);
   });
 
-  it("gives roleOptions' agent no timing when it is given no run, and the same command with one", () => {
-    const toolEvents = roleOptions("tester").agent.parseStreamLine(toolLine("Bash"));
-    assert.deepEqual(toolEvents, [{ type: "tool_call", name: "Bash", args: "ls" }]);
+  it("lists no run for a role whose options can't be built", async () => {
     timelineReport.reset();
+    let ran = 0;
+    const sandbox = { run: async () => (ran++, { iterations: [], commits: [] }) } as unknown as Sandbox;
+
+    await withUiRole(false, async () => {
+      await assert.rejects(runRoleInSandbox(sandbox, "ui", { prompt: "" }, new RunLimits(), undefined, { backstopMs: 1000 }), /no ui entry/);
+      await assert.rejects(runRole("ui", hostOptions, new RunLimits(), (async () => (ran++, { iterations: [], commits: [] })) as unknown as typeof sandcastle.run), /no ui entry/);
+    });
+
+    assert.equal(ran, 0);
     assert.deepEqual(timelineReport.lines(), []);
+  });
+
+  it("leaves roleOptions' agent alone, and the wrapper changes neither its events nor its restricted command", () => {
+    timelineReport.reset();
+    const events = roleOptions("tester").agent.parseStreamLine(toolLine("Bash"));
+    assert.deepEqual(events, [{ type: "tool_call", name: "Bash", args: "ls" }]);
+    assert.deepEqual(timelineReport.lines(), [], "roleOptions timed a call with no run to time it");
 
     const restrictions = { tools: REVIEWER_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true };
     const print = { prompt: "p", dangerouslySkipPermissions: true };
-    const plain = roleOptions("pre-push-reviewer", undefined, restrictions).agent.buildPrintCommand(print);
-    const timed = roleOptions("pre-push-reviewer", undefined, restrictions, timelineReport.begin("pre-push-reviewer")).agent.buildPrintCommand(print);
-    assert.deepEqual(timed, plain);
+    const plain = roleOptions("pre-push-reviewer", undefined, restrictions).agent;
+    const timed = timedProvider(plain, timelineReport.begin("pre-push-reviewer"));
+    assert.deepEqual(timed.buildPrintCommand(print), plain.buildPrintCommand(print));
   });
 });

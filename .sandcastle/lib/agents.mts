@@ -95,13 +95,11 @@ export function restrictedClaudeCode(
   return { ...provider, buildPrintCommand: (options) => restricted(provider.buildPrintCommand(options)) };
 }
 
-export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout, restrictions?: AgentRestrictions, run?: RoleRun) {
+export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout, restrictions?: AgentRestrictions) {
   const { model, effort, maxIterations, timeoutMinutes } = roleAgent(role);
-  const agent = restrictions === undefined ? sandcastle.claudeCode(model, { effort }) : restrictedClaudeCode(model, effort, restrictions);
   return {
     name: role,
-    // Timed when the caller gave the run's clock (lib/role-timeline.mts), so the report can say where the role's time went.
-    agent: run === undefined ? agent : timedProvider(agent, run),
+    agent: restrictions === undefined ? sandcastle.claudeCode(model, { effort }) : restrictedClaudeCode(model, effort, restrictions),
     maxIterations,
     signal: timeout(timeoutMinutes * 60_000),
   };
@@ -139,14 +137,16 @@ export async function runRole(
   execute: typeof sandcastle.run = sandcastle.run,
 ): Promise<sandcastle.RunResult> {
   usageReport.record(role, []);
-  // Timed from the moment the role starts: a role the run's limits refuse never does, and must not be listed as one that ran.
+  // Timed from the moment the role starts: a role the run's limits refuse, or whose options can't be built, never does, and must not be
+  // listed as one that ran. So the options come first, and the agent is wrapped (lib/role-timeline.mts) once the clock is running.
   let timing: RoleRun | undefined;
   try {
     const result = await runWithinLimits(
       role,
       () => {
+        const prepared = { ...withSharedRules(options), ...roleOptions(role) };
         timing = timelineReport.begin(role);
-        return execute({ ...withSharedRules(options), ...roleOptions(role, undefined, undefined, timing) });
+        return execute({ ...prepared, agent: timedProvider(prepared.agent, timing) });
       },
       limits,
     );
@@ -180,8 +180,9 @@ export async function runRoleInSandbox(
     const result = await runWithinLimits(
       role,
       () => {
+        const prepared = { ...withSharedRules(options), ...roleOptions(role, undefined, restrictions) };
         timing = timelineReport.begin(role);
-        return withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...withSharedRules(options), ...roleOptions(role, undefined, restrictions, timing) }));
+        return withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...prepared, agent: timedProvider(prepared.agent, timing) }));
       },
       limits,
     );

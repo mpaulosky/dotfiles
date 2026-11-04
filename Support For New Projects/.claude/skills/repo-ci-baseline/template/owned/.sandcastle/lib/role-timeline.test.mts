@@ -155,6 +155,12 @@ describe("timedProvider", () => {
     assert.ok(!report.lines().join("\n").includes("secret"));
   });
 
+  it("doesn't parse a line that can't hold a tool call, and still names the calls of one that can", () => {
+    const user = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "x".repeat(2_000_000) }] } });
+    assert.deepEqual(toolNamesInLine(user), []);
+    assert.deepEqual(toolNamesInLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } })), ["Bash"]);
+  });
+
   it("lets a line that isn't JSON through without a throw or a call", () => {
     const report = new TimelineReport();
     const provider = timedProvider(base(), report.begin("backend", 0), () => 1_000);

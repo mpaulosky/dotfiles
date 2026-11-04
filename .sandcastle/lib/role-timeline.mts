@@ -43,7 +43,8 @@ export function reportedToolName(name: string): string {
 // message holds `tool_use` blocks; any other line, malformed JSON included, holds none. Never throws: it runs inside
 // Sandcastle's stream handling, which a throw would disturb.
 export function toolNamesInLine(line: string): string[] {
-  if (!line.startsWith("{")) return [];
+  // A substring test first: most lines (a tool's result, a large file's text) hold no call, and need not be parsed a second time.
+  if (!line.startsWith("{") || !line.includes('"tool_use"')) return [];
   try {
     const parsed: unknown = JSON.parse(line);
     const message = (parsed as { type?: unknown; message?: { content?: unknown } } | null);

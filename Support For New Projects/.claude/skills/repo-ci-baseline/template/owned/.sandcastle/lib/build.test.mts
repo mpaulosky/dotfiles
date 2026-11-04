@@ -25,6 +25,8 @@ import {
   publicErrorText,
   prTitle,
   publish,
+  openHeldPullRequest,
+  DRAFT_NOTE,
   remoteBranchIsOnOrigin,
   readSkillFiles,
   remoteMainIs,
@@ -2828,6 +2830,40 @@ describe("prTitle", () => {
 
   it("doesn't double a prefix the title has, and squeezes stray spaces", () => {
     assert.equal(titled("  chore:   Bump   the pins "), "chore: Bump the pins");
+  });
+});
+
+describe("openHeldPullRequest", () => {
+  const branch = "feature/4-add-search";
+  // A gh stub that lists one open PR for the branch with `body`, and records every call.
+  const gh = (isDraft: boolean, body: string) => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      return args[1] === "list"
+        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/3", body }])
+        : "";
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+
+  it("adds the draft note to an existing PR whose body a person edited, so the body still says why it is a draft", () => {
+    const body = "Closes #4\n\n## Review notes\n\n- R1 accepted: fine.";
+    const { calls, run } = gh(false, body);
+
+    assert.equal(openHeldPullRequest(branch, "Add search", "new body", true, run, "o/r"), "https://github.com/o/r/pull/3");
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "ready"], ["pr", "edit"]]);
+    assert.equal(calls[2]!.input, `${body}\n\n${DRAFT_NOTE}`);
+  });
+
+  it("opens a new PR as a draft with the body it was given", () => {
+    const { calls, run } = gh(false, "");
+    const listOnly = ((cmd: string, args: readonly string[], options: { input?: unknown }) =>
+      args[1] === "list" ? "[]" : run(cmd, args, options)) as unknown as typeof execFileSync;
+
+    openHeldPullRequest(branch, "Add search", "new body", true, listOnly, "o/r");
+    assert.ok(calls[0]!.args.includes("--draft"), calls[0]!.args.join(" "));
+    assert.equal(calls[0]!.input, "new body");
   });
 });
 

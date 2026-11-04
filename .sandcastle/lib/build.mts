@@ -114,7 +114,7 @@ export async function publish(
   push: (branch: string, commit: string) => void = (pushBranch, pushCommit) =>
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
   createPullRequest: (branch: string, title: string, body: string, draft?: boolean) => string = (pushBranch, title, body, draft) =>
-    openPullRequest(pushBranch, title, body, undefined, undefined, draft, DRAFT_NOTE),
+    openHeldPullRequest(pushBranch, title, body, draft),
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
   reviewNote = "",
   holdAsDraft = false,
@@ -152,6 +152,19 @@ export async function publish(
   // finds that PR rather than open a second one: openPullRequest looks for an
   // open PR from the branch first.
   return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body, holdAsDraft), wait);
+}
+
+// publish's live way to open the PR: openPullRequest with DRAFT_NOTE as the note to add when a held PR's body is a person's and is kept. It is a named function so a
+// test can pin that the note is passed: without it, a rerun that holds a PR with edited Review notes would make the PR a draft with nothing in the body saying why.
+export function openHeldPullRequest(
+  branch: string,
+  title: string,
+  body: string,
+  draft: boolean = false,
+  run?: typeof execFileSync,
+  repo?: string,
+): string {
+  return openPullRequest(branch, title, body, run, repo, draft, DRAFT_NOTE);
 }
 
 // The PR body's reason for a draft: open Critical or Warning findings the host's review left. It names the two steps only a person takes.

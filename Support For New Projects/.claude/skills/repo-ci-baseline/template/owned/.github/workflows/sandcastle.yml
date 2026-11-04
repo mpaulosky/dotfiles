@@ -305,7 +305,10 @@ jobs:
       # arguments, and the last few error lines) and leaves out a view shaped like a secret.
       # The view narrows what a steered reviewer can print into the artifact; it
       # can't promise a few words on an error line stay out. The pre-push
-      # review's own log is never copied.
+      # review's own log is never copied. The artifact's paths span the
+      # checkout and the runner's temp folder, so it is rooted at their common
+      # ancestor: summary.md and handbacks.json sit under the repository
+      # folder, the reviewer logs under _temp/sandcastle-reviewer-logs/.
       - name: Upload the run report
         if: always() && steps.secrets.outputs.enabled == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

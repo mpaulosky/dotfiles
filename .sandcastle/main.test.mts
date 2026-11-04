@@ -563,8 +563,9 @@ describe(".sandcastle/.env.example mode", () => {
   });
 });
 
-// The reviewer logs reach the run report's artifact through two things that nothing else ties together: main.mts copies
-// them to REPORT_DIR/report/ after the report is written, and the Sandcastle workflow uploads that folder's reviewer logs.
+// The reviewer logs reach the run report's artifact through two things that nothing else ties together: main.mts writes
+// their views to reportLogsDir() (RUNNER_TEMP/sandcastle-reviewer-logs, outside the checkout) after the report is written, and the
+// Sandcastle workflow uploads that folder's reviewer logs.
 // If either drifts, the artifact silently carries no reviewer log (the upload step only warns when nothing at all matches).
 describe("main.mts's reviewer-log wiring", () => {
   it("copies the reviewer logs from REPORT_DIR right after the run report is written, in the same finally", () => {

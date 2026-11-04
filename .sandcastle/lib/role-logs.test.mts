@@ -276,13 +276,16 @@ describe("copyReviewerLogs", () => {
     const before = process.env.RUNNER_TEMP;
     try {
       writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
-      // A file left by an earlier run is removed, and a file in the checkout's own report folder is neither read nor uploaded from.
+      // A file left by an earlier run is removed, and a file in the checkout's own report folder stays where it is, untouched.
+      mkdirSync(join(dir, "report"));
+      writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
       mkdirSync(join(runnerTemp, REPORT_LOGS_NAME));
       writeFileSync(join(runnerTemp, REPORT_LOGS_NAME, "old-reviewer.log"), "left over\n");
       process.env.RUNNER_TEMP = runnerTemp;
       assert.deepEqual(copyReviewerLogs(dir, undefined, () => undefined, []), ["ok-reviewer.log"]);
       assert.deepEqual(readdirSync(join(runnerTemp, REPORT_LOGS_NAME)), ["ok-reviewer.log"]);
-      assert.ok(!existsSync(join(dir, "report")), "something was written under the logs folder");
+      assert.deepEqual(readdirSync(join(dir, "report")), ["planted-reviewer.log"], "the checkout's report folder was touched");
+      assert.deepEqual(readdirSync(dir).sort(), ["ok-reviewer.log", "report"], "something was written under the logs folder");
     } finally {
       if (before === undefined) delete process.env.RUNNER_TEMP;
       else process.env.RUNNER_TEMP = before;

@@ -1408,6 +1408,20 @@ describe("runHostReview's decisions file", () => {
     assert.equal(person[0]!.status, "open", "a finding for a person");
   });
 
+  it("re-raises a Warning the backend claimed fixed after changing only an unrelated test: it stays open in round 1 and the next round's reviewer sees it as one to raise again", async () => {
+    const run = fake({
+      answers: (round, who) => (who.lens === "Security" && round <= 2 ? [raw({ lens: "Security", severity: "warning", summary: "Open redirect." })] : []),
+      fixer: () => ({ outcomes: [{ id: "R1", status: "fixed", test: "tests/unrelated.test.ts::x", reason: null }], changed: ["tests/unrelated.test.ts"] }),
+    });
+
+    recorded(await runHostReview(run.host, input(run.startHead)));
+
+    const findings = run.records[0]!.input.findings;
+    assert.equal(findings.find((found) => found.id === "R1")?.status, "open", "round 1 doesn't take the Warning as fixed");
+    assert.match(decisionsOf(run, 2), /R1 .*Raise again if still in the code/);
+    assert.ok(findings.some((found) => found.id !== "R1" && found.severity === "warning" && found.status !== "fixed"), "round 2's re-raise is recorded");
+  });
+
   it("marks a finding left open to be raised again", async () => {
     const run = fake({
       answers: (round, who) => (round === 1 && who.lens === "Edge cases" ? [raw(), raw({ line: 30, summary: "Other.", needsPerson: true })] : []),

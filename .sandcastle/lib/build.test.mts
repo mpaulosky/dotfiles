@@ -4954,6 +4954,32 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R6/);
   });
 
+  it("still files the findings for a branch whose name holds the words review notes", async () => {
+    const named = "feature/12-add-review-notes-section";
+    const ledger = { ...ledgerWith(reviewed, [advisory()]), branch: named };
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/a.md"]) }) });
+    run.buildHost.publicError = (text) => publicErrorText(String(text));
+
+    await buildIssue(issue, named, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /feature\/12-add-review-notes-section/);
+  });
+
+  it("files nothing, and says so, when the issue's text as a whole isn't safe to publish", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = filed([advisory()]);
+    run.buildHost.publicError = (text) => (String(text).includes("Advisory findings from the local review") ? "(withheld)" : String(text));
+    run.logs.length = 0;
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+    assert.ok(run.logs.some((line) => /follow-up issue/.test(line)) || logged.some((line) => /follow-up issue/.test(line)), [...run.logs, ...logged].join("\n"));
+  });
+
   it("still publishes the PR when filing the issue fails", async () => {
     const run = host([0, 0], { localReview: recorded([advisory()]) });
     run.buildHost.fileAdvisoryIssue = () => {

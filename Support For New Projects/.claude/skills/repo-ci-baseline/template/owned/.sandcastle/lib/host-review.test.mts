@@ -2418,6 +2418,13 @@ describe("advisoryIssueBody", () => {
     assert.match(body, /1 more open Advisory finding is in/);
   });
 
+  it("leaves out a finding whose path holds Markdown that makes no link, such as emphasis", () => {
+    const odd = "docs/*loud*.md";
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: odd })]), new Set(["docs/a.md", odd]));
+    assert.doesNotMatch(body, /R6 /);
+    assert.match(body, /1 more open Advisory finding is in/);
+  });
+
   it("leaves out a finding whose text the caller's public-text check refuses, and only that one", () => {
     const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", summary: `The token ${token} is hard-coded.` })]), DOCS, clean);
     assert.match(body, /R5/);
@@ -2428,6 +2435,52 @@ describe("advisoryIssueBody", () => {
   it("leaves out a suggested fix that holds a secret, not only a summary", () => {
     const body = advisoryIssueBody(ledgerOf([advisory({ fix: `Use ${token}.` })]), DOCS, clean);
     assert.equal(body, "");
+  });
+
+  // GitHub links a www. address anywhere after a space or an underscore too, so every place a path can hold one is left out.
+  for (const path of ["www.evil.example/x", "x www.evil.example/a", "a_www.evil.example", "docs/WWW.evil.example"]) {
+    it(`leaves out a finding whose path is ${JSON.stringify(path)}, and counts it`, () => {
+      const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path })]), new Set(["docs/a.md", path]));
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6|evil/);
+      assert.match(body, /1 more open Advisory finding is in/);
+    });
+  }
+
+  // A reviewer that read untrusted text can put a link or an image in a summary or fix, which the host would publish under its own account.
+  const linky: [string, string][] = [
+    ["a Markdown link", "See [the docs](https://evil.example)."],
+    ["an image", "Shows ![](https://evil.example/p?d=1)."],
+    ["a reference-style link", "See [the docs][1]."],
+    ["a link reference definition", "[1]: //evil.example/x"],
+    ["an image reference", "Shows ![logo] here."],
+    ["a bare URL", "Go to https://evil.example/x now."],
+    ["a www. address", "Go to www.evil.example now."],
+    ["a mailto link", "Write to mailto:a@evil.example now."],
+    ["a link with no scheme", "See [text](//evil.example)."],
+  ];
+  for (const field of ["summary", "fix"] as const) {
+    for (const [name, text] of linky) {
+      it(`leaves out a finding whose ${field} holds ${name}, and keeps the others`, () => {
+        const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", [field]: text })]), DOCS);
+        assert.match(body, /R5/);
+        assert.doesNotMatch(body, /R6|evil/);
+        assert.match(body, /1 more open Advisory finding is in/);
+      });
+    }
+  }
+
+  it("keeps a finding that writes code with brackets, parentheses and dots", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "Reads items[0] and calls trim(x) in lib/a.mts, e.g. twice.", fix: "Check (a) and [b]." })]), DOCS);
+    assert.match(body, /R5 docs\/a\.md:4: Reads items\[0\]/);
+  });
+
+  it("asks the caller's check about a finding's own line, not the header with the branch name", () => {
+    const seen: string[] = [];
+    advisoryIssueBody(ledgerOf([advisory()]), DOCS, (text) => (seen.push(text), true));
+    assert.equal(seen.length, 1);
+    assert.match(seen[0]!, /^- R5 docs\/a\.md:4: /);
+    assert.doesNotMatch(seen[0]!, /feature\/388/);
   });
 
   it("is empty when every finding is left out", () => {

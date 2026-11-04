@@ -697,11 +697,17 @@ const ADVISORY_ISSUE_FINDINGS = 20;
 const ADVISORY_LINE_LIMIT = 2000;
 const ADVISORY_MARKER = "<!-- claude-session -->";
 
+// What GitHub renders as a link or an image, or fetches: an address with a scheme (`://`, `mailto:`), a www. address (GitHub links one anywhere after a space or
+// an underscore too, in a path as well as in prose), an inline, reference or image link (`](`, `][`, `![`), and a link reference definition (`]:`). A finding whose
+// line holds one is not published: a reviewer that read untrusted text can be made to put one in a summary or fix, and the host would publish it under its own account.
+const RENDERED_LINK = /:\/\/|mailto:|www\.|\]\(|\]\[|!\[|\]:/i;
+
 // The public follow-up issue's body for the review's open Advisory findings (review-ledger.mts#renderAdvisories), held to the PR note's rules: a
-// finding is listed only when its path is one of the files the review read and is made of plain file-name characters, its line is no longer than
-// ADVISORY_LINE_LIMIT, and `publishable` leaves its whole rendering as it is (the host's public-text check: a reviewer that read untrusted text can quote a
-// secret in a summary or fix). At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and stay in the local review record.
-// Empty when nothing can be listed.
+// finding is listed only when its path is one of the files the review read and is made of plain file-name characters, its line (id, place, summary and fix)
+// is no longer than ADVISORY_LINE_LIMIT and holds nothing GitHub renders as a link or an image (RENDERED_LINK), and `publishable` leaves that line as it is
+// (the host's public-text check: a reviewer that read untrusted text can quote a secret in a summary or fix). `publishable` sees the finding's own line,
+// never the header with the branch name, which the caller checks once. At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and
+// stay in the local review record. Empty when nothing can be listed.
 export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>, publishable: (text: string) => boolean = () => true): string {
   const rendered = ledger.findings
     .map((finding) => ({ finding, text: renderAdvisories({ ...ledger, findings: [finding] }) }))
@@ -710,7 +716,7 @@ export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>
     .filter(({ finding, text }) => {
       const path = diffPath(finding.path);
       const line = text.split("\n").find((candidate) => candidate.startsWith("- ")) ?? "";
-      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && !/www\./i.test(path) && line.length <= ADVISORY_LINE_LIMIT && publishable(text.trim());
+      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && line.length <= ADVISORY_LINE_LIMIT && !RENDERED_LINK.test(line) && publishable(line);
     })
     .slice(0, ADVISORY_ISSUE_FINDINGS)
     .map((entry) => entry.finding);

@@ -2419,6 +2419,11 @@ describe("advisoryIssueBody", () => {
     ["a pop directional isolate", "\u2069"],
     ["a Hangul jungseong filler", "\u1160"],
     ["a soft hyphen", "\u00AD"],
+    ["a null character", "\u0000"],
+    ["an Arabic number sign, a format character that is not default-ignorable", "\u0600"],
+    ["an Arabic end of ayah, a format character that is not default-ignorable", "\u06DD"],
+    ["a Syriac abbreviation mark, a format character that is not default-ignorable", "\u070F"],
+    ["an interlinear annotation anchor, a format character that is not default-ignorable", "\uFFF9"],
     ["a combining grapheme joiner", "\u034F"],
     ["a Khmer inherent vowel", "\u17B4"],
     ["a Mongolian free variation selector", "\u180B"],
@@ -2467,17 +2472,42 @@ describe("advisoryIssueBody", () => {
     assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: "A \u2764\uFE0F\u200D\u200C\u{1F525} here." })]), DOCS), "");
   });
 
-  it("leaves out a joiner or selector at the start or end of a field or beside a space", () => {
-    for (const summary of ["\u200Dstart", "end\u200D", "a \u200D b", "a\u200D b", "a \u200Db", "\uFE0Fstart", "a \uFE0F b", "a\u200C", "\u200Cb"]) {
+  // The non-joiners U+200C and U+200D may not end a field or touch a space; the selector U+FE0F may not start one or follow a space, but it ends one and
+  // precedes a space in ordinary text ("Careful \u26A0\uFE0F" and "\u26A0\uFE0F here").
+  it("leaves out a joiner at the start or end of a field or beside a space, and a selector at the start or after a space", () => {
+    for (const summary of ["\u200Dstart", "end\u200D", "a \u200D b", "a\u200D b", "a \u200Db", "\u200Cstart", "end\u200C", "a\u200C b", "a \u200Cb", "\uFE0Fstart", "a \uFE0F b", "a \uFE0Fb"]) {
       assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary })]), DOCS), "", JSON.stringify(summary));
     }
   });
 
-  it("lists a field with 20 joiners between letters and leaves out one with 21", () => {
-    const joined = (count: number) => `${"x\u200D".repeat(count)}x`;
+  it("lists a selector that ends a field or precedes a space, as an emoji does in ordinary text", () => {
+    for (const summary of ["Careful \u26A0\uFE0F", "\u26A0\uFE0F here", "a \u26A0\uFE0F b"]) {
+      assert.match(advisoryIssueBody(ledgerOf([advisory({ summary }), advisory({ id: "R6", fix: summary })]), DOCS), /R5[\s\S]*R6/, JSON.stringify(summary));
+    }
+  });
 
-    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: joined(20) })]), DOCS), /R5/);
-    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: joined(21) })]), DOCS), "");
+  // The cap counts all three characters in a field, so each one is tried at 20 and 21.
+  for (const [name, character] of [["U+200D", "\u200D"], ["U+200C", "\u200C"], ["U+FE0F", "\uFE0F"]] as const) {
+    it(`lists a field with 20 of ${name} between letters and leaves out one with 21`, () => {
+      const joined = (count: number) => `${`x${character}`.repeat(count)}x`;
+
+      assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: joined(20) })]), DOCS), /R5/);
+      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: joined(21) })]), DOCS), "");
+    });
+  }
+
+  it("counts the three characters together: 21 mixed in one field are left out, 20 are listed", () => {
+    const mixed = (counts: [number, number, number]) =>
+      `${"x\u200D".repeat(counts[0])}${"x\u200C".repeat(counts[1])}${"x\uFE0F".repeat(counts[2])}x`;
+
+    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: mixed([10, 5, 5]) })]), DOCS), /R5/);
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: mixed([10, 6, 5]) })]), DOCS), "");
+  });
+
+  it("counts joiners in each field on its own: 20 in the summary and 20 in the fix are both listed", () => {
+    const twenty = `${"x\u200D".repeat(20)}x`;
+
+    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: twenty, fix: twenty })]), DOCS), /R5/);
   });
 
   it("leaves the whole body out when the branch the header quotes holds hidden text", () => {

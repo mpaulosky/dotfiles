@@ -30,7 +30,7 @@ import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from ".
 import { runLimits, type RunLimits } from "./limits.mts";
 import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs, reviewerPromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
-import { isBlocking, mergeBase, pinLedgerGit, prepareRound, recordReview, takenIds } from "./review-ledger.mts";
+import { isBlocking, mergeBase, pinLedgerGit, prepareRound, recordReview, renderAdvisories, takenIds } from "./review-ledger.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git, hostGitInvocation, runHostGit } from "./shell.mts";
@@ -1584,6 +1584,11 @@ async function buildMarkedIssue(
         review.readPaths,
         (line) => host.publicError(line) === line && !visibleLetters(line).includes("reviewnotes"),
       );
+      // An empty body is also what a review with no open Advisory finding gives, so say when findings were open and none could be listed (hidden text in
+      // the branch name or in every finding): nothing else tells a person the follow-up issue was dropped.
+      if (advisories === "" && renderAdvisories(review.ledger) !== "") {
+        log("the local review's Advisory findings can't be listed (hidden text in the branch name or in every finding), so no follow-up issue is filed for them");
+      }
       if (advisories !== "" && host.publicError(advisories) !== advisories.trim()) {
         log("the local review's Advisory findings hold text that isn't safe to publish, so no follow-up issue is filed for them");
         advisories = "";

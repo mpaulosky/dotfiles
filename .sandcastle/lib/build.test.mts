@@ -4950,6 +4950,29 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     assert.match(run.advisoryIssues[0]?.body ?? "", /R6/);
   });
 
+  it("files nothing, still publishes, and says so when the branch name hides text, so a dropped issue isn't mistaken for no findings", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const hidden = { ...ledgerWith(reviewed, [advisory()]), branch: `${branch}\u202Ey` };
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger: hidden, readPaths: new Set(["docs/a.md"]) }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.advisoryIssues, []);
+    assert.ok([...run.logs, ...logged].some((line) => /Advisory findings can't be listed/.test(line)), [...run.logs, ...logged].join("\n"));
+  });
+
+  it("logs nothing about a dropped issue when no Advisory finding is open", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([openFinding()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(![...run.logs, ...logged].some((line) => /Advisory findings can't be listed/.test(line)));
+  });
+
   it("files nothing when no Advisory finding is open", async () => {
     const run = host([0, 0], { localReview: recorded([openFinding(), advisory({ status: "fixed", test: null, reason: "Reworded." })]) });
 

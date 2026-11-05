@@ -715,8 +715,9 @@ const MAX_JOINER_CHARACTERS = 20;
 const JOINER_CHARACTERS = /[\u200C\u200D\uFE0F]/gu;
 
 // Whether a field holds text a reader can't see (HIDDEN_TEXT), or joiners used as a channel rather than as text: three or more in a row (an emoji such as
-// a red heart with a flame holds two: a selector then a joiner), one at the start or end of the field or beside a space, or more than
-// MAX_JOINER_CHARACTERS in all. A run of joiners is a binary encoding that renders as nothing.
+// a red heart with a flame holds two: a selector then a joiner), a U+200C or U+200D at the start or end of the field or beside a space, a U+FE0F at the
+// start or after a space (it does end a field or precede a space in ordinary text, as in a warning sign followed by a word), or more than
+// MAX_JOINER_CHARACTERS of the three in all. A run of joiners is a binary encoding that renders as nothing.
 function hiddenText(field: string): boolean {
   if (HIDDEN_TEXT.test(field)) return true;
   if ((field.match(JOINER_CHARACTERS) ?? []).length > MAX_JOINER_CHARACTERS) return true;

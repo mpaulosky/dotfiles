@@ -163,7 +163,8 @@ export const humanThreadReport = new HumanThreadReport();
 // (the first automatic runs ending green on a missing Docker image).
 // `unjudged` are the issue numbers intake never gave a verdict to this
 // round; `firstError` is the message of the first error in the streak that
-// stopped it.
+// stopped it. The report also holds the stops that end the run red for another reason, with `unjudged` empty: a stalled sandbox step (STALL_STOP_REASON, below) and a
+// published PR whose Advisory findings reached nowhere a person sees (lib/round.mts#FINDINGS_LOST_STOP_REASON); `firstError` names what happened.
 export type IntakeStopEntry = { reason: string; unjudged: readonly number[]; firstError: string };
 
 // Every intake stop this run recorded, so the run report and the exit code
@@ -183,9 +184,8 @@ export class IntakeStopReport {
 // The one report every intake stop this run makes records into.
 export const intakeStopReport = new IntakeStopReport();
 
-// Whether main.mts must exit non-zero: any recorded intake stop means some
-// issues were left silently unjudged, so the run must end red even
-// when nothing else failed, a hand-back included.
+// Whether main.mts must exit non-zero: any recorded stop (an intake stop that left issues silently unjudged, a stall, or lost Advisory findings) means
+// something went unseen, so the run must end red even when nothing else failed, a hand-back included.
 export function intakeStopExitCode(stops: readonly IntakeStopEntry[]): number {
   return stops.length > 0 ? 1 : 0;
 }

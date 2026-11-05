@@ -5190,8 +5190,9 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     const run = host([0, 0], { localReview: recorded([advisory()]) });
     run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
 
-    await buildIssue(issue, branch, base, run.buildHost);
+    const result = await buildIssue(issue, branch, base, run.buildHost);
 
+    assert.equal(result.findingsLost, undefined, "a filed issue loses nothing");
     assert.ok(!comments.some((body) => /couldn't file the follow-up issue/.test(body)));
   });
 

@@ -139,4 +139,13 @@ describe("findingsLostStops", () => {
     ]);
     assert.deepEqual(findingsLostStops(work, [value(undefined), { status: "rejected", reason: new Error("boom") }]), []);
   });
+
+  it("names each lost build by its own issue, whichever position it is in, even beside a rejected build", () => {
+    const value = (findingsLost?: boolean) => ({ status: "fulfilled", value: { findingsLost } }) as const;
+    const named = (stops: { firstError: string }[]) => stops.map((stop) => /#(\d+)/.exec(stop.firstError)?.[1]);
+
+    assert.deepEqual(named(findingsLostStops(work, [value(false), value(true)])), ["72"]);
+    assert.deepEqual(named(findingsLostStops(work, [value(true), value(true)])), ["71", "72"]);
+    assert.deepEqual(named(findingsLostStops(work, [{ status: "rejected", reason: new Error("boom") }, value(true)])), ["72"]);
+  });
 });

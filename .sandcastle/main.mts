@@ -93,7 +93,8 @@
 //                               (lib/handback.mts). A failed scribe, reviewer or
 //                               local review still publishes, with a note in the PR (a local review that didn't finish holds the PR as a draft);
 //                               a usage-limit stop or a stalled sandbox leaves the branch for a later round, and a
-//                               time-budget stop or the review's time cap publishes what passed the gate.
+//                               time-budget stop or the review's time cap publishes what passed the gate. When the Advisory findings can't be filed
+//                               as an issue or posted as a comment on the Sandcastle issue, the PR still publishes and the run ends red.
 //                               Otherwise the host scans the commits for the
 //                               sandbox's secrets, pushes the commit the gate
 //                               passed on from the main checkout with git hooks
@@ -184,7 +185,7 @@ import {
   writeRunReport,
   type RunEnding,
 } from "./lib/report.mts";
-import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
+import { findingsLostStops, publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
 import { copyReviewerLogs, reviewerLogsDir } from "./lib/role-logs.mts";
 import { timelineReport } from "./lib/role-timeline.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
@@ -488,6 +489,8 @@ try {
       }
     }
 
+    for (const stop of findingsLostStops(work, settled)) intakeStopReport.record(stop);
+
     const summary = roundSummary(work, settled);
     for (const line of summary.lines) {
       console.log(line);
@@ -568,8 +571,8 @@ try {
   copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR));
   console.log(`\nRun report: ${REPORT_DIR}/summary.md`);
 
-  // Unlike a hand-back, an intake stop means the host couldn't run a role at
-  // all, so the run ends red once the report is written. A crash still
+  // Unlike a hand-back, a recorded stop (an intake stop: the host couldn't run a role at all; a stall; or a PR's Advisory findings lost with both the
+  // follow-up issue and the fallback comment failing) is something no person was told, so the run ends red once the report is written. A crash still
   // exits 1 on its uncaught error, whatever this sets.
   for (const { reason, firstError } of intakeStopReport.items()) {
     console.error(`\n✗ Intake stopped: ${reason}. First error: ${firstError}`);

@@ -308,6 +308,8 @@ describe("the Owned check.sh in an existing repo (mpaulosky/dotfiles#391)", () =
 
     assert.match(reference, /`\.sandcastle\/check\.sh` is Owned, so Apply refreshes it/);
     assert.match(reference, /moves those paths, one per line, into the Seed `\.sandcastle\/check-paths\.txt`/);
-    assert.match(reference, /renames it first and points `GATE_COMMAND` and `GATE_SCRIPT`/);
+    assert.match(reference, /renames it first and points `GATE_COMMAND` and `GATE_SCRIPT` at the new name/);
+    assert.match(reference, /Apply keeps a `\.sandcastle\/check\.sh` that either names/);
+    assert.match(reference, /Name it `\.sandcastle\/sandbox-gate\.sh`, not `\.sandcastle\/check\.sh`, which is Owned/);
   });
 });

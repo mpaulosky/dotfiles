@@ -327,5 +327,41 @@ check "security record: a re-Apply leaves the README's edits and the entry alone
   '[[ "$(cat "$repo/.security/README.md" "$repo/.security/0001-an-entry.md")" == "$before" ]]'
 check "security record: a re-Apply leaves the worktree clean, the entry ignored" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
 
+# .sandcastle/check.sh is Owned, but a repo whose GATE_COMMAND or GATE_SCRIPT names it uses it as its sandbox gate (the three older
+# repos did): Apply keeps that copy and says to rename it, since the Owned script would pass the gate without its lints and tests.
+printf '#!/usr/bin/env bash\necho owned\n' > "$skill/template/owned/.sandcastle/check.sh"
+chmod +x "$skill/template/owned/.sandcastle/check.sh"
+n=0
+for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/check.sh";' \
+  'export  let GATE_COMMAND = "bash .sandcastle/check.sh";'; do
+  n=$((n + 1))
+  repo="$work/gate check $n"
+  new_repo "$repo"
+  mkdir -p "$repo/.sandcastle/lib"
+  printf '%s\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
+  printf '#!/usr/bin/env bash\necho sandbox gate\n' > "$repo/.sandcastle/check.sh"
+  commit_all "$repo" "init"
+  git_q -C "$repo" switch -q -c chore/standardize-baseline
+  out="$("$apply" "$repo")"
+  check "gate check ($n): the repo's sandbox gate is kept" 'grep -q "sandbox gate" "$repo/.sandcastle/check.sh"'
+  check "gate check ($n): the report says to rename it" 'grep -q "check.sh is Owned.*rename" <<< "$out"'
+  dry="$("$apply" --dry-run "$repo")"
+  check "gate check ($n): a dry run says it too" 'grep -q "check.sh is Owned.*rename" <<< "$dry"'
+done
+n=0
+for config in '// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'export const ROLE_AGENTS = {};'; do
+  n=$((n + 1))
+  repo="$work/gate check other $n"
+  new_repo "$repo"
+  mkdir -p "$repo/.sandcastle/lib"
+  printf '%s\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
+  printf '#!/usr/bin/env bash\necho old copy\n' > "$repo/.sandcastle/check.sh"
+  commit_all "$repo" "init"
+  git_q -C "$repo" switch -q -c chore/standardize-baseline
+  out="$("$apply" "$repo")"
+  check "gate check other ($n): the Owned check.sh replaces the copy" 'grep -q "echo owned" "$repo/.sandcastle/check.sh"'
+  check "gate check other ($n): no rename warning" '! grep -q "check.sh is Owned" <<< "$out"'
+done
+
 echo "apply.test.sh: $pass passed, $failed failed"
 [[ $failed -eq 0 ]]

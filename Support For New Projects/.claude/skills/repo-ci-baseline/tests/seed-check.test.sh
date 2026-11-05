@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for the Owned .sandcastle/check.sh: it runs Sandcastle's check only when a file the
-# check reads changed since <merge-base> (always, with no merge base), so a repo that copies it
-# doesn't stop checking when only one of those files changes. Each case runs the Seed script in
-# a throwaway repo with a stub pnpm that logs its calls.
+# check reads changed since <merge-base> (always, with no merge base): its built-in paths, or
+# one a repo lists in the Seed .sandcastle/check-paths.txt, so the check doesn't stop when only
+# one of those files changes. Each case runs the Template's script in a throwaway repo with a
+# stub pnpm that logs its calls.
 # Usage: tests/seed-check.test.sh
 set -uo pipefail
 
@@ -28,7 +29,7 @@ echo "GIT_DIR=\${GIT_DIR-unset} GIT_WORK_TREE=\${GIT_WORK_TREE-unset} GIT_INDEX_
 STUB
 chmod +x "$STUBS/pnpm"
 
-# Every path the script's pathspec names, plus a file it doesn't.
+# Every path the script's built-in pathspec names, plus a file it doesn't.
 PATHS=(.sandcastle/lib/x.mts package.json pnpm-workspace.yaml pnpm-lock.yaml scripts/review.sh
   .claude/skills/pre-push-review/SKILL.md .claude/skills/hardening-review/SKILL.md .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml)
 
@@ -126,35 +127,110 @@ check "with the variables set, a change to package.json runs the Sandcastle chec
 check "with the variables set, a change to package.json leaves pnpm none of them" pnpm_saw_no_git_variables
 git -C "$REPO" switch -q main
 
-# A repo lists the other files its tests read in .sandcastle/check-paths.txt (Seed).
-cat > "$REPO/.sandcastle/check-paths.txt" <<'LIST'
-# a comment, then a blank line
-
-CLAUDE.md
-:(glob)docs/guides/**
-LIST
+# A repo lists the other files its tests read in .sandcastle/check-paths.txt (Seed). Each case writes the list with printf
+# (so a CRLF, a missing final newline or odd whitespace is exact), commits it on main, and changes one file on a branch.
 mkdir -p "$REPO/docs/guides/sub"
-echo start > "$REPO/CLAUDE.md"; echo start > "$REPO/docs/guides/sub/a.md"
+for path in CLAUDE.md docs/guides/sub/a.md '#notes.md' -dashed.md; do echo start > "$REPO/$path"; done
 git -C "$REPO" add -A
-git -C "$REPO" commit -q -m "paths list"
-LISTBASE="$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" commit -q -m "files the lists name"
 
+LISTBASE=""
+BRANCHES=0
+set_list() { # set_list <printf %b text>: the list on main, and LISTBASE its commit
+  git -C "$REPO" switch -q main
+  printf '%b' "$1" > "$REPO/.sandcastle/check-paths.txt"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit -q --allow-empty -m "list"
+  LISTBASE="$(git -C "$REPO" rev-parse HEAD)"
+}
+touch_file() { # touch_file <path>: change it on a new branch and run the check from the list's commit
+  BRANCHES=$((BRANCHES + 1))
+  git -C "$REPO" switch -q -c "list-$BRANCHES" main
+  mkdir -p "$REPO/$(dirname -- "$1")"
+  echo more >> "$REPO/$1"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit -qm "touch $1"
+  run_check "$LISTBASE"
+  git -C "$REPO" switch -q main
+}
+
+set_list '# a comment, then a blank line\n\nCLAUDE.md\n:(glob)docs/guides/**\n'
 run_check "$LISTBASE"
 check "with a paths list and nothing changed since it, nothing runs" not ran_check
-for path in CLAUDE.md docs/guides/sub/a.md; do
-  git -C "$REPO" switch -q -c "listed-$RANDOM" main
-  echo more >> "$REPO/$path"
-  git -C "$REPO" commit -qam "touch $path"
-  run_check "$LISTBASE"
-  check "a change to $path, listed in check-paths.txt, runs the Sandcastle check" ran_check
-  git -C "$REPO" switch -q main
-done
-git -C "$REPO" switch -q -c listed-unrelated main
-echo more >> "$REPO/docs/unrelated.md"
-git -C "$REPO" commit -qam "unrelated again"
-run_check "$LISTBASE"
-check "a file the list doesn't name still runs nothing (the comment and blank lines name no path)" not ran_check
+touch_file CLAUDE.md
+check "a change to CLAUDE.md, listed in check-paths.txt, runs the Sandcastle check" ran_check
+touch_file docs/guides/sub/a.md
+check "a change under a listed :(glob) path runs the Sandcastle check" ran_check
+touch_file docs/unrelated.md
+check "a file the list doesn't name runs nothing" not ran_check
+
+set_list '# crlf\r\nCLAUDE.md\r\n'
+touch_file CLAUDE.md
+check "a list with CRLF line endings still watches CLAUDE.md" ran_check
+
+set_list 'docs/guides/sub/a.md'
+touch_file docs/guides/sub/a.md
+check "a last line with no trailing newline is read" ran_check
+
+set_list '   CLAUDE.md \t\n'
+touch_file CLAUDE.md
+check "a path with leading and trailing whitespace is trimmed, not silently dropped" ran_check
+
+set_list '\xef\xbb\xbfCLAUDE.md\n'
+touch_file CLAUDE.md
+check "a UTF-8 byte order mark before the first path is ignored" ran_check
+
+set_list '  #*\n\t\n   \n-dashed.md\n'
+touch_file '#notes.md'
+check "an indented comment names no path (#* would otherwise match #notes.md)" not ran_check
+touch_file docs/unrelated.md
+check "whitespace-only lines name no path (an empty pathspec would run the check)" not ran_check
+touch_file -dashed.md
+check "a path beginning with - is watched" ran_check
+
+set_list ':(exclude).sandcastle\n:^package.json\n'
+touch_file .sandcastle/lib/x.mts
+check "an :(exclude) line can't switch off the .sandcastle/ check" ran_check
+touch_file package.json
+check "a :^ line can't switch off the package.json check" ran_check
+touch_file .sandcastle/check-paths.txt
+check "a change to the list itself runs the check" ran_check
+
+set_list ':(bogus)x\n'
+touch_file docs/unrelated.md
+check "an invalid pathspec runs the check rather than skipping it" ran_check
+
+rm "$REPO/.sandcastle/check-paths.txt"
+git -C "$REPO" add -A
+git -C "$REPO" commit -q -m "no list"
+LISTBASE="$(git -C "$REPO" rev-parse HEAD)"
+touch_file docs/unrelated.md
+check "with no check-paths.txt a file the check doesn't read runs nothing" not ran_check
+touch_file package.json
+check "with no check-paths.txt package.json still runs the check" ran_check
+
+# The script finds the repo itself: run from a subfolder, or by absolute path from elsewhere, it still diffs the repo's files.
+set_list '# empty\n'
+BRANCHES=$((BRANCHES + 1))
+git -C "$REPO" switch -q -c "list-$BRANCHES" main
+echo more >> "$REPO/package.json"
+git -C "$REPO" commit -qam "touch package.json"
+run_check_from() { # run_check_from <dir> <script> <merge-base>
+  : > "$LOG"
+  OUTPUT="$(cd "$1" && PATH="$STUBS:$PATH" bash "$2" "$3" 2>&1)"
+  STATUS=$?
+}
+run_check_from "$REPO/docs" ../.sandcastle/check.sh "$LISTBASE"
+check "run from a subfolder, a change to package.json runs the check" ran_check
+run_check_from "$WORK" "$REPO/.sandcastle/check.sh" "$LISTBASE"
+check "run by absolute path from outside the repo, a change to package.json runs the check" ran_check
 git -C "$REPO" switch -q main
+
+# The Seed list ships with comments only: a pathspec there would widen every repo's watch list.
+SEED_LIST="$SKILL_DIR/template/seed/.sandcastle/check-paths.txt"
+check "the Seed check-paths.txt exists" test -f "$SEED_LIST"
+seed_list_is_comments_only() { ! grep -Evq '^[[:space:]]*(#.*)?$' "$SEED_LIST"; }
+check "the Seed check-paths.txt holds comments and blank lines only" seed_list_is_comments_only
 
 echo
 echo "seed-check.test.sh: $PASSED passed, $FAILED failed"

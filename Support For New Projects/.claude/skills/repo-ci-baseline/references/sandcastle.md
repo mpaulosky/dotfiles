@@ -296,9 +296,9 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 5. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.
 6. Take the Template's `sandcastle.yml` and drop the repo's own from `NOT_OWNED_BASELINE_PATHS`; move the skills it installs into `.github/ci/sandcastle-skills.txt` ([The workflow](#the-workflow)).
 7. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
-   those out and keeps the lints (a script of its own, not `.sandcastle/check.sh`, which is Owned: IssueManager, IssueTracker and TicketManager rename theirs,
-   e.g. to `.sandcastle/sandbox-gate.sh`, before the first Apply that brings in the Owned one), and points the gate-fixer and follow-up roles' instructions at it.
-8. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/sandbox-gate.sh` for the step above), and list in `CHECK_PATHS` every place
+   those out and keeps the lints, and points the gate-fixer and follow-up roles' instructions at it. Name it `.sandcastle/sandbox-gate.sh`, not `.sandcastle/check.sh`, which is Owned:
+   IssueManager, IssueTracker and TicketManager rename theirs, in a PR that merges before the Apply that brings in the Owned one.
+8. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/sandbox-gate.sh`, the script of step 7), and list in `CHECK_PATHS` every place
    the gate reads its checks from: its scripts and tests, `.github/workflows/`, `.github/scripts/check_gh_repo.py`, `.claude/skills/` (the gate's `gh` check reads them)
    and `package.json`. A gate whose branch changes `GATE_SCRIPT`, or a `GATE_SCRIPT` that isn't a file at the
    branch's base, fails without running.
@@ -307,7 +307,10 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 
 `.sandcastle/check.sh` is Owned, so Apply refreshes it: the unset of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` and the review paths arrive with it.
 A repo that had edited its copy's list of watched paths (Blazor-Server and auth0-management-app) moves those paths, one per line, into the Seed `.sandcastle/check-paths.txt` before it Applies.
-A repo whose `check.sh` is its sandbox gate (the three older repos) renames it first and points `GATE_COMMAND` and `GATE_SCRIPT` at the new name: Apply would otherwise replace it.
+A repo whose `check.sh` is its sandbox gate (the three older repos) renames it first and points `GATE_COMMAND` and `GATE_SCRIPT` at the new name (step 7).
+Apply keeps a `.sandcastle/check.sh` that either names,
+and reports it as a known conflict with the rename to make, since the Owned script would otherwise replace the gate and pass it without the repo's lints and tests.
+The list is read as written: a line is a git pathspec, and an `:(exclude)` line only trims the list, never the Template's own paths.
 
 Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES
 list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and

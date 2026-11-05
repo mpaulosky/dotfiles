@@ -96,6 +96,15 @@ if $with_sandcastle && [[ -f "$target/.sandcastle/lib/repo-config.mts" ]] \
   ledger_ready=false
 fi
 
+# .sandcastle/check.sh is Owned, but a repo whose GATE_COMMAND or GATE_SCRIPT names it uses it as its sandbox gate (IssueManager,
+# IssueTracker and TicketManager did). The Owned script only type-checks and tests .sandcastle/, so replacing the gate with it would
+# pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it.
+gate_check_kept=false
+if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" && -f "$target/.sandcastle/lib/repo-config.mts" ]] \
+  && grep -qE '^export[[:space:]]+(const|let)[[:space:]]+GATE_(COMMAND|SCRIPT)\b[^;]*\.sandcastle/check\.sh' "$target/.sandcastle/lib/repo-config.mts"; then
+  gate_check_kept=true
+fi
+
 # ── Placeholder values ──────────────────────────────────────────────────────
 owner=""
 repo=""
@@ -143,6 +152,7 @@ ledger_left=()
 while IFS= read -r rel; do
   if ! $with_sandcastle && sandcastle_path "$rel"; then sandcastle_left+=("$rel"); continue; fi
   if ! $ledger_ready && ledger_path "$rel"; then ledger_left+=("$rel"); continue; fi
+  if $gate_check_kept && [[ "$rel" == .sandcastle/check.sh ]]; then continue; fi
   src="$owned_dir/$rel"
   dst="$target/$rel"
   if [[ ! -e "$dst" ]]; then
@@ -207,6 +217,7 @@ done
 for f in .copilot-commit-message-instructions.md .claude/rules/git-commit.md; do
   [[ -e "$target/$f" ]] && conflicts+=("$f duplicates .github/instructions/git-commit-instructions.md; delete it, and point CLAUDE.md at docs/PROCESS.md")
 done
+$gate_check_kept && conflicts+=(".sandcastle/check.sh is Owned, but this repo's GATE_COMMAND or GATE_SCRIPT runs it as its sandbox gate, so Apply kept the copy; rename it (e.g. to .sandcastle/sandbox-gate.sh), point both at the new name, and Apply again")
 if [[ -d "$target/.squad" ]] || compgen -G "$target/.github/workflows/squad-*" >/dev/null; then
   conflicts+=("squad is still installed (.squad/ or squad-* workflows); run the remove-squad skill before Applying")
 fi

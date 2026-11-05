@@ -119,8 +119,9 @@ A repo that already has Sandcastle:
    (a deny rule beats any allow rule, so a `.env.*` rule would lock the templates too). The list is a floor: add a rule for each other `.env.<name>` file your repo keeps secrets in.
 
 3. Run `pnpm install` (the ledger needs `zod` and `tsx`, both in the Seed `package.json`; a repo whose own `package.json` lacks `tsx` gets it when it migrates
-   to the Sandcastle section), then `pnpm run check:sandcastle`. Add `scripts/review.sh`, `.claude/skills/pre-push-review`,
-   `.claude/agents/pre-push-reviewer.md` and `.github/workflows/claude-review.yml` to the pathspec in the repo's Sandcastle check (the Owned `.sandcastle/check.sh` has them), since its tests read them.
+   to the Sandcastle section), then `pnpm run check:sandcastle`. The Owned `.sandcastle/check.sh` already watches `scripts/review.sh`, `.claude/skills/pre-push-review`,
+   `.claude/agents/pre-push-reviewer.md` and `.github/workflows/claude-review.yml`, since its tests read them. A repo with a sandbox gate script of its own adds them to that script's
+   pathspec, and any other file its tests read goes in the Seed `.sandcastle/check-paths.txt`.
 4. The repo's own guidance for reviewers is optional: a `.claude/skills/code-review/SKILL.md` with a **Lenses** table of the same shape as `lenses.md` adds lenses
    and `CLAUDE.md`, `.sandcastle/CODING_STANDARDS.md` (or `docs/CODING_STANDARDS.md`) and `.claude/rules/` are read when they exist. A lesson from a GitHub review goes into the
    repo's `code-review` skill, not into the Owned `lenses.md` or `review-bar.md` (the next Apply reverts those): to change them, change the Template first.

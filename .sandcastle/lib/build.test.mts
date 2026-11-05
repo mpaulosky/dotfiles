@@ -5542,7 +5542,7 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
 
     const withheld = await buildIssue(issue, branch, base, run.buildHost);
 
-    assert.equal(withheld.findingsUnlisted, true, "the findings are in the log only, so the run must end red");
+    assert.equal(withheld.findingsUnlisted, true, "no follow-up issue was filed, so the run must end red");
 
     assert.deepEqual(run.advisoryIssues, []);
     assert.ok(run.logs.some((line) => /follow-up issue/.test(line)) || logged.some((line) => /follow-up issue/.test(line)), [...run.logs, ...logged].join("\n"));

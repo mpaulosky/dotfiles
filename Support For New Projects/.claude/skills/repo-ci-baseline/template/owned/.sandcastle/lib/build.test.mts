@@ -4892,6 +4892,17 @@ describe("buildIssue's PR state after the local review", () => {
     assert.match(DRAFT_NOTE, /didn't finish/);
   });
 
+  // The review's ledger stays on the Actions runner, so `scripts/review.sh accept` finds nothing in a later checkout: the note tells a person to record
+  // one with the review itself (`report` only prints a ledger, it records none).
+  it("DRAFT_NOTE says the ledger stayed on the runner and that /pre-push-review records one to accept against", () => {
+    assert.match(DRAFT_NOTE, /ledger the review recorded stayed on the runner/);
+    assert.match(DRAFT_NOTE, /run `\/pre-push-review` on it, which records a ledger/);
+    assert.match(DRAFT_NOTE, /ids that review prints/);
+    assert.ok(DRAFT_NOTE.indexOf("/pre-push-review") < DRAFT_NOTE.indexOf("review.sh accept <id>"), DRAFT_NOTE);
+    assert.match(DRAFT_NOTE, /`gh pr ready`/);
+    assert.ok(!DRAFT_NOTE.includes("review.sh report"), DRAFT_NOTE);
+  });
+
   it("holds the PR as a draft for an open finding graded Advisory that is a security finding", async () => {
     const run = host([0, 0], { localReview: recorded([openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" })]) });
 
@@ -5276,6 +5287,8 @@ describe("buildIssue when publishing fails after the PR was held as a draft", ()
     assert.match(comments[0] ?? "", /held as a draft/);
     assert.match(comments[0] ?? "", /gh pr list --head feature\/69-run-the-gate/);
     assert.match(comments[0] ?? "", /scripts\/review\.sh accept/);
+    // The ledger stayed on the runner: accept needs a ledger from a local /pre-push-review first.
+    assert.match(comments[0] ?? "", /ledger is on the runner: run `\/pre-push-review` on the branch first, then `scripts\/review\.sh accept <id> <reason>`/);
     assert.doesNotMatch(comments[0] ?? "", /open one by hand/);
     assert.match(comments[0] ?? "", /non-fast-forward/);
   });

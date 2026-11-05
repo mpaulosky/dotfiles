@@ -184,7 +184,7 @@ import {
   writeRunReport,
   type RunEnding,
 } from "./lib/report.mts";
-import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
+import { findingsLostStops, publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
 import { copyReviewerLogs, reviewerLogsDir } from "./lib/role-logs.mts";
 import { timelineReport } from "./lib/role-timeline.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
@@ -487,6 +487,8 @@ try {
         );
       }
     }
+
+    for (const stop of findingsLostStops(work, settled)) intakeStopReport.record(stop);
 
     const summary = roundSummary(work, settled);
     for (const line of summary.lines) {

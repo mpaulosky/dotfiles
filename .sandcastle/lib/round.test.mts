@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { UncountedStopError } from "./errors.mts";
-import { publishedIssues, roundOutcomes, roundSummary } from "./round.mts";
+import { FINDINGS_LOST_STOP_REASON, findingsLostStops, publishedIssues, roundOutcomes, roundSummary } from "./round.mts";
 
 const work = [
   { issue: { number: 71 }, branch: "feature/71-a" },
@@ -126,5 +126,17 @@ describe("publishedIssues", () => {
     const settled = [{ status: "rejected", reason: new UncountedStopError("budget") } as const, built(undefined)];
 
     assert.deepEqual([...publishedIssues(work, settled)], []);
+  });
+});
+
+describe("findingsLostStops", () => {
+  it("records one stop, naming the issue and no error text, for each build that lost its findings, and none for the others", () => {
+    const value = (findingsLost?: boolean) => ({ status: "fulfilled", value: { findingsLost } }) as const;
+    const stops = findingsLostStops(work, [value(true), value(false)]);
+
+    assert.deepEqual(stops, [
+      { reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: "filing the follow-up issue and commenting on #71 both failed; the findings are in the run log only" },
+    ]);
+    assert.deepEqual(findingsLostStops(work, [value(undefined), { status: "rejected", reason: new Error("boom") }]), []);
   });
 });

@@ -1,7 +1,7 @@
 // The run summary for one round, logged once every issue's build has settled.
 
 import { UncountedStopError } from "./errors.mts";
-import type { OutcomeEntry } from "./report.mts";
+import type { IntakeStopEntry, OutcomeEntry } from "./report.mts";
 
 // What the summary needs from each build's result; see buildIssue.
 type BuildResult = { prUrl: string | undefined; publishFailed: boolean };
@@ -98,4 +98,21 @@ export function publishedIssues(
       return outcome?.status === "fulfilled" && outcome.value.prUrl ? [issue.number] : [];
     }),
   );
+}
+
+// The reason of the stop recorded for a build whose Advisory findings reached nowhere a person sees (see buildIssue's findingsLost).
+export const FINDINGS_LOST_STOP_REASON = "a pull request's Advisory findings weren't filed anywhere";
+
+// One stop per fulfilled build that lost its findings, recorded with the intake stops so the run report names it and the run ends red (lib/report.mts#intakeStopExitCode).
+// `firstError` is host-written text: the issue's number, never an error's own text, since the report is public on a public repository.
+export function findingsLostStops(
+  work: readonly { issue: { number: number } }[],
+  settled: readonly PromiseSettledResult<{ findingsLost?: boolean }>[],
+): IntakeStopEntry[] {
+  return work.flatMap(({ issue }, i): IntakeStopEntry[] => {
+    const outcome = settled[i];
+    return outcome?.status === "fulfilled" && outcome.value.findingsLost === true
+      ? [{ reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: `filing the follow-up issue and commenting on #${issue.number} both failed; the findings are in the run log only` }]
+      : [];
+  });
 }

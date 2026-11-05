@@ -5157,6 +5157,7 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
+    assert.equal(result.findingsLost, undefined, "the comment on the issue holds the findings, so nothing is lost");
     const posted = comments.filter((comment) => /follow-up issue/.test(comment.body));
     assert.equal(posted.length, 1);
     assert.equal(posted[0]?.issue, issue.number);
@@ -5179,6 +5180,7 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
+    assert.equal(result.findingsLost, true, "the findings are in the log only, so the run must end red");
     assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)));
     assert.ok(logged.some((line) => /posting the Advisory findings/.test(line)), logged.join("\n"));
   });

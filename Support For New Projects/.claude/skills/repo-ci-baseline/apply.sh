@@ -95,24 +95,20 @@ fi
 
 # .sandcastle/check.sh is Owned, but a repo whose GATE_COMMAND or GATE_SCRIPT names it uses it as its sandbox gate (IssueManager,
 # IssueTracker and TicketManager did). The Owned script only type-checks and tests .sandcastle/, so replacing the gate with it would
-# pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it. It reads repo-config.mts and
-# the older config.mts, drops `//` and `/* */` comments, joins the lines, ends a statement only at a `;` that a further `export const` or
-# `export let` follows (so an `export` or a `;` inside a string, a value on the next line and a type annotation don't matter), and keeps
-# the copy when a GATE_COMMAND or GATE_SCRIPT statement names check.sh as a path (`.sandcastle/check.sh`, `./check.sh`, `${DIR}/check.sh`)
-# or a bare name. A false match only adds a conflict to report. A value built from another constant is not followed.
-gate_config_statements() {
-  local file nl=$'\n'
-  for file in "$target/.sandcastle/lib/repo-config.mts" "$target/.sandcastle/lib/config.mts"; do
-    if [[ -f "$file" ]]; then cat "$file"; echo; fi
-  done | sed -E 's#(^|[[:space:]])//.*#\1#' | tr '\n' ' ' | sed -E 's#/\*([^*]|\*+[^*/])*\*+/##g' \
-    | sed -E "s/;[[:space:]]*(export[[:space:]]+(const|let)[[:space:]])/;\\${nl}\\1/g"
-}
+# pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it. This reads no TypeScript
+# (a parser written in sed was wrong in a new way every round): it keeps the copy when check.sh, as a name or at the end of any path,
+# appears on a line that mentions GATE_COMMAND or GATE_SCRIPT or in the three lines after one, in repo-config.mts or the older
+# config.mts. A formatter's wrapped value, a comment, a string or a glob can't hide it; a comment or another constant in that window is
+# a false match, which only adds a conflict to report (move the text out of the window). A value built from another constant is not followed.
 gate_check_kept=false
 if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" ]]; then
-  gate_statements="$(gate_config_statements)"
-  if grep -qE "export[[:space:]]+(const|let)[[:space:]]+GATE_(COMMAND|SCRIPT)\\b.*(\\.sandcastle/|\\./|\\}/|[[:space:]\"'\`])check\\.sh([^[:alnum:]_.-]|\$)" <<< "$gate_statements"; then
-    gate_check_kept=true
-  fi
+  for gate_config in "$target/.sandcastle/lib/repo-config.mts" "$target/.sandcastle/lib/config.mts"; do
+    [[ -f "$gate_config" ]] || continue
+    gate_window="$(grep -h -A3 -E 'GATE_(COMMAND|SCRIPT)' "$gate_config" || true)"
+    if grep -qE '(^|[^[:alnum:]_.-])check\.sh([^[:alnum:]_.-]|$)' <<< "$gate_window"; then
+      gate_check_kept=true
+    fi
+  done
 fi
 
 # ── Placeholder values ──────────────────────────────────────────────────────

@@ -331,14 +331,18 @@ printf '#!/usr/bin/env bash\necho owned\n' > "$skill/template/owned/.sandcastle/
 chmod +x "$skill/template/owned/.sandcastle/check.sh"
 n=0
 for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/check.sh";' \
-  'export  let GATE_COMMAND = "bash .sandcastle/check.sh";' \
-  $'export const GATE_COMMAND =\n  "bash .sandcastle/check.sh";' 'export const GATE_COMMAND = "pnpm lint; .sandcastle/check.sh";' \
+  'export  let GATE_COMMAND = "bash .sandcastle/check.sh";' 'export var GATE_COMMAND = "bash .sandcastle/check.sh";' \
+  $'export const GATE_COMMAND =\n  "bash .sandcastle/check.sh";' 'export const GATE_COMMAND = "pnpm lint; export CI=1; bash .sandcastle/check.sh";' \
   'export const GATE_SCRIPT: string = ".sandcastle/check.sh";' 'export const GATE_COMMAND = "cd .sandcastle && ./check.sh";' \
-  'export const A = "x"; export const GATE_SCRIPT = ".sandcastle/check.sh";' \
-  'export const GATE_COMMAND = "export CI=1; bash .sandcastle/check.sh";' 'export const GATE_COMMAND = "pnpm run export && bash .sandcastle/check.sh";' \
-  'export const GATE_COMMAND = `bash ${DIR}/check.sh`;' 'export const GATE_SCRIPT = "check.sh";' 'export const GATE_COMMAND = "cd .sandcastle && bash check.sh";' \
+  'export const A = "x"; export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_COMMAND = "pnpm run export && bash .sandcastle/check.sh";' \
+  'export const GATE_COMMAND = `bash ${DIR}/check.sh`;' 'export const GATE_COMMAND = "bash $DIR/check.sh";' 'export const GATE_COMMAND = "bash ../check.sh";' \
+  'export const GATE_SCRIPT = "check.sh";' "export const GATE_SCRIPT = 'check.sh';" 'export const GATE_SCRIPT = `check.sh`;' 'export const GATE_COMMAND = "cd .sandcastle && bash check.sh";' \
   $'/* the gate */ export const GATE_COMMAND = ".sandcastle/check.sh"; /* x */' $'export const GATE_COMMAND = ".sandcastle/check.sh"\nexport const A = 1' \
-  $'// a note without a final newline\nexport const GATE_COMMAND = ".sandcastle/check.sh";'; do
+  $'export const WATCH = ["src/*.ts", "**/*"];\nexport const GATE_COMMAND = "eslint \'src/**/*.ts\' && .sandcastle/check.sh"; /** The gate. */' \
+  $'/* see // here */ export const GATE_COMMAND = ".sandcastle/check.sh";' $'// a note\nexport const GATE_COMMAND = ".sandcastle/check.sh";' \
+  $'// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_COMMAND = "x"; // formerly .sandcastle/check.sh' \
+  $'export const GATE_COMMAND = "x";\nexport const CHECKS = [".sandcastle/check.sh"];\nexport const B = 1' \
+  $'export const GATE_COMMAND = "x";\n\n\nexport const CHECKS = [".sandcastle/check.sh"];'; do
   n=$((n + 1))
   repo="$work/gate check $n"
   new_repo "$repo"
@@ -354,11 +358,11 @@ for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export cons
   check "gate check ($n): a dry run says it too" 'grep -q "check.sh is Owned.*rename" <<< "$dry"'
 done
 n=0
-for config in '// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'export const ROLE_AGENTS = {};' \
+for config in 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'export const ROLE_AGENTS = {};' \
   'export const GATE_COMMAND = ".sandcastle/check.sh.bak";' 'export const GATE_COMMAND = ".sandcastle/my-check.sh";' \
-  $'// .sandcastle/check.sh\nexport const GATE_COMMAND = "x";' 'export const NOTE = ".sandcastle/check.sh";' \
   'export const GATE_COMMAND = ".sandcastle/check.shx";' 'export const GATE_COMMAND = ".sandcastle/check.sh-old";' 'export const GATE_COMMAND = ".sandcastle/check.sh_old";' \
-  'export const GATE_COMMAND = "x"; /** see .sandcastle/check.sh */' $'export const GATE_COMMAND = "x";\nexport const CHECKS = [".sandcastle/check.sh"];'; do
+  $'// .sandcastle/check.sh\nexport const GATE_COMMAND = "x";' 'export const NOTE = ".sandcastle/check.sh";' \
+  $'export const GATE_COMMAND = "x";\n\n\n\nexport const CHECKS = [".sandcastle/check.sh"];'; do
   n=$((n + 1))
   repo="$work/gate check other $n"
   new_repo "$repo"

@@ -210,6 +210,8 @@ done
 set_list ':(glob)logs/a,exclude)/**\n'
 touch_file 'logs/a,exclude)/x.md'
 check "a positive pathspec containing ,exclude) is still watched" ran_check
+touch_file docs/unrelated.md
+check "a positive pathspec containing ,exclude) is a real pathspec: an unrelated change still runs nothing" not_ran
 set_list 'CLAUDE.md\n:(exclude)docs\n'
 touch_file docs/unrelated.md
 check "an exclude line beside a positive one still runs nothing for an unrelated change" not_ran

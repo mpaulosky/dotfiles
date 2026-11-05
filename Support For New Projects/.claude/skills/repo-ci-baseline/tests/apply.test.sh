@@ -373,6 +373,8 @@ done
 n=0
 for config in 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'export const ROLE_AGENTS = {};' \
   'export const GATE_COMMAND = ".sandcastle/check.sh.bak";' 'export const GATE_COMMAND = ".sandcastle/my-check.sh";' \
+  'export const GATE_COMMAND = ".sandcastle/mycheck.sh";' 'export const GATE_COMMAND = ".sandcastle/_check.sh";' 'export const GATE_COMMAND = ".sandcastle/.check.sh";' \
+  'export const GATE_COMMAND = ".sandcastle/9check.sh";' \
   'export const GATE_COMMAND = ".sandcastle/check.shx";' 'export const GATE_COMMAND = ".sandcastle/check.sh-old";' 'export const GATE_COMMAND = ".sandcastle/check.sh_old";' \
   $'// .sandcastle/check.sh\nexport const GATE_COMMAND = "x";' 'export const NOTE = ".sandcastle/check.sh";' \
   $'export const GATE_COMMAND = "x";'"$NL11"$'export const CHECKS = [".sandcastle/check.sh"];' \

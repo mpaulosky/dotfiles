@@ -233,6 +233,12 @@ touch_file docs/unrelated.md
 check "an exclude line beside a positive one still runs nothing for an unrelated change" not_ran
 touch_file CLAUDE.md
 check "an exclude line beside a positive one still watches the positive path" ran_check
+# An exclude line trims the other lines: with the positive line matching the file it removes, that file runs nothing while a sibling still does.
+set_list 'docs\n:(exclude)docs/unrelated.md\n'
+touch_file docs/unrelated.md
+check "an exclude line trims the positive line it overlaps: the excluded file runs nothing" not_ran
+touch_file docs/other.md
+check "an exclude line trims only what it names: a sibling under the positive path still runs the check" ran_check
 
 set_list ':(bogus)x\n'
 touch_file docs/unrelated.md

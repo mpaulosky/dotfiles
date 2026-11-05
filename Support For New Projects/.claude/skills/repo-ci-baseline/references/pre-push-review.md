@@ -186,7 +186,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   note says so): the host opens it with `gh pr create --draft`, and its body says why and what a person does: the ledger stays on the runner (it can hold security details), so a person
   first runs `/pre-push-review` on the checked-out branch to record one. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the
   PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready. A PR that already exists for the branch (a rerun) is turned into a draft with `gh pr ready
-  --undo` before the new commits are pushed (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body, but
+  --undo` before the new commits are pushed (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body
+  (the body is read again just before the edit, which keeps what that read held; gh has no compare-and-swap, so a change made in the one call between the read and the edit is lost), but
   only while its body still carries the host's `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the
   draft note added to it, unless that would pass GitHub's 65,536-character limit: then the body is left as it is and the PR is a draft with no note. A body edited by hand with the marker
   left in is rewritten. A rerun that no longer holds a PR that is a draft leaves it a draft, as marking it ready is a person's, but takes the draft note out of its body (the host's own body

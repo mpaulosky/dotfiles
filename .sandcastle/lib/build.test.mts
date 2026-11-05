@@ -5236,7 +5236,7 @@ describe("buildIssue when the open PR can't be held as a draft", () => {
   });
 });
 
-// A review that didn't finish holds the PR too, with no finding to fix or accept: the comments say to run the review again.
+// A review that didn't finish holds the PR too, with no finding to fix or accept: the hand-back comment for a PR that couldn't be made a draft says the review didn't finish, and the one for a publish that failed after the hold says to run it again.
 describe("buildIssue when a review that didn't finish held the PR and publishing failed", () => {
   const unfinished = { localReview: async (args: { startHead: string }) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) as const };
 

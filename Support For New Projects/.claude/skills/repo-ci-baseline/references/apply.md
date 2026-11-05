@@ -13,7 +13,7 @@ Each section maps to an action in Adapt ([adapt.md](adapt.md)).
 | Seed files written | New, placeholders filled | Fill any left in "unfilled placeholders", which counts only `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}` |
 | Seed files skipped | The repo has its own copy, kept as is | Compare with the Template's and merge what the repo lacks |
 | Leftovers | Files under `.github/workflows`, `.github/hooks` or `.github/scripts` the Template doesn't carry | Delete, keep as repo-specific, or move into the Template |
-| Conflicts | Known clashes: a `.markdownlint.*` file that overrides the Template's rules, squad still installed, a `.sandcastle/check.sh` the repo uses as its sandbox gate (Apply keeps it; rename it and Apply again, or, if nothing runs it as a gate, put the text that names check.sh on a comment line of its own that names neither `GATE_COMMAND` nor `GATE_SCRIPT`, or more than ten lines after them) | Fix before landing |
+| Conflicts | Known clashes: a `.markdownlint.*` file that overrides the Template's rules, squad still installed, a `.sandcastle/check.sh` the repo uses as its sandbox gate (Apply keeps it; rename it and Apply again, or, if nothing runs it as a gate, put the text that names check.sh on a comment line of its own that names neither `GATE_COMMAND` nor `GATE_SCRIPT`, or more than ten lines after them; a gate named through another constant isn't followed, so rename it before Applying) | Fix before landing |
 
 ## Guards
 

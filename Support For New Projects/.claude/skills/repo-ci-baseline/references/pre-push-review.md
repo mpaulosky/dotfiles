@@ -193,8 +193,9 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   leave out a re-raised finding. It lists a finding only when its path is a file the review read and is plain file-name characters, and its line (summary and fix too) holds nothing GitHub
   renders as a link or an image (a scheme, `www.`, `mailto:`, `](`, `![`) and reads like neither a secret under the host's public-text check nor a `## Review notes` section
   (at most 20 findings, 2000 characters a line; the rest are counted). That check sees each finding's own line, so a branch named for review notes loses none; the whole body is checked once
-  for the branch, and a refusal is logged. It reuses only an open issue of its own (`--author` with the host's login) with that exact title. It does not match finding by finding as step 9 does: it comments the whole
-  current list unless the body or a comment already holds exactly that text, so findings the issue already lists can appear again beside a new one; a body a person edited is never replaced. A later review with no Advisory findings files nothing, so the earlier issue keeps findings that may
+  for the branch, and a refusal is logged. It reuses only an open issue of its own (`--author` with the host's login) with that exact title. It does not match finding by finding as
+  step 9 does: it comments the whole current list unless the body or a comment already holds exactly that text, so findings the issue already lists can appear again beside a new one;
+  a body a person edited is never replaced. A later review with no Advisory findings files nothing, so the earlier issue keeps findings that may
   be fixed by now: a person closes it. It files none for a review that didn't finish, and a failed filing is only logged: the PR still publishes.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's

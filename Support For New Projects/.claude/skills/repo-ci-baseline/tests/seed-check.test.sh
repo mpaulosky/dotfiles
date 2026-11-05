@@ -301,6 +301,60 @@ check "the Seed check-paths.txt exists" test -f "$SEED_LIST"
 seed_list_is_comments_only() { ! grep -Evq '^[[:space:]]*(#.*)?$' "$SEED_LIST"; }
 check "the Seed check-paths.txt holds comments and blank lines only" seed_list_is_comments_only
 
+# A listed line that matches no tracked file watches nothing until one is added, and git diff stays silent for it: each such line is named on stderr, one per line of the list, and
+# the check runs or skips as it would without the warning. A line git rejects as a pathspec is named too, with its own message.
+warned_about() { [[ "$OUTPUT" == *"check-paths.txt: $1 matches no tracked file, so it watches nothing until a matching file is added"* ]]; }
+contains_escape() { [[ "$OUTPUT" == *$'\033'* ]]; }
+rejected_named() { [[ "$OUTPUT" == *"check-paths.txt: $1 is not a pathspec git accepts, so the check always runs"* ]]; }
+echo start > "$REPO/docs/my file.md"
+echo start > "$REPO/docs/gone.md"
+set_list 'CLAUDE.md\n:(glob)docs/guides/**\ndocs/typo-folder/x.md\n:(exclude)*\ne2e/**\n'
+run_check "$LISTBASE"
+check "a listed path that matches no file is named on stderr" warned_about docs/typo-folder/x.md
+check "a listed glob that matches no file is named too" warned_about 'e2e/**'
+check "a listed file that exists is not named" not warned_about CLAUDE.md
+check "a listed :(glob) path that matches files is not named" not warned_about ':(glob)docs/guides/**'
+check "an :(exclude) line that excludes every file is not asked: it only trims" not warned_about ':(exclude)*'
+check "a warning does not run the check when nothing watched changed" not_ran
+run_check
+check "a warning does not stop the check running when there is no merge base" ran_check
+set_list 'CLAUDE.md\n'
+run_check "$LISTBASE"
+check "a list whose paths all exist prints no warning" not warned_about CLAUDE.md
+check "a list whose paths all exist prints nothing at all" test -z "$OUTPUT"
+
+# A line is one element, whatever it holds: a space doesn't split it, so a listed file with a space in its name is found and an unmatched one is named whole.
+set_list 'docs/my file.md\nno such dir/x y.md\n-dashed.md\n-nosuch.md\n'
+run_check "$LISTBASE"
+check "a listed file with a space in its name is not named" not warned_about 'docs/my file.md'
+check "an unmatched line with spaces is named whole" warned_about 'no such dir/x y.md'
+check "an unmatched line with spaces isn't named in pieces" not warned_about 'no'
+check "a listed file whose name starts with - is not named" not warned_about '-dashed.md'
+check "an unmatched line starting with - is named" warned_about '-nosuch.md'
+
+# A control character in a line is shown as ?, so a committed list can't send terminal escapes to the gate's output.
+set_list 'no\tsuch\033[31mfile.md\n'
+run_check "$LISTBASE"
+check "a control character in a listed line is shown as ?" warned_about 'no?such?[31mfile.md'
+check "a control character in a listed line never reaches the output raw" not contains_escape
+
+# A pathspec git rejects makes the diff fail, so the check always runs: the warning says that, not that the line matches nothing.
+set_list ':(bogus)x\n'
+run_check "$LISTBASE"
+check "a pathspec git rejects is named as rejected" rejected_named ':(bogus)x'
+check "a pathspec git rejects is not named as matching nothing" not warned_about ':(bogus)x'
+check "a pathspec git rejects still runs the check" ran_check
+
+# Deleting the only file a line matches is itself a change the check runs for; the line then matches nothing, which the warning still says.
+set_list 'docs/gone.md\n'
+git -C "$REPO" switch -q -c gone main
+git -C "$REPO" rm -q docs/gone.md
+git -C "$REPO" commit -qm "delete gone.md"
+run_check "$LISTBASE"
+check "deleting the only file a listed line matches runs the check" ran_check
+check "after that deletion the line is named as watching nothing" warned_about docs/gone.md
+git -C "$REPO" switch -q main
+
 echo
 echo "seed-check.test.sh: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

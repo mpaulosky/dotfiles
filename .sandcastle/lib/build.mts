@@ -838,6 +838,15 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
   const subagents = (args.reviewerMode ?? reviewerMode()) === "subagents";
   const backstop = args.backstopMs === undefined ? {} : { backstopMs: args.backstopMs };
   const runRel = `.sandcastle/work/${issue.number}/review`;
+  // A shell test that fails, naming the link, when the run folder or any folder above it is a symlink: a write or a removal there would reach whatever the link
+  // points at. It runs before any mkdir, which only makes real folders, so a link can only be one that was there already.
+  const runParts = runRel.split("/");
+  const runFolderUnlinked = runParts
+    .map((_, at) => {
+      const folder = shellWord(runParts.slice(0, at + 1).join("/"));
+      return `{ test ! -L ${folder} || { echo "${runParts.slice(0, at + 1).join("/")} is a link" >&2; false; }; }`;
+    })
+    .join(" && ");
   const outcomesFile = `${runRel}/outcomes.json`;
   // The ledger's git commands run in the main checkout, whose .git agents can write: pinned to its own shared directory, whatever a
   // commondir file says (lib/host-safety.mts).
@@ -861,7 +870,7 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
     takenIds: (head) => takenIds(checkout, baseOf(head), head),
     removeRunFile: async (path) => {
       if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only remove under ${runRel}/, not ${path}`);
-      const removed = await sandbox.exec(`rm -f ${shellWord(path)}`);
+      const removed = await sandbox.exec(`${runFolderUnlinked} && rm -f -- ${shellWord(path)}`);
       if (removed.exitCode !== 0) throw new Error(`removing ${path} in the sandbox failed: ${removed.stderr.trim()}`);
     },
     writeRunFile: async (path, content) => {
@@ -873,14 +882,11 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       // aliasing two run files (two lenses' prompts) to one.
       const encoded = Buffer.from(content).toString("base64");
       const clear = `rm -f -- ${shellWord(path)}`;
-      // Nor may the run folder, or a folder above it, be a link: the write (and the mkdir before it) would land wherever the link points. Checked before mkdir,
-      // which only makes real folders, so a link can only be one that was there already.
-      const parts = runRel.split("/");
-      const unlinked = parts.map((_, at) => `test ! -L ${shellWord(parts.slice(0, at + 1).join("/"))}`).join(" && ");
+      // Nor may the run folder, or a folder above it, be a link (runFolderUnlinked): the write, and the mkdir before it, would land wherever the link points.
       const written =
         encoded === ""
-          ? await sandbox.exec(`${unlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && : > ${shellWord(path)}`)
-          : await sandbox.exec(`${unlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
+          ? await sandbox.exec(`${runFolderUnlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && : > ${shellWord(path)}`)
+          : await sandbox.exec(`${runFolderUnlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
       if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
     },
     runReviewer: async (_reviewer, prompt) => {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { spawnSync, type execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
 import { hostExecFileSync } from "./host-limit.mts";
@@ -4800,7 +4800,7 @@ describe("liveReviewHost", () => {
         await assert.rejects(() => live.removeRunFile(path), /may only remove under/, path);
       }
 
-      assert.match(execs.at(-1)?.command ?? "", /rm -f '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+      assert.match(execs.at(-1)?.command ?? "", / && rm -f -- '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
       assert.equal(execs.filter((found) => found.command.includes("rm -f")).length, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
@@ -4826,41 +4826,91 @@ describe("liveReviewHost", () => {
     }
   });
 
-  it("refuses to write when the run folder or a folder above it is a link, and writes nothing through it", async () => {
-    const rel = ".sandcastle/work/387/review/lens-1.md";
-    // The command the host would run in the sandbox, run here in a folder holding the planted layout.
-    const attempt = async (plant: (root: string, outside: string) => void) => {
+  const RUN = ".sandcastle/work/387/review";
+  const plantRun = (root: string) => mkdirSync(join(root, RUN), { recursive: true });
+
+  it("writes a run file whole, empty or not, replacing a link, a hard link or a dangling link at its path instead of following it", async () => {
+    const cases: [string, string, (root: string) => void, (root: string) => void][] = [
+      ["a clean folder", "lens one", () => {}, () => {}],
+      ["an empty file", "", () => {}, () => {}],
+      ["a symlink to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); symlinkSync("lens-2.md", join(root, RUN, "lens-1.md")); }, () => {}],
+      ["a hard link to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); linkSync(join(root, RUN, "lens-2.md"), join(root, RUN, "lens-1.md")); }, () => {}],
+      ["a dangling symlink", "lens one", (root) => { plantRun(root); symlinkSync("nowhere.md", join(root, RUN, "lens-1.md")); }, () => {}],
+    ];
+    for (const [name, content, plant] of cases) {
       const { args, execs } = recorder();
       const dir = checkout();
-      const root = mkdtempSync(join(tmpdir(), "write-run-file-"));
-      const outside = mkdtempSync(join(tmpdir(), "write-run-outside-"));
+      const root = mkdtempSync(join(tmpdir(), "run-file-"));
       try {
-        plant(root, outside);
-        await liveReviewHost(args, dir).writeRunFile(rel, "lens one");
-        const found = execs.find((e) => e.stdin !== undefined);
-        assert.ok(found, "no write command ran");
-        const run = spawnSync("sh", ["-c", found.command], { cwd: root, input: found.stdin, encoding: "utf8" });
-        return { status: run.status, outsideEntries: readdirSync(outside), written: existsSync(join(root, rel)) };
+        plant(root);
+        await liveReviewHost(args, dir).writeRunFile(`${RUN}/lens-1.md`, content);
+        const found = execs.at(-1);
+        const shell = spawnSync("sh", ["-c", found?.command ?? "false"], { cwd: root, input: found?.stdin ?? "", encoding: "utf8" });
+
+        assert.equal(shell.error, undefined, name);
+        assert.equal(shell.status, 0, `${name}: ${shell.stderr}`);
+        assert.equal(readFileSync(join(root, RUN, "lens-1.md"), "utf8"), content, name);
+        assert.equal(lstatSync(join(root, RUN, "lens-1.md")).isSymbolicLink(), false, name);
+        if (existsSync(join(root, RUN, "lens-2.md"))) assert.equal(readFileSync(join(root, RUN, "lens-2.md"), "utf8"), "two", name);
       } finally {
         rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
         rmSync(root, { recursive: true, force: true, maxRetries: 5 });
-        rmSync(outside, { recursive: true, force: true, maxRetries: 5 });
       }
-    };
+    }
+  });
 
-    const plain = await attempt(() => {});
-    assert.equal(plain.status, 0);
-    assert.equal(plain.written, true);
+  it("fails, and writes nothing, when the run file's path is a folder", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    const root = mkdtempSync(join(tmpdir(), "run-file-"));
+    try {
+      mkdirSync(join(root, RUN, "lens-1.md"), { recursive: true });
+      await liveReviewHost(args, dir).writeRunFile(`${RUN}/lens-1.md`, "x");
+      const shell = spawnSync("sh", ["-c", execs.at(-1)?.command ?? "false"], { cwd: root, input: execs.at(-1)?.stdin ?? "", encoding: "utf8" });
 
-    for (const [name, plant] of [
-      [".sandcastle", (root: string, outside: string) => symlinkSync(outside, join(root, ".sandcastle"))],
-      [".sandcastle/work", (root: string, outside: string) => { mkdirSync(join(root, ".sandcastle")); symlinkSync(outside, join(root, ".sandcastle/work")); }],
-      [".sandcastle/work/387", (root: string, outside: string) => { mkdirSync(join(root, ".sandcastle/work"), { recursive: true }); symlinkSync(outside, join(root, ".sandcastle/work/387")); }],
-      [".sandcastle/work/387/review", (root: string, outside: string) => { mkdirSync(join(root, ".sandcastle/work/387"), { recursive: true }); symlinkSync(outside, join(root, ".sandcastle/work/387/review")); }],
-    ] as const) {
-      const got = await attempt(plant);
-      assert.notEqual(got.status, 0, name);
-      assert.deepEqual(got.outsideEntries, [], name);
+      assert.equal(shell.error, undefined);
+      assert.notEqual(shell.status, 0);
+      assert.equal(lstatSync(join(root, RUN, "lens-1.md")).isDirectory(), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("refuses to write or remove a run file when the run folder or a folder above it is a link, says so, and touches nothing through it", async () => {
+    const links: [string, (root: string, outside: string) => void][] = [
+      [".sandcastle", (root, outside) => symlinkSync(outside, join(root, ".sandcastle"))],
+      [".sandcastle/work", (root, outside) => { mkdirSync(join(root, ".sandcastle")); symlinkSync(outside, join(root, ".sandcastle/work")); }],
+      [".sandcastle/work/387", (root, outside) => { mkdirSync(join(root, ".sandcastle/work"), { recursive: true }); symlinkSync(outside, join(root, ".sandcastle/work/387")); }],
+      [RUN, (root, outside) => { mkdirSync(join(root, ".sandcastle/work/387"), { recursive: true }); symlinkSync(outside, join(root, RUN)); }],
+    ];
+    for (const [name, plant] of links) {
+      for (const action of ["write", "remove"] as const) {
+        const { args, execs } = recorder();
+        const dir = checkout();
+        const root = mkdtempSync(join(tmpdir(), "run-file-"));
+        const outside = mkdtempSync(join(tmpdir(), "run-file-outside-"));
+        try {
+          writeFileSync(join(outside, "lens-1.md"), "keep");
+          plant(root, outside);
+          const live = liveReviewHost(args, dir);
+          if (action === "write") await live.writeRunFile(`${RUN}/lens-1.md`, "lens one");
+          else await live.removeRunFile(`${RUN}/lens-1.md`);
+          const found = execs.at(-1);
+          const shell = spawnSync("sh", ["-c", found?.command ?? "false"], { cwd: root, input: found?.stdin ?? "", encoding: "utf8" });
+          const label = `${action} through a link at ${name}`;
+
+          assert.equal(shell.error, undefined, label);
+          assert.equal(shell.status, 1, label);
+          assert.match(shell.stderr, /is a link/, label);
+          assert.deepEqual(readdirSync(outside), ["lens-1.md"], label);
+          assert.equal(readFileSync(join(outside, "lens-1.md"), "utf8"), "keep", label);
+        } finally {
+          rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+          rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+          rmSync(outside, { recursive: true, force: true, maxRetries: 5 });
+        }
+      }
     }
   });
 

@@ -5129,7 +5129,7 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
     const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
     const logFile = join(dir, "calls.log");
     const createdFile = join(dir, "created-body.txt");
-    // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers the three calls publish makes and keeps the body of `pr create`.
+    // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers `repo view`, `pr list` and `pr create` (keeping its body), and reads and drops the input of anything else, such as the hold's `pr ready`.
     writeFileSync(
       join(dir, "gh"),
       [

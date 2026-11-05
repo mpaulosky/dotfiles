@@ -2408,6 +2408,24 @@ describe("advisoryIssueBody", () => {
     ["a halfwidth Hangul filler", "\uFFA0"],
     ["a Hangul choseong filler", "\u115F"],
     ["a delete character", "\u007F"],
+    ["a vertical tab", "\u000B"],
+    ["a unit separator", "\u001F"],
+    ["a C1 control", "\u0085"],
+    ["a C1 control at the end of its range", "\u009F"],
+    ["a right-to-left mark", "\u200F"],
+    ["a left-to-right embedding", "\u202A"],
+    ["a function application mark", "\u2061"],
+    ["an invisible plus", "\u2064"],
+    ["a pop directional isolate", "\u2069"],
+    ["a Hangul jungseong filler", "\u1160"],
+    ["a soft hyphen", "\u00AD"],
+    ["a combining grapheme joiner", "\u034F"],
+    ["a Khmer inherent vowel", "\u17B4"],
+    ["a Mongolian free variation selector", "\u180B"],
+    ["a Mongolian vowel separator", "\u180E"],
+    ["a deprecated format character", "\u206A"],
+    ["a text variation selector", "\uFE0E"],
+    ["a variation selector from the supplement", "\u{E0100}"],
     ["a Unicode tag character", "\u{E0041}"],
     ["a control character", "\u0007"],
   ] as const) {
@@ -2434,6 +2452,38 @@ describe("advisoryIssueBody", () => {
 
       assert.match(body, /R5/, summary);
     }
+  });
+
+  it("lists a finding whose summary or fix holds a tab or a line break, which plainText folds to a space", () => {
+    for (const text of ["A stale\tsentence.", "A stale\nsentence.", "A stale\r\nsentence."]) {
+      assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: text }), advisory({ id: "R6", fix: text })]), DOCS), /R5[\s\S]*R6/, JSON.stringify(text));
+    }
+  });
+
+  // The joiners and the variation selector are text only in the shapes real text uses; elsewhere they are a channel.
+  it("leaves out three or more joiners in a row, and lists two (a red heart with a flame is a selector then a joiner)", () => {
+    const flame = "A \u2764\uFE0F\u200D\u{1F525} here.";
+    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: flame })]), DOCS), /R5/);
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: "A \u2764\uFE0F\u200D\u200C\u{1F525} here." })]), DOCS), "");
+  });
+
+  it("leaves out a joiner or selector at the start or end of a field or beside a space", () => {
+    for (const summary of ["\u200Dstart", "end\u200D", "a \u200D b", "a\u200D b", "a \u200Db", "\uFE0Fstart", "a \uFE0F b", "a\u200C", "\u200Cb"]) {
+      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary })]), DOCS), "", JSON.stringify(summary));
+    }
+  });
+
+  it("lists a field with 20 joiners between letters and leaves out one with 21", () => {
+    const joined = (count: number) => `${"x\u200D".repeat(count)}x`;
+
+    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: joined(20) })]), DOCS), /R5/);
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: joined(21) })]), DOCS), "");
+  });
+
+  it("leaves the whole body out when the branch the header quotes holds hidden text", () => {
+    const ledger = { ...ledgerOf([advisory()]), branch: "feature/388-x\u202Ey" };
+
+    assert.equal(advisoryIssueBody(ledger, DOCS), "");
   });
 
   it("leaves out a finding whose fix holds hidden text", () => {

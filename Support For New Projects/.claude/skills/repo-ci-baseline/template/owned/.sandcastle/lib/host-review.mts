@@ -702,21 +702,37 @@ const ADVISORY_MARKER = "<!-- claude-session -->";
 // line holds one is not published: a reviewer that read untrusted text can be made to put one in a summary or fix, and the host would publish it under its own account.
 const RENDERED_LINK = /:\/\/|mailto:|www\.|\]\(|\]\[|!\[|\]:/i;
 
-// Text a reader can't see or that reorders what they read: a control character (a tab and a line break aside, which plainText folds to a space), the
-// bidirectional marks, overrides and isolates, the zero-width space and the invisible operators (U+2060-2064), the byte-order mark, the Hangul fillers,
-// and the Unicode tag block. A reviewer that read untrusted text could hide instructions in them, and a later agent that reads the issue would act on
-// text no person saw, so a finding holding one is not published. It is tested on the finding's own fields, not on the rendered line, whose zero-width
-// spaces the host adds itself after an @, a # or "github.com". The joiners (U+200C, U+200D) and the emoji variation selector (U+FE0F) are allowed:
-// emoji sequences such as the warning sign and Persian or Indic words need them.
-const HIDDEN_TEXT = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u115F\u1160\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u3164\uFEFF\uFFA0\u{E0000}-\u{E007F}]/u;
+// Text a reader can't see or that reorders what they read: every control character, every format character and every default-ignorable code point (the
+// bidirectional marks and isolates, the zero-width space, the soft hyphen, the variation selectors, the Hangul fillers, the invisible operators), and the
+// Unicode tag block. A reviewer that read untrusted text could hide instructions in them, and a later agent that reads the issue would act on text no
+// person saw. Exempt are the tab and the line breaks, which plainText folds to a space, and the three characters real text needs: the joiners U+200C and
+// U+200D and the emoji variation selector U+FE0F (JOINER_CHARACTERS), which `hiddenText` lets through only in the shapes real text uses.
+const HIDDEN_TEXT = /(?![\t\n\r\u200C\u200D\uFE0F])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u{E0000}-\u{E007F}]/u;
+
+// The most joiners and variation selectors one field may hold: a family emoji holds three, so this leaves room for a line of emoji sequences while a
+// payload that spreads one invisible character between letters stays small.
+const MAX_JOINER_CHARACTERS = 20;
+const JOINER_CHARACTERS = /[\u200C\u200D\uFE0F]/gu;
+
+// Whether a field holds text a reader can't see (HIDDEN_TEXT), or joiners used as a channel rather than as text: three or more in a row (an emoji such as
+// a red heart with a flame holds two: a selector then a joiner), one at the start or end of the field or beside a space, or more than
+// MAX_JOINER_CHARACTERS in all. A run of joiners is a binary encoding that renders as nothing.
+function hiddenText(field: string): boolean {
+  if (HIDDEN_TEXT.test(field)) return true;
+  if ((field.match(JOINER_CHARACTERS) ?? []).length > MAX_JOINER_CHARACTERS) return true;
+  return /[\u200C\u200D\uFE0F]{3}/u.test(field) || /(^|\s)[\u200C\u200D\uFE0F]|[\u200C\u200D](\s|$)/u.test(field);
+}
 
 // The public follow-up issue's body for the review's open Advisory findings (review-ledger.mts#renderAdvisories), held to the PR note's rules: a
 // finding is listed only when its path is one of the files the review read and is made of plain file-name characters, its line (id, place, summary and fix)
-// is no longer than ADVISORY_LINE_LIMIT and holds nothing GitHub renders as a link or an image (RENDERED_LINK) or a reader can't see (HIDDEN_TEXT), and `publishable` leaves that line as it is
-// (the host's public-text check: a reviewer that read untrusted text can quote a secret in a summary or fix). `publishable` sees the finding's own line,
+// is no longer than ADVISORY_LINE_LIMIT and holds no link or image GitHub would render (RENDERED_LINK), and `publishable` leaves that line as it is
+// (the host's public-text check: a reviewer that read untrusted text can quote a secret in a summary or fix). Its id, path, summary and fix hold nothing a
+// reader can't see (`hiddenText`, tested on the fields, not on the rendered line, whose zero-width spaces the host adds itself), and neither does the
+// branch, which the header quotes: the whole body is then left out. `publishable` sees the finding's own line,
 // never the header with the branch name, which the caller checks once. At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and
 // stay in the local review record. Empty when nothing can be listed.
 export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>, publishable: (text: string) => boolean = () => true): string {
+  if (hiddenText(ledger.branch)) return "";
   const rendered = ledger.findings
     .map((finding) => ({ finding, text: renderAdvisories({ ...ledger, findings: [finding] }) }))
     .filter((entry) => entry.text !== "");
@@ -724,7 +740,7 @@ export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>
     .filter(({ finding, text }) => {
       const path = diffPath(finding.path);
       const line = text.split("\n").find((candidate) => candidate.startsWith("- ")) ?? "";
-      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && line.length <= ADVISORY_LINE_LIMIT && !RENDERED_LINK.test(line) && !HIDDEN_TEXT.test(`${finding.id} ${finding.path} ${finding.summary} ${finding.fix ?? ""}`) && publishable(line);
+      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && line.length <= ADVISORY_LINE_LIMIT && !RENDERED_LINK.test(line) && ![finding.id, finding.path, finding.summary, finding.fix ?? ""].some(hiddenText) && publishable(line);
     })
     .slice(0, ADVISORY_ISSUE_FINDINGS)
     .map((entry) => entry.finding);

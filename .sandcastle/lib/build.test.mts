@@ -48,11 +48,12 @@ import {
   FIXED_ROLE_AGENTS,
   GATE_FIXER_ATTEMPTS,
   MAX_GATE_RUNS,
+  MAX_REVIEWERS_PER_ROUND,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { LEAD_DENIED_TOOLS, LEAD_TOOLS, LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { LEAD_DENIED_TOOLS, LEAD_TOOLS, LEDGER_DENIED_TOOLS, MAX_AGENTS_WORD_BYTES } from "./agents.mts";
 import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
@@ -4666,6 +4667,25 @@ describe("liveReviewHost", () => {
         assert.ok(one.prompt.includes(member.file), member.agent);
         assert.ok(one.description.includes(member.reviewer.lens), member.agent);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  // A repository's lens row has no length limit: a full round of the longest names must still fit the --agents word, and with apostrophes in every one.
+  it("builds the lead's command for a full round of lenses with very long names, within the --agents cap", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const long = (n: number) => `Lens ${n} it's ${"'x".repeat(50_000)}`;
+      const team = members(...Array.from({ length: MAX_REVIEWERS_PER_ROUND }, (_, index) => long(index)));
+
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(team, "lead");
+
+      const words = wordsOf(commandOf(runs[0]!));
+      const word = words[words.indexOf("--agents") + 1]!;
+      assert.ok(Buffer.byteLength(word) < MAX_AGENTS_WORD_BYTES / 2, `${Buffer.byteLength(word)} bytes`);
+      assert.equal(Object.keys(JSON.parse(word) as object).length, MAX_REVIEWERS_PER_ROUND);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }

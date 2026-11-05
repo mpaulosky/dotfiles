@@ -3066,6 +3066,116 @@ describe("runHostReview with the reviewers as subagents of one lead run", () => 
     assert.ok(run.logs.some((line) => /Security reviewer's answer was refused .*asking again/.test(line)), run.logs.join("\n"));
   });
 
+  // R8: the nonce is what keeps a stale or forged wrapper from speaking for a lens, so each lead run, a retry included, gets its own.
+  it("draws a new nonce for the retry of a lens within a round", async () => {
+    const run = fake({ team: (call) => call.members.filter((member) => call.attempt > 1 || member.reviewer.lens !== "Security").map((member) => wrapped(call.nonce, member.id, findingsBlock([]))).join("\n") });
+
+    recorded(await runHostReview(run.host, input(run.startHead)));
+
+    assert.equal(run.teamRuns.length, 2);
+    assert.notEqual(run.teamRuns[0]!.nonce, run.teamRuns[1]!.nonce);
+  });
+
+  it("refuses, in the retry, a lens answered under the first attempt's nonce", async () => {
+    const security = CODE_REVIEWERS.indexOf("Security") + 1;
+    let first = "";
+    const run = fake({
+      team: (call) => {
+        if (call.attempt === 1) first = call.nonce;
+        return call.members
+          .filter((member) => call.attempt > 1 || member.reviewer.lens !== "Security")
+          .map((member) => wrapped(member.id === security ? first : call.nonce, member.id, findingsBlock([])))
+          .join("\n");
+      },
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed", "a wrapper replayed from the first attempt does not count");
+    assert.equal(run.teamRuns.length, 2);
+    assert.equal(run.records.length, 0);
+  });
+
+  // R10: the retry's lead failing after the first attempt cleared some lenses leaves a failed review, not a partial record.
+  it("ends failed and records nothing when the retry's lead throws after the first attempt answered the other lenses", async () => {
+    const run = fake({
+      team: (call) =>
+        call.attempt > 1
+          ? new Error("the sandbox said no")
+          : call.members.filter((member) => member.reviewer.lens !== "Security").map((member) => wrapped(call.nonce, member.id, findingsBlock([raw()]))).join("\n"),
+    });
+
+    const result = await runHostReview(run.host, input(run.startHead));
+
+    assert.equal(result.status, "failed");
+    assert.equal(run.teamRuns.length, 2);
+    assert.equal(run.records.length, 0);
+    assert.equal(run.fixerPrompts.length, 0);
+  });
+
+  // R2: a relay cut off at the lead's output limit is the same for every retry that asks for all the lenses again.
+  describe("when the lead's relay is cut off", () => {
+    const truncated = (call: TeamCall) => {
+      const all = call.members.map((member) => wrapped(call.nonce, member.id, findingsBlock([]))).join("\n");
+      // Cut inside the last wrapper: its closing tag is gone.
+      return all.slice(0, all.lastIndexOf(`</review-${call.nonce}-`));
+    };
+    const whole = (call: TeamCall) => call.members.map((member) => wrapped(call.nonce, member.id, findingsBlock([]))).join("\n");
+
+    it("asks again in two halves of the lenses, each in its own lead run with its own nonce, and records when both answer", async () => {
+      const run = fake({ team: (call) => (call.attempt === 1 ? truncated(call) : whole(call)) });
+
+      const result = recorded(await runHostReview(run.host, input(run.startHead)));
+
+      assert.equal(result.rounds, 1);
+      assert.equal(run.teamRuns.length, 3);
+      const [all, first, second] = run.teamRuns;
+      assert.equal(all!.members.length, CODE_REVIEWERS.length);
+      assert.equal(first!.members.length, Math.ceil(CODE_REVIEWERS.length / 2));
+      assert.equal(second!.members.length, Math.floor(CODE_REVIEWERS.length / 2));
+      assert.deepEqual([...first!.members, ...second!.members].map((member) => member.id), all!.members.map((member) => member.id));
+      assert.equal(new Set(run.teamRuns.map((call) => call.nonce)).size, 3);
+      assert.equal(run.records.length, 1);
+    });
+
+    it("puts the extra lens of an odd round in the first half", async () => {
+      // A README alone applies Bar, Docs match the code and Repo conventions.
+      const run = fake({ patches: () => ({ patch: diffFor("README.md") }), team: (call) => (call.attempt === 1 ? truncated(call) : whole(call)) });
+
+      recorded(await runHostReview(run.host, input(run.startHead)));
+
+      assert.deepEqual(run.teamRuns.map((call) => call.members.length), [3, 2, 1]);
+    });
+
+    it("ends failed when the halves are cut off too", async () => {
+      const run = fake({ team: truncated });
+
+      const result = await runHostReview(run.host, input(run.startHead));
+
+      assert.equal(result.status, "failed");
+      assert.equal(run.teamRuns.length, 3);
+      assert.equal(run.records.length, 0);
+    });
+
+    it("checks the time cap before the second half too", async () => {
+      let now = 0;
+      const run = fake({
+        team: (call) => {
+          if (call.attempt > 1) now = 11 * minute;
+          return call.attempt === 1 ? truncated(call) : whole(call);
+        },
+        clock: () => now,
+        wallClockMs: 10 * minute,
+      });
+
+      const result = await runHostReview(run.host, input(run.startHead));
+
+      assert.equal(result.status, "failed");
+      assert.equal(run.teamRuns.length, 2, "no second half once the cap is spent");
+      assert.equal(run.records.length, 0);
+    });
+  });
+
   const badBlocks: [string, (nonce: string, id: number) => string][] = [
     ["a wrapper of another nonce", (_nonce, id) => wrapped("stale", id, findingsBlock([]))],
     ["a block that isn't valid JSON", (nonce, id) => wrapped(nonce, id, "<findings>[{ oops</findings>")],

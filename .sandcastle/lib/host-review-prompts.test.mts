@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, it } from "node:test";
 import { BAR_LENS, type Reviewer, type TriageFinding } from "./host-review.mts";
-import { decisionsMarkdown, leadPrompt, reviewerPrompt, reviewFixPrompt, reviewTag, subagentDefinition } from "./host-review-prompts.mts";
+import { decisionsMarkdown, LENS_NAME_LIMIT, leadPrompt, reviewerPrompt, reviewFixPrompt, reviewTag, subagentDefinition } from "./host-review-prompts.mts";
 import { TEMPLATE_OWNED_PREFIX, type Ledger, type ReviewInput } from "./review-ledger.mts";
 import { containsSecret } from "./sandbox-env.mts";
 
@@ -490,6 +490,32 @@ describe("subagentDefinition", () => {
     assert.match(prompt, /<findings>/);
   });
 
+  // The lead relays every subagent's answer in one reply, up to 14 of them: prose from each would push it past the lead's output limit and cut the last wrapper.
+  it("tells the subagent to answer with only the one findings block, no prose before or after it", () => {
+    const { prompt } = subagentDefinition("sonnet", file, edgeCases);
+
+    assert.match(prompt, /only the one <findings> block/i);
+    assert.match(prompt, /no (other )?(text|prose)/i);
+  });
+
+  it("cuts a long lens name in the description at LENS_NAME_LIMIT characters, so 14 definitions stay far below the --agents cap", () => {
+    const named = (lens: string) => subagentDefinition("sonnet", file, { lens, row: "| x |" }).description;
+
+    assert.equal(LENS_NAME_LIMIT, 80);
+    assert.ok(named("a".repeat(LENS_NAME_LIMIT - 1)).includes("a".repeat(LENS_NAME_LIMIT - 1)));
+    assert.ok(named("a".repeat(LENS_NAME_LIMIT)).includes("a".repeat(LENS_NAME_LIMIT)));
+    assert.ok(!named("a".repeat(LENS_NAME_LIMIT + 1)).includes("a".repeat(LENS_NAME_LIMIT + 1)));
+    assert.ok(named("a".repeat(10_000)).length < 200);
+  });
+
+  it("cuts a lens name by characters, never in the middle of a surrogate pair", () => {
+    const description = subagentDefinition("sonnet", file, { lens: "😀".repeat(LENS_NAME_LIMIT + 5), row: "| x |" }).description;
+
+    assert.doesNotMatch(description, /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
+    assert.ok(description.includes("😀".repeat(LENS_NAME_LIMIT)));
+    assert.ok(!description.includes("😀".repeat(LENS_NAME_LIMIT + 1)));
+  });
+
   it("is small: the full review prompt is in the file, not in the command's argument", () => {
     for (const lens of [bar, edgeCases]) {
       const { description, prompt } = subagentDefinition("sonnet", file, lens);
@@ -550,6 +576,11 @@ describe("leadPrompt", () => {
     assert.match(prompt, /shorten/i);
     assert.match(prompt, /merge/i);
     assert.match(prompt, /nothing else/i);
+  });
+
+  it("asks for only each answer's <findings> block, so the relay of up to 14 answers stays within the lead's output", () => {
+    assert.match(prompt, /only (its|the|that)[^.\n]*<findings> block/i);
+    assert.doesNotMatch(prompt, /complete final answer/i);
   });
 
   it("says what to write for a subagent that failed or answered nothing: its tags with nothing between", () => {

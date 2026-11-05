@@ -337,6 +337,9 @@ export type TeamMember = { id: number; agent: string; file: string; reviewer: Re
 // What each requested id of a lead's answer came to: its findings, or why they were refused.
 export type TeamAnswer = Map<number, { findings: ReviewerFinding[] } | { error: ReviewerAnswerError }>;
 
+// Why the lead's answer is refused when its last wrapper has no closing tag: the lead's reply was most likely cut off at its output limit.
+const UNCLOSED_WRAPPER = "a wrapper is not closed";
+
 // Reads the lead's output into each requested id's findings. Only the tags `<review-{nonce}-{n}>` and `</review-{nonce}-{n}>` count; the nonce is
 // the host's, fresh for each lead run, so the subagents (which read text anyone could plant) never know it. Every anomaly in those tags fails every
 // requested id, so a forged or duplicated wrapper can never clear another lens's findings: an id nobody asked for, a tag twice, a closing tag
@@ -369,7 +372,7 @@ export function parseTeamAnswer(stdout: string, nonce: string, ids: readonly num
       open = undefined;
     }
   }
-  if (open !== undefined) return malformed("a wrapper is not closed");
+  if (open !== undefined) return malformed(UNCLOSED_WRAPPER);
   for (const id of ids) {
     const block = blocks.get(id);
     if (block === undefined) {
@@ -698,6 +701,8 @@ async function askTeam(
   const settled: PromiseSettledResult<ReviewerFinding[]>[] = reviewers.map(() => ({ status: "rejected", reason: new ReviewerAnswerError("the lens was not asked") }));
   // Positions in `reviewers` still to answer, each with what was wrong with its last answer.
   let pending = new Map<number, string | undefined>(reviewers.map((_, index) => [index, undefined]));
+  // True when the last lead run's relay was cut off (see UNCLOSED_WRAPPER): asking for the same lenses again would be cut off at the same place.
+  let cutOff: boolean = false;
   for (let attempt = 1; pending.size > 0; attempt++) {
     if (spent()) return { stopped: outOfTime("the review lead") };
     const members: TeamMember[] = [];
@@ -707,30 +712,42 @@ async function askTeam(
       await host.writeRunFile(`${runRel}/lens-${id}.md`, promptFor(member.reviewer, problem));
       members.push(member);
     }
-    host.log(`  review round ${round}: ${members.length} reviewers as parallel subagents of one lead run`);
-    const nonce = (host.nonce ?? (() => randomBytes(12).toString("hex")))();
-    let stdout: string;
-    try {
-      stdout = await runReviewerTeam(members, leadPrompt({ nonce, members: members.map((member) => ({ id: member.id, agent: member.agent, lens: member.reviewer.lens })) }));
-    } catch (error) {
-      if (error instanceof UncountedStopError) throw error;
-      for (const index of pending.keys()) settled[index] = { status: "rejected", reason: error };
-      return { settled };
-    }
-    const answer = parseTeamAnswer(stdout, nonce, members.map((member) => member.id));
+    // After a relay cut off at the lead's output limit, the lenses are asked for in two halves, each in a lead run of its own, so each relay is about half as long.
+    const middle: number = cutOff ? Math.ceil(members.length / 2) : members.length;
+    const waves: TeamMember[][] = [members.slice(0, middle), members.slice(middle)].filter((wave) => wave.length > 0);
+    cutOff = false;
     const next = new Map<number, string | undefined>();
-    for (const member of members) {
-      const index = member.id - 1;
-      const got = answer.get(member.id);
-      if (got !== undefined && "findings" in got) {
-        settled[index] = { status: "fulfilled", value: got.findings };
-        continue;
+    for (const wave of waves) {
+      if (spent()) return { stopped: outOfTime("the review lead") };
+      host.log(`  review round ${round}: ${wave.length} reviewers as parallel subagents of one lead run`);
+      // Drawn for each lead run, a retry or the second half included: a wrapper left from an earlier run must not speak for a lens in this one.
+      const nonce = (host.nonce ?? (() => randomBytes(12).toString("hex")))();
+      let stdout: string;
+      try {
+        stdout = await runReviewerTeam(wave, leadPrompt({ nonce, members: wave.map((member) => ({ id: member.id, agent: member.agent, lens: member.reviewer.lens })) }));
+      } catch (error) {
+        if (error instanceof UncountedStopError) throw error;
+        for (const member of wave) settled[member.id - 1] = { status: "rejected", reason: error };
+        return { settled };
       }
-      const error = got?.error ?? new ReviewerAnswerError("the lead returned no block for this lens");
-      settled[index] = { status: "rejected", reason: error };
-      if (attempt < REVIEWER_ATTEMPTS) {
-        next.set(index, error.message);
-        host.log(`  ⚠ the ${member.reviewer.lens} reviewer's answer was refused (${error.message}); asking again`);
+      const answer = parseTeamAnswer(stdout, nonce, wave.map((member) => member.id));
+      cutOff = cutOff || wave.every((member) => {
+        const got = answer.get(member.id);
+        return got !== undefined && "error" in got && got.error.message.includes(UNCLOSED_WRAPPER);
+      });
+      for (const member of wave) {
+        const index = member.id - 1;
+        const got = answer.get(member.id);
+        if (got !== undefined && "findings" in got) {
+          settled[index] = { status: "fulfilled", value: got.findings };
+          continue;
+        }
+        const error = got?.error ?? new ReviewerAnswerError("the lead returned no block for this lens");
+        settled[index] = { status: "rejected", reason: error };
+        if (attempt < REVIEWER_ATTEMPTS) {
+          next.set(index, error.message);
+          host.log(`  ⚠ the ${member.reviewer.lens} reviewer's answer was refused (${error.message}); asking again`);
+        }
       }
     }
     pending = next;

@@ -685,12 +685,13 @@ function failureText(error: unknown): string {
   return isRoleTimeout(error) ? "timed out" : "failed";
 }
 
-// The round's reviewers as parallel subagents of one lead run (REVIEWER_ATTEMPTS lead runs at most). Each lens's full prompt is a file under the
-// run's folder, which its subagent reads; the lead only starts the subagents and returns each answer between that lens's tags, and the host
-// parses every lens's block itself (parseTeamAnswer). A lens whose block is missing or invalid is asked for again, alone, quoting what was
-// wrong; the others' findings are kept. A lead that times out or fails ends the round at once with no retry (a retry would spend another
-// timeout), as the sequential path never retries a timeout. An UncountedStopError is rethrown. The result is aligned with `reviewers`, or says the
-// review ran out of time.
+// The round's reviewers as parallel subagents of one lead run. Each lens's full prompt is a file under the run's folder, which its subagent reads; the lead only starts
+// the subagents and returns each answer between that lens's tags, and the host parses every lens's block itself (parseTeamAnswer). A lens whose block is missing or
+// invalid is asked for again, alone, quoting what was wrong (REVIEWER_ATTEMPTS asks per lens); the others' findings are kept. When the relay was cut off at the lead's
+// output limit (UNCLOSED_WRAPPER for every requested lens), the next attempt asks the lenses in two halves, each its own lead run with its own nonce, so a round
+// spends at most REVIEWER_ATTEMPTS + 1 lead runs; the time cap is checked before each lead run. A lead that times out or fails ends the round at once with no retry
+// (a retry would spend another timeout), as the sequential path never retries a timeout, and blames every lens of the attempt that has no answer yet. An
+// UncountedStopError is rethrown. The result is aligned with `reviewers`, or says the review ran out of time.
 async function askTeam(
   host: HostReviewHost,
   runReviewerTeam: NonNullable<HostReviewHost["runReviewerTeam"]>,
@@ -727,7 +728,9 @@ async function askTeam(
         stdout = await runReviewerTeam(wave, leadPrompt({ nonce, members: wave.map((member) => ({ id: member.id, agent: member.agent, lens: member.reviewer.lens })) }));
       } catch (error) {
         if (error instanceof UncountedStopError) throw error;
-        for (const member of wave) settled[member.id - 1] = { status: "rejected", reason: error };
+        // This wave's lenses and those of the halves still to run are blamed on this error: their attempt-1 answer error ("gave no valid answer") would be false
+        // for a lens that was never asked again. An earlier half's answers stay as they are.
+        for (const pendingMember of [...wave, ...waves.slice(waves.indexOf(wave) + 1).flat()]) settled[pendingMember.id - 1] = { status: "rejected", reason: error };
         return { settled };
       }
       const answer = parseTeamAnswer(stdout, nonce, wave.map((member) => member.id));

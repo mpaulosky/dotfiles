@@ -3157,6 +3157,46 @@ describe("runHostReview with the reviewers as subagents of one lead run", () => 
       assert.equal(run.records.length, 0);
     });
 
+    // R19: a half whose lead throws must not leave the lenses that never ran with their first attempt's answer error, which would say they "gave no valid answer after 2 attempts".
+    it("blames a thrown first half for every lens still pending, the second half's too, not for a malformed answer", async () => {
+      const run = fake({ team: (call) => (call.attempt === 1 ? truncated(call) : call.members.length === Math.ceil(CODE_REVIEWERS.length / 2) && call.members[0]!.id === 1 ? new Error("the sandbox said no") : whole(call)) });
+
+      const result = await runHostReview(run.host, input(run.startHead));
+
+      assert.equal(result.status, "failed");
+      assert.equal(run.teamRuns.length, 2, "the second half is not started after the first half's lead threw");
+      const reason = result.status === "failed" ? result.reason : "";
+      for (const lens of CODE_REVIEWERS) assert.match(reason, new RegExp(`${lens} reviewer failed`), `${lens} in: ${reason}`);
+      assert.doesNotMatch(reason, /no valid answer/);
+      assert.equal(run.records.length, 0);
+    });
+
+    it("blames a thrown second half for its lenses only, and keeps the first half's answers", async () => {
+      const first = Math.ceil(CODE_REVIEWERS.length / 2);
+      const run = fake({ team: (call) => (call.attempt === 1 ? truncated(call) : call.members[0]!.id === first + 1 ? new Error("the sandbox said no") : whole(call)) });
+
+      const result = await runHostReview(run.host, input(run.startHead));
+
+      assert.equal(result.status, "failed");
+      assert.equal(run.teamRuns.length, 3);
+      const reason = result.status === "failed" ? result.reason : "";
+      CODE_REVIEWERS.forEach((lens, index) => {
+        if (index < first) assert.doesNotMatch(reason, new RegExp(`${lens} reviewer`), `${lens} answered and is not blamed: ${reason}`);
+        else assert.match(reason, new RegExp(`${lens} reviewer failed`), `${lens} in: ${reason}`);
+      });
+      assert.doesNotMatch(reason, /no valid answer/);
+    });
+
+    it("says timed out for every pending lens when a half's lead times out", async () => {
+      const run = fake({ team: (call) => (call.attempt === 1 ? truncated(call) : Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" })) });
+
+      const result = await runHostReview(run.host, input(run.startHead));
+
+      assert.equal(result.status, "failed");
+      const reason = result.status === "failed" ? result.reason : "";
+      for (const lens of CODE_REVIEWERS) assert.match(reason, new RegExp(`${lens} reviewer timed out`), `${lens} in: ${reason}`);
+    });
+
     it("checks the time cap before the second half too", async () => {
       let now = 0;
       const run = fake({

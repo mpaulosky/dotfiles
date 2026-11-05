@@ -53,7 +53,7 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { LEAD_DENIED_TOOLS, LEAD_TOOLS, LEDGER_DENIED_TOOLS, MAX_AGENTS_WORD_BYTES } from "./agents.mts";
+import { LEAD_DENIED_TOOLS, leadTools, LEDGER_DENIED_TOOLS, MAX_AGENTS_WORD_BYTES } from "./agents.mts";
 import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
@@ -4634,8 +4634,9 @@ describe("liveReviewHost", () => {
 
       const command = commandOf(runs[0]!);
       const words = wordsOf(command);
-      assert.equal(words[words.indexOf("--tools") + 1], LEAD_TOOLS.join(","));
-      assert.ok(words[words.indexOf("--tools") + 1]!.split(",").includes("Agent"));
+      // The lead's Agent tool names exactly the lens-<id> agents defined for the round, so no other subagent (a user-level or plugin one, a type a later Claude Code adds) starts.
+      assert.equal(words[words.indexOf("--tools") + 1], leadTools(["lens-1", "lens-2"]).join(","));
+      assert.equal(words[words.indexOf("--tools") + 1], "Agent(lens-1,lens-2),Read,Grep,Glob");
       assert.doesNotMatch(words[words.indexOf("--tools") + 1]!, /Bash|Edit|Write/);
       assert.ok(words.includes("--strict-mcp-config"));
       assert.equal(words[words.indexOf("--setting-sources") + 1], "user");

@@ -199,7 +199,9 @@ export function openHeldPullRequest(
 // The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left, or a review that didn't finish. It names the two steps only a person takes.
 export const DRAFT_NOTE =
   "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding: " +
-  "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. Once nothing is open, mark the PR ready with `gh pr ready`.";
+  "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. The review's ledger stayed on the runner that built this branch " +
+  "(it can hold security details, so it isn't published): check the branch out and run `scripts/review.sh report` first, which records a ledger for it that `accept` can act on. " +
+  "Once nothing is open, mark the PR ready with `gh pr ready`.";
 
 // Whether a git or gh failure is GitHub's own server error, which a later
 // attempt may not hit. Matches what git and gh print for one ("remote: Internal

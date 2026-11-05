@@ -7,7 +7,7 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { isRoleTimeout, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, runRoleInSandbox, uiEnabled } from "./agents.mts";
+import { isRoleTimeout, LEAD_TOOLS, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, roleAgent, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
 import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, withoutRunnerCommands, type Checkpoint } from "./checkpoint.mts";
 import {
@@ -15,9 +15,11 @@ import {
   BUILD_FAILED_MARKER,
   BUILDING_LABEL,
   DESIGN_MARKER,
+  FIXED_ROLE_AGENTS,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
+  reviewerMode,
   type ReviewerMode,
 } from "./config.mts";
 import { CHECK_PATHS, copyToWorktree, hooks } from "./repo-config.mts";
@@ -25,7 +27,8 @@ import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./e
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, fileIssueOnce, holdExistingPullRequest, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
-import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
+import { subagentDefinition } from "./host-review-prompts.mts";
+import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles, type TeamMember } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
@@ -823,8 +826,13 @@ export function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
 // role in the build's sandbox. The host never runs the worktree's scripts/review.sh or its git: prepareRound and recordReview run in
 // the main checkout, on commits the sandbox made (the objects are shared), so no agent-written code runs on the host and no agent
 // reaches the ledger. The sandbox mounts an empty folder over .git/review and has no GitHub token.
+//
+// With the "subagents" reviewer mode (SANDCASTLE_REVIEWERS, lib/config.mts#reviewerMode) the host also has `runReviewerTeam`: one lead run in
+// the sandbox starts a round's reviewers as parallel subagents, defined on its command line (`--agents`, named lens-<id>, Read/Grep/Glob only).
+// The lead holds Agent, Read, Grep and Glob: no shell, no network and no write tool. In the "sequential" mode `runReviewerTeam` is absent.
 export function liveReviewHost(args: LocalReviewArgs, checkout: string = process.cwd()): HostReviewHost {
   const { sandbox, issue, main, limits } = args;
+  const subagents = (args.reviewerMode ?? reviewerMode()) === "subagents";
   const backstop = args.backstopMs === undefined ? {} : { backstopMs: args.backstopMs };
   const runRel = `.sandcastle/work/${issue.number}/review`;
   const outcomesFile = `${runRel}/outcomes.json`;
@@ -875,6 +883,31 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       }, backstop);
       return run.stdout;
     },
+    ...(subagents
+      ? {
+          runReviewerTeam: async (members: TeamMember[], prompt: string) => {
+            const model = FIXED_ROLE_AGENTS["pre-push-reviewer"].model;
+            const run = await runRoleInSandbox(
+              sandbox,
+              "pre-push-review-lead",
+              // Sandcastle's idle timeout is ten minutes of silence by default; a lead waiting on its subagents may print nothing for longer, so
+              // it is the role's whole timeout, which the run's AbortSignal and the host's backstop enforce.
+              { prompt, idleTimeoutSeconds: roleAgent("pre-push-review-lead").timeoutMinutes * 60 },
+              limits,
+              {
+                tools: LEAD_TOOLS,
+                denied: LEDGER_DENIED_TOOLS,
+                strictMcp: true,
+                // Not the branch's .claude/settings.json (see runReviewer). The subagents are defined on the command line, so they don't need its .claude/agents.
+                userSettingsOnly: true,
+                agents: Object.fromEntries(members.map((member) => [member.agent, subagentDefinition(model, member.file, member.reviewer)])),
+              },
+              backstop,
+            );
+            return run.stdout;
+          },
+        }
+      : {}),
     runFixer: async (prompt) => {
       // An earlier round's outcomes must not be read as this one's.
       await sandbox.exec(`rm -f ${shellWord(outcomesFile)}`);

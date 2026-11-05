@@ -32,7 +32,7 @@ export function uiEnabled(): boolean {
 // skill fixes, else ROLE_AGENTS'. A role the repo left out (only `ui` may be)
 // is a bug in the caller, so it throws.
 export function roleAgent(role: AnyRole): RoleAgent {
-  const agent = role === "pre-push-reviewer" ? FIXED_ROLE_AGENTS[role] : agents[role];
+  const agent = role === "pre-push-reviewer" || role === "pre-push-review-lead" ? FIXED_ROLE_AGENTS[role] : agents[role];
   if (agent === undefined) throw new Error(`ROLE_AGENTS in lib/repo-config.mts has no ${role} entry`);
   return agent;
 }
@@ -72,13 +72,30 @@ export type SubagentDefinition = { description: string; prompt: string; tools: r
 export const MAX_AGENTS_JSON_BYTES = 60_000;
 
 // The tools the lead of a review's subagents gets: the reviewers' own, and the one that starts a subagent.
-export const LEAD_TOOLS: readonly string[] = [];
+export const LEAD_TOOLS: readonly string[] = ["Agent", ...REVIEWER_TOOLS];
 
 const PRINT_COMMAND_START = "claude --print ";
 
 // `value` as one single-quoted shell word.
 function shellWord(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+// The subagent names `--agents` takes: lowercase ASCII, so a name is never a shell or JSON surprise.
+const AGENT_NAME = /^[a-z][a-z0-9-]*$/;
+
+// `agents` as the JSON `--agents` takes. Throws for a name that isn't plain, for none at all (`{}` is not the same as leaving `agents` out),
+// and for JSON past MAX_AGENTS_JSON_BYTES, so a too-long command fails where the provider is built and not at exec.
+function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): string {
+  const names = Object.keys(agents);
+  if (names.length === 0) throw new Error("the agents to define for --agents are empty: give none or at least one");
+  for (const name of names) {
+    if (!AGENT_NAME.test(name)) throw new Error(`an agent name for --agents must be lowercase ASCII letters, digits and hyphens, starting with a letter, not ${JSON.stringify(name.slice(0, 40))}`);
+  }
+  const json = JSON.stringify(agents);
+  const bytes = Buffer.byteLength(json);
+  if (bytes > MAX_AGENTS_JSON_BYTES) throw new Error(`the --agents JSON is ${bytes} bytes, over the limit of ${MAX_AGENTS_JSON_BYTES} bytes`);
+  return json;
 }
 
 // `sandcastle.claudeCode` with `restrictions` put into its command as Claude
@@ -92,9 +109,10 @@ export function restrictedClaudeCode(
   build: typeof sandcastle.claudeCode = sandcastle.claudeCode,
 ): sandcastle.AgentProvider {
   const provider = build(model, { effort });
-  const { tools, denied, strictMcp, userSettingsOnly } = restrictions;
+  const { tools, denied, strictMcp, userSettingsOnly, agents: subagents } = restrictions;
   const flags = [
     ...(tools === undefined ? [] : ["--tools", shellWord(tools.join(","))]),
+    ...(subagents === undefined ? [] : ["--agents", shellWord(agentsJson(subagents))]),
     ...(strictMcp === true ? ["--strict-mcp-config"] : []),
     ...(userSettingsOnly === true ? ["--setting-sources", "user"] : []),
     ...(denied === undefined || denied.length === 0 ? [] : ["--disallowedTools", ...denied.map(shellWord)]),

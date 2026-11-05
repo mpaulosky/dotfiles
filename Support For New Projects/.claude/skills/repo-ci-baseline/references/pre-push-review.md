@@ -212,10 +212,29 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   escaped line the issue shows. When open Advisory findings exist and none can be listed, the build logs that no follow-up issue is filed. The issue lists reviewer prose (summary and fix) on
   purpose: on Actions the local record is discarded with the runner, so the issue is the only copy that survives.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
-  A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
-  global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run,
-  an Actions run included, holds its issue that long). A change to how the host runs the reviewers needs a run
-  against a real sandbox before merging, since the tests stub Docker and see `--tools`, `--strict-mcp-config`, `--setting-sources` and `--disallowedTools` only as text.
+- A round's reviewers start one of two ways, chosen by `SANDCASTLE_REVIEWERS` (`lib/config.mts#reviewerMode`): `sequential` or `subagents`. Unset or empty means `sequential`, any other
+  value is an error, and the default stays `sequential` until a run in a real sandbox settles the questions below.
+  - `sequential`: the reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since role runs started together race for the sandbox's global git config lock
+    (a real run lost four of ten). A round can take hours against the run's 240-minute budget. `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run, an
+    Actions run included, holds its issue that long).
+  - `subagents`: one role run, `pre-push-review-lead`, starts all the round's reviewers as parallel subagents (one wave: `MAX_REVIEWERS_PER_ROUND` is within Claude Code's 20 concurrent subagents),
+    so there is one role start and no lock race. Each lens's full prompt is a file under the run's folder (`lens-<id>.md`), and its subagent, `lens-<id>`, is defined on the lead's command line with
+    `--agents` (`tools` Read, Grep and Glob; the JSON is capped at `MAX_AGENTS_JSON_BYTES`) and told to read that file. The lead holds `Agent`, Read, Grep and Glob: no shell, no network, no write tool.
+  - The lead returns each subagent's complete answer verbatim between `<review-{nonce}-{id}>` and `</review-{nonce}-{id}>`, with a nonce the host makes fresh for each lead run. The host parses each
+    lens's block itself, with the parser the sequential mode uses. A lens with a missing wrapper, an empty one or an invalid block fails, and is asked for again alone (up to `REVIEWER_ATTEMPTS`
+    lead runs, keeping the other lenses' findings); a lens still failing ends the review as failed, with a host-written reason. Any anomaly in the nonce's tags (a lens nobody asked for, a tag twice, a
+    closing tag before its opening tag, nested or overlapping wrappers, an unclosed wrapper) fails every lens of that run, so a subagent steered by a planted file can't write a tag that clears
+    another lens. A lead that shortens a block, or empties one, can't be told from the subagent's own answer, because the host sees only the lead's output: that is accepted, and bounded by the lead
+    having no write tool and a prompt that forbids adding, shortening or merging.
+  - The role's one timeout (`FIXED_ROLE_AGENTS`, 30 minutes: the reviewer's 20 with every lens in one wave, plus relay time) covers all the subagents, and the run's idle timeout is set to it, since a
+    lead waiting on its subagents may print nothing for longer than Sandcastle's default 10 minutes. A lead that times out or fails ends the review at once with no retry; a usage-limit stop or a
+    stalled sandbox is rethrown as for a reviewer. The lead's log is never copied to the public report.
+  - What the tests can't settle, and the answer the design takes so that a wrong guess fails loudly instead of recording a clean review: whether the lead's `--tools` narrows its subagents (the lead
+    holds Read, Grep and Glob itself, and each subagent's own `tools` list is its ceiling); whether `--setting-sources user` blocks the branch's `.claude/agents` (the subagents are named by the host and
+    defined on the command line, so they don't depend on it); how one role timeout covers all the subagents (above); and keeping the lead from dropping findings (the wrapper protocol above).
+    A CLI that can't start subagents leaves every lens missing, and the review fails.
+- A change to how the host runs the reviewers needs a run against a real sandbox before merging, since the tests stub Docker and see `--tools`, `--agents`, `--strict-mcp-config`,
+  `--setting-sources` and `--disallowedTools` only as text. For the `subagents` mode that run is `SANDCASTLE_REVIEWERS=subagents SANDCASTLE_ISSUE=<n> pnpm run sandcastle`, before the default flips.
 
 ## Not in it yet
 

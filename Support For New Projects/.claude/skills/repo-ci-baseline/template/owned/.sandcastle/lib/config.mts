@@ -275,10 +275,9 @@ export function describeQueueScope(scope: QueueScope): string {
 // The agent and budget of each FixedRole.
 export const FIXED_ROLE_AGENTS: Record<FixedRole, RoleAgent> = {
   "pre-push-reviewer": { model: "sonnet", effort: "high", maxIterations: 1, timeoutMinutes: 20 },
-  // Not implemented yet: the lead's agent and budget (issue 399).
-  get "pre-push-review-lead"(): RoleAgent {
-    throw new Error("Not implemented");
-  },
+  // The lead that starts a round's reviewers as parallel subagents (lib/host-review.mts). Its one timeout covers the whole wave: the reviewer's
+  // 20 minutes with every lens in one wave, plus the time to relay the answers. The effort is the reviewer's, which subagents may inherit.
+  "pre-push-review-lead": { model: "sonnet", effort: "high", maxIterations: 1, timeoutMinutes: 30 },
 };
 
 // How many subagents Claude Code runs at once.
@@ -288,8 +287,13 @@ export const MAX_CONCURRENT_SUBAGENTS = 20;
 export type ReviewerMode = "sequential" | "subagents";
 
 // SANDCASTLE_REVIEWERS from `env` as the reviewer mode.
-export function reviewerMode(_env: Record<string, string | undefined> = process.env): ReviewerMode {
-  throw new Error("Not implemented");
+// Unset or empty is "sequential", and stays so until a run in a real sandbox settles how the Claude CLI treats `--tools`, `--setting-sources` and
+// `--agents` for subagents. Any other value throws: a typo must not silently pick a path.
+export function reviewerMode(env: Record<string, string | undefined> = process.env): ReviewerMode {
+  const value = env.SANDCASTLE_REVIEWERS;
+  if (value === undefined || value === "") return "sequential";
+  if (value === "sequential" || value === "subagents") return value;
+  throw new Error(`SANDCASTLE_REVIEWERS must be "sequential" or "subagents", not ${JSON.stringify(value.slice(0, 40))}`);
 }
 
 // After this many review rounds that fixed something, one more round only reviews.

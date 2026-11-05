@@ -81,6 +81,8 @@ guardrails keep agent-written code from running on the host. A change keeps ever
   `protectedRecordMounts`). Every sandbox also sets `GATE_SKIP_REVIEW=1` (`SANDBOX_ENV`): the host runs that review's rounds itself after checkpoint 2
   (`lib/host-review.mts`), recording in the main checkout through `prepareRound` and `recordReview`, never by running the worktree's `scripts/review.sh`. The reviewers
   get Read, Grep and Glob only (`restrictedClaudeCode`), and no agent's prompt names a shell on the ledger, a token or `.git/review`.
+  In the `subagents` reviewer mode (`SANDCASTLE_REVIEWERS`) the `pre-push-review-lead` run holds `Agent,Read,Grep,Glob` and starts the reviewers as subagents defined on its command line,
+  which hold Read, Grep and Glob only; the lead has no shell, no network and no write tool.
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.
 - The run report artifact is downloadable by any signed-in user of a public repository and GitHub doesn't mask secrets in it, so it never holds a role's log whole:
   `lib/role-logs.mts` copies only the reviewers' allowlisted view (the last host status lines, the last known tool names without arguments,

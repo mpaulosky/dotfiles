@@ -4,11 +4,12 @@
 // skill's steps 4 to 8 (.claude/skills/pre-push-review/SKILL.md), and host-review.test.mts fails when the skill's lens table,
 // reviewer or round limit changes without this module following.
 
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { isRoleTimeout } from "./agents.mts";
 import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, REVIEWER_ATTEMPTS, SESSION_REPLY_MARKER } from "./config.mts";
 import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
-import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
+import { decisionsMarkdown, leadPrompt, reviewerPrompt, reviewFixPrompt, reviewTag } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
 import { hasHiddenText } from "./status.mts";
 import { FINDING_PATH_SHAPE, isSecurity, patchPaths, renderAdvisories, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
@@ -336,9 +337,53 @@ export type TeamMember = { id: number; agent: string; file: string; reviewer: Re
 // What each requested id of a lead's answer came to: its findings, or why they were refused.
 export type TeamAnswer = Map<number, { findings: ReviewerFinding[] } | { error: ReviewerAnswerError }>;
 
-// Reads the lead's output into each requested id's findings.
-export function parseTeamAnswer(_stdout: string, _nonce: string, _ids: readonly number[]): TeamAnswer {
-  throw new Error("Not implemented");
+// Reads the lead's output into each requested id's findings. Only the tags `<review-{nonce}-{n}>` and `</review-{nonce}-{n}>` count; the nonce is
+// the host's, fresh for each lead run, so the subagents (which read text anyone could plant) never know it. Every anomaly in those tags fails every
+// requested id, so a forged or duplicated wrapper can never clear another lens's findings: an id nobody asked for, a tag twice, a closing tag
+// before its opening tag, wrappers nested or overlapping, an opening tag with no closing tag. Otherwise each id's block goes to
+// parseReviewerAnswer, and an id with no wrapper gets an error of its own. Text outside the wrappers is ignored. A lead that empties or
+// shortens a subagent's `<findings>` block inside its wrapper cannot be told from the subagent's own answer (the host sees only the lead's output):
+// an accepted residual, which the lead's prompt and its lack of any write tool bound.
+export function parseTeamAnswer(stdout: string, nonce: string, ids: readonly number[]): TeamAnswer {
+  const answer: TeamAnswer = new Map();
+  const malformed = (why: string) => {
+    for (const id of ids) answer.set(id, { error: new ReviewerAnswerError(`the lead's answer is malformed: ${why}`) });
+    return answer;
+  };
+  const escaped = nonce.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tags = [...stdout.matchAll(new RegExp(`<(/?)review-${escaped}-(\\d+)>`, "g"))];
+  const blocks = new Map<number, string>();
+  let open: { id: number; end: number } | undefined;
+  for (const tag of tags) {
+    const closing = tag[1] === "/";
+    const id = Number(tag[2]);
+    if (!ids.includes(id)) return malformed("it has a wrapper for a lens that was not asked for");
+    if (!closing) {
+      if (open !== undefined) return malformed("its wrappers are nested or overlap");
+      if (blocks.has(id)) return malformed("a lens appears twice");
+      open = { id, end: tag.index + tag[0].length };
+    } else {
+      if (open === undefined) return malformed("a closing tag comes before its opening tag");
+      if (open.id !== id) return malformed("its wrappers are nested or overlap");
+      blocks.set(id, stdout.slice(open.end, tag.index));
+      open = undefined;
+    }
+  }
+  if (open !== undefined) return malformed("a wrapper is not closed");
+  for (const id of ids) {
+    const block = blocks.get(id);
+    if (block === undefined) {
+      answer.set(id, { error: new ReviewerAnswerError("the lead returned no block for this lens") });
+      continue;
+    }
+    try {
+      answer.set(id, { findings: parseReviewerAnswer(block) });
+    } catch (error) {
+      if (!(error instanceof ReviewerAnswerError)) throw error;
+      answer.set(id, { error });
+    }
+  }
+  return answer;
 }
 
 // What the review needs from outside; tests pass stubs.
@@ -503,36 +548,42 @@ async function runRounds(
       return { status: "failed", head: prepared.head, reason: "the round has more reviewers than the review's time bounds allow" };
     }
 
-    const ask = (reviewer: Reviewer) =>
-      reviewerFindings(host, reviewer, (problem) =>
-        reviewerPrompt({
-          agentBody: skill.agentBody,
-          bar: skill.bar,
-          severities: skill.severities,
-          lens: reviewer,
-          worktree,
-          runDir,
-          round,
-          issue,
-          hasFixes: prepared.fixes !== undefined,
-          // A reader patch is shorter than the whole one exactly when a verbatim mirror was left out of it.
-          mirrorsLeftOut: prepared.readPatch.length !== prepared.patch.length || (prepared.readFixes?.length ?? 0) !== (prepared.fixes?.length ?? 0),
-        }) + (problem === undefined ? "" : retryNote(problem)),
-      );
-    // One after another, never together: each role run sets up the sandbox's global git config, and runs started together race for its lock
-    // (a real run lost four of ten reviewers to `could not lock config file`). The round ends at the first reviewer that fails: the review ends
-    // as failed anyway, so the reviewers after it would only spend the review's time. A usage-limit stop or a stalled sandbox ends the round at
-    // once too, by rethrowing (the time budget's stop does too, and runHostReview turns it into a failed review).
-    const settled: PromiseSettledResult<ReviewerFinding[]>[] = [];
-    for (const reviewer of reviewers) {
-      if (spent()) return outOfTime(`the ${reviewer.lens} reviewer`);
-      const result = await ask(reviewer).then(
-        (value): PromiseFulfilledResult<ReviewerFinding[]> => ({ status: "fulfilled", value }),
-        (reason: unknown): PromiseRejectedResult => ({ status: "rejected", reason }),
-      );
-      if (result.status === "rejected" && result.reason instanceof UncountedStopError) throw result.reason;
-      settled.push(result);
-      if (result.status === "rejected") break;
+    const promptFor = (reviewer: Reviewer, problem: string | undefined) =>
+      reviewerPrompt({
+        agentBody: skill.agentBody,
+        bar: skill.bar,
+        severities: skill.severities,
+        lens: reviewer,
+        worktree,
+        runDir,
+        round,
+        issue,
+        hasFixes: prepared.fixes !== undefined,
+        // A reader patch is shorter than the whole one exactly when a verbatim mirror was left out of it.
+        mirrorsLeftOut: prepared.readPatch.length !== prepared.patch.length || (prepared.readFixes?.length ?? 0) !== (prepared.fixes?.length ?? 0),
+      }) + (problem === undefined ? "" : retryNote(problem));
+    // Two ways to start the round's reviewers. With `runReviewerTeam` they are parallel subagents of one lead run (askTeam); without it they run
+    // one after another, below. Everything after them is shared.
+    let settled: PromiseSettledResult<ReviewerFinding[]>[] = [];
+    if (host.runReviewerTeam !== undefined) {
+      const team = await askTeam(host, host.runReviewerTeam, reviewers, promptFor, { round, runRel, runDir, spent, outOfTime });
+      if ("stopped" in team) return team.stopped;
+      settled = team.settled;
+    } else {
+      // The sequential mode: one after another, never together: each role run sets up the sandbox's global git config, and runs started together race for its lock
+      // (a real run lost four of ten reviewers to `could not lock config file`). The round ends at the first reviewer that fails: the review ends
+      // as failed anyway, so the reviewers after it would only spend the review's time. A usage-limit stop or a stalled sandbox ends the round at
+      // once too, by rethrowing (the time budget's stop does too, and runHostReview turns it into a failed review).
+      for (const reviewer of reviewers) {
+        if (spent()) return outOfTime(`the ${reviewer.lens} reviewer`);
+        const result = await reviewerFindings(host, reviewer, (problem) => promptFor(reviewer, problem)).then(
+          (value): PromiseFulfilledResult<ReviewerFinding[]> => ({ status: "fulfilled", value }),
+          (reason: unknown): PromiseRejectedResult => ({ status: "rejected", reason }),
+        );
+        if (result.status === "rejected" && result.reason instanceof UncountedStopError) throw result.reason;
+        settled.push(result);
+        if (result.status === "rejected") break;
+      }
     }
     const failures = settled.flatMap((result, index): ReviewerFailure[] =>
       result.status === "rejected" ? [{ lens: reviewers[index]!.lens, what: failureText(result.reason) }] : [],
@@ -629,6 +680,62 @@ function retryNote(problem: string): string {
 function failureText(error: unknown): string {
   if (error instanceof ReviewerAnswerError) return `gave no valid answer after ${REVIEWER_ATTEMPTS} attempts`;
   return isRoleTimeout(error) ? "timed out" : "failed";
+}
+
+// The round's reviewers as parallel subagents of one lead run (REVIEWER_ATTEMPTS lead runs at most). Each lens's full prompt is a file under the
+// run's folder, which its subagent reads; the lead only starts the subagents and returns each answer between that lens's tags, and the host
+// parses every lens's block itself (parseTeamAnswer). A lens whose block is missing or invalid is asked for again, alone, quoting what was
+// wrong; the others' findings are kept. A lead that times out or fails ends the round at once with no retry (a retry would spend another
+// timeout), as the sequential path never retries a timeout. An UncountedStopError is rethrown. The result is aligned with `reviewers`, or says the
+// review ran out of time.
+async function askTeam(
+  host: HostReviewHost,
+  runReviewerTeam: NonNullable<HostReviewHost["runReviewerTeam"]>,
+  reviewers: readonly Reviewer[],
+  promptFor: (reviewer: Reviewer, problem: string | undefined) => string,
+  { round, runRel, runDir, spent, outOfTime }: { round: number; runRel: string; runDir: string; spent: () => boolean; outOfTime: (at: string) => HostReviewResult },
+): Promise<{ settled: PromiseSettledResult<ReviewerFinding[]>[] } | { stopped: HostReviewResult }> {
+  const settled: PromiseSettledResult<ReviewerFinding[]>[] = reviewers.map(() => ({ status: "rejected", reason: new ReviewerAnswerError("the lens was not asked") }));
+  // Positions in `reviewers` still to answer, each with what was wrong with its last answer.
+  let pending = new Map<number, string | undefined>(reviewers.map((_, index) => [index, undefined]));
+  for (let attempt = 1; pending.size > 0; attempt++) {
+    if (spent()) return { stopped: outOfTime("the review lead") };
+    const members: TeamMember[] = [];
+    for (const [index, problem] of pending) {
+      const id = index + 1;
+      const member = { id, agent: `lens-${id}`, file: `${runDir}/lens-${id}.md`, reviewer: reviewers[index]! };
+      await host.writeRunFile(`${runRel}/lens-${id}.md`, promptFor(member.reviewer, problem));
+      members.push(member);
+    }
+    host.log(`  review round ${round}: ${members.length} reviewers as parallel subagents of one lead run`);
+    const nonce = (host.nonce ?? (() => randomBytes(12).toString("hex")))();
+    let stdout: string;
+    try {
+      stdout = await runReviewerTeam(members, leadPrompt({ nonce, members: members.map((member) => ({ id: member.id, agent: member.agent, lens: member.reviewer.lens })) }));
+    } catch (error) {
+      if (error instanceof UncountedStopError) throw error;
+      for (const index of pending.keys()) settled[index] = { status: "rejected", reason: error };
+      return { settled };
+    }
+    const answer = parseTeamAnswer(stdout, nonce, members.map((member) => member.id));
+    const next = new Map<number, string | undefined>();
+    for (const member of members) {
+      const index = member.id - 1;
+      const got = answer.get(member.id);
+      if (got !== undefined && "findings" in got) {
+        settled[index] = { status: "fulfilled", value: got.findings };
+        continue;
+      }
+      const error = got?.error ?? new ReviewerAnswerError("the lead returned no block for this lens");
+      settled[index] = { status: "rejected", reason: error };
+      if (attempt < REVIEWER_ATTEMPTS) {
+        next.set(index, error.message);
+        host.log(`  ⚠ the ${member.reviewer.lens} reviewer's answer was refused (${error.message}); asking again`);
+      }
+    }
+    pending = next;
+  }
+  return { settled };
 }
 
 // One reviewer's findings. A usage-limit stop, a stalled sandbox or the time budget's stop (any UncountedStopError) is rethrown at once

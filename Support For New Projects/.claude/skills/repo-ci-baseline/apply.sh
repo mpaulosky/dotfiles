@@ -99,11 +99,12 @@ fi
 # (a parser written in sed was wrong in a new way every round): it keeps the copy when check.sh, as a name or at the end of any path,
 # appears on a line that mentions GATE_COMMAND or GATE_SCRIPT or in the ten lines after one, in repo-config.mts or the older
 # config.mts. A formatter's wrapped value, a string or a glob can't hide it, but a value that starts more than ten lines after the name
-# can. A line whose first text is a comment marker (`//`, `/*`, `*`) is skipped unless it names GATE_COMMAND or GATE_SCRIPT itself: the
-# previous Seed's comments gave `.sandcastle/check.sh` as an example, and a repo that kept them has no such gate. A trailing comment on a
-# value line, or another constant in the window, is a false match, which only adds a conflict to report (move the text out of the window).
-# A value built from another constant is not followed. grep runs with -a so a stray non-UTF-8 byte can't turn a line into a "binary file
-# matches" notice, awk runs byte-wise (LC_ALL=C), and a config the scan can't read stops Apply before it writes anything.
+# can. A line whose first text is a comment marker (`//`, `/*`, `*`) is skipped, apart from any code after its last `*/`, unless it names
+# GATE_COMMAND or GATE_SCRIPT itself: the previous Seed's comments gave `.sandcastle/check.sh` as an example, and a repo that kept them
+# has no such gate. A trailing comment on a value line, or another constant in the window, is a false match, which only adds a conflict
+# to report (put the text on a comment line of its own, or out of the window). A value built from another constant is not followed.
+# grep runs with -a so a stray non-UTF-8 byte can't turn a line into a "binary file matches" notice, awk runs under LC_ALL=C so its
+# regexes see bytes, and a config the scan can't read stops Apply before it writes anything.
 gate_window_lines=10
 gate_check_kept=false
 if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" ]]; then
@@ -111,12 +112,16 @@ if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" ]]; then
     [[ -f "$gate_config" ]] || continue
     gate_status=0
     gate_window="$(grep -a -h -A"$gate_window_lines" -E 'GATE_(COMMAND|SCRIPT)' "$gate_config")" || gate_status=$?
+    if (( gate_status == 1 )); then continue; fi
     if (( gate_status == 0 )); then
+      # A line that starts with a comment marker counts only for the code after its last `*/` (a `/* note */ ".sandcastle/check.sh",`
+      # element still does), and only when it names no gate itself; a `//` line is skipped whole.
       printf '%s\n' "$gate_window" | LC_ALL=C awk '
-        /^[ \t]*(\/\/|\/\*|\*)/ && !/GATE_(COMMAND|SCRIPT)/ { next }
+        /^[ \t]*\/\// && !/GATE_(COMMAND|SCRIPT)/ { next }
+        /^[ \t]*(\/\*|\*)/ && !/GATE_(COMMAND|SCRIPT)/ { if (!sub(/^.*\*\//, "")) next }
         /(^|[^A-Za-z0-9_.-])check\.sh([^A-Za-z0-9_.-]|$)/ { found = 1 }
         END { exit found ? 0 : 1 }' || gate_status=$?
-      if (( gate_status == 0 )); then gate_check_kept=true; gate_status=1; fi
+      if (( gate_status == 0 )); then gate_check_kept=true; fi
     fi
     if (( gate_status > 1 )); then
       echo "apply.sh: can't read $gate_config, so it can't tell whether the config names .sandcastle/check.sh as the sandbox gate; fix it and Apply again" >&2
@@ -235,7 +240,7 @@ done
 for f in .copilot-commit-message-instructions.md .claude/rules/git-commit.md; do
   [[ -e "$target/$f" ]] && conflicts+=("$f duplicates .github/instructions/git-commit-instructions.md; delete it, and point CLAUDE.md at docs/PROCESS.md")
 done
-$gate_check_kept && conflicts+=(".sandcastle/check.sh is Owned, but this repo's GATE_COMMAND or GATE_SCRIPT runs it as its sandbox gate, so Apply kept the copy; rename it (e.g. to .sandcastle/sandbox-gate.sh), point both at the new name, and Apply again; if nothing runs it as a gate, move the text that names check.sh (a trailing comment, another constant) more than ten lines after GATE_COMMAND and GATE_SCRIPT")
+$gate_check_kept && conflicts+=(".sandcastle/check.sh is Owned, but this repo's GATE_COMMAND or GATE_SCRIPT runs it as its sandbox gate, so Apply kept the copy; rename it (e.g. to .sandcastle/sandbox-gate.sh), point both at the new name, and Apply again; if nothing runs it as a gate, put the text that names check.sh (a trailing comment, another constant) on a comment line of its own that names neither GATE_COMMAND nor GATE_SCRIPT, or more than ten lines after them")
 if [[ -d "$target/.squad" ]] || compgen -G "$target/.github/workflows/squad-*" >/dev/null; then
   conflicts+=("squad is still installed (.squad/ or squad-* workflows); run the remove-squad skill before Applying")
 fi

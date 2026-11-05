@@ -274,6 +274,18 @@ STATUS=$?
 check "when git can't find the repo's top the script fails" test $STATUS -ne 0
 check "when git can't find the repo's top pnpm is not called" not ran_check
 
+# A check-paths.txt the script can't read stops it rather than reading as an empty list (a stub tr fails, as an unreadable file would).
+set_list 'CLAUDE.md\n'
+mkdir -p "$WORK/trbin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/trbin/tr"
+chmod +x "$WORK/trbin/tr"
+git -C "$REPO" switch -q main
+: > "$LOG"
+OUTPUT="$(cd "$REPO" && PATH="$WORK/trbin:$STUBS:$PATH" bash .sandcastle/check.sh "$LISTBASE" 2>&1)"
+STATUS=$?
+check "a list the script can't read stops it with a failure" test $STATUS -ne 0
+check "a list the script can't read does not run the check either" not ran_check
+
 # The Seed list ships with comments only: a pathspec there would widen every repo's watch list.
 SEED_LIST="$SKILL_DIR/template/seed/.sandcastle/check-paths.txt"
 check "the Seed check-paths.txt exists" test -f "$SEED_LIST"

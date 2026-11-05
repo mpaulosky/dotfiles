@@ -4754,6 +4754,19 @@ describe("liveReviewHost", () => {
     }
   });
 
+  it("stops the fixer, before it starts, when the run folder is a link and the earlier outcomes can't be cleared", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const sandbox = { ...(args.sandbox as object), exec: async () => ({ stdout: "", stderr: ".sandcastle/work/387/review is a link", exitCode: 1 }) } as unknown as Sandbox;
+
+      await assert.rejects(() => liveReviewHost({ ...args, sandbox }, dir).runFixer("fix"), /clearing .*outcomes\.json.* failed: .*is a link/);
+      assert.equal(runs.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
   it("runs the fixer with the ledger deny list only, clears the earlier outcomes first and hands the build its commits", async () => {
     const { args, runs, orderOf, commits } = recorder();
     const dir = checkout();
@@ -4763,7 +4776,9 @@ describe("liveReviewHost", () => {
       const command = commandOf(runs[0]!);
       assert.match(command, /--disallowedTools/);
       assert.doesNotMatch(command, /--tools|--strict-mcp-config/);
-      assert.ok(orderOf.indexOf("exec rm -f '.sandcastle/work/387/review/outcomes.json'") < orderOf.indexOf("run backend"), orderOf.join("\n"));
+      const cleared = orderOf.findIndex((entry) => / && rm -f -- '\.sandcastle\/work\/387\/review\/outcomes\.json'$/.test(entry));
+      assert.ok(cleared >= 0 && cleared < orderOf.indexOf("run backend"), orderOf.join("\n"));
+      assert.match(orderOf[cleared]!, /test ! -L '\.sandcastle\/work\/387\/review'/);
       assert.deepEqual(commits, [{ sha: "made" }]);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
@@ -4830,14 +4845,14 @@ describe("liveReviewHost", () => {
   const plantRun = (root: string) => mkdirSync(join(root, RUN), { recursive: true });
 
   it("writes a run file whole, empty or not, replacing a link, a hard link or a dangling link at its path instead of following it", async () => {
-    const cases: [string, string, (root: string) => void, (root: string) => void][] = [
-      ["a clean folder", "lens one", () => {}, () => {}],
-      ["an empty file", "", () => {}, () => {}],
-      ["a symlink to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); symlinkSync("lens-2.md", join(root, RUN, "lens-1.md")); }, () => {}],
-      ["a hard link to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); linkSync(join(root, RUN, "lens-2.md"), join(root, RUN, "lens-1.md")); }, () => {}],
-      ["a dangling symlink", "lens one", (root) => { plantRun(root); symlinkSync("nowhere.md", join(root, RUN, "lens-1.md")); }, () => {}],
+    const cases: [string, string, (root: string) => void, boolean][] = [
+      ["a clean folder", "lens one", () => {}, false],
+      ["an empty file", "", () => {}, false],
+      ["a symlink to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); symlinkSync("lens-2.md", join(root, RUN, "lens-1.md")); }, true],
+      ["a hard link to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); linkSync(join(root, RUN, "lens-2.md"), join(root, RUN, "lens-1.md")); }, true],
+      ["a dangling symlink", "lens one", (root) => { plantRun(root); symlinkSync("nowhere.md", join(root, RUN, "lens-1.md")); }, false],
     ];
-    for (const [name, content, plant] of cases) {
+    for (const [name, content, plant, otherPlanted] of cases) {
       const { args, execs } = recorder();
       const dir = checkout();
       const root = mkdtempSync(join(tmpdir(), "run-file-"));
@@ -4851,10 +4866,45 @@ describe("liveReviewHost", () => {
         assert.equal(shell.status, 0, `${name}: ${shell.stderr}`);
         assert.equal(readFileSync(join(root, RUN, "lens-1.md"), "utf8"), content, name);
         assert.equal(lstatSync(join(root, RUN, "lens-1.md")).isSymbolicLink(), false, name);
-        if (existsSync(join(root, RUN, "lens-2.md"))) assert.equal(readFileSync(join(root, RUN, "lens-2.md"), "utf8"), "two", name);
+        if (otherPlanted) assert.equal(readFileSync(join(root, RUN, "lens-2.md"), "utf8"), "two", `${name}: the other prompt`);
       } finally {
         rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
         rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+      }
+    }
+  });
+
+  it("removes a run file in a real shell: an existing one, an absent one, a missing run folder, and a link without touching its target", async () => {
+    const cases: [string, (root: string, outside: string) => void, (root: string, outside: string) => void][] = [
+      ["an existing file", (root) => { plantRun(root); writeFileSync(join(root, RUN, "fixes.patch"), "p"); }, (root) => assert.equal(existsSync(join(root, RUN, "fixes.patch")), false)],
+      ["an absent file", (root) => plantRun(root), (root) => assert.deepEqual(readdirSync(join(root, RUN)), [])],
+      ["a run folder that does not exist yet", () => {}, (root) => assert.equal(existsSync(join(root, ".sandcastle")), false)],
+      [
+        "a symlink at the path",
+        (root, outside) => { plantRun(root); writeFileSync(join(outside, "target"), "keep"); symlinkSync(join(outside, "target"), join(root, RUN, "fixes.patch")); },
+        (root, outside) => {
+          assert.equal(existsSync(join(root, RUN, "fixes.patch")), false);
+          assert.equal(readFileSync(join(outside, "target"), "utf8"), "keep");
+        },
+      ],
+    ];
+    for (const [name, plant, check] of cases) {
+      const { args, execs } = recorder();
+      const dir = checkout();
+      const root = mkdtempSync(join(tmpdir(), "run-file-"));
+      const outside = mkdtempSync(join(tmpdir(), "run-file-outside-"));
+      try {
+        plant(root, outside);
+        await liveReviewHost(args, dir).removeRunFile(`${RUN}/fixes.patch`);
+        const shell = spawnSync("sh", ["-c", execs.at(-1)?.command ?? "false"], { cwd: root, encoding: "utf8" });
+
+        assert.equal(shell.error, undefined, name);
+        assert.equal(shell.status, 0, `${name}: ${shell.stderr}`);
+        check(root, outside);
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(outside, { recursive: true, force: true, maxRetries: 5 });
       }
     }
   });
@@ -4870,7 +4920,9 @@ describe("liveReviewHost", () => {
 
       assert.equal(shell.error, undefined);
       assert.notEqual(shell.status, 0);
-      assert.equal(lstatSync(join(root, RUN, "lens-1.md")).isDirectory(), true);
+      assert.match(shell.stderr, /lens-1\.md/);
+      assert.doesNotMatch(shell.stderr, /is a link/);
+      assert.deepEqual(readdirSync(join(root, RUN, "lens-1.md")), []);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
       rmSync(root, { recursive: true, force: true, maxRetries: 5 });

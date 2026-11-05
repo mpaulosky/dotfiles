@@ -927,7 +927,8 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       : {}),
     runFixer: async (prompt) => {
       // An earlier round's outcomes must not be read as this one's.
-      await sandbox.exec(`rm -f ${shellWord(outcomesFile)}`);
+      const cleared = await sandbox.exec(`${runFolderUnlinked} && rm -f -- ${shellWord(outcomesFile)}`);
+      if (cleared.exitCode !== 0) throw new Error(`clearing ${outcomesFile} in the sandbox failed: ${cleared.stderr.trim()}`);
       const run = await runRoleInSandbox(sandbox, "backend", { prompt }, limits, { denied: LEDGER_DENIED_TOOLS }, backstop);
       args.addCommits(run.commits);
     },

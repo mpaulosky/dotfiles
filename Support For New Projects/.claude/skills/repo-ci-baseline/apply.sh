@@ -95,20 +95,22 @@ fi
 
 # .sandcastle/check.sh is Owned, but a repo whose GATE_COMMAND or GATE_SCRIPT names it uses it as its sandbox gate (IssueManager,
 # IssueTracker and TicketManager did). The Owned script only type-checks and tests .sandcastle/, so replacing the gate with it would
-# pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it. This fails closed: it reads
-# the repo-config.mts and the older config.mts, drops `//` comments, puts each `export` on a line of its own whatever the formatter did
-# to the statement (a value on the next line, a `;` inside the string, a type annotation), and keeps the copy when any GATE_COMMAND or
-# GATE_SCRIPT statement mentions check.sh as a path or a bare name. A false match only adds a conflict to report; a miss weakens the gate.
+# pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it. It reads repo-config.mts and
+# the older config.mts, drops `//` and `/* */` comments, joins the lines, ends a statement only at a `;` that a further `export const` or
+# `export let` follows (so an `export` or a `;` inside a string, a value on the next line and a type annotation don't matter), and keeps
+# the copy when a GATE_COMMAND or GATE_SCRIPT statement names check.sh as a path (`.sandcastle/check.sh`, `./check.sh`, `${DIR}/check.sh`)
+# or a bare name. A false match only adds a conflict to report. A value built from another constant is not followed.
 gate_config_statements() {
   local file nl=$'\n'
   for file in "$target/.sandcastle/lib/repo-config.mts" "$target/.sandcastle/lib/config.mts"; do
-    if [[ -f "$file" ]]; then cat "$file"; fi
-  done | sed -E 's#(^|[[:space:]])//.*#\1#' | tr '\n' ' ' | sed -E "s/export[[:space:]]/\\${nl}&/g"
+    if [[ -f "$file" ]]; then cat "$file"; echo; fi
+  done | sed -E 's#(^|[[:space:]])//.*#\1#' | tr '\n' ' ' | sed -E 's#/\*([^*]|\*+[^*/])*\*+/##g' \
+    | sed -E "s/;[[:space:]]*(export[[:space:]]+(const|let)[[:space:]])/;\\${nl}\\1/g"
 }
 gate_check_kept=false
 if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" ]]; then
   gate_statements="$(gate_config_statements)"
-  if grep -qE "^export[[:space:]]+(const|let)[[:space:]]+GATE_(COMMAND|SCRIPT)\\b.*(\\.sandcastle/|\\./|[[:space:]\"'\`])check\\.sh([^[:alnum:]_.-]|\$)" <<< "$gate_statements"; then
+  if grep -qE "export[[:space:]]+(const|let)[[:space:]]+GATE_(COMMAND|SCRIPT)\\b.*(\\.sandcastle/|\\./|\\}/|[[:space:]\"'\`])check\\.sh([^[:alnum:]_.-]|\$)" <<< "$gate_statements"; then
     gate_check_kept=true
   fi
 fi

@@ -199,13 +199,17 @@ touch_file .sandcastle/check-paths.txt
 check "a change to the list itself runs the check" ran_check
 
 # A list of exclude lines alone is "everything else" to git: it must not widen the watch to the whole repo.
-for only in ':(exclude)docs\n' ':^docs\n' ':!docs\n' ':(top,exclude)docs\n' ':(exclude,top)docs\n' '# note\n:(exclude)CLAUDE.md\n:^docs\n'; do
+for only in ':(exclude)docs\n' ':^docs\n' ':!docs\n' ':(top,exclude)docs\n' ':(exclude,top)docs\n' ':/!docs\n' ':/^docs\n' ':!/docs\n' ':(icase,exclude,top)docs\n' '# note\n:(exclude)CLAUDE.md\n:^docs\n'; do
   set_list "$only"
   touch_file -dashed.md
   check "a list of only exclude lines (${only%%\\n*}) watches nothing, so a change outside the excluded paths runs nothing" not_ran
   touch_file package.json
   check "a list of only exclude lines (${only%%\\n*}) leaves the built-in package.json check on" ran_check
 done
+# A positive pathspec whose text holds ",exclude)" is not an exclude line.
+set_list ':(glob)logs/a,exclude)/**\n'
+touch_file 'logs/a,exclude)/x.md'
+check "a positive pathspec containing ,exclude) is still watched" ran_check
 set_list 'CLAUDE.md\n:(exclude)docs\n'
 touch_file docs/unrelated.md
 check "an exclude line beside a positive one still runs nothing for an unrelated change" not_ran

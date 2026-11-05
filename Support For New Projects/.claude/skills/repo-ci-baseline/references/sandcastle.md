@@ -298,8 +298,8 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   those steps still run the repo's `package.json` scripts and `.sandcastle/` code from `main`, which a PR to `main` reviews.
 - **The CI workflows it follows are listed by name** (`workflow_run` can't read a variable): `Build and Test Suite` (the Template's `ci.yml`),
   `repo-ci-baseline Template` (the workflow that tests the Template, in dotfiles) and `Claude Review`. A name the repo lacks matches nothing.
-- **A repo with its own `sandcastle.yml`** has it overwritten by its re-Apply (`apply.sh` can't skip an Owned file; `NOT_OWNED_BASELINE_PATHS` only tells the local review
-  which files are the repo's own). It drops the file from that list in the same PR and moves the skills it installs into `sandcastle-skills.txt`.
+- **A repo with its own `sandcastle.yml`** has it overwritten by its re-Apply (`apply.sh` skips no Owned file but a repo's own sandbox gate named `check.sh`;
+  `NOT_OWNED_BASELINE_PATHS` only tells the local review which files are the repo's own). It drops the file from that list in the same PR and moves the skills it installs into `sandcastle-skills.txt`.
   Anything else its workflow does that the Template's doesn't needs a Template change first.
   The Template's workflow reads no repository variable, so a variable the old one read (auth0-management-app's follow-up switches) does nothing after the re-Apply.
   A repo whose own workflow has triggers the Template lacks (auth0-management-app's follow-up-run and hand-opened-PR ones;

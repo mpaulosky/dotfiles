@@ -334,7 +334,11 @@ for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export cons
   'export  let GATE_COMMAND = "bash .sandcastle/check.sh";' \
   $'export const GATE_COMMAND =\n  "bash .sandcastle/check.sh";' 'export const GATE_COMMAND = "pnpm lint; .sandcastle/check.sh";' \
   'export const GATE_SCRIPT: string = ".sandcastle/check.sh";' 'export const GATE_COMMAND = "cd .sandcastle && ./check.sh";' \
-  'export const A = "x"; export const GATE_SCRIPT = ".sandcastle/check.sh";'; do
+  'export const A = "x"; export const GATE_SCRIPT = ".sandcastle/check.sh";' \
+  'export const GATE_COMMAND = "export CI=1; bash .sandcastle/check.sh";' 'export const GATE_COMMAND = "pnpm run export && bash .sandcastle/check.sh";' \
+  'export const GATE_COMMAND = `bash ${DIR}/check.sh`;' 'export const GATE_SCRIPT = "check.sh";' 'export const GATE_COMMAND = "cd .sandcastle && bash check.sh";' \
+  $'/* the gate */ export const GATE_COMMAND = ".sandcastle/check.sh"; /* x */' $'export const GATE_COMMAND = ".sandcastle/check.sh"\nexport const A = 1' \
+  $'// a note without a final newline\nexport const GATE_COMMAND = ".sandcastle/check.sh";'; do
   n=$((n + 1))
   repo="$work/gate check $n"
   new_repo "$repo"
@@ -352,7 +356,9 @@ done
 n=0
 for config in '// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'export const ROLE_AGENTS = {};' \
   'export const GATE_COMMAND = ".sandcastle/check.sh.bak";' 'export const GATE_COMMAND = ".sandcastle/my-check.sh";' \
-  $'// .sandcastle/check.sh\nexport const GATE_COMMAND = "x";' 'export const NOTE = ".sandcastle/check.sh";'; do
+  $'// .sandcastle/check.sh\nexport const GATE_COMMAND = "x";' 'export const NOTE = ".sandcastle/check.sh";' \
+  'export const GATE_COMMAND = ".sandcastle/check.shx";' 'export const GATE_COMMAND = ".sandcastle/check.sh-old";' 'export const GATE_COMMAND = ".sandcastle/check.sh_old";' \
+  'export const GATE_COMMAND = "x"; /** see .sandcastle/check.sh */' $'export const GATE_COMMAND = "x";\nexport const CHECKS = [".sandcastle/check.sh"];'; do
   n=$((n + 1))
   repo="$work/gate check other $n"
   new_repo "$repo"
@@ -377,6 +383,18 @@ git_q -C "$repo" switch -q -c chore/standardize-baseline
 out="$("$apply" "$repo")"
 check "gate check (old config.mts): the repo's sandbox gate is kept" 'grep -q "sandbox gate" "$repo/.sandcastle/check.sh"'
 check "gate check (old config.mts): the report says to rename it" 'grep -q "check.sh is Owned.*rename" <<< "$out"'
+
+# A repo-config.mts that ends with a comment and no final newline must not swallow the first line of config.mts.
+repo="$work/gate check no newline"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle/lib"
+printf 'export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];\n// last line, no newline' > "$repo/.sandcastle/lib/repo-config.mts"
+printf 'export const GATE_COMMAND = "bash .sandcastle/check.sh";\n' > "$repo/.sandcastle/lib/config.mts"
+printf '#!/usr/bin/env bash\necho sandbox gate\n' > "$repo/.sandcastle/check.sh"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$("$apply" "$repo")"
+check "gate check (no final newline): the repo's sandbox gate is kept" 'grep -q "sandbox gate" "$repo/.sandcastle/check.sh"'
 
 echo "apply.test.sh: $pass passed, $failed failed"
 [[ $failed -eq 0 ]]

@@ -26,7 +26,7 @@ paths=(.sandcastle package.json ':(glob)pnpm-*.yaml'
   scripts/review.sh .claude/skills/pre-push-review .claude/skills/hardening-review .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml)
 listed=()
 positive=0
-exclude='^:(\((.*,)?exclude(,.*)?\)|[!^])'
+exclude='^:(\(([^),]*,)*exclude(,[^)]*)?\)|/?[!^])'
 if [[ -f "$extra" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"

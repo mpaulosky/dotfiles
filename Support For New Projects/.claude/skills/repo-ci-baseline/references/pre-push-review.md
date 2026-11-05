@@ -183,7 +183,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   A finding is listed only when its path is a file the review's diffs touched and is made of plain file-name characters (never a link, an image or a `www.` address), and a line the host's
   public-text check would change, or that reads like a `## Review notes` section, is left out on its own. The rest, and any security finding, are only counted.
 - Open Critical or Warning findings (and any open security finding, whatever its grade) hold the PR as a draft, and so does a review that didn't finish, since it hasn't cleared the code (its
-  note says so): the host opens it with `gh pr create --draft`, and its body says why and what a person does. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the
+  note says so): the host opens it with `gh pr create --draft`, and its body says why and what a person does: the ledger stays on the runner (it can hold security details), so a person
+  first runs `/pre-push-review` on the checked-out branch to record one. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the
   PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready. A PR that already exists for the branch (a rerun) is turned into a draft with `gh pr ready
   --undo` before the new commits are pushed (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body, but
   only while its body still carries the host's `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the

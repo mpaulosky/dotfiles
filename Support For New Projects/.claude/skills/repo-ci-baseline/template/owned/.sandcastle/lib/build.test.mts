@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { spawnSync, type execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
 import { hostExecFileSync } from "./host-limit.mts";
@@ -4823,6 +4823,44 @@ describe("liveReviewHost", () => {
       }
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("refuses to write when the run folder or a folder above it is a link, and writes nothing through it", async () => {
+    const rel = ".sandcastle/work/387/review/lens-1.md";
+    // The command the host would run in the sandbox, run here in a folder holding the planted layout.
+    const attempt = async (plant: (root: string, outside: string) => void) => {
+      const { args, execs } = recorder();
+      const dir = checkout();
+      const root = mkdtempSync(join(tmpdir(), "write-run-file-"));
+      const outside = mkdtempSync(join(tmpdir(), "write-run-outside-"));
+      try {
+        plant(root, outside);
+        await liveReviewHost(args, dir).writeRunFile(rel, "lens one");
+        const found = execs.find((e) => e.stdin !== undefined);
+        assert.ok(found, "no write command ran");
+        const run = spawnSync("sh", ["-c", found.command], { cwd: root, input: found.stdin, encoding: "utf8" });
+        return { status: run.status, outsideEntries: readdirSync(outside), written: existsSync(join(root, rel)) };
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(outside, { recursive: true, force: true, maxRetries: 5 });
+      }
+    };
+
+    const plain = await attempt(() => {});
+    assert.equal(plain.status, 0);
+    assert.equal(plain.written, true);
+
+    for (const [name, plant] of [
+      [".sandcastle", (root: string, outside: string) => symlinkSync(outside, join(root, ".sandcastle"))],
+      [".sandcastle/work", (root: string, outside: string) => { mkdirSync(join(root, ".sandcastle")); symlinkSync(outside, join(root, ".sandcastle/work")); }],
+      [".sandcastle/work/387", (root: string, outside: string) => { mkdirSync(join(root, ".sandcastle/work"), { recursive: true }); symlinkSync(outside, join(root, ".sandcastle/work/387")); }],
+      [".sandcastle/work/387/review", (root: string, outside: string) => { mkdirSync(join(root, ".sandcastle/work/387"), { recursive: true }); symlinkSync(outside, join(root, ".sandcastle/work/387/review")); }],
+    ] as const) {
+      const got = await attempt(plant);
+      assert.notEqual(got.status, 0, name);
+      assert.deepEqual(got.outsideEntries, [], name);
     }
   });
 

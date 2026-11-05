@@ -873,10 +873,14 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       // aliasing two run files (two lenses' prompts) to one.
       const encoded = Buffer.from(content).toString("base64");
       const clear = `rm -f -- ${shellWord(path)}`;
+      // Nor may the run folder, or a folder above it, be a link: the write (and the mkdir before it) would land wherever the link points. Checked before mkdir,
+      // which only makes real folders, so a link can only be one that was there already.
+      const parts = runRel.split("/");
+      const unlinked = parts.map((_, at) => `test ! -L ${shellWord(parts.slice(0, at + 1).join("/"))}`).join(" && ");
       const written =
         encoded === ""
-          ? await sandbox.exec(`mkdir -p ${shellWord(runRel)} && ${clear} && : > ${shellWord(path)}`)
-          : await sandbox.exec(`mkdir -p ${shellWord(runRel)} && ${clear} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
+          ? await sandbox.exec(`${unlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && : > ${shellWord(path)}`)
+          : await sandbox.exec(`${unlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
       if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
     },
     runReviewer: async (_reviewer, prompt) => {

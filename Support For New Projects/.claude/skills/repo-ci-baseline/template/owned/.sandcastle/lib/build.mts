@@ -198,8 +198,8 @@ export function openHeldPullRequest(
 
 // The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left. It names the two steps only a person takes.
 export const DRAFT_NOTE =
-  "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open. A person decides each one: fix it, or accept it " +
-  "with `scripts/review.sh accept <id> <reason>`. Once none is open, mark the PR ready with `gh pr ready`.";
+  "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding: " +
+  "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. Once nothing is open, mark the PR ready with `gh pr ready`.";
 
 // Whether a git or gh failure is GitHub's own server error, which a later
 // attempt may not hit. Matches what git and gh print for one ("remote: Internal
@@ -1569,6 +1569,8 @@ async function buildMarkedIssue(
       // The unfinished review's gated commit is published, not checkpoint 2's: earlier rounds' fixes passed checkpoint 3.
       gated = review.head;
       reviewNote = `⚠️ The local review didn't finish (${review.reason}), so this branch has no recorded review.`;
+      // It has not cleared the code, and PR Auto-Merge only merges ready PRs: the PR is held, and a person marks it ready after looking.
+      holdAsDraft = true;
     } else {
       gated = review.head;
       // A line the host's public-text check would change, or that reads like a Review notes section, is left out on its own.

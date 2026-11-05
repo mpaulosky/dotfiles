@@ -180,13 +180,15 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
   A finding is listed only when its path is a file the review's diffs touched and is made of plain file-name characters (never a link, an image or a `www.` address), and a line the host's
   public-text check would change, or that reads like a `## Review notes` section, is left out on its own. The rest, and any security finding, are only counted.
-- Open Critical or Warning findings (and any open security finding, whatever its grade) hold the PR as a draft: the host opens it with `gh pr create --draft`, and its body says why and what a
-  person does. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready, and so
-  is one whose review didn't finish (its note says so). A PR that already exists for the branch (a rerun) is turned into a draft with `gh pr ready --undo` before the new commits are pushed
-  (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body, but only while its body still carries the host's
-  `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the draft note added to it, unless that would pass
-  GitHub's 65,536-character limit: then the body is left as it is and the PR is a draft with no note. A body edited by hand with the marker left in is rewritten. A held PR is a draft, so
-  Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or review feedback on it needs a person.
+- Open Critical or Warning findings (and any open security finding, whatever its grade) hold the PR as a draft, and so does a review that didn't finish, since it hasn't cleared the code (its
+  note says so): the host opens it with `gh pr create --draft`, and its body says why and what a person does. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the
+  PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready. A PR that already exists for the branch (a rerun) is turned into a draft with `gh pr ready
+  --undo` before the new commits are pushed (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body, but
+  only while its body still carries the host's `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the
+  draft note added to it, unless that would pass GitHub's 65,536-character limit: then the body is left as it is and the PR is a draft with no note. A body edited by hand with the marker
+  left in is rewritten. A rerun that no longer holds a PR that is a draft leaves it a draft, as marking it ready is a person's, but takes the draft note out of its body (the host's own body
+  is replaced; a person's body loses only the note). A held PR is a draft, so Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or
+  review feedback on it needs a person.
 - The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the
   generic one.
 - The review's open Advisory findings go in one follow-up issue titled `chore(review): Advisory review findings: <branch>`, whose body is `renderAdvisories`' list (a security finding is left out,
@@ -204,7 +206,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   covers a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800,
   Hangul), a next-line character (U+0085, which the issue's own text folding would publish raw), a joiner that does no work (outside emoji or the joining scripts), more than eight joiners or more than
   eight private-use or unassigned characters across the issue's text, and a run of more than eight combining marks. Each field is also checked for secrets as the reviewer wrote it, not only in the
-  escaped line the issue shows. When open Advisory findings exist and none can be listed, the build logs that no follow-up issue is filed.
+  escaped line the issue shows. When open Advisory findings exist and none can be listed, the build logs that no follow-up issue is filed. The issue lists reviewer prose (summary and fix) on
+  purpose: on Actions the local record is discarded with the runner, so the issue is the only copy that survives.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
   global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run,

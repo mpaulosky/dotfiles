@@ -309,10 +309,12 @@ export function openPullRequest(
       if (existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
       // The body is read again now that the PR is a draft: the list's copy is from before the hold, and a person may have accepted a finding in
       // between. Only a change in the one call between this read and the edit is left, and the edit keeps whatever the read held.
-      const current = (JSON.parse(ghWithStderr(run, ["pr", "view", String(existing.number), "--repo", repo, "--json", "body"])) as { body?: unknown }).body;
-      // An answer without a text body is not an empty body: replacing what a person wrote with the draft note alone would delete their acceptances.
-      if (typeof current !== "string") throw new Error(`gh pr view didn't answer the body of pull request ${existing.number}`);
-      const next = bodyForHeldPullRequest(current, body, heldNote);
+      const next = bodyForHeldPullRequest(currentBody(run, repo, existing.number), body, heldNote);
+      if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
+    } else if (existing.isDraft === true && heldNote !== "") {
+      // A rerun the review no longer holds leaves a draft from an earlier held build as it is (marking it ready is a person's), but its body still gives
+      // the reason it was held, which is no longer true: the note is taken out.
+      const next = bodyWithoutHeldNote(currentBody(run, repo, existing.number), body, heldNote);
       if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
     }
     return existing.url;
@@ -322,6 +324,24 @@ export function openPullRequest(
     ["pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", title, "--body-file", "-", ...(draft ? ["--draft"] : [])],
     body,
   ).trim();
+}
+
+// A pull request's body as it is now. gh pr view is asked rather than the list, whose copy is from before the call that changed the PR, and an answer without a text
+// body throws: it is not an empty body, and replacing what a person wrote would delete their acceptances.
+function currentBody(run: typeof execFileSync, repo: string, number: number): string {
+  const body = (JSON.parse(ghWithStderr(run, ["pr", "view", String(number), "--repo", repo, "--json", "body"])) as { body?: unknown }).body;
+  if (typeof body !== "string") throw new Error(`gh pr view didn't answer the body of pull request ${number}`);
+  return body;
+}
+
+// The body a draft should end with once its hold is over (see openPullRequest): the host's own body when the host wrote it, and otherwise the person's body with
+// only the draft note taken out. Undefined when the note isn't there, so a draft the review never held, or one a person already cleaned, is not edited.
+function bodyWithoutHeldNote(current: string, next: string, heldNote: string): string | undefined {
+  const lines = (text: string) => text.replace(/\r\n?/g, "\n");
+  const note = lines(heldNote).trim();
+  if (note === "" || !lines(current).includes(note)) return undefined;
+  const hostWrote = current.includes(PR_MARKER) && !visibleLetters(current).includes("reviewnotes");
+  return hostWrote ? next : lines(current).replace(note, "").trimEnd();
 }
 
 // The body a PR the review holds should end with, or undefined when it needs no edit (see openPullRequest). GitHub stores the body with CRLF line endings

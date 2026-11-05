@@ -4864,12 +4864,15 @@ describe("buildIssue's PR state after the local review", () => {
     assert.deepEqual(run.publishedDrafts, [false]);
   });
 
-  it("opens the PR ready, as before, when the review didn't finish and recorded nothing", async () => {
+  // A review that didn't finish has not cleared the code, and PR Auto-Merge only merges ready PRs: the PR is held, and the note in its body says why.
+  it("holds the PR as a draft when the review didn't finish and recorded nothing, with the note saying the review didn't finish", async () => {
     const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
 
     await buildIssue(issue, branch, base, run.buildHost);
 
-    assert.deepEqual(run.publishedDrafts, [false]);
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.match(run.publishedReviewNotes[0] ?? "", /The local review didn't finish \(the Bar reviewer timed out\)/);
+    assert.match(DRAFT_NOTE, /didn't finish/);
   });
 
   it("holds the PR as a draft for an open finding graded Advisory that is a security finding", async () => {

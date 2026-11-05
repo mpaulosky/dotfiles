@@ -615,6 +615,67 @@ describe("openPullRequest", () => {
     });
   });
 
+  // A clean rerun no longer holds the PR, but a draft from an earlier held build still carries the note that gave the reason. The note is dropped; whether the PR is
+  // ready stays a person's decision.
+  describe("when a rerun no longer holds a PR that is a draft with the draft note", () => {
+    const cleanBody = `${MARKER}\nCloses #4\n\nWhy it was built.`;
+    const accepted = `${hostBody}\n\n<!-- review-notes -->\n## Review notes\n\n- R3 accepted: the owner decided it.\n<!-- /review-notes -->`;
+
+    it("puts the new body, without the note, on a draft the host wrote", () => {
+      const { calls, run } = gh(existing(true, `${cleanBody}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
+      assert.equal(calls[2]!.input, cleanBody);
+    });
+
+    it("takes only the note out of a body a person wrote in", () => {
+      const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, accepted);
+    });
+
+    it("finds the note in a body with GitHub's line endings", () => {
+      const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`.replace(/\n/g, "\r\n")));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, accepted);
+    });
+
+    it("edits nothing when the draft has no note, and never converts it", () => {
+      const { calls, run } = gh(existing(true, accepted));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
+    });
+
+    it("leaves a ready PR alone, without reading its body", () => {
+      const { calls, run } = gh(existing(false, `${accepted}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.length, 1);
+    });
+
+    it("leaves a draft alone when no note was given", () => {
+      const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false);
+      assert.equal(calls.length, 1);
+    });
+
+    it("throws on an answer without a text body, and edits nothing", () => {
+      const calls: string[] = [];
+      const run = ((_cmd: string, args: readonly string[]) => {
+        calls.push(String(args[1]));
+        return args[1] === "list" ? JSON.stringify(existing(true)) : "{}";
+      }) as unknown as typeof execFileSync;
+
+      assert.throws(() => openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE), /body/);
+      assert.deepEqual(calls.slice(1), ["view"]);
+    });
+  });
+
   it("leaves an existing PR alone when the review doesn't hold it", () => {
     const { calls, run } = gh(existing(false));
 

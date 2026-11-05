@@ -300,14 +300,17 @@ export function openPullRequest(
 ): string {
   const listed = JSON.parse(
     ghWithStderr(run, [
-      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url,body",
+      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url",
     ]),
-  ) as (ListedPullRequest & { number: number; isDraft?: boolean; body?: string })[];
+  ) as (ListedPullRequest & { number: number; isDraft?: boolean })[];
   const existing = sameRepository(listed).find((pr) => pr.headRefName === branch);
   if (existing?.url) {
     if (draft) {
       if (existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
-      const next = bodyForHeldPullRequest(existing.body ?? "", body, heldNote);
+      // The body is read again now that the PR is a draft: the list's copy is from before the hold, and a person may have accepted a finding in
+      // between. Only a change in the one call between this read and the edit is left, and the edit keeps whatever the read held.
+      const current = (JSON.parse(ghWithStderr(run, ["pr", "view", String(existing.number), "--repo", repo, "--json", "body"])) as { body?: string }).body;
+      const next = bodyForHeldPullRequest(current ?? "", body, heldNote);
       if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
     }
     return existing.url;

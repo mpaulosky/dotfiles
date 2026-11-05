@@ -197,9 +197,12 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   unless the body or one of the host's own comments already holds exactly that text (anyone can comment on a public issue, so another author's comment never counts), so findings the issue already
   lists can appear again beside a new one; a body a person edited is never replaced. A later review with no Advisory findings files nothing, so the earlier issue keeps findings that may be fixed
   by now: a person closes it. It files none for a review that didn't finish, and a failed filing is retried after a GitHub server error and then only logged: the PR still publishes. A finding
-  holds text a reader can't see (a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag
-  character; tested on its id, path, summary and fix, and on the branch) is left out like one with a link. The joiners U+200C and U+200D stay unless they start or end a field
-  or touch a space; the emoji selector U+FE0F stays unless it starts a field or follows a space; never three in a row, and at most 20 of the three to a field. When open Advisory findings
+  holds text a reader can't see (`hasHiddenText` in `status.mts`, the rule of ADR 0010: `terminalText` would drop or cap something from it, other than whitespace and spacing) is
+  left out like one with a link.
+  So are a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800, Hangul), a joiner
+  that does no work (outside emoji or the joining scripts), and more than eight joiners, private-use or unassigned characters or stacked marks across the issue's text. It is tested
+  on the id, path, summary and fix of each finding,
+  and on the branch. When open Advisory findings
   exist and none can be listed, the build logs that no follow-up issue is filed.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's

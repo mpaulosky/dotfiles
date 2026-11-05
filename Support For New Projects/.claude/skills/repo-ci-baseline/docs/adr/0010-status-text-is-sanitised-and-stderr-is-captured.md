@@ -25,6 +25,8 @@ gh and git also write to the process's stderr themselves when they are run with 
   and flag-tag emoji fall apart.
 - **What may draw as nothing is capped, not removed:** at most eight private-use (icon glyph) or unassigned code points per text, and no more than eight combining marks
   in a row. The limit is honest: a few invisible bits can still ride on one text, and no more.
+- **Text a public issue shows is held to the same rule:** `hasHiddenText` is true when `terminalText` would change a text by more than whitespace, so the host's follow-up issue
+  (`advisoryIssueBody`) leaves out a finding with such text instead of publishing a cleaned copy. The eight-per-text caps count across everything the issue shows.
 - **`terminalText` is idempotent**, and `terminalLine` keeps at most eight spaces of indent. `plainStderr` makes `console.error` plain text: its arguments are data (a
   string as it is, an Error as its message, anything else through `inspect`), never a format string.
 - **gh and git stderr is captured into the thrown message, never inherited,** on the status's path (`ghWithStderr`, `readRepoName`, `protectHostGit`'s `git config`).

@@ -426,11 +426,13 @@ describe("sameRepository", () => {
 
 describe("openPullRequest", () => {
   const branch = "feature/4-add-search";
-  // A gh stub that lists `listed` and creates a PR at /pull/9.
-  const gh = (listed: object[]) => {
+  // A gh stub that lists `listed`, creates a PR at /pull/9, and answers `pr view` with `viewed` (the listed PR's own body when not given): the body
+  // a person may have changed since the list.
+  const gh = (listed: object[], viewed?: string) => {
     const calls: { args: readonly string[]; input: unknown }[] = [];
     const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
       calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body: viewed ?? (listed[0] as { body?: string } | undefined)?.body ?? "" });
       return args[1] === "list" ? JSON.stringify(listed) : "https://github.com/o/r/pull/9\n";
     }) as unknown as typeof execFileSync;
     return { calls, run };
@@ -481,31 +483,24 @@ describe("openPullRequest", () => {
     assert.equal(openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), "https://github.com/o/r/pull/3");
     assert.deepEqual(calls.slice(1).map((call) => call.args), [
       ["pr", "ready", "3", "--repo", "o/r", "--undo"],
+      ["pr", "view", "3", "--repo", "o/r", "--json", "body"],
       ["pr", "edit", "3", "--repo", "o/r", "--body-file", "-"],
     ]);
-    assert.equal(calls[2]!.input, fresh);
-  });
-
-  it("asks for the existing PR's body, to know what a person added", () => {
-    const { calls, run } = gh(existing(false));
-
-    openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
-    const args = calls[0]!.args;
-    assert.match(args[args.indexOf("--json") + 1]!, /\bbody\b/);
+    assert.equal(calls[3]!.input, fresh);
   });
 
   it("refreshes the body of an existing draft the review still holds, without converting it again", () => {
     const { calls, run } = gh(existing(true));
 
     openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
-    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "edit"]]);
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
   });
 
   it("does not edit a draft whose body is already the new one, whatever its line endings", () => {
     const { calls, run } = gh(existing(true, `${fresh.replace(/\n/g, "\r\n")}\r\n`));
 
     openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
-    assert.equal(calls.length, 1);
+    assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
   });
 
   describe("when a person has written in the PR's body", () => {
@@ -523,7 +518,7 @@ describe("openPullRequest", () => {
       const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`));
 
       openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
-      assert.equal(calls.length, 1);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
     });
 
     for (const [name, heading] of [
@@ -552,7 +547,7 @@ describe("openPullRequest", () => {
       const { calls, run } = gh(existing(false, accepted));
 
       openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
-      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "edit"]);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "view", "edit"]);
     });
 
     // GitHub refuses a PR body of more than 65,536 characters. The note is added after a blank line, so the body may be as long as the limit allows.
@@ -562,8 +557,8 @@ describe("openPullRequest", () => {
         const { calls, run } = gh(existing(false, own));
 
         openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
-        assert.deepEqual(calls.slice(1).map((call) => call.args[1]), edits ? ["ready", "edit"] : ["ready"]);
-        if (edits) assert.equal(String(calls[2]!.input).length, 65_536 + extra);
+        assert.deepEqual(calls.slice(1).map((call) => call.args[1]), edits ? ["ready", "view", "edit"] : ["ready", "view"]);
+        if (edits) assert.equal(String(calls[3]!.input).length, 65_536 + extra);
       });
     }
 
@@ -571,7 +566,39 @@ describe("openPullRequest", () => {
       const { calls, run } = gh(existing(true, accepted));
 
       openPullRequest(branch, "Add search", fresh, run, "o/r", true);
-      assert.equal(calls.length, 1);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
+    });
+
+    // The body read with the list can be stale by the time the PR is a draft: a person accepted a finding in the meantime. The edit is built from
+    // a body read after the hold, so those acceptances survive.
+    it("keeps a Review notes section a person added after the list, and adds only the draft note", () => {
+      const { calls, run } = gh(existing(false), accepted);
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, `${accepted}\n\n${NOTE}`);
+    });
+
+    it("reads the body again only after the PR is a draft", () => {
+      const { calls, run } = gh(existing(false));
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "view", "edit"]);
+    });
+
+    it("does not edit when the body read after the hold is already the new one", () => {
+      const { calls, run } = gh(existing(false), fresh);
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "view"]);
+    });
+
+    it("throws when the body can't be read after the hold, rather than write over it blind", () => {
+      const run = ((_cmd: string, args: readonly string[]) => {
+        if (args[1] === "list") return JSON.stringify(existing(true));
+        throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 502" });
+      }) as unknown as typeof execFileSync;
+
+      assert.throws(() => openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), /HTTP 502/);
     });
   });
 

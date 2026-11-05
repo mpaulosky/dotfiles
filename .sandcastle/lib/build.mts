@@ -168,6 +168,12 @@ export async function publish(
   return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body, holdAsDraft), wait);
 }
 
+// The comment on the Sandcastle issue when the follow-up issue for the review's Advisory findings could not be filed: the findings (`advisories`, the body
+// checked for the public issue) are listed here so they are not lost with the runner.
+export function advisoryFilingFailedComment(prUrl: string, advisories: string): string {
+  return `Sandcastle published ${prUrl}, but it couldn't file the follow-up issue for the review's open Advisory findings, so they are listed here instead:\n\n${advisories}`;
+}
+
 // Thrown by publish when it could not turn the branch's open PR into a draft, so it pushed nothing. buildIssue tells a person so: the generic
 // "pushing failed" comment would send them to push the branch's commits onto a PR that is still ready.
 export class HoldFailedError extends Error {
@@ -1661,6 +1667,13 @@ async function buildMarkedIssue(
           );
         } catch (error) {
           console.error(`  ⚠ #${issue.number}: filing the follow-up issue for the Advisory findings failed: ${terminalText(String(error))}`);
+          // The ledger lives in the main checkout, which an Actions runner discards, so a findings list that isn't filed would be lost with it. The same
+          // text, already checked for the public issue, goes on the Sandcastle issue instead.
+          try {
+            host.commentOnIssue(issue.number, advisoryFilingFailedComment(prUrl, advisories));
+          } catch (commentError) {
+            console.error(`  ⚠ #${issue.number}: posting the Advisory findings on the issue failed too: ${terminalText(String(commentError))}`);
+          }
         }
       }
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
@@ -1740,6 +1753,25 @@ async function buildMarkedIssue(
           publishFailed: true,
           outcome: "not published",
           detail: "turning its open pull request into a draft failed, so nothing was pushed",
+        };
+      }
+      if (holdAsDraft) {
+        // The hold ran before the push, so a pull request the branch already had is a draft now, with the body it had before; the failure came after.
+        host.commentOnIssue(
+          issue.number,
+          `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening or updating its pull request failed after the ` +
+            "review left findings open and the pull request was held as a draft. The branch keeps its commits. A person needs to look at it. A pull " +
+            `request from it may already be open as a draft, without the note saying why: find it with \`gh pr list --head ${branch}\` before opening ` +
+            `one, and do not mark it ready until each open finding is fixed or accepted (\`scripts/review.sh accept <id> <reason>\`). If origin's ` +
+            `\`${branch}\` isn't at \`${gated}\`, the commit the gate passed, it still has to be pushed from its worktree, and if origin's branch has ` +
+            `commits the local one doesn't, the two need reconciling.\n\n${fence}text\n${detail}\n${fence}`,
+        );
+        return {
+          commits,
+          prUrl: undefined,
+          publishFailed: true,
+          outcome: "not published",
+          detail: "pushing it or opening its pull request failed after the pull request was held as a draft",
         };
       }
       host.commentOnIssue(

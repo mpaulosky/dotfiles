@@ -2846,8 +2846,9 @@ describe("openHeldPullRequest", () => {
     const calls: { args: readonly string[]; input: unknown }[] = [];
     const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
       calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body });
       return args[1] === "list"
-        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/3", body }])
+        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/3" }])
         : "";
     }) as unknown as typeof execFileSync;
     return { calls, run };
@@ -2858,8 +2859,8 @@ describe("openHeldPullRequest", () => {
     const { calls, run } = gh(false, body);
 
     assert.equal(openHeldPullRequest(branch, "Add search", "new body", true, run, "o/r"), "https://github.com/o/r/pull/3");
-    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "ready"], ["pr", "edit"]]);
-    assert.equal(calls[2]!.input, `${body}\n\n${DRAFT_NOTE}`);
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "ready"], ["pr", "view"], ["pr", "edit"]]);
+    assert.equal(calls[3]!.input, `${body}\n\n${DRAFT_NOTE}`);
   });
 
   it("opens a new PR as a draft with the body it was given", () => {
@@ -5111,6 +5112,55 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)), logged.join("\n"));
   });
 
+  // A failed filing must leave a trace: on an ephemeral runner the ledger is gone, so the Advisory findings are posted on the Sandcastle issue instead.
+  it("posts the findings on the Sandcastle issue when filing the follow-up issue fails, so they are not lost", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const comments: { issue: number; body: string }[] = [];
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = (n, body) => void comments.push({ issue: n, body });
+    run.buildHost.fileAdvisoryIssue = () => {
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    const posted = comments.filter((comment) => /follow-up issue/.test(comment.body));
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0]?.issue, issue.number);
+    assert.match(posted[0]?.body ?? "", /couldn't file the follow-up issue/);
+    assert.match(posted[0]?.body ?? "", /R5 docs\/a\.md:4: A stale sentence\./);
+    assert.ok(posted[0]?.body.includes(result.prUrl ?? "no PR url"), "the comment names the pull request");
+  });
+
+  it("still publishes, and logs both failures, when the comment on the findings fails too", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = () => {
+      throw new Error("gh issue comment failed");
+    };
+    run.buildHost.fileAdvisoryIssue = () => {
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)));
+    assert.ok(logged.some((line) => /posting the Advisory findings/.test(line)), logged.join("\n"));
+  });
+
+  it("posts nothing on the Sandcastle issue when the follow-up issue is filed", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(!comments.some((body) => /couldn't file the follow-up issue/.test(body)));
+  });
+
   it("gives up filing after the last attempt of a GitHub server error, and still publishes", async (t) => {
     t.mock.method(console, "error", () => {});
     const run = host([0, 0], { localReview: recorded([advisory()]) });
@@ -5146,6 +5196,44 @@ describe("buildIssue when the open PR can't be held as a draft", () => {
   });
 });
 
+// A push or a PR create that fails after the hold leaves a draft: the comment must say so, not send a person to open a second PR.
+describe("buildIssue when publishing fails after the PR was held as a draft", () => {
+  const reviewed = "c".repeat(40);
+  const blocked = () =>
+    host([0, 0], {
+      publishError: "git push --quiet origin abc:refs/heads/x failed:\n ! [rejected] abc -> x (non-fast-forward)",
+      localReview: async () =>
+        ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, [openFinding()]), readPaths: new Set(["src/app.ts"]) }) as const,
+    });
+
+  it("says the pull request may already be a draft and why, to find it rather than open another, and to mark it ready only once nothing is open", async () => {
+    const comments: string[] = [];
+    const run = blocked();
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.equal(comments.length, 1);
+    assert.match(comments[0] ?? "", /held as a draft/);
+    assert.match(comments[0] ?? "", /gh pr list --head feature\/69-run-the-gate/);
+    assert.match(comments[0] ?? "", /scripts\/review\.sh accept/);
+    assert.doesNotMatch(comments[0] ?? "", /open one by hand/);
+    assert.match(comments[0] ?? "", /non-fast-forward/);
+  });
+
+  it("keeps the generic wording, which sends a person to open the PR by hand, when nothing held the PR", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishError: "gh pr create failed:\n remote: Internal Server Error" });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.match(comments[0] ?? "", /open one by hand/);
+    assert.doesNotMatch(comments[0] ?? "", /held as a draft/);
+  });
+});
+
 // publish's live defaults, run against a fake `gh` that is the only program on PATH, so a test can never reach the real gh and its login: the hold must reach gh
 // before the push, and a created PR must carry --draft and DRAFT_NOTE.
 describe("publish's default hold and PR creation", { skip: process.platform === "win32" }, () => {
@@ -5153,7 +5241,7 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
     const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
     const logFile = join(dir, "calls.log");
     const createdFile = join(dir, "created-body.txt");
-    // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers `repo view`, `pr list` and `pr create` (keeping its body), and reads and drops the input of anything else, such as the hold's `pr ready`.
+    // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers `repo view`, `pr list`, `pr view` and `pr create` (keeping its body), and reads and drops the input of anything else, such as the hold's `pr ready`.
     writeFileSync(
       join(dir, "gh"),
       [
@@ -5162,6 +5250,7 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
         'case "$1 $2" in',
         `  "repo view") echo ${repoAnswer} ;;`,
         `  "pr list") echo '${listed}' ;;`,
+        `  "pr view") echo '{"body":""}' ;;`,
         `  "pr create") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${createdFile}"; done; echo https://github.com/o/r/pull/9 ;;`,
         "  *) while IFS= read -r line || [ -n \"$line\" ]; do :; done ;;",
         "esac",
@@ -5190,7 +5279,7 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
     }
   };
   const open = (isDraft: boolean) =>
-    JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4", body: "" }]);
+    JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4" }]);
 
   it("forgets a repository name cached before it starts, so the fake's own answer is read", async () => {
     await withFakeGh("[]", async () => {

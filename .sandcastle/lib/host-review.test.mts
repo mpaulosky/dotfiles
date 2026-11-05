@@ -2408,9 +2408,9 @@ describe("advisoryIssueBody", () => {
     ["a halfwidth Hangul filler", "\uFFA0"],
     ["a Hangul choseong filler", "\u115F"],
     ["a delete character", "\u007F"],
-    ["a vertical tab", "\u000B"],
+    ["an escape character", "\u001B"],
     ["a unit separator", "\u001F"],
-    ["a C1 control", "\u0085"],
+    ["a C1 control", "\u0090"],
     ["a C1 control at the end of its range", "\u009F"],
     ["a right-to-left mark", "\u200F"],
     ["a left-to-right embedding", "\u202A"],
@@ -2486,28 +2486,43 @@ describe("advisoryIssueBody", () => {
     }
   });
 
-  // The cap counts all three characters in a field, so each one is tried at 20 and 21.
-  for (const [name, character] of [["U+200D", "\u200D"], ["U+200C", "\u200C"], ["U+FE0F", "\uFE0F"]] as const) {
-    it(`lists a field with 20 of ${name} between letters and leaves out one with 21`, () => {
-      const joined = (count: number) => `${`x${character}`.repeat(count)}x`;
-
-      assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: joined(20) })]), DOCS), /R5/);
-      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: joined(21) })]), DOCS), "");
-    });
-  }
-
-  it("counts the three characters together: 21 mixed in one field are left out, 20 are listed", () => {
-    const mixed = (counts: [number, number, number]) =>
-      `${"x\u200D".repeat(counts[0])}${"x\u200C".repeat(counts[1])}${"x\uFE0F".repeat(counts[2])}x`;
-
-    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: mixed([10, 5, 5]) })]), DOCS), /R5/);
-    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: mixed([10, 6, 5]) })]), DOCS), "");
+  // ADR 0010's rule, asked of the branch and the findings listed so far together: a joiner stays only where it does its work, and eight in all.
+  it("leaves out a joiner between ASCII letters, where it does no work", () => {
+    for (const summary of ["x\u200Dx", "x\u200Cx"]) {
+      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary })]), DOCS), "", JSON.stringify(summary));
+    }
   });
 
-  it("counts joiners in each field on its own: 20 in the summary and 20 in the fix are both listed", () => {
-    const twenty = `${"x\u200D".repeat(20)}x`;
+  // A family emoji sequence with N joiners: a man, then N more people each after a joiner.
+  const people = (joiners: number) => `\u{1F468}${"\u200D\u{1F469}".repeat(joiners)}`;
 
-    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: twenty, fix: twenty })]), DOCS), /R5/);
+  it("lists eight joiners in the issue and leaves out the finding that would bring them to nine", () => {
+    const eight = advisoryIssueBody(ledgerOf([advisory({ summary: people(4) }), advisory({ id: "R6", summary: people(4) })]), DOCS);
+    assert.match(eight, /R5[\s\S]*R6/);
+
+    const nine = advisoryIssueBody(ledgerOf([advisory({ summary: people(4) }), advisory({ id: "R6", summary: people(5) })]), DOCS);
+    assert.match(nine, /R5/);
+    assert.doesNotMatch(nine, /R6/);
+    assert.match(nine, /1 more open Advisory finding is in the local review record/);
+  });
+
+  it("lists a later finding after one that was left out, if it keeps the issue within the cap", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: people(8) }), advisory({ id: "R6", summary: people(1) }), advisory({ id: "R7", summary: "Plain." })]), DOCS);
+
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /R6/);
+    assert.match(body, /R7/, "R5's eight joiners leave none for R6, but R7 is plain text");
+  });
+
+  it("leaves out a finding with nine private-use code points, which draw as nothing, and lists one with eight", () => {
+    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: "\u{E000}".repeat(8) })]), DOCS), /R5/);
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: "\u{E000}".repeat(9) })]), DOCS), "");
+  });
+
+  it("leaves out the Braille blank and the Hangul fillers, which draw as blanks", () => {
+    for (const hidden of ["\u2800", "\u3164", "\uFFA0", "\u115F", "\u1160"]) {
+      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: `A${hidden}B` })]), DOCS), "", JSON.stringify(hidden));
+    }
   });
 
   it("leaves the whole body out when the branch the header quotes holds hidden text", () => {

@@ -869,11 +869,14 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only write under ${runRel}/, not ${path}`);
       // Base64, so the bytes git printed arrive as they are: a patch of a file that isn't UTF-8 would otherwise be rewritten in transit.
       // An empty file is made without stdin: a command waiting on an empty stdin could hold the build until its limit.
+      // The path is removed first: a symlink or hard link left there by an earlier step would otherwise be written through,
+      // aliasing two run files (two lenses' prompts) to one.
       const encoded = Buffer.from(content).toString("base64");
+      const clear = `rm -f -- ${shellWord(path)}`;
       const written =
         encoded === ""
-          ? await sandbox.exec(`mkdir -p ${shellWord(runRel)} && : > ${shellWord(path)}`)
-          : await sandbox.exec(`mkdir -p ${shellWord(runRel)} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
+          ? await sandbox.exec(`mkdir -p ${shellWord(runRel)} && ${clear} && : > ${shellWord(path)}`)
+          : await sandbox.exec(`mkdir -p ${shellWord(runRel)} && ${clear} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
       if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
     },
     runReviewer: async (_reviewer, prompt) => {

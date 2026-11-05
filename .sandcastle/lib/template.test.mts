@@ -476,4 +476,22 @@ describe("the docs on the reviewers as parallel subagents of one lead session", 
     assert.match(rules, /Agent,Read,Grep,Glob|Agent, Read, Grep and Glob/);
     assert.match(rules, /subagents?[^.]{0,120}Read, Grep and Glob only/i);
   });
+
+  it("the rule says the lead's Agent tool is an allowlist of the round's lens agents, not a bare Agent", () => {
+    assert.match(rules, /Agent\(lens-[^)]*\)/);
+    assert.match(rules, /leadTools/);
+    assert.match(rules, /restrictedClaudeCode/);
+    assert.doesNotMatch(rules, /holds `Agent,Read,Grep,Glob`/);
+  });
+
+  it("liveReviewHost's header, in the live build.mts and the Template's copy, says the lead's Agent tool is limited to the round's lens agents (leadTools)", () => {
+    for (const file of [
+      new URL("./build.mts", import.meta.url),
+      new URL(`../../${TEMPLATE_OWNED_DIR}/.sandcastle/lib/build.mts`, import.meta.url),
+    ]) {
+      const header = text(fileURLToPath(file)).split("export function liveReviewHost")[0] ?? "";
+      assert.match(header, /Agent` tool limited to the round's lens-<id> agents \(leadTools\)/, fileURLToPath(file));
+      assert.doesNotMatch(header, /The lead holds Agent, Read, Grep and Glob/, fileURLToPath(file));
+    }
+  });
 });

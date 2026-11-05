@@ -68,7 +68,6 @@ const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
   ".sandcastle/.markdownlint-cli2.jsonc",
-  ".sandcastle/check.sh",
   "scripts/gate.sh",
   "scripts/check-branch-name.sh",
   "scripts/check-git-hooks.sh",
@@ -99,7 +98,7 @@ describe("the files a re-Apply may write without a review", () => {
   });
 
   it("reviews the files whose content widens what the review, the judging roles or the build can do", () => {
-    for (const file of [".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", "global.json"]) {
+    for (const file of [".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", ".sandcastle/check.sh", "global.json"]) {
       assert.equal(REVIEWED_ON_REAPPLY.has(file), true, file);
     }
   });

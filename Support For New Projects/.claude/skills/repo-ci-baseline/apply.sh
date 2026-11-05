@@ -97,15 +97,23 @@ fi
 # IssueTracker and TicketManager did). The Owned script only type-checks and tests .sandcastle/, so replacing the gate with it would
 # pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it. This reads no TypeScript
 # (a parser written in sed was wrong in a new way every round): it keeps the copy when check.sh, as a name or at the end of any path,
-# appears on a line that mentions GATE_COMMAND or GATE_SCRIPT or in the three lines after one, in repo-config.mts or the older
-# config.mts. A formatter's wrapped value, a comment, a string or a glob can't hide it; a comment or another constant in that window is
-# a false match, which only adds a conflict to report (move the text out of the window). A value built from another constant is not followed.
+# appears on a line that mentions GATE_COMMAND or GATE_SCRIPT or in the ten lines after one, in repo-config.mts or the older
+# config.mts. A formatter's wrapped value, a comment, a string or a glob can't hide it, but a value that starts more than ten lines after
+# the name can; a comment or another constant in that window is a false match, which only adds a conflict to report (move the text out of
+# the window). A value built from another constant is not followed. grep runs with -a so a stray non-UTF-8 byte can't turn a line into a
+# "binary file matches" notice, and a config grep can't read stops Apply before it writes anything.
+gate_window_lines=10
 gate_check_kept=false
 if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" ]]; then
   for gate_config in "$target/.sandcastle/lib/repo-config.mts" "$target/.sandcastle/lib/config.mts"; do
     [[ -f "$gate_config" ]] || continue
-    gate_window="$(grep -h -A3 -E 'GATE_(COMMAND|SCRIPT)' "$gate_config" || true)"
-    if grep -qE '(^|[^[:alnum:]_.-])check\.sh([^[:alnum:]_.-]|$)' <<< "$gate_window"; then
+    gate_status=0
+    gate_window="$(grep -a -h -A"$gate_window_lines" -E 'GATE_(COMMAND|SCRIPT)' "$gate_config")" || gate_status=$?
+    if (( gate_status > 1 )); then
+      echo "apply.sh: can't read $gate_config, so it can't tell whether the config names .sandcastle/check.sh as the sandbox gate; fix it and Apply again" >&2
+      exit 1
+    fi
+    if grep -aqE '(^|[^[:alnum:]_.-])check\.sh([^[:alnum:]_.-]|$)' <<< "$gate_window"; then
       gate_check_kept=true
     fi
   done

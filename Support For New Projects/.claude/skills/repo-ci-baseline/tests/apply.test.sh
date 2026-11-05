@@ -325,6 +325,9 @@ check "security record: dry run lists the entry nowhere" '! grep -q "0001-an-ent
 check "security record: a re-Apply restores the README" 'grep -qx "# The security record" "$repo/.security/README.md" && ! grep -q "Our own note" "$repo/.security/README.md"'
 check "security record: a re-Apply leaves the entry alone" '[[ "$(cat "$repo/.security/0001-an-entry.md")" == "$(printf "# 0001: An entry\n\n- Status: fixed")" ]]'
 
+# Runs of newlines for the window cases (a command substitution would strip them).
+printf -v NL10 '%*s' 10 ''; NL10="${NL10// /$'\n'}"
+printf -v NL11 '%*s' 11 ''; NL11="${NL11// /$'\n'}"
 # .sandcastle/check.sh is Owned, but a repo whose GATE_COMMAND or GATE_SCRIPT names it uses it as its sandbox gate (the three older
 # repos did): Apply keeps that copy and says to rename it, since the Owned script would pass the gate without its lints and tests.
 printf '#!/usr/bin/env bash\necho owned\n' > "$skill/template/owned/.sandcastle/check.sh"
@@ -342,7 +345,8 @@ for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export cons
   $'/* see // here */ export const GATE_COMMAND = ".sandcastle/check.sh";' $'// a note\nexport const GATE_COMMAND = ".sandcastle/check.sh";' \
   $'// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_COMMAND = "x"; // formerly .sandcastle/check.sh' \
   $'export const GATE_COMMAND = "x";\nexport const CHECKS = [".sandcastle/check.sh"];\nexport const B = 1' \
-  $'export const GATE_COMMAND = "x";\n\n\nexport const CHECKS = [".sandcastle/check.sh"];'; do
+  $'export const GATE_COMMAND = "x";'"$NL10"$'export const CHECKS = [".sandcastle/check.sh"];' \
+  $'export const GATE_COMMAND = [\n  "pnpm lint",\n  "pnpm build",\n  "pnpm test",\n  "pnpm e2e",\n  ".sandcastle/check.sh",\n].join(" && ");'; do
   n=$((n + 1))
   repo="$work/gate check $n"
   new_repo "$repo"
@@ -362,7 +366,7 @@ for config in 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'expor
   'export const GATE_COMMAND = ".sandcastle/check.sh.bak";' 'export const GATE_COMMAND = ".sandcastle/my-check.sh";' \
   'export const GATE_COMMAND = ".sandcastle/check.shx";' 'export const GATE_COMMAND = ".sandcastle/check.sh-old";' 'export const GATE_COMMAND = ".sandcastle/check.sh_old";' \
   $'// .sandcastle/check.sh\nexport const GATE_COMMAND = "x";' 'export const NOTE = ".sandcastle/check.sh";' \
-  $'export const GATE_COMMAND = "x";\n\n\n\nexport const CHECKS = [".sandcastle/check.sh"];'; do
+  $'export const GATE_COMMAND = "x";'"$NL11"$'export const CHECKS = [".sandcastle/check.sh"];'; do
   n=$((n + 1))
   repo="$work/gate check other $n"
   new_repo "$repo"
@@ -399,6 +403,36 @@ commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
 out="$("$apply" "$repo")"
 check "gate check (no final newline): the repo's sandbox gate is kept" 'grep -q "sandbox gate" "$repo/.sandcastle/check.sh"'
+
+# A config with a byte that is not UTF-8 (a Latin-1 accent in a comment) must not hide the gate: grep would otherwise print a
+# "binary file matches" notice instead of the line in a UTF-8 locale.
+repo="$work/gate check latin1"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle/lib"
+printf 'export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];\nexport const GATE_COMMAND = "bash .sandcastle/check.sh"; // caf\xe9\n' > "$repo/.sandcastle/lib/repo-config.mts"
+printf '#!/usr/bin/env bash\necho sandbox gate\n' > "$repo/.sandcastle/check.sh"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$(LC_ALL=C.utf8 "$apply" "$repo")"
+check "gate check (Latin-1 byte): the repo's sandbox gate is kept" 'grep -q "sandbox gate" "$repo/.sandcastle/check.sh"'
+
+# A grep that fails (exit 2, as on an unreadable config) when scanning for the gate stops Apply before it writes anything: a stub
+# grep stands in, since Apply refuses a worktree git can't read before it gets that far.
+repo="$work/gate check grep error"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle/lib" "$work/grep-stub"
+printf 'export const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];\nexport const GATE_COMMAND = "x";\n' > "$repo/.sandcastle/lib/repo-config.mts"
+printf '#!/usr/bin/env bash\necho sandbox gate\n' > "$repo/.sandcastle/check.sh"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+real_grep="$(command -v grep)"
+printf '#!/usr/bin/env bash\nfor a in "$@"; do [[ "$a" == *GATE_* ]] && exit 2; done\nexec %s "$@"\n' "$real_grep" > "$work/grep-stub/grep"
+chmod +x "$work/grep-stub/grep"
+status=0
+out="$(PATH="$work/grep-stub:$PATH" "$apply" "$repo" 2>&1)" || status=$?
+check "gate check (grep error): Apply stops" '[[ $status -ne 0 ]]'
+check "gate check (grep error): it says which file it can't read" 'grep -q "can.t read .*repo-config.mts" <<< "$out"'
+check "gate check (grep error): the repo's check.sh is untouched" 'grep -q "sandbox gate" "$repo/.sandcastle/check.sh"'
 
 echo "apply.test.sh: $pass passed, $failed failed"
 [[ $failed -eq 0 ]]

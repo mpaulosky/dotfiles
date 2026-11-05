@@ -56,7 +56,23 @@ export const LEDGER_DENIED_TOOLS: readonly string[] = [
 // it gets, rules it is denied, and whether only the MCP servers named on the
 // command line may start, and whether Claude Code reads only the user's settings, not the branch's .claude/settings.json (whose hooks
 // would run shell commands, with the sandbox's environment, in a run that is meant to hold no shell).
-export type AgentRestrictions = { tools?: readonly string[]; denied?: readonly string[]; strictMcp?: boolean; userSettingsOnly?: boolean };
+export type AgentRestrictions = {
+  tools?: readonly string[];
+  denied?: readonly string[];
+  strictMcp?: boolean;
+  userSettingsOnly?: boolean;
+  // Subagents defined on the command line (`--agents`), by name.
+  agents?: Readonly<Record<string, SubagentDefinition>>;
+};
+
+// One subagent as `--agents` takes it.
+export type SubagentDefinition = { description: string; prompt: string; tools: readonly string[]; model: string };
+
+// The most bytes of `--agents` JSON one command may carry (one argv word is capped at 128 KiB on Linux).
+export const MAX_AGENTS_JSON_BYTES = 60_000;
+
+// The tools the lead of a review's subagents gets: the reviewers' own, and the one that starts a subagent.
+export const LEAD_TOOLS: readonly string[] = [];
 
 const PRINT_COMMAND_START = "claude --print ";
 

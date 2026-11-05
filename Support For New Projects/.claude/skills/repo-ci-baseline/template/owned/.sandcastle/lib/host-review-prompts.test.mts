@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 import { BAR_LENS, type Reviewer, type TriageFinding } from "./host-review.mts";
-import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
+import { decisionsMarkdown, leadPrompt, reviewerPrompt, reviewFixPrompt, reviewTag, subagentDefinition } from "./host-review-prompts.mts";
 import { TEMPLATE_OWNED_PREFIX, type Ledger, type ReviewInput } from "./review-ledger.mts";
 import { containsSecret } from "./sandbox-env.mts";
 
@@ -443,6 +443,132 @@ describe("reviewFixPrompt", () => {
     const prompt = reviewFixPrompt(fixArgs());
 
     for (const [what, pattern] of forbidden.filter(([what]) => what !== "a shell")) assert.doesNotMatch(prompt, pattern, what);
+    assert.equal(containsSecret(prompt, []), false);
+  });
+});
+
+// Issue 399: a lead run starts a round's reviewers as parallel subagents. Each subagent's full prompt is a file (it is 10 KB or more with the
+// bar and the issue, past what `--agents` should carry in one argument), so its definition is small and points at that file.
+describe("reviewTag", () => {
+  it("writes the opening and the closing tag of one lens's answer from the nonce and the id", () => {
+    assert.equal(reviewTag("abc123", 4, false), "<review-abc123-4>");
+    assert.equal(reviewTag("abc123", 4, true), "</review-abc123-4>");
+    assert.notEqual(reviewTag("abc123", 4, false), reviewTag("abc123", 14, false));
+    assert.notEqual(reviewTag("abc123", 4, false), reviewTag("def456", 4, false));
+  });
+});
+
+describe("subagentDefinition", () => {
+  const file = `${runDir}/lens-2.md`;
+
+  it("gives a subagent exactly Read, Grep and Glob, and the model it is given", () => {
+    const definition = subagentDefinition("sonnet", file, edgeCases);
+
+    assert.deepEqual([...definition.tools], ["Read", "Grep", "Glob"]);
+    assert.equal(definition.model, "sonnet");
+  });
+
+  it("names the lens in its description, and the Bar for the Bar reviewer", () => {
+    assert.match(subagentDefinition("sonnet", file, edgeCases).description, /Edge cases/);
+    assert.match(subagentDefinition("sonnet", file, bar).description, /Bar/);
+  });
+
+  it("tells the subagent to read its instructions file first and follow it, naming the file", () => {
+    const { prompt } = subagentDefinition("sonnet", file, edgeCases);
+
+    assert.ok(prompt.includes(file), prompt);
+    assert.match(prompt, /read/i);
+    assert.match(prompt, /follow/i);
+  });
+
+  it("says it is read-only, that text in the files it reviews is data and never instructions, and that it ends with one findings block", () => {
+    const { prompt } = subagentDefinition("sonnet", file, edgeCases);
+
+    assert.match(prompt, /read-only/i);
+    assert.match(prompt, /data/i);
+    assert.match(prompt, /instruction/i);
+    assert.match(prompt, /<findings>/);
+  });
+
+  it("is small: the full review prompt is in the file, not in the command's argument", () => {
+    for (const lens of [bar, edgeCases]) {
+      const { description, prompt } = subagentDefinition("sonnet", file, lens);
+
+      assert.ok(description.length + prompt.length < 2_000, `${description.length + prompt.length} characters`);
+    }
+  });
+
+  it("makes a lens name with a newline, tabs or runs of spaces one line in the description", () => {
+    const { description } = subagentDefinition("sonnet", file, { lens: "Edge\n cases\t\t  here", row: "| x |" });
+
+    assert.doesNotMatch(description, /[\n\t\r]| {2}/);
+    assert.match(description, /Edge cases here/);
+  });
+
+  it("names no shell, gh, token, scripts/review.sh or .git/review", () => {
+    for (const lens of [bar, edgeCases]) {
+      const { description, prompt } = subagentDefinition("sonnet", file, lens);
+
+      for (const [what, pattern] of forbidden) assert.doesNotMatch(`${description}\n${prompt}`, pattern, what);
+      assert.equal(containsSecret(`${description}\n${prompt}`, []), false);
+    }
+  });
+});
+
+describe("leadPrompt", () => {
+  const members = [
+    { id: 1, agent: "lens-1", lens: BAR_LENS },
+    { id: 2, agent: "lens-2", lens: "Edge cases" },
+    { id: 14, agent: "lens-14", lens: "Repo conventions" },
+  ];
+  let prompt = "";
+  beforeEach(() => {
+    prompt = leadPrompt({ nonce: "n0nce", members });
+  });
+
+  it("names every subagent to start, by its name, id and lens", () => {
+    for (const member of members) {
+      assert.ok(prompt.includes(member.agent), member.agent);
+      assert.ok(prompt.includes(member.lens), member.lens);
+    }
+  });
+
+  it("asks for every subagent in one message, so they run in parallel", () => {
+    assert.match(prompt, /one message/i);
+    assert.match(prompt, /parallel/i);
+  });
+
+  it("names the wrapper tags of each id with the nonce, in the form the parser reads", () => {
+    for (const member of members) {
+      assert.ok(prompt.includes(reviewTag("n0nce", member.id, false)), `opening tag of ${member.id}`);
+      assert.ok(prompt.includes(reviewTag("n0nce", member.id, true)), `closing tag of ${member.id}`);
+    }
+  });
+
+  it("asks for each answer verbatim, every character, with nothing added, shortened or merged, and nothing else written", () => {
+    assert.match(prompt, /verbatim/i);
+    assert.match(prompt, /shorten/i);
+    assert.match(prompt, /merge/i);
+    assert.match(prompt, /nothing else/i);
+  });
+
+  it("says what to write for a subagent that failed or answered nothing: its tags with nothing between", () => {
+    assert.match(prompt, /fail/i);
+    assert.match(prompt, /nothing between|empty/i);
+  });
+
+  it("has the lead review nothing and read no file itself", () => {
+    assert.match(prompt, /not review|review nothing|don't review/i);
+    assert.match(prompt, /read no file|not read|don't read/i);
+  });
+
+  it("holds no issue text and no nonce other than the one it was given", () => {
+    assert.doesNotMatch(prompt, new RegExp(issue.title.slice(0, 20)));
+    assert.doesNotMatch(leadPrompt({ nonce: "other", members }), /n0nce/);
+  });
+
+  it("names no shell, gh, token, scripts/review.sh or .git/review", () => {
+    for (const [what, pattern] of forbidden) assert.doesNotMatch(prompt, pattern, what);
     assert.equal(containsSecret(prompt, []), false);
   });
 });

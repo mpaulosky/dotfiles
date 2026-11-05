@@ -18,6 +18,7 @@ import {
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
+  type ReviewerMode,
 } from "./config.mts";
 import { CHECK_PATHS, copyToWorktree, hooks } from "./repo-config.mts";
 import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
@@ -527,6 +528,8 @@ export type LocalReviewArgs = {
   // How long the host waits for one reviewer or backend run before it gives up on it, in milliseconds; for tests. The default is the role's
   // timeoutMinutes plus ROLE_RUN_GRACE_MINUTES (lib/agents.mts#roleBackstopMs).
   backstopMs?: number;
+  // How a round's reviewers start; SANDCASTLE_REVIEWERS (lib/config.mts#reviewerMode) when absent. For tests.
+  reviewerMode?: ReviewerMode;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no

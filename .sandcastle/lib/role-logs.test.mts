@@ -260,6 +260,12 @@ describe("copyReviewerLogs", () => {
     assert.deepEqual(written, { "logs/report/reviewer-1.log": "aborted\n", "logs/report/index.txt": "reviewer-1.log: a build this run did not start\n" });
   });
 
+  it("never copies the review lead's log (issue 399), which lists the subagents' answers", () => {
+    const { fs, written } = fakeFs({ "a-pre-push-review-lead.log": "aborted", "b-reviewer.log": "aborted" });
+    assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);
+    assert.deepEqual(Object.keys(written), ["logs/report/reviewer-1.log", "logs/report/index.txt"]);
+  });
+
   it("never copies the pre-push review's log", () => {
     const { fs, written } = fakeFs({ "a-pre-push-reviewer.log": "aborted", "b-reviewer.log": "aborted" });
     assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);

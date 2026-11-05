@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type * as sandcastle from "@ai-hero/sandcastle";
@@ -6,7 +7,9 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { AgentProvider } from "@ai-hero/sandcastle";
 import {
   isRoleTimeout,
+  LEAD_TOOLS,
   LEDGER_DENIED_TOOLS,
+  MAX_AGENTS_JSON_BYTES,
   restrictedClaudeCode,
   REVIEWER_TOOLS,
   roleAgent,
@@ -18,6 +21,7 @@ import {
   runRoleInSandbox,
   runWithinLimits,
   withSharedRules,
+  type SubagentDefinition,
 } from "./agents.mts";
 import { FIXED_ROLE_AGENTS, ROLE_RUN_GRACE_MINUTES } from "./config.mts";
 import { StalledStepError, UncountedStopError } from "./errors.mts";
@@ -399,6 +403,136 @@ describe("restrictedClaudeCode", () => {
       assert.ok(LEDGER_DENIED_TOOLS.includes(`${tool}(//**/.git/review/**)`), `${tool} of its files`);
     }
     assert.ok(LEDGER_DENIED_TOOLS.includes("Bash(scripts/review.sh:*)"));
+  });
+});
+
+// Issue 399: one `claude -p` lead starts a round's reviewers as parallel subagents, defined on the command line with `--agents`.
+describe("the pre-push review lead role", () => {
+  it("is read from FIXED_ROLE_AGENTS, and its run is cut at that role's timeout", () => {
+    const requested: number[] = [];
+    const options = roleOptions("pre-push-review-lead", (ms) => {
+      requested.push(ms);
+      return new AbortController().signal;
+    });
+
+    assert.deepEqual(roleAgent("pre-push-review-lead"), FIXED_ROLE_AGENTS["pre-push-review-lead"]);
+    assert.equal(options.name, "pre-push-review-lead");
+    assert.equal(options.maxIterations, 1);
+    assert.deepEqual(requested, [FIXED_ROLE_AGENTS["pre-push-review-lead"].timeoutMinutes * 60_000]);
+  });
+
+  it("gets Agent, Read, Grep and Glob, and no shell, no network and no write tool", () => {
+    assert.deepEqual([...LEAD_TOOLS].sort(), ["Agent", ...REVIEWER_TOOLS].sort());
+    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit"]) assert.ok(!LEAD_TOOLS.includes(tool), tool);
+  });
+});
+
+describe("restrictedClaudeCode's --agents", () => {
+  const definition = (overrides: Partial<SubagentDefinition> = {}): SubagentDefinition => ({
+    description: "Reviews the branch through the Edge cases lens",
+    prompt: "Read the file and follow it.",
+    tools: ["Read", "Grep", "Glob"],
+    model: "sonnet",
+    ...overrides,
+  });
+  const lead = { tools: LEAD_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true, userSettingsOnly: true };
+  const commandOf = (restrictions: Parameters<typeof restrictedClaudeCode>[2]) =>
+    restrictedClaudeCode("sonnet", "high", restrictions).buildPrintCommand({ prompt: "the prompt", dangerouslySkipPermissions: true }).command;
+  // The words the shell hands claude, one per line, after `claude --print`: read back through a real shell, so quoting is tested, not assumed.
+  // JSON.stringify never writes a raw newline, so the --agents word is one line.
+  const wordsOf = (command: string): string[] => {
+    const shell = spawnSync("sh", ["-c", `printf '%s\n' ${command.slice("claude --print ".length)}`], { encoding: "utf8" });
+    assert.equal(shell.status, 0, shell.stderr);
+    return shell.stdout.split("\n");
+  };
+  const agentsJson = (command: string): unknown => {
+    const words = wordsOf(command);
+    const at = words.indexOf("--agents");
+    assert.ok(at >= 0, `no --agents in ${command}`);
+    return JSON.parse(words[at + 1]!);
+  };
+
+  it("hands claude the definitions as one JSON word, by name", () => {
+    const agents = { "lens-1": definition(), "lens-2": definition({ description: "Reviews through the Tests lens" }) };
+
+    assert.deepEqual(agentsJson(commandOf({ ...lead, agents })), agents);
+  });
+
+  it("keeps a single quote, a double quote, a dollar sign and a backtick in a definition intact through the shell", () => {
+    const agents = { "lens-1": definition({ description: `it's the "Edge cases" lens $HOME \`id\``, prompt: `Don't $(touch /tmp/x); read 'the file'` }) };
+
+    assert.deepEqual(agentsJson(commandOf({ ...lead, agents })), agents);
+  });
+
+  it("still emits --tools, --strict-mcp-config, --setting-sources user and the deny list beside --agents", () => {
+    const command = commandOf({ ...lead, agents: { "lens-1": definition() } });
+    const words = wordsOf(command);
+
+    assert.equal(words[words.indexOf("--tools") + 1], LEAD_TOOLS.join(","));
+    assert.ok(words.includes("--strict-mcp-config"));
+    assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
+    assert.ok(words.includes("--disallowedTools"));
+    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
+    assert.equal(words.filter((word) => word === "--agents").length, 1);
+  });
+
+  it("keeps the prompt on stdin and the flags before -p -", () => {
+    const result = restrictedClaudeCode("sonnet", "high", { ...lead, agents: { "lens-1": definition() } }).buildPrintCommand({
+      prompt: "the prompt",
+      dangerouslySkipPermissions: true,
+    });
+
+    assert.equal(result.stdin, "the prompt");
+    assert.match(result.command, /^claude --print /);
+    assert.ok(result.command.endsWith(" -p -"), result.command);
+  });
+
+  it("adds no --agents when none are given", () => {
+    assert.doesNotMatch(commandOf(lead), /--agents/);
+    assert.doesNotMatch(commandOf({ tools: REVIEWER_TOOLS }), /--agents/);
+  });
+
+  it("applies --agents even when it is the only restriction", () => {
+    assert.ok(wordsOf(commandOf({ agents: { "lens-1": definition() } })).includes("--agents"));
+  });
+
+  it("refuses, where the provider is built, a name that isn't lowercase ASCII letters, digits and hyphens starting with a letter", () => {
+    for (const name of ["", "Lens-1", "1lens", "-lens", "lens_1", "lens 1", "lens-é", "lens;touch", "lens\n1", "../lens"]) {
+      assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, agents: { [name]: definition() } }), /agent|name/i, JSON.stringify(name));
+    }
+    for (const name of ["a", "lens-1", "lens-14", "a1-b2"]) {
+      assert.doesNotThrow(() => restrictedClaudeCode("sonnet", "high", { ...lead, agents: { [name]: definition() } }), name);
+    }
+  });
+
+  it("refuses an empty set of definitions, which is not the same as giving none", () => {
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, agents: {} }), /agent/i);
+  });
+
+  it("refuses JSON over MAX_AGENTS_JSON_BYTES and accepts it at n-1 and n bytes, so it fails at build time and not at exec", () => {
+    const sized = (bytes: number) => {
+      const empty = JSON.stringify({ "lens-1": definition({ description: "" }) });
+      const agents = { "lens-1": definition({ description: "d".repeat(bytes - Buffer.byteLength(empty)) }) };
+      assert.equal(Buffer.byteLength(JSON.stringify(agents)), bytes);
+      return agents;
+    };
+    const build = (agents: Record<string, SubagentDefinition>) => () => restrictedClaudeCode("sonnet", "high", { ...lead, agents });
+
+    assert.equal(MAX_AGENTS_JSON_BYTES, 60_000);
+    assert.doesNotThrow(build(sized(MAX_AGENTS_JSON_BYTES - 1)));
+    assert.doesNotThrow(build(sized(MAX_AGENTS_JSON_BYTES)));
+    assert.throws(build(sized(MAX_AGENTS_JSON_BYTES + 1)), /byte|too (large|long)|limit/i);
+  });
+
+  it("counts the cap in bytes, not characters: multi-byte text over it is refused", () => {
+    const empty = JSON.stringify({ "lens-1": definition({ description: "" }) });
+    // Each é is one character and two bytes in UTF-8; JSON.stringify leaves it as it is.
+    const characters = Math.floor((MAX_AGENTS_JSON_BYTES - Buffer.byteLength(empty)) / 2) + 1;
+    const agents = { "lens-1": definition({ description: "é".repeat(characters) }) };
+
+    assert.ok(JSON.stringify(agents).length <= MAX_AGENTS_JSON_BYTES);
+    assert.ok(Buffer.byteLength(JSON.stringify(agents)) > MAX_AGENTS_JSON_BYTES);
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, agents }), /byte|too (large|long)|limit/i);
   });
 });
 

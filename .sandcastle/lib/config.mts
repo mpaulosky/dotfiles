@@ -32,7 +32,7 @@ export type AnyRole = Role | OptInRole | FixedRole;
 
 // The role that runs the pre-push review's reviewers on the host (lib/host-review.mts). The skill fixes its model and
 // effort, so it is not in ROLES: a repo's ROLE_AGENTS names none.
-export type FixedRole = "pre-push-reviewer";
+export type FixedRole = "pre-push-reviewer" | "pre-push-review-lead";
 
 // The agent and budget lib/repo-config.mts#ROLE_AGENTS gives one role.
 export type RoleAgent = {
@@ -275,7 +275,22 @@ export function describeQueueScope(scope: QueueScope): string {
 // The agent and budget of each FixedRole.
 export const FIXED_ROLE_AGENTS: Record<FixedRole, RoleAgent> = {
   "pre-push-reviewer": { model: "sonnet", effort: "high", maxIterations: 1, timeoutMinutes: 20 },
+  // Not implemented yet: the lead's agent and budget (issue 399).
+  get "pre-push-review-lead"(): RoleAgent {
+    throw new Error("Not implemented");
+  },
 };
+
+// How many subagents Claude Code runs at once.
+export const MAX_CONCURRENT_SUBAGENTS = 20;
+
+// How a round's reviewers are started: one after another, or as parallel subagents of one lead run.
+export type ReviewerMode = "sequential" | "subagents";
+
+// SANDCASTLE_REVIEWERS from `env` as the reviewer mode.
+export function reviewerMode(_env: Record<string, string | undefined> = process.env): ReviewerMode {
+  throw new Error("Not implemented");
+}
 
 // After this many review rounds that fixed something, one more round only reviews.
 export const REVIEW_FIX_ROUNDS = 3;

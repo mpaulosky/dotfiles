@@ -5,6 +5,7 @@
 
 import { textBlock } from "./checkpoint.mts";
 import { isSecurity, TEMPLATE_OWNED_PREFIX, type Ledger, type ReviewInput } from "./review-ledger.mts";
+import type { SubagentDefinition } from "./agents.mts";
 import type { Reviewer, TriageFinding } from "./host-review.mts";
 
 type IssueText = { number: number; title: string; body: string };
@@ -204,4 +205,19 @@ export function reviewFixPrompt({
     "",
     "Then output <promise>COMPLETE</promise>.",
   ].join("\n");
+}
+
+// The tag that opens or closes one lens's answer in the lead's output.
+export function reviewTag(_nonce: string, _id: number, _closing: boolean): string {
+  throw new Error("Not implemented");
+}
+
+// The definition of the subagent that reviews through one lens, whose full instructions are in `file`.
+export function subagentDefinition(_model: string, _file: string, _lens: Reviewer): SubagentDefinition {
+  throw new Error("Not implemented");
+}
+
+// The lead's prompt: start the members as parallel subagents and return each one's answer verbatim between its tags.
+export function leadPrompt(_args: { nonce: string; members: { id: number; agent: string; lens: string }[] }): string {
+  throw new Error("Not implemented");
 }

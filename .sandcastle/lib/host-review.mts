@@ -330,6 +330,17 @@ export function applyOutcomes(
 // The skill files the host reads from the main checkout, never the worktree: the worktree is branch-controlled.
 export type SkillFiles = { lenses: string; bar: string; severities: string; agentBody: string; repoLenses?: string };
 
+// One reviewer of a team: its 1-based id in the round, the subagent's name, the absolute path of its prompt file and its lens.
+export type TeamMember = { id: number; agent: string; file: string; reviewer: Reviewer };
+
+// What each requested id of a lead's answer came to: its findings, or why they were refused.
+export type TeamAnswer = Map<number, { findings: ReviewerFinding[] } | { error: ReviewerAnswerError }>;
+
+// Reads the lead's output into each requested id's findings.
+export function parseTeamAnswer(_stdout: string, _nonce: string, _ids: readonly number[]): TeamAnswer {
+  throw new Error("Not implemented");
+}
+
 // What the review needs from outside; tests pass stubs.
 export type HostReviewHost = {
   readSkillFiles(): SkillFiles;
@@ -342,6 +353,10 @@ export type HostReviewHost = {
   // Removes a file under the run's folder. Round 1 has no fixes, and an earlier build of the same branch may have left a fixes.patch there.
   removeRunFile(path: string): Promise<void>;
   runReviewer(reviewer: Reviewer, prompt: string): Promise<string>;
+  // Runs a round's reviewers as parallel subagents of one lead run and returns the lead's output. When present, the round uses it, not runReviewer.
+  runReviewerTeam?(members: TeamMember[], prompt: string): Promise<string>;
+  // A fresh nonce for each lead run's wrapper tags; random when absent. For tests.
+  nonce?: () => string;
   runFixer(prompt: string): Promise<void>;
   readOutcomes(): Promise<string | undefined>;
   head(): Promise<string | undefined>;

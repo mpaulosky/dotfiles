@@ -51,7 +51,8 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { LEAD_TOOLS, LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { FIXED_ROLE_AGENTS } from "./config.mts";
 import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
@@ -4521,6 +4522,167 @@ describe("liveReviewHost", () => {
       assert.match(command, /--strict-mcp-config/);
       assert.match(command, /--setting-sources '?user'?(?= |$)/);
       assert.match(command, /--disallowedTools/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  // Issue 399: in the subagents mode one lead run starts a round's reviewers as parallel subagents; in the sequential mode nothing changes.
+  const members = (...lenses: string[]) =>
+    lenses.map((lens, index) => ({
+      id: index + 1,
+      agent: `lens-${index + 1}`,
+      file: `/home/agent/workspace/.sandcastle/work/387/review/lens-${index + 1}.md`,
+      reviewer: { lens, row: lens === "Bar" ? "" : `| ${lens} | Any code | Ask. |` },
+    }));
+  const wordsOf = (command: string): string[] => {
+    const shell = spawnSync("sh", ["-c", `printf '%s\n' ${command.slice("claude --print ".length)}`], { encoding: "utf8" });
+    assert.equal(shell.status, 0, shell.stderr);
+    return shell.stdout.split("\n");
+  };
+
+  it("has no runReviewerTeam in the sequential mode, and starts the pre-push-reviewer as before", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost({ ...args, reviewerMode: "sequential" }, dir);
+
+      await live.runReviewer({ lens: "Bar", row: "" }, "review");
+
+      assert.equal(live.runReviewerTeam, undefined);
+      assert.deepEqual(runs.map((found) => found.name), ["pre-push-reviewer"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("has a runReviewerTeam in the subagents mode, which the host review then uses instead of runReviewer", () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      assert.equal(typeof liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam, "function");
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("starts the pre-push-review-lead once for the whole team, with the idle timeout set to the role's timeout, and returns the lead's output", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const stdout = await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar", "Edge cases", "Tests"), "the lead's prompt");
+
+      assert.equal(stdout, "<findings>[]</findings>");
+      assert.deepEqual(runs.map((found) => found.name), ["pre-push-review-lead"]);
+      assert.equal(runs[0]!.prompt, "the lead's prompt");
+      // Sandcastle's default idle timeout is ten minutes of silence, and a lead waiting on its subagents may print nothing for longer.
+      assert.equal(runs[0]!.idleTimeoutSeconds, FIXED_ROLE_AGENTS["pre-push-review-lead"].timeoutMinutes * 60);
+      assert.equal(runs[0]!.idleTimeoutSeconds, 1800);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("gives the lead Agent, Read, Grep and Glob, no shell, the ledger deny list, strict MCP and the user's settings only", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar", "Edge cases"), "lead");
+
+      const command = commandOf(runs[0]!);
+      const words = wordsOf(command);
+      assert.equal(words[words.indexOf("--tools") + 1], LEAD_TOOLS.join(","));
+      assert.ok(words[words.indexOf("--tools") + 1]!.split(",").includes("Agent"));
+      assert.doesNotMatch(words[words.indexOf("--tools") + 1]!, /Bash|Edit|Write/);
+      assert.ok(words.includes("--strict-mcp-config"));
+      assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
+      assert.ok(words.includes("--disallowedTools"));
+      for (const rule of LEDGER_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("defines one subagent per member with --agents: named lens-<id>, Read, Grep and Glob only, pointing at the member's prompt file", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const team = members("Bar", "Edge cases", "Tests");
+
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(team, "lead");
+
+      const words = wordsOf(commandOf(runs[0]!));
+      const defined = JSON.parse(words[words.indexOf("--agents") + 1]!) as Record<string, { description: string; prompt: string; tools: string[]; model: string }>;
+      assert.deepEqual(Object.keys(defined).sort(), ["lens-1", "lens-2", "lens-3"]);
+      for (const member of team) {
+        const one = defined[member.agent]!;
+        assert.deepEqual(one.tools, ["Read", "Grep", "Glob"]);
+        assert.equal(one.model, FIXED_ROLE_AGENTS["pre-push-reviewer"].model);
+        assert.ok(one.prompt.includes(member.file), member.agent);
+        assert.ok(one.description.includes(member.reviewer.lens), member.agent);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("runs the team's lead through none of review.sh or .git/review but the deny rules", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar"), "lead");
+
+      const withoutDenyRules = LEDGER_DENIED_TOOLS.reduce((text, rule) => text.split(rule).join(""), commandOf(runs[0]!));
+      assert.doesNotMatch(withoutDenyRules, /review\.sh|\.git\/review/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("refuses to start a lead for no members rather than run a lead with nothing to start", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      await assert.rejects(() => liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!([], "lead"));
+
+      assert.equal(runs.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("rejects with an UncountedStopError when the lead hits Claude's usage limit, and gives the build's limits the stop", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      const sandbox = {
+        ...(args.sandbox as object),
+        run: async () => {
+          throw new Error("claude-code exited with code 1:\nClaude AI usage limit reached|1760000000");
+        },
+      } as unknown as Sandbox;
+
+      await assert.rejects(
+        () => liveReviewHost({ ...args, sandbox, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar"), "lead"),
+        (error: unknown) => error instanceof UncountedStopError && /pre-push-review-lead/.test(error.message),
+      );
+      assert.throws(() => args.limits.throwIfStopped());
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("gives up on a lead that never answers, stalling the sandbox, like a reviewer", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      const sandbox = { ...(args.sandbox as object), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+
+      await assert.rejects(
+        () => liveReviewHost({ ...args, sandbox, backstopMs: 20, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar"), "lead"),
+        (error: unknown) => error instanceof StalledStepError,
+      );
+      assert.match(stalledStepOf(sandbox) ?? "", /pre-push-review-lead/);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }

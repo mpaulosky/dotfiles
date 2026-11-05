@@ -426,3 +426,54 @@ describe("the docs on the host-side review's PR state, record and follow-up issu
     assert.match(docs["references/sandcastle.md"], /draft[^.]{0,200}(Critical or Warning|Warning or Critical)|(Critical or Warning|Warning or Critical)[^.]{0,200}draft/i);
   });
 });
+
+// A round's reviewers can run as parallel subagents of one lead session, behind a switch that stays on the sequential path until a run in a real sandbox
+// has settled the questions the unit tests can't see (mpaulosky/dotfiles#399). The docs must say how to switch, who the lead is and how its answer is read.
+describe("the docs on the reviewers as parallel subagents of one lead session", () => {
+  const text = (path: string) => readFileSync(path, "utf8").replace(/\s+/g, " ");
+  const reference = text(join(skill, "references/pre-push-review.md"));
+  const section = (reference.split("## Sandcastle runs the review on the host")[1] ?? "").split(/ ## /)[0] ?? "";
+  const rules = text(fileURLToPath(new URL("../../.claude/rules/sandcastle.md", import.meta.url)));
+
+  it("the host-side section is found", () => {
+    assert.notEqual(section, "", "the section 'Sandcastle runs the review on the host' is not in references/pre-push-review.md");
+  });
+
+  it("the host-side section names both modes and the switch, and says the default stays sequential until a real-sandbox run", () => {
+    assert.match(section, /`SANDCASTLE_REVIEWERS`/);
+    assert.match(section, /`sequential`/);
+    assert.match(section, /`subagents`/);
+    assert.match(section, /default[^.]{0,80}sequential|sequential[^.]{0,80}default/i);
+    assert.match(section, /real sandbox/i);
+  });
+
+  it("the host-side section names the lead role and says the host reads each lens's block itself and fails a missing lens", () => {
+    assert.match(section, /`pre-push-review-lead`/);
+    assert.match(section, /nonce/i);
+    assert.match(section, /each lens|per lens|every lens/i);
+    assert.match(section, /missing|no block/i);
+  });
+
+  it("the host-side section says what the lead may do: Agent, Read, Grep and Glob, no shell", () => {
+    assert.match(section, /`Agent`/);
+    assert.match(section, /Read, Grep and Glob/);
+  });
+
+  it("the host-side section records an answer for each of the issue's four open questions", () => {
+    assert.match(section, /--tools/);
+    assert.match(section, /--setting-sources/);
+    assert.match(section, /--agents/);
+    assert.match(section, /timeout/i);
+    assert.match(section, /verbatim/i);
+  });
+
+  it("the host-side section says what the lead can't be caught doing: shortening or emptying a block it relays", () => {
+    assert.match(section, /(shorten|empt)[^.]{0,120}(accepted|can't be (told|detected|caught)|cannot be)/i);
+  });
+
+  it("the rule's Host safety section says the lead holds Agent, Read, Grep and Glob and the subagents Read, Grep and Glob only", () => {
+    assert.match(rules, /pre-push-review-lead/);
+    assert.match(rules, /Agent,Read,Grep,Glob|Agent, Read, Grep and Glob/);
+    assert.match(rules, /subagents?[^.]{0,120}Read, Grep and Glob only/i);
+  });
+});

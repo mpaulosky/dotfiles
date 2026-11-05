@@ -320,13 +320,13 @@ function bodyForHeldPullRequest(current: string, next: string, heldNote: string)
   const hostWrote = current.includes(PR_MARKER) && !visibleLetters(current).includes("reviewnotes");
   if (hostWrote) return same(current) === same(next) ? undefined : next;
   if (heldNote === "" || same(current).includes(same(heldNote))) return undefined;
-  const kept = `${current.replace(/\s+$/, "")}\n\n${heldNote}`;
+  const kept = `${current.trimEnd()}\n\n${heldNote}`;
   // GitHub refuses a body past this length, and the edit would then fail after the PR is a draft; the note is only a convenience, so leave it out.
-  return kept.length > PR_BODY_LIMIT ? undefined : kept;
+  return kept.length > GITHUB_BODY_MAX ? undefined : kept;
 }
 
-// The longest PR body GitHub accepts, in characters.
-const PR_BODY_LIMIT = 65_536;
+// The longest PR body GitHub accepts, in characters. Named apart from build.mts#PR_BODY_LIMIT (the architect's body) and PR_BODY_TOTAL_LIMIT (what the host builds).
+const GITHUB_BODY_MAX = 65_536;
 
 // Turns this repository's open, ready PR for `branch` into a draft, and does nothing when there is none or it is one already. The build calls it before it
 // pushes, so a branch the review holds is never briefly a ready PR with new commits, which PR Auto-Merge could merge. A failure throws, so the caller stops

@@ -83,10 +83,14 @@ export { UncountedStopError };
 // work already there.
 //
 // A GitHub server error (a 5xx or "Internal Server Error" in git's or gh's
-// output) is transient, so the push and the PR creation are each tried up to
+// output) is transient, so the hold of an existing PR, the push and the PR creation are each tried up to
 // PUBLISH_RETRY_ATTEMPTS times in all, with backoff, before giving up. Any
 // other failure, such as a push that doesn't fast-forward, isn't retried: a
 // person needs to look at it regardless.
+//
+// `reviewNote` is the host-side review's note for the PR body, and `holdAsDraft` is true while a blocking finding is open: the PR is then created as a
+// draft with DRAFT_NOTE in its body. `holdExisting` is what first turns a PR already open for the branch into a draft: it runs before the push, and a
+// failure throws HoldFailedError with nothing pushed.
 //
 // `docsFailed` is true when the planner picked the scribe for this issue and
 // its run failed. Unlike an architect, tester, backend or UI failure, that
@@ -122,7 +126,13 @@ export async function publish(
 ): Promise<string> {
   // A PR already open for the branch (an earlier build's, opened ready) is made a draft before the new commits reach it, so PR Auto-Merge never sees
   // a ready PR with commits the review hasn't cleared. A failure stops here, before the push.
-  if (holdAsDraft) await retryOnServerError(() => holdExisting(branch), wait);
+  if (holdAsDraft) {
+    try {
+      await retryOnServerError(() => holdExisting(branch), wait);
+    } catch (error) {
+      throw new HoldFailedError(branch, error);
+    }
+  }
   await retryOnServerError(() => push(branch, commit), wait);
   const reviewFailedNote = "⚠️ The review step failed, so no agent has reviewed this PR.";
   let description: string;
@@ -158,6 +168,15 @@ export async function publish(
   return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body, holdAsDraft), wait);
 }
 
+// Thrown by publish when it could not turn the branch's open PR into a draft, so it pushed nothing. buildIssue tells a person so: the generic
+// "pushing failed" comment would send them to push the branch's commits onto a PR that is still ready.
+export class HoldFailedError extends Error {
+  constructor(branch: string, cause: unknown) {
+    super(`holding the open pull request for ${branch} as a draft failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "HoldFailedError";
+  }
+}
+
 // publish's live way to open the PR: openPullRequest with DRAFT_NOTE as the note to add when a held PR's body is a person's and is kept. It is a named function so a
 // test can pin that the note is passed: without it, a rerun that holds a PR with edited Review notes would make the PR a draft with nothing in the body saying why.
 export function openHeldPullRequest(
@@ -171,9 +190,9 @@ export function openHeldPullRequest(
   return openPullRequest(branch, title, body, run, repo, draft, DRAFT_NOTE);
 }
 
-// The PR body's reason for a draft: open Critical or Warning findings the host's review left. It names the two steps only a person takes.
+// The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left. It names the two steps only a person takes.
 export const DRAFT_NOTE =
-  "🚧 This PR is a draft because the local review left Critical or Warning findings open. A person decides each one: fix it, or accept it " +
+  "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open. A person decides each one: fix it, or accept it " +
   "with `scripts/review.sh accept <id> <reason>`. Once none is open, mark the PR ready with `gh pr ready`.";
 
 // Whether a git or gh failure is GitHub's own server error, which a later
@@ -1702,6 +1721,21 @@ async function buildMarkedIssue(
         };
       }
       const fence = "`".repeat(Math.max(3, ...[...detail.matchAll(/`+/g)].map((match) => match[0].length + 1)));
+      if (error instanceof HoldFailedError) {
+        host.commentOnIssue(
+          issue.number,
+          `Sandcastle couldn't publish \`${branch}\`: the review left findings open, so its open pull request has to be a draft, and turning it into one ` +
+            "failed. Nothing was pushed, and that pull request may still be ready. A person needs to look at it: make it a draft " +
+            `with \`gh pr ready --undo\` before pushing anything to \`${branch}\`, so PR Auto-Merge can't merge it.\n\n${fence}text\n${detail}\n${fence}`,
+        );
+        return {
+          commits,
+          prUrl: undefined,
+          publishFailed: true,
+          outcome: "not published",
+          detail: "turning its open pull request into a draft failed, so nothing was pushed",
+        };
+      }
       host.commentOnIssue(
         issue.number,
         `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening its pull request ` +

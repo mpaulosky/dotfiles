@@ -2395,6 +2395,37 @@ describe("advisoryIssueBody", () => {
   const token = `${"gh"}p_${"A".repeat(36)}`;
   const clean = (line: string) => !line.includes("ghp_");
 
+  // Text a reader can't see: a bidirectional override, a zero-width space, a Unicode tag character, a control character.
+  for (const [name, hidden] of [
+    ["a bidirectional override", "\u202E"],
+    ["a bidirectional isolate", "\u2066"],
+    ["a zero-width space", "\u200B"],
+    ["a zero-width joiner", "\u200D"],
+    ["a Unicode tag character", "\u{E0041}"],
+    ["a control character", "\u0007"],
+  ] as const) {
+    it(`leaves out a finding whose summary holds ${name}, and counts it as left out`, () => {
+      const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", summary: `A stale${hidden} sentence.` })]), DOCS);
+
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6/);
+      assert.ok(!body.includes(hidden), "the hidden character reached the issue");
+      assert.match(body, /1 more open Advisory finding is in the local review record/);
+    });
+  }
+
+  it("leaves out a finding whose fix holds hidden text", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ fix: "Reword\u200B it." })]), DOCS);
+
+    assert.equal(body, "");
+  });
+
+  it("still lists a finding with ordinary non-ASCII letters and an emoji", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "Café naïve 日本語 ✅." })]), DOCS);
+
+    assert.match(body, /Café naïve 日本語 ✅/);
+  });
+
   it("is empty when no Advisory finding is open", () => {
     assert.equal(advisoryIssueBody(ledgerOf([advisory({ status: "fixed", reason: "Reworded." })]), DOCS), "");
   });

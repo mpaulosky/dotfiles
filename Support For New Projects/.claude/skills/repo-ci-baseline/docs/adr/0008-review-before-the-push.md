@@ -26,7 +26,8 @@ That repo moved the heavy review onto the developer's machine, before the push, 
   own reviewers, verifies and triages their findings, has the backend role fix each fixable one behind a failing test, and records the ledger itself
   (`lib/host-review.mts`). Every sandbox still sets `GATE_SKIP_REVIEW=1` and sees an empty folder over `.git/review`, since ledgers hold accepted security findings that are
   never published: no agent gets a shell, a token or the ledger, and the host never runs the worktree's `scripts/review.sh`.
-  Open Critical or Warning findings hold the PR as a draft, with its body saying why, until a person accepts them and marks it ready; the host files the open Advisory findings in a follow-up issue,
+  Open Critical or Warning findings (and any open security finding) hold the PR as a draft, with its body saying why, until a person accepts them and marks it ready;
+  the host files the open Advisory findings in a follow-up issue,
   and never writes a `## Review notes` section, since only a person's acceptances belong there.
 - **`.claude/settings.json` stays out of the Template.** The deny rules for `.git/review` and credential files are an adapting step instead.
 - **Claude Review (Copilot's backup, run while a PR carries `review:claude`) opens findings only for what a local review can't check, and reads the PR's Review notes**

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { execFileSync } from "node:child_process";
+import { spawnSync, type execFileSync } from "node:child_process";
 import { COPILOT_REVIEWER, FOLLOW_UP_LABEL, FOLLOW_UP_MARKER, FOLLOW_UP_LABEL_DEFINITION, HOST_LABELS, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
 import {
   addBlockedBy,
@@ -567,7 +567,7 @@ describe("openPullRequest", () => {
       });
     }
 
-        it("adds nothing to a body when there is no draft note to add", () => {
+    it("adds nothing to a body when there is no draft note to add", () => {
       const { calls, run } = gh(existing(true, accepted));
 
       openPullRequest(branch, "Add search", fresh, run, "o/r", true);
@@ -718,7 +718,21 @@ describe("fileIssueOnce", () => {
 
     fileIssueOnce(title, "new", run, "o/r");
     const read = calls.find((call) => call.args[0] === "api" && call.args.some((arg) => arg.endsWith("/comments")))!.args;
-    assert.ok(read[read.indexOf("--jq") + 1]!.includes('select(.user.login == "the-host")'), read.join(" "));
+    assert.equal(read[read.indexOf("--jq") + 1], '.[] | select(.user.login == "the-host") | .body | @json');
+  });
+
+  // The filter itself, run by jq on comments from two authors: a stranger's copy of the findings must not count as already filed.
+  it("ignores a stranger's comment that copies the findings: jq keeps only the host's comments", { skip: spawnSync("jq", ["--version"]).status !== 0 }, () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old" }], []);
+    fileIssueOnce(title, "new", run, "o/r");
+    const filter = (calls.find((call) => call.args.some((arg) => arg.endsWith("/comments")))!.args as string[]).at(-1)!;
+    const comments = JSON.stringify([
+      { user: { login: "stranger" }, body: "new" },
+      { user: { login: "the-host" }, body: "mine" },
+    ]);
+    const out = spawnSync("jq", ["-r", filter], { input: comments, encoding: "utf8" });
+
+    assert.equal(out.stdout.trim(), JSON.stringify("mine"));
   });
 
   it("reads the issue's comments from the issue it reuses", () => {

@@ -702,9 +702,14 @@ const ADVISORY_MARKER = "<!-- claude-session -->";
 // line holds one is not published: a reviewer that read untrusted text can be made to put one in a summary or fix, and the host would publish it under its own account.
 const RENDERED_LINK = /:\/\/|mailto:|www\.|\]\(|\]\[|!\[|\]:/i;
 
+// Text a reader can't see or that reorders what they read: any control character, the bidirectional overrides and isolates, the zero-width and other
+// default-ignorable code points, and the Unicode tag block. A reviewer that read untrusted text could hide instructions in them, and a later agent that reads
+// the issue would act on text no person saw, so a finding whose line holds one is not published.
+const HIDDEN_TEXT = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u{E0000}-\u{E007F}]/u;
+
 // The public follow-up issue's body for the review's open Advisory findings (review-ledger.mts#renderAdvisories), held to the PR note's rules: a
 // finding is listed only when its path is one of the files the review read and is made of plain file-name characters, its line (id, place, summary and fix)
-// is no longer than ADVISORY_LINE_LIMIT and holds nothing GitHub renders as a link or an image (RENDERED_LINK), and `publishable` leaves that line as it is
+// is no longer than ADVISORY_LINE_LIMIT and holds nothing GitHub renders as a link or an image (RENDERED_LINK) or a reader can't see (HIDDEN_TEXT), and `publishable` leaves that line as it is
 // (the host's public-text check: a reviewer that read untrusted text can quote a secret in a summary or fix). `publishable` sees the finding's own line,
 // never the header with the branch name, which the caller checks once. At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and
 // stay in the local review record. Empty when nothing can be listed.
@@ -716,7 +721,7 @@ export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>
     .filter(({ finding, text }) => {
       const path = diffPath(finding.path);
       const line = text.split("\n").find((candidate) => candidate.startsWith("- ")) ?? "";
-      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && line.length <= ADVISORY_LINE_LIMIT && !RENDERED_LINK.test(line) && publishable(line);
+      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && line.length <= ADVISORY_LINE_LIMIT && !RENDERED_LINK.test(line) && !HIDDEN_TEXT.test(line) && publishable(line);
     })
     .slice(0, ADVISORY_ISSUE_FINDINGS)
     .map((entry) => entry.finding);

@@ -12,6 +12,7 @@ import {
   worktreeIsGone,
   designComment,
   designNoteIn,
+  HoldFailedError,
   latestDesignNote,
   isGitHubServerError,
   isWorkflowPushRejection,
@@ -114,6 +115,7 @@ function host(
     leaksOnlyInMergedMain,
     worktreeProblems = [],
     publishError,
+    publishHoldFailed,
     designNote,
     designFile = "",
     prBodyFile = validPrBody,
@@ -157,6 +159,7 @@ function host(
     leaksOnlyInMergedMain?: SecretMatch;
     worktreeProblems?: string[];
     publishError?: string;
+    publishHoldFailed?: boolean;
     // What latestDesignNote returns for the architect's prompt: the body of
     // its latest earlier design comment, or undefined on a first run.
     designNote?: string;
@@ -418,6 +421,7 @@ function host(
       return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
     publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote, holdAsDraft) => {
+      if (publishHoldFailed) throw new HoldFailedError(publishedBranch, new Error("gh pr ready failed:\nHTTP 422"));
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
       publishEvents.push("publish");
@@ -4873,6 +4877,28 @@ describe("buildIssue's PR state after the local review", () => {
     assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /R3 /, "a security finding is counted, never listed");
   });
 
+  it("lists an open finding that isn't a security one and counts the security one beside it", async () => {
+    const run = host([0, 0], {
+      localReview: recorded([
+        openFinding({ id: "R2", path: "src/a.ts", line: 3, security: false }),
+        openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" }),
+      ]),
+    });
+    // The note lists only paths the review read.
+    const local = run.buildHost.localReview;
+    run.buildHost.localReview = async (args) => {
+      const result = await local(args);
+      return result.status === "recorded" ? { ...result, readPaths: new Set(["src/a.ts", "src/log.ts"]) } : result;
+    };
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /R2 /);
+    assert.doesNotMatch(note, /R3 /);
+    assert.match(note, /1 security finding is left open/);
+  });
+
   it("holds the PR as a draft when the only open finding's path the note can't list", async () => {
     const run = host([0, 0], { localReview: recorded([openFinding({ path: "src/unread.ts" })]) });
 
@@ -4887,8 +4913,18 @@ describe("buildIssue's PR state after the local review", () => {
 
     await buildIssue(issue, branch, base, run.buildHost);
 
+    assert.ok((run.publishedReviewNotes[0] ?? "").length > 0, "the note was built");
     assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /Review.{0,6}notes/i);
-    assert.doesNotMatch(run.publishedPrBodies[0] ?? "", /Review.{0,6}notes/i);
+  });
+
+  it("writes no Review notes section into the body publish assembles for a held PR", async () => {
+    const bodies: string[] = [];
+    const note = "The local review left these findings open (their details are in the local review record):\n\n- R1 critical src/app.ts:12";
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, (_b, _t, body) => (bodies.push(body), "u"), async () => {}, note, true, () => {});
+
+    assert.ok(bodies[0]?.includes(note));
+    assert.doesNotMatch(bodies[0] ?? "", /Review.{0,6}notes/i);
   });
 });
 
@@ -5032,15 +5068,106 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     assert.equal(attempts, 2);
   });
 
-  it("still publishes the PR when filing the issue fails", async () => {
+  it("still publishes the PR when filing the issue fails, tries once, and logs the failure", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
     const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
     run.buildHost.fileAdvisoryIssue = () => {
+      attempts++;
       throw new Error("gh issue create failed");
     };
 
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
+    assert.equal(attempts, 1, "a failure that isn't a GitHub server error is not retried");
+    assert.ok(run.publishEvents.includes("publish"));
+    assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)), logged.join("\n"));
+  });
+
+  it("gives up filing after the last attempt of a GitHub server error, and still publishes", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.wait = async () => {};
+    run.buildHost.fileAdvisoryIssue = () => {
+      attempts++;
+      throw new Error("gh issue create failed:\nHTTP 503: Service Unavailable");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, PUBLISH_RETRY_ATTEMPTS);
+  });
+});
+
+describe("buildIssue when the open PR can't be held as a draft", () => {
+  it("says nothing was pushed and the PR must be made a draft, files nothing and publishes nothing", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishHoldFailed: true });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.equal(result.publishFailed, true);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0] ?? "", /gh pr ready --undo/);
+    assert.match(comments[0] ?? "", /Nothing was pushed/);
+    assert.doesNotMatch(comments[0] ?? "", /push it\s+from its worktree/);
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+});
+
+// publish's live defaults, run against a fake `gh` first on PATH: the hold must reach gh before the push, and a created PR must carry --draft and DRAFT_NOTE.
+describe("publish's default hold and PR creation", { skip: process.platform === "win32" }, () => {
+  const withFakeGh = async (listed: string, body: (log: () => string[]) => Promise<void>) => {
+    const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
+    const logFile = join(dir, "calls.log");
+    writeFileSync(
+      join(dir, "gh"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logFile}"\ncase "$1 $2" in\n  "repo view") echo o/r ;;\n  "pr list") echo '${listed}' ;;\n  "pr create") echo https://github.com/o/r/pull/9 ;;\n  *) cat >/dev/null ;;\nesac\n`,
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = `${dir}:${path}`;
+    try {
+      await body(() => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean) : []));
+    } finally {
+      process.env.PATH = path;
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  };
+  const open = (isDraft: boolean) =>
+    JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4", body: "" }]);
+
+  it("turns the ready PR for the branch into a draft before the push", async () => {
+    await withFakeGh(open(false), async (calls) => {
+      const order: string[] = [];
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => void order.push(`push after ${calls().length} gh calls`), undefined, async () => {}, "note", true);
+
+      assert.ok(calls().some((line) => line.startsWith("pr ready 4") && line.includes("--undo")), calls().join("\n"));
+      assert.match(order[0] ?? "", /push after [1-9]/, "the hold ran before the push");
+    });
+  });
+
+  it("creates a new PR as a draft with the draft note when nothing is open", async () => {
+    await withFakeGh("[]", async (calls) => {
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "note", true);
+
+      assert.ok(calls().some((line) => line.startsWith("pr create") && line.includes("--draft")), calls().join("\n"));
+    });
+  });
+
+  it("creates a ready PR, and looks for none to hold, when nothing holds it", async () => {
+    await withFakeGh("[]", async (calls) => {
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "", false);
+
+      assert.ok(calls().some((line) => line.startsWith("pr create") && !line.includes("--draft")), calls().join("\n"));
+      assert.ok(!calls().some((line) => line.startsWith("pr ready")));
+    });
   });
 });
 
@@ -5140,7 +5267,8 @@ describe("publish with the review holding the PR as a draft", () => {
     await publish(issue, branch, "a".repeat(40), true, false, `## Why\n\n${"x".repeat(80_000)}`, [], () => {}, createPullRequest, async () => {}, note, true, () => {});
 
     const body = calls[0]?.body ?? "";
-    assert.ok(body.length <= 65_536, String(body.length));
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, String(body.length));
+    assert.ok(body.length >= PR_BODY_TOTAL_LIMIT - 100, `the room is used, not just under GitHub's cap: ${body.length}`);
     assert.match(body, /^<!-- sandcastle:pr -->\nCloses #69\n/);
     assert.match(body, /gh pr ready/);
   });

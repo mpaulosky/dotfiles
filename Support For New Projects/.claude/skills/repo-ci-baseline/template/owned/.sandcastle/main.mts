@@ -91,7 +91,7 @@
 //                               attempt: the first gets a comment, the second
 //                               hands the issue back with sandcastle:needs-human
 //                               (lib/handback.mts). A failed scribe, reviewer or
-//                               local review still publishes, with a note in the PR;
+//                               local review still publishes, with a note in the PR (a local review that didn't finish holds the PR as a draft);
 //                               a usage-limit stop or a stalled sandbox leaves the branch for a later round, and a
 //                               time-budget stop or the review's time cap publishes what passed the gate.
 //                               Otherwise the host scans the commits for the

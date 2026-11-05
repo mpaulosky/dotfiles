@@ -6,11 +6,12 @@
 
 import { z } from "zod";
 import { isRoleTimeout } from "./agents.mts";
-import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, REVIEWER_ATTEMPTS } from "./config.mts";
+import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, REVIEWER_ATTEMPTS, SESSION_REPLY_MARKER } from "./config.mts";
 import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
-import { FINDING_PATH_SHAPE, isSecurity, patchPaths, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
+import { hasHiddenText } from "./status.mts";
+import { FINDING_PATH_SHAPE, isSecurity, patchPaths, renderAdvisories, severityOf, sizeWarning, type Ledger, type PreparedRound, type ReviewInput } from "./review-ledger.mts";
 
 // One row of lenses.md's table (or of a repo's own lenses table).
 export type Lens = { name: string; appliesTo: string; row: string };
@@ -357,7 +358,7 @@ export type HostReviewHost = {
 
 // The most a round's diff, or the fixes a later round reads, may hold, in bytes. The host sends each to the sandbox through one command with a time limit, and each reviewer reads
 // it: a generated file or a lockfile past this would stall that command, and the build with it, on every run. A larger diff ends the review as
-// failed, which publishes the branch with a note.
+// failed, which publishes the branch as a draft, with a note.
 export const MAX_REVIEW_PATCH_BYTES = 4 * 1024 * 1024;
 
 // How a review ends: recorded, or failed (with the last commit the gate passed on, which is published).
@@ -409,7 +410,7 @@ export async function runHostReview(
     }
     if (error instanceof UncountedStopError) throw error;
     // Any host step (reading the skill files, the sandbox, git) that throws ends the review as failed, so the finished and gated work
-    // is still published with a note. The reason is host-written: the error's own text may hold an agent's words.
+    // is still published, as a draft with a note. The reason is host-written: the error's own text may hold an agent's words.
     host.log(`  ✗ the local review failed: a host step threw: ${errorText(error)}`);
     return { status: "failed", head: progress.head, reason: "a step of the review on the host failed" };
   }
@@ -690,4 +691,50 @@ export function openFindingsNote(ledger: Ledger, readPaths: ReadonlySet<string>,
     ...(more > 0 ? [...(lines.length > 0 ? [""] : []), `${more} more open finding${more === 1 ? " is" : "s are"} in the local review record and aren't listed here.`] : []),
     ...(hidden > 0 ? [...(lines.length > 0 ? [""] : []), `${hidden} security finding${hidden === 1 ? " is" : "s are"} left open in the local review record and aren't listed here.`] : []),
   ].join("\n");
+}
+
+// The most findings the follow-up issue lists, and the longest line it keeps. The issue is public, so a reviewer's text is bounded.
+const ADVISORY_ISSUE_FINDINGS = 20;
+const ADVISORY_LINE_LIMIT = 2000;
+
+// What GitHub renders as a link or an image, or fetches: an address with a scheme (`://`, `mailto:`), a www. address (GitHub links one anywhere after a space or
+// an underscore too, in a path as well as in prose), an inline, reference or image link (`](`, `][`, `![`), and a link reference definition (`]:`). A finding whose
+// line holds one is not published: a reviewer that read untrusted text can be made to put one in a summary or fix, and the host would publish it under its own account.
+const RENDERED_LINK = /:\/\/|mailto:|www\.|\]\(|\]\[|!\[|\]:/i;
+
+// The public follow-up issue's body for the review's open Advisory findings (review-ledger.mts#renderAdvisories), held to the PR note's rules: a
+// finding is listed only when its path is one of the files the review read and is made of plain file-name characters, its line (id, place, summary and fix)
+// is no longer than ADVISORY_LINE_LIMIT and holds no link or image GitHub would render (RENDERED_LINK), and `publishable` leaves that line as it is
+// (the host's public-text check: a reviewer that read untrusted text can quote a secret in a summary or fix). Hidden text is held to ADR 0010's rule
+// (status.mts#hasHiddenText: what terminalText would drop). It is asked of the branch the header quotes together with the fields (id, path, summary,
+// fix) of the findings listed so far and the next one, never of the rendered line, whose zero-width spaces the host adds itself after an @, a # or "github.com".
+// So a branch that holds hidden text leaves every finding out (and the body empty), and the issue as a whole keeps no more than eight joiners and no more than eight private-use or unassigned
+// code points, as one text does, and no run of more than eight marks: a finding that would exceed that is left out. A next-line character (U+0085) is left
+// out too, since terminalText reads it as a space but plainText, which writes the issue, does not. `publishable` sees the finding's rendered line, then its path, summary and fix as the reviewer wrote them (trimmed, since publicError trims), never the header with the branch name.
+// At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and stay in the local review record. Empty when nothing can be listed.
+export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>, publishable: (text: string) => boolean = () => true): string {
+  const rendered = ledger.findings
+    .map((finding) => ({ finding, text: renderAdvisories({ ...ledger, findings: [finding] }) }))
+    .filter((entry) => entry.text !== "");
+  const listed: Ledger["findings"] = [];
+  let shown = ledger.branch;
+  for (const { finding, text } of rendered) {
+    if (listed.length >= ADVISORY_ISSUE_FINDINGS) break;
+    const path = diffPath(finding.path);
+    const line = text.split("\n").find((candidate) => candidate.startsWith("- ")) ?? "";
+    const together = `${shown} ${finding.id} ${finding.path} ${finding.summary} ${finding.fix ?? ""}`;
+    if (!readPaths.has(path) || !SAFE_NOTE_PATH.test(path) || line.length > ADVISORY_LINE_LIMIT || RENDERED_LINK.test(line)) continue;
+    // U+0085 is whitespace to terminalText but not to plainText, which would publish it raw. The secret check sees each field as the reviewer wrote it as well as the
+    // rendered line: plainText escapes & < \ ` and breaks @ and #, so a secret holding one of them no longer matches there.
+    if (hasHiddenText(together) || together.includes("\u0085") || !publishable(line)) continue;
+    if (![finding.path, finding.summary, finding.fix ?? ""].every((field) => publishable(field.trim()))) continue;
+    listed.push(finding);
+    shown = together;
+  }
+  // With nothing listed renderAdvisories answers "", which the caller reads as no issue to file.
+  const body = renderAdvisories({ ...ledger, findings: listed });
+  const left = rendered.length - listed.length;
+  if (left === 0) return body;
+  const note = `${left} more open Advisory finding${left === 1 ? " is" : "s are"} in the local review record and ${left === 1 ? "isn't" : "aren't"} listed here.`;
+  return body.replace(`\n${SESSION_REPLY_MARKER}`, `\n${note}\n\n${SESSION_REPLY_MARKER}`);
 }

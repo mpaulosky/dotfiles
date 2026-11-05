@@ -284,7 +284,7 @@ export const REVIEW_FIX_ROUNDS = 3;
 export const REVIEWER_ATTEMPTS = 2;
 
 // How long the whole host-side review may run, in minutes. It is checked before each round, reviewer and fixer run, never in the middle of one:
-// a spent review ends as failed at the last commit the gate passed on, which the build publishes with a note. The longest the review can take is
+// a spent review ends as failed at the last commit the gate passed on, which the build publishes as a draft, with a note. The longest the review can take is
 // this, plus the step it was in when it ran out (a reviewer, or a fixer with its gate), and BUILDING_LABEL_MAX_AGE_MS is sized from that.
 export const REVIEW_WALL_CLOCK_MINUTES = 180;
 

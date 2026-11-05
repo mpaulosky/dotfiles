@@ -23,14 +23,14 @@ import { CHECK_PATHS, copyToWorktree, hooks } from "./repo-config.mts";
 import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
-import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
-import { openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
+import { commentOnIssue, fileIssueOnce, holdExistingPullRequest, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
+import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs, reviewerPromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
-import { mergeBase, pinLedgerGit, prepareRound, recordReview, takenIds } from "./review-ledger.mts";
+import { isBlocking, mergeBase, pinLedgerGit, prepareRound, recordReview, renderAdvisories, takenIds } from "./review-ledger.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git, hostGitInvocation, runHostGit } from "./shell.mts";
@@ -83,10 +83,14 @@ export { UncountedStopError };
 // work already there.
 //
 // A GitHub server error (a 5xx or "Internal Server Error" in git's or gh's
-// output) is transient, so the push and the PR creation are each tried up to
+// output) is transient, so the hold of an existing PR, the push and the PR creation are each tried up to
 // PUBLISH_RETRY_ATTEMPTS times in all, with backoff, before giving up. Any
 // other failure, such as a push that doesn't fast-forward, isn't retried: a
 // person needs to look at it regardless.
+//
+// `reviewNote` is the host-side review's note for the PR body, and `holdAsDraft` is true while a blocking finding is open, or when the review didn't finish: the PR is then created as a
+// draft with DRAFT_NOTE in its body. When it is false, a rerun leaves an existing draft a draft but takes DRAFT_NOTE out of its body (openPullRequest). `holdExisting` is what first turns a PR already open for the branch into a draft: it runs before the push, and a
+// failure throws HoldFailedError with nothing pushed.
 //
 // `docsFailed` is true when the planner picked the scribe for this issue and
 // its run failed. Unlike an architect, tester, backend or UI failure, that
@@ -113,10 +117,22 @@ export async function publish(
   checkChanges: readonly string[] = [],
   push: (branch: string, commit: string) => void = (pushBranch, pushCommit) =>
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
-  createPullRequest: (branch: string, title: string, body: string) => string = openPullRequest,
+  createPullRequest: (branch: string, title: string, body: string, draft?: boolean) => string = (pushBranch, title, body, draft) =>
+    openHeldPullRequest(pushBranch, title, body, draft),
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
   reviewNote = "",
+  holdAsDraft = false,
+  holdExisting: (branch: string) => void = (heldBranch) => holdExistingPullRequest(heldBranch),
 ): Promise<string> {
+  // A PR already open for the branch (an earlier build's, opened ready) is made a draft before the new commits reach it, so PR Auto-Merge never sees
+  // a ready PR with commits the review hasn't cleared. A failure stops here, before the push.
+  if (holdAsDraft) {
+    try {
+      await retryOnServerError(() => holdExisting(branch), wait);
+    } catch (error) {
+      throw new HoldFailedError(branch, error);
+    }
+  }
   await retryOnServerError(() => push(branch, commit), wait);
   const reviewFailedNote = "⚠️ The review step failed, so no agent has reviewed this PR.";
   let description: string;
@@ -138,8 +154,10 @@ export async function publish(
       : "";
   // The host-side review's note (lib/host-review.mts): what it left open, or that it didn't finish.
   const reviewSection = reviewNote === "" ? "" : `\n\n${reviewNote}`;
+  // Why the PR is a draft and what a person does about it: only a person accepts a finding, and only a person marks the PR ready.
+  const draftSection = holdAsDraft ? `\n\n${DRAFT_NOTE}` : "";
   const head = `${PR_MARKER}\nCloses #${issue.number}\n\n`;
-  const tail = `${docsNote}${checkNote}${reviewSection}`;
+  const tail = `${docsNote}${checkNote}${reviewSection}${draftSection}`;
   // The marker, `Closes #n` and the notes are kept whole; the description gives way.
   const room = PR_BODY_TOTAL_LIMIT - head.length - tail.length;
   if (description.length > room) description = cutDescription(description, room);
@@ -147,8 +165,41 @@ export async function publish(
   // A retry after a create that GitHub carried out but answered with an error
   // finds that PR rather than open a second one: openPullRequest looks for an
   // open PR from the branch first.
-  return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body), wait);
+  return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body, holdAsDraft), wait);
 }
+
+// The comment on the Sandcastle issue when the follow-up issue for the review's Advisory findings could not be filed: the findings (`advisories`, the body
+// checked for the public issue) are listed here so they are not lost with the runner.
+export function advisoryFilingFailedComment(prUrl: string, advisories: string): string {
+  return `Sandcastle published ${prUrl}, but it couldn't file the follow-up issue for the review's open Advisory findings, so they are listed here instead:\n\n${advisories}`;
+}
+
+// Thrown by publish when it could not turn the branch's open PR into a draft, so it pushed nothing. buildIssue tells a person so: the generic
+// "pushing failed" comment would send them to push the branch's commits onto a PR that is still ready.
+export class HoldFailedError extends Error {
+  constructor(branch: string, cause: unknown) {
+    super(`holding the open pull request for ${branch} as a draft failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "HoldFailedError";
+  }
+}
+
+// publish's live way to open the PR: openPullRequest with DRAFT_NOTE as the note to add when a held PR's body is a person's and is kept. It is a named function so a
+// test can pin that the note is passed: without it, a rerun that holds a PR with edited Review notes would make the PR a draft with nothing in the body saying why.
+export function openHeldPullRequest(
+  branch: string,
+  title: string,
+  body: string,
+  draft: boolean = false,
+  run?: typeof execFileSync,
+  repo?: string,
+): string {
+  return openPullRequest(branch, title, body, run, repo, draft, DRAFT_NOTE);
+}
+
+// The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left, or a review that didn't finish. It names the two steps only a person takes.
+export const DRAFT_NOTE =
+  "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding: " +
+  "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. Once nothing is open, mark the PR ready with `gh pr ready`.";
 
 // Whether a git or gh failure is GitHub's own server error, which a later
 // attempt may not hit. Matches what git and gh print for one ("remote: Internal
@@ -396,6 +447,11 @@ export type BuildHost = {
   // (handing it back first) or a ref can't be deleted.
   startFromMain(issueNumber: number, branch: string, base: string): { pr: number; deleted: string[] } | undefined;
   publish: typeof publish;
+  // Files the follow-up issue for the review's open Advisory findings (its title and body), or reuses the host's own open one with that title and
+  // adds the body to it as a comment when neither its body nor a comment holds it yet (lib/github.mts#fileIssueOnce); a body a person edited is never replaced.
+  fileAdvisoryIssue(title: string, body: string): void;
+  // The backoff between retries of the filing above; tests replace it so they don't wait.
+  wait?(ms: number): Promise<void>;
   // Fetches origin/main and returns the commit it now names (see
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main
   // while it ran. Throws when the fetch fails.
@@ -716,6 +772,7 @@ const liveHost: BuildHost = {
   startFromMain: (issueNumber, branch, base) => sweepStartFromMain(issueNumber, branch, base),
   publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), containsSandboxSecret),
   publish,
+  fileAdvisoryIssue: (title, body) => void fileIssueOnce(title, body),
   latestMain: fetchMain,
   isRemoteMain: (commit) => remoteMainIs(commit),
   worktreeProblems,
@@ -1493,8 +1550,12 @@ async function buildMarkedIssue(
 
     // The pre-push review's rounds, on the host (lib/host-review.mts), on the commit checkpoint 2 passed on. A round that fixes
     // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage-limit stop
-    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note.
+    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note, as a draft.
     let reviewNote = "";
+    let holdAsDraft = false;
+    // True when the hold is because the review didn't finish, not because it left findings: the hand-back comments then say the review didn't finish, and the one after a failed publish says to run it again.
+    let reviewUnfinished = false;
+    let advisories = "";
     const review = await host.localReview({
       sandbox,
       issue: { number: issue.number, title: issue.title, body: issue.body },
@@ -1510,6 +1571,9 @@ async function buildMarkedIssue(
       // The unfinished review's gated commit is published, not checkpoint 2's: earlier rounds' fixes passed checkpoint 3.
       gated = review.head;
       reviewNote = `⚠️ The local review didn't finish (${review.reason}), so this branch has no recorded review.`;
+      // It has not cleared the code, and PR Auto-Merge only merges ready PRs: the PR is held, and a person marks it ready after looking.
+      holdAsDraft = true;
+      reviewUnfinished = true;
     } else {
       gated = review.head;
       // A line the host's public-text check would change, or that reads like a Review notes section, is left out on its own.
@@ -1519,6 +1583,27 @@ async function buildMarkedIssue(
       if (reviewNote !== "" && host.publicError(reviewNote) !== reviewNote) {
         log("the local review's open findings hold a path that isn't safe to publish, so the PR gets no note on them");
         reviewNote = "";
+      }
+      // Only a person accepts a finding (scripts/review.sh accept) and marks the PR ready, so a blocking finding left open holds it as a draft.
+      holdAsDraft = review.ledger.findings.some(isBlocking);
+      // The open Advisory findings go to a follow-up issue, as the skill's step 9 files them, but only once the branch is published (below):
+      // the issue is public, so a branch the secret scan refuses or whose push fails gets none. Its text is a reviewer's, so it is held to the PR note's rules.
+      // Each finding's own line and its fields are checked (a branch named for review notes must not hide them all), and the whole body once more for what the header
+      // quotes, the branch name.
+      advisories = advisoryIssueBody(
+        review.ledger,
+        review.readPaths,
+        (line) => host.publicError(line) === line && !visibleLetters(line).includes("reviewnotes"),
+      );
+      // An empty body is also what a review with no open Advisory finding gives, so say when findings were open and none could be listed: none passed
+      // the checks on what goes in a public issue (hidden text, a link, a secret, a length bound, a path the review didn't read or that isn't plain file-name
+      // characters, a line that reads like a Review notes section), or the branch name failed them. Nothing else tells a person the follow-up issue was dropped.
+      if (advisories === "" && renderAdvisories(review.ledger) !== "") {
+        log("the local review's Advisory findings can't be listed (none passed the checks on what goes in a public issue), so no follow-up issue is filed for them");
+      }
+      if (advisories !== "" && host.publicError(advisories) !== advisories.trim()) {
+        log("the local review's Advisory findings hold text that isn't safe to publish, so no follow-up issue is filed for them");
+        advisories = "";
       }
     }
     // Claude Review reads a "Review notes" section as the owner's accepted findings, so no note may pass for one, in any form.
@@ -1576,7 +1661,26 @@ async function buildMarkedIssue(
         undefined,
         undefined,
         reviewNote,
+        holdAsDraft,
       );
+      // A failed filing never undoes the published PR.
+      if (advisories !== "") {
+        try {
+          await retryOnServerError(
+            () => host.fileAdvisoryIssue(`chore(review): Advisory review findings: ${branch}`, advisories),
+            host.wait ?? ((ms) => sleep(ms)),
+          );
+        } catch (error) {
+          console.error(`  ⚠ #${issue.number}: filing the follow-up issue for the Advisory findings failed: ${terminalText(String(error))}`);
+          // The ledger lives in the main checkout, which an Actions runner discards, so a findings list that isn't filed would be lost with it. The same
+          // text, already checked for the public issue, goes on the Sandcastle issue instead.
+          try {
+            host.commentOnIssue(issue.number, advisoryFilingFailedComment(prUrl, advisories));
+          } catch (commentError) {
+            console.error(`  ⚠ #${issue.number}: posting the Advisory findings on the issue failed too: ${terminalText(String(commentError))}`);
+          }
+        }
+      }
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
     } catch (error) {
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${terminalText(String(error))}`);
@@ -1641,6 +1745,40 @@ async function buildMarkedIssue(
         };
       }
       const fence = "`".repeat(Math.max(3, ...[...detail.matchAll(/`+/g)].map((match) => match[0].length + 1)));
+      if (error instanceof HoldFailedError) {
+        host.commentOnIssue(
+          issue.number,
+          `Sandcastle couldn't publish \`${branch}\`: ${reviewUnfinished ? "the review didn't finish" : "the review left findings open"}, so its open pull request has to be a draft, and turning it into one ` +
+            "failed. Nothing was pushed, and that pull request may still be ready. A person needs to look at it: make it a draft " +
+            `with \`gh pr ready ${branch} --undo\` before pushing anything to \`${branch}\`, so PR Auto-Merge can't merge it.\n\n${fence}text\n${detail}\n${fence}`,
+        );
+        return {
+          commits,
+          prUrl: undefined,
+          publishFailed: true,
+          outcome: "not published",
+          detail: "turning its open pull request into a draft failed, so nothing was pushed",
+        };
+      }
+      if (holdAsDraft) {
+        // The hold ran before the push, so a pull request the branch already had is a draft now, with the body it had before; the failure came after.
+        host.commentOnIssue(
+          issue.number,
+          `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening or updating its pull request failed after the ` +
+            `${reviewUnfinished ? "review didn't finish" : "review left findings open"} and the pull request was held as a draft. The branch keeps its commits. A person needs to look at it. A pull ` +
+            `request from it may already be open as a draft, without the note saying why: find it with \`gh pr list --head ${branch}\` before opening ` +
+            `one, and do not mark it ready until ${reviewUnfinished ? "the review has been run again and nothing is open" : "each open finding is fixed or accepted (`scripts/review.sh accept <id> <reason>`)"}. If origin's ` +
+            `\`${branch}\` isn't at \`${gated}\`, the commit the gate passed, it still has to be pushed from its worktree, and if origin's branch has ` +
+            `commits the local one doesn't, the two need reconciling.\n\n${fence}text\n${detail}\n${fence}`,
+        );
+        return {
+          commits,
+          prUrl: undefined,
+          publishFailed: true,
+          outcome: "not published",
+          detail: "pushing it or opening its pull request failed after the pull request was held as a draft",
+        };
+      }
       host.commentOnIssue(
         issue.number,
         `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening its pull request ` +

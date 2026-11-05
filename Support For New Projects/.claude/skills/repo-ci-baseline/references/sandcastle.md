@@ -29,7 +29,7 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 | `main.mts` | The run's phases and round loop; it reads its round cap from `lib/repo-config.mts` |
 | `status.mts`, `lib/status.mts` and their tests | The read-only `sandcastle:status` command ([Status](#status)); it shares the sweep's decision code (`sweepContext`, `admitToSweep`, `decide`) so it can't disagree with it |
 | `lib/config.mts` and its test | What every Sandcastle repo shares: the role names (`ROLES`, plus the opt-in `ui` as `OptInRole`), limits, labels (`SANDCASTLE_LABELS`, and `FOLLOW_UP_LABEL` kept apart from them, with `HOST_LABELS` the host creates), markers (`SESSION_REPLY_MARKER` too), the Copilot reviewer settings, and the queue-scope (`isDefaultQueueScope`) and budget parsing |
-| `lib/host-review.mts`, `lib/host-review-prompts.mts` and their tests | The host-side pre-push review of a built branch ([pre-push-review.md](pre-push-review.md#sandcastle-runs-the-review-on-the-host)): the reviewers, triage, the backend role's fixes and the host's record |
+| `lib/host-review.mts`, `lib/host-review-prompts.mts` and their tests | The host-side pre-push review of a built branch ([pre-push-review.md](pre-push-review.md#sandcastle-runs-the-review-on-the-host)): the reviewers, triage, the backend role's fixes and the host's record; the host holds the PR as a draft while Critical or Warning findings (or a security finding) are open, or when the review didn't finish, until a person accepts them (or runs the review again) and marks it ready, and files the open Advisory ones in a follow-up issue |
 | The other `lib/` modules and their tests, `lib/errors.mts`, `lib/git-sandbox-fake.mts` and `lib/ui-role-fixture.mts` (the test helper for the opt-in `ui` role) | They import each other as one cluster, so they're Owned together; their tests pin no per-repo value |
 
 The Owned modules read only the names `lib/repo-config.mts` exports (below), and `config.mts` imports nothing from it.
@@ -184,6 +184,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
 
 - **Which.** `sweepSubject` in `lib/follow-up.mts` accepts a labelled pull request that isn't a Sandcastle issue's (host-authored, marked, on an issue's branch, in this run's scope or not) when it is
   from the same repository, into `main`, not a draft, and its branch name passes `scripts/check-branch-name.sh` (`isHandOffBranch` in `lib/branches.mts`).
+  A PR the host-side review holds as a draft ([pre-push-review.md](pre-push-review.md#sandcastle-runs-the-review-on-the-host))
+  is not swept until a person marks it ready, so CI failures and review feedback on it need a person.
   A Sandcastle pull request carrying the label is never a hand-off:
   it is swept as its issue's when `sweepSkipReason` lets it through, and skipped otherwise. Only the default queue scope (`isDefaultQueueScope`: the `Sandcastle` label,
   what GitHub Actions always runs) follows hand-offs.

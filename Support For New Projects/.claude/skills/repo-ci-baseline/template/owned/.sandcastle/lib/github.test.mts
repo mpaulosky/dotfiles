@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { execFileSync } from "node:child_process";
+import { spawnSync, type execFileSync } from "node:child_process";
 import { COPILOT_REVIEWER, FOLLOW_UP_LABEL, FOLLOW_UP_MARKER, FOLLOW_UP_LABEL_DEFINITION, HOST_LABELS, LOCAL_QUEUE_LABEL, SANDCASTLE_LABELS } from "./config.mts";
 import {
   addBlockedBy,
@@ -34,6 +34,8 @@ import {
   markerComments,
   markerCommentsSince,
   openIssuesWithComment,
+  fileIssueOnce,
+  holdExistingPullRequest,
   openPullRequest,
   openPullRequests,
   openPullRequestsIntoMain,
@@ -424,11 +426,13 @@ describe("sameRepository", () => {
 
 describe("openPullRequest", () => {
   const branch = "feature/4-add-search";
-  // A gh stub that lists `listed` and creates a PR at /pull/9.
-  const gh = (listed: object[]) => {
+  // A gh stub that lists `listed`, creates a PR at /pull/9, and answers `pr view` with `viewed` (the listed PR's own body when not given): the body
+  // a person may have changed since the list.
+  const gh = (listed: object[], viewed?: string) => {
     const calls: { args: readonly string[]; input: unknown }[] = [];
     const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
       calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body: viewed ?? (listed[0] as { body?: string } | undefined)?.body ?? "" });
       return args[1] === "list" ? JSON.stringify(listed) : "https://github.com/o/r/pull/9\n";
     }) as unknown as typeof execFileSync;
     return { calls, run };
@@ -450,6 +454,455 @@ describe("openPullRequest", () => {
       "pr", "create", "--repo", "o/r", "--base", "main", "--head", branch, "--title", "Add search", "--body-file", "-",
     ]);
     assert.equal(calls[1]!.input, "Closes #4");
+  });
+
+  it("opens the PR as a draft when asked to, and as a ready one otherwise", () => {
+    const draft = gh([]);
+    const ready = gh([]);
+
+    openPullRequest(branch, "Add search", "Closes #4", draft.run, "o/r", true);
+    openPullRequest(branch, "Add search", "Closes #4", ready.run, "o/r");
+
+    assert.deepEqual(draft.calls[1]!.args, [
+      "pr", "create", "--repo", "o/r", "--base", "main", "--head", branch, "--title", "Add search", "--body-file", "-", "--draft",
+    ]);
+    assert.ok(!ready.calls[1]!.args.includes("--draft"), ready.calls[1]!.args.join(" "));
+  });
+
+  const MARKER = "<!-- sandcastle:pr -->";
+  const hostBody = `${MARKER}\nCloses #4\n\nWhy it was built.`;
+  const existing = (isDraft: boolean, body: string = hostBody) => [
+    { number: 3, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/3", body },
+  ];
+  const NOTE = "🚧 This PR is a draft.";
+  const fresh = `${MARKER}\nCloses #4\n\nWhy it was built.\n\n${NOTE}`;
+
+  it("turns an existing ready PR into a draft and puts the new body on it when the review holds it", () => {
+    const { calls, run } = gh(existing(false));
+
+    assert.equal(openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), "https://github.com/o/r/pull/3");
+    assert.deepEqual(calls.slice(1).map((call) => call.args), [
+      ["pr", "ready", "3", "--repo", "o/r", "--undo"],
+      ["pr", "view", "3", "--repo", "o/r", "--json", "body"],
+      ["pr", "edit", "3", "--repo", "o/r", "--body-file", "-"],
+    ]);
+    assert.equal(calls[3]!.input, fresh);
+  });
+
+  it("refreshes the body of an existing draft the review still holds, without converting it again", () => {
+    const { calls, run } = gh(existing(true));
+
+    openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
+  });
+
+  it("does not edit a draft whose body is already the new one, whatever its line endings", () => {
+    const { calls, run } = gh(existing(true, `${fresh.replace(/\n/g, "\r\n")}\r\n`));
+
+    openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+    assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
+  });
+
+  describe("when a person has written in the PR's body", () => {
+    const accepted = `${hostBody}\n\n<!-- review-notes -->\n## Review notes\n\n- R3 accepted: the owner decided it.\n<!-- /review-notes -->`;
+
+    it("keeps a Review notes section of accepted findings and adds only the draft note", () => {
+      const { calls, run } = gh(existing(false, accepted));
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      const edit = calls.find((call) => call.args[1] === "edit");
+      assert.equal(edit?.input, `${accepted}\n\n${NOTE}`);
+    });
+
+    it("does not add the draft note twice", () => {
+      const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
+    });
+
+    for (const [name, heading] of [
+      ["a heading", "## Review notes"],
+      ["emphasis splitting the words", "## Re*view* **notes**"],
+      ["a character reference", "Review n&#111;tes"],
+    ] as const) {
+      it(`reads Review notes written as ${name}, even without the markers`, () => {
+        const { calls, run } = gh(existing(false, `${hostBody}\n\n${heading}\n\n- R3 accepted`));
+
+        openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+        const edit = calls.find((call) => call.args[1] === "edit");
+        assert.ok(String(edit?.input).includes("R3 accepted"), String(edit?.input));
+      });
+    }
+
+    it("leaves a body without the host's marker alone but for the draft note", () => {
+      const own = "Written by hand.\n\nCloses #4";
+      const { calls, run } = gh(existing(false, own));
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, `${own}\n\n${NOTE}`);
+    });
+
+    it("still makes the PR a draft before it touches the body", () => {
+      const { calls, run } = gh(existing(false, accepted));
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "view", "edit"]);
+    });
+
+    // GitHub refuses a PR body of more than 65,536 characters. The note is added after a blank line, so the body may be as long as the limit allows.
+    for (const [extra, edits] of [[-1, true], [0, true], [1, false]] as const) {
+      it(`${edits ? "adds" : "leaves out"} the draft note when the kept body would end ${extra === 0 ? "exactly at" : extra < 0 ? "one under" : "one over"} GitHub's limit`, () => {
+        const own = "x".repeat(65_536 - `\n\n${NOTE}`.length + extra);
+        const { calls, run } = gh(existing(false, own));
+
+        openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+        assert.deepEqual(calls.slice(1).map((call) => call.args[1]), edits ? ["ready", "view", "edit"] : ["ready", "view"]);
+        if (edits) assert.equal(String(calls[3]!.input).length, 65_536 + extra);
+      });
+    }
+
+    it("adds nothing to a body when there is no draft note to add", () => {
+      const { calls, run } = gh(existing(true, accepted));
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
+    });
+
+    // The body read with the list can be stale by the time the PR is a draft: a person accepted a finding in the meantime. The edit is built from
+    // a body read after the hold, so those acceptances survive.
+    it("keeps a Review notes section a person added after the list, and adds only the draft note", () => {
+      const { calls, run } = gh(existing(false), accepted);
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, `${accepted}\n\n${NOTE}`);
+    });
+
+    it("reads the body again only after the PR is a draft", () => {
+      const { calls, run } = gh(existing(false));
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "view", "edit"]);
+    });
+
+    it("does not edit when the body read after the hold is already the new one", () => {
+      const { calls, run } = gh(existing(false), fresh);
+
+      openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "view"]);
+    });
+
+    for (const [name, answer] of [["an object without a body", "{}"], ["a null body", '{"body":null}'], ["a body that isn't text", '{"body":5}']] as const) {
+      it(`throws on ${name} after the hold, and edits nothing, rather than replace a body it did not read`, () => {
+        const calls: string[] = [];
+        const run = ((_cmd: string, args: readonly string[]) => {
+          calls.push(String(args[1]));
+          return args[1] === "list" ? JSON.stringify(existing(false)) : args[1] === "view" ? answer : "";
+        }) as unknown as typeof execFileSync;
+
+        assert.throws(() => openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), /body/);
+        assert.deepEqual(calls.slice(1), ["ready", "view"]);
+      });
+    }
+
+    it("throws when the body can't be read after the hold, rather than write over it blind", () => {
+      const run = ((_cmd: string, args: readonly string[]) => {
+        if (args[1] === "list") return JSON.stringify(existing(true));
+        throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 502" });
+      }) as unknown as typeof execFileSync;
+
+      assert.throws(() => openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), /HTTP 502/);
+    });
+  });
+
+  // A clean rerun no longer holds the PR, but a draft from an earlier held build still carries the note that gave the reason. The note is dropped; whether the PR is
+  // ready stays a person's decision.
+  describe("when a rerun no longer holds a PR that is a draft with the draft note", () => {
+    const cleanBody = `${MARKER}\nCloses #4\n\nWhy it was built.`;
+    const accepted = `${hostBody}\n\n<!-- review-notes -->\n## Review notes\n\n- R3 accepted: the owner decided it.\n<!-- /review-notes -->`;
+
+    it("puts the new body, without the note, on a draft the host wrote, replacing the host's old text", () => {
+      const { calls, run } = gh(existing(true, `${MARKER}\nCloses #4\n\nAn OLD description.\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
+      assert.equal(calls[2]!.input, cleanBody);
+    });
+
+    it("takes only the note out of a body written by hand, with no marker and no Review notes", () => {
+      const { calls, run } = gh(existing(true, `Written by hand.\n\nCloses #4\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, "Written by hand.\n\nCloses #4");
+    });
+
+    it("does nothing for a note that is only whitespace", () => {
+      const { calls, run } = gh(existing(true, `${cleanBody}\n\n  `));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, "  ");
+      assert.equal(calls.length, 1);
+    });
+
+    it("takes only the note out of a body a person wrote in", () => {
+      const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, accepted);
+    });
+
+    it("finds the note in a body with GitHub's line endings", () => {
+      const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`.replace(/\n/g, "\r\n")));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, accepted);
+    });
+
+    it("edits nothing when the draft has no note, and never converts it", () => {
+      const { calls, run } = gh(existing(true, accepted));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["view"]);
+    });
+
+    it("leaves a ready PR alone, without reading its body", () => {
+      const { calls, run } = gh(existing(false, `${accepted}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.length, 1);
+    });
+
+    it("leaves a draft alone when no note was given", () => {
+      const { calls, run } = gh(existing(true, `${accepted}\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false);
+      assert.equal(calls.length, 1);
+    });
+
+    // The PR is pushed and a draft by now, and the note is a convenience: a failure to remove it must not turn a published build into a failed one.
+    for (const [name, failing, expected] of [
+      ["an answer without a text body", "view", ["view"]],
+      ["a body that can't be read", "viewError", ["view"]],
+      ["an edit that fails", "edit", ["view", "edit"]],
+    ] as const) {
+      it(`logs and returns the PR's address on ${name}, without throwing`, (t) => {
+        const logged: string[] = [];
+        t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+        const calls: string[] = [];
+        const run = ((_cmd: string, args: readonly string[]) => {
+          calls.push(String(args[1]));
+          if (args[1] === "list") return JSON.stringify(existing(true));
+          if (args[1] === "view") {
+            if (failing === "viewError") throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+            return failing === "view" ? "{}" : JSON.stringify({ body: `${cleanBody}\n\n${NOTE}` });
+          }
+          throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+        }) as unknown as typeof execFileSync;
+
+        assert.equal(openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE), "https://github.com/o/r/pull/3");
+        assert.deepEqual(calls.slice(1), expected);
+        assert.ok(logged.some((line) => /draft note/.test(line)), logged.join("\n"));
+        // The reason gh gave stays in the line, so a person can tell a refused edit from a network error; the command line never does.
+        if (failing !== "view") assert.ok(logged.some((line) => /HTTP 422/.test(line)), logged.join("\n"));
+        assert.ok(logged.every((line) => !line.includes("Command failed")), logged.join("\n"));
+      });
+    }
+  });
+
+  it("leaves an existing PR alone when the review doesn't hold it", () => {
+    const { calls, run } = gh(existing(false));
+
+    openPullRequest(branch, "Add search", "Closes #4", run, "o/r", false);
+    assert.equal(calls.length, 1);
+  });
+
+  it("throws when the existing PR can't be turned into a draft, so the build isn't reported as held", () => {
+    const run = ((_cmd: string, args: readonly string[]) => {
+      if (args[1] === "list") return JSON.stringify(existing(false));
+      throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), /HTTP 422/);
+  });
+});
+
+describe("holdExistingPullRequest", () => {
+  const branch = "feature/4-add-search";
+  const gh = (listed: object[]) => {
+    const calls: { args: readonly string[] }[] = [];
+    const run = ((_cmd: string, args: readonly string[]) => {
+      calls.push({ args });
+      return args[1] === "list" ? JSON.stringify(listed) : "";
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+  const pr = (extra: object) => ({ number: 3, headRefName: branch, isCrossRepository: false, isDraft: false, url: "https://github.com/o/r/pull/3", ...extra });
+
+  it("turns this repository's ready PR for the branch into a draft", () => {
+    const { calls, run } = gh([pr({})]);
+
+    holdExistingPullRequest(branch, run, "o/r");
+    assert.deepEqual(calls.map((call) => call.args), [
+      ["pr", "list", "--repo", "o/r", "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url"],
+      ["pr", "ready", "3", "--repo", "o/r", "--undo"],
+    ]);
+  });
+
+  // A draft is tried alone. A fork's PR and a PR from another branch are each tried alone and with a ready same-repo PR listed after them, so a missing
+  // filter lets the wrong PR through or hides the right one.
+  it("leaves a draft alone", () => {
+    const { calls, run } = gh([pr({ isDraft: true })]);
+
+    holdExistingPullRequest(branch, run, "o/r");
+    assert.equal(calls.length, 1);
+  });
+
+  it("leaves a fork's PR alone, and holds the same-repository PR listed after it", () => {
+    const fork = gh([pr({ number: 5, isCrossRepository: true })]);
+    holdExistingPullRequest(branch, fork.run, "o/r");
+    assert.equal(fork.calls.length, 1);
+
+    const both = gh([pr({ number: 5, isCrossRepository: true }), pr({ number: 3 })]);
+    holdExistingPullRequest(branch, both.run, "o/r");
+    assert.deepEqual(both.calls[1]?.args, ["pr", "ready", "3", "--repo", "o/r", "--undo"]);
+  });
+
+  it("leaves a PR from another branch alone, and holds the PR for this branch listed after it", () => {
+    const other = gh([pr({ number: 6, headRefName: "other" })]);
+    holdExistingPullRequest(branch, other.run, "o/r");
+    assert.equal(other.calls.length, 1);
+
+    const both = gh([pr({ number: 6, headRefName: "other" }), pr({ number: 3 })]);
+    holdExistingPullRequest(branch, both.run, "o/r");
+    assert.deepEqual(both.calls[1]?.args, ["pr", "ready", "3", "--repo", "o/r", "--undo"]);
+  });
+
+  it("does nothing when the branch has no PR", () => {
+    const { calls, run } = gh([]);
+
+    holdExistingPullRequest(branch, run, "o/r");
+    assert.equal(calls.length, 1);
+  });
+
+  it("throws when the PR can't be turned into a draft, so the caller can stop before it pushes", () => {
+    const run = ((_cmd: string, args: readonly string[]) => {
+      if (args[1] === "list") return JSON.stringify([pr({})]);
+      throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => holdExistingPullRequest(branch, run, "o/r"), /HTTP 422/);
+  });
+});
+
+describe("fileIssueOnce", () => {
+  // A gh stub: `api user` answers the login, an issue listing answers `listed` for the author it was asked for only, the comments API answers
+  // `comments`, and anything else answers 17.
+  const stub = (listed: { number: number; title: string; body?: string; author?: string }[], comments: string[] = [], login = "the-host") => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      if (args[0] === "api" && args[1] === "user") return `${login}\n`;
+      if (args[0] === "issue" && args[1] === "list") {
+        const author = args[args.indexOf("--author") + 1];
+        return JSON.stringify(listed.filter((issue) => issue.author === undefined || issue.author === author));
+      }
+      if (args[0] === "api" && String(args[1]).startsWith("--paginate")) return comments.map((body) => JSON.stringify(body)).join("\n");
+      return "17\n";
+    }) as unknown as typeof execFileSync;
+    return { calls, run, writes: () => calls.filter((call) => call.args[0] === "issue" && call.args[1] !== "list" || call.args.includes("POST")) };
+  };
+
+  const title = "chore(review): Advisory review findings: fix/1-a-b";
+
+  it("reuses the host's own open issue with exactly this title, and leaves an identical body alone", () => {
+    const { writes, run } = stub([{ number: 5, title, body: "body" }, { number: 6, title: "other", body: "" }]);
+
+    assert.equal(fileIssueOnce(title, "body", run, "o/r"), 5);
+    assert.equal(writes().length, 0);
+  });
+
+  it("lists only the issues of the login the host is signed in as, by listing and not by search, since anyone can open an issue with this title and search lags", () => {
+    const { calls, run } = stub([]);
+
+    fileIssueOnce(title, "body", run, "o/r");
+    const args = calls.find((call) => call.args[1] === "list")!.args;
+    assert.equal(args[args.indexOf("--author") + 1], "the-host", "an explicit login: @me needs a user token");
+    assert.ok(!args.includes("--search"), args.join(" "));
+    assert.equal(args[args.indexOf("--limit") + 1], "1000", "a long list of the host's issues doesn't hide the one to reuse");
+  });
+
+  it("files a new issue when only another author has one with the title", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old", author: "someone-else" }]);
+
+    assert.equal(fileIssueOnce(title, "body", run, "o/r"), 17);
+    assert.ok(calls.some((call) => call.args.includes("POST")));
+  });
+
+  it("treats a body that differs only in line endings and trailing whitespace as identical", () => {
+    const { writes, run } = stub([{ number: 5, title, body: "a\r\nb\r\n" }]);
+
+    fileIssueOnce(title, "a\nb\n\n", run, "o/r");
+    assert.equal(writes().length, 0);
+  });
+
+  it("treats a lone carriage return as a line ending too", () => {
+    const { writes, run } = stub([{ number: 5, title, body: "a\rb" }]);
+
+    fileIssueOnce(title, "a\nb", run, "o/r");
+    assert.equal(writes().length, 0);
+  });
+
+  it("adds new findings as a comment and leaves the issue's body, which a person may have edited, alone", () => {
+    const { calls, writes, run } = stub([{ number: 5, title, body: "old findings, with a note from the owner" }]);
+
+    assert.equal(fileIssueOnce(title, "new findings", run, "o/r"), 5);
+    assert.equal(writes().length, 1);
+    assert.deepEqual(writes()[0]!.args, ["issue", "comment", "5", "--repo", "o/r", "--body-file", "-"]);
+    assert.equal(writes()[0]!.input, "new findings");
+    assert.ok(!calls.some((call) => call.args[1] === "edit"), "the body is not replaced");
+  });
+
+  it("does not comment the same findings again on a rerun", () => {
+    const { writes, run } = stub([{ number: 5, title, body: "old findings" }], ["new findings\r\n"]);
+
+    fileIssueOnce(title, "new findings", run, "o/r");
+    assert.equal(writes().length, 0);
+  });
+
+  it("counts only the host's own comments as findings already filed, since anyone can comment on a public issue", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old" }], []);
+
+    fileIssueOnce(title, "new", run, "o/r");
+    const read = calls.find((call) => call.args[0] === "api" && call.args.some((arg) => arg.endsWith("/comments")))!.args;
+    assert.equal(read[read.indexOf("--jq") + 1], '.[] | select(.user.login == "the-host") | .body | @json');
+  });
+
+  // The filter itself, run by jq on comments from two authors: a stranger's copy of the findings must not count as already filed.
+  it("ignores a stranger's comment that copies the findings: jq keeps only the host's comments", { skip: spawnSync("jq", ["--version"]).status !== 0 }, () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old" }], []);
+    fileIssueOnce(title, "new", run, "o/r");
+    const filter = (calls.find((call) => call.args.some((arg) => arg.endsWith("/comments")))!.args as string[]).at(-1)!;
+    const comments = JSON.stringify([
+      { user: { login: "stranger" }, body: "new" },
+      { user: { login: "the-host" }, body: "mine" },
+    ]);
+    const out = spawnSync("jq", ["-r", filter], { input: comments, encoding: "utf8" });
+
+    assert.equal(out.stdout.trim(), JSON.stringify("mine"));
+  });
+
+  it("reads the issue's comments from the issue it reuses", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old" }]);
+
+    fileIssueOnce(title, "new", run, "o/r");
+    assert.ok(calls.some((call) => call.args.some((arg) => arg === "repos/o/r/issues/5/comments")), JSON.stringify(calls.map((call) => call.args)));
+  });
+
+  it("creates the issue, with no labels, when none has the title", () => {
+    const { calls, run } = stub([{ number: 6, title: "chore(review): Advisory review findings: fix/1-a-b-c" }]);
+
+    assert.equal(fileIssueOnce("chore(review): Advisory review findings: fix/1-a-b", "body", run, "o/r"), 17);
+    const create = calls.find((call) => call.args.includes("POST"))!;
+    assert.deepEqual(JSON.parse(String(create.input)), { title: "chore(review): Advisory review findings: fix/1-a-b", body: "body", labels: [] });
   });
 });
 

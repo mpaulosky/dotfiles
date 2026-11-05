@@ -376,3 +376,53 @@ describe("references/sandcastle.md's bullet on the reviewers' logs, for a run th
     }
   });
 });
+
+// The host holds a built branch's PR as a draft while a Critical or Warning finding is open, and files the open Advisory ones in a follow-up issue
+// (mpaulosky/dotfiles#388). The docs must say so, and none may still say Sandcastle skips the review or leaves the follow-up issue unfiled.
+describe("the docs on the host-side review's PR state, record and follow-up issue", () => {
+  const read = (relative: string) => readFileSync(join(skill, relative), "utf8").replace(/\s+/g, " ");
+  const docs = {
+    "SKILL.md": read("SKILL.md"),
+    "CONTEXT.md": read("CONTEXT.md"),
+    "references/sandcastle.md": read("references/sandcastle.md"),
+    "references/pre-push-review.md": read("references/pre-push-review.md"),
+    "docs/adr/0003-github-settings-as-code.md": read("docs/adr/0003-github-settings-as-code.md"),
+    "docs/adr/0008-review-before-the-push.md": read("docs/adr/0008-review-before-the-push.md"),
+  };
+  const section = (docs["references/pre-push-review.md"].split("## Sandcastle runs the review on the host")[1] ?? "").split(/ ## /)[0] ?? "";
+
+  it("no doc says Sandcastle skips or doesn't run the pre-push review", () => {
+    for (const [name, text] of Object.entries(docs)) {
+      assert.doesNotMatch(text, /sandcastle[^.]{0,60}\b(skips?|doesn't run|does not run|never runs)\b[^.]{0,40}(pre-push|local) review/i, name);
+      assert.doesNotMatch(text, /(pre-push|local) review[^.]{0,40}\b(is|are) skipped\b[^.]{0,40}sandcastle/i, name);
+    }
+  });
+
+  it("the host-side section is found, and no longer says the follow-up Advisory issue isn't filed", () => {
+    assert.notEqual(section, "", "the section 'Sandcastle runs the review on the host' is not in references/pre-push-review.md");
+    assert.doesNotMatch(section, /follow-up Advisory issue isn't filed/);
+    assert.match(section, /follow-up (Advisory )?issue/i);
+  });
+
+  it("the host-side section says open Critical or Warning findings hold the PR as a draft until a person accepts them and marks it ready", () => {
+    assert.match(section, /draft/i);
+    assert.match(section, /Critical or Warning/);
+    assert.match(section, /`scripts\/review\.sh accept`/);
+    assert.match(section, /`gh pr ready`/);
+  });
+
+  it("the host-side section says the PR's ## Review notes hold only a person's acceptances", () => {
+    assert.match(section, /Review notes/);
+    assert.match(section, /only a person's acceptances|a person's acceptances only/i);
+  });
+
+  it("CONTEXT.md's Host-side review entry and ADR 0008 say a PR with open findings is held as a draft", () => {
+    const entry = (docs["CONTEXT.md"].split("**Host-side review**:")[1] ?? "").split("**Sandcastle section**")[0] ?? "";
+    assert.match(entry, /draft/i);
+    assert.match(docs["docs/adr/0008-review-before-the-push.md"], /draft/i);
+  });
+
+  it("references/sandcastle.md says the host holds the PR as a draft while Critical or Warning findings are open", () => {
+    assert.match(docs["references/sandcastle.md"], /draft[^.]{0,200}(Critical or Warning|Warning or Critical)|(Critical or Warning|Warning or Critical)[^.]{0,200}draft/i);
+  });
+});

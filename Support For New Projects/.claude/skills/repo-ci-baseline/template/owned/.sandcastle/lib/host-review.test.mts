@@ -11,6 +11,7 @@ import {
   LENS_APPLIES,
   MAX_REVIEW_PATCH_BYTES,
   diffPath,
+  advisoryIssueBody,
   openFindingsNote,
   parseLensTable,
   parseReviewerAnswer,
@@ -1630,7 +1631,7 @@ describe("runHostReview's time cap", () => {
 });
 
 // A usage-limit stop (or a stalled sandbox) during the review leaves the branch for a later round; the run's time budget passing, or the
-// review's own time cap, ends it as failed at the last commit the gate passed on, which is published with a note and no record. A
+// review's own time cap, ends it as failed at the last commit the gate passed on, which is published as a draft, with a note and no record. A
 // reviewer that fails is reported, and the branch is not recorded as reviewed.
 describe("runHostReview's stops and failures", () => {
   it("rejects with the UncountedStopError a reviewer hits at once, starting no later reviewer, and records nothing", async () => {
@@ -2361,5 +2362,344 @@ describe("openFindingsNote", () => {
     const note = openFindingsNote(ledgerOf([found({ summary, fix: summary })]), APP);
 
     assert.doesNotMatch(note, /octocat|#12|aGVsbG8/);
+  });
+});
+
+// The follow-up issue for the open Advisory findings is public, and its text is a reviewer's, so it is held to the PR note's rules.
+describe("advisoryIssueBody", () => {
+  const DOCS = new Set(["docs/a.md"]);
+  const ledgerOf = (findings: Ledger["findings"]): Ledger => ({
+    version: 1,
+    key: "k",
+    branch: "feature/388-x",
+    base: BASE,
+    head: hex(2),
+    recordedAt: "2026-01-01T00:00:00.000Z",
+    rounds: 1,
+    findings,
+  });
+  const advisory = (overrides: Partial<Ledger["findings"][number]> = {}): Ledger["findings"][number] => ({
+    id: "R5",
+    lens: "Docs match the code",
+    path: "docs/a.md",
+    line: 4,
+    summary: "A stale sentence.",
+    severity: "advisory",
+    security: false,
+    status: "open",
+    test: null,
+    reason: null,
+    fix: "Reword it.",
+    ...overrides,
+  });
+  const token = `${"gh"}p_${"A".repeat(36)}`;
+  const clean = (line: string) => !line.includes("ghp_");
+
+  // Text a reader can't see: a bidirectional override, a zero-width space, a Unicode tag character, a control character.
+  for (const [name, hidden] of [
+    ["a bidirectional override", "\u202E"],
+    ["a bidirectional isolate", "\u2066"],
+    ["a zero-width space", "\u200B"],
+    ["a left-to-right mark", "\u200E"],
+    ["an Arabic letter mark", "\u061C"],
+    ["a word joiner", "\u2060"],
+    ["a byte-order mark", "\uFEFF"],
+    ["a Hangul filler", "\u3164"],
+    ["a halfwidth Hangul filler", "\uFFA0"],
+    ["a Hangul choseong filler", "\u115F"],
+    ["a delete character", "\u007F"],
+    ["an escape character", "\u001B"],
+    ["a unit separator", "\u001F"],
+    ["a C1 control", "\u0090"],
+    ["a C1 control at the end of its range", "\u009F"],
+    ["a right-to-left mark", "\u200F"],
+    ["a left-to-right embedding", "\u202A"],
+    ["a function application mark", "\u2061"],
+    ["an invisible plus", "\u2064"],
+    ["a pop directional isolate", "\u2069"],
+    ["a Hangul jungseong filler", "\u1160"],
+    ["a soft hyphen", "\u00AD"],
+    ["a null character", "\u0000"],
+    ["an Arabic number sign, a format character that is not default-ignorable", "\u0600"],
+    ["an Arabic end of ayah, a format character that is not default-ignorable", "\u06DD"],
+    ["a Syriac abbreviation mark, a format character that is not default-ignorable", "\u070F"],
+    ["an interlinear annotation anchor, a format character that is not default-ignorable", "\uFFF9"],
+    ["a combining grapheme joiner", "\u034F"],
+    ["a Khmer inherent vowel", "\u17B4"],
+    ["a Mongolian free variation selector", "\u180B"],
+    ["a Mongolian vowel separator", "\u180E"],
+    ["a deprecated format character", "\u206A"],
+    ["a text variation selector", "\uFE0E"],
+    ["a variation selector from the supplement", "\u{E0100}"],
+    ["a Unicode tag character", "\u{E0041}"],
+    ["a control character", "\u0007"],
+  ] as const) {
+    it(`leaves out a finding whose summary holds ${name}, and counts it as left out`, () => {
+      const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", summary: `A stale${hidden} sentence.` })]), DOCS);
+
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6/);
+      assert.ok(!body.includes(hidden), "the hidden character reached the issue");
+      assert.match(body, /1 more open Advisory finding is in the local review record/);
+    });
+  }
+
+  // terminalText folds U+0085 to a space, but plainText's \s does not match it, so the issue would carry the raw control: it counts as hidden here.
+  for (const field of ["summary", "fix"] as const) {
+    it(`leaves out a finding whose ${field} holds a next-line character, which the issue's own folding would publish raw`, () => {
+      const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", [field]: "Two\u0085lines." })]), DOCS);
+
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6/);
+      assert.ok(!body.includes("\u0085"));
+    });
+  }
+
+  // plainText escapes & < \ ` and breaks @ and # before a letter or digit, so a secret holding one of them no longer matches in the rendered line.
+  for (const [name, secret] of [["an ampersand", "p@ss&word"], ["a hash and a digit", "ab#1xyz"], ["a backtick", "k`ey9"], ["a less-than sign", "a<b-secret"]] as const) {
+    it(`leaves out a finding whose summary holds a secret with ${name}, which the rendered line no longer shows whole`, () => {
+      const holdsSecret = (text: string) => text.includes(secret);
+      const body = advisoryIssueBody(
+        ledgerOf([advisory(), advisory({ id: "R6", summary: `The value ${secret} is set.` })]),
+        DOCS,
+        (text) => !holdsSecret(text),
+      );
+
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6/);
+    });
+  }
+
+  it("asks the public-text check about each field as it is, and does not leave a finding out for padding around a field", () => {
+    const seen: string[] = [];
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "  Padded.  ", fix: null })]), DOCS, (text) => (seen.push(text), true));
+
+    assert.match(body, /R5/);
+    assert.ok(seen.includes("Padded."), seen.join(" | "));
+    assert.ok(seen.includes("docs/a.md"), seen.join(" | "));
+  });
+
+  it("lists a finding that names a user, an issue or github.com, whose rendering the host breaks with a zero-width space", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "Closes #12 or calls @octocat via github.com and GH-7." })]), DOCS);
+
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /left out|more open Advisory/);
+  });
+
+  it("lists a finding with the emoji variation selector, a joiner sequence, or a Persian word with a non-joiner", () => {
+    for (const summary of ["Mind the \u26A0\uFE0F here.", "A family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} emoji.", "می\u200Cخواهم"]) {
+      const body = advisoryIssueBody(ledgerOf([advisory({ summary })]), DOCS);
+
+      assert.match(body, /R5/, summary);
+    }
+  });
+
+  it("lists a finding whose summary or fix holds a tab or a line break, which plainText folds to a space", () => {
+    for (const text of ["A stale\tsentence.", "A stale\nsentence.", "A stale\r\nsentence."]) {
+      assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: text }), advisory({ id: "R6", fix: text })]), DOCS), /R5[\s\S]*R6/, JSON.stringify(text));
+    }
+  });
+
+  // The joiners and the variation selector are text only in the shapes real text uses; elsewhere they are a channel.
+  it("leaves out three or more joiners in a row, and lists two (a red heart with a flame is a selector then a joiner)", () => {
+    const flame = "A \u2764\uFE0F\u200D\u{1F525} here.";
+    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: flame })]), DOCS), /R5/);
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: "A \u2764\uFE0F\u200D\u200C\u{1F525} here." })]), DOCS), "");
+  });
+
+  // The non-joiners U+200C and U+200D may not end a field or touch a space; the selector U+FE0F may not start one or follow a space, but it ends one and
+  // precedes a space in ordinary text ("Careful \u26A0\uFE0F" and "\u26A0\uFE0F here").
+  it("leaves out a joiner at the start or end of a field or beside a space, and a selector at the start or after a space", () => {
+    for (const summary of ["\u200Dstart", "end\u200D", "a \u200D b", "a\u200D b", "a \u200Db", "\u200Cstart", "end\u200C", "a\u200C b", "a \u200Cb", "\uFE0Fstart", "a \uFE0F b", "a \uFE0Fb"]) {
+      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary })]), DOCS), "", JSON.stringify(summary));
+    }
+  });
+
+  it("lists a selector that ends a field or precedes a space, as an emoji does in ordinary text", () => {
+    for (const summary of ["Careful \u26A0\uFE0F", "\u26A0\uFE0F here", "a \u26A0\uFE0F b"]) {
+      assert.match(advisoryIssueBody(ledgerOf([advisory({ summary }), advisory({ id: "R6", fix: summary })]), DOCS), /R5[\s\S]*R6/, JSON.stringify(summary));
+    }
+  });
+
+  // ADR 0010's rule, asked of the branch and the findings listed so far together: a joiner stays only where it does its work, and eight in all.
+  it("leaves out a joiner between ASCII letters, where it does no work", () => {
+    for (const summary of ["x\u200Dx", "x\u200Cx"]) {
+      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary })]), DOCS), "", JSON.stringify(summary));
+    }
+  });
+
+  // A family emoji sequence with N joiners: a man, then N more people each after a joiner.
+  const people = (joiners: number) => `\u{1F468}${"\u200D\u{1F469}".repeat(joiners)}`;
+
+  it("lists eight joiners in the issue and leaves out the finding that would bring them to nine", () => {
+    const eight = advisoryIssueBody(ledgerOf([advisory({ summary: people(4) }), advisory({ id: "R6", summary: people(4) })]), DOCS);
+    assert.match(eight, /R5[\s\S]*R6/);
+
+    const nine = advisoryIssueBody(ledgerOf([advisory({ summary: people(4) }), advisory({ id: "R6", summary: people(5) })]), DOCS);
+    assert.match(nine, /R5/);
+    assert.doesNotMatch(nine, /R6/);
+    assert.match(nine, /1 more open Advisory finding is in the local review record/);
+  });
+
+  it("lists a later finding after one that was left out, if it keeps the issue within the cap", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: people(8) }), advisory({ id: "R6", summary: people(1) }), advisory({ id: "R7", summary: "Plain." })]), DOCS);
+
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /R6/);
+    assert.match(body, /R7/, "R5's eight joiners leave none for R6, but R7 is plain text");
+  });
+
+  it("leaves out a finding with nine private-use code points, which draw as nothing, and lists one with eight", () => {
+    assert.match(advisoryIssueBody(ledgerOf([advisory({ summary: "\u{E000}".repeat(8) })]), DOCS), /R5/);
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: "\u{E000}".repeat(9) })]), DOCS), "");
+  });
+
+  it("leaves out the Braille blank and the Hangul fillers, which draw as blanks", () => {
+    for (const hidden of ["\u2800", "\u3164", "\uFFA0", "\u115F", "\u1160"]) {
+      assert.equal(advisoryIssueBody(ledgerOf([advisory({ summary: `A${hidden}B` })]), DOCS), "", JSON.stringify(hidden));
+    }
+  });
+
+  it("leaves the whole body out when the branch the header quotes holds hidden text", () => {
+    const ledger = { ...ledgerOf([advisory()]), branch: "feature/388-x\u202Ey" };
+
+    assert.equal(advisoryIssueBody(ledger, DOCS), "");
+  });
+
+  it("leaves out a finding whose fix holds hidden text", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ fix: "Reword\u200B it." })]), DOCS);
+
+    assert.equal(body, "");
+  });
+
+  it("still lists a finding with ordinary non-ASCII letters and an emoji", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "Café naïve 日本語 ✅." })]), DOCS);
+
+    assert.match(body, /Café naïve 日本語 ✅/);
+  });
+
+  it("is empty when no Advisory finding is open", () => {
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ status: "fixed", reason: "Reworded." })]), DOCS), "");
+  });
+
+  it("lists an open Advisory finding with its summary and fix", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory()]), DOCS);
+    assert.match(body, /R5 docs\/a\.md:4: A stale sentence\. Suggested fix: Reword it\./);
+  });
+
+  it("leaves out a finding whose path the review didn't read", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: "docs/other.md" })]), DOCS);
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /R6 docs/);
+    assert.match(body, /1 more open Advisory finding is in the local review record/);
+  });
+
+  it("says how many findings are left out, in the plural for two or more", () => {
+    const body = advisoryIssueBody(
+      ledgerOf([advisory(), advisory({ id: "R6", path: "docs/other.md" }), advisory({ id: "R7", path: "docs/another.md" })]),
+      DOCS,
+    );
+
+    assert.match(body, /R5/);
+    assert.match(body, /2 more open Advisory findings are in the local review record and aren't listed here\./);
+  });
+
+  it("leaves out a finding whose path is not made of plain file-name characters", () => {
+    const odd = "docs/[x](http://e.example).md";
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: odd })]), new Set(["docs/a.md", odd]));
+    assert.doesNotMatch(body, /R6 /);
+    assert.match(body, /1 more open Advisory finding is in/);
+  });
+
+  it("leaves out a finding whose path holds Markdown that makes no link, such as emphasis", () => {
+    const odd = "docs/*loud*.md";
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: odd })]), new Set(["docs/a.md", odd]));
+    assert.doesNotMatch(body, /R6 /);
+    assert.match(body, /1 more open Advisory finding is in/);
+  });
+
+  it("leaves out a finding whose text the caller's public-text check refuses, and only that one", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", summary: `The token ${token} is hard-coded.` })]), DOCS, clean);
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /R6|ghp_/);
+    assert.match(body, /1 more open Advisory finding is in/);
+  });
+
+  it("leaves out a suggested fix that holds a secret, not only a summary", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ fix: `Use ${token}.` })]), DOCS, clean);
+    assert.equal(body, "");
+  });
+
+  // GitHub links a www. address anywhere after a space or an underscore too, so every place a path can hold one is left out.
+  for (const path of ["www.evil.example/x", "x www.evil.example/a", "a_www.evil.example", "docs/WWW.evil.example"]) {
+    it(`leaves out a finding whose path is ${JSON.stringify(path)}, and counts it`, () => {
+      const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path })]), new Set(["docs/a.md", path]));
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6|evil/);
+      assert.match(body, /1 more open Advisory finding is in/);
+    });
+  }
+
+  // A reviewer that read untrusted text can put a link or an image in a summary or fix, which the host would publish under its own account.
+  const linky: [string, string][] = [
+    ["a Markdown link", "See [the docs](https://evil.example)."],
+    ["an image", "Shows ![](https://evil.example/p?d=1)."],
+    ["a reference-style link", "See [the docs][1]."],
+    ["a link reference definition", "[1]: //evil.example/x"],
+    ["an image reference", "Shows ![logo] here."],
+    ["a bare URL", "Go to https://evil.example/x now."],
+    ["a www. address", "Go to www.evil.example now."],
+    ["a mailto link", "Write to mailto:a@evil.example now."],
+    ["a link with no scheme", "See [text](//evil.example)."],
+  ];
+  for (const field of ["summary", "fix"] as const) {
+    for (const [name, text] of linky) {
+      it(`leaves out a finding whose ${field} holds ${name}, and keeps the others`, () => {
+        const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", [field]: text })]), DOCS);
+        assert.match(body, /R5/);
+        assert.doesNotMatch(body, /R6|evil/);
+        assert.match(body, /1 more open Advisory finding is in/);
+      });
+    }
+  }
+
+  it("keeps a finding that writes code with brackets, parentheses and dots", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "Reads items[0] and calls trim(x) in lib/a.mts, e.g. twice.", fix: "Check (a) and [b]." })]), DOCS);
+    assert.match(body, /R5 docs\/a\.md:4: Reads items\[0\]/);
+  });
+
+  it("asks the caller's check about a finding's own line, not the header with the branch name", () => {
+    const seen: string[] = [];
+    advisoryIssueBody(ledgerOf([advisory()]), DOCS, (text) => (seen.push(text), true));
+    assert.deepEqual(seen.slice(1), ["docs/a.md", "A stale sentence.", "Reword it."]);
+    assert.match(seen[0]!, /^- R5 docs\/a\.md:4: /);
+    assert.ok(seen.every((text) => !/feature\/388/.test(text)), seen.join(" | "));
+  });
+
+  it("is empty when every finding is left out", () => {
+    assert.equal(advisoryIssueBody(ledgerOf([advisory({ path: "docs/other.md" })]), DOCS), "");
+  });
+
+  it("lists at most 20 findings and counts the rest", () => {
+    const many = Array.from({ length: 21 }, (_, i) => advisory({ id: `R${i + 1}`, line: i + 1 }));
+    const body = advisoryIssueBody(ledgerOf(many), DOCS);
+    assert.equal(body.split("\n").filter((line) => line.startsWith("- R")).length, 20);
+    assert.match(body, /1 more open Advisory finding is in/);
+    assert.equal(advisoryIssueBody(ledgerOf(many.slice(0, 20)), DOCS).includes("more open"), false);
+  });
+
+  it("leaves out a finding whose line is over the length bound, and keeps one at the bound", () => {
+    const at = (summary: string) => advisoryIssueBody(ledgerOf([advisory({ fix: null, summary })]), DOCS);
+    const fits = at("x".repeat(1900));
+    assert.match(fits, /R5/);
+    const lineLength = fits.split("\n").find((line) => line.startsWith("- R5"))!.length;
+    const room = 2000 - (lineLength - 1900);
+    assert.match(at("x".repeat(room)), /R5/, "a line of exactly the bound stays");
+    assert.equal(at("x".repeat(room + 1)), "", "a line one over is left out");
+  });
+
+  it("ends with the session marker and keeps the 'more' note above it", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: "docs/other.md" })]), DOCS);
+    assert.match(body, /isn't listed here\.\n\n<!-- claude-session -->\n$/);
   });
 });

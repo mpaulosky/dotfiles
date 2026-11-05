@@ -317,6 +317,9 @@ export function collectStatus(github: StatusGitHub, now: number = Date.now(), lo
 const SHOWN_LABEL_NAMES = [BUILDING_LABEL, "sandcastle:needs-human", FOLLOW_UP_LABEL, "review:claude", QUEUE_LABEL, LOCAL_QUEUE_LABEL];
 const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 
+// A run of whitespace, which terminalText turns into one space. Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
+const SPACE_RUN = /[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu;
+
 // GitHub's and gh's text (a title, a branch, a reason, an error) made safe for a terminal: whitespace, including a line break, is one
 // space, and every control character (ESC and the C1 set, so no CSI sequence), format character (bidi marks, zero-width characters,
 // the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, noncharacter, filler that
@@ -334,8 +337,7 @@ export function terminalText(text: string): string {
   let odd = 0;
   return (
     text
-      // Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
-      .replace(/[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu, " ")
+      .replace(SPACE_RUN, " ")
       .replace(HIDDEN_CHARACTERS, (character, offset: number, whole: string) => {
         const keep = kept < MAX_KEPT_JOINERS && keptJoiner(character, whole.slice(Math.max(0, offset - JOINER_LOOKBEHIND), offset), whole.slice(offset + character.length, offset + 3));
         if (keep) kept += 1;
@@ -347,6 +349,13 @@ export function terminalText(text: string): string {
       .replace(/ {2,}/g, " ")
       .trim()
   );
+}
+
+// Whether terminalText would drop anything from `text` but whitespace: a character that draws as nothing or reorders what a reader sees, a joiner outside the
+// places it stays, or more joiners, private-use or unassigned code points or stacked marks than a text keeps. The public follow-up issue
+// (lib/host-review.mts#advisoryIssueBody) leaves out a finding that holds any, so the issue carries no more hidden text than ADR 0010 lets a terminal line carry.
+export function hasHiddenText(text: string): boolean {
+  return terminalText(text) !== text.replace(SPACE_RUN, " ").replace(/ {2,}/g, " ").trim();
 }
 
 // The most private-use or unassigned code points, and the most combining marks in a row, one text keeps.

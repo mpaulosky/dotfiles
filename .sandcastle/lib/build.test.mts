@@ -5,6 +5,8 @@ import { spawnSync, type execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
+import { hostExecFileSync } from "./host-limit.mts";
+import { forgetRepoName, repoName } from "./github.mts";
 import { join } from "node:path";
 import {
   buildIssue,
@@ -12,6 +14,7 @@ import {
   worktreeIsGone,
   designComment,
   designNoteIn,
+  HoldFailedError,
   latestDesignNote,
   isGitHubServerError,
   isWorkflowPushRejection,
@@ -25,6 +28,8 @@ import {
   publicErrorText,
   prTitle,
   publish,
+  openHeldPullRequest,
+  DRAFT_NOTE,
   remoteBranchIsOnOrigin,
   readSkillFiles,
   remoteMainIs,
@@ -53,7 +58,7 @@ import { gitSandboxFake } from "./git-sandbox-fake.mts";
 import type { HostReviewResult } from "./host-review.mts";
 import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
-import { ledgerGitEnv, type Ledger } from "./review-ledger.mts";
+import { ledgerGitEnv, renderAdvisories, type Ledger } from "./review-ledger.mts";
 import type { SecretMatch } from "./scan.mts";
 import { buildLogs, reviewerLogFileName } from "./role-logs.mts";
 import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
@@ -112,6 +117,7 @@ function host(
     leaksOnlyInMergedMain,
     worktreeProblems = [],
     publishError,
+    publishHoldFailed,
     designNote,
     designFile = "",
     prBodyFile = validPrBody,
@@ -155,6 +161,7 @@ function host(
     leaksOnlyInMergedMain?: SecretMatch;
     worktreeProblems?: string[];
     publishError?: string;
+    publishHoldFailed?: boolean;
     // What latestDesignNote returns for the architect's prompt: the body of
     // its latest earlier design comment, or undefined on a first run.
     designNote?: string;
@@ -350,6 +357,10 @@ function host(
   const publishedPrBodies: (string | undefined)[] = [];
   // The reviewNote argument buildMarkedIssue passed to host.publish (its 11th), one entry per call.
   const publishedReviewNotes: (string | undefined)[] = [];
+  // The holdAsDraft argument buildMarkedIssue passed to host.publish (its 12th), one entry per call.
+  const publishedDrafts: (boolean | undefined)[] = [];
+  // Every follow-up issue the build filed for the review's open Advisory findings.
+  const advisoryIssues: { title: string; body: string }[] = [];
   // Every localReview call's arguments.
   const localReviewCalls: LocalReviewArgs[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
@@ -411,16 +422,23 @@ function host(
       scannedExclusions.push(mergedMain);
       return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
-    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote) => {
+    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote, holdAsDraft) => {
+      // Only a publish that holds the PR as a draft can fail to hold it.
+      if (publishHoldFailed && holdAsDraft) throw new HoldFailedError(publishedBranch, new Error("gh pr ready failed:\nHTTP 422"));
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
       publishEvents.push("publish");
       publishCalls.push({ reviewed, docsFailed });
       publishedPrBodies.push(prBody);
       publishedReviewNotes.push(reviewNote);
+      publishedDrafts.push(holdAsDraft);
       publishedCheckChanges.push(checkChanges);
       steps.push(`publish${reviewed ? "" : " unreviewed"}${docsFailed ? " docs-failed" : ""}`);
       return "https://github.com/o/r/pull/1";
+    },
+    fileAdvisoryIssue: (title, body) => {
+      publishEvents.push("file-advisory");
+      advisoryIssues.push({ title, body });
     },
     latestMain: () => {
       if (latestMainError !== undefined) throw new Error(latestMainError);
@@ -472,7 +490,7 @@ function host(
     steps, runs, logs, probes, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, publishedCheckChanges, gateGuardChecks, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
-    publishedReviewNotes, localReviewCalls,
+    publishedReviewNotes, localReviewCalls, publishedDrafts, advisoryIssues,
   };
 }
 
@@ -2822,6 +2840,60 @@ describe("prTitle", () => {
   });
 });
 
+describe("openHeldPullRequest", () => {
+  const branch = "feature/4-add-search";
+  // A gh stub that lists one open PR for the branch with `body`, and records every call.
+  const gh = (isDraft: boolean, body: string) => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body });
+      return args[1] === "list"
+        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/3" }])
+        : "";
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+
+  it("adds the draft note to an existing PR whose body a person edited, so the body still says why it is a draft", () => {
+    const body = "Closes #4\n\n## Review notes\n\n- R1 accepted: fine.";
+    const { calls, run } = gh(false, body);
+
+    assert.equal(openHeldPullRequest(branch, "Add search", "new body", true, run, "o/r"), "https://github.com/o/r/pull/3");
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "ready"], ["pr", "view"], ["pr", "edit"]]);
+    assert.equal(calls[3]!.input, `${body}\n\n${DRAFT_NOTE}`);
+  });
+
+  // The clean rerun's note removal depends on the wrapper passing DRAFT_NOTE when the PR is not held: were it to stop, the note would stay on a draft for good.
+  it("passes the draft note on a rerun that no longer holds the PR, so the note is taken out of a draft that has it", () => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body: `Closes #4\n\n${DRAFT_NOTE}` });
+      return args[1] === "list"
+        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft: true, url: "https://github.com/o/r/pull/3" }])
+        : "";
+    }) as unknown as typeof execFileSync;
+
+    openHeldPullRequest(branch, "Add search", "new body", false, run, "o/r");
+
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
+    assert.ok(!String(calls[2]!.input).includes(DRAFT_NOTE), String(calls[2]!.input));
+  });
+
+  it("opens a new PR as a draft with the body it was given", () => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      return args[1] === "list" ? "[]" : "https://github.com/o/r/pull/9\n";
+    }) as unknown as typeof execFileSync;
+
+    openHeldPullRequest(branch, "Add search", "new body", true, run, "o/r");
+    assert.ok(calls[1]!.args.includes("--draft"), calls[1]!.args.join(" "));
+    assert.equal(calls[1]!.input, "new body");
+  });
+});
+
 describe("publish", () => {
   // git's output for a GitHub Internal Server Error: a transient
   // GitHub failure that's worth retrying.
@@ -4759,5 +4831,714 @@ describe("liveReviewHost", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }
+  });
+});
+
+// Open Critical or Warning findings hold a built branch's PR as a draft until a person accepts them (`scripts/review.sh accept`) and marks it ready
+// (`gh pr ready`); a PR with none open is opened ready. Only a person accepts: the host never does.
+describe("buildIssue's PR state after the local review", () => {
+  const reviewed = "c".repeat(40);
+  const recorded = (findings: Ledger["findings"]) => async () =>
+    ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["src/app.ts", "src/log.ts"]) }) as const;
+  const warning = () => openFinding({ id: "R2", lens: "Security", severity: "warning", security: true, summary: "The token reaches the log line.", path: "src/log.ts" });
+
+  it("holds the PR as a draft when a Critical finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+  });
+
+  it("holds the PR as a draft when a Warning finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([warning()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+  });
+
+  it("opens the PR ready when the review left nothing open", async () => {
+    const run = host([0, 0], { localReview: recorded([]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [false]);
+  });
+
+  it("opens the PR ready when only fixed, dismissed or accepted findings and open Advisory ones remain", async () => {
+    const run = host([0, 0], {
+      localReview: recorded([
+        openFinding({ id: "R1", status: "fixed", test: "tests/a.test.ts::blank" }),
+        openFinding({ id: "R2", status: "dismissed", reason: "src/app.ts:12 is guarded." }),
+        openFinding({ id: "R3", status: "accepted", reason: "A person accepted it." }),
+        openFinding({ id: "R4", severity: "advisory", path: "docs/a.md", summary: "A stale sentence." }),
+      ]),
+    });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [false]);
+  });
+
+  // A review that didn't finish has not cleared the code, and PR Auto-Merge only merges ready PRs: the PR is held, and the note in its body says why.
+  it("holds the PR as a draft when the review didn't finish and recorded nothing, with the note saying the review didn't finish", async () => {
+    const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.match(run.publishedReviewNotes[0] ?? "", /The local review didn't finish \(the Bar reviewer timed out\)/);
+    assert.match(DRAFT_NOTE, /didn't finish/);
+  });
+
+  it("holds the PR as a draft for an open finding graded Advisory that is a security finding", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /R3 /, "a security finding is counted, never listed");
+  });
+
+  it("lists an open finding that isn't a security one and counts the security one beside it", async () => {
+    const run = host([0, 0], {
+      localReview: recorded([
+        openFinding({ id: "R2", path: "src/a.ts", line: 3, security: false }),
+        openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" }),
+      ]),
+    });
+    // The note lists only paths the review read.
+    const local = run.buildHost.localReview;
+    run.buildHost.localReview = async (args) => {
+      const result = await local(args);
+      return result.status === "recorded" ? { ...result, readPaths: new Set(["src/a.ts", "src/log.ts"]) } : result;
+    };
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /R2 /);
+    assert.doesNotMatch(note, /R3 /);
+    assert.match(note, /1 security finding is left open/);
+  });
+
+  it("holds the PR as a draft when the only open finding's path the note can't list", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding({ path: "src/unread.ts" })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /unread\.ts/);
+  });
+
+  it("never writes a Review notes section: only a person's acceptances make one", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding(), warning()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok((run.publishedReviewNotes[0] ?? "").length > 0, "the note was built");
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /Review.{0,6}notes/i);
+  });
+
+  it("writes no Review notes section into the body publish assembles for a held PR", async () => {
+    const bodies: string[] = [];
+    const note = "The local review left these findings open (their details are in the local review record):\n\n- R1 critical src/app.ts:12";
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, (_b, _t, body) => (bodies.push(body), "u"), async () => {}, note, true, () => {});
+
+    assert.ok(bodies[0]?.includes(note));
+    assert.doesNotMatch(bodies[0] ?? "", /Review.{0,6}notes/i);
+  });
+});
+
+// The follow-up issue holds the open Advisory findings of the review, as the skill's step 9 files it (`scripts/review.sh advisory`).
+describe("buildIssue's follow-up issue for open Advisory findings", () => {
+  const reviewed = "c".repeat(40);
+  const advisory = (overrides: Partial<Ledger["findings"][number]> = {}) =>
+    openFinding({ id: "R5", severity: "advisory", path: "docs/a.md", line: 4, summary: "A stale sentence.", fix: "Reword it.", ...overrides });
+  const recorded = (findings: Ledger["findings"]) => async () =>
+    ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["docs/a.md"]) }) as const;
+
+  it("files one issue titled for the branch, whose body is the ledger's list of the open Advisory findings", async () => {
+    const ledger = ledgerWith(reviewed, [advisory(), advisory({ id: "R6", line: 9, summary: "A stale comment." })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/a.md"]) }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.equal(run.advisoryIssues[0]?.title, `chore(review): Advisory review findings: ${branch}`);
+    assert.equal(run.advisoryIssues[0]?.body, renderAdvisories(ledger));
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R6/);
+  });
+
+  it("files nothing, still publishes, and says so when the branch name hides text, so a dropped issue isn't mistaken for no findings", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const hidden = { ...ledgerWith(reviewed, [advisory()]), branch: `${branch}\u202Ey` };
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger: hidden, readPaths: new Set(["docs/a.md"]) }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.advisoryIssues, []);
+    assert.ok([...run.logs, ...logged].some((line) => /Advisory findings can't be listed/.test(line)), [...run.logs, ...logged].join("\n"));
+  });
+
+  it("logs nothing about a dropped issue when no Advisory finding is open", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([openFinding()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(![...run.logs, ...logged].some((line) => /Advisory findings can't be listed/.test(line)));
+  });
+
+  it("files nothing when no Advisory finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding(), advisory({ status: "fixed", test: null, reason: "Reworded." })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a security finding out of the public issue, whatever its grade", async () => {
+    const run = host([0, 0], { localReview: recorded([advisory(), advisory({ id: "R7", security: true, summary: "The token reaches the log line." })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R7|token reaches/);
+  });
+
+  it("files nothing when the review didn't finish", async () => {
+    const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  const filed = (findings: Ledger["findings"], options: Parameters<typeof host>[1] = {}) =>
+    host([0, 0], { localReview: recorded(findings), ...options });
+
+  it("files the issue only once the branch is published", async () => {
+    const run = filed([advisory()]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishEvents.slice(-2), ["publish", "file-advisory"]);
+  });
+
+  it("files nothing when the secret scan refuses the branch", async () => {
+    const run = filed([advisory()], { leaksSecret: sampleSecretMatch });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("files nothing when publishing fails", async () => {
+    const run = filed([advisory()], { publishError: "push rejected" });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a finding whose summary holds a secret out of the issue, and files the rest", async () => {
+    const run = filed([advisory(), advisory({ id: "R6", summary: `Hard-coded ${"gh"}p_${"A".repeat(36)} in the page.` })]);
+    run.buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R6|ghp_/);
+  });
+
+  it("leaves a finding whose path the review didn't read out of the issue", async () => {
+    const run = filed([advisory({ path: "docs/unread.md" })]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a finding that reads like a Review notes section out of the issue", async () => {
+    const run = filed([advisory(), advisory({ id: "R6", summary: "Add a Review notes section." })]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R6/);
+  });
+
+  it("still files the findings for a branch whose name holds the words review notes", async () => {
+    const named = "feature/12-add-review-notes-section";
+    const ledger = { ...ledgerWith(reviewed, [advisory()]), branch: named };
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/a.md"]) }) });
+    run.buildHost.publicError = (text) => publicErrorText(String(text));
+
+    await buildIssue(issue, named, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /feature\/12-add-review-notes-section/);
+  });
+
+  it("files nothing, and says so, when the issue's text as a whole isn't safe to publish", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = filed([advisory()]);
+    run.buildHost.publicError = (text) => (String(text).includes("Advisory findings from the local review") ? "(withheld)" : String(text));
+    run.logs.length = 0;
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+    assert.ok(run.logs.some((line) => /follow-up issue/.test(line)) || logged.some((line) => /follow-up issue/.test(line)), [...run.logs, ...logged].join("\n"));
+  });
+
+  it("retries filing the issue after a GitHub server error", async () => {
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.wait = async () => {};
+    run.buildHost.fileAdvisoryIssue = () => {
+      if (++attempts === 1) throw new Error("gh issue create failed:\nHTTP 503: Service Unavailable");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, 2);
+  });
+
+  it("still publishes the PR when filing the issue fails, tries once, and logs the failure", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.fileAdvisoryIssue = () => {
+      attempts++;
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, 1, "a failure that isn't a GitHub server error is not retried");
+    assert.ok(run.publishEvents.includes("publish"));
+    assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)), logged.join("\n"));
+  });
+
+  // A failed filing must leave a trace: on an ephemeral runner the ledger is gone, so the Advisory findings are posted on the Sandcastle issue instead.
+  it("posts the findings on the Sandcastle issue when filing the follow-up issue fails, so they are not lost", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const comments: { issue: number; body: string }[] = [];
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = (n, body) => void comments.push({ issue: n, body });
+    run.buildHost.fileAdvisoryIssue = () => {
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    const posted = comments.filter((comment) => /follow-up issue/.test(comment.body));
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0]?.issue, issue.number);
+    assert.match(posted[0]?.body ?? "", /couldn't file the follow-up issue/);
+    assert.match(posted[0]?.body ?? "", /R5 docs\/a\.md:4: A stale sentence\./);
+    assert.ok(posted[0]?.body.includes(result.prUrl ?? "no PR url"), "the comment names the pull request");
+  });
+
+  it("still publishes, and logs both failures, when the comment on the findings fails too", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = () => {
+      throw new Error("gh issue comment failed");
+    };
+    run.buildHost.fileAdvisoryIssue = () => {
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)));
+    assert.ok(logged.some((line) => /posting the Advisory findings/.test(line)), logged.join("\n"));
+  });
+
+  it("posts nothing on the Sandcastle issue when the follow-up issue is filed", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(!comments.some((body) => /couldn't file the follow-up issue/.test(body)));
+  });
+
+  it("gives up filing after the last attempt of a GitHub server error, and still publishes", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.wait = async () => {};
+    run.buildHost.fileAdvisoryIssue = () => {
+      attempts++;
+      throw new Error("gh issue create failed:\nHTTP 503: Service Unavailable");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, PUBLISH_RETRY_ATTEMPTS);
+  });
+});
+
+describe("buildIssue when the open PR can't be held as a draft", () => {
+  it("says nothing was pushed and the PR must be made a draft, files nothing and publishes nothing", async () => {
+    const comments: string[] = [];
+    // A blocking finding makes the build hold the PR, and an open Advisory one is what the follow-up issue would list: the issue must not be filed for a branch
+    // that was never pushed.
+    const reviewed = "c".repeat(40);
+    const findings = [openFinding(), openFinding({ id: "R2", severity: "advisory", path: "docs/a.md", line: 4, summary: "A stale sentence.", fix: "Reword it." })];
+    const run = host([0, 0], {
+      publishHoldFailed: true,
+      localReview: async () =>
+        ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["src/app.ts", "docs/a.md"]) }) as const,
+    });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.equal(result.publishFailed, true);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0] ?? "", /gh pr ready feature\/69-run-the-gate --undo/);
+    assert.match(comments[0] ?? "", /Nothing was pushed/);
+    assert.doesNotMatch(comments[0] ?? "", /push it\s+from its worktree/);
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+});
+
+// A review that didn't finish holds the PR too, with no finding to fix or accept: the comments say to run the review again.
+describe("buildIssue when a review that didn't finish held the PR and publishing failed", () => {
+  const unfinished = { localReview: async (args: { startHead: string }) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) as const };
+
+  it("says the review didn't finish when the PR can't be made a draft", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishHoldFailed: true, ...unfinished });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.match(comments[0] ?? "", /the review didn't finish/);
+    assert.doesNotMatch(comments[0] ?? "", /left findings open/);
+  });
+
+  it("says the review didn't finish and to run it again, not to accept findings, when publishing fails after the hold", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishError: "git push --quiet origin abc:refs/heads/x failed:\n ! [rejected] abc -> x (non-fast-forward)", ...unfinished });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.match(comments[0] ?? "", /the review didn't finish and the pull request was held as a draft/);
+    assert.match(comments[0] ?? "", /until the review has been run again and nothing is open/);
+    assert.doesNotMatch(comments[0] ?? "", /fixed or accepted|left findings open/);
+  });
+});
+
+// A push or a PR create that fails after the hold leaves a draft: the comment must say so, not send a person to open a second PR.
+describe("buildIssue when publishing fails after the PR was held as a draft", () => {
+  const reviewed = "c".repeat(40);
+  const blocked = () =>
+    host([0, 0], {
+      publishError: "git push --quiet origin abc:refs/heads/x failed:\n ! [rejected] abc -> x (non-fast-forward)",
+      localReview: async () =>
+        ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, [openFinding()]), readPaths: new Set(["src/app.ts"]) }) as const,
+    });
+
+  it("says the pull request may already be a draft and why, to find it rather than open another, and to mark it ready only once nothing is open", async () => {
+    const comments: string[] = [];
+    const run = blocked();
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.equal(comments.length, 1);
+    assert.match(comments[0] ?? "", /held as a draft/);
+    assert.match(comments[0] ?? "", /gh pr list --head feature\/69-run-the-gate/);
+    assert.match(comments[0] ?? "", /scripts\/review\.sh accept/);
+    assert.doesNotMatch(comments[0] ?? "", /open one by hand/);
+    assert.match(comments[0] ?? "", /non-fast-forward/);
+  });
+
+  it("keeps the generic wording, which sends a person to open the PR by hand, when nothing held the PR", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishError: "gh pr create failed:\n remote: Internal Server Error" });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.match(comments[0] ?? "", /open one by hand/);
+    assert.doesNotMatch(comments[0] ?? "", /held as a draft/);
+  });
+});
+
+// publish's live defaults, run against a fake `gh` that is the only program on PATH, so a test can never reach the real gh and its login: the hold must reach gh
+// before the push, and a created PR must carry --draft and DRAFT_NOTE.
+describe("publish's default hold and PR creation", { skip: process.platform === "win32" }, () => {
+  const withFakeGh = async (
+    listed: string,
+    body: (log: () => string[], created: () => string, edited: () => string) => Promise<void>,
+    repoAnswer = "o/r",
+    viewBody = "",
+  ) => {
+    const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
+    const logFile = join(dir, "calls.log");
+    const createdFile = join(dir, "created-body.txt");
+    const editedFile = join(dir, "edited-body.txt");
+    const viewFile = join(dir, "view.json");
+    writeFileSync(viewFile, JSON.stringify({ body: viewBody }));
+    // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers `repo view`, `pr list`, `pr view` and `pr create` (keeping its body), and reads and drops the input of anything else, such as the hold's `pr ready`.
+    writeFileSync(
+      join(dir, "gh"),
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> "${logFile}"`,
+        'case "$1 $2" in',
+        `  "repo view") echo ${repoAnswer} ;;`,
+        `  "pr list") echo '${listed}' ;;`,
+        `  "pr view") read -r answer < "${viewFile}"; printf '%s\\n' "$answer" ;;`,
+        `  "pr edit") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${editedFile}"; done ;;`,
+        `  "pr create") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${createdFile}"; done; echo https://github.com/o/r/pull/9 ;;`,
+        "  *) while IFS= read -r line || [ -n \"$line\" ]; do :; done ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const saved = process.env.PATH;
+    // Whatever an earlier use or test cached is not the fake's answer.
+    forgetRepoName();
+    process.env.PATH = dir;
+    try {
+      // The fake must be what runs: were it unrunnable the real gh, with the developer's login, would not be reachable either (PATH holds nothing else).
+      assert.equal(String(hostExecFileSync("gh", ["repo", "view"], { encoding: "utf8" })).trim(), repoAnswer);
+      rmSync(logFile);
+      await body(
+        () => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean) : []),
+        () => (existsSync(createdFile) ? readFileSync(createdFile, "utf8") : ""),
+        () => (existsSync(editedFile) ? readFileSync(editedFile, "utf8") : ""),
+      );
+    } finally {
+      if (saved === undefined) delete process.env.PATH;
+      else process.env.PATH = saved;
+      // The fake's repository name must not stay cached for the tests that follow.
+      forgetRepoName();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  };
+  const open = (isDraft: boolean) =>
+    JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4" }]);
+
+  it("forgets a repository name cached before it starts, so the fake's own answer is read", async () => {
+    await withFakeGh("[]", async () => {
+      assert.equal(repoName(), "o/r");
+      await withFakeGh("[]", async () => assert.equal(repoName(), "p/q"), "p/q");
+    });
+  });
+
+  // Not through withFakeGh, whose start forgets the name too and would hide a missing forget at its end.
+  it("forgets the repository name the fake gh gave, so a later use reads its own", async () => {
+    await withFakeGh("[]", async () => assert.equal(repoName(), "o/r"));
+    const dir = mkdtempSync(join(tmpdir(), "later-gh-"));
+    writeFileSync(join(dir, "gh"), "#!/bin/sh\necho x/y\n", { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      assert.equal(repoName(), "x/y");
+    } finally {
+      if (saved === undefined) delete process.env.PATH;
+      else process.env.PATH = saved;
+      forgetRepoName();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("turns the ready PR for the branch into a draft before the push, not only in the later create hop", async () => {
+    await withFakeGh(open(false), async (calls) => {
+      const atPush: string[][] = [];
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => void atPush.push(calls()), undefined, async () => {}, "note", true);
+
+      assert.equal(atPush.length, 1);
+      assert.ok(atPush[0]!.some((line) => line.startsWith("pr ready 4") && line.includes("--undo")), `at the push: ${atPush[0]!.join(" | ")}`);
+    });
+  });
+
+  it("takes the draft note out of an existing draft on a rerun that no longer holds it, and does not convert it", async () => {
+    await withFakeGh(
+      open(true),
+      async (calls, _created, edited) => {
+        await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "", false);
+
+        assert.ok(calls().some((line) => line.startsWith("pr view 4")), calls().join("\n"));
+        assert.ok(calls().some((line) => line.startsWith("pr edit 4")), calls().join("\n"));
+        assert.ok(!calls().some((line) => line.startsWith("pr ready")), calls().join("\n"));
+        assert.ok(!edited().includes(DRAFT_NOTE), edited());
+        assert.match(edited(), /Why it was built/);
+      },
+      "o/r",
+      `Why it was built.\n\n${DRAFT_NOTE}`,
+    );
+  });
+
+  it("creates a new PR as a draft with the draft note in its body when nothing is open", async () => {
+    await withFakeGh("[]", async (calls, created) => {
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "note", true);
+
+      assert.ok(calls().some((line) => line.startsWith("pr create") && line.includes("--draft")), calls().join("\n"));
+      assert.ok(created().includes(DRAFT_NOTE), created());
+    });
+  });
+
+  it("creates a ready PR with no draft wording, and holds none, when nothing holds it", async () => {
+    await withFakeGh("[]", async (calls, created) => {
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "", false);
+
+      assert.ok(calls().some((line) => line.startsWith("pr create") && !line.includes("--draft")), calls().join("\n"));
+      assert.ok(!calls().some((line) => line.startsWith("pr ready")));
+      assert.ok(!created().includes(DRAFT_NOTE));
+    });
+  });
+});
+
+describe("publish holds an existing PR before it pushes", () => {
+  const note = "The local review left these findings open:\n\n- R1 critical src/app.ts:12";
+  const args = (order: string[]) => ({
+    push: () => void order.push("push"),
+    create: () => (order.push("create"), "https://github.com/o/r/pull/1"),
+    hold: () => void order.push("hold"),
+  });
+
+  it("turns a ready PR into a draft before the push, so new commits never sit on a ready PR", async () => {
+    const order: string[] = [];
+    const { push, create, hold } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, hold);
+
+    assert.deepEqual(order, ["hold", "push", "create"]);
+  });
+
+  it("does not push when the PR can't be held, and rejects with a HoldFailedError naming the branch and keeping the cause", async () => {
+    const order: string[] = [];
+    const { push, create } = args(order);
+    const cause = new Error("gh pr ready failed: HTTP 422");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, () => {
+        throw cause;
+      }),
+      (error: unknown) => error instanceof HoldFailedError && error.message.includes(branch) && /HTTP 422/.test(error.message) && error.cause === cause,
+    );
+    assert.deepEqual(order, []);
+  });
+
+  it("rejects with the push's own error, not a HoldFailedError, when the hold worked and the push fails", async () => {
+    const failure = new Error("git push failed: non-fast-forward");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => { throw failure; }, () => "u", async () => {}, note, true, () => {}),
+      (error: unknown) => error === failure && !(error instanceof HoldFailedError),
+    );
+  });
+
+  it("rejects with the create's own error, not a HoldFailedError, when the hold and the push worked and the create fails", async () => {
+    const failure = new Error("gh pr create failed: validation");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, () => { throw failure; }, async () => {}, note, true, () => {}),
+      (error: unknown) => error === failure && !(error instanceof HoldFailedError),
+    );
+  });
+
+
+  it("retries holding the PR after a GitHub server error", async () => {
+    let attempts = 0;
+    const order: string[] = [];
+    const { push, create } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, () => {
+      if (++attempts === 1) throw new Error("gh pr ready failed:\nHTTP 503: Service Unavailable");
+    });
+
+    assert.equal(attempts, 2);
+    assert.deepEqual(order, ["push", "create"]);
+  });
+
+  it("does not look for a PR to hold when nothing holds the PR", async () => {
+    const order: string[] = [];
+    const { push, create, hold } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, "", false, hold);
+
+    assert.deepEqual(order, ["push", "create"]);
+  });
+});
+
+describe("publish with the review holding the PR as a draft", () => {
+  const create = () => {
+    const calls: { body: string; draft: boolean | undefined }[] = [];
+    return { calls, createPullRequest: (_branch: string, _title: string, body: string, draft?: boolean) => (calls.push({ body, draft }), "https://github.com/o/r/pull/1") };
+  };
+  const note = "The local review left these findings open (their details are in the local review record):\n\n- R1 critical src/app.ts:12";
+
+  it("opens the PR as a draft and says why in its body, naming what a person does", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, note, true, () => {});
+
+    assert.equal(calls[0]?.draft, true);
+    const body = calls[0]?.body ?? "";
+    assert.match(body, /draft/i);
+    assert.match(body, /scripts\/review\.sh accept/);
+    assert.match(body, /gh pr ready/);
+    assert.ok(body.includes(note), "the note of the open findings stays in the body");
+  });
+
+  it("opens the PR ready, with no draft wording, when nothing holds it", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, "", false);
+
+    assert.equal(calls[0]?.draft, false);
+    assert.doesNotMatch(calls[0]?.body ?? "", /draft|gh pr ready/i);
+  });
+
+  it("opens the PR ready by default", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {});
+
+    assert.equal(calls[0]?.draft, false);
+  });
+
+  it("keeps the marker, Closes and the reason whole when the description is cut to fit", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, `## Why\n\n${"x".repeat(80_000)}`, [], () => {}, createPullRequest, async () => {}, note, true, () => {});
+
+    const body = calls[0]?.body ?? "";
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, String(body.length));
+    assert.ok(body.length >= PR_BODY_TOTAL_LIMIT - 100, `the room is used, not just under GitHub's cap: ${body.length}`);
+    assert.match(body, /^<!-- sandcastle:pr -->\nCloses #69\n/);
+    assert.match(body, /gh pr ready/);
   });
 });

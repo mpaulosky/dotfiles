@@ -172,15 +172,44 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
 - A usage-limit stop, or a stalled sandbox (a reviewer or fixer run the host gave up on `ROLE_RUN_GRACE_MINUTES` after its `timeoutMinutes`), leaves the branch for a later round: nothing is
   published and no failed attempt is spent; a usage-limit stop ends the run cleanly,
   and a stalled sandbox ends it red. The run's time budget passing (`TimeBudgetStopError`), or the review's own cap of `REVIEW_WALL_CLOCK_MINUTES` (checked before each
-  round, reviewer and fixer run), ends the review as failed at the last commit the gate passed on, so work already gated is published with a note.
+  round, reviewer and fixer run), ends the review as failed at the last commit the gate passed on, so work already gated is published, as a draft, with a note.
   The first reviewer that fails ends the round (no later reviewer of it runs). That, a record that can't be made, a round's diff past `MAX_REVIEW_PATCH_BYTES`,
   or a checkpoint 3 that stays red after a round's fixes
-  publishes the branch, at the last commit the gate passed on, with a PR note and no record. A fixer that moves HEAD without
+  publishes the branch, at the last commit the gate passed on, as a draft with a PR note and no record (see the draft bullet below). A fixer that moves HEAD without
   changing a file ends the review at the round as it was read. A finding's lens is the reviewer's the host ran, never the one its answer names.
   Open non-security findings go in the PR as a note of at most 20 findings, each by id, severity and place only: a reviewer's own summary and fix stay in the local record.
   A finding is listed only when its path is a file the review's diffs touched and is made of plain file-name characters (never a link, an image or a `www.` address), and a line the host's
   public-text check would change, or that reads like a `## Review notes` section, is left out on its own. The rest, and any security finding, are only counted.
-- Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers; the follow-up Advisory issue isn't filed.
+- Open Critical or Warning findings (and any open security finding, whatever its grade) hold the PR as a draft, and so does a review that didn't finish, since it hasn't cleared the code (its
+  note says so): the host opens it with `gh pr create --draft`, and its body says why and what a person does. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the
+  PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready. A PR that already exists for the branch (a rerun) is turned into a draft with `gh pr ready
+  --undo` before the new commits are pushed (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body, but
+  only while its body still carries the host's `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the
+  draft note added to it, unless that would pass GitHub's 65,536-character limit: then the body is left as it is and the PR is a draft with no note. A body edited by hand with the marker
+  left in is rewritten. A rerun that no longer holds a PR that is a draft leaves it a draft, as marking it ready is a person's, but takes the draft note out of its body (the host's own body
+  is replaced; a person's body loses only the note). That edit is best effort: if reading or editing the body fails the host logs the reason and still publishes, and the note stays until a
+  person removes it. A held PR is a draft, so Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or
+  review feedback on it needs a person.
+- The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the
+  generic one.
+- The review's open Advisory findings go in one follow-up issue titled `chore(review): Advisory review findings: <branch>`, whose body is `renderAdvisories`' list (a security finding is left out,
+  the issue being public). The host differs from the skill's step 9: it files the issue only after the secret scan passes and the branch is published, shows no person the text first, and doesn't
+  leave out a re-raised finding. It lists a finding only when its path is a file the review read and is plain file-name characters, and its line (summary and fix too) holds nothing GitHub renders
+  as a link or an image (a scheme, `www.`, `mailto:`, `](`, `![`) and reads like neither a secret under the host's public-text check nor a `## Review notes` section (at most 20 findings, 2000
+  characters a line; the rest are counted). That check sees each finding's own line, so a branch named for review notes loses none; the whole body is checked once for the branch, and a refusal is
+  logged. It reuses only an open issue of its own (`--author` with the host's login) with that exact title. It does not match finding by finding as step 9 does: it comments the whole current list
+  unless the body or one of the host's own comments already holds exactly that text (anyone can comment on a public issue, so another author's comment never counts), so findings the issue already
+  lists can appear again beside a new one; a body a person edited is never replaced. A later review with no Advisory findings files nothing, so the earlier issue keeps findings that may be fixed
+  by now: a person closes it. It files none for a review that didn't finish. A failed filing is retried after a GitHub server error; if it still fails, the failure is logged and the same
+  checked list is posted as a comment on the Sandcastle issue, so it isn't lost with the runner, and the PR still publishes. A push or PR create that fails after the PR was held as a draft
+  hands back with a comment saying the PR may already be a draft: find it with `gh pr list --head <branch>` rather than open a second one. A finding is also left out when its id, path,
+  summary or fix, or the branch, holds text a reader can't see (`hasHiddenText` in `status.mts`, the rule of ADR 0010: `terminalText` would drop or cap something other than whitespace). That
+  covers a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800,
+  Hangul), a next-line character (U+0085, which the issue's own text folding would publish raw), a joiner that does no work (outside emoji or the joining scripts), more than eight joiners or more than
+  eight private-use or unassigned characters across the issue's text, and a run of more than eight combining marks. Each field is also checked for secrets as the reviewer wrote it, not only in the
+  escaped line the issue shows. When open Advisory findings exist and none can be listed, the build logs that no follow-up issue is filed. The issue lists reviewer prose (summary and fix) on
+  purpose: on Actions the local record is discarded with the runner, so the issue is the only copy that survives.
+- Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
   global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run,
   an Actions run included, holds its issue that long). A change to how the host runs the reviewers needs a run

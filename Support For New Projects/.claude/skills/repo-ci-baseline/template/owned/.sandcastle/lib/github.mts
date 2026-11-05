@@ -7,8 +7,9 @@
 import type { execFileSync } from "node:child_process";
 import { hostExecFileSync } from "./host-limit.mts";
 import { endOf } from "./checkpoint.mts";
-import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
+import { BASE_BRANCH, COPILOT_REVIEWER, FOLLOW_UP_MARKER, HOST_LABELS, PR_MARKER, QUEUE_LABEL, withoutOwnCheck, type QueueScope, type SandcastleLabel } from "./config.mts";
 import type { CheckState, SweepPullRequest } from "./follow-up.mts";
+import { visibleLetters } from "./plain-text.mts";
 import { handBackReport, targetUrl, type HandBackReport } from "./report.mts";
 
 let repo: string | undefined;
@@ -19,6 +20,12 @@ let repo: string | undefined;
 export function repoName(): string {
   repo ??= readRepoName();
   return repo;
+}
+
+// Forgets the name repoName cached, so the next call reads it again. A test that puts a fake gh on PATH calls it when it is done: the fake's answer
+// would otherwise stay cached for every later test in the process.
+export function forgetRepoName(): void {
+  repo = undefined;
 }
 
 // One read of the name, with gh's stderr captured: a failure reaches the terminal only through the thrown message, where a caller
@@ -274,26 +281,103 @@ export function ghWithStderr(run: typeof execFileSync, args: string[], input?: s
 
 // The open pull request from this repository's `branch`, or a new one for it
 // with the title and body, as its URL. A fork's PR from a branch of the same
-// name doesn't count.
+// name doesn't count. With `draft`, the review holds the PR: a new one is created as a draft, and one that already exists (a rerun, or an
+// earlier build's PR opened ready before this review's findings) is turned into a draft, so the hold never depends on the PR being new. A failure
+// to do so throws rather than leave a ready PR standing for blocking findings; the hold comes before the body, so a failed edit leaves a draft.
+//
+// An existing PR's body is a person's too: a `## Review notes` section is their acceptances (Claude Review reads it as the owner's decisions), and
+// replacing the body would silently delete them. So the body is replaced by `body` only when it still carries PR_MARKER (the host wrote it) and
+// nothing in it reads as Review notes, in any form a reader sees; otherwise it is kept as it is, with `heldNote` (why the PR is a draft) added when it
+// isn't there yet. A body edited by hand in some other way, with the marker left in, is rewritten on a rerun that holds the PR.
+//
+// Without `draft`, a PR that is already a draft and whose body holds `heldNote` (an earlier held build's) has the note taken out: the host's own body is replaced by
+// `body`, a person's body loses only the note, and the draft state is never changed, as marking it ready is a person's. That edit is best effort: the PR is already pushed
+// and a draft, so a failure is passed to `warn` and the PR's address is still returned.
 export function openPullRequest(
   branch: string,
   title: string,
   body: string,
   run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
+  draft: boolean = false,
+  heldNote: string = "",
+  warn: (message: string) => void = console.error,
 ): string {
   const listed = JSON.parse(
     ghWithStderr(run, [
-      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,url",
+      "pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url",
     ]),
-  ) as ListedPullRequest[];
-  const existing = sameRepository(listed).find((pr) => pr.headRefName === branch)?.url;
-  if (existing) return existing;
+  ) as (ListedPullRequest & { number: number; isDraft?: boolean })[];
+  const existing = sameRepository(listed).find((pr) => pr.headRefName === branch);
+  if (existing?.url) {
+    if (draft) {
+      if (existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
+      // The body is read again now that the PR is a draft: the list's copy is from before the hold, and a person may have accepted a finding in
+      // between. Only a change in the one call between this read and the edit is left, and the edit keeps whatever the read held.
+      const next = bodyForHeldPullRequest(currentBody(run, repo, existing.number), body, heldNote);
+      if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
+    } else if (existing.isDraft === true && heldNote.trim() !== "") {
+      // A rerun the review no longer holds leaves a draft from an earlier held build as it is (marking it ready is a person's), but its body still gives
+      // the reason it was held, which is no longer true: the note is taken out. That is a convenience on a PR that is already pushed and a draft, so a failure
+      // is logged with the reason gh gave (its first two lines: ghWithStderr's message holds gh's own text after "failed:", never Node's command line) and the PR's address is still returned: the build is not a failed one for it.
+      try {
+        const next = bodyWithoutHeldNote(currentBody(run, repo, existing.number), body, heldNote);
+        if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
+      } catch (error) {
+        warn(`  ⚠ couldn't take the draft note out of pull request ${existing.number}'s body: ${String((error as Error)?.message ?? error).split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 2).join(" ")}`);
+      }
+    }
+    return existing.url;
+  }
   return ghWithStderr(
     run,
-    ["pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", title, "--body-file", "-"],
+    ["pr", "create", "--repo", repo, "--base", "main", "--head", branch, "--title", title, "--body-file", "-", ...(draft ? ["--draft"] : [])],
     body,
   ).trim();
+}
+
+// A pull request's body as it is now. gh pr view is asked rather than the list, whose copy is from before the call that changed the PR, and an answer without a text
+// body throws: it is not an empty body, and replacing what a person wrote would delete their acceptances.
+function currentBody(run: typeof execFileSync, repo: string, number: number): string {
+  const body = (JSON.parse(ghWithStderr(run, ["pr", "view", String(number), "--repo", repo, "--json", "body"])) as { body?: unknown }).body;
+  if (typeof body !== "string") throw new Error(`gh pr view didn't answer the body of pull request ${number}`);
+  return body;
+}
+
+// The body a draft should end with once its hold is over (see openPullRequest): the host's own body when the host wrote it, and otherwise the person's body with
+// only the draft note taken out. Undefined when the note isn't there, so a draft the review never held, or one a person already cleaned, is not edited.
+function bodyWithoutHeldNote(current: string, next: string, heldNote: string): string | undefined {
+  const lines = (text: string) => text.replace(/\r\n?/g, "\n");
+  const note = lines(heldNote).trim();
+  if (!lines(current).includes(note)) return undefined;
+  const hostWrote = current.includes(PR_MARKER) && !visibleLetters(current).includes("reviewnotes");
+  return hostWrote ? next : lines(current).replace(note, "").trimEnd();
+}
+
+// The body a PR the review holds should end with, or undefined when it needs no edit (see openPullRequest). GitHub stores the body with CRLF line endings
+// and may trim it, so the comparisons ignore both.
+function bodyForHeldPullRequest(current: string, next: string, heldNote: string): string | undefined {
+  const same = (text: string) => text.replace(/\r\n?/g, "\n").trim();
+  const hostWrote = current.includes(PR_MARKER) && !visibleLetters(current).includes("reviewnotes");
+  if (hostWrote) return same(current) === same(next) ? undefined : next;
+  if (heldNote === "" || same(current).includes(same(heldNote))) return undefined;
+  const kept = `${current.trimEnd()}\n\n${heldNote}`;
+  // GitHub refuses a body past this length, and the edit would then fail after the PR is a draft; the note is only a convenience, so leave it out.
+  return kept.length > GITHUB_BODY_MAX ? undefined : kept;
+}
+
+// The longest PR body GitHub accepts, in characters. Named apart from build.mts#PR_BODY_LIMIT (the architect's body) and PR_BODY_TOTAL_LIMIT (what the host builds).
+const GITHUB_BODY_MAX = 65_536;
+
+// Turns this repository's open, ready PR for `branch` into a draft, and does nothing when there is none or it is one already. The build calls it before it
+// pushes, so a branch the review holds is never briefly a ready PR with new commits, which PR Auto-Merge could merge. A failure throws, so the caller stops
+// before the push.
+export function holdExistingPullRequest(branch: string, run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): void {
+  const listed = JSON.parse(
+    ghWithStderr(run, ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url"]),
+  ) as (ListedPullRequest & { number: number; isDraft?: boolean })[];
+  const existing = sameRepository(listed).find((pr) => pr.headRefName === branch);
+  if (existing !== undefined && existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
 }
 
 // The fields the follow-up sweep (lib/follow-up.mts) checks on every PR it
@@ -949,6 +1033,42 @@ export function createIssue(
   );
   if (!Number.isInteger(number) || number <= 0) throw new Error(`gh api didn't answer the new issue's number for "${title}"`);
   return number;
+}
+
+// Files an issue with no labels, or reuses the host's own open one with exactly this title, as its number. The local review's follow-up issue for the open
+// Advisory findings (lib/build.mts) goes through it: a later build of the same branch, or a rerun, finds the issue it already filed rather than
+// open a second, and adds its current findings to it as a comment when neither the body nor an earlier comment already holds them, as the skill's step 9
+// does, so a later build's new findings aren't lost and what a person wrote in the issue's body is never replaced. A later build with no Advisory findings
+// files nothing, so the earlier issue keeps findings that may since be fixed: a person closes it. Only the host's own issues count (`--author` with the
+// login it is signed in as, since `@me` needs a user token): the title is predictable from the branch name, so anyone could open an issue with it first
+// and keep the findings from the maintainers. The issues are listed, not searched, since GitHub's search index lags and would let a quick rerun file a
+// duplicate. Two overlapping runs on one branch can still both file one; the building label keeps a branch to one run at a time.
+export function fileIssueOnce(
+  title: string,
+  body: string,
+  run: typeof execFileSync = hostExecFileSync,
+  repo: string = repoName(),
+): number {
+  const host = signedInHostLogin(run);
+  const listed = JSON.parse(
+    ghWithStderr(run, [
+      "issue", "list", "--repo", repo, "--state", "open", "--author", host, "--limit", "1000", "--json", "number,title,body",
+    ]),
+  ) as { number: number; title: string; body?: string }[];
+  const existing = listed.find((issue) => issue.title === title);
+  if (existing === undefined) return createIssue(title, body, [], run, repo);
+  // GitHub stores the body with CRLF line endings and may trim it, so the comparison ignores both.
+  const same = (text: string) => text.replace(/\r\n?/g, "\n").trim();
+  // Only the host's own comments count as findings already filed: anyone can comment on a public issue, and a comment copying the findings would
+  // otherwise keep the real ones from being added.
+  const comments = jsonLines(
+    ghWithStderr(run, [
+      "api", "--paginate", `repos/${repo}/issues/${existing.number}/comments`,
+      "--jq", `.[] | select(.user.login == ${JSON.stringify(host)}) | .body | @json`,
+    ]),
+  ) as string[];
+  if (![existing.body ?? "", ...comments].some((text) => same(text) === same(body))) commentOnIssue(existing.number, body, run, repo);
+  return existing.number;
 }
 
 // Adds the native "parent has sub-issue child" relationship GitHub shows as a

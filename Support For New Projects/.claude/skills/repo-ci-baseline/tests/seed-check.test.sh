@@ -170,6 +170,22 @@ set_list '# crlf\r\nCLAUDE.md\r\n'
 touch_file CLAUDE.md
 check "a list with CRLF line endings still watches CLAUDE.md" ran_check
 
+# A lone CR (an old Mac editor) ends a line too: read as one line, the list would skip everything it names.
+set_list '# note\rCLAUDE.md\rdocs/guides/sub/a.md\r'
+touch_file CLAUDE.md
+check "a list with lone CR line endings watches CLAUDE.md" ran_check
+touch_file docs/guides/sub/a.md
+check "a list with lone CR line endings watches the second path too" ran_check
+touch_file docs/unrelated.md
+check "a list with lone CR line endings still runs nothing for an unrelated change" not_ran
+
+# A # after a path is part of the pathspec, as the header says: the comment is not stripped.
+set_list 'CLAUDE.md # note\n'
+touch_file CLAUDE.md
+check "a # after a path is part of it: CLAUDE.md alone is not watched" not_ran
+touch_file 'CLAUDE.md # note'
+check "a # after a path is part of it: the file with the # in its name is watched" ran_check
+
 set_list 'docs/guides/sub/a.md'
 touch_file docs/guides/sub/a.md
 check "a last line with no trailing newline is read" ran_check

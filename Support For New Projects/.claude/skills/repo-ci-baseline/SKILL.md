@@ -10,7 +10,7 @@ Its single source of truth is `template/`: `apply.sh` copies it into a repo, and
 The vocabulary (Baseline, Template, Owned, Seed, Apply, Adapt, Standardize, Drift, Leftover) is in [CONTEXT.md](CONTEXT.md).
 Why it works this way is in [ADR 0001](docs/adr/0001-standardize-by-copying-a-template.md).
 
-- **Owned files** (`template/owned/`) are overwritten on every Apply, mode included.
+- **Owned files** (`template/owned/`) are overwritten on every Apply, mode included, except a `.sandcastle/check.sh` the repo uses as its sandbox gate, which Apply keeps and reports as a conflict.
   They carry no per-repo values.
 - **Seed files** (`template/seed/`) are written only where the repo has none, with `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}` filled in.
   Per-repo CI setup goes in the Seed `.github/ci/prepare.sh`, which `ci.yml` calls; per-repo gate checks go in the Seed `.github/ci/gate-checks.sh`, which `scripts/gate.sh` calls.

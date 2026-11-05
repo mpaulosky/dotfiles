@@ -4,7 +4,7 @@
 # files, or the local review's script, skills and agent and Claude Review's workflow
 # (which its tests read) changed since <merge-base> (always, when <merge-base> is empty).
 # A repo adds the other files its own tests read in .sandcastle/check-paths.txt (Seed):
-# one git pathspec per line, surrounding whitespace ignored, blank lines and lines starting
+# one git pathspec per line (LF, CRLF or a lone CR ends one), surrounding whitespace ignored, blank lines and lines starting
 # with # skipped (a # after a path is part of it). The list only adds to the built-in paths:
 # the two are diffed separately, so an :(exclude) or :^ line can't remove one of them. An exclude
 # line only trims the list's other lines; git reads a list of exclude lines alone as "everything
@@ -28,15 +28,16 @@ listed=()
 positive=0
 exclude='^:(\(([^),]*,)*exclude(,[^)]*)?\)|/?[!^])'
 if [[ -f "$extra" ]]; then
+  # Read the file first: a list that can't be read stops the script (set -e) rather than reading as empty.
+  extra_text="$(tr '\r' '\n' < "$extra")"
   while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%$'\r'}"
     line="${line#$'\xef\xbb\xbf'}"
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" || "$line" == \#* ]] && continue
     listed+=("$line")
     [[ "$line" =~ $exclude ]] || positive=$((positive + 1))
-  done < "$extra"
+  done <<< "$extra_text"
 fi
 [[ $positive -gt 0 ]] || listed=()
 

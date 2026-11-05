@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { spawnSync, type execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
 import { hostExecFileSync } from "./host-limit.mts";
@@ -45,13 +45,15 @@ import {
   BUILD_FAILED_MARKER,
   BUILD_ROLES,
   DESIGN_MARKER,
+  FIXED_ROLE_AGENTS,
   GATE_FIXER_ATTEMPTS,
   MAX_GATE_RUNS,
+  MAX_REVIEWERS_PER_ROUND,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { LEAD_DENIED_TOOLS, leadTools, LEDGER_DENIED_TOOLS, MAX_AGENTS_WORD_BYTES } from "./agents.mts";
 import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
@@ -4526,6 +4528,245 @@ describe("liveReviewHost", () => {
     }
   });
 
+  // Issue 399: in the subagents mode one lead run starts a round's reviewers as parallel subagents; in the sequential mode nothing changes.
+  const members = (...lenses: string[]) =>
+    lenses.map((lens, index) => ({
+      id: index + 1,
+      agent: `lens-${index + 1}`,
+      file: `/home/agent/workspace/.sandcastle/work/387/review/lens-${index + 1}.md`,
+      reviewer: { lens, row: lens === "Bar" ? "" : `| ${lens} | Any code | Ask. |` },
+    }));
+  const wordsOf = (command: string): string[] => {
+    const shell = spawnSync("sh", ["-c", `printf '%s\n' ${command.slice("claude --print ".length)}`], { encoding: "utf8" });
+    assert.equal(shell.status, 0, shell.stderr);
+    return shell.stdout.split("\n");
+  };
+
+  it("has no runReviewerTeam in the sequential mode, and starts the pre-push-reviewer as before", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost({ ...args, reviewerMode: "sequential" }, dir);
+
+      await live.runReviewer({ lens: "Bar", row: "" }, "review");
+
+      assert.equal(live.runReviewerTeam, undefined);
+      assert.deepEqual(runs.map((found) => found.name), ["pre-push-reviewer"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  // The production default: `reviewerMode` absent, so SANDCASTLE_REVIEWERS decides. Every other test passes the mode.
+  describe("without an explicit reviewerMode", () => {
+    const withEnv = (value: string | undefined, run: () => void) => {
+      const before = process.env.SANDCASTLE_REVIEWERS;
+      try {
+        if (value === undefined) delete process.env.SANDCASTLE_REVIEWERS;
+        else process.env.SANDCASTLE_REVIEWERS = value;
+        run();
+      } finally {
+        if (before === undefined) delete process.env.SANDCASTLE_REVIEWERS;
+        else process.env.SANDCASTLE_REVIEWERS = before;
+      }
+    };
+    const teamOf = (value: string | undefined) => {
+      const { args } = recorder();
+      const dir = checkout();
+      try {
+        let team: unknown;
+        withEnv(value, () => {
+          team = liveReviewHost(args, dir).runReviewerTeam;
+        });
+        return team;
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+      }
+    };
+
+    it("stays sequential when SANDCASTLE_REVIEWERS is unset or empty", () => {
+      assert.equal(teamOf(undefined), undefined);
+      assert.equal(teamOf(""), undefined);
+      assert.equal(teamOf("sequential"), undefined);
+    });
+
+    it("uses the subagents when SANDCASTLE_REVIEWERS is subagents", () => {
+      assert.equal(typeof teamOf("subagents"), "function");
+    });
+
+    it("throws for a mistyped SANDCASTLE_REVIEWERS", () => {
+      assert.throws(() => teamOf("subagent"), /SANDCASTLE_REVIEWERS/);
+    });
+  });
+
+  it("has a runReviewerTeam in the subagents mode, which the host review then uses instead of runReviewer", () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      assert.equal(typeof liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam, "function");
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("starts the pre-push-review-lead once for the whole team, with the idle timeout set to the role's timeout, and returns the lead's output", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const stdout = await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar", "Edge cases", "Tests"), "the lead's prompt");
+
+      assert.equal(stdout, "<findings>[]</findings>");
+      assert.deepEqual(runs.map((found) => found.name), ["pre-push-review-lead"]);
+      assert.equal(runs[0]!.prompt, "the lead's prompt");
+      // Sandcastle's default idle timeout is ten minutes of silence, and a lead waiting on its subagents may print nothing for longer.
+      assert.equal(runs[0]!.idleTimeoutSeconds, FIXED_ROLE_AGENTS["pre-push-review-lead"].timeoutMinutes * 60);
+      assert.equal(runs[0]!.idleTimeoutSeconds, 1800);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("gives the lead Agent, Read, Grep and Glob, no shell, the ledger deny list, strict MCP and the user's settings only", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar", "Edge cases"), "lead");
+
+      const command = commandOf(runs[0]!);
+      const words = wordsOf(command);
+      // The lead's Agent tool names exactly the lens-<id> agents defined for the round, so no other subagent (a user-level or plugin one, a type a later Claude Code adds) starts.
+      assert.equal(words[words.indexOf("--tools") + 1], leadTools(["lens-1", "lens-2"]).join(","));
+      assert.equal(words[words.indexOf("--tools") + 1], "Agent(lens-1,lens-2),Read,Grep,Glob");
+      assert.doesNotMatch(words[words.indexOf("--tools") + 1]!, /Bash|Edit|Write/);
+      assert.ok(words.includes("--strict-mcp-config"));
+      assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
+      assert.ok(words.includes("--disallowedTools"));
+      for (const rule of LEDGER_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
+      // A steered lead must not start a built-in subagent (general-purpose holds a shell and the network) in place of the lens-<id> agents.
+      for (const type of ["general-purpose", "Explore", "Plan"]) assert.ok(words.includes(`Agent(${type})`), `Agent(${type}) isn't denied`);
+      for (const rule of LEAD_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("defines one subagent per member with --agents: named lens-<id>, Read, Grep and Glob only, pointing at the member's prompt file", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const team = members("Bar", "Edge cases", "Tests");
+
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(team, "lead");
+
+      const words = wordsOf(commandOf(runs[0]!));
+      const defined = JSON.parse(words[words.indexOf("--agents") + 1]!) as Record<string, { description: string; prompt: string; tools: string[]; model: string }>;
+      assert.deepEqual(Object.keys(defined).sort(), ["lens-1", "lens-2", "lens-3"]);
+      for (const member of team) {
+        const one = defined[member.agent]!;
+        assert.deepEqual(one.tools, ["Read", "Grep", "Glob"]);
+        assert.equal(one.model, FIXED_ROLE_AGENTS["pre-push-reviewer"].model);
+        assert.ok(one.prompt.includes(member.file), member.agent);
+        assert.ok(one.description.includes(member.reviewer.lens), member.agent);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  // A repository's lens row has no length limit: a full round of the longest names must still fit the --agents word, and with apostrophes in every one.
+  it("builds the lead's command for a full round of lenses with very long names, within the --agents cap", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const long = (n: number) => `Lens ${n} it's ${"'x".repeat(50_000)}`;
+      const team = members(...Array.from({ length: MAX_REVIEWERS_PER_ROUND }, (_, index) => long(index)));
+
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(team, "lead");
+
+      const words = wordsOf(commandOf(runs[0]!));
+      const word = words[words.indexOf("--agents") + 1]!;
+      assert.ok(Buffer.byteLength(word) < MAX_AGENTS_WORD_BYTES / 2, `${Buffer.byteLength(word)} bytes`);
+      assert.equal(Object.keys(JSON.parse(word) as object).length, MAX_REVIEWERS_PER_ROUND);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("runs the team's lead through none of review.sh or .git/review but the deny rules", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar"), "lead");
+
+      const withoutDenyRules = LEDGER_DENIED_TOOLS.reduce((text, rule) => text.split(rule).join(""), commandOf(runs[0]!));
+      assert.doesNotMatch(withoutDenyRules, /review\.sh|\.git\/review/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("refuses to start a lead for no members rather than run a lead with nothing to start", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      await assert.rejects(() => liveReviewHost({ ...args, reviewerMode: "subagents" }, dir).runReviewerTeam!([], "lead"));
+
+      assert.equal(runs.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("rejects with an UncountedStopError when the lead hits Claude's usage limit, and gives the build's limits the stop", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      const sandbox = {
+        ...(args.sandbox as object),
+        run: async () => {
+          throw new Error("claude-code exited with code 1:\nClaude AI usage limit reached|1760000000");
+        },
+      } as unknown as Sandbox;
+
+      await assert.rejects(
+        () => liveReviewHost({ ...args, sandbox, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar"), "lead"),
+        (error: unknown) => error instanceof UncountedStopError && /pre-push-review-lead/.test(error.message),
+      );
+      assert.throws(() => args.limits.throwIfStopped());
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("gives up on a lead that never answers, stalling the sandbox, like a reviewer", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      const sandbox = { ...(args.sandbox as object), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+
+      await assert.rejects(
+        () => liveReviewHost({ ...args, sandbox, backstopMs: 20, reviewerMode: "subagents" }, dir).runReviewerTeam!(members("Bar"), "lead"),
+        (error: unknown) => error instanceof StalledStepError,
+      );
+      assert.match(stalledStepOf(sandbox) ?? "", /pre-push-review-lead/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("stops the fixer, before it starts, when the run folder is a link and the earlier outcomes can't be cleared", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const sandbox = { ...(args.sandbox as object), exec: async () => ({ stdout: "", stderr: ".sandcastle/work/387/review is a link", exitCode: 1 }) } as unknown as Sandbox;
+
+      await assert.rejects(() => liveReviewHost({ ...args, sandbox }, dir).runFixer("fix"), /clearing .*outcomes\.json.* failed: .*is a link/);
+      assert.equal(runs.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
   it("runs the fixer with the ledger deny list only, clears the earlier outcomes first and hands the build its commits", async () => {
     const { args, runs, orderOf, commits } = recorder();
     const dir = checkout();
@@ -4535,7 +4776,9 @@ describe("liveReviewHost", () => {
       const command = commandOf(runs[0]!);
       assert.match(command, /--disallowedTools/);
       assert.doesNotMatch(command, /--tools|--strict-mcp-config/);
-      assert.ok(orderOf.indexOf("exec rm -f '.sandcastle/work/387/review/outcomes.json'") < orderOf.indexOf("run backend"), orderOf.join("\n"));
+      const cleared = orderOf.findIndex((entry) => / && rm -f -- '\.sandcastle\/work\/387\/review\/outcomes\.json'$/.test(entry));
+      assert.ok(cleared >= 0 && cleared < orderOf.indexOf("run backend"), orderOf.join("\n"));
+      assert.match(orderOf[cleared]!, /test ! -L '\.sandcastle\/work\/387\/review'/);
       assert.deepEqual(commits, [{ sha: "made" }]);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
@@ -4572,10 +4815,157 @@ describe("liveReviewHost", () => {
         await assert.rejects(() => live.removeRunFile(path), /may only remove under/, path);
       }
 
-      assert.match(execs.at(-1)?.command ?? "", /rm -f '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+      assert.match(execs.at(-1)?.command ?? "", / && rm -f -- '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
       assert.equal(execs.filter((found) => found.command.includes("rm -f")).length, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("removes a run file's path before writing it, so a link left there isn't followed", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+      await live.writeRunFile(".sandcastle/work/387/review/lens-1.md", "one");
+      await live.writeRunFile(".sandcastle/work/387/review/lens-2.md", "");
+
+      const matched = execs.filter((e) => /lens-\d\.md/.test(e.command));
+      assert.equal(matched.length, 2);
+      for (const found of matched) {
+        assert.match(found.command, /rm -f -- '\.sandcastle\/work\/387\/review\/lens-\d\.md' && /, found.command);
+        assert.ok(found.command.indexOf("rm -f") < found.command.search(/base64 -d >|: >/), found.command);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  const RUN = ".sandcastle/work/387/review";
+  const plantRun = (root: string) => mkdirSync(join(root, RUN), { recursive: true });
+
+  it("writes a run file whole, empty or not, replacing a link, a hard link or a dangling link at its path instead of following it", async () => {
+    const cases: [string, string, (root: string) => void, boolean][] = [
+      ["a clean folder", "lens one", () => {}, false],
+      ["an empty file", "", () => {}, false],
+      ["a symlink to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); symlinkSync("lens-2.md", join(root, RUN, "lens-1.md")); }, true],
+      ["a hard link to another prompt", "lens one", (root) => { plantRun(root); writeFileSync(join(root, RUN, "lens-2.md"), "two"); linkSync(join(root, RUN, "lens-2.md"), join(root, RUN, "lens-1.md")); }, true],
+      ["a dangling symlink", "lens one", (root) => { plantRun(root); symlinkSync("nowhere.md", join(root, RUN, "lens-1.md")); }, false],
+    ];
+    for (const [name, content, plant, otherPlanted] of cases) {
+      const { args, execs } = recorder();
+      const dir = checkout();
+      const root = mkdtempSync(join(tmpdir(), "run-file-"));
+      try {
+        plant(root);
+        await liveReviewHost(args, dir).writeRunFile(`${RUN}/lens-1.md`, content);
+        const found = execs.at(-1);
+        const shell = spawnSync("sh", ["-c", found?.command ?? "false"], { cwd: root, input: found?.stdin ?? "", encoding: "utf8" });
+
+        assert.equal(shell.error, undefined, name);
+        assert.equal(shell.status, 0, `${name}: ${shell.stderr}`);
+        assert.equal(readFileSync(join(root, RUN, "lens-1.md"), "utf8"), content, name);
+        assert.equal(lstatSync(join(root, RUN, "lens-1.md")).isSymbolicLink(), false, name);
+        if (otherPlanted) assert.equal(readFileSync(join(root, RUN, "lens-2.md"), "utf8"), "two", `${name}: the other prompt`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+      }
+    }
+  });
+
+  it("removes a run file in a real shell: an existing one, an absent one, a missing run folder, and a link without touching its target", async () => {
+    const cases: [string, (root: string, outside: string) => void, (root: string, outside: string) => void][] = [
+      ["an existing file", (root) => { plantRun(root); writeFileSync(join(root, RUN, "fixes.patch"), "p"); }, (root) => assert.equal(existsSync(join(root, RUN, "fixes.patch")), false)],
+      ["an absent file", (root) => plantRun(root), (root) => assert.deepEqual(readdirSync(join(root, RUN)), [])],
+      ["a run folder that does not exist yet", () => {}, (root) => assert.equal(existsSync(join(root, ".sandcastle")), false)],
+      [
+        "a symlink at the path",
+        (root, outside) => { plantRun(root); writeFileSync(join(outside, "target"), "keep"); symlinkSync(join(outside, "target"), join(root, RUN, "fixes.patch")); },
+        (root, outside) => {
+          assert.equal(existsSync(join(root, RUN, "fixes.patch")), false);
+          assert.equal(readFileSync(join(outside, "target"), "utf8"), "keep");
+        },
+      ],
+    ];
+    for (const [name, plant, check] of cases) {
+      const { args, execs } = recorder();
+      const dir = checkout();
+      const root = mkdtempSync(join(tmpdir(), "run-file-"));
+      const outside = mkdtempSync(join(tmpdir(), "run-file-outside-"));
+      try {
+        plant(root, outside);
+        await liveReviewHost(args, dir).removeRunFile(`${RUN}/fixes.patch`);
+        const shell = spawnSync("sh", ["-c", execs.at(-1)?.command ?? "false"], { cwd: root, encoding: "utf8" });
+
+        assert.equal(shell.error, undefined, name);
+        assert.equal(shell.status, 0, `${name}: ${shell.stderr}`);
+        check(root, outside);
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+        rmSync(outside, { recursive: true, force: true, maxRetries: 5 });
+      }
+    }
+  });
+
+  it("fails, and writes nothing, when the run file's path is a folder", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    const root = mkdtempSync(join(tmpdir(), "run-file-"));
+    try {
+      mkdirSync(join(root, RUN, "lens-1.md"), { recursive: true });
+      await liveReviewHost(args, dir).writeRunFile(`${RUN}/lens-1.md`, "x");
+      // No stdin: the command fails at the removal, before the write reads it, and a shell that has already exited makes spawnSync report EPIPE for it.
+      const shell = spawnSync("sh", ["-c", execs.at(-1)?.command ?? "false"], { cwd: root, encoding: "utf8" });
+
+      assert.equal(shell.error, undefined);
+      assert.notEqual(shell.status, 0);
+      assert.match(shell.stderr, /lens-1\.md/);
+      assert.doesNotMatch(shell.stderr, /is a link/);
+      assert.deepEqual(readdirSync(join(root, RUN, "lens-1.md")), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("refuses to write or remove a run file when the run folder or a folder above it is a link, says so, and touches nothing through it", async () => {
+    const links: [string, (root: string, outside: string) => void][] = [
+      [".sandcastle", (root, outside) => symlinkSync(outside, join(root, ".sandcastle"))],
+      [".sandcastle/work", (root, outside) => { mkdirSync(join(root, ".sandcastle")); symlinkSync(outside, join(root, ".sandcastle/work")); }],
+      [".sandcastle/work/387", (root, outside) => { mkdirSync(join(root, ".sandcastle/work"), { recursive: true }); symlinkSync(outside, join(root, ".sandcastle/work/387")); }],
+      [RUN, (root, outside) => { mkdirSync(join(root, ".sandcastle/work/387"), { recursive: true }); symlinkSync(outside, join(root, RUN)); }],
+    ];
+    for (const [name, plant] of links) {
+      for (const action of ["write", "remove"] as const) {
+        const { args, execs } = recorder();
+        const dir = checkout();
+        const root = mkdtempSync(join(tmpdir(), "run-file-"));
+        const outside = mkdtempSync(join(tmpdir(), "run-file-outside-"));
+        try {
+          writeFileSync(join(outside, "lens-1.md"), "keep");
+          plant(root, outside);
+          const live = liveReviewHost(args, dir);
+          if (action === "write") await live.writeRunFile(`${RUN}/lens-1.md`, "lens one");
+          else await live.removeRunFile(`${RUN}/lens-1.md`);
+          const found = execs.at(-1);
+          // No stdin: the guard fails before anything reads it, and a shell that has already exited makes spawnSync report EPIPE for the unread input.
+          // A guard that let the write through would find an empty stdin and truncate the file outside, which the checks below still catch.
+          const shell = spawnSync("sh", ["-c", found?.command ?? "false"], { cwd: root, encoding: "utf8" });
+          const label = `${action} through a link at ${name}`;
+
+          assert.equal(shell.error, undefined, label);
+          assert.equal(shell.status, 1, label);
+          assert.match(shell.stderr, /is a link/, label);
+          assert.deepEqual(readdirSync(outside), ["lens-1.md"], label);
+          assert.equal(readFileSync(join(outside, "lens-1.md"), "utf8"), "keep", label);
+        } finally {
+          rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+          rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+          rmSync(outside, { recursive: true, force: true, maxRetries: 5 });
+        }
+      }
     }
   });
 

@@ -32,7 +32,7 @@ export type AnyRole = Role | OptInRole | FixedRole;
 
 // The role that runs the pre-push review's reviewers on the host (lib/host-review.mts). The skill fixes its model and
 // effort, so it is not in ROLES: a repo's ROLE_AGENTS names none.
-export type FixedRole = "pre-push-reviewer";
+export type FixedRole = "pre-push-reviewer" | "pre-push-review-lead";
 
 // The agent and budget lib/repo-config.mts#ROLE_AGENTS gives one role.
 export type RoleAgent = {
@@ -62,7 +62,7 @@ export const DESIGN_MARKER = "<!-- sandcastle:design -->";
 // besides the gate-fixer, which runs up to GATE_FIXER_ATTEMPTS times at each
 // checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts and
 // the gate's limit (lib/repo-config.mts#GATE_LIMIT_MINUTES): config.test.mts checks the sum fits, and build.test.mts
-// that buildIssue runs no role outside the list. The host-side review's own backend and pre-push-reviewer runs are not counted
+// that buildIssue runs no role outside the list. The host-side review's own backend, pre-push-reviewer and pre-push-review-lead runs are not counted
 // here: config.test.mts sizes them separately, as REVIEW_WALL_CLOCK_MINUTES and one step of overshoot.
 export const BUILD_ROLES = ["architect", "tester", "backend", "ui", "scribe", "reviewer"] as const satisfies readonly AnyRole[];
 
@@ -275,7 +275,30 @@ export function describeQueueScope(scope: QueueScope): string {
 // The agent and budget of each FixedRole.
 export const FIXED_ROLE_AGENTS: Record<FixedRole, RoleAgent> = {
   "pre-push-reviewer": { model: "sonnet", effort: "high", maxIterations: 1, timeoutMinutes: 20 },
+  // The lead that starts a round's reviewers as parallel subagents (lib/host-review.mts). Its one timeout covers the whole wave: the reviewer's
+  // 20 minutes with every lens in one wave, plus the time to relay the answers. The effort is the reviewer's, which subagents may inherit.
+  "pre-push-review-lead": { model: "sonnet", effort: "high", maxIterations: 1, timeoutMinutes: 30 },
 };
+
+// How many subagents Claude Code runs at once.
+export const MAX_CONCURRENT_SUBAGENTS = 20;
+
+// How a round's reviewers are started: one after another, or as parallel subagents of one lead run.
+export type ReviewerMode = "sequential" | "subagents";
+
+// Thrown by reviewerMode for a SANDCASTLE_REVIEWERS that names no reviewer mode.
+export class ReviewerModeError extends Error {}
+
+// SANDCASTLE_REVIEWERS from `env` as the reviewer mode.
+// Unset or empty is "sequential", and stays so until a run in a real sandbox settles how the Claude CLI treats `--tools`, `--setting-sources` and
+// `--agents` for subagents. Any other value throws ReviewerModeError: a typo must not silently pick a path. main.mts reads it at start-up, so a typo
+// exits before any sandbox starts and not after a build, at its review.
+export function reviewerMode(env: Record<string, string | undefined> = process.env): ReviewerMode {
+  const value = env.SANDCASTLE_REVIEWERS;
+  if (value === undefined || value === "") return "sequential";
+  if (value === "sequential" || value === "subagents") return value;
+  throw new ReviewerModeError(`SANDCASTLE_REVIEWERS must be "sequential" or "subagents", not ${JSON.stringify(value.slice(0, 40))}`);
+}
 
 // After this many review rounds that fixed something, one more round only reviews.
 export const REVIEW_FIX_ROUNDS = 3;
@@ -288,8 +311,9 @@ export const REVIEWER_ATTEMPTS = 2;
 // this, plus the step it was in when it ran out (a reviewer, or a fixer with its gate), and BUILDING_LABEL_MAX_AGE_MS is sized from that.
 export const REVIEW_WALL_CLOCK_MINUTES = 180;
 
-// The most reviewers a round runs (the Bar and the lenses that apply). A round's reviewers run one after another, so the time a build can take
-// grows with this number, and a repository whose own lenses push a round past it fails the review. REVIEW_WALL_CLOCK_MINUTES caps the whole review.
+// The most reviewers a round runs (the Bar and the lenses that apply). In the "sequential" reviewer mode a round's reviewers run one after another, so the time
+// a build can take grows with this number; in the "subagents" mode they are one wave, so it must stay within MAX_CONCURRENT_SUBAGENTS. A repository whose
+// own lenses push a round past it fails the review. REVIEW_WALL_CLOCK_MINUTES caps the whole review.
 export const MAX_REVIEWERS_PER_ROUND = 14;
 
 // Marks an issue, or a hand-off pull request (lib/building.mts), while a

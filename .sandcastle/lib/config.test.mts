@@ -16,7 +16,9 @@ import {
   HOST_LABELS,
   LOCAL_QUEUE_LABEL,
   LOCAL_QUEUE_LABEL_DEFINITION,
+  MAX_CONCURRENT_SUBAGENTS,
   MAX_GATE_RUNS,
+  MAX_REVIEWERS_PER_ROUND,
   OPTIONAL_ROLES,
   QUEUE_LABEL,
   QUEUE_SCOPE_USAGE,
@@ -26,11 +28,13 @@ import {
   REVIEWER_ATTEMPTS,
   ROLES,
   RunModeError,
+  ReviewerModeError,
   SANDBOX_CPUS,
   SANDCASTLE_LABELS,
   SESSION_REPLY_MARKER,
   budgetMinutesFrom,
   isDefaultQueueScope,
+  reviewerMode,
   queueScopeFrom,
   runModeFrom,
   sandboxCpus,
@@ -96,6 +100,55 @@ describe("the host-side review's fixed role", () => {
   });
 });
 
+// Issue 399: the lead of a round's parallel subagents is a fixed role of its own, so one timeout covers the whole wave.
+describe("the review lead's fixed role", () => {
+  it("is sonnet at the reviewer's effort, once per run, for 30 minutes: the reviewer's 20 with all lenses in one wave, plus relay time", () => {
+    const lead = FIXED_ROLE_AGENTS["pre-push-review-lead"];
+
+    assert.equal(lead.model, "sonnet");
+    assert.equal(lead.effort, FIXED_ROLE_AGENTS["pre-push-reviewer"].effort);
+    assert.equal(lead.maxIterations, 1);
+    assert.equal(lead.timeoutMinutes, 30);
+  });
+
+  it("is in no repo's ROLES, so a repo's ROLE_AGENTS names none", () => {
+    assert.ok(!(ROLES as readonly string[]).includes("pre-push-review-lead"));
+    assert.deepEqual(roleAgent("pre-push-review-lead"), FIXED_ROLE_AGENTS["pre-push-review-lead"]);
+  });
+
+  it("starts every reviewer of a round in one wave: MAX_REVIEWERS_PER_ROUND is within Claude Code's 20 concurrent subagents", () => {
+    assert.equal(MAX_CONCURRENT_SUBAGENTS, 20);
+    assert.ok(MAX_REVIEWERS_PER_ROUND <= MAX_CONCURRENT_SUBAGENTS, `${MAX_REVIEWERS_PER_ROUND} reviewers > ${MAX_CONCURRENT_SUBAGENTS} subagents`);
+  });
+});
+
+// The switch stays on "sequential" until a run in a real sandbox settles the issue's open questions, and a typo must not silently pick a path.
+describe("reviewerMode", () => {
+  it("is sequential when SANDCASTLE_REVIEWERS is unset or empty", () => {
+    assert.equal(reviewerMode({}), "sequential");
+    assert.equal(reviewerMode({ SANDCASTLE_REVIEWERS: "" }), "sequential");
+    assert.equal(reviewerMode({ SANDCASTLE_REVIEWERS: undefined }), "sequential");
+  });
+
+  it("reads sequential and subagents as they are", () => {
+    assert.equal(reviewerMode({ SANDCASTLE_REVIEWERS: "sequential" }), "sequential");
+    assert.equal(reviewerMode({ SANDCASTLE_REVIEWERS: "subagents" }), "subagents");
+  });
+
+  it("throws for anything else, rather than pick a path for a typo", () => {
+    for (const value of ["subagent", "Subagents", "parallel", "1", "true"]) {
+      assert.throws(() => reviewerMode({ SANDCASTLE_REVIEWERS: value }), /SANDCASTLE_REVIEWERS/, JSON.stringify(value));
+    }
+  });
+
+  // main.mts catches this class to exit 2 at start-up; a plain Error would read as a crash.
+  it("throws a ReviewerModeError, so main.mts can refuse the value at start-up", () => {
+    for (const value of ["subagent", "subagents ", " subagents", "SEQUENTIAL"]) {
+      assert.throws(() => reviewerMode({ SANDCASTLE_REVIEWERS: value }), ReviewerModeError, JSON.stringify(value));
+    }
+  });
+});
+
 describe("sandboxCpus", () => {
   it("gives a sandbox 4 CPUs at most (mpaulosky/dotfiles#423)", () => {
     assert.equal(SANDBOX_CPUS, 4);
@@ -146,7 +199,7 @@ describe("BUILDING_LABEL_MAX_AGE_MS", () => {
     const review =
       REVIEW_WALL_CLOCK_MINUTES +
       Math.max(
-        REVIEWER_ATTEMPTS * FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes + ROLE_RUN_GRACE_MINUTES,
+        REVIEWER_ATTEMPTS * Math.max(FIXED_ROLE_AGENTS["pre-push-reviewer"].timeoutMinutes, FIXED_ROLE_AGENTS["pre-push-review-lead"].timeoutMinutes) + ROLE_RUN_GRACE_MINUTES,
         ROLE_AGENTS.backend.timeoutMinutes + ROLE_RUN_GRACE_MINUTES + gateFixing + MAX_GATE_RUNS * GATE_LIMIT_MINUTES,
       );
     const minutes =

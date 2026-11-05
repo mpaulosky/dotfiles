@@ -150,6 +150,8 @@ import {
   describeQueueScope,
   QueueScopeError,
   queueScopeFrom,
+  ReviewerModeError,
+  reviewerMode,
   RunModeError,
   runModeFrom,
   type RunMode,
@@ -217,6 +219,16 @@ try {
   process.exit(2);
 }
 console.log(`Mode: ${runMode}`);
+
+// So is the reviewer mode (SANDCASTLE_REVIEWERS): liveReviewHost reads it only when a build reaches its review, where a typo would throw after the
+// build's hours of work. The same environment is read there, so a value that passes here is the one the review uses.
+try {
+  console.log(`Reviewers: ${reviewerMode(process.env)}`);
+} catch (error) {
+  if (!(error instanceof ReviewerModeError)) throw error;
+  console.error(error.message);
+  process.exit(2);
+}
 
 // The time budget is read just as early, so a bad value exits the same way.
 // Its clock starts here, as close to the job's own start as it gets.

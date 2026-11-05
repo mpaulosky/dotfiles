@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import type * as sandcastle from "@ai-hero/sandcastle";
@@ -6,7 +7,10 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { AgentProvider } from "@ai-hero/sandcastle";
 import {
   isRoleTimeout,
+  LEAD_DENIED_TOOLS,
+  leadTools,
   LEDGER_DENIED_TOOLS,
+  MAX_AGENTS_WORD_BYTES,
   restrictedClaudeCode,
   REVIEWER_TOOLS,
   roleAgent,
@@ -18,6 +22,7 @@ import {
   runRoleInSandbox,
   runWithinLimits,
   withSharedRules,
+  type SubagentDefinition,
 } from "./agents.mts";
 import { FIXED_ROLE_AGENTS, ROLE_RUN_GRACE_MINUTES } from "./config.mts";
 import { StalledStepError, UncountedStopError } from "./errors.mts";
@@ -399,6 +404,211 @@ describe("restrictedClaudeCode", () => {
       assert.ok(LEDGER_DENIED_TOOLS.includes(`${tool}(//**/.git/review/**)`), `${tool} of its files`);
     }
     assert.ok(LEDGER_DENIED_TOOLS.includes("Bash(scripts/review.sh:*)"));
+  });
+});
+
+// Issue 399: one `claude -p` lead starts a round's reviewers as parallel subagents, defined on the command line with `--agents`.
+describe("the pre-push review lead role", () => {
+  it("is read from FIXED_ROLE_AGENTS, and its run is cut at that role's timeout", () => {
+    const requested: number[] = [];
+    const options = roleOptions("pre-push-review-lead", (ms) => {
+      requested.push(ms);
+      return new AbortController().signal;
+    });
+
+    assert.deepEqual(roleAgent("pre-push-review-lead"), FIXED_ROLE_AGENTS["pre-push-review-lead"]);
+    assert.equal(options.name, "pre-push-review-lead");
+    assert.equal(options.maxIterations, 1);
+    assert.deepEqual(requested, [FIXED_ROLE_AGENTS["pre-push-review-lead"].timeoutMinutes * 60_000]);
+  });
+
+  it("gets Agent restricted to the lens-<id> agents of the round, Read, Grep and Glob, and no shell, no network and no write tool", () => {
+    const tools = leadTools(["lens-1", "lens-2", "lens-10"]);
+
+    assert.deepEqual(tools, ["Agent(lens-1,lens-2,lens-10)", ...REVIEWER_TOOLS]);
+    assert.ok(!tools.includes("Agent"), "a bare Agent starts any subagent type");
+    for (const tool of ["Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit"]) assert.ok(!tools.includes(tool), tool);
+  });
+
+  it("refuses no agents and a name that isn't plain, so the allowlist is never empty, wildcard or a shell surprise", () => {
+    assert.throws(() => leadTools([]), /agent/i);
+    for (const name of ["", "Lens-1", "lens 1", "lens-1)", "lens,x", "*", "lens-1;x"]) assert.throws(() => leadTools([name]), /agent|name/i, JSON.stringify(name));
+  });
+});
+
+describe("LEAD_DENIED_TOOLS", () => {
+  it("holds the ledger deny list and denies every built-in subagent type, so the lead starts only the lens-<id> agents defined for it", () => {
+    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(LEAD_DENIED_TOOLS.includes(rule), rule);
+    for (const type of ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide", "output-style-setup"]) {
+      assert.ok(LEAD_DENIED_TOOLS.includes(`Agent(${type})`), `Agent(${type}) isn't denied`);
+    }
+  });
+});
+
+describe("restrictedClaudeCode's --agents", () => {
+  const definition = (overrides: Partial<SubagentDefinition> = {}): SubagentDefinition => ({
+    description: "Reviews the branch through the Edge cases lens",
+    prompt: "Read the file and follow it.",
+    tools: ["Read", "Grep", "Glob"],
+    model: "sonnet",
+    ...overrides,
+  });
+  const lead = { tools: leadTools(["lens-1"]), denied: LEAD_DENIED_TOOLS, strictMcp: true, userSettingsOnly: true };
+  // The lead's restrictions for these agents: its Agent tool names exactly them.
+  const leadFor = (agents: Record<string, SubagentDefinition>) => ({ ...lead, tools: leadTools(Object.keys(agents)), agents });
+  const commandOf = (restrictions: Parameters<typeof restrictedClaudeCode>[2]) =>
+    restrictedClaudeCode("sonnet", "high", restrictions).buildPrintCommand({ prompt: "the prompt", dangerouslySkipPermissions: true }).command;
+  // The words the shell hands claude, one per line, after `claude --print`: read back through a real shell, so quoting is tested, not assumed.
+  // JSON.stringify never writes a raw newline, so the --agents word is one line.
+  const wordsOf = (command: string): string[] => {
+    const shell = spawnSync("sh", ["-c", `printf '%s\n' ${command.slice("claude --print ".length)}`], { encoding: "utf8" });
+    assert.equal(shell.status, 0, shell.stderr);
+    return shell.stdout.split("\n");
+  };
+  const agentsJson = (command: string): unknown => {
+    const words = wordsOf(command);
+    const at = words.indexOf("--agents");
+    assert.ok(at >= 0, `no --agents in ${command}`);
+    return JSON.parse(words[at + 1]!);
+  };
+
+  it("hands claude the definitions as one JSON word, by name", () => {
+    const agents = { "lens-1": definition(), "lens-2": definition({ description: "Reviews through the Tests lens" }) };
+
+    assert.deepEqual(agentsJson(commandOf(leadFor(agents))), agents);
+  });
+
+  it("keeps a single quote, a double quote, a dollar sign and a backtick in a definition intact through the shell", () => {
+    const agents = { "lens-1": definition({ description: `it's the "Edge cases" lens $HOME \`id\``, prompt: `Don't $(touch /tmp/x); read 'the file'` }) };
+
+    assert.deepEqual(agentsJson(commandOf(leadFor(agents))), agents);
+  });
+
+  it("still emits --tools, --strict-mcp-config, --setting-sources user and the deny list beside --agents", () => {
+    const command = commandOf(leadFor({ "lens-1": definition() }));
+    const words = wordsOf(command);
+
+    assert.equal(words[words.indexOf("--tools") + 1], leadTools(["lens-1"]).join(","));
+    assert.ok(words.includes("--strict-mcp-config"));
+    assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
+    assert.ok(words.includes("--disallowedTools"));
+    for (const rule of LEAD_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
+    assert.equal(words.filter((word) => word === "--agents").length, 1);
+  });
+
+  it("fails closed when the lead's Agent tool isn't restricted to exactly the defined agents", () => {
+    const agents = { "lens-1": definition(), "lens-2": definition() };
+    const refused = (tools: readonly string[]) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools, agents });
+
+    assert.doesNotThrow(refused(leadTools(["lens-1", "lens-2"])));
+    assert.throws(refused(["Agent", ...REVIEWER_TOOLS]), /Agent/, "a bare Agent starts any subagent type");
+    assert.throws(refused(["Agent(*)", ...REVIEWER_TOOLS]), /Agent/);
+    assert.throws(refused(REVIEWER_TOOLS), /Agent/, "no Agent tool at all");
+    assert.throws(refused(leadTools(["lens-1"])), /Agent/, "an agent the lead can't start");
+    assert.throws(refused(leadTools(["lens-1", "lens-2", "lens-3"])), /Agent/, "an agent that isn't defined");
+    assert.throws(refused([...leadTools(["lens-1", "lens-2"]), "Agent"]), /Agent/, "a bare Agent beside the list");
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, tools: undefined, agents }), /Agent/, "no --tools at all");
+  });
+
+  it("keeps the prompt on stdin and the flags before -p -", () => {
+    const result = restrictedClaudeCode("sonnet", "high", leadFor({ "lens-1": definition() })).buildPrintCommand({
+      prompt: "the prompt",
+      dangerouslySkipPermissions: true,
+    });
+
+    assert.equal(result.stdin, "the prompt");
+    assert.match(result.command, /^claude --print /);
+    assert.ok(result.command.endsWith(" -p -"), result.command);
+  });
+
+  it("adds no --agents when none are given", () => {
+    assert.doesNotMatch(commandOf(lead), /--agents/);
+    assert.doesNotMatch(commandOf({ tools: REVIEWER_TOOLS }), /--agents/);
+  });
+
+  it("applies --agents even when the Agent allowlist is its only companion", () => {
+    assert.ok(wordsOf(commandOf({ tools: leadTools(["lens-1"]), agents: { "lens-1": definition() } })).includes("--agents"));
+  });
+
+  // The restrictions with the lead's tools written by hand, so leadTools' own validation is not in the way and only agentsJson can refuse a name or an empty set.
+  const byHand = (names: readonly string[], agents: Record<string, SubagentDefinition>) =>
+    ({ ...lead, tools: [`Agent(${names.join(",")})`, ...REVIEWER_TOOLS], agents });
+
+  it("refuses, where the provider is built, a subagent whose tools aren't a non-empty subset of the reviewers' own", () => {
+    for (const tools of [["Bash"], ["Agent"], ["WebFetch"], ["Write"], ["Read", "Bash"], ["Read", "Grep", "Glob", "Edit"], [], ["read"]]) {
+      assert.throws(() => restrictedClaudeCode("sonnet", "high", leadFor({ "lens-1": definition({ tools }) })), /the subagent lens-1 must hold/, JSON.stringify(tools));
+    }
+    for (const tools of [["Read"], ["Glob", "Read", "Grep"], ["Grep", "Glob"], ["Read", "Grep", "Glob"]]) {
+      assert.doesNotThrow(() => restrictedClaudeCode("sonnet", "high", leadFor({ "lens-1": definition({ tools }) })), JSON.stringify(tools));
+    }
+  });
+
+  it("refuses, where the provider is built, a name that isn't lowercase ASCII letters, digits and hyphens starting with a letter", () => {
+    // `a,b` is one name that checkLeadAgentTool's comparison accepts (`Agent(a,b)`), so only agentsJson's name check stops it.
+    for (const name of ["", "Lens-1", "1lens", "-lens", "lens_1", "lens 1", "lens-é", "lens;touch", "lens\n1", "../lens", "a,b", "*"]) {
+      assert.throws(() => restrictedClaudeCode("sonnet", "high", byHand([name], { [name]: definition() })), /an agent name for --agents/, JSON.stringify(name));
+    }
+    for (const name of ["a", "lens-1", "lens-14", "a1-b2"]) {
+      assert.doesNotThrow(() => restrictedClaudeCode("sonnet", "high", byHand([name], { [name]: definition() })), name);
+    }
+  });
+
+  it("refuses an empty set of definitions, which is not the same as giving none", () => {
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", byHand([], {})), /for --agents are empty/);
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", leadFor({})), /agent/i, "leadTools refuses it too");
+  });
+
+  it("matches the lead's Agent tool to the agents by their names and order, wherever the tool sits among the others", () => {
+    const agents = { "lens-1": definition(), "lens-2": definition() };
+    const build = (tools: readonly string[]) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools, agents });
+
+    assert.doesNotThrow(build([...REVIEWER_TOOLS, "Agent(lens-1,lens-2)"]), "the Agent tool last");
+    assert.doesNotThrow(build(["Read", "Agent(lens-1,lens-2)", "Grep", "Glob"]), "the Agent tool among the others");
+    assert.throws(build(["Agent(lens-2,lens-1)", ...REVIEWER_TOOLS]), /Agent/, "the same agents in another order are not the definitions' order");
+  });
+
+  // The size of the word the shell is handed: the JSON in single quotes, each single quote inside it written as four bytes ('\'').
+  const wordBytes = (agents: Record<string, SubagentDefinition>) => Buffer.byteLength(`'${JSON.stringify(agents).replaceAll("'", `'\\''`)}'`);
+  const build = (agents: Record<string, SubagentDefinition>) => () => restrictedClaudeCode("sonnet", "high", leadFor(agents));
+  // One definition whose word is exactly `bytes` long, padded with `filler` (one byte per character unless it says otherwise).
+  const sized = (bytes: number, filler = "d", perFiller = 1) => {
+    const base = wordBytes({ "lens-1": definition({ description: "" }) });
+    const agents = { "lens-1": definition({ description: filler.repeat(Math.floor((bytes - base) / perFiller)) }) };
+    return agents;
+  };
+
+  it("refuses an --agents word over MAX_AGENTS_WORD_BYTES and accepts it at n-1 and n bytes, so it fails at build time and not at exec", () => {
+    assert.equal(MAX_AGENTS_WORD_BYTES, 60_000);
+    for (const bytes of [MAX_AGENTS_WORD_BYTES - 1, MAX_AGENTS_WORD_BYTES]) {
+      const agents = sized(bytes);
+      assert.equal(wordBytes(agents), bytes);
+      assert.doesNotThrow(build(agents));
+    }
+    const over = sized(MAX_AGENTS_WORD_BYTES + 1);
+    assert.equal(wordBytes(over), MAX_AGENTS_WORD_BYTES + 1);
+    assert.throws(build(over), /byte|too (large|long)|limit/i);
+  });
+
+  it("counts the cap in bytes, not characters: multi-byte text over it is refused", () => {
+    // Each é is one character and two bytes in UTF-8; JSON.stringify leaves it as it is.
+    const agents = sized(MAX_AGENTS_WORD_BYTES + 2, "é", 2);
+
+    assert.ok(JSON.stringify(agents).length <= MAX_AGENTS_WORD_BYTES);
+    assert.ok(wordBytes(agents) > MAX_AGENTS_WORD_BYTES);
+    assert.throws(build(agents), /byte|too (large|long)|limit/i);
+  });
+
+  // `shellWord` writes each ' as '\'' (four bytes), so JSON of apostrophes only a quarter of the cap long is already over it.
+  it("counts the apostrophes the shell word escapes: JSON under the cap that quotes to a word over it is refused", () => {
+    const agents = sized(MAX_AGENTS_WORD_BYTES + 4, "'", 4);
+
+    assert.ok(Buffer.byteLength(JSON.stringify(agents)) < MAX_AGENTS_WORD_BYTES / 2);
+    assert.ok(wordBytes(agents) > MAX_AGENTS_WORD_BYTES);
+    assert.throws(build(agents), /byte|too (large|long)|limit/i);
+    // And at the edge: one apostrophe fewer is four bytes fewer.
+    const edge = sized(MAX_AGENTS_WORD_BYTES, "'", 4);
+    assert.ok(wordBytes(edge) <= MAX_AGENTS_WORD_BYTES);
+    assert.doesNotThrow(build(edge));
   });
 });
 

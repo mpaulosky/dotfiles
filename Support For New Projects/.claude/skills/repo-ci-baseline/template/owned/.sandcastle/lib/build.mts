@@ -7,7 +7,7 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { isRoleTimeout, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, runRoleInSandbox, uiEnabled } from "./agents.mts";
+import { isRoleTimeout, LEAD_DENIED_TOOLS, leadTools, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, roleAgent, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
 import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, withoutRunnerCommands, type Checkpoint } from "./checkpoint.mts";
 import {
@@ -15,16 +15,20 @@ import {
   BUILD_FAILED_MARKER,
   BUILDING_LABEL,
   DESIGN_MARKER,
+  FIXED_ROLE_AGENTS,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
+  reviewerMode,
+  type ReviewerMode,
 } from "./config.mts";
 import { CHECK_PATHS, copyToWorktree, hooks } from "./repo-config.mts";
 import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
 import { commentOnIssue, fileIssueOnce, holdExistingPullRequest, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
-import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
+import { subagentDefinition } from "./host-review-prompts.mts";
+import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles, type TeamMember } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
@@ -530,6 +534,8 @@ export type LocalReviewArgs = {
   // How long the host waits for one reviewer or backend run before it gives up on it, in milliseconds; for tests. The default is the role's
   // timeoutMinutes plus ROLE_RUN_GRACE_MINUTES (lib/agents.mts#roleBackstopMs).
   backstopMs?: number;
+  // How a round's reviewers start; SANDCASTLE_REVIEWERS (lib/config.mts#reviewerMode) when absent. For tests.
+  reviewerMode?: ReviewerMode;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no
@@ -823,10 +829,24 @@ export function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
 // role in the build's sandbox. The host never runs the worktree's scripts/review.sh or its git: prepareRound and recordReview run in
 // the main checkout, on commits the sandbox made (the objects are shared), so no agent-written code runs on the host and no agent
 // reaches the ledger. The sandbox mounts an empty folder over .git/review and has no GitHub token.
+//
+// With the "subagents" reviewer mode (SANDCASTLE_REVIEWERS, lib/config.mts#reviewerMode) the host also has `runReviewerTeam`: one lead run in
+// the sandbox starts a round's reviewers as parallel subagents, defined on its command line (`--agents`, named lens-<id>, Read/Grep/Glob only).
+// The lead holds Read, Grep and Glob and an `Agent` tool limited to the round's lens-<id> agents (leadTools): no shell, no network and no write tool. In the "sequential" mode `runReviewerTeam` is absent.
 export function liveReviewHost(args: LocalReviewArgs, checkout: string = process.cwd()): HostReviewHost {
   const { sandbox, issue, main, limits } = args;
+  const subagents = (args.reviewerMode ?? reviewerMode()) === "subagents";
   const backstop = args.backstopMs === undefined ? {} : { backstopMs: args.backstopMs };
   const runRel = `.sandcastle/work/${issue.number}/review`;
+  // A shell test that fails, naming the link, when the run folder or any folder above it is a symlink: a write or a removal there would reach whatever the link
+  // points at. It runs before any mkdir, which only makes real folders, so a link can only be one that was there already.
+  const runParts = runRel.split("/");
+  const runFolderUnlinked = runParts
+    .map((_, at) => {
+      const folder = shellWord(runParts.slice(0, at + 1).join("/"));
+      return `{ test ! -L ${folder} || { echo "${runParts.slice(0, at + 1).join("/")} is a link" >&2; false; }; }`;
+    })
+    .join(" && ");
   const outcomesFile = `${runRel}/outcomes.json`;
   // The ledger's git commands run in the main checkout, whose .git agents can write: pinned to its own shared directory, whatever a
   // commondir file says (lib/host-safety.mts).
@@ -850,7 +870,7 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
     takenIds: (head) => takenIds(checkout, baseOf(head), head),
     removeRunFile: async (path) => {
       if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only remove under ${runRel}/, not ${path}`);
-      const removed = await sandbox.exec(`rm -f ${shellWord(path)}`);
+      const removed = await sandbox.exec(`${runFolderUnlinked} && rm -f -- ${shellWord(path)}`);
       if (removed.exitCode !== 0) throw new Error(`removing ${path} in the sandbox failed: ${removed.stderr.trim()}`);
     },
     writeRunFile: async (path, content) => {
@@ -858,11 +878,15 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only write under ${runRel}/, not ${path}`);
       // Base64, so the bytes git printed arrive as they are: a patch of a file that isn't UTF-8 would otherwise be rewritten in transit.
       // An empty file is made without stdin: a command waiting on an empty stdin could hold the build until its limit.
+      // The path is removed first: a symlink or hard link left there by an earlier step would otherwise be written through,
+      // aliasing two run files (two lenses' prompts) to one.
       const encoded = Buffer.from(content).toString("base64");
+      const clear = `rm -f -- ${shellWord(path)}`;
+      // Nor may the run folder, or a folder above it, be a link (runFolderUnlinked): the write, and the mkdir before it, would land wherever the link points.
       const written =
         encoded === ""
-          ? await sandbox.exec(`mkdir -p ${shellWord(runRel)} && : > ${shellWord(path)}`)
-          : await sandbox.exec(`mkdir -p ${shellWord(runRel)} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
+          ? await sandbox.exec(`${runFolderUnlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && : > ${shellWord(path)}`)
+          : await sandbox.exec(`${runFolderUnlinked} && mkdir -p ${shellWord(runRel)} && ${clear} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
       if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
     },
     runReviewer: async (_reviewer, prompt) => {
@@ -875,9 +899,36 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
       }, backstop);
       return run.stdout;
     },
+    ...(subagents
+      ? {
+          runReviewerTeam: async (members: TeamMember[], prompt: string) => {
+            const model = FIXED_ROLE_AGENTS["pre-push-reviewer"].model;
+            const run = await runRoleInSandbox(
+              sandbox,
+              "pre-push-review-lead",
+              // Sandcastle's idle timeout is ten minutes of silence by default; a lead waiting on its subagents may print nothing for longer, so
+              // it is the role's whole timeout, which the run's AbortSignal and the host's backstop enforce.
+              { prompt, idleTimeoutSeconds: roleAgent("pre-push-review-lead").timeoutMinutes * 60 },
+              limits,
+              {
+                // Only the round's lens-<id> agents may start, not a user-level, plugin or later built-in subagent.
+                tools: leadTools(members.map((member) => member.agent)),
+                denied: LEAD_DENIED_TOOLS,
+                strictMcp: true,
+                // Not the branch's .claude/settings.json (see runReviewer). The subagents are defined on the command line, so they don't need its .claude/agents.
+                userSettingsOnly: true,
+                agents: Object.fromEntries(members.map((member) => [member.agent, subagentDefinition(model, member.file, member.reviewer)])),
+              },
+              backstop,
+            );
+            return run.stdout;
+          },
+        }
+      : {}),
     runFixer: async (prompt) => {
       // An earlier round's outcomes must not be read as this one's.
-      await sandbox.exec(`rm -f ${shellWord(outcomesFile)}`);
+      const cleared = await sandbox.exec(`${runFolderUnlinked} && rm -f -- ${shellWord(outcomesFile)}`);
+      if (cleared.exitCode !== 0) throw new Error(`clearing ${outcomesFile} in the sandbox failed: ${cleared.stderr.trim()}`);
       const run = await runRoleInSandbox(sandbox, "backend", { prompt }, limits, { denied: LEDGER_DENIED_TOOLS }, backstop);
       args.addCommits(run.commits);
     },

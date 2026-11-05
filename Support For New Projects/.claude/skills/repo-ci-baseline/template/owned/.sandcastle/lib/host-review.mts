@@ -708,9 +708,9 @@ const RENDERED_LINK = /:\/\/|mailto:|www\.|\]\(|\]\[|!\[|\]:/i;
 // (the host's public-text check: a reviewer that read untrusted text can quote a secret in a summary or fix). Hidden text is held to ADR 0010's rule
 // (status.mts#hasHiddenText: what terminalText would drop). It is asked of the branch the header quotes together with the fields (id, path, summary,
 // fix) of the findings listed so far and the next one, never of the rendered line, whose zero-width spaces the host adds itself after an @, a # or "github.com".
-// So a branch that holds hidden text leaves every finding out (and the body empty), and the issue as a whole keeps no more joiners or private-use or unassigned
-// code points than one text does (eight in all), and no run of more than eight marks: a finding that would exceed that is left out. A next-line character (U+0085) is left
-// out too, since terminalText reads it as a space but plainText, which writes the issue, does not. `publishable` sees the finding's own line, never the header with the branch name.
+// So a branch that holds hidden text leaves every finding out (and the body empty), and the issue as a whole keeps no more than eight joiners and no more than eight private-use or unassigned
+// code points, as one text does, and no run of more than eight marks: a finding that would exceed that is left out. A next-line character (U+0085) is left
+// out too, since terminalText reads it as a space but plainText, which writes the issue, does not. `publishable` sees the finding's rendered line, then its path, summary and fix as the reviewer wrote them (trimmed, since publicError trims), never the header with the branch name.
 // At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and stay in the local review record. Empty when nothing can be listed.
 export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>, publishable: (text: string) => boolean = () => true): string {
   const rendered = ledger.findings

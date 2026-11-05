@@ -202,8 +202,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   hands back with a comment saying the PR may already be a draft: find it with `gh pr list --head <branch>` rather than open a second one. A finding is also left out when its id, path,
   summary or fix, or the branch, holds text a reader can't see (`hasHiddenText` in `status.mts`, the rule of ADR 0010: `terminalText` would drop or cap something other than whitespace). That
   covers a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800,
-  Hangul), a next-line character (U+0085, which the issue's own text folding would publish raw), a joiner that does no work (outside emoji or the joining scripts), more than eight joiners or
-  private-use or unassigned characters across the issue's text, and a run of more than eight combining marks. Each field is also checked for secrets as the reviewer wrote it, not only in the
+  Hangul), a next-line character (U+0085, which the issue's own text folding would publish raw), a joiner that does no work (outside emoji or the joining scripts), more than eight joiners or more than
+  eight private-use or unassigned characters across the issue's text, and a run of more than eight combining marks. Each field is also checked for secrets as the reviewer wrote it, not only in the
   escaped line the issue shows. When open Advisory findings exist and none can be listed, the build logs that no follow-up issue is filed.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's

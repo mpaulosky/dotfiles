@@ -1583,7 +1583,7 @@ async function buildMarkedIssue(
       holdAsDraft = review.ledger.findings.some(isBlocking);
       // The open Advisory findings go to a follow-up issue, as the skill's step 9 files them, but only once the branch is published (below):
       // the issue is public, so a branch the secret scan refuses or whose push fails gets none. Its text is a reviewer's, so it is held to the PR note's rules.
-      // Each finding's own line is checked (a branch named for review notes must not hide them all), and the whole body once more for what the header
+      // Each finding's own line and its fields are checked (a branch named for review notes must not hide them all), and the whole body once more for what the header
       // quotes, the branch name.
       advisories = advisoryIssueBody(
         review.ledger,

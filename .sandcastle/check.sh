@@ -9,6 +9,9 @@
 # the two are diffed separately, so an :(exclude) or :^ line can't remove one of them. An exclude
 # line only trims the list's other lines; git reads a list of exclude lines alone as "everything
 # else", so such a list is treated as empty rather than watching the whole repo.
+# git diff is silent for a pathspec that matches no file, so a line that matches no tracked file (a mistyped path, a deleted folder)
+# watches nothing until a matching file is added: each such line is named on stderr on every run. A line git rejects as a
+# pathspec is named too (the check then always runs). Either way the check runs or skips as it would without the warning.
 #
 #   .sandcastle/check.sh <merge-base>
 set -euo pipefail
@@ -40,6 +43,20 @@ if [[ -f "$extra" ]]; then
   done <<< "$extra_text"
 fi
 [[ $positive -gt 0 ]] || listed=()
+# A positive line that matches no tracked file watches nothing, and one git rejects makes the diff below fail: name each, instead of silently dropping that
+# coverage. An exclude line only trims, so it is not asked. Only a warning: what runs is decided below. The count guard keeps an empty array
+# from tripping set -u on bash older than 4.4.
+warn() { printf '⚠ .sandcastle/check-paths.txt: %s %s\n' "${1//[[:cntrl:]]/?}" "$2" >&2; }
+if ((${#listed[@]} > 0)); then
+  for line in "${listed[@]}"; do
+    [[ "$line" =~ $exclude ]] && continue
+    if found="$(git ls-files -- "$line" 2>/dev/null)"; then
+      [[ -n "$found" ]] || warn "$line" "matches no tracked file, so it watches nothing until a matching file is added"
+    else
+      warn "$line" "is not a pathspec git accepts, so the check always runs"
+    fi
+  done
+fi
 
 unchanged() { git diff --quiet --no-renames "$base" HEAD -- "$@"; }
 # A pathspec git rejects makes unchanged fail, so the check runs rather than being skipped.

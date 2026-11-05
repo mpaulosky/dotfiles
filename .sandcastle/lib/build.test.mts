@@ -5385,6 +5385,7 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
+    assert.equal(result.findingsLost, undefined, "the comment on the issue holds the findings, so nothing is lost");
     const posted = comments.filter((comment) => /follow-up issue/.test(comment.body));
     assert.equal(posted.length, 1);
     assert.equal(posted[0]?.issue, issue.number);
@@ -5407,6 +5408,7 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
+    assert.equal(result.findingsLost, true, "the findings are in the log only, so the run must end red");
     assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)));
     assert.ok(logged.some((line) => /posting the Advisory findings/.test(line)), logged.join("\n"));
   });
@@ -5416,8 +5418,9 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     const run = host([0, 0], { localReview: recorded([advisory()]) });
     run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
 
-    await buildIssue(issue, branch, base, run.buildHost);
+    const result = await buildIssue(issue, branch, base, run.buildHost);
 
+    assert.equal(result.findingsLost, undefined, "a filed issue loses nothing");
     assert.ok(!comments.some((body) => /couldn't file the follow-up issue/.test(body)));
   });
 
@@ -5464,7 +5467,7 @@ describe("buildIssue when the open PR can't be held as a draft", () => {
   });
 });
 
-// A review that didn't finish holds the PR too, with no finding to fix or accept: the comments say to run the review again.
+// A review that didn't finish holds the PR too, with no finding to fix or accept: the hand-back comment for a PR that couldn't be made a draft says the review didn't finish, and the one for a publish that failed after the hold says to run it again.
 describe("buildIssue when a review that didn't finish held the PR and publishing failed", () => {
   const unfinished = { localReview: async (args: { startHead: string }) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) as const };
 

@@ -186,13 +186,14 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   note says so): the host opens it with `gh pr create --draft`, and its body says why and what a person does: the ledger stays on the runner (it can hold security details), so a person
   first runs `/pre-push-review` on the checked-out branch to record one. Only a person accepts a finding, with `scripts/review.sh accept`, and marks the
   PR ready with `gh pr ready`; the host never does either. A PR with none open is opened ready. A PR that already exists for the branch (a rerun) is turned into a draft with `gh pr ready
-  --undo` before the new commits are pushed (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body, but
+  --undo` before the new commits are pushed (retried after a GitHub server error; if it still fails nothing is pushed and the issue gets a comment saying so) and then given the new body
+  (the body is read again just before the edit, which keeps what that read held; gh has no compare-and-swap, so a change made in the one call between the read and the edit is lost), but
   only while its body still carries the host's `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the
   draft note added to it, unless that would pass GitHub's 65,536-character limit: then the body is left as it is and the PR is a draft with no note. A body edited by hand with the marker
   left in is rewritten. A rerun that no longer holds a PR that is a draft leaves it a draft, as marking it ready is a person's, but takes the draft note out of its body (the host's own body
-  is replaced; a person's body loses only the note). That edit is best effort: if reading or editing the body fails the host logs the reason and still publishes, and the note stays until a
-  person removes it. A held PR is a draft, so Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or
-  review feedback on it needs a person.
+  is replaced; a person's body loses only the note). That edit is best effort, with the same one-call window between the read and the edit: if reading or editing the body fails the host logs
+  the reason and still publishes, and the note stays until a person removes it. A held PR is a draft, so Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it
+  ready: a failing check or review feedback on it needs a person.
 - The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the
   generic one.
 - The review's open Advisory findings go in one follow-up issue titled `chore(review): Advisory review findings: <branch>`, whose body is `renderAdvisories`' list (a security finding is left out,
@@ -204,7 +205,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   unless the body or one of the host's own comments already holds exactly that text (anyone can comment on a public issue, so another author's comment never counts), so findings the issue already
   lists can appear again beside a new one; a body a person edited is never replaced. A later review with no Advisory findings files nothing, so the earlier issue keeps findings that may be fixed
   by now: a person closes it. It files none for a review that didn't finish. A failed filing is retried after a GitHub server error; if it still fails, the failure is logged and the same
-  checked list is posted as a comment on the Sandcastle issue, so it isn't lost with the runner, and the PR still publishes. A push or PR create that fails after the PR was held as a draft
+  checked list is posted as a comment on the Sandcastle issue, so it isn't lost with the runner, and the PR still publishes. If that comment fails too the
+  findings are only in the run log, so the build returns `findingsLost`, the run report names it and the run ends red. A push or PR create that fails after the PR was held as a draft
   hands back with a comment saying the PR may already be a draft: find it with `gh pr list --head <branch>` rather than open a second one. A finding is also left out when its id, path,
   summary or fix, or the branch, holds text a reader can't see (`hasHiddenText` in `status.mts`, the rule of ADR 0010: `terminalText` would drop or cap something other than whitespace). That
   covers a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800,

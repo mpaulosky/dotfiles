@@ -425,6 +425,16 @@ describe("main.mts's intake-stop exit code", () => {
     assert.match(mainMts, /ending = runEnding\(limitReason, intakeStopReport\.items\(\)\)/, "main.mts doesn't take the loop's ending from runEnding");
     assert.match(mainMts, /runEnding\(error\.message, intakeStopReport\.items\(\)\)/, "the catch doesn't take its ending from everything recorded");
   });
+
+  it("records the stops for a PR's lost Advisory findings right after the settled builds, before the round summary can stop the loop", () => {
+    const mainMts = read(".sandcastle/main.mts");
+
+    assert.match(mainMts, /findingsLostStops\(work, settled\)[\s\S]{0,80}intakeStopReport\.record\(/, "main.mts doesn't record the findings-lost stops");
+    assert.ok(
+      mainMts.indexOf("findingsLostStops(work, settled)") < mainMts.indexOf("roundSummary(work, settled)"),
+      "the findings-lost stops are recorded after roundSummary, whose stop can break the loop first",
+    );
+  });
 });
 
 // #147: SANDCASTLE_BUDGET_MINUTES reaches the sandbox like every other key in

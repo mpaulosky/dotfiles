@@ -1048,6 +1048,9 @@ type BuildResult = {
   publishFailed: boolean;
   outcome: BuildOutcome;
   detail: string;
+  // True when the PR was published but its Advisory findings were filed nowhere a person sees: the follow-up issue and the fallback comment on the issue both
+  // failed, so they are only in the run log. lib/round.mts#findingsLostStops turns it into a recorded stop, which ends the run red.
+  findingsLost?: true;
 };
 
 // buildIssue's work once the issue is marked: everything from creating the
@@ -1704,6 +1707,7 @@ async function buildMarkedIssue(
         holdAsDraft,
       );
       // A failed filing never undoes the published PR.
+      let findingsLost = false;
       if (advisories !== "") {
         try {
           await retryOnServerError(
@@ -1718,10 +1722,11 @@ async function buildMarkedIssue(
             host.commentOnIssue(issue.number, advisoryFilingFailedComment(prUrl, advisories));
           } catch (commentError) {
             console.error(`  ⚠ #${issue.number}: posting the Advisory findings on the issue failed too: ${terminalText(String(commentError))}`);
+            findingsLost = true;
           }
         }
       }
-      return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
+      return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl, ...(findingsLost ? { findingsLost: true as const } : {}) };
     } catch (error) {
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${terminalText(String(error))}`);
       const detail = host.publicError(error);

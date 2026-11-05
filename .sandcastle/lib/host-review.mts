@@ -702,10 +702,13 @@ const ADVISORY_MARKER = "<!-- claude-session -->";
 // line holds one is not published: a reviewer that read untrusted text can be made to put one in a summary or fix, and the host would publish it under its own account.
 const RENDERED_LINK = /:\/\/|mailto:|www\.|\]\(|\]\[|!\[|\]:/i;
 
-// Text a reader can't see or that reorders what they read: any control character, the bidirectional overrides and isolates, the zero-width and other
-// default-ignorable code points, and the Unicode tag block. A reviewer that read untrusted text could hide instructions in them, and a later agent that reads
-// the issue would act on text no person saw, so a finding whose line holds one is not published.
-const HIDDEN_TEXT = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u{E0000}-\u{E007F}]/u;
+// Text a reader can't see or that reorders what they read: a control character (a tab and a line break aside, which plainText folds to a space), the
+// bidirectional marks, overrides and isolates, the zero-width space and the invisible operators (U+2060-2064), the byte-order mark, the Hangul fillers,
+// and the Unicode tag block. A reviewer that read untrusted text could hide instructions in them, and a later agent that reads the issue would act on
+// text no person saw, so a finding holding one is not published. It is tested on the finding's own fields, not on the rendered line, whose zero-width
+// spaces the host adds itself after an @, a # or "github.com". The joiners (U+200C, U+200D) and the emoji variation selector (U+FE0F) are allowed:
+// emoji sequences such as the warning sign and Persian or Indic words need them.
+const HIDDEN_TEXT = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u115F\u1160\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\u3164\uFEFF\uFFA0\u{E0000}-\u{E007F}]/u;
 
 // The public follow-up issue's body for the review's open Advisory findings (review-ledger.mts#renderAdvisories), held to the PR note's rules: a
 // finding is listed only when its path is one of the files the review read and is made of plain file-name characters, its line (id, place, summary and fix)
@@ -721,7 +724,7 @@ export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>
     .filter(({ finding, text }) => {
       const path = diffPath(finding.path);
       const line = text.split("\n").find((candidate) => candidate.startsWith("- ")) ?? "";
-      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && line.length <= ADVISORY_LINE_LIMIT && !RENDERED_LINK.test(line) && !HIDDEN_TEXT.test(line) && publishable(line);
+      return readPaths.has(path) && SAFE_NOTE_PATH.test(path) && line.length <= ADVISORY_LINE_LIMIT && !RENDERED_LINK.test(line) && !HIDDEN_TEXT.test(`${finding.id} ${finding.path} ${finding.summary} ${finding.fix ?? ""}`) && publishable(line);
     })
     .slice(0, ADVISORY_ISSUE_FINDINGS)
     .map((entry) => entry.finding);

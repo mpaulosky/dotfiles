@@ -197,7 +197,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   unless the body or one of the host's own comments already holds exactly that text (anyone can comment on a public issue, so another author's comment never counts), so findings the issue already
   lists can appear again beside a new one; a body a person edited is never replaced. A later review with no Advisory findings files nothing, so the earlier issue keeps findings that may be fixed
   by now: a person closes it. It files none for a review that didn't finish, and a failed filing is retried after a GitHub server error and then only logged: the PR still publishes. A finding
-  whose line holds text a reader can't see (a control character, a bidirectional override, a zero-width or tag character) is left out like one with a link.
+  holds text a reader can't see (a control character, a bidirectional mark or override, a zero-width space, a Hangul filler or a tag character) is left out like one with a link;
+  emoji with a variation selector or a joiner stay.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
   global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run,

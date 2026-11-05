@@ -1726,7 +1726,7 @@ async function buildMarkedIssue(
           issue.number,
           `Sandcastle couldn't publish \`${branch}\`: the review left findings open, so its open pull request has to be a draft, and turning it into one ` +
             "failed. Nothing was pushed, and that pull request may still be ready. A person needs to look at it: make it a draft " +
-            `with \`gh pr ready --undo\` before pushing anything to \`${branch}\`, so PR Auto-Merge can't merge it.\n\n${fence}text\n${detail}\n${fence}`,
+            `with \`gh pr ready ${branch} --undo\` before pushing anything to \`${branch}\`, so PR Auto-Merge can't merge it.\n\n${fence}text\n${detail}\n${fence}`,
         );
         return {
           commits,

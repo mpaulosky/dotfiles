@@ -5,6 +5,7 @@ import { spawnSync, type execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
+import { hostExecFileSync } from "./host-limit.mts";
 import { join } from "node:path";
 import {
   buildIssue,
@@ -5114,59 +5115,81 @@ describe("buildIssue when the open PR can't be held as a draft", () => {
     assert.equal(result.outcome, "not published");
     assert.equal(result.publishFailed, true);
     assert.equal(comments.length, 1);
-    assert.match(comments[0] ?? "", /gh pr ready --undo/);
+    assert.match(comments[0] ?? "", /gh pr ready feature\/69-run-the-gate --undo/);
     assert.match(comments[0] ?? "", /Nothing was pushed/);
     assert.doesNotMatch(comments[0] ?? "", /push it\s+from its worktree/);
     assert.deepEqual(run.advisoryIssues, []);
   });
 });
 
-// publish's live defaults, run against a fake `gh` first on PATH: the hold must reach gh before the push, and a created PR must carry --draft and DRAFT_NOTE.
+// publish's live defaults, run against a fake `gh` that is the only program on PATH, so a test can never reach the real gh and its login: the hold must reach gh
+// before the push, and a created PR must carry --draft and DRAFT_NOTE.
 describe("publish's default hold and PR creation", { skip: process.platform === "win32" }, () => {
-  const withFakeGh = async (listed: string, body: (log: () => string[]) => Promise<void>) => {
+  const withFakeGh = async (listed: string, body: (log: () => string[], created: () => string) => Promise<void>) => {
     const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
     const logFile = join(dir, "calls.log");
+    const createdFile = join(dir, "created-body.txt");
+    // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers the three calls publish makes and keeps the body of `pr create`.
     writeFileSync(
       join(dir, "gh"),
-      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logFile}"\ncase "$1 $2" in\n  "repo view") echo o/r ;;\n  "pr list") echo '${listed}' ;;\n  "pr create") echo https://github.com/o/r/pull/9 ;;\n  *) cat >/dev/null ;;\nesac\n`,
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> "${logFile}"`,
+        'case "$1 $2" in',
+        "  \"repo view\") echo o/r ;;",
+        `  "pr list") echo '${listed}' ;;`,
+        `  "pr create") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${createdFile}"; done; echo https://github.com/o/r/pull/9 ;;`,
+        "  *) while IFS= read -r line || [ -n \"$line\" ]; do :; done ;;",
+        "esac",
+        "",
+      ].join("\n"),
       { mode: 0o755 },
     );
-    const path = process.env.PATH;
-    process.env.PATH = `${dir}:${path}`;
+    const saved = process.env.PATH;
+    process.env.PATH = dir;
     try {
-      await body(() => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean) : []));
+      // The fake must be what runs: were it unrunnable the real gh, with the developer's login, would not be reachable either (PATH holds nothing else).
+      assert.equal(String(hostExecFileSync("gh", ["repo", "view"], { encoding: "utf8" })).trim(), "o/r");
+      rmSync(logFile);
+      await body(
+        () => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean) : []),
+        () => (existsSync(createdFile) ? readFileSync(createdFile, "utf8") : ""),
+      );
     } finally {
-      process.env.PATH = path;
+      if (saved === undefined) delete process.env.PATH;
+      else process.env.PATH = saved;
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   };
   const open = (isDraft: boolean) =>
     JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4", body: "" }]);
 
-  it("turns the ready PR for the branch into a draft before the push", async () => {
+  it("turns the ready PR for the branch into a draft before the push, not only in the later create hop", async () => {
     await withFakeGh(open(false), async (calls) => {
-      const order: string[] = [];
-      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => void order.push(`push after ${calls().length} gh calls`), undefined, async () => {}, "note", true);
+      const atPush: string[][] = [];
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => void atPush.push(calls()), undefined, async () => {}, "note", true);
 
-      assert.ok(calls().some((line) => line.startsWith("pr ready 4") && line.includes("--undo")), calls().join("\n"));
-      assert.match(order[0] ?? "", /push after [1-9]/, "the hold ran before the push");
+      assert.equal(atPush.length, 1);
+      assert.ok(atPush[0]!.some((line) => line.startsWith("pr ready 4") && line.includes("--undo")), `at the push: ${atPush[0]!.join(" | ")}`);
     });
   });
 
-  it("creates a new PR as a draft with the draft note when nothing is open", async () => {
-    await withFakeGh("[]", async (calls) => {
+  it("creates a new PR as a draft with the draft note in its body when nothing is open", async () => {
+    await withFakeGh("[]", async (calls, created) => {
       await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "note", true);
 
       assert.ok(calls().some((line) => line.startsWith("pr create") && line.includes("--draft")), calls().join("\n"));
+      assert.ok(created().includes(DRAFT_NOTE), created());
     });
   });
 
-  it("creates a ready PR, and looks for none to hold, when nothing holds it", async () => {
-    await withFakeGh("[]", async (calls) => {
+  it("creates a ready PR with no draft wording, and holds none, when nothing holds it", async () => {
+    await withFakeGh("[]", async (calls, created) => {
       await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "", false);
 
       assert.ok(calls().some((line) => line.startsWith("pr create") && !line.includes("--draft")), calls().join("\n"));
       assert.ok(!calls().some((line) => line.startsWith("pr ready")));
+      assert.ok(!created().includes(DRAFT_NOTE));
     });
   });
 });
@@ -5188,18 +5211,38 @@ describe("publish holds an existing PR before it pushes", () => {
     assert.deepEqual(order, ["hold", "push", "create"]);
   });
 
-  it("does not push when the PR can't be held", async () => {
+  it("does not push when the PR can't be held, and rejects with a HoldFailedError naming the branch and keeping the cause", async () => {
     const order: string[] = [];
     const { push, create } = args(order);
+    const cause = new Error("gh pr ready failed: HTTP 422");
 
     await assert.rejects(
       publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, () => {
-        throw new Error("gh pr ready failed: HTTP 422");
+        throw cause;
       }),
-      /HTTP 422/,
+      (error: unknown) => error instanceof HoldFailedError && error.message.includes(branch) && /HTTP 422/.test(error.message) && error.cause === cause,
     );
     assert.deepEqual(order, []);
   });
+
+  it("rejects with the push's own error, not a HoldFailedError, when the hold worked and the push fails", async () => {
+    const failure = new Error("git push failed: non-fast-forward");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => { throw failure; }, () => "u", async () => {}, note, true, () => {}),
+      (error: unknown) => error === failure && !(error instanceof HoldFailedError),
+    );
+  });
+
+  it("rejects with the create's own error, not a HoldFailedError, when the hold and the push worked and the create fails", async () => {
+    const failure = new Error("gh pr create failed: validation");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, () => { throw failure; }, async () => {}, note, true, () => {}),
+      (error: unknown) => error === failure && !(error instanceof HoldFailedError),
+    );
+  });
+
 
   it("retries holding the PR after a GitHub server error", async () => {
     let attempts = 0;

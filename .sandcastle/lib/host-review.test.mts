@@ -2400,7 +2400,14 @@ describe("advisoryIssueBody", () => {
     ["a bidirectional override", "\u202E"],
     ["a bidirectional isolate", "\u2066"],
     ["a zero-width space", "\u200B"],
-    ["a zero-width joiner", "\u200D"],
+    ["a left-to-right mark", "\u200E"],
+    ["an Arabic letter mark", "\u061C"],
+    ["a word joiner", "\u2060"],
+    ["a byte-order mark", "\uFEFF"],
+    ["a Hangul filler", "\u3164"],
+    ["a halfwidth Hangul filler", "\uFFA0"],
+    ["a Hangul choseong filler", "\u115F"],
+    ["a delete character", "\u007F"],
     ["a Unicode tag character", "\u{E0041}"],
     ["a control character", "\u0007"],
   ] as const) {
@@ -2413,6 +2420,21 @@ describe("advisoryIssueBody", () => {
       assert.match(body, /1 more open Advisory finding is in the local review record/);
     });
   }
+
+  it("lists a finding that names a user, an issue or github.com, whose rendering the host breaks with a zero-width space", () => {
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "Closes #12 or calls @octocat via github.com and GH-7." })]), DOCS);
+
+    assert.match(body, /R5/);
+    assert.doesNotMatch(body, /left out|more open Advisory/);
+  });
+
+  it("lists a finding with the emoji variation selector, a joiner sequence, or a Persian word with a non-joiner", () => {
+    for (const summary of ["Mind the \u26A0\uFE0F here.", "A family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} emoji.", "می\u200Cخواهم"]) {
+      const body = advisoryIssueBody(ledgerOf([advisory({ summary })]), DOCS);
+
+      assert.match(body, /R5/, summary);
+    }
+  });
 
   it("leaves out a finding whose fix holds hidden text", () => {
     const body = advisoryIssueBody(ledgerOf([advisory({ fix: "Reword\u200B it." })]), DOCS);

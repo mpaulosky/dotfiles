@@ -349,7 +349,9 @@ for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export cons
   $'export const GATE_COMMAND = `\ncheck.sh --fast\n`;' $'export const GATE_COMMAND = `bash check.sh\n`;' \
   $'export const GATE_COMMAND = [\n  "pnpm lint",\n  /* the sandbox gate */ ".sandcastle/check.sh",\n].join(" && ");' \
   $'export const GATE_COMMAND = [\n  "pnpm lint",\n  /**\n   * the sandbox gate\n   */ ".sandcastle/check.sh",\n].join(" && ");' \
-  $'export const GATE_COMMAND = [\n  "pnpm lint",\n  * / ".sandcastle/check.sh",\n  */ ".sandcastle/check.sh",\n].join(" && ");' \
+  $'export const GATE_COMMAND = [\n  "pnpm lint",\n  */ ".sandcastle/check.sh",\n].join(" && ");' \
+  $'export const GATE_COMMAND = [\n  /* gate */ ".sandcastle/check.sh", /* trailing */\n].join(" && ");' \
+  $'export const GATE_COMMAND = [\n  /* a */ ".sandcastle/check.sh" /* b */,\n].join(" && ");' \
   $'export const GATE_COMMAND = "x";\n'"$NL12"$'export const GATE_SCRIPT = ".sandcastle/check.sh";' \
   $'export const GATE_COMMAND = "x";'"$NL10"$'export const CHECKS = [".sandcastle/check.sh"];' \
   $'export const GATE_COMMAND = [\n  "pnpm lint",\n  "pnpm build",\n  "pnpm test",\n  "pnpm e2e",\n  ".sandcastle/check.sh",\n].join(" && ");'; do
@@ -376,6 +378,7 @@ for config in 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'expor
   $'// The command the host runs in the sandbox as the gate.\nexport const GATE_COMMAND = "scripts/gate.sh";\n\n// The committed file GATE_COMMAND runs. It is written in the worktree by the\n// agents whose work it judges, so a gate whose branch changes it fails without\n// running (lib/checkpoint.mts#gateScriptChange); a file that isn\'t committed at\n// the branch\'s base fails too. Name the script, not the interpreter or\n// arguments: `.sandcastle/check.sh` for `bash .sandcastle/check.sh`.\nexport const GATE_SCRIPT = "scripts/gate.sh";' \
   $'export const GATE_COMMAND = "scripts/gate.sh";\n/**\n * Name the script: `.sandcastle/check.sh` for `bash .sandcastle/check.sh`.\n */\nexport const GATE_SCRIPT = "scripts/gate.sh";' \
   $'export const GATE_COMMAND = "scripts/gate.sh";\n/** e.g. .sandcastle/check.sh */\nexport const GATE_SCRIPT = "scripts/gate.sh";' \
+  $'export const GATE_COMMAND = "scripts/gate.sh";\n/**\n * e.g. .sandcastle/check.sh */\nexport const GATE_SCRIPT = "scripts/gate.sh";' \
   $'export const GATE_COMMAND = "scripts/gate.sh";\n\t// e.g. .sandcastle/check.sh\n\t * e.g. .sandcastle/check.sh\nexport const GATE_SCRIPT = "scripts/gate.sh";'; do
   n=$((n + 1))
   repo="$work/gate check other $n"

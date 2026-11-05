@@ -277,12 +277,15 @@ check "when git can't find the repo's top pnpm is not called" not ran_check
 # A check-paths.txt the script can't read stops it rather than reading as an empty list (a stub tr fails, as an unreadable file would).
 set_list 'CLAUDE.md\n'
 mkdir -p "$WORK/trbin"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/trbin/tr"
+printf '#!/usr/bin/env bash\necho called >> "%s"\nexit 1\n' "$WORK/tr-called" > "$WORK/trbin/tr"
 chmod +x "$WORK/trbin/tr"
 git -C "$REPO" switch -q main
 : > "$LOG"
-OUTPUT="$(cd "$REPO" && PATH="$WORK/trbin:$STUBS:$PATH" bash .sandcastle/check.sh "$LISTBASE" 2>&1)"
+: > "$WORK/tr-called"
+# From the first commit the list (under .sandcastle/) has changed, so a script that read it as empty would run the check.
+OUTPUT="$(cd "$REPO" && PATH="$WORK/trbin:$STUBS:$PATH" bash .sandcastle/check.sh "$BASE" 2>&1)"
 STATUS=$?
+check "the stub tr was reached" test -s "$WORK/tr-called"
 check "a list the script can't read stops it with a failure" test $STATUS -ne 0
 check "a list the script can't read does not run the check either" not ran_check
 

@@ -99,7 +99,7 @@ fi
 # (a parser written in sed was wrong in a new way every round): it keeps the copy when check.sh, as a name or at the end of any path,
 # appears on a line that mentions GATE_COMMAND or GATE_SCRIPT or in the ten lines after one, in repo-config.mts or the older
 # config.mts. A formatter's wrapped value, a string or a glob can't hide it, but a value that starts more than ten lines after the name
-# can. A line whose first text is a comment marker (`//`, `/*`, `*`) is skipped, apart from any code after its last `*/`, unless it names
+# can. A line whose first text is a comment marker (`//`, `/*`, `*`) is skipped, apart from whatever follows its first `*/`, unless it names
 # GATE_COMMAND or GATE_SCRIPT itself: the previous Seed's comments gave `.sandcastle/check.sh` as an example, and a repo that kept them
 # has no such gate. A trailing comment on a value line, or another constant in the window, is a false match, which only adds a conflict
 # to report (put the text on a comment line of its own, or out of the window). A value built from another constant is not followed.
@@ -112,13 +112,12 @@ if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" ]]; then
     [[ -f "$gate_config" ]] || continue
     gate_status=0
     gate_window="$(grep -a -h -A"$gate_window_lines" -E 'GATE_(COMMAND|SCRIPT)' "$gate_config")" || gate_status=$?
-    if (( gate_status == 1 )); then continue; fi
     if (( gate_status == 0 )); then
-      # A line that starts with a comment marker counts only for the code after its last `*/` (a `/* note */ ".sandcastle/check.sh",`
+      # A line that starts with a comment marker counts only for the text after its first `*/` (a `/* note */ ".sandcastle/check.sh", /* x */`
       # element still does), and only when it names no gate itself; a `//` line is skipped whole.
       printf '%s\n' "$gate_window" | LC_ALL=C awk '
         /^[ \t]*\/\// && !/GATE_(COMMAND|SCRIPT)/ { next }
-        /^[ \t]*(\/\*|\*)/ && !/GATE_(COMMAND|SCRIPT)/ { if (!sub(/^.*\*\//, "")) next }
+        /^[ \t]*(\/\*|\*)/ && !/GATE_(COMMAND|SCRIPT)/ { i = index($0, "*/"); if (!i) next; $0 = substr($0, i + 2) }
         /(^|[^A-Za-z0-9_.-])check\.sh([^A-Za-z0-9_.-]|$)/ { found = 1 }
         END { exit found ? 0 : 1 }' || gate_status=$?
       if (( gate_status == 0 )); then gate_check_kept=true; fi

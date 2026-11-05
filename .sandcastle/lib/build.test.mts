@@ -5417,9 +5417,10 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
   it("files nothing when the review didn't finish", async () => {
     const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
 
-    await buildIssue(issue, branch, base, run.buildHost);
+    const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.deepEqual(run.advisoryIssues, []);
+    assert.equal(result.findingsUnlisted, undefined, "a review that didn't finish recorded no findings to lose");
   });
 
   const filed = (findings: Ledger["findings"], options: Parameters<typeof host>[1] = {}) =>
@@ -5468,6 +5469,49 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     assert.deepEqual(run.advisoryIssues, []);
   });
 
+  it("ends the run red, as findings nobody sees, when open Advisory findings exist and none of them can be listed", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const run = filed([advisory({ path: "docs/unread.md" })]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(result.findingsUnlisted, true);
+    assert.equal(result.findingsLost, undefined);
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("does not mark findings unlisted for a branch that isn't published, whatever the findings", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const refused = filed([advisory({ path: "docs/unread.md" })], { leaksSecret: sampleSecretMatch });
+    const failed = filed([advisory({ path: "docs/unread.md" })], { publishError: "push rejected" });
+
+    for (const run of [refused, failed]) {
+      const result = await buildIssue(issue, branch, base, run.buildHost);
+
+      assert.notEqual(result.outcome, "published");
+      assert.equal(result.findingsUnlisted, undefined);
+    }
+  });
+
+  it("does not end the run red when only some of the open Advisory findings can't be listed", async () => {
+    const run = filed([advisory(), advisory({ id: "R6", path: "docs/unread.md" })]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.findingsUnlisted, undefined);
+    assert.equal(run.advisoryIssues.length, 1);
+  });
+
+  it("does not end the run red when the review left no open Advisory finding", async () => {
+    const run = filed([]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.findingsUnlisted, undefined);
+    assert.equal(result.findingsLost, undefined);
+  });
+
   it("leaves a finding that reads like a Review notes section out of the issue", async () => {
     const run = filed([advisory(), advisory({ id: "R6", summary: "Add a Review notes section." })]);
 
@@ -5496,7 +5540,9 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     run.buildHost.publicError = (text) => (String(text).includes("Advisory findings from the local review") ? "(withheld)" : String(text));
     run.logs.length = 0;
 
-    await buildIssue(issue, branch, base, run.buildHost);
+    const withheld = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(withheld.findingsUnlisted, true, "no follow-up issue was filed, so the run must end red");
 
     assert.deepEqual(run.advisoryIssues, []);
     assert.ok(run.logs.some((line) => /follow-up issue/.test(line)) || logged.some((line) => /follow-up issue/.test(line)), [...run.logs, ...logged].join("\n"));

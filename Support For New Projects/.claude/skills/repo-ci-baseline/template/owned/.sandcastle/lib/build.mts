@@ -1063,8 +1063,11 @@ type BuildResult = {
   outcome: BuildOutcome;
   detail: string;
   // True when the PR was published but its Advisory findings were filed nowhere a person sees: the follow-up issue and the fallback comment on the issue both
-  // failed, so they are only in the run log. lib/round.mts#findingsLostStops turns it into a recorded stop, which ends the run red.
+  // failed, so they are only in the run log. lib/round.mts#findingsLostStops turns it into a recorded stop, which ends the run red (so does findingsUnlisted below).
   findingsLost?: true;
+  // True when the PR was published but the review's open Advisory findings were all left out of the public follow-up issue (none passed the checks on what goes
+  // in a public issue, or the whole body failed them) and so were never filed. Ends the run red the same way as findingsLost.
+  findingsUnlisted?: true;
 };
 
 // buildIssue's work once the issue is marked: everything from creating the
@@ -1613,6 +1616,8 @@ async function buildMarkedIssue(
     // True when the hold is because the review didn't finish, not because it left findings: the hand-back comments then say the review didn't finish, and the one after a failed publish says to run it again.
     let reviewUnfinished = false;
     let advisories = "";
+    // True when open Advisory findings existed and no follow-up issue could hold any of them, so they reach nowhere a person sees (see findingsUnlisted).
+    let advisoriesUnlisted = false;
     const review = await host.localReview({
       sandbox,
       issue: { number: issue.number, title: issue.title, body: issue.body },
@@ -1657,10 +1662,12 @@ async function buildMarkedIssue(
       // characters, a line that reads like a Review notes section), or the branch name failed them. Nothing else tells a person the follow-up issue was dropped.
       if (advisories === "" && renderAdvisories(review.ledger) !== "") {
         log("the local review's Advisory findings can't be listed (none passed the checks on what goes in a public issue), so no follow-up issue is filed for them");
+        advisoriesUnlisted = true;
       }
       if (advisories !== "" && host.publicError(advisories) !== advisories.trim()) {
         log("the local review's Advisory findings hold text that isn't safe to publish, so no follow-up issue is filed for them");
         advisories = "";
+        advisoriesUnlisted = true;
       }
     }
     // Claude Review reads a "Review notes" section as the owner's accepted findings, so no note may pass for one, in any form.
@@ -1740,7 +1747,15 @@ async function buildMarkedIssue(
           }
         }
       }
-      return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl, ...(findingsLost ? { findingsLost: true as const } : {}) };
+      return {
+        commits,
+        prUrl,
+        publishFailed: false,
+        outcome: "published",
+        detail: prUrl,
+        ...(findingsLost ? { findingsLost: true as const } : {}),
+        ...(advisoriesUnlisted ? { findingsUnlisted: true as const } : {}),
+      };
     } catch (error) {
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${terminalText(String(error))}`);
       const detail = host.publicError(error);

@@ -530,17 +530,32 @@ describe("restrictedClaudeCode's --agents", () => {
     assert.ok(wordsOf(commandOf({ tools: leadTools(["lens-1"]), agents: { "lens-1": definition() } })).includes("--agents"));
   });
 
+  // The restrictions with the lead's tools written by hand, so leadTools' own validation is not in the way and only agentsJson can refuse a name or an empty set.
+  const byHand = (names: readonly string[], agents: Record<string, SubagentDefinition>) =>
+    ({ ...lead, tools: [`Agent(${names.join(",")})`, ...REVIEWER_TOOLS], agents });
+
   it("refuses, where the provider is built, a name that isn't lowercase ASCII letters, digits and hyphens starting with a letter", () => {
-    for (const name of ["", "Lens-1", "1lens", "-lens", "lens_1", "lens 1", "lens-é", "lens;touch", "lens\n1", "../lens"]) {
-      assert.throws(() => restrictedClaudeCode("sonnet", "high", leadFor({ [name]: definition() })), /agent|name/i, JSON.stringify(name));
+    // `a,b` is one name that checkLeadAgentTool's comparison accepts (`Agent(a,b)`), so only agentsJson's name check stops it.
+    for (const name of ["", "Lens-1", "1lens", "-lens", "lens_1", "lens 1", "lens-é", "lens;touch", "lens\n1", "../lens", "a,b", "*"]) {
+      assert.throws(() => restrictedClaudeCode("sonnet", "high", byHand([name], { [name]: definition() })), /an agent name for --agents/, JSON.stringify(name));
     }
     for (const name of ["a", "lens-1", "lens-14", "a1-b2"]) {
-      assert.doesNotThrow(() => restrictedClaudeCode("sonnet", "high", leadFor({ [name]: definition() })), name);
+      assert.doesNotThrow(() => restrictedClaudeCode("sonnet", "high", byHand([name], { [name]: definition() })), name);
     }
   });
 
   it("refuses an empty set of definitions, which is not the same as giving none", () => {
-    assert.throws(() => restrictedClaudeCode("sonnet", "high", leadFor({})), /agent/i);
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", byHand([], {})), /for --agents are empty/);
+    assert.throws(() => restrictedClaudeCode("sonnet", "high", leadFor({})), /agent/i, "leadTools refuses it too");
+  });
+
+  it("matches the lead's Agent tool to the agents by their names and order, wherever the tool sits among the others", () => {
+    const agents = { "lens-1": definition(), "lens-2": definition() };
+    const build = (tools: readonly string[]) => () => restrictedClaudeCode("sonnet", "high", { ...lead, tools, agents });
+
+    assert.doesNotThrow(build([...REVIEWER_TOOLS, "Agent(lens-1,lens-2)"]), "the Agent tool last");
+    assert.doesNotThrow(build(["Read", "Agent(lens-1,lens-2)", "Grep", "Glob"]), "the Agent tool among the others");
+    assert.throws(build(["Agent(lens-2,lens-1)", ...REVIEWER_TOOLS]), /Agent/, "the same agents in another order are not the definitions' order");
   });
 
   // The size of the word the shell is handed: the JSON in single quotes, each single quote inside it written as four bytes ('\'').

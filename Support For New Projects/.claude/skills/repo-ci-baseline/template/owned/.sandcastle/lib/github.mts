@@ -319,12 +319,12 @@ export function openPullRequest(
     } else if (existing.isDraft === true && heldNote.trim() !== "") {
       // A rerun the review no longer holds leaves a draft from an earlier held build as it is (marking it ready is a person's), but its body still gives
       // the reason it was held, which is no longer true: the note is taken out. That is a convenience on a PR that is already pushed and a draft, so a failure
-      // is logged (its first line only, which holds no command line) and the PR's address is still returned: the build is not a failed one for it.
+      // is logged with the reason gh gave (its first two lines: ghWithStderr's message holds gh's own text after "failed:", never Node's command line) and the PR's address is still returned: the build is not a failed one for it.
       try {
         const next = bodyWithoutHeldNote(currentBody(run, repo, existing.number), body, heldNote);
         if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
       } catch (error) {
-        warn(`  ⚠ couldn't take the draft note out of pull request ${existing.number}'s body: ${String((error as Error)?.message ?? error).split("\n")[0]}`);
+        warn(`  ⚠ couldn't take the draft note out of pull request ${existing.number}'s body: ${String((error as Error)?.message ?? error).split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 2).join(" ")}`);
       }
     }
     return existing.url;

@@ -1631,7 +1631,7 @@ describe("runHostReview's time cap", () => {
 });
 
 // A usage-limit stop (or a stalled sandbox) during the review leaves the branch for a later round; the run's time budget passing, or the
-// review's own time cap, ends it as failed at the last commit the gate passed on, which is published with a note and no record. A
+// review's own time cap, ends it as failed at the last commit the gate passed on, which is published as a draft, with a note and no record. A
 // reviewer that fails is reported, and the branch is not recorded as reviewed.
 describe("runHostReview's stops and failures", () => {
   it("rejects with the UncountedStopError a reviewer hits at once, starting no later reviewer, and records nothing", async () => {

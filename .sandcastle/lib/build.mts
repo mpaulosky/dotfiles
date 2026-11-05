@@ -1553,7 +1553,7 @@ async function buildMarkedIssue(
     // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note, as a draft.
     let reviewNote = "";
     let holdAsDraft = false;
-    // True when the hold is because the review didn't finish, not because it left findings: the hand-back comments then say to run it again.
+    // True when the hold is because the review didn't finish, not because it left findings: the hand-back comments then say the review didn't finish, and the one after a failed publish says to run it again.
     let reviewUnfinished = false;
     let advisories = "";
     const review = await host.localReview({

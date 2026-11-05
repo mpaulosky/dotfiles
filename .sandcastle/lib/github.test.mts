@@ -701,6 +701,9 @@ describe("openPullRequest", () => {
         assert.equal(openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE), "https://github.com/o/r/pull/3");
         assert.deepEqual(calls.slice(1), expected);
         assert.ok(logged.some((line) => /draft note/.test(line)), logged.join("\n"));
+        // The reason gh gave stays in the line, so a person can tell a refused edit from a network error; the command line never does.
+        if (failing !== "view") assert.ok(logged.some((line) => /HTTP 422/.test(line)), logged.join("\n"));
+        assert.ok(logged.every((line) => !line.includes("Command failed")), logged.join("\n"));
       });
     }
   });

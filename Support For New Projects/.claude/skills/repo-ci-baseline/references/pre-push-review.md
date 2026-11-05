@@ -187,7 +187,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   only while its body still carries the host's `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the
   draft note added to it, unless that would pass GitHub's 65,536-character limit: then the body is left as it is and the PR is a draft with no note. A body edited by hand with the marker
   left in is rewritten. A rerun that no longer holds a PR that is a draft leaves it a draft, as marking it ready is a person's, but takes the draft note out of its body (the host's own body
-  is replaced; a person's body loses only the note). A held PR is a draft, so Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or
+  is replaced; a person's body loses only the note). That edit is best effort: if reading or editing the body fails the host logs the reason and still publishes, and the note stays until a
+  person removes it. A held PR is a draft, so Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or
   review feedback on it needs a person.
 - The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the
   generic one.

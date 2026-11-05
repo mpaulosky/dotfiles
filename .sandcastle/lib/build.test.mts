@@ -5229,7 +5229,7 @@ describe("buildIssue when the open PR can't be held as a draft", () => {
 describe("buildIssue when a review that didn't finish held the PR and publishing failed", () => {
   const unfinished = { localReview: async (args: { startHead: string }) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) as const };
 
-  it("says the review didn't finish and to run it again when the PR can't be made a draft", async () => {
+  it("says the review didn't finish when the PR can't be made a draft", async () => {
     const comments: string[] = [];
     const run = host([0, 0], { publishHoldFailed: true, ...unfinished });
     run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);

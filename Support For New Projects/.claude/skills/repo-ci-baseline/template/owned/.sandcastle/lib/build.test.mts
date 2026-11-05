@@ -5170,6 +5170,8 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
       { mode: 0o755 },
     );
     const saved = process.env.PATH;
+    // Whatever an earlier use or test cached is not the fake's answer.
+    forgetRepoName();
     process.env.PATH = dir;
     try {
       // The fake must be what runs: were it unrunnable the real gh, with the developer's login, would not be reachable either (PATH holds nothing else).
@@ -5189,6 +5191,13 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
   };
   const open = (isDraft: boolean) =>
     JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4", body: "" }]);
+
+  it("forgets a repository name cached before it starts, so the fake's own answer is read", async () => {
+    await withFakeGh("[]", async () => {
+      assert.equal(repoName(), "o/r");
+      await withFakeGh("[]", async () => assert.equal(repoName(), "p/q"), "p/q");
+    });
+  });
 
   it("forgets the repository name the fake gh gave, so a later use reads its own", async () => {
     await withFakeGh("[]", async () => assert.equal(repoName(), "o/r"));

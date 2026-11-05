@@ -35,7 +35,6 @@ import {
   markerCommentsSince,
   openIssuesWithComment,
   fileIssueOnce,
-  forgetRepoName,
   holdExistingPullRequest,
   openPullRequest,
   openPullRequests,
@@ -615,7 +614,8 @@ describe("holdExistingPullRequest", () => {
     ]);
   });
 
-  // Each exclusion is tried alone and with a ready same-repo PR listed after it, so a missing filter lets the wrong PR through or hides the right one.
+  // A draft is tried alone. A fork's PR and a PR from another branch are each tried alone and with a ready same-repo PR listed after them, so a missing
+  // filter lets the wrong PR through or hides the right one.
   it("leaves a draft alone", () => {
     const { calls, run } = gh([pr({ isDraft: true })]);
 

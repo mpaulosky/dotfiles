@@ -23,7 +23,7 @@ import { CHECK_PATHS, copyToWorktree, hooks } from "./repo-config.mts";
 import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
-import { commentOnIssue, fileIssueOnce, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
+import { commentOnIssue, fileIssueOnce, holdExistingPullRequest, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
 import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
 import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
@@ -118,7 +118,11 @@ export async function publish(
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
   reviewNote = "",
   holdAsDraft = false,
+  holdExisting: (branch: string) => void = (heldBranch) => holdExistingPullRequest(heldBranch),
 ): Promise<string> {
+  // A PR already open for the branch (an earlier build's, opened ready) is made a draft before the new commits reach it, so PR Auto-Merge never sees
+  // a ready PR with commits the review hasn't cleared. A failure stops here, before the push.
+  if (holdAsDraft) await retryOnServerError(() => holdExisting(branch), wait);
   await retryOnServerError(() => push(branch, commit), wait);
   const reviewFailedNote = "⚠️ The review step failed, so no agent has reviewed this PR.";
   let description: string;
@@ -421,6 +425,8 @@ export type BuildHost = {
   // Files the follow-up issue for the review's open Advisory findings (its title and body), or reuses the host's own open one with that title and
   // adds the body to it as a comment when neither its body nor a comment holds it yet (lib/github.mts#fileIssueOnce); a body a person edited is never replaced.
   fileAdvisoryIssue(title: string, body: string): void;
+  // The backoff between retries of the filing above; tests replace it so they don't wait.
+  wait?(ms: number): Promise<void>;
   // Fetches origin/main and returns the commit it now names (see
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main
   // while it ran. Throws when the fetch fails.
@@ -1624,7 +1630,10 @@ async function buildMarkedIssue(
       // A failed filing never undoes the published PR.
       if (advisories !== "") {
         try {
-          host.fileAdvisoryIssue(`chore(review): Advisory review findings: ${branch}`, advisories);
+          await retryOnServerError(
+            () => host.fileAdvisoryIssue(`chore(review): Advisory review findings: ${branch}`, advisories),
+            host.wait ?? ((ms) => sleep(ms)),
+          );
         } catch (error) {
           console.error(`  ⚠ #${issue.number}: filing the follow-up issue for the Advisory findings failed: ${terminalText(String(error))}`);
         }

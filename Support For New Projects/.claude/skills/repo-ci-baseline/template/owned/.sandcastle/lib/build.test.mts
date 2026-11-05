@@ -5018,6 +5018,20 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     assert.ok(run.logs.some((line) => /follow-up issue/.test(line)) || logged.some((line) => /follow-up issue/.test(line)), [...run.logs, ...logged].join("\n"));
   });
 
+  it("retries filing the issue after a GitHub server error", async () => {
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.wait = async () => {};
+    run.buildHost.fileAdvisoryIssue = () => {
+      if (++attempts === 1) throw new Error("gh issue create failed:\nHTTP 503: Service Unavailable");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, 2);
+  });
+
   it("still publishes the PR when filing the issue fails", async () => {
     const run = host([0, 0], { localReview: recorded([advisory()]) });
     run.buildHost.fileAdvisoryIssue = () => {
@@ -5027,6 +5041,59 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.equal(result.outcome, "published");
+  });
+});
+
+describe("publish holds an existing PR before it pushes", () => {
+  const note = "The local review left these findings open:\n\n- R1 critical src/app.ts:12";
+  const args = (order: string[]) => ({
+    push: () => void order.push("push"),
+    create: () => (order.push("create"), "https://github.com/o/r/pull/1"),
+    hold: () => void order.push("hold"),
+  });
+
+  it("turns a ready PR into a draft before the push, so new commits never sit on a ready PR", async () => {
+    const order: string[] = [];
+    const { push, create, hold } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, hold);
+
+    assert.deepEqual(order, ["hold", "push", "create"]);
+  });
+
+  it("does not push when the PR can't be held", async () => {
+    const order: string[] = [];
+    const { push, create } = args(order);
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, () => {
+        throw new Error("gh pr ready failed: HTTP 422");
+      }),
+      /HTTP 422/,
+    );
+    assert.deepEqual(order, []);
+  });
+
+  it("retries holding the PR after a GitHub server error", async () => {
+    let attempts = 0;
+    const order: string[] = [];
+    const { push, create } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, () => {
+      if (++attempts === 1) throw new Error("gh pr ready failed:\nHTTP 503: Service Unavailable");
+    });
+
+    assert.equal(attempts, 2);
+    assert.deepEqual(order, ["push", "create"]);
+  });
+
+  it("does not look for a PR to hold when nothing holds the PR", async () => {
+    const order: string[] = [];
+    const { push, create, hold } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, "", false, hold);
+
+    assert.deepEqual(order, ["push", "create"]);
   });
 });
 
@@ -5040,7 +5107,7 @@ describe("publish with the review holding the PR as a draft", () => {
   it("opens the PR as a draft and says why in its body, naming what a person does", async () => {
     const { calls, createPullRequest } = create();
 
-    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, note, true);
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, note, true, () => {});
 
     assert.equal(calls[0]?.draft, true);
     const body = calls[0]?.body ?? "";
@@ -5070,7 +5137,7 @@ describe("publish with the review holding the PR as a draft", () => {
   it("keeps the marker, Closes and the reason whole when the description is cut to fit", async () => {
     const { calls, createPullRequest } = create();
 
-    await publish(issue, branch, "a".repeat(40), true, false, `## Why\n\n${"x".repeat(80_000)}`, [], () => {}, createPullRequest, async () => {}, note, true);
+    await publish(issue, branch, "a".repeat(40), true, false, `## Why\n\n${"x".repeat(80_000)}`, [], () => {}, createPullRequest, async () => {}, note, true, () => {});
 
     const body = calls[0]?.body ?? "";
     assert.ok(body.length <= 65_536, String(body.length));

@@ -35,6 +35,7 @@ import {
   markerCommentsSince,
   openIssuesWithComment,
   fileIssueOnce,
+  holdExistingPullRequest,
   openPullRequest,
   openPullRequests,
   openPullRequestsIntoMain,
@@ -554,7 +555,19 @@ describe("openPullRequest", () => {
       assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "edit"]);
     });
 
-    it("adds nothing to a body when there is no draft note to add", () => {
+    // GitHub refuses a PR body of more than 65,536 characters. The note is added after a blank line, so the body may be as long as the limit allows.
+    for (const [extra, edits] of [[-1, true], [0, true], [1, false]] as const) {
+      it(`${edits ? "adds" : "leaves out"} the draft note when the kept body would end ${extra === 0 ? "exactly at" : extra < 0 ? "one under" : "one over"} GitHub's limit`, () => {
+        const own = "x".repeat(65_536 - `\n\n${NOTE}`.length + extra);
+        const { calls, run } = gh(existing(false, own));
+
+        openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE);
+        assert.deepEqual(calls.slice(1).map((call) => call.args[1]), edits ? ["ready", "edit"] : ["ready"]);
+        if (edits) assert.equal(String(calls[2]!.input).length, 65_536 + extra);
+      });
+    }
+
+        it("adds nothing to a body when there is no draft note to add", () => {
       const { calls, run } = gh(existing(true, accepted));
 
       openPullRequest(branch, "Add search", fresh, run, "o/r", true);
@@ -576,6 +589,52 @@ describe("openPullRequest", () => {
     }) as unknown as typeof execFileSync;
 
     assert.throws(() => openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), /HTTP 422/);
+  });
+});
+
+describe("holdExistingPullRequest", () => {
+  const branch = "feature/4-add-search";
+  const gh = (listed: object[]) => {
+    const calls: { args: readonly string[] }[] = [];
+    const run = ((_cmd: string, args: readonly string[]) => {
+      calls.push({ args });
+      return args[1] === "list" ? JSON.stringify(listed) : "";
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+  const pr = (extra: object) => ({ number: 3, headRefName: branch, isCrossRepository: false, isDraft: false, url: "https://github.com/o/r/pull/3", ...extra });
+
+  it("turns this repository's ready PR for the branch into a draft", () => {
+    const { calls, run } = gh([pr({})]);
+
+    holdExistingPullRequest(branch, run, "o/r");
+    assert.deepEqual(calls.map((call) => call.args), [
+      ["pr", "list", "--repo", "o/r", "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url"],
+      ["pr", "ready", "3", "--repo", "o/r", "--undo"],
+    ]);
+  });
+
+  it("leaves a draft, a fork's PR and a PR from another branch alone", () => {
+    const { calls, run } = gh([pr({ isDraft: true }), pr({ number: 5, isCrossRepository: true }), pr({ number: 6, headRefName: "other" })]);
+
+    holdExistingPullRequest(branch, run, "o/r");
+    assert.equal(calls.length, 1);
+  });
+
+  it("does nothing when the branch has no PR", () => {
+    const { calls, run } = gh([]);
+
+    holdExistingPullRequest(branch, run, "o/r");
+    assert.equal(calls.length, 1);
+  });
+
+  it("throws when the PR can't be turned into a draft, so the caller can stop before it pushes", () => {
+    const run = ((_cmd: string, args: readonly string[]) => {
+      if (args[1] === "list") return JSON.stringify([pr({})]);
+      throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+    }) as unknown as typeof execFileSync;
+
+    assert.throws(() => holdExistingPullRequest(branch, run, "o/r"), /HTTP 422/);
   });
 });
 
@@ -652,6 +711,14 @@ describe("fileIssueOnce", () => {
 
     fileIssueOnce(title, "new findings", run, "o/r");
     assert.equal(writes().length, 0);
+  });
+
+  it("counts only the host's own comments as findings already filed, since anyone can comment on a public issue", () => {
+    const { calls, run } = stub([{ number: 5, title, body: "old" }], []);
+
+    fileIssueOnce(title, "new", run, "o/r");
+    const read = calls.find((call) => call.args[0] === "api" && call.args.some((arg) => arg.endsWith("/comments")))!.args;
+    assert.ok(read[read.indexOf("--jq") + 1]!.includes('select(.user.login == "the-host")'), read.join(" "));
   });
 
   it("reads the issue's comments from the issue it reuses", () => {

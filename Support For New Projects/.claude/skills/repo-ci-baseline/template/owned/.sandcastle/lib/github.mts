@@ -320,7 +320,23 @@ function bodyForHeldPullRequest(current: string, next: string, heldNote: string)
   const hostWrote = current.includes(PR_MARKER) && !visibleLetters(current).includes("reviewnotes");
   if (hostWrote) return same(current) === same(next) ? undefined : next;
   if (heldNote === "" || same(current).includes(same(heldNote))) return undefined;
-  return `${current.replace(/\s+$/, "")}\n\n${heldNote}`;
+  const kept = `${current.replace(/\s+$/, "")}\n\n${heldNote}`;
+  // GitHub refuses a body past this length, and the edit would then fail after the PR is a draft; the note is only a convenience, so leave it out.
+  return kept.length > PR_BODY_LIMIT ? undefined : kept;
+}
+
+// The longest PR body GitHub accepts, in characters.
+const PR_BODY_LIMIT = 65_536;
+
+// Turns this repository's open, ready PR for `branch` into a draft, and does nothing when there is none or it is one already. The build calls it before it
+// pushes, so a branch the review holds is never briefly a ready PR with new commits, which PR Auto-Merge could merge. A failure throws, so the caller stops
+// before the push.
+export function holdExistingPullRequest(branch: string, run: typeof execFileSync = hostExecFileSync, repo: string = repoName()): void {
+  const listed = JSON.parse(
+    ghWithStderr(run, ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "number,headRefName,isCrossRepository,isDraft,url"]),
+  ) as (ListedPullRequest & { number: number; isDraft?: boolean })[];
+  const existing = sameRepository(listed).find((pr) => pr.headRefName === branch);
+  if (existing !== undefined && existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
 }
 
 // The fields the follow-up sweep (lib/follow-up.mts) checks on every PR it
@@ -992,17 +1008,23 @@ export function fileIssueOnce(
   run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
 ): number {
+  const host = signedInHostLogin(run);
   const listed = JSON.parse(
     ghWithStderr(run, [
-      "issue", "list", "--repo", repo, "--state", "open", "--author", signedInHostLogin(run), "--limit", "1000", "--json", "number,title,body",
+      "issue", "list", "--repo", repo, "--state", "open", "--author", host, "--limit", "1000", "--json", "number,title,body",
     ]),
   ) as { number: number; title: string; body?: string }[];
   const existing = listed.find((issue) => issue.title === title);
   if (existing === undefined) return createIssue(title, body, [], run, repo);
   // GitHub stores the body with CRLF line endings and may trim it, so the comparison ignores both.
   const same = (text: string) => text.replace(/\r\n?/g, "\n").trim();
+  // Only the host's own comments count as findings already filed: anyone can comment on a public issue, and a comment copying the findings would
+  // otherwise keep the real ones from being added.
   const comments = jsonLines(
-    ghWithStderr(run, ["api", "--paginate", `repos/${repo}/issues/${existing.number}/comments`, "--jq", ".[] | .body | @json"]),
+    ghWithStderr(run, [
+      "api", "--paginate", `repos/${repo}/issues/${existing.number}/comments`,
+      "--jq", `.[] | select(.user.login == ${JSON.stringify(host)}) | .body | @json`,
+    ]),
   ) as string[];
   if (![existing.body ?? "", ...comments].some((text) => same(text) === same(body))) commentOnIssue(existing.number, body, run, repo);
   return existing.number;

@@ -4916,7 +4916,8 @@ describe("liveReviewHost", () => {
     try {
       mkdirSync(join(root, RUN, "lens-1.md"), { recursive: true });
       await liveReviewHost(args, dir).writeRunFile(`${RUN}/lens-1.md`, "x");
-      const shell = spawnSync("sh", ["-c", execs.at(-1)?.command ?? "false"], { cwd: root, input: execs.at(-1)?.stdin ?? "", encoding: "utf8" });
+      // No stdin: the command fails at the removal, before the write reads it, and a shell that has already exited makes spawnSync report EPIPE for it.
+      const shell = spawnSync("sh", ["-c", execs.at(-1)?.command ?? "false"], { cwd: root, encoding: "utf8" });
 
       assert.equal(shell.error, undefined);
       assert.notEqual(shell.status, 0);
@@ -4949,7 +4950,9 @@ describe("liveReviewHost", () => {
           if (action === "write") await live.writeRunFile(`${RUN}/lens-1.md`, "lens one");
           else await live.removeRunFile(`${RUN}/lens-1.md`);
           const found = execs.at(-1);
-          const shell = spawnSync("sh", ["-c", found?.command ?? "false"], { cwd: root, input: found?.stdin ?? "", encoding: "utf8" });
+          // No stdin: the guard fails before anything reads it, and a shell that has already exited makes spawnSync report EPIPE for the unread input.
+          // A guard that let the write through would find an empty stdin and truncate the file outside, which the checks below still catch.
+          const shell = spawnSync("sh", ["-c", found?.command ?? "false"], { cwd: root, encoding: "utf8" });
           const label = `${action} through a link at ${name}`;
 
           assert.equal(shell.error, undefined, label);

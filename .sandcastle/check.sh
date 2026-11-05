@@ -8,7 +8,9 @@
 # with # skipped (a # after a path is part of it). The list only adds to the built-in paths:
 # the two are diffed separately, so an :(exclude) or :^ line can't remove one of them. An exclude
 # line only trims the list's other lines; git reads a list of exclude lines alone as "everything
-# else", so such a list is treated as empty rather than watching the whole repo.
+# else", so such a list is treated as empty rather than watching the whole repo. A line that matches no file in the repo (a mistyped
+# path, a glob git reads differently) can never make a change run the check, since git diff is silent for a pathspec with no match: each
+# such line is named on stderr on every run, and the check still runs or skips as before.
 #
 #   .sandcastle/check.sh <merge-base>
 set -euo pipefail
@@ -40,6 +42,13 @@ if [[ -f "$extra" ]]; then
   done <<< "$extra_text"
 fi
 [[ $positive -gt 0 ]] || listed=()
+# A positive line that matches no tracked file watches nothing: say so, instead of silently dropping that coverage. An exclude line only trims, so it is
+# not asked. A pathspec git rejects matches nothing here too, and still makes the diff below fail, so the check runs.
+for line in ${listed[@]+"${listed[@]}"}; do
+  [[ "$line" =~ $exclude ]] && continue
+  [[ -n "$(git ls-files -- "$line" 2>/dev/null || true)" ]] ||
+    printf '⚠ .sandcastle/check-paths.txt: %s matches no file in this repo, so a change to it will not run the Sandcastle check\n' "${line//[[:cntrl:]]/?}" >&2
+done
 
 unchanged() { git diff --quiet --no-renames "$base" HEAD -- "$@"; }
 # A pathspec git rejects makes unchanged fail, so the check runs rather than being skipped.

@@ -301,6 +301,23 @@ check "the Seed check-paths.txt exists" test -f "$SEED_LIST"
 seed_list_is_comments_only() { ! grep -Evq '^[[:space:]]*(#.*)?$' "$SEED_LIST"; }
 check "the Seed check-paths.txt holds comments and blank lines only" seed_list_is_comments_only
 
+# A listed line that matches no file watches nothing, and git diff stays silent for it: each such line is named on stderr, and the check runs or skips as it would without the warning.
+warned_about() { [[ "$OUTPUT" == *"check-paths.txt: $1 matches no file"* ]]; }
+set_list 'CLAUDE.md\n:(glob)docs/guides/**\ndocs/typo-folder/x.md\n:(exclude)*\ne2e/**\n'
+run_check "$LISTBASE"
+check "a listed path that matches no file is named on stderr" warned_about docs/typo-folder/x.md
+check "a listed glob that matches no file is named too" warned_about 'e2e/**'
+check "a listed file that exists is not named" not warned_about CLAUDE.md
+check "a listed :(glob) path that matches files is not named" not warned_about ':(glob)docs/guides/**'
+check "an :(exclude) line that excludes every file is not asked: it only trims" not warned_about ':(exclude)*'
+check "a warning does not run the check when nothing watched changed" not_ran
+run_check
+check "a warning does not stop the check running when there is no merge base" ran_check
+set_list 'CLAUDE.md\n'
+run_check "$LISTBASE"
+check "a list whose paths all exist prints no warning" not warned_about CLAUDE.md
+check "a list whose paths all exist prints nothing at all" test -z "$OUTPUT"
+
 echo
 echo "seed-check.test.sh: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

@@ -140,6 +140,15 @@ describe("findingsLostStops", () => {
     assert.deepEqual(findingsLostStops(work, [value(undefined), { status: "rejected", reason: new Error("boom") }]), []);
   });
 
+  it("records a stop, with its own text, for a build whose Advisory findings none could be listed publicly", () => {
+    const value = (findingsUnlisted?: boolean) => ({ status: "fulfilled", value: { findingsUnlisted } }) as const;
+
+    assert.deepEqual(findingsLostStops(work, [value(false), value(true)]), [
+      { reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: "no Advisory finding on #72 could be put in a public issue; the findings are in the run log only" },
+    ]);
+    assert.deepEqual(findingsLostStops(work, [value(undefined), value(false)]), []);
+  });
+
   it("names each lost build by its own issue, whichever position it is in, even beside a rejected build", () => {
     const value = (findingsLost?: boolean) => ({ status: "fulfilled", value: { findingsLost } }) as const;
     const named = (stops: { firstError: string }[]) => stops.map((stop) => /#(\d+)/.exec(stop.firstError)?.[1]);

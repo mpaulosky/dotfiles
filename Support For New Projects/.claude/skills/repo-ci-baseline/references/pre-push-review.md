@@ -213,7 +213,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   covers a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800,
   Hangul), a next-line character (U+0085, which the issue's own text folding would publish raw), a joiner that does no work (outside emoji or the joining scripts), more than eight joiners or more than
   eight private-use or unassigned characters across the issue's text, and a run of more than eight combining marks. Each field is also checked for secrets as the reviewer wrote it, not only in the
-  escaped line the issue shows. When open Advisory findings exist and none can be listed, the build logs that no follow-up issue is filed. The issue lists reviewer prose (summary and fix) on
+  escaped line the issue shows. When open Advisory findings exist and none can be listed, or the issue's body as a whole fails these checks, the build logs that no follow-up issue is filed,
+  returns `findingsUnlisted`, and the run ends red like `findingsLost`: the findings are in the run log only. The issue lists reviewer prose (summary and fix) on
   purpose: on Actions the local record is discarded with the runner, so the issue is the only copy that survives.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
 - A round's reviewers start one of two ways, chosen by `SANDCASTLE_REVIEWERS` (`lib/config.mts#reviewerMode`): `sequential` or `subagents`. Unset or empty means `sequential`, any other

@@ -103,16 +103,22 @@ export function publishedIssues(
 // The reason of the stop recorded for a build whose Advisory findings reached nowhere a person sees (see buildIssue's findingsLost).
 export const FINDINGS_LOST_STOP_REASON = "a pull request's Advisory findings weren't filed anywhere";
 
-// One stop per fulfilled build that lost its findings, recorded with the intake stops so the run report names it and the run ends red (lib/report.mts#intakeStopExitCode).
+// One stop per fulfilled build whose Advisory findings reached nowhere a person sees, recorded with the intake stops so the run report names it and the run ends red
+// (lib/report.mts#intakeStopExitCode): the follow-up issue and the fallback comment both failed (findingsLost), or none of the findings could be put in a public issue (findingsUnlisted).
 // `firstError` is host-written text: the issue's number, never an error's own text, since the report is public on a public repository.
 export function findingsLostStops(
   work: readonly { issue: { number: number } }[],
-  settled: readonly PromiseSettledResult<{ findingsLost?: boolean }>[],
+  settled: readonly PromiseSettledResult<{ findingsLost?: boolean; findingsUnlisted?: boolean }>[],
 ): IntakeStopEntry[] {
   return work.flatMap(({ issue }, i): IntakeStopEntry[] => {
     const outcome = settled[i];
-    return outcome?.status === "fulfilled" && outcome.value.findingsLost === true
-      ? [{ reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: `filing the follow-up issue and commenting on #${issue.number} both failed; the findings are in the run log only` }]
-      : [];
+    if (outcome?.status !== "fulfilled") return [];
+    if (outcome.value.findingsLost === true) {
+      return [{ reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: `filing the follow-up issue and commenting on #${issue.number} both failed; the findings are in the run log only` }];
+    }
+    if (outcome.value.findingsUnlisted === true) {
+      return [{ reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: `no Advisory finding on #${issue.number} could be put in a public issue; the findings are in the run log only` }];
+    }
+    return [];
   });
 }

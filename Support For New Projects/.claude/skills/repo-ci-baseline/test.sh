@@ -123,7 +123,7 @@ shell_files=(
   "$owned/scripts/sync-copilot-review.sh" "$owned/scripts/tests/sync-copilot-review.test.sh"
   "$owned/scripts/watch-pr.sh" "$owned/scripts/tests/watch-pr.test.sh"
   "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh" "$owned/scripts/review.sh"
-  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.sandcastle/check.sh"
+  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$owned/.sandcastle/check.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )
@@ -284,7 +284,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .claude/skills/hardening-review/references/triage.md .claude/skills/hardening-review/scripts/known_open.py \
   .claude/skills/hardening-review/scripts/mutate.py \
   .security/README.md \
-  .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/critique-prompt.md \
+  .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/check.sh .sandcastle/critique-prompt.md \
   .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
   .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
   .sandcastle/lib/building.test.mts .sandcastle/lib/checkpoint.mts .sandcastle/lib/checkpoint.test.mts .sandcastle/lib/config.mts \
@@ -587,6 +587,17 @@ for file in "$owned/.github/workflows/sandcastle.yml" "$skill_dir/references/san
 done
 
 step "Seed Sandcastle files"
+# mpaulosky/dotfiles#391: check.sh is Owned (Apply refreshes it, so a repo's copy can't drift); a repo's own watched paths are in the Seed check-paths.txt.
+[[ -x "$owned/.sandcastle/check.sh" ]] || fail "the Owned .sandcastle/check.sh must exist and be executable (gate-checks.sh runs it only when it is)"
+[[ ! -e "$seed/.sandcastle/check.sh" ]] || fail "the Seed must not carry .sandcastle/check.sh: it is Owned (mpaulosky/dotfiles#391)"
+[[ -f "$seed/.sandcastle/check-paths.txt" ]] || fail "the Seed must carry .sandcastle/check-paths.txt, the repo's extra watched paths"
+[[ ! -e "$owned/.sandcastle/check-paths.txt" ]] || fail "check-paths.txt is the repo's, so it must be a Seed file and not Owned"
+grep -qF 'check-paths.txt' "$owned/.sandcastle/check.sh" || fail "the Owned .sandcastle/check.sh must read the repo's .sandcastle/check-paths.txt"
+grep -qF 'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX' "$owned/.sandcastle/check.sh" || fail "the Owned .sandcastle/check.sh must unset GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and GIT_PREFIX"
+grep -qF '.claude/skills/hardening-review' "$owned/.sandcastle/check.sh" || fail "the Owned .sandcastle/check.sh must watch .claude/skills/hardening-review"
+if grep -vE '^[[:space:]]*(#|$)' "$seed/.sandcastle/check-paths.txt"; then
+  fail "the Seed .sandcastle/check-paths.txt must list no path: comments and blank lines only"
+fi
 # Written from dotfiles' copies, so none of dotfiles' own text may stay behind.
 if grep -rnE 'dotfiles|repo-ci-baseline|Support For New Projects' "$seed/.sandcastle" "$seed/package.json"; then
   fail "the Seed Sandcastle files describe dotfiles; describe any Baseline repo instead"

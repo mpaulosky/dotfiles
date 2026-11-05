@@ -426,3 +426,86 @@ describe("the docs on the host-side review's PR state, record and follow-up issu
     assert.match(docs["references/sandcastle.md"], /draft[^.]{0,200}(Critical or Warning|Warning or Critical)|(Critical or Warning|Warning or Critical)[^.]{0,200}draft/i);
   });
 });
+
+// mpaulosky/dotfiles#391: .sandcastle/check.sh is Owned, so Apply refreshes it; a repo lists its own watched paths in the Seed
+// .sandcastle/check-paths.txt. The docs say where each file is and what a repo with an older check.sh does on its next Apply.
+describe("check.sh is Owned and check-paths.txt is Seed", () => {
+  const read = (relative: string) => readFileSync(join(skill, relative), "utf8").replace(/\s+/g, " ");
+  const reference = read("references/sandcastle.md");
+  const adr = read("docs/adr/0006-sandcastle-section-of-the-template.md");
+  const between = (text: string, from: string, to: string) => (text.split(from)[1] ?? "").split(to)[0] ?? "";
+  const ownedSection = between(reference, "## Owned files", "## Seed files");
+  const seedSection = between(reference, "## Seed files", "## Status");
+  const migrating = reference.slice(reference.indexOf("## Migrating a repo"));
+
+  it("the Template carries check.sh as an Owned file and no Seed check.sh", () => {
+    assert.ok(existsSync(join(owned, ".sandcastle/check.sh")), "owned/.sandcastle/check.sh");
+    assert.ok(!existsSync(join(seed, ".sandcastle/check.sh")), "seed/.sandcastle/check.sh must not exist");
+    assert.ok(statSync(join(owned, ".sandcastle/check.sh")).mode & 0o111, "check.sh must be executable");
+  });
+
+  it("the Template carries check-paths.txt as a Seed file only, with no path listed", () => {
+    const text = readFileSync(join(seed, ".sandcastle/check-paths.txt"), "utf8");
+
+    assert.ok(!existsSync(join(owned, ".sandcastle/check-paths.txt")), "check-paths.txt must not be Owned");
+    assert.deepEqual(text.split("\n").filter((line) => line.trim() !== "" && !line.startsWith("#")), []);
+  });
+
+  it("dotfiles carries check.sh as a root copy identical to the Template's", () => {
+    assert.ok(existsSync(join(root, ".sandcastle/check.sh")), ".sandcastle/check.sh");
+    assert.equal(readFileSync(join(root, ".sandcastle/check.sh"), "utf8"), readFileSync(join(owned, ".sandcastle/check.sh"), "utf8"));
+  });
+
+  it("the check reads check-paths.txt and keeps the built-in paths and the unset line", () => {
+    const script = readFileSync(join(owned, ".sandcastle/check.sh"), "utf8");
+
+    assert.match(script, /check-paths\.txt/);
+    assert.match(script, /unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX/);
+    for (const path of [".claude/skills/hardening-review", ".claude/skills/pre-push-review", ".claude/agents/pre-push-reviewer.md", ".github/workflows/claude-review.yml", "scripts/review.sh"]) {
+      assert.ok(script.includes(path), path);
+    }
+  });
+
+  it("references/sandcastle.md lists check.sh among the Owned files and not among the Seed files", () => {
+    assert.match(ownedSection, /`(\.sandcastle\/)?check\.sh`/);
+    assert.doesNotMatch(seedSection, /\| `\.sandcastle\/check\.sh` \|/);
+  });
+
+  it("references/sandcastle.md lists check-paths.txt among the Seed files, and says what it holds", () => {
+    assert.match(seedSection, /\| `\.sandcastle\/check-paths\.txt` \|/);
+    assert.match(seedSection, /check-paths\.txt`? \|[^|]*(watch|path)/i);
+  });
+
+  it("references/sandcastle.md no longer says Apply leaves check.sh alone or that it's copied by hand", () => {
+    assert.doesNotMatch(reference, /Apply writes `\.sandcastle\/check\.sh` only where a repo has none/);
+    assert.doesNotMatch(reference, /copies (the new pathspec|it) by hand from the Seed's `check\.sh`/);
+    assert.doesNotMatch(reference, /`\.sandcastle\/check\.sh` for the step above/);
+  });
+
+  it("the re-Apply note: IssueManager, IssueTracker and TicketManager rename their sandbox gate and repoint GATE_COMMAND and GATE_SCRIPT before Apply", () => {
+    for (const repo of ["IssueManager", "IssueTracker", "TicketManager"]) assert.match(migrating, new RegExp(repo));
+    assert.match(migrating, /sandbox-gate\.sh/);
+    assert.match(migrating, /GATE_COMMAND/);
+    assert.match(migrating, /GATE_SCRIPT/);
+    assert.match(migrating, /before (you )?Apply|Apply would (replace|overwrite)/i);
+  });
+
+  it("the re-Apply note: Blazor-Server and auth0-management-app move their path lists into check-paths.txt", () => {
+    assert.match(migrating, /Blazor-Server/);
+    assert.match(migrating, /auth0-management-app/);
+    assert.match(migrating, /check-paths\.txt/);
+  });
+
+  it("ADR 0006 puts check.sh among the Owned files and check-paths.txt among the Seed files", () => {
+    const ownedDecision = between(adr, "**Owned:**", "**Seed:**");
+    const seedDecision = between(adr, "**Seed:**", "**Superseded");
+
+    assert.match(ownedDecision, /check\.sh/);
+    assert.doesNotMatch(seedDecision, /check\.sh/);
+    assert.match(seedDecision, /check-paths\.txt/);
+  });
+
+  it("pre-push-review.md points at the Owned check.sh, not at the Seed's, for the pathspec its tests need", () => {
+    assert.doesNotMatch(read("references/pre-push-review.md"), /the Seed `\.sandcastle\/check\.sh`/);
+  });
+});

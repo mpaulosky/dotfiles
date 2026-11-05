@@ -4892,6 +4892,14 @@ describe("buildIssue's PR state after the local review", () => {
     assert.match(DRAFT_NOTE, /didn't finish/);
   });
 
+  // The review's ledger stays on the Actions runner, so `scripts/review.sh accept` finds nothing in a later checkout: the note tells a person to record
+  // one with the review itself (`report` only prints a ledger, it records none).
+  it("DRAFT_NOTE says the ledger stayed on the runner and that /pre-push-review records one to accept against", () => {
+    assert.match(DRAFT_NOTE, /ledger stayed on the runner/);
+    assert.match(DRAFT_NOTE, /run `\/pre-push-review` on it first/);
+    assert.ok(!DRAFT_NOTE.includes("review.sh report"), DRAFT_NOTE);
+  });
+
   it("holds the PR as a draft for an open finding graded Advisory that is a security finding", async () => {
     const run = host([0, 0], { localReview: recorded([openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" })]) });
 

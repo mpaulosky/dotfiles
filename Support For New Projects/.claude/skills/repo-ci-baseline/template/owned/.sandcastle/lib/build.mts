@@ -200,7 +200,7 @@ export function openHeldPullRequest(
 export const DRAFT_NOTE =
   "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding: " +
   "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. The review's ledger stayed on the runner that built this branch " +
-  "(it can hold security details, so it isn't published): check the branch out and run `scripts/review.sh report` first, which records a ledger for it that `accept` can act on. " +
+  "(it can hold security details, so it isn't published): check the branch out and run `/pre-push-review` on it first, which records a ledger that `scripts/review.sh accept` can act on. " +
   "Once nothing is open, mark the PR ready with `gh pr ready`.";
 
 // Whether a git or gh failure is GitHub's own server error, which a later

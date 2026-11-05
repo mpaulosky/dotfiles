@@ -80,7 +80,7 @@ export const GATE_LIMIT_MINUTES = 10;
 // agents whose work it judges, so a gate whose branch changes it fails without
 // running (lib/checkpoint.mts#gateScriptChange); a file that isn't committed at
 // the branch's base fails too. Name the script, not the interpreter or
-// arguments: `.sandcastle/check.sh` for `bash .sandcastle/check.sh`.
+// arguments: `.sandcastle/sandbox-gate.sh` for `bash .sandcastle/sandbox-gate.sh`.
 export const GATE_SCRIPT = "scripts/gate.sh";
 
 // The paths whose files the gate and CI run: the scripts, the tests, the build

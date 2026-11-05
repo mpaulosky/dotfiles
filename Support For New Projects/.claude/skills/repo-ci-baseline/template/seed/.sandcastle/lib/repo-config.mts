@@ -74,7 +74,7 @@ export const GATE_COVERED_CHECKS: readonly string[] = ["Build Solution"];
 // on a PR's head in a follow-up pass. The default is the Template's
 // scripts/gate.sh, which runs every test project. The sandbox has no Docker
 // daemon, so a repo whose tests start containers points this at a script that
-// leaves those out (such as .sandcastle/check.sh) and keeps its lints.
+// leaves those out (such as .sandcastle/sandbox-gate.sh) and keeps its lints.
 export const GATE_COMMAND = "scripts/gate.sh";
 
 // How long the gate may run in the sandbox, in minutes, before the host kills it and counts the checkpoint
@@ -87,7 +87,7 @@ export const GATE_LIMIT_MINUTES = 10;
 // agents whose work it judges, so a gate whose branch changes it fails without
 // running (lib/checkpoint.mts#gateScriptChange); a file that isn't committed at
 // the branch's base fails too. Name the script, not the interpreter or
-// arguments: `.sandcastle/check.sh` for `bash .sandcastle/check.sh`.
+// arguments: `.sandcastle/sandbox-gate.sh` for `bash .sandcastle/sandbox-gate.sh`.
 export const GATE_SCRIPT = "scripts/gate.sh";
 
 // The paths whose files the gate and CI run: the scripts, the tests, the build

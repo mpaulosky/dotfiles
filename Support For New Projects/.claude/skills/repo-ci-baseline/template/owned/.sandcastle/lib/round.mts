@@ -100,7 +100,7 @@ export function publishedIssues(
   );
 }
 
-// The reason of the stop recorded for a build whose Advisory findings reached nowhere a person sees (see buildIssue's findingsLost).
+// The reason of the stop recorded for a build whose Advisory findings reached nowhere a person sees (see buildIssue's findingsLost and findingsUnlisted).
 export const FINDINGS_LOST_STOP_REASON = "a pull request's Advisory findings weren't filed anywhere";
 
 // One stop per fulfilled build whose Advisory findings reached nowhere a person sees, recorded with the intake stops so the run report names it and the run ends red
@@ -117,7 +117,7 @@ export function findingsLostStops(
       return [{ reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: `filing the follow-up issue and commenting on #${issue.number} both failed; the findings are in the run log only` }];
     }
     if (outcome.value.findingsUnlisted === true) {
-      return [{ reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: `no Advisory finding on #${issue.number} could be put in a public issue; the findings are in the run log only` }];
+      return [{ reason: FINDINGS_LOST_STOP_REASON, unjudged: [], firstError: `no Advisory finding on #${issue.number} could be put in a public issue, so none was filed` }];
     }
     return [];
   });

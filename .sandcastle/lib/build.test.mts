@@ -5417,9 +5417,10 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
   it("files nothing when the review didn't finish", async () => {
     const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
 
-    await buildIssue(issue, branch, base, run.buildHost);
+    const result = await buildIssue(issue, branch, base, run.buildHost);
 
     assert.deepEqual(run.advisoryIssues, []);
+    assert.equal(result.findingsUnlisted, undefined, "a review that didn't finish recorded no findings to lose");
   });
 
   const filed = (findings: Ledger["findings"], options: Parameters<typeof host>[1] = {}) =>
@@ -5478,6 +5479,19 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
     assert.equal(result.findingsUnlisted, true);
     assert.equal(result.findingsLost, undefined);
     assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("does not mark findings unlisted for a branch that isn't published, whatever the findings", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const refused = filed([advisory({ path: "docs/unread.md" })], { leaksSecret: sampleSecretMatch });
+    const failed = filed([advisory({ path: "docs/unread.md" })], { publishError: "push rejected" });
+
+    for (const run of [refused, failed]) {
+      const result = await buildIssue(issue, branch, base, run.buildHost);
+
+      assert.notEqual(result.outcome, "published");
+      assert.equal(result.findingsUnlisted, undefined);
+    }
   });
 
   it("does not end the run red when only some of the open Advisory findings can't be listed", async () => {

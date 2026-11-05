@@ -1063,10 +1063,10 @@ type BuildResult = {
   outcome: BuildOutcome;
   detail: string;
   // True when the PR was published but its Advisory findings were filed nowhere a person sees: the follow-up issue and the fallback comment on the issue both
-  // failed, so they are only in the run log. lib/round.mts#findingsLostStops turns it into a recorded stop, which ends the run red.
+  // failed, so they are only in the run log. lib/round.mts#findingsLostStops turns it into a recorded stop, which ends the run red (so does findingsUnlisted below).
   findingsLost?: true;
   // True when the PR was published but the review's open Advisory findings were all left out of the public follow-up issue (none passed the checks on what goes
-  // in a public issue, or the whole body failed them) and so were never filed: they are only in the run log. Ends the run red the same way as findingsLost.
+  // in a public issue, or the whole body failed them) and so were never filed. Ends the run red the same way as findingsLost.
   findingsUnlisted?: true;
 };
 

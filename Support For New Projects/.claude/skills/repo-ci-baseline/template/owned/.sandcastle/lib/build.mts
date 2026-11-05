@@ -7,7 +7,7 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { isRoleTimeout, LEAD_TOOLS, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, roleAgent, runRoleInSandbox, uiEnabled } from "./agents.mts";
+import { isRoleTimeout, LEAD_DENIED_TOOLS, LEAD_TOOLS, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, roleAgent, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
 import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, withoutRunnerCommands, type Checkpoint } from "./checkpoint.mts";
 import {
@@ -899,7 +899,7 @@ export function liveReviewHost(args: LocalReviewArgs, checkout: string = process
               limits,
               {
                 tools: LEAD_TOOLS,
-                denied: LEDGER_DENIED_TOOLS,
+                denied: LEAD_DENIED_TOOLS,
                 strictMcp: true,
                 // Not the branch's .claude/settings.json (see runReviewer). The subagents are defined on the command line, so they don't need its .claude/agents.
                 userSettingsOnly: true,

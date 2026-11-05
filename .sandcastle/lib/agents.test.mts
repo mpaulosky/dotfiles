@@ -7,9 +7,10 @@ import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import type { AgentProvider } from "@ai-hero/sandcastle";
 import {
   isRoleTimeout,
+  LEAD_DENIED_TOOLS,
   LEAD_TOOLS,
   LEDGER_DENIED_TOOLS,
-  MAX_AGENTS_JSON_BYTES,
+  MAX_AGENTS_WORD_BYTES,
   restrictedClaudeCode,
   REVIEWER_TOOLS,
   roleAgent,
@@ -427,6 +428,15 @@ describe("the pre-push review lead role", () => {
   });
 });
 
+describe("LEAD_DENIED_TOOLS", () => {
+  it("holds the ledger deny list and denies every built-in subagent type, so the lead starts only the lens-<id> agents defined for it", () => {
+    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(LEAD_DENIED_TOOLS.includes(rule), rule);
+    for (const type of ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide"]) {
+      assert.ok(LEAD_DENIED_TOOLS.includes(`Agent(${type})`), `Agent(${type}) isn't denied`);
+    }
+  });
+});
+
 describe("restrictedClaudeCode's --agents", () => {
   const definition = (overrides: Partial<SubagentDefinition> = {}): SubagentDefinition => ({
     description: "Reviews the branch through the Edge cases lens",
@@ -435,7 +445,7 @@ describe("restrictedClaudeCode's --agents", () => {
     model: "sonnet",
     ...overrides,
   });
-  const lead = { tools: LEAD_TOOLS, denied: LEDGER_DENIED_TOOLS, strictMcp: true, userSettingsOnly: true };
+  const lead = { tools: LEAD_TOOLS, denied: LEAD_DENIED_TOOLS, strictMcp: true, userSettingsOnly: true };
   const commandOf = (restrictions: Parameters<typeof restrictedClaudeCode>[2]) =>
     restrictedClaudeCode("sonnet", "high", restrictions).buildPrintCommand({ prompt: "the prompt", dangerouslySkipPermissions: true }).command;
   // The words the shell hands claude, one per line, after `claude --print`: read back through a real shell, so quoting is tested, not assumed.
@@ -472,7 +482,7 @@ describe("restrictedClaudeCode's --agents", () => {
     assert.ok(words.includes("--strict-mcp-config"));
     assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
     assert.ok(words.includes("--disallowedTools"));
-    for (const rule of LEDGER_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
+    for (const rule of LEAD_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
     assert.equal(words.filter((word) => word === "--agents").length, 1);
   });
 
@@ -509,30 +519,48 @@ describe("restrictedClaudeCode's --agents", () => {
     assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, agents: {} }), /agent/i);
   });
 
-  it("refuses JSON over MAX_AGENTS_JSON_BYTES and accepts it at n-1 and n bytes, so it fails at build time and not at exec", () => {
-    const sized = (bytes: number) => {
-      const empty = JSON.stringify({ "lens-1": definition({ description: "" }) });
-      const agents = { "lens-1": definition({ description: "d".repeat(bytes - Buffer.byteLength(empty)) }) };
-      assert.equal(Buffer.byteLength(JSON.stringify(agents)), bytes);
-      return agents;
-    };
-    const build = (agents: Record<string, SubagentDefinition>) => () => restrictedClaudeCode("sonnet", "high", { ...lead, agents });
+  // The size of the word the shell is handed: the JSON in single quotes, each single quote inside it written as four bytes ('\'').
+  const wordBytes = (agents: Record<string, SubagentDefinition>) => Buffer.byteLength(`'${JSON.stringify(agents).replaceAll("'", `'\\''`)}'`);
+  const build = (agents: Record<string, SubagentDefinition>) => () => restrictedClaudeCode("sonnet", "high", { ...lead, agents });
+  // One definition whose word is exactly `bytes` long, padded with `filler` (one byte per character unless it says otherwise).
+  const sized = (bytes: number, filler = "d", perFiller = 1) => {
+    const base = wordBytes({ "lens-1": definition({ description: "" }) });
+    const agents = { "lens-1": definition({ description: filler.repeat(Math.floor((bytes - base) / perFiller)) }) };
+    return agents;
+  };
 
-    assert.equal(MAX_AGENTS_JSON_BYTES, 60_000);
-    assert.doesNotThrow(build(sized(MAX_AGENTS_JSON_BYTES - 1)));
-    assert.doesNotThrow(build(sized(MAX_AGENTS_JSON_BYTES)));
-    assert.throws(build(sized(MAX_AGENTS_JSON_BYTES + 1)), /byte|too (large|long)|limit/i);
+  it("refuses an --agents word over MAX_AGENTS_WORD_BYTES and accepts it at n-1 and n bytes, so it fails at build time and not at exec", () => {
+    assert.equal(MAX_AGENTS_WORD_BYTES, 60_000);
+    for (const bytes of [MAX_AGENTS_WORD_BYTES - 1, MAX_AGENTS_WORD_BYTES]) {
+      const agents = sized(bytes);
+      assert.equal(wordBytes(agents), bytes);
+      assert.doesNotThrow(build(agents));
+    }
+    const over = sized(MAX_AGENTS_WORD_BYTES + 1);
+    assert.equal(wordBytes(over), MAX_AGENTS_WORD_BYTES + 1);
+    assert.throws(build(over), /byte|too (large|long)|limit/i);
   });
 
   it("counts the cap in bytes, not characters: multi-byte text over it is refused", () => {
-    const empty = JSON.stringify({ "lens-1": definition({ description: "" }) });
     // Each é is one character and two bytes in UTF-8; JSON.stringify leaves it as it is.
-    const characters = Math.floor((MAX_AGENTS_JSON_BYTES - Buffer.byteLength(empty)) / 2) + 1;
-    const agents = { "lens-1": definition({ description: "é".repeat(characters) }) };
+    const agents = sized(MAX_AGENTS_WORD_BYTES + 2, "é", 2);
 
-    assert.ok(JSON.stringify(agents).length <= MAX_AGENTS_JSON_BYTES);
-    assert.ok(Buffer.byteLength(JSON.stringify(agents)) > MAX_AGENTS_JSON_BYTES);
-    assert.throws(() => restrictedClaudeCode("sonnet", "high", { ...lead, agents }), /byte|too (large|long)|limit/i);
+    assert.ok(JSON.stringify(agents).length <= MAX_AGENTS_WORD_BYTES);
+    assert.ok(wordBytes(agents) > MAX_AGENTS_WORD_BYTES);
+    assert.throws(build(agents), /byte|too (large|long)|limit/i);
+  });
+
+  // `shellWord` writes each ' as '\'' (four bytes), so JSON of apostrophes only a quarter of the cap long is already over it.
+  it("counts the apostrophes the shell word escapes: JSON under the cap that quotes to a word over it is refused", () => {
+    const agents = sized(MAX_AGENTS_WORD_BYTES + 4, "'", 4);
+
+    assert.ok(Buffer.byteLength(JSON.stringify(agents)) < MAX_AGENTS_WORD_BYTES / 2);
+    assert.ok(wordBytes(agents) > MAX_AGENTS_WORD_BYTES);
+    assert.throws(build(agents), /byte|too (large|long)|limit/i);
+    // And at the edge: one apostrophe fewer is four bytes fewer.
+    const edge = sized(MAX_AGENTS_WORD_BYTES, "'", 4);
+    assert.ok(wordBytes(edge) <= MAX_AGENTS_WORD_BYTES);
+    assert.doesNotThrow(build(edge));
   });
 });
 

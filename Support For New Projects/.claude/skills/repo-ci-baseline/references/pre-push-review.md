@@ -220,7 +220,7 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
     Actions run included, holds its issue that long).
   - `subagents`: one role run, `pre-push-review-lead`, starts all the round's reviewers as parallel subagents (one wave: `MAX_REVIEWERS_PER_ROUND` is within Claude Code's 20 concurrent subagents),
     so there is one role start and no lock race. Each lens's full prompt is a file under the run's folder (`lens-<id>.md`), and its subagent, `lens-<id>`, is defined on the lead's command line with
-    `--agents` (`tools` Read, Grep and Glob; the JSON is capped at `MAX_AGENTS_JSON_BYTES`) and told to read that file. The lead holds `Agent`, Read, Grep and Glob: no shell, no network, no write tool.
+    `--agents` (`tools` Read, Grep and Glob; the JSON is the quoted word is capped at `MAX_AGENTS_WORD_BYTES`) and told to read that file. The lead holds `Agent`, Read, Grep and Glob: no shell, no network, no write tool, and it is denied every built-in subagent type (`LEAD_DENIED_TOOLS`), so it can start only the `lens-<id>` agents.
   - The lead returns each subagent's complete answer verbatim between `<review-{nonce}-{id}>` and `</review-{nonce}-{id}>`, with a nonce the host makes fresh for each lead run. The host parses each
     lens's block itself, with the parser the sequential mode uses. A lens with a missing wrapper, an empty one or an invalid block fails, and is asked for again alone (up to `REVIEWER_ATTEMPTS`
     lead runs, keeping the other lenses' findings); a lens still failing ends the review as failed, with a host-written reason. Any anomaly in the nonce's tags (a lens nobody asked for, a tag twice, a

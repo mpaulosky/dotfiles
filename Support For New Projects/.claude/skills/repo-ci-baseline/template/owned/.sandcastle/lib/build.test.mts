@@ -52,7 +52,7 @@ import {
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { LEAD_TOOLS, LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { LEAD_DENIED_TOOLS, LEAD_TOOLS, LEDGER_DENIED_TOOLS } from "./agents.mts";
 import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
@@ -4640,6 +4640,9 @@ describe("liveReviewHost", () => {
       assert.equal(words[words.indexOf("--setting-sources") + 1], "user");
       assert.ok(words.includes("--disallowedTools"));
       for (const rule of LEDGER_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
+      // A steered lead must not start a built-in subagent (general-purpose holds a shell and the network) in place of the lens-<id> agents.
+      for (const type of ["general-purpose", "Explore", "Plan"]) assert.ok(words.includes(`Agent(${type})`), `Agent(${type}) isn't denied`);
+      for (const rule of LEAD_DENIED_TOOLS) assert.ok(words.includes(rule), rule);
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     }

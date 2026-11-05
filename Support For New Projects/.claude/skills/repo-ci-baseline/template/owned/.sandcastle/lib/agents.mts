@@ -68,8 +68,17 @@ export type AgentRestrictions = {
 // One subagent as `--agents` takes it.
 export type SubagentDefinition = { description: string; prompt: string; tools: readonly string[]; model: string };
 
-// The most bytes of `--agents` JSON one command may carry (one argv word is capped at 128 KiB on Linux).
-export const MAX_AGENTS_JSON_BYTES = 60_000;
+// The most bytes the `--agents` shell word may be: the JSON in single quotes, each single quote inside it written as four bytes. One argv word is capped at
+// 128 KiB on Linux, and JSON full of apostrophes grows to four times its size once quoted, so the limit is on the word and not on the raw JSON.
+export const MAX_AGENTS_WORD_BYTES = 60_000;
+
+// The built-in subagent types of Claude Code. The lead of a review's subagents may start only the `lens-<id>` agents defined for it: `general-purpose`
+// holds every tool, a shell and the network among them, and the lead reads answers from reviewers that read branch-planted files.
+const BUILTIN_SUBAGENT_TYPES = ["general-purpose", "Explore", "Plan", "statusline-setup", "claude-code-guide"] as const;
+
+// What the lead of a review's subagents is denied: the ledger rules, and every built-in subagent type. It does not rely on the lead's `--tools`
+// narrowing its subagents, which a run in a real sandbox has yet to settle.
+export const LEAD_DENIED_TOOLS: readonly string[] = [...LEDGER_DENIED_TOOLS, ...BUILTIN_SUBAGENT_TYPES.map((type) => `Agent(${type})`)];
 
 // The tools the lead of a review's subagents gets: the reviewers' own, and the one that starts a subagent.
 export const LEAD_TOOLS: readonly string[] = ["Agent", ...REVIEWER_TOOLS];
@@ -85,7 +94,7 @@ function shellWord(value: string): string {
 const AGENT_NAME = /^[a-z][a-z0-9-]*$/;
 
 // `agents` as the JSON `--agents` takes. Throws for a name that isn't plain, for none at all (`{}` is not the same as leaving `agents` out),
-// and for JSON past MAX_AGENTS_JSON_BYTES, so a too-long command fails where the provider is built and not at exec.
+// and for a shell word past MAX_AGENTS_WORD_BYTES, so a too-long command fails where the provider is built and not at exec.
 function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): string {
   const names = Object.keys(agents);
   if (names.length === 0) throw new Error("the agents to define for --agents are empty: give none or at least one");
@@ -93,8 +102,8 @@ function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): strin
     if (!AGENT_NAME.test(name)) throw new Error(`an agent name for --agents must be lowercase ASCII letters, digits and hyphens, starting with a letter, not ${JSON.stringify(name.slice(0, 40))}`);
   }
   const json = JSON.stringify(agents);
-  const bytes = Buffer.byteLength(json);
-  if (bytes > MAX_AGENTS_JSON_BYTES) throw new Error(`the --agents JSON is ${bytes} bytes, over the limit of ${MAX_AGENTS_JSON_BYTES} bytes`);
+  const bytes = Buffer.byteLength(shellWord(json));
+  if (bytes > MAX_AGENTS_WORD_BYTES) throw new Error(`the --agents word is ${bytes} bytes once quoted for the shell, over the limit of ${MAX_AGENTS_WORD_BYTES} bytes`);
   return json;
 }
 

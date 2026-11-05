@@ -207,8 +207,9 @@ export function reviewFixPrompt({
   ].join("\n");
 }
 
-// The tag that opens or closes one lens's answer in the lead's output. The nonce is the host's, fresh for each lead run, and the subagents
-// never see it, so a reviewer steered by a planted file can't write a tag the host would take for another lens's.
+// The tag that opens or closes one lens's answer in the lead's output. The nonce is the host's, fresh for each lead run, and is in no subagent's definition or instructions.
+// It is defence in depth only (the lead's prompt holds it, and may be saved where a subagent's Read could reach it): a tag written twice, nested or left
+// unclosed fails every lens of the run (lib/host-review.mts#parseTeamAnswer), whether or not the nonce leaked.
 export function reviewTag(nonce: string, id: number, closing: boolean): string {
   return `<${closing ? "/" : ""}review-${nonce}-${id}>`;
 }

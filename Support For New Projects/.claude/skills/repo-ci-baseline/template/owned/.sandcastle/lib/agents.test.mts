@@ -534,6 +534,15 @@ describe("restrictedClaudeCode's --agents", () => {
   const byHand = (names: readonly string[], agents: Record<string, SubagentDefinition>) =>
     ({ ...lead, tools: [`Agent(${names.join(",")})`, ...REVIEWER_TOOLS], agents });
 
+  it("refuses, where the provider is built, a subagent whose tools aren't a non-empty subset of the reviewers' own", () => {
+    for (const tools of [["Bash"], ["Agent"], ["WebFetch"], ["Write"], ["Read", "Bash"], ["Read", "Grep", "Glob", "Edit"], [], ["read"]]) {
+      assert.throws(() => restrictedClaudeCode("sonnet", "high", leadFor({ "lens-1": definition({ tools }) })), /the subagent lens-1 must hold/, JSON.stringify(tools));
+    }
+    for (const tools of [["Read"], ["Glob", "Read", "Grep"], ["Grep", "Glob"], ["Read", "Grep", "Glob"]]) {
+      assert.doesNotThrow(() => restrictedClaudeCode("sonnet", "high", leadFor({ "lens-1": definition({ tools }) })), JSON.stringify(tools));
+    }
+  });
+
   it("refuses, where the provider is built, a name that isn't lowercase ASCII letters, digits and hyphens starting with a letter", () => {
     // `a,b` is one name that checkLeadAgentTool's comparison accepts (`Agent(a,b)`), so only agentsJson's name check stops it.
     for (const name of ["", "Lens-1", "1lens", "-lens", "lens_1", "lens 1", "lens-é", "lens;touch", "lens\n1", "../lens", "a,b", "*"]) {

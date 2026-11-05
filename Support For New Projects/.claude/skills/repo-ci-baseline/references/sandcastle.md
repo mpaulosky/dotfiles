@@ -108,7 +108,8 @@ For .NET work, these skills are mounted into the sandbox from the host's `~/.cla
 Other roles may list the skills they need the same way. `lib/skills.test.mts` keeps the two in step: no prompt lists a skill that isn't mounted, and the `tester`, `backend`
 and (when opted in) `ui` prompts each list every mounted skill.
 
-**Reviewer mode.** `SANDCASTLE_REVIEWERS` (`sequential` or `subagents`, commented out in `.env.example`; a command-line or workflow switch) picks how the host review starts a round's reviewers;
+**Reviewer mode.** `SANDCASTLE_REVIEWERS` (`sequential` or `subagents`; `.env.example` shows it only as a usage example in comments, since that file reaches the sandbox,
+so set it on the command line or in the workflow) picks how the host review starts a round's reviewers;
 a mistyped value stops the run at start-up with exit code 2. See [`pre-push-review.md`](pre-push-review.md).
 
 **Run modes.** `SANDCASTLE_MODE` (commented out in `.env.example`) picks what a run does; `runModeFrom` in `lib/config.mts` reads it. Unset, blank or `full` is a full run: intake, builds and rounds.

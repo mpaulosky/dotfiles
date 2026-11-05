@@ -341,12 +341,14 @@ export type TeamAnswer = Map<number, { findings: ReviewerFinding[] } | { error: 
 const UNCLOSED_WRAPPER = "a wrapper is not closed";
 
 // Reads the lead's output into each requested id's findings. Only the tags `<review-{nonce}-{n}>` and `</review-{nonce}-{n}>` count; the nonce is
-// the host's, fresh for each lead run, so the subagents (which read text anyone could plant) never know it. Every anomaly in those tags fails every
+// the host's, fresh for each lead run, and kept out of the subagents' definitions and instructions. It is defence in depth only: the lead's prompt holds it, and Claude Code may save that prompt
+// to a session file the subagents' Read could reach, so safety rests on the checks below, not on the nonce being secret. Every anomaly in those tags fails every
 // requested id, so a forged or duplicated wrapper can never clear another lens's findings: an id nobody asked for, a tag twice, a closing tag
 // before its opening tag, wrappers nested or overlapping, an opening tag with no closing tag. Otherwise each id's block goes to
 // parseReviewerAnswer, and an id with no wrapper gets an error of its own. Text outside the wrappers is ignored. A lead that empties or
 // shortens a subagent's `<findings>` block inside its wrapper cannot be told from the subagent's own answer (the host sees only the lead's output):
-// an accepted residual, which the lead's prompt and its lack of any write tool bound.
+// a residual this parser cannot close. Every subagent's text reaches the lead, so one lens's injected text can try to change what the lead relays for another lens;
+// the lead's prompt forbids it and it has no write tool, which limits what it can do but does not stop it. The default stays sequential for that reason.
 export function parseTeamAnswer(stdout: string, nonce: string, ids: readonly number[]): TeamAnswer {
   const answer: TeamAnswer = new Map();
   const malformed = (why: string) => {
@@ -689,7 +691,7 @@ function failureText(error: unknown): string {
 // the subagents and returns each answer between that lens's tags, and the host parses every lens's block itself (parseTeamAnswer). A lens whose block is missing or
 // invalid is asked for again, alone, quoting what was wrong (REVIEWER_ATTEMPTS asks per lens); the others' findings are kept. When the relay was cut off at the lead's
 // output limit (UNCLOSED_WRAPPER for every requested lens), the next attempt asks the lenses in two halves, each its own lead run with its own nonce, so a round
-// spends at most REVIEWER_ATTEMPTS + 1 lead runs; the time cap is checked before each lead run. A lead that times out or fails ends the round at once with no retry
+// spends at most 2 * REVIEWER_ATTEMPTS - 1 lead runs (three while REVIEWER_ATTEMPTS is 2); the time cap is checked before each lead run. A lead that times out or fails ends the round at once with no retry
 // (a retry would spend another timeout), as the sequential path never retries a timeout, and blames every lens of the attempt that has no answer yet. An
 // UncountedStopError is rethrown. The result is aligned with `reviewers`, or says the review ran out of time.
 async function askTeam(

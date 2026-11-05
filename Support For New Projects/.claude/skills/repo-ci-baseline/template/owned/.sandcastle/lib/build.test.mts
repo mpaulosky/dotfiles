@@ -4815,7 +4815,9 @@ describe("liveReviewHost", () => {
       await live.writeRunFile(".sandcastle/work/387/review/lens-1.md", "one");
       await live.writeRunFile(".sandcastle/work/387/review/lens-2.md", "");
 
-      for (const found of execs.filter((e) => /lens-\d\.md/.test(e.command))) {
+      const matched = execs.filter((e) => /lens-\d\.md/.test(e.command));
+      assert.equal(matched.length, 2);
+      for (const found of matched) {
         assert.match(found.command, /rm -f -- '\.sandcastle\/work\/387\/review\/lens-\d\.md' && /, found.command);
         assert.ok(found.command.indexOf("rm -f") < found.command.search(/base64 -d >|: >/), found.command);
       }

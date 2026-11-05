@@ -55,7 +55,8 @@ export const LEDGER_DENIED_TOOLS: readonly string[] = [
 // What a role's agent is held to besides its model and effort: the only tools
 // it gets, rules it is denied, and whether only the MCP servers named on the
 // command line may start, and whether Claude Code reads only the user's settings, not the branch's .claude/settings.json (whose hooks
-// would run shell commands, with the sandbox's environment, in a run that is meant to hold no shell).
+// would run shell commands, with the sandbox's environment, in a run that is meant to hold no shell). `agents` adds the subagents defined on the command line
+// (`--agents`); a role that has them must hold exactly the tool `Agent(<those names>)` (leadTools), and each subagent only some of REVIEWER_TOOLS.
 export type AgentRestrictions = {
   tools?: readonly string[];
   denied?: readonly string[];
@@ -118,6 +119,12 @@ function agentsJson(agents: Readonly<Record<string, SubagentDefinition>>): strin
   if (names.length === 0) throw new Error("the agents to define for --agents are empty: give none or at least one");
   for (const name of names) {
     if (!AGENT_NAME.test(name)) throw new Error(`an agent name for --agents must be lowercase ASCII letters, digits and hyphens, starting with a letter, not ${JSON.stringify(name.slice(0, 40))}`);
+  }
+  // The ceiling on what a subagent can do is its own tools, so the builder holds it and not only the one caller that builds them today.
+  for (const [name, { tools }] of Object.entries(agents)) {
+    if (tools.length === 0 || !tools.every((tool) => (REVIEWER_TOOLS as readonly string[]).includes(tool))) {
+      throw new Error(`the subagent ${name} must hold some of ${REVIEWER_TOOLS.join(", ")} and no other tool, not ${JSON.stringify(tools)}`);
+    }
   }
   const json = JSON.stringify(agents);
   const bytes = Buffer.byteLength(shellWord(json));

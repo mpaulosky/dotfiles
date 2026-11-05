@@ -345,8 +345,8 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 A repo that had edited its copy's list of watched paths (Blazor-Server and auth0-management-app) moves those paths, one per line, into the Seed `.sandcastle/check-paths.txt` before it Applies.
 A repo whose `check.sh` is its sandbox gate (the three older repos) renames it first and points `GATE_COMMAND` and `GATE_SCRIPT` at the new name (steps 8 and 9).
 Apply keeps a `.sandcastle/check.sh` that `GATE_COMMAND` or `GATE_SCRIPT` names,
-in `lib/repo-config.mts` or the older `lib/config.mts` (read as text: a `check.sh` on that line or the ten after it, not counting a line that starts with a comment marker
-(apart from the text after its first `*/`) unless it names the gate),
+in `lib/repo-config.mts` or the older `lib/config.mts` (read as text: a `check.sh` on that line or the ten after it,
+not counting a line that starts with `//`, or one that starts with `/*` or `*` apart from the text after its first `*/`, unless it names the gate),
 and reports it as a known conflict with the rename to make, since the Owned script would otherwise replace the gate and pass it without the repo's lints and tests.
 A value built from another constant (`const GATE = ".sandcastle/check.sh"; export const GATE_COMMAND = GATE`) is not followed, so a repo that names its gate that way renames the script before it Applies.
 The list is read as written: a line is a git pathspec, and an `:(exclude)` line only trims the list's other lines, never the Template's own paths.

@@ -301,13 +301,13 @@ describe("the places the gate's checks are read from (mpaulosky/dotfiles#339)", 
   });
 });
 
-// mpaulosky/dotfiles#341: Apply writes a Seed file only where a repo has none, so an existing repo keeps its old `.sandcastle/check.sh`.
-describe("the Seed check.sh in an existing repo (mpaulosky/dotfiles#341)", () => {
-  it("references/sandcastle.md says Apply writes check.sh only where a repo has none, and an existing repo copies the new pathspec by hand", () => {
+// mpaulosky/dotfiles#341, changed by mpaulosky/dotfiles#391: .sandcastle/check.sh was a Seed file an existing repo kept in its old form; it is
+// Owned now, so Apply refreshes it and the docs no longer ask for a hand copy.
+describe("the Owned check.sh in an existing repo (mpaulosky/dotfiles#341, mpaulosky/dotfiles#391)", () => {
+  it("references/sandcastle.md says Apply refreshes check.sh, which watches .claude/skills/hardening-review/ itself", () => {
     const reference = readFileSync(new URL(`${skill}/references/sandcastle.md`, root), "utf8").replace(/\s+/g, " ");
 
-    assert.match(reference, /`\.sandcastle\/check\.sh`[^.]*\bonly where a repo has none/);
-    assert.match(reference, /an existing repo copies the new pathspec by hand/);
-    assert.match(reference, /\.claude\/skills\/hardening-review\//);
+    assert.match(reference, /`\.sandcastle\/check\.sh` is Owned[^.]*so Apply refreshes it/);
+    assert.match(reference, /\.claude\/skills\/hardening-review/);
   });
 });

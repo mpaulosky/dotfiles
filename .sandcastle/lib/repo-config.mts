@@ -153,6 +153,7 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
   ".sandcastle/.markdownlint-cli2.jsonc",
+  ".sandcastle/check.sh",
   ".sandcastle/critique-prompt.md",
   ".sandcastle/intake-prompt.md",
   ".sandcastle/lib/agents.mts",

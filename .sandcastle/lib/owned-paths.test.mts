@@ -64,6 +64,7 @@ const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".sandcastle/main.mts",
   ".sandcastle/status.mts",
   ".sandcastle/status.test.mts",
+  ".sandcastle/check.sh",
   ".sandcastle/tsconfig.json",
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",

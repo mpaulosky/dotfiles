@@ -1,0 +1,4 @@
+# Paths the Sandcastle check also watches, one per line: the files and folders this repo's
+# .sandcastle/ tests read (a change to one runs `pnpm run check:sandcastle`).
+# .sandcastle/check.sh is Owned and already watches .sandcastle/, package.json, the pnpm files
+# and the local review's files. Blank lines and lines starting with # are ignored.

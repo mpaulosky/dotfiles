@@ -77,6 +77,7 @@ export const OWNED_PATHS = [
   ".sandcastle/status.mts",
   ".sandcastle/status.test.mts",
   ".sandcastle/lib/*.mts",
+  ".sandcastle/check.sh",
   ".sandcastle/critique-prompt.md",
   ".sandcastle/intake-prompt.md",
   ".sandcastle/tsconfig.json",

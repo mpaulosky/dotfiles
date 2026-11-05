@@ -12,12 +12,14 @@ The Template now carries one, split by the same rule as the rest of it (ADR 0001
 
 ## Decisions
 
-- **Owned:** `.sandcastle/tsconfig.json`, `.markdownlint-cli2.jsonc`, `.gitignore`, `.env.example`, `intake-prompt.md`, `critique-prompt.md`,
+- **Owned:** `.sandcastle/tsconfig.json`, `.markdownlint-cli2.jsonc`, `.gitignore`, `.env.example`, `intake-prompt.md`, `critique-prompt.md`, `check.sh`,
   and `lib/host-safety.mts` and `lib/shell.mts` with their tests.
   These carry nothing about the repo, and the two modules import nothing but each other, so a repo can't break them through its own code.
   Keeping the host-safety guardrails identical everywhere is the point of owning them.
+  mpaulosky/dotfiles#391 moved `check.sh` from Seed to Owned: as a Seed file it drifted (repos edited its pathspec, one lacked the `unset GIT_*` line and the `hardening-review` path).
+  A repo's own watched paths are now one per line in the Seed `check-paths.txt`. Re-Apply notes are in [sandcastle.md](../../references/sandcastle.md#migrating-a-repo).
 - **Seed:** the role prompts (`roles/*.md`, `shared-rules.md` included), `plan-prompt.md`, `review-prompt.md`, `Dockerfile`, `CODING_STANDARDS.md`
-  and `check.sh` under `.sandcastle/`, and the root `package.json` and `pnpm-workspace.yaml`.
+  and `check-paths.txt` under `.sandcastle/`, and the root `package.json` and `pnpm-workspace.yaml`.
   Each one describes the repo (its stacks, test commands, docs, toolchain), so it's the repo's once written.
   mpaulosky/dotfiles#280 listed `roles/shared-rules.md` as Owned; it isn't, because it is the one file that describes the repo to every role.
 - **Superseded by ADR 0007: the rest of `lib/` and `main.mts` stay out of the Template for now.** Almost every module imports `lib/config.mts`, which holds

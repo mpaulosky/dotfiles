@@ -196,12 +196,13 @@ export function openHeldPullRequest(
   return openPullRequest(branch, title, body, run, repo, draft, DRAFT_NOTE);
 }
 
-// The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left, or a review that didn't finish. It names the two steps only a person takes.
+// The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left, or a review that didn't finish. It names the steps only a person
+// takes, and says any ledger the review recorded stayed on the runner, so a person records one with /pre-push-review before accepting (acceptFinding refuses with no ledger for the diff).
 export const DRAFT_NOTE =
-  "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding: " +
-  "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. The review's ledger stayed on the runner that built this branch " +
-  "(it can hold security details, so it isn't published): check the branch out and run `/pre-push-review` on it first, which records a ledger that `scripts/review.sh accept` can act on. " +
-  "Once nothing is open, mark the PR ready with `gh pr ready`.";
+  "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding. " +
+  "Any ledger the review recorded stayed on the runner that built this branch (it can hold security details, so it isn't published), so `scripts/review.sh accept` has nothing to act on yet: " +
+  "check the branch out and run `/pre-push-review` on it, which records a ledger. Then fix each finding it leaves open, or accept it with `scripts/review.sh accept <id> <reason>`, " +
+  "using the ids that review prints (they may differ from the ones listed here). Once nothing is open, mark the PR ready with `gh pr ready`.";
 
 // Whether a git or gh failure is GitHub's own server error, which a later
 // attempt may not hit. Matches what git and gh print for one ("remote: Internal
@@ -1769,7 +1770,7 @@ async function buildMarkedIssue(
           `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening or updating its pull request failed after the ` +
             `${reviewUnfinished ? "review didn't finish" : "review left findings open"} and the pull request was held as a draft. The branch keeps its commits. A person needs to look at it. A pull ` +
             `request from it may already be open as a draft, without the note saying why: find it with \`gh pr list --head ${branch}\` before opening ` +
-            `one, and do not mark it ready until ${reviewUnfinished ? "the review has been run again and nothing is open" : "each open finding is fixed or accepted (`scripts/review.sh accept <id> <reason>`)"}. If origin's ` +
+            `one, and do not mark it ready until ${reviewUnfinished ? "the review has been run again and nothing is open" : "each open finding is fixed or accepted (the review's ledger is on the runner: run `/pre-push-review` on the branch first, then `scripts/review.sh accept <id> <reason>`)"}. If origin's ` +
             `\`${branch}\` isn't at \`${gated}\`, the commit the gate passed, it still has to be pushed from its worktree, and if origin's branch has ` +
             `commits the local one doesn't, the two need reconciling.\n\n${fence}text\n${detail}\n${fence}`,
         );

@@ -4895,8 +4895,11 @@ describe("buildIssue's PR state after the local review", () => {
   // The review's ledger stays on the Actions runner, so `scripts/review.sh accept` finds nothing in a later checkout: the note tells a person to record
   // one with the review itself (`report` only prints a ledger, it records none).
   it("DRAFT_NOTE says the ledger stayed on the runner and that /pre-push-review records one to accept against", () => {
-    assert.match(DRAFT_NOTE, /ledger stayed on the runner/);
-    assert.match(DRAFT_NOTE, /run `\/pre-push-review` on it first/);
+    assert.match(DRAFT_NOTE, /ledger the review recorded stayed on the runner/);
+    assert.match(DRAFT_NOTE, /run `\/pre-push-review` on it, which records a ledger/);
+    assert.match(DRAFT_NOTE, /ids that review prints/);
+    assert.ok(DRAFT_NOTE.indexOf("/pre-push-review") < DRAFT_NOTE.indexOf("review.sh accept <id>"), DRAFT_NOTE);
+    assert.match(DRAFT_NOTE, /`gh pr ready`/);
     assert.ok(!DRAFT_NOTE.includes("review.sh report"), DRAFT_NOTE);
   });
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for the Owned .sandcastle/check.sh: it runs Sandcastle's check only when a file the
-# check reads changed since <merge-base> (always, with no merge base), so a repo that copies it
-# doesn't stop checking when only one of those files changes. Each case runs the Seed script in
-# a throwaway repo with a stub pnpm that logs its calls.
+# check reads (the built-in paths, or one listed in .sandcastle/check-paths.txt) changed since
+# <merge-base> (always, with no merge base), so the check doesn't stop running when only one of
+# those files changes. Each case runs the Owned script in a throwaway repo with a stub pnpm that
+# logs its calls.
 # Usage: tests/seed-check.test.sh
 set -uo pipefail
 
@@ -224,6 +225,92 @@ git -C "$REPO" commit -qam "touch extra"
 run_check_in_hook "$BASE3"
 check "with the variables set, a file listed in check-paths.txt runs the Sandcastle check" ran_check
 git -C "$REPO" switch -q main
+
+# How check.sh reads check-paths.txt. Every line is a literal path (`:(literal)`), so a comment that is also a
+# real file name, a name with glob characters and a line that looks like pathspec magic are all pinned with real files.
+# Each case writes a list on a branch off main, touches a file on a branch off that, and runs the check.
+LIT_FILES=("#notes.md" "# indented" "lit/[x].md" "lit/x.md" 'lit/*.md' lit/a.md "lit/a*b.md" lit/aXb.md)
+for path in "${LIT_FILES[@]}"; do
+  mkdir -p "$REPO/$(dirname "$path")"
+  echo start > "$REPO/$path"
+done
+git -C "$REPO" switch -q main
+git -C "$REPO" add .
+git -C "$REPO" commit -q -m "literal-path files"
+
+case_n=0
+list_case() { # list_case <list content> <file to touch>: runs the check after <file> changes, with <content> as check-paths.txt
+  case_n=$((case_n + 1))
+  git -C "$REPO" switch -q -c "list-$case_n" main
+  write_paths "$1"
+  local base
+  base="$(git -C "$REPO" rev-parse HEAD)"
+  echo more >> "$REPO/$2"
+  git -C "$REPO" commit -qam "touch $2"
+  run_check "$base"
+  git -C "$REPO" switch -q main
+}
+
+list_case $'docs/generated\r\n\r\n# docs/commented.md\r\n'"$EXTRA_FILE"$'\r\n' "$EXTRA_FILE"
+check "a CRLF check-paths.txt: its last listed file runs the check when it changes" ran_check
+list_case $'docs/generated\r\n\r\n# docs/commented.md\r\n'"$EXTRA_FILE"$'\r\n' "$EXTRA_DIR/page.md"
+check "a CRLF check-paths.txt: its first listed folder runs the check when a file in it changes" ran_check
+list_case $'docs/generated\r\n\r\n# docs/commented.md\r\n'"$EXTRA_FILE"$'\r\n' docs/commented.md
+check "a CRLF check-paths.txt: a commented-out path isn't watched" not ran_check
+list_case $'docs/generated\n'"$EXTRA_FILE" "$EXTRA_FILE"
+check "a check-paths.txt whose last line has no trailing newline watches that last path" ran_check
+list_case $'docs/generated\n'"$EXTRA_FILE" "$EXTRA_DIR/page.md"
+check "a check-paths.txt whose last line has no trailing newline still watches the earlier path" ran_check
+list_case $'docs/generated\n   ' docs/unrelated.md
+check "a check-paths.txt whose last line is blank with no trailing newline watches nothing extra" not ran_check
+list_case $'docs/generated\n'"$EXTRA_FILE"$'\r' "$EXTRA_FILE"
+check "a last line ending in a lone CR with no newline is watched without the CR" ran_check
+list_case $'\t'"$EXTRA_FILE"$' \t\n' "$EXTRA_FILE"
+check "a listed path with leading and trailing tabs and spaces is watched" ran_check
+list_case "   $SPACED   "$'\n' "$SPACED"
+check "surrounding spaces are trimmed but a space inside a path is kept" ran_check
+list_case $'  # docs/commented.md\n' docs/commented.md
+check "an indented comment line isn't watched" not ran_check
+
+# A comment that names a real file must be skipped, not watched: under :(literal) a '#' line that isn't skipped
+# matches that file, so these fail if the '#' skip is removed.
+list_case $'#notes.md\n' "#notes.md"
+check "a line starting with # is a comment even when a file is named that" not ran_check
+list_case $'   # indented\n' "# indented"
+check "an indented line starting with # is a comment even when a file is named that" not ran_check
+list_case $'# \n   \n\t\n' docs/unrelated.md
+check "blank and whitespace-only lines watch nothing, not every file" not ran_check
+
+# :(literal) keeps a line from being read as a glob or as pathspec magic.
+list_case $'lit/[x].md\n' 'lit/[x].md'
+check "a listed name with glob brackets is watched as that literal file" ran_check
+list_case $'lit/[x].md\n' lit/x.md
+check "a listed name with glob brackets doesn't match the file the glob would" not ran_check
+list_case $'lit/*.md\n' 'lit/*.md'
+check "a listed name with * is watched as that literal file" ran_check
+list_case $'lit/*.md\n' lit/a.md
+check "a listed glob like lit/*.md isn't expanded: a file it would match runs nothing" not ran_check
+list_case $'lit/a*b.md\n' lit/aXb.md
+check "a * in the middle of a listed name isn't a wildcard" not ran_check
+list_case $':(exclude)package.json\n' package.json
+check "a :(exclude) line doesn't exclude a built-in path: package.json still runs the check" ran_check
+check "a :(exclude) line doesn't make the script fail" test $STATUS -eq 0
+list_case $':(glob)lit/*.md\n' lit/a.md
+check "a :(glob) line is a literal name, so a file the glob would match runs nothing" not ran_check
+check "a :(glob) line doesn't make the script fail" test $STATUS -eq 0
+list_case $':!.sandcastle\n' .sandcastle/lib/x.mts
+check "a :! line isn't a pathspec: it doesn't exclude a built-in path" ran_check
+
+# The Seed's header and the docs must say entries are literal paths, not globs.
+mentions_literal() { grep -qi 'literal' "$1" && grep -qi 'globs are not expanded' "$1"; }
+check "the Seed check-paths.txt says entries are literal paths, not globs" mentions_literal "$SEED_PATHS"
+check "check.sh's header says entries are literal paths, not globs" mentions_literal "$CHECK"
+doc_row_mentions_literal() {
+  local row
+  row="$(grep -F "| \`.sandcastle/check-paths.txt\`" "$SKILL_DIR/references/sandcastle.md")"
+  grep -qi 'literal' <<< "$row" && grep -qi 'globs are not expanded' <<< "$row"
+}
+check "references/sandcastle.md's check-paths.txt row says entries are literal, not globs" doc_row_mentions_literal
 
 echo
 echo "seed-check.test.sh: $PASSED passed, $FAILED failed"

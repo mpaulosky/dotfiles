@@ -2,3 +2,5 @@
 # .sandcastle/ tests read (a change to one runs `pnpm run check:sandcastle`).
 # .sandcastle/check.sh is Owned and already watches .sandcastle/, package.json, the pnpm files
 # and the local review's files. Blank lines and lines starting with # are ignored.
+# Each line is a literal file or folder relative to the repo root: globs are not expanded (list the folder that
+# holds the files instead of e2e/**/*.ts) and pathspec magic such as :(glob) is not read.

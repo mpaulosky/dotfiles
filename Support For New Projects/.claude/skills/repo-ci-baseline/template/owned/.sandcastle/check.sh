@@ -5,6 +5,7 @@
 # (which its tests read) changed since <merge-base> (always, when <merge-base> is empty).
 # A repo adds the paths its own tests read, one per line, to .sandcastle/check-paths.txt
 # (blank lines and lines starting with # are ignored); this script is Owned, so it isn't edited.
+# Each line is a literal file or folder relative to the repo root: globs are not expanded and pathspec magic is not read.
 #
 #   .sandcastle/check.sh <merge-base>
 set -euo pipefail
@@ -15,7 +16,7 @@ base="${1-}"
 extra=()
 if [[ -f .sandcastle/check-paths.txt ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%$'\r'}"
+    # Trimming whitespace also drops the CR of a CRLF line ending.
     line="${line#"${line%%[![:space:]]*}"}"
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" || "$line" == '#'* ]] && continue

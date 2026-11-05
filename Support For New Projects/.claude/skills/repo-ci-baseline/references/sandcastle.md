@@ -10,9 +10,10 @@ The pipeline's per-repo values sit in one Seed file, `lib/repo-config.mts`, so t
 ## What it guarantees
 
 - Every Sandcastle repo type-checks with the same `tsconfig.json`, lints its prompts with the same rules, ignores the same run output, and documents the same `.env` settings.
-- The pipeline's code (`main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`), the intake and critique prompts, and the host-safety
-  guardrails (`lib/host-safety.mts`, `lib/shell.mts`) are identical everywhere.
-- A new repo starts from the same role prompts, Dockerfile, check and `package.json` scripts (`sandcastle`, `sandcastle:status` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`).
+- The pipeline's code (`main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`), the intake and critique prompts, the host-safety
+  guardrails (`lib/host-safety.mts`, `lib/shell.mts`) and the local gate's Sandcastle check (`check.sh`) are identical everywhere.
+- A new repo starts from the same role prompts, Dockerfile and `package.json` scripts (`sandcastle`, `sandcastle:status` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`);
+  only its `check-paths.txt` is the repo's own.
 
 ## Owned files
 
@@ -54,7 +55,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.sandcastle/plan-prompt.md`, `.sandcastle/review-prompt.md` | The optional roles' rules and the docs the review follows |
 | `.sandcastle/CODING_STANDARDS.md` | The repo's code and test standards, which every role and the review follow |
 | `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`), optional Chromium libraries for Playwright (`INSTALL_PLAYWRIGHT_DEPS`, `PLAYWRIGHT_VERSION`), and `tini` as PID 1 (`ENTRYPOINT ["tini", "--", "sleep", "infinity"]`) |
-| `.sandcastle/check-paths.txt` | The extra paths the Owned `check.sh` watches, one file or folder per line (blank lines and `#` lines are ignored): the files and folders the repo's own `.sandcastle/` tests read. Empty in the Seed. The Seed `.github/ci/gate-checks.sh` runs `check.sh` when it's there |
+| `.sandcastle/check-paths.txt` | The extra paths the Owned `check.sh` watches, one literal file or folder path per line, relative to the repo root (blank lines and `#` lines are ignored): the files and folders the repo's own `.sandcastle/` tests read. Globs are not expanded and pathspec magic is not read, so list the folder that holds the files rather than `e2e/**/*.ts`. Empty in the Seed. `check.sh` is Owned, so it is always there, and the Seed `.github/ci/gate-checks.sh` runs it when it's executable |
 | `package.json`, `pnpm-workspace.yaml` | Sandcastle's packages and scripts; a repo with its own Node tooling merges them |
 | `.github/ci/sandcastle-skills.txt` | The skills the Sandcastle workflow installs on the runner for the run (a pinned dotfiles commit and skill names, read as data); empty until filled ([The workflow](#the-workflow)) |
 | `.sandcastle/lib/repo-config.mts` | `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` for the local review ([pre-push-review.md](pre-push-review.md)), `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), how long the host lets that gate run before it kills it (`GATE_LIMIT_MINUTES`, 10 in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
@@ -347,7 +348,9 @@ go one per line in the Seed `.sandcastle/check-paths.txt` (empty in the Seed). B
 
 - IssueManager, IssueTracker and TicketManager use the name `.sandcastle/check.sh` for a different script, the sandbox's Docker-free gate. Rename it (for example `.sandcastle/sandbox-gate.sh`)
   and repoint `GATE_COMMAND` and `GATE_SCRIPT` in `lib/repo-config.mts` at the new name before you Apply, or Apply would replace it with the Owned `check.sh`.
-- Blazor-Server and auth0-management-app edited only the watched-path list of their `check.sh` (their own tests' inputs). Move those paths into `.sandcastle/check-paths.txt`, one per line;
+- Blazor-Server and auth0-management-app edited only the watched-path list of their `check.sh` (their own tests' inputs).
+  Move those paths into `.sandcastle/check-paths.txt`, one literal file or folder per line
+  (globs are not expanded and pathspec magic is not read, so replace a glob such as `e2e/**` with the folder `e2e`);
   Apply then replaces `check.sh`, which also gives Blazor-Server the `unset GIT_*` line and the `hardening-review` path it lacked.
 
 Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES

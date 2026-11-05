@@ -621,12 +621,26 @@ describe("openPullRequest", () => {
     const cleanBody = `${MARKER}\nCloses #4\n\nWhy it was built.`;
     const accepted = `${hostBody}\n\n<!-- review-notes -->\n## Review notes\n\n- R3 accepted: the owner decided it.\n<!-- /review-notes -->`;
 
-    it("puts the new body, without the note, on a draft the host wrote", () => {
-      const { calls, run } = gh(existing(true, `${cleanBody}\n\n${NOTE}`));
+    it("puts the new body, without the note, on a draft the host wrote, replacing the host's old text", () => {
+      const { calls, run } = gh(existing(true, `${MARKER}\nCloses #4\n\nAn OLD description.\n\n${NOTE}`));
 
       openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
       assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
       assert.equal(calls[2]!.input, cleanBody);
+    });
+
+    it("takes only the note out of a body written by hand, with no marker and no Review notes", () => {
+      const { calls, run } = gh(existing(true, `Written by hand.\n\nCloses #4\n\n${NOTE}`));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE);
+      assert.equal(calls.find((call) => call.args[1] === "edit")?.input, "Written by hand.\n\nCloses #4");
+    });
+
+    it("does nothing for a note that is only whitespace", () => {
+      const { calls, run } = gh(existing(true, `${cleanBody}\n\n  `));
+
+      openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, "  ");
+      assert.equal(calls.length, 1);
     });
 
     it("takes only the note out of a body a person wrote in", () => {
@@ -664,16 +678,31 @@ describe("openPullRequest", () => {
       assert.equal(calls.length, 1);
     });
 
-    it("throws on an answer without a text body, and edits nothing", () => {
-      const calls: string[] = [];
-      const run = ((_cmd: string, args: readonly string[]) => {
-        calls.push(String(args[1]));
-        return args[1] === "list" ? JSON.stringify(existing(true)) : "{}";
-      }) as unknown as typeof execFileSync;
+    // The PR is pushed and a draft by now, and the note is a convenience: a failure to remove it must not turn a published build into a failed one.
+    for (const [name, failing, expected] of [
+      ["an answer without a text body", "view", ["view"]],
+      ["a body that can't be read", "viewError", ["view"]],
+      ["an edit that fails", "edit", ["view", "edit"]],
+    ] as const) {
+      it(`logs and returns the PR's address on ${name}, without throwing`, (t) => {
+        const logged: string[] = [];
+        t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+        const calls: string[] = [];
+        const run = ((_cmd: string, args: readonly string[]) => {
+          calls.push(String(args[1]));
+          if (args[1] === "list") return JSON.stringify(existing(true));
+          if (args[1] === "view") {
+            if (failing === "viewError") throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+            return failing === "view" ? "{}" : JSON.stringify({ body: `${cleanBody}\n\n${NOTE}` });
+          }
+          throw Object.assign(new Error("Command failed"), { stderr: "gh: HTTP 422" });
+        }) as unknown as typeof execFileSync;
 
-      assert.throws(() => openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE), /body/);
-      assert.deepEqual(calls.slice(1), ["view"]);
-    });
+        assert.equal(openPullRequest(branch, "Add search", cleanBody, run, "o/r", false, NOTE), "https://github.com/o/r/pull/3");
+        assert.deepEqual(calls.slice(1), expected);
+        assert.ok(logged.some((line) => /draft note/.test(line)), logged.join("\n"));
+      });
+    }
   });
 
   it("leaves an existing PR alone when the review doesn't hold it", () => {

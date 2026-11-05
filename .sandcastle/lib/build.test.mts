@@ -2864,6 +2864,23 @@ describe("openHeldPullRequest", () => {
     assert.equal(calls[3]!.input, `${body}\n\n${DRAFT_NOTE}`);
   });
 
+  // The clean rerun's note removal depends on the wrapper passing DRAFT_NOTE when the PR is not held: were it to stop, the note would stay on a draft for good.
+  it("passes the draft note on a rerun that no longer holds the PR, so the note is taken out of a draft that has it", () => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body: `Closes #4\n\n${DRAFT_NOTE}` });
+      return args[1] === "list"
+        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft: true, url: "https://github.com/o/r/pull/3" }])
+        : "";
+    }) as unknown as typeof execFileSync;
+
+    openHeldPullRequest(branch, "Add search", "new body", false, run, "o/r");
+
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
+    assert.ok(!String(calls[2]!.input).includes(DRAFT_NOTE), String(calls[2]!.input));
+  });
+
   it("opens a new PR as a draft with the body it was given", () => {
     const calls: { args: readonly string[]; input: unknown }[] = [];
     const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
@@ -5208,6 +5225,35 @@ describe("buildIssue when the open PR can't be held as a draft", () => {
   });
 });
 
+// A review that didn't finish holds the PR too, with no finding to fix or accept: the comments say to run the review again.
+describe("buildIssue when a review that didn't finish held the PR and publishing failed", () => {
+  const unfinished = { localReview: async (args: { startHead: string }) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) as const };
+
+  it("says the review didn't finish and to run it again when the PR can't be made a draft", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishHoldFailed: true, ...unfinished });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.match(comments[0] ?? "", /the review didn't finish/);
+    assert.doesNotMatch(comments[0] ?? "", /left findings open/);
+  });
+
+  it("says the review didn't finish and to run it again, not to accept findings, when publishing fails after the hold", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishError: "git push --quiet origin abc:refs/heads/x failed:\n ! [rejected] abc -> x (non-fast-forward)", ...unfinished });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.match(comments[0] ?? "", /the review didn't finish and the pull request was held as a draft/);
+    assert.match(comments[0] ?? "", /until the review has been run again and nothing is open/);
+    assert.doesNotMatch(comments[0] ?? "", /fixed or accepted|left findings open/);
+  });
+});
+
 // A push or a PR create that fails after the hold leaves a draft: the comment must say so, not send a person to open a second PR.
 describe("buildIssue when publishing fails after the PR was held as a draft", () => {
   const reviewed = "c".repeat(40);
@@ -5249,10 +5295,18 @@ describe("buildIssue when publishing fails after the PR was held as a draft", ()
 // publish's live defaults, run against a fake `gh` that is the only program on PATH, so a test can never reach the real gh and its login: the hold must reach gh
 // before the push, and a created PR must carry --draft and DRAFT_NOTE.
 describe("publish's default hold and PR creation", { skip: process.platform === "win32" }, () => {
-  const withFakeGh = async (listed: string, body: (log: () => string[], created: () => string) => Promise<void>, repoAnswer = "o/r") => {
+  const withFakeGh = async (
+    listed: string,
+    body: (log: () => string[], created: () => string, edited: () => string) => Promise<void>,
+    repoAnswer = "o/r",
+    viewBody = "",
+  ) => {
     const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
     const logFile = join(dir, "calls.log");
     const createdFile = join(dir, "created-body.txt");
+    const editedFile = join(dir, "edited-body.txt");
+    const viewFile = join(dir, "view.json");
+    writeFileSync(viewFile, JSON.stringify({ body: viewBody }));
     // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers `repo view`, `pr list`, `pr view` and `pr create` (keeping its body), and reads and drops the input of anything else, such as the hold's `pr ready`.
     writeFileSync(
       join(dir, "gh"),
@@ -5262,7 +5316,8 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
         'case "$1 $2" in',
         `  "repo view") echo ${repoAnswer} ;;`,
         `  "pr list") echo '${listed}' ;;`,
-        `  "pr view") echo '{"body":""}' ;;`,
+        `  "pr view") read -r answer < "${viewFile}"; printf '%s\\n' "$answer" ;;`,
+        `  "pr edit") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${editedFile}"; done ;;`,
         `  "pr create") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${createdFile}"; done; echo https://github.com/o/r/pull/9 ;;`,
         "  *) while IFS= read -r line || [ -n \"$line\" ]; do :; done ;;",
         "esac",
@@ -5281,6 +5336,7 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
       await body(
         () => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean) : []),
         () => (existsSync(createdFile) ? readFileSync(createdFile, "utf8") : ""),
+        () => (existsSync(editedFile) ? readFileSync(editedFile, "utf8") : ""),
       );
     } finally {
       if (saved === undefined) delete process.env.PATH;
@@ -5325,6 +5381,23 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
       assert.equal(atPush.length, 1);
       assert.ok(atPush[0]!.some((line) => line.startsWith("pr ready 4") && line.includes("--undo")), `at the push: ${atPush[0]!.join(" | ")}`);
     });
+  });
+
+  it("takes the draft note out of an existing draft on a rerun that no longer holds it, and does not convert it", async () => {
+    await withFakeGh(
+      open(true),
+      async (calls, _created, edited) => {
+        await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "", false);
+
+        assert.ok(calls().some((line) => line.startsWith("pr view 4")), calls().join("\n"));
+        assert.ok(calls().some((line) => line.startsWith("pr edit 4")), calls().join("\n"));
+        assert.ok(!calls().some((line) => line.startsWith("pr ready")), calls().join("\n"));
+        assert.ok(!edited().includes(DRAFT_NOTE), edited());
+        assert.match(edited(), /Why it was built/);
+      },
+      "o/r",
+      `Why it was built.\n\n${DRAFT_NOTE}`,
+    );
   });
 
   it("creates a new PR as a draft with the draft note in its body when nothing is open", async () => {

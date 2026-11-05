@@ -289,6 +289,10 @@ export function ghWithStderr(run: typeof execFileSync, args: string[], input?: s
 // replacing the body would silently delete them. So the body is replaced by `body` only when it still carries PR_MARKER (the host wrote it) and
 // nothing in it reads as Review notes, in any form a reader sees; otherwise it is kept as it is, with `heldNote` (why the PR is a draft) added when it
 // isn't there yet. A body edited by hand in some other way, with the marker left in, is rewritten on a rerun that holds the PR.
+//
+// Without `draft`, a PR that is already a draft and whose body holds `heldNote` (an earlier held build's) has the note taken out: the host's own body is replaced by
+// `body`, a person's body loses only the note, and the draft state is never changed, as marking it ready is a person's. That edit is best effort: the PR is already pushed
+// and a draft, so a failure is passed to `warn` and the PR's address is still returned.
 export function openPullRequest(
   branch: string,
   title: string,
@@ -297,6 +301,7 @@ export function openPullRequest(
   repo: string = repoName(),
   draft: boolean = false,
   heldNote: string = "",
+  warn: (message: string) => void = console.error,
 ): string {
   const listed = JSON.parse(
     ghWithStderr(run, [
@@ -311,11 +316,16 @@ export function openPullRequest(
       // between. Only a change in the one call between this read and the edit is left, and the edit keeps whatever the read held.
       const next = bodyForHeldPullRequest(currentBody(run, repo, existing.number), body, heldNote);
       if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
-    } else if (existing.isDraft === true && heldNote !== "") {
+    } else if (existing.isDraft === true && heldNote.trim() !== "") {
       // A rerun the review no longer holds leaves a draft from an earlier held build as it is (marking it ready is a person's), but its body still gives
-      // the reason it was held, which is no longer true: the note is taken out.
-      const next = bodyWithoutHeldNote(currentBody(run, repo, existing.number), body, heldNote);
-      if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
+      // the reason it was held, which is no longer true: the note is taken out. That is a convenience on a PR that is already pushed and a draft, so a failure
+      // is logged (its first line only, which holds no command line) and the PR's address is still returned: the build is not a failed one for it.
+      try {
+        const next = bodyWithoutHeldNote(currentBody(run, repo, existing.number), body, heldNote);
+        if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
+      } catch (error) {
+        warn(`  ⚠ couldn't take the draft note out of pull request ${existing.number}'s body: ${String((error as Error)?.message ?? error).split("\n")[0]}`);
+      }
     }
     return existing.url;
   }
@@ -339,7 +349,7 @@ function currentBody(run: typeof execFileSync, repo: string, number: number): st
 function bodyWithoutHeldNote(current: string, next: string, heldNote: string): string | undefined {
   const lines = (text: string) => text.replace(/\r\n?/g, "\n");
   const note = lines(heldNote).trim();
-  if (note === "" || !lines(current).includes(note)) return undefined;
+  if (!lines(current).includes(note)) return undefined;
   const hostWrote = current.includes(PR_MARKER) && !visibleLetters(current).includes("reviewnotes");
   return hostWrote ? next : lines(current).replace(note, "").trimEnd();
 }

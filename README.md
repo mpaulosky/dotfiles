@@ -259,8 +259,8 @@ pnpm exec tsx .sandcastle/main.mts
 
 Label the issues you want worked `Sandcastle`. Each round prints the issues it holds back, the branches it works
 and the pull requests it opens, and stops when a round opens no pull request. A red gate gets a comment on the
-issue and no pull request. A failed review still opens one, flagged as unreviewed in its body, if the second
-gate passes. Sandcastle doesn't label anything `sandcastle:needs-human`: add it to hand a pull request to a
+issue and no pull request. A failed review still opens one, as a draft with a note saying the review didn't finish, if the second
+gate passes; a person marks it ready after running the review again. Sandcastle doesn't label anything `sandcastle:needs-human`: add it to hand a pull request to a
 person, and it won't auto-merge until the owner removes it.
 
 Finally, mention `.sandcastle/` and the `check:sandcastle` command in the repo's `README.md` and `CLAUDE.md`.

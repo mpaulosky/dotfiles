@@ -358,7 +358,7 @@ export type HostReviewHost = {
 
 // The most a round's diff, or the fixes a later round reads, may hold, in bytes. The host sends each to the sandbox through one command with a time limit, and each reviewer reads
 // it: a generated file or a lockfile past this would stall that command, and the build with it, on every run. A larger diff ends the review as
-// failed, which publishes the branch with a note.
+// failed, which publishes the branch as a draft, with a note.
 export const MAX_REVIEW_PATCH_BYTES = 4 * 1024 * 1024;
 
 // How a review ends: recorded, or failed (with the last commit the gate passed on, which is published).
@@ -410,7 +410,7 @@ export async function runHostReview(
     }
     if (error instanceof UncountedStopError) throw error;
     // Any host step (reading the skill files, the sandbox, git) that throws ends the review as failed, so the finished and gated work
-    // is still published with a note. The reason is host-written: the error's own text may hold an agent's words.
+    // is still published, as a draft with a note. The reason is host-written: the error's own text may hold an agent's words.
     host.log(`  ✗ the local review failed: a host step threw: ${errorText(error)}`);
     return { status: "failed", head: progress.head, reason: "a step of the review on the host failed" };
   }

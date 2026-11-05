@@ -88,8 +88,8 @@ export { UncountedStopError };
 // other failure, such as a push that doesn't fast-forward, isn't retried: a
 // person needs to look at it regardless.
 //
-// `reviewNote` is the host-side review's note for the PR body, and `holdAsDraft` is true while a blocking finding is open: the PR is then created as a
-// draft with DRAFT_NOTE in its body. `holdExisting` is what first turns a PR already open for the branch into a draft: it runs before the push, and a
+// `reviewNote` is the host-side review's note for the PR body, and `holdAsDraft` is true while a blocking finding is open, or when the review didn't finish: the PR is then created as a
+// draft with DRAFT_NOTE in its body. When it is false, a rerun leaves an existing draft a draft but takes DRAFT_NOTE out of its body (openPullRequest). `holdExisting` is what first turns a PR already open for the branch into a draft: it runs before the push, and a
 // failure throws HoldFailedError with nothing pushed.
 //
 // `docsFailed` is true when the planner picked the scribe for this issue and
@@ -196,7 +196,7 @@ export function openHeldPullRequest(
   return openPullRequest(branch, title, body, run, repo, draft, DRAFT_NOTE);
 }
 
-// The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left. It names the two steps only a person takes.
+// The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left, or a review that didn't finish. It names the two steps only a person takes.
 export const DRAFT_NOTE =
   "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding: " +
   "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. Once nothing is open, mark the PR ready with `gh pr ready`.";
@@ -1550,9 +1550,11 @@ async function buildMarkedIssue(
 
     // The pre-push review's rounds, on the host (lib/host-review.mts), on the commit checkpoint 2 passed on. A round that fixes
     // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage-limit stop
-    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note.
+    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note, as a draft.
     let reviewNote = "";
     let holdAsDraft = false;
+    // True when the hold is because the review didn't finish, not because it left findings: the hand-back comments then say to run it again.
+    let reviewUnfinished = false;
     let advisories = "";
     const review = await host.localReview({
       sandbox,
@@ -1571,6 +1573,7 @@ async function buildMarkedIssue(
       reviewNote = `⚠️ The local review didn't finish (${review.reason}), so this branch has no recorded review.`;
       // It has not cleared the code, and PR Auto-Merge only merges ready PRs: the PR is held, and a person marks it ready after looking.
       holdAsDraft = true;
+      reviewUnfinished = true;
     } else {
       gated = review.head;
       // A line the host's public-text check would change, or that reads like a Review notes section, is left out on its own.
@@ -1745,7 +1748,7 @@ async function buildMarkedIssue(
       if (error instanceof HoldFailedError) {
         host.commentOnIssue(
           issue.number,
-          `Sandcastle couldn't publish \`${branch}\`: the review left findings open, so its open pull request has to be a draft, and turning it into one ` +
+          `Sandcastle couldn't publish \`${branch}\`: ${reviewUnfinished ? "the review didn't finish" : "the review left findings open"}, so its open pull request has to be a draft, and turning it into one ` +
             "failed. Nothing was pushed, and that pull request may still be ready. A person needs to look at it: make it a draft " +
             `with \`gh pr ready ${branch} --undo\` before pushing anything to \`${branch}\`, so PR Auto-Merge can't merge it.\n\n${fence}text\n${detail}\n${fence}`,
         );
@@ -1762,9 +1765,9 @@ async function buildMarkedIssue(
         host.commentOnIssue(
           issue.number,
           `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening or updating its pull request failed after the ` +
-            "review left findings open and the pull request was held as a draft. The branch keeps its commits. A person needs to look at it. A pull " +
+            `${reviewUnfinished ? "review didn't finish" : "review left findings open"} and the pull request was held as a draft. The branch keeps its commits. A person needs to look at it. A pull ` +
             `request from it may already be open as a draft, without the note saying why: find it with \`gh pr list --head ${branch}\` before opening ` +
-            `one, and do not mark it ready until each open finding is fixed or accepted (\`scripts/review.sh accept <id> <reason>\`). If origin's ` +
+            `one, and do not mark it ready until ${reviewUnfinished ? "the review has been run again and nothing is open" : "each open finding is fixed or accepted (`scripts/review.sh accept <id> <reason>`)"}. If origin's ` +
             `\`${branch}\` isn't at \`${gated}\`, the commit the gate passed, it still has to be pushed from its worktree, and if origin's branch has ` +
             `commits the local one doesn't, the two need reconciling.\n\n${fence}text\n${detail}\n${fence}`,
         );

@@ -35,6 +35,7 @@ import {
   markerCommentsSince,
   openIssuesWithComment,
   fileIssueOnce,
+  forgetRepoName,
   holdExistingPullRequest,
   openPullRequest,
   openPullRequests,
@@ -614,11 +615,32 @@ describe("holdExistingPullRequest", () => {
     ]);
   });
 
-  it("leaves a draft, a fork's PR and a PR from another branch alone", () => {
-    const { calls, run } = gh([pr({ isDraft: true }), pr({ number: 5, isCrossRepository: true }), pr({ number: 6, headRefName: "other" })]);
+  // Each exclusion is tried alone and with a ready same-repo PR listed after it, so a missing filter lets the wrong PR through or hides the right one.
+  it("leaves a draft alone", () => {
+    const { calls, run } = gh([pr({ isDraft: true })]);
 
     holdExistingPullRequest(branch, run, "o/r");
     assert.equal(calls.length, 1);
+  });
+
+  it("leaves a fork's PR alone, and holds the same-repository PR listed after it", () => {
+    const fork = gh([pr({ number: 5, isCrossRepository: true })]);
+    holdExistingPullRequest(branch, fork.run, "o/r");
+    assert.equal(fork.calls.length, 1);
+
+    const both = gh([pr({ number: 5, isCrossRepository: true }), pr({ number: 3 })]);
+    holdExistingPullRequest(branch, both.run, "o/r");
+    assert.deepEqual(both.calls[1]?.args, ["pr", "ready", "3", "--repo", "o/r", "--undo"]);
+  });
+
+  it("leaves a PR from another branch alone, and holds the PR for this branch listed after it", () => {
+    const other = gh([pr({ number: 6, headRefName: "other" })]);
+    holdExistingPullRequest(branch, other.run, "o/r");
+    assert.equal(other.calls.length, 1);
+
+    const both = gh([pr({ number: 6, headRefName: "other" }), pr({ number: 3 })]);
+    holdExistingPullRequest(branch, both.run, "o/r");
+    assert.deepEqual(both.calls[1]?.args, ["pr", "ready", "3", "--repo", "o/r", "--undo"]);
   });
 
   it("does nothing when the branch has no PR", () => {

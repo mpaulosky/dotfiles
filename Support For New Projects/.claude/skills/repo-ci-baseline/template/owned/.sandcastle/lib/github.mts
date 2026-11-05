@@ -22,6 +22,12 @@ export function repoName(): string {
   return repo;
 }
 
+// Forgets the name repoName cached, so the next call reads it again. A test that puts a fake gh on PATH calls it when it is done: the fake's answer
+// would otherwise stay cached for every later test in the process.
+export function forgetRepoName(): void {
+  repo = undefined;
+}
+
 // One read of the name, with gh's stderr captured: a failure reaches the terminal only through the thrown message, where a caller
 // can print it as plain text, never written by gh itself. Takes the runner, for a test.
 export function readRepoName(run: typeof execFileSync = hostExecFileSync): string {

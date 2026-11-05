@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { worktreePathFor } from "./host-safety.mts";
 import { hostExecFileSync } from "./host-limit.mts";
+import { forgetRepoName, repoName } from "./github.mts";
 import { join } from "node:path";
 import {
   buildIssue,
@@ -5148,7 +5149,7 @@ describe("buildIssue when the open PR can't be held as a draft", () => {
 // publish's live defaults, run against a fake `gh` that is the only program on PATH, so a test can never reach the real gh and its login: the hold must reach gh
 // before the push, and a created PR must carry --draft and DRAFT_NOTE.
 describe("publish's default hold and PR creation", { skip: process.platform === "win32" }, () => {
-  const withFakeGh = async (listed: string, body: (log: () => string[], created: () => string) => Promise<void>) => {
+  const withFakeGh = async (listed: string, body: (log: () => string[], created: () => string) => Promise<void>, repoAnswer = "o/r") => {
     const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
     const logFile = join(dir, "calls.log");
     const createdFile = join(dir, "created-body.txt");
@@ -5159,7 +5160,7 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
         "#!/bin/sh",
         `printf '%s\\n' "$*" >> "${logFile}"`,
         'case "$1 $2" in',
-        "  \"repo view\") echo o/r ;;",
+        `  "repo view") echo ${repoAnswer} ;;`,
         `  "pr list") echo '${listed}' ;;`,
         `  "pr create") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${createdFile}"; done; echo https://github.com/o/r/pull/9 ;;`,
         "  *) while IFS= read -r line || [ -n \"$line\" ]; do :; done ;;",
@@ -5172,7 +5173,7 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
     process.env.PATH = dir;
     try {
       // The fake must be what runs: were it unrunnable the real gh, with the developer's login, would not be reachable either (PATH holds nothing else).
-      assert.equal(String(hostExecFileSync("gh", ["repo", "view"], { encoding: "utf8" })).trim(), "o/r");
+      assert.equal(String(hostExecFileSync("gh", ["repo", "view"], { encoding: "utf8" })).trim(), repoAnswer);
       rmSync(logFile);
       await body(
         () => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean) : []),
@@ -5181,11 +5182,18 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
     } finally {
       if (saved === undefined) delete process.env.PATH;
       else process.env.PATH = saved;
+      // The fake's repository name must not stay cached for the tests that follow.
+      forgetRepoName();
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   };
   const open = (isDraft: boolean) =>
     JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4", body: "" }]);
+
+  it("forgets the repository name the fake gh gave, so a later use reads its own", async () => {
+    await withFakeGh("[]", async () => assert.equal(repoName(), "o/r"));
+    await withFakeGh("[]", async () => assert.equal(repoName(), "p/q"), "p/q");
+  });
 
   it("turns the ready PR for the branch into a draft before the push, not only in the later create hop", async () => {
     await withFakeGh(open(false), async (calls) => {

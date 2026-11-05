@@ -2544,6 +2544,16 @@ describe("advisoryIssueBody", () => {
     assert.match(body, /1 more open Advisory finding is in the local review record/);
   });
 
+  it("says how many findings are left out, in the plural for two or more", () => {
+    const body = advisoryIssueBody(
+      ledgerOf([advisory(), advisory({ id: "R6", path: "docs/other.md" }), advisory({ id: "R7", path: "docs/another.md" })]),
+      DOCS,
+    );
+
+    assert.match(body, /R5/);
+    assert.match(body, /2 more open Advisory findings are in the local review record and aren't listed here\./);
+  });
+
   it("leaves out a finding whose path is not made of plain file-name characters", () => {
     const odd = "docs/[x](http://e.example).md";
     const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", path: odd })]), new Set(["docs/a.md", odd]));

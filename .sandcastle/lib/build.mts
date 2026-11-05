@@ -1584,10 +1584,14 @@ async function buildMarkedIssue(
         review.readPaths,
         (line) => host.publicError(line) === line && !visibleLetters(line).includes("reviewnotes"),
       );
-      // An empty body is also what a review with no open Advisory finding gives, so say when findings were open and none could be listed (hidden text in
-      // the branch name or in every finding): nothing else tells a person the follow-up issue was dropped.
+      // An empty body is also what a review with no open Advisory finding gives, so say when findings were open and none could be listed: the branch name
+      // or every finding holds hidden text, a link or a secret, or is too long, or its path is one the review didn't read. Nothing else tells a person the
+      // follow-up issue was dropped.
       if (advisories === "" && renderAdvisories(review.ledger) !== "") {
-        log("the local review's Advisory findings can't be listed (hidden text in the branch name or in every finding), so no follow-up issue is filed for them");
+        log(
+          "the local review's Advisory findings can't be listed (the branch name or every finding holds hidden text, a link or a secret, is too long, " +
+            "or names a path the review didn't read), so no follow-up issue is filed for them",
+        );
       }
       if (advisories !== "" && host.publicError(advisories) !== advisories.trim()) {
         log("the local review's Advisory findings hold text that isn't safe to publish, so no follow-up issue is filed for them");

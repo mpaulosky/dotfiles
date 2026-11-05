@@ -5287,6 +5287,8 @@ describe("buildIssue when publishing fails after the PR was held as a draft", ()
     assert.match(comments[0] ?? "", /held as a draft/);
     assert.match(comments[0] ?? "", /gh pr list --head feature\/69-run-the-gate/);
     assert.match(comments[0] ?? "", /scripts\/review\.sh accept/);
+    // The ledger stayed on the runner: accept needs a ledger from a local /pre-push-review first.
+    assert.match(comments[0] ?? "", /ledger is on the runner: run `\/pre-push-review` on the branch first, then `scripts\/review\.sh accept <id> <reason>`/);
     assert.doesNotMatch(comments[0] ?? "", /open one by hand/);
     assert.match(comments[0] ?? "", /non-fast-forward/);
   });

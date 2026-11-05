@@ -45,6 +45,7 @@ import {
   BUILD_FAILED_MARKER,
   BUILD_ROLES,
   DESIGN_MARKER,
+  FIXED_ROLE_AGENTS,
   GATE_FIXER_ATTEMPTS,
   MAX_GATE_RUNS,
   PR_MARKER,
@@ -52,7 +53,6 @@ import {
   type OptionalRole,
 } from "./config.mts";
 import { LEAD_TOOLS, LEDGER_DENIED_TOOLS } from "./agents.mts";
-import { FIXED_ROLE_AGENTS } from "./config.mts";
 import { SANDBOX_PROBE } from "./diagnostics.mts";
 import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";

@@ -307,8 +307,9 @@ export const REVIEWER_ATTEMPTS = 2;
 // this, plus the step it was in when it ran out (a reviewer, or a fixer with its gate), and BUILDING_LABEL_MAX_AGE_MS is sized from that.
 export const REVIEW_WALL_CLOCK_MINUTES = 180;
 
-// The most reviewers a round runs (the Bar and the lenses that apply). A round's reviewers run one after another, so the time a build can take
-// grows with this number, and a repository whose own lenses push a round past it fails the review. REVIEW_WALL_CLOCK_MINUTES caps the whole review.
+// The most reviewers a round runs (the Bar and the lenses that apply). In the "sequential" reviewer mode a round's reviewers run one after another, so the time
+// a build can take grows with this number; in the "subagents" mode they are one wave, so it must stay within MAX_CONCURRENT_SUBAGENTS. A repository whose
+// own lenses push a round past it fails the review. REVIEW_WALL_CLOCK_MINUTES caps the whole review.
 export const MAX_REVIEWERS_PER_ROUND = 14;
 
 // Marks an issue, or a hand-off pull request (lib/building.mts), while a

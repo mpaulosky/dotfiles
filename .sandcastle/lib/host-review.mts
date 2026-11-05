@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 import { isRoleTimeout } from "./agents.mts";
-import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, REVIEWER_ATTEMPTS } from "./config.mts";
+import { MAX_REVIEWERS_PER_ROUND, REVIEW_FIX_ROUNDS, REVIEW_WALL_CLOCK_MINUTES, REVIEWER_ATTEMPTS, SESSION_REPLY_MARKER } from "./config.mts";
 import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 import { decisionsMarkdown, reviewerPrompt, reviewFixPrompt } from "./host-review-prompts.mts";
 import { plainText } from "./plain-text.mts";
@@ -696,7 +696,6 @@ export function openFindingsNote(ledger: Ledger, readPaths: ReadonlySet<string>,
 // The most findings the follow-up issue lists, and the longest line it keeps. The issue is public, so a reviewer's text is bounded.
 const ADVISORY_ISSUE_FINDINGS = 20;
 const ADVISORY_LINE_LIMIT = 2000;
-const ADVISORY_MARKER = "<!-- claude-session -->";
 
 // What GitHub renders as a link or an image, or fetches: an address with a scheme (`://`, `mailto:`), a www. address (GitHub links one anywhere after a space or
 // an underscore too, in a path as well as in prose), an inline, reference or image link (`](`, `][`, `![`), and a link reference definition (`]:`). A finding whose
@@ -709,8 +708,9 @@ const RENDERED_LINK = /:\/\/|mailto:|www\.|\]\(|\]\[|!\[|\]:/i;
 // (the host's public-text check: a reviewer that read untrusted text can quote a secret in a summary or fix). Hidden text is held to ADR 0010's rule
 // (status.mts#hasHiddenText: what terminalText would drop). It is asked of the branch the header quotes together with the fields (id, path, summary,
 // fix) of the findings listed so far and the next one, never of the rendered line, whose zero-width spaces the host adds itself after an @, a # or "github.com".
-// So a branch that holds hidden text leaves every finding out (and the body empty), and the issue as a whole keeps no more joiners, private-use code points or
-// stacked marks than one text does (eight): a finding that would pass that is left out. `publishable` sees the finding's own line, never the header with the branch name.
+// So a branch that holds hidden text leaves every finding out (and the body empty), and the issue as a whole keeps no more joiners or private-use or unassigned
+// code points than one text does (eight in all), and no run of more than eight marks: a finding that would exceed that is left out. A next-line character (U+0085) is left
+// out too, since terminalText reads it as a space but plainText, which writes the issue, does not. `publishable` sees the finding's own line, never the header with the branch name.
 // At most ADVISORY_ISSUE_FINDINGS are listed; the findings left out are counted, and stay in the local review record. Empty when nothing can be listed.
 export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>, publishable: (text: string) => boolean = () => true): string {
   const rendered = ledger.findings
@@ -724,7 +724,10 @@ export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>
     const line = text.split("\n").find((candidate) => candidate.startsWith("- ")) ?? "";
     const together = `${shown} ${finding.id} ${finding.path} ${finding.summary} ${finding.fix ?? ""}`;
     if (!readPaths.has(path) || !SAFE_NOTE_PATH.test(path) || line.length > ADVISORY_LINE_LIMIT || RENDERED_LINK.test(line)) continue;
-    if (hasHiddenText(together) || !publishable(line)) continue;
+    // U+0085 is whitespace to terminalText but not to plainText, which would publish it raw. The secret check sees each field as the reviewer wrote it as well as the
+    // rendered line: plainText escapes & < \ ` and breaks @ and #, so a secret holding one of them no longer matches there.
+    if (hasHiddenText(together) || together.includes("\u0085") || !publishable(line)) continue;
+    if (![finding.path, finding.summary, finding.fix ?? ""].every((field) => publishable(field.trim()))) continue;
     listed.push(finding);
     shown = together;
   }
@@ -733,5 +736,5 @@ export function advisoryIssueBody(ledger: Ledger, readPaths: ReadonlySet<string>
   const left = rendered.length - listed.length;
   if (left === 0) return body;
   const note = `${left} more open Advisory finding${left === 1 ? " is" : "s are"} in the local review record and ${left === 1 ? "isn't" : "aren't"} listed here.`;
-  return body.replace(`\n${ADVISORY_MARKER}`, `\n${note}\n\n${ADVISORY_MARKER}`);
+  return body.replace(`\n${SESSION_REPLY_MARKER}`, `\n${note}\n\n${SESSION_REPLY_MARKER}`);
 }

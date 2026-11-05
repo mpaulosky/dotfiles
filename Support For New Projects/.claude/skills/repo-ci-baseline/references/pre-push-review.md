@@ -187,7 +187,8 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   `sandcastle:pr` marker and reads no `## Review notes`; otherwise the body (a person's acceptances, or text written by hand) is kept and the draft note added to it, unless that would pass
   GitHub's 65,536-character limit: then the body is left as it is and the PR is a draft with no note. A body edited by hand with the marker left in is rewritten. A held PR is a draft, so
   Sandcastle's follow-up sweep and `sandcastle:status` skip it until a person marks it ready: a failing check or review feedback on it needs a person.
-- The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the generic one.
+- The PR's `## Review notes` hold only a person's acceptances, as in a local review: the host writes no such section, and an agent-written PR body that carries the words is replaced by the
+  generic one.
 - The review's open Advisory findings go in one follow-up issue titled `chore(review): Advisory review findings: <branch>`, whose body is `renderAdvisories`' list (a security finding is left out,
   the issue being public). The host differs from the skill's step 9: it files the issue only after the secret scan passes and the branch is published, shows no person the text first, and doesn't
   leave out a re-raised finding. It lists a finding only when its path is a file the review read and is plain file-name characters, and its line (summary and fix too) holds nothing GitHub renders
@@ -196,14 +197,14 @@ A branch Sandcastle builds gets this review's rounds after the reviewer role and
   logged. It reuses only an open issue of its own (`--author` with the host's login) with that exact title. It does not match finding by finding as step 9 does: it comments the whole current list
   unless the body or one of the host's own comments already holds exactly that text (anyone can comment on a public issue, so another author's comment never counts), so findings the issue already
   lists can appear again beside a new one; a body a person edited is never replaced. A later review with no Advisory findings files nothing, so the earlier issue keeps findings that may be fixed
-  by now: a person closes it. It files none for a review that didn't finish, and a failed filing is retried after a GitHub server error and then only logged: the PR still publishes. A finding
-  holds text a reader can't see (`hasHiddenText` in `status.mts`, the rule of ADR 0010: `terminalText` would drop or cap something from it, other than whitespace and spacing) is
-  left out like one with a link.
-  So are a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800, Hangul), a joiner
-  that does no work (outside emoji or the joining scripts), and more than eight joiners, private-use or unassigned characters or stacked marks across the issue's text. It is tested
-  on the id, path, summary and fix of each finding,
-  and on the branch. When open Advisory findings
-  exist and none can be listed, the build logs that no follow-up issue is filed.
+  by now: a person closes it. It files none for a review that didn't finish. A failed filing is retried after a GitHub server error; if it still fails, the failure is logged and the same
+  checked list is posted as a comment on the Sandcastle issue, so it isn't lost with the runner, and the PR still publishes. A push or PR create that fails after the PR was held as a draft
+  hands back with a comment saying the PR may already be a draft: find it with `gh pr list --head <branch>` rather than open a second one. A finding is also left out when its id, path,
+  summary or fix, or the branch, holds text a reader can't see (`hasHiddenText` in `status.mts`, the rule of ADR 0010: `terminalText` would drop or cap something other than whitespace). That
+  covers a control, format or default-ignorable character such as a bidirectional mark, a zero-width space, a soft hyphen, a variation selector or a tag character, a blank filler (U+2800,
+  Hangul), a next-line character (U+0085, which the issue's own text folding would publish raw), a joiner that does no work (outside emoji or the joining scripts), more than eight joiners or
+  private-use or unassigned characters across the issue's text, and a run of more than eight combining marks. Each field is also checked for secrets as the reviewer wrote it, not only in the
+  escaped line the issue shows. When open Advisory findings exist and none can be listed, the build logs that no follow-up issue is filed.
 - Not in v1: the branch's earlier recorded review, the `.security/` entries and PR threads aren't given to the reviewers.
   A round's reviewers run one after another on one sandbox, at most `MAX_REVIEWERS_PER_ROUND`, since runs started together race for the sandbox's
   global git config lock (a real run lost four of ten); `BUILDING_LABEL_MAX_AGE_MS` is sized for that and for the cap (12 hours, so a crashed run,

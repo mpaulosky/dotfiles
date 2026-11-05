@@ -309,8 +309,10 @@ export function openPullRequest(
       if (existing.isDraft !== true) ghWithStderr(run, ["pr", "ready", String(existing.number), "--repo", repo, "--undo"]);
       // The body is read again now that the PR is a draft: the list's copy is from before the hold, and a person may have accepted a finding in
       // between. Only a change in the one call between this read and the edit is left, and the edit keeps whatever the read held.
-      const current = (JSON.parse(ghWithStderr(run, ["pr", "view", String(existing.number), "--repo", repo, "--json", "body"])) as { body?: string }).body;
-      const next = bodyForHeldPullRequest(current ?? "", body, heldNote);
+      const current = (JSON.parse(ghWithStderr(run, ["pr", "view", String(existing.number), "--repo", repo, "--json", "body"])) as { body?: unknown }).body;
+      // An answer without a text body is not an empty body: replacing what a person wrote with the draft note alone would delete their acceptances.
+      if (typeof current !== "string") throw new Error(`gh pr view didn't answer the body of pull request ${existing.number}`);
+      const next = bodyForHeldPullRequest(current, body, heldNote);
       if (next !== undefined) ghWithStderr(run, ["pr", "edit", String(existing.number), "--repo", repo, "--body-file", "-"], next);
     }
     return existing.url;

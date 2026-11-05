@@ -317,6 +317,9 @@ export function collectStatus(github: StatusGitHub, now: number = Date.now(), lo
 const SHOWN_LABEL_NAMES = [BUILDING_LABEL, "sandcastle:needs-human", FOLLOW_UP_LABEL, "review:claude", QUEUE_LABEL, LOCAL_QUEUE_LABEL];
 const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 
+// A run of whitespace, which terminalText turns into one space. Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
+const SPACE_RUN = /[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu;
+
 // GitHub's and gh's text (a title, a branch, a reason, an error) made safe for a terminal: whitespace, including a line break, is one
 // space, and every control character (ESC and the C1 set, so no CSI sequence), format character (bidi marks, zero-width characters,
 // the soft hyphen, the Unicode tag block a model reads as hidden text), default-ignorable character, surrogate, noncharacter, filler that
@@ -329,9 +332,6 @@ const SHOWN_LABELS = SHOWN_LABEL_NAMES.map((label) => label.toLowerCase());
 // code points, and no more than MAX_MARKS combining marks in a row, so a few invisible bits are all that can ride on one text. The cost: text
 // that stacks more marks than that (Tibetan, Hebrew with niqqud and cantillation, some Indic clusters) loses the extras. Keycap and
 // flag-tag emoji sequences fall apart.
-// A run of whitespace, which terminalText turns into one space. Not \s, which also takes U+FEFF, a byte order mark that is dropped like the other format characters.
-const SPACE_RUN = /[\t\n\v\f\r \u00a0\u0085\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu;
-
 export function terminalText(text: string): string {
   let kept = 0;
   let odd = 0;

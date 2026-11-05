@@ -423,7 +423,8 @@ function host(
       return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
     publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote, holdAsDraft) => {
-      if (publishHoldFailed) throw new HoldFailedError(publishedBranch, new Error("gh pr ready failed:\nHTTP 422"));
+      // Only a publish that holds the PR as a draft can fail to hold it.
+      if (publishHoldFailed && holdAsDraft) throw new HoldFailedError(publishedBranch, new Error("gh pr ready failed:\nHTTP 422"));
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
       publishEvents.push("publish");
@@ -5181,7 +5182,15 @@ describe("buildIssue's follow-up issue for open Advisory findings", () => {
 describe("buildIssue when the open PR can't be held as a draft", () => {
   it("says nothing was pushed and the PR must be made a draft, files nothing and publishes nothing", async () => {
     const comments: string[] = [];
-    const run = host([0, 0], { publishHoldFailed: true });
+    // A blocking finding makes the build hold the PR, and an open Advisory one is what the follow-up issue would list: the issue must not be filed for a branch
+    // that was never pushed.
+    const reviewed = "c".repeat(40);
+    const findings = [openFinding(), openFinding({ id: "R2", severity: "advisory", path: "docs/a.md", line: 4, summary: "A stale sentence.", fix: "Reword it." })];
+    const run = host([0, 0], {
+      publishHoldFailed: true,
+      localReview: async () =>
+        ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["src/app.ts", "docs/a.md"]) }) as const,
+    });
     run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
 
     const result = await buildIssue(issue, branch, base, run.buildHost);
@@ -5288,9 +5297,21 @@ describe("publish's default hold and PR creation", { skip: process.platform === 
     });
   });
 
+  // Not through withFakeGh, whose start forgets the name too and would hide a missing forget at its end.
   it("forgets the repository name the fake gh gave, so a later use reads its own", async () => {
     await withFakeGh("[]", async () => assert.equal(repoName(), "o/r"));
-    await withFakeGh("[]", async () => assert.equal(repoName(), "p/q"), "p/q");
+    const dir = mkdtempSync(join(tmpdir(), "later-gh-"));
+    writeFileSync(join(dir, "gh"), "#!/bin/sh\necho x/y\n", { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      assert.equal(repoName(), "x/y");
+    } finally {
+      if (saved === undefined) delete process.env.PATH;
+      else process.env.PATH = saved;
+      forgetRepoName();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it("turns the ready PR for the branch into a draft before the push, not only in the later create hop", async () => {

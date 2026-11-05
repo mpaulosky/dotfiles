@@ -592,6 +592,19 @@ describe("openPullRequest", () => {
       assert.deepEqual(calls.slice(1).map((call) => call.args[1]), ["ready", "view"]);
     });
 
+    for (const [name, answer] of [["an object without a body", "{}"], ["a null body", '{"body":null}'], ["a body that isn't text", '{"body":5}']] as const) {
+      it(`throws on ${name} after the hold, and edits nothing, rather than replace a body it did not read`, () => {
+        const calls: string[] = [];
+        const run = ((_cmd: string, args: readonly string[]) => {
+          calls.push(String(args[1]));
+          return args[1] === "list" ? JSON.stringify(existing(false)) : args[1] === "view" ? answer : "";
+        }) as unknown as typeof execFileSync;
+
+        assert.throws(() => openPullRequest(branch, "Add search", fresh, run, "o/r", true, NOTE), /body/);
+        assert.deepEqual(calls.slice(1), ["ready", "view"]);
+      });
+    }
+
     it("throws when the body can't be read after the hold, rather than write over it blind", () => {
       const run = ((_cmd: string, args: readonly string[]) => {
         if (args[1] === "list") return JSON.stringify(existing(true));

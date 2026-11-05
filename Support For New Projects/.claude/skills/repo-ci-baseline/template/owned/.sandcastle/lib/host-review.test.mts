@@ -2444,6 +2444,41 @@ describe("advisoryIssueBody", () => {
     });
   }
 
+  // terminalText folds U+0085 to a space, but plainText's \s does not match it, so the issue would carry the raw control: it counts as hidden here.
+  for (const field of ["summary", "fix"] as const) {
+    it(`leaves out a finding whose ${field} holds a next-line character, which the issue's own folding would publish raw`, () => {
+      const body = advisoryIssueBody(ledgerOf([advisory(), advisory({ id: "R6", [field]: "Two\u0085lines." })]), DOCS);
+
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6/);
+      assert.ok(!body.includes("\u0085"));
+    });
+  }
+
+  // plainText escapes & < \ ` and breaks @ and # before a letter or digit, so a secret holding one of them no longer matches in the rendered line.
+  for (const [name, secret] of [["an ampersand", "p@ss&word"], ["a hash and a digit", "ab#1xyz"], ["a backtick", "k`ey9"], ["a less-than sign", "a<b-secret"]] as const) {
+    it(`leaves out a finding whose summary holds a secret with ${name}, which the rendered line no longer shows whole`, () => {
+      const holdsSecret = (text: string) => text.includes(secret);
+      const body = advisoryIssueBody(
+        ledgerOf([advisory(), advisory({ id: "R6", summary: `The value ${secret} is set.` })]),
+        DOCS,
+        (text) => !holdsSecret(text),
+      );
+
+      assert.match(body, /R5/);
+      assert.doesNotMatch(body, /R6/);
+    });
+  }
+
+  it("asks the public-text check about each field as it is, and does not leave a finding out for padding around a field", () => {
+    const seen: string[] = [];
+    const body = advisoryIssueBody(ledgerOf([advisory({ summary: "  Padded.  ", fix: null })]), DOCS, (text) => (seen.push(text), true));
+
+    assert.match(body, /R5/);
+    assert.ok(seen.includes("Padded."), seen.join(" | "));
+    assert.ok(seen.includes("docs/a.md"), seen.join(" | "));
+  });
+
   it("lists a finding that names a user, an issue or github.com, whose rendering the host breaks with a zero-width space", () => {
     const body = advisoryIssueBody(ledgerOf([advisory({ summary: "Closes #12 or calls @octocat via github.com and GH-7." })]), DOCS);
 
@@ -2636,9 +2671,9 @@ describe("advisoryIssueBody", () => {
   it("asks the caller's check about a finding's own line, not the header with the branch name", () => {
     const seen: string[] = [];
     advisoryIssueBody(ledgerOf([advisory()]), DOCS, (text) => (seen.push(text), true));
-    assert.equal(seen.length, 1);
+    assert.deepEqual(seen.slice(1), ["docs/a.md", "A stale sentence.", "Reword it."]);
     assert.match(seen[0]!, /^- R5 docs\/a\.md:4: /);
-    assert.doesNotMatch(seen[0]!, /feature\/388/);
+    assert.ok(seen.every((text) => !/feature\/388/.test(text)), seen.join(" | "));
   });
 
   it("is empty when every finding is left out", () => {

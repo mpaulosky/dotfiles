@@ -2838,14 +2838,14 @@ describe("parseTeamAnswer", () => {
     assert.deepEqual(findingsOf(got, 3), []);
   });
 
-  it("reads a wrapper whose block holds an empty findings block as clean: a lead that empties a subagent's answer can't be told apart (an accepted residual)", () => {
+  it("reads a wrapper whose block holds an empty findings block as clean: a lead that empties a subagent's answer can't be told apart (a residual the parser cannot close)", () => {
     const got = read([wrapped(nonce, 1, "<findings>[]</findings>"), wrapped(nonce, 2, block(oneFinding)), wrapped(nonce, 3, block([]))].join("\n"));
 
     assert.deepEqual(findingsOf(got, 1), []);
   });
 
-  // A reviewer steered by a file the branch planted could write a closing tag to speak for another lens; the nonce is unknown to it, and any anomaly in the
-  // nonce's tags fails every lens, so such a forgery can never clear another lens's findings.
+  // A reviewer steered by a file the branch planted could write a closing tag to speak for another lens; the nonce only makes a forgery less likely, and any anomaly in the
+  // nonce's tags fails every lens, so such a forgery can never clear another lens's findings even if the nonce leaked.
   const anomalies: [string, string][] = [
     [
       "a tag twice (a duplicated wrapper)",

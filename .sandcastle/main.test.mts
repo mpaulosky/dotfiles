@@ -154,6 +154,43 @@ describe("main.mts entry point", () => {
   });
 });
 
+// A mistyped SANDCASTLE_REVIEWERS must stop the run before any git, gh or sandbox work, not throw after a build's hours at its review.
+describe("main.mts's reviewer-mode wiring", () => {
+  it("resolves the reviewer mode before protectHostGit() and ensureLabels()", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const modeCall = mainMts.indexOf("reviewerMode(");
+    assert.notEqual(modeCall, -1, "main.mts doesn't call reviewerMode(");
+    assert.ok(modeCall < mainMts.indexOf("protectHostGit()"), "main.mts doesn't resolve the reviewer mode before protectHostGit()");
+    assert.ok(modeCall < mainMts.indexOf("ensureLabels()"), "main.mts doesn't resolve the reviewer mode before ensureLabels()");
+  });
+
+  it("exits 2 with the message and touches nothing for a mistyped SANDCASTLE_REVIEWERS", () => {
+    const binDir = realpathSync(mkdtempSync(join(tmpdir(), "sandcastle-reviewers-bin-")));
+    const stubLog = join(binDir, "stub-calls.log");
+    try {
+      for (const name of ["gh", "git", "docker"]) {
+        const path = join(binDir, name);
+        writeFileSync(path, `#!/bin/sh\necho "$0 $*" >> "${stubLog}"\nexit 1\n`);
+        chmodSync(path, 0o755);
+      }
+      const env = { PATH: `${binDir}:${process.env.PATH ?? ""}`, HOME: process.env.HOME ?? "", SANDCASTLE_ISSUE: "1", SANDCASTLE_REVIEWERS: "Subagents" };
+      let status: number | null = null;
+      let stderr = "";
+      try {
+        execFileSync("node", ["--import", "tsx", ".sandcastle/main.mts"], { cwd: repoRoot, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      } catch (error) {
+        status = (error as { status: number | null }).status;
+        stderr = String((error as { stderr?: unknown }).stderr ?? "");
+      }
+      assert.equal(status, 2, `stderr:\n${stderr}`);
+      assert.match(stderr, /SANDCASTLE_REVIEWERS must be/);
+      assert.equal(existsSync(stubLog), false, "main.mts shelled out to gh, git or docker before exiting");
+    } finally {
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // Covers "`.sandcastle/work/` is gitignored" from issue #72: the architect's
 // design note and other inter-role notes live there (lib/build.mts), and
 // must never reach a commit. Checked with git itself, rather than by

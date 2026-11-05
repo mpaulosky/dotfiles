@@ -4556,6 +4556,48 @@ describe("liveReviewHost", () => {
     }
   });
 
+  // The production default: `reviewerMode` absent, so SANDCASTLE_REVIEWERS decides. Every other test passes the mode.
+  describe("without an explicit reviewerMode", () => {
+    const withEnv = (value: string | undefined, run: () => void) => {
+      const before = process.env.SANDCASTLE_REVIEWERS;
+      try {
+        if (value === undefined) delete process.env.SANDCASTLE_REVIEWERS;
+        else process.env.SANDCASTLE_REVIEWERS = value;
+        run();
+      } finally {
+        if (before === undefined) delete process.env.SANDCASTLE_REVIEWERS;
+        else process.env.SANDCASTLE_REVIEWERS = before;
+      }
+    };
+    const teamOf = (value: string | undefined) => {
+      const { args } = recorder();
+      const dir = checkout();
+      try {
+        let team: unknown;
+        withEnv(value, () => {
+          team = liveReviewHost(args, dir).runReviewerTeam;
+        });
+        return team;
+      } finally {
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+      }
+    };
+
+    it("stays sequential when SANDCASTLE_REVIEWERS is unset or empty", () => {
+      assert.equal(teamOf(undefined), undefined);
+      assert.equal(teamOf(""), undefined);
+      assert.equal(teamOf("sequential"), undefined);
+    });
+
+    it("uses the subagents when SANDCASTLE_REVIEWERS is subagents", () => {
+      assert.equal(typeof teamOf("subagents"), "function");
+    });
+
+    it("throws for a mistyped SANDCASTLE_REVIEWERS", () => {
+      assert.throws(() => teamOf("subagent"), /SANDCASTLE_REVIEWERS/);
+    });
+  });
+
   it("has a runReviewerTeam in the subagents mode, which the host review then uses instead of runReviewer", () => {
     const { args } = recorder();
     const dir = checkout();

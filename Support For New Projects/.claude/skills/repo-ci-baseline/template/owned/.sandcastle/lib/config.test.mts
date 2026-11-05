@@ -28,6 +28,7 @@ import {
   REVIEWER_ATTEMPTS,
   ROLES,
   RunModeError,
+  ReviewerModeError,
   SANDBOX_CPUS,
   SANDCASTLE_LABELS,
   SESSION_REPLY_MARKER,
@@ -137,6 +138,13 @@ describe("reviewerMode", () => {
   it("throws for anything else, rather than pick a path for a typo", () => {
     for (const value of ["subagent", "Subagents", "parallel", "1", "true"]) {
       assert.throws(() => reviewerMode({ SANDCASTLE_REVIEWERS: value }), /SANDCASTLE_REVIEWERS/, JSON.stringify(value));
+    }
+  });
+
+  // main.mts catches this class to exit 2 at start-up; a plain Error would read as a crash.
+  it("throws a ReviewerModeError, so main.mts can refuse the value at start-up", () => {
+    for (const value of ["subagent", "subagents ", " subagents", "SEQUENTIAL"]) {
+      assert.throws(() => reviewerMode({ SANDCASTLE_REVIEWERS: value }), ReviewerModeError, JSON.stringify(value));
     }
   });
 });

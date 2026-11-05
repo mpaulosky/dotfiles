@@ -62,7 +62,7 @@ export const DESIGN_MARKER = "<!-- sandcastle:design -->";
 // besides the gate-fixer, which runs up to GATE_FIXER_ATTEMPTS times at each
 // checkpoint. BUILDING_LABEL_MAX_AGE_MS is sized from these roles' timeouts and
 // the gate's limit (lib/repo-config.mts#GATE_LIMIT_MINUTES): config.test.mts checks the sum fits, and build.test.mts
-// that buildIssue runs no role outside the list. The host-side review's own backend and pre-push-reviewer runs are not counted
+// that buildIssue runs no role outside the list. The host-side review's own backend, pre-push-reviewer and pre-push-review-lead runs are not counted
 // here: config.test.mts sizes them separately, as REVIEW_WALL_CLOCK_MINUTES and one step of overshoot.
 export const BUILD_ROLES = ["architect", "tester", "backend", "ui", "scribe", "reviewer"] as const satisfies readonly AnyRole[];
 
@@ -286,14 +286,18 @@ export const MAX_CONCURRENT_SUBAGENTS = 20;
 // How a round's reviewers are started: one after another, or as parallel subagents of one lead run.
 export type ReviewerMode = "sequential" | "subagents";
 
+// Thrown by reviewerMode for a SANDCASTLE_REVIEWERS that names no reviewer mode.
+export class ReviewerModeError extends Error {}
+
 // SANDCASTLE_REVIEWERS from `env` as the reviewer mode.
 // Unset or empty is "sequential", and stays so until a run in a real sandbox settles how the Claude CLI treats `--tools`, `--setting-sources` and
-// `--agents` for subagents. Any other value throws: a typo must not silently pick a path.
+// `--agents` for subagents. Any other value throws ReviewerModeError: a typo must not silently pick a path. main.mts reads it at start-up, so a typo
+// exits before any sandbox starts and not after a build, at its review.
 export function reviewerMode(env: Record<string, string | undefined> = process.env): ReviewerMode {
   const value = env.SANDCASTLE_REVIEWERS;
   if (value === undefined || value === "") return "sequential";
   if (value === "sequential" || value === "subagents") return value;
-  throw new Error(`SANDCASTLE_REVIEWERS must be "sequential" or "subagents", not ${JSON.stringify(value.slice(0, 40))}`);
+  throw new ReviewerModeError(`SANDCASTLE_REVIEWERS must be "sequential" or "subagents", not ${JSON.stringify(value.slice(0, 40))}`);
 }
 
 // After this many review rounds that fixed something, one more round only reviews.

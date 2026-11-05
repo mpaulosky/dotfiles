@@ -43,11 +43,20 @@ _Avoid_: Orphan, stale file
 
 **Security record**:
 The review's local, git-ignored `.security/` folder in the main checkout: one file per security finding, written by `scripts/review.sh record`
-and read by both reviews by id, lens and path only. Its README is a Seed file; its entries are never published.
+and read by both reviews by id, lens and path only. Its README is an Owned file; its entries are never published.
 _Avoid_: Security log, findings database
 
+**Host-side review**:
+The pre-push review's rounds as the Sandcastle host runs them on a branch it built, after the reviewer role and a passing checkpoint 2. The host starts the skill's own reviewers,
+the backend role fixes each fixable finding behind a failing test, and only the host records the ledger; no agent gets a shell, a token or `.git/review`.
+Open Critical or Warning findings (and any open security finding, whatever its grade) hold the branch's PR as a draft, and so does a review that didn't finish. A person accepts the findings
+(`scripts/review.sh accept`) or runs the review again, then marks the PR ready (`gh pr ready`); open Advisory findings go in a follow-up issue, filed once the branch is published and held to
+the PR note's public-text rules. A held PR is a draft, which Sandcastle's follow-up sweep skips.
+Described in [references/pre-push-review.md](references/pre-push-review.md#sandcastle-runs-the-review-on-the-host).
+_Avoid_: Sandbox review, reviewer role (the sandbox's own, lighter review)
+
 **Sandcastle section**:
-The Template's files for a repo that runs Sandcastle: `.sandcastle/`, its workflow and Seed skills list, the Seed session guidance
+The Template's files for a repo that runs Sandcastle: `.sandcastle/`, its workflow and Seed skills list, the session guidance
 `.claude/rules/sandcastle-hand-off.md`, and the local review's skills, agent and `scripts/review.sh`.
 Apply adds them only to a repo that has a `.sandcastle/` folder or no commits yet.
 The files, and the model for handing a PR off, are in [references/sandcastle.md](references/sandcastle.md#hand-off-prs).

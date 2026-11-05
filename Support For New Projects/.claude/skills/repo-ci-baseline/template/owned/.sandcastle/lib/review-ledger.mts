@@ -28,11 +28,11 @@
 // one decided. It is git-ignored and never published, like the ledgers, and
 // `security` lists it for the reviews, by id, status, lens and path only.
 //
-// Run as a script: `scripts/review.sh <command>` (see USAGE below). Sandcastle
-// doesn't run this review yet; the module lives in .sandcastle/lib/ for its
-// type-check and tests.
+// Run as a script: `scripts/review.sh <command>` (see USAGE below). For a branch
+// Sandcastle builds, the host runs the rounds itself (lib/host-review.mts) and
+// calls prepareRound and recordReview in-process, in the main checkout, never
+// the sandbox's scripts/review.sh; the module lives in .sandcastle/lib/ too.
 
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -40,7 +40,11 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { plainText, visibleLetters } from "./plain-text.mts";
 import { NOT_OWNED_BASELINE_PATHS, REPO_SLUG } from "./repo-config.mts";
-import { markAccepted, readEntries, recordSecurity, renderSecurityList, type SecurityInput, type SecurityOutcome } from "./security-record.mts";
+import { hostExecFileSync } from "./host-limit.mts";
+import { ledgerGitEnv, markAccepted, pinLedgerGit, readEntries, recordSecurity, renderSecurityList, type SecurityInput, type SecurityOutcome } from "./security-record.mts";
+
+// They live in security-record.mts, which runs git on the host the same way, and are re-exported for the callers of the ledger.
+export { ledgerGitEnv, pinLedgerGit };
 
 // The variable that skips the review check, for the gate runs that come
 // before or during the review: the skill's own (each round's), and every gate
@@ -58,7 +62,8 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // these (and writes any Seed file the repository lacks, which is not on this
 // list and needs a review), and they're reviewed in the Template's own PRs; a
 // repository must never change them, so a review there could only raise
-// findings nobody there may fix.
+// findings nobody there may fix. A re-Apply skips the local review for them,
+// except for REVIEWED_ON_REAPPLY below.
 export const OWNED_PATHS = [
   ".github/workflows/*.yml",
   ".github/hooks/**",
@@ -88,6 +93,15 @@ export const OWNED_PATHS = [
   "scripts/watch-pr.sh",
   "scripts/tests/**",
   "docs/PROCESS.md",
+  "docs/CODE_OF_CONDUCT.md",
+  ".github/ISSUE_TEMPLATE/bug_report.md",
+  ".github/ISSUE_TEMPLATE/config.yml",
+  ".github/ISSUE_TEMPLATE/feature_request.md",
+  ".github/ci/coverage-threshold",
+  ".claude/rules/sandcastle-hand-off.md",
+  ".claude/skills/README.md",
+  ".security/README.md",
+  "LICENSE",
   ".editorconfig",
   ".gitignore",
   ".markdownlint-cli2.jsonc",
@@ -96,6 +110,31 @@ export const OWNED_PATHS = [
   "GitVersion.yml",
   "global.json",
 ] as const;
+
+// The Owned files whose content is behaviour, not text: the coverage gate
+// ci.yml enforces (any whole percentage passes it, 0 included), the rules
+// file that loads into every Claude session in the repository, and the issue
+// templates, whose front matter sets the labels and assignee of every issue
+// opened from them (a `Sandcastle` label would feed the unattended pipeline),
+// the reviewer agent, whose `tools:` front matter is what keeps reviewers
+// read-only, the two prompts that instruct the pipeline's judging roles, and
+// global.json, which sets the SDK and the msbuild-sdks a build runs.
+// The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
+// the READMEs under .security/ and .claude/skills/) are text. A re-Apply
+// overwrites them like any Owned file, but checkReview does not let a
+// re-Apply branch skip the review for them: the exemption below judges a path,
+// never the bytes, and a repository has no copy of the Template to compare with.
+export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
+  ".github/ci/coverage-threshold",
+  ".claude/rules/sandcastle-hand-off.md",
+  ".github/ISSUE_TEMPLATE/bug_report.md",
+  ".github/ISSUE_TEMPLATE/config.yml",
+  ".github/ISSUE_TEMPLATE/feature_request.md",
+  ".claude/agents/pre-push-reviewer.md",
+  ".sandcastle/critique-prompt.md",
+  ".sandcastle/intake-prompt.md",
+  "global.json",
+]);
 
 // The files under an Owned pattern that the Template doesn't supply: its Seed
 // repo-config.mts, and the files the repository lists in repo-config.mts's
@@ -127,6 +166,10 @@ export const SEVERITIES = ["critical", "warning", "advisory"] as const;
 
 export type Severity = (typeof SEVERITIES)[number];
 
+// What a finding's path may look like. The host's reviewer schema (lib/host-review.mts) uses the same pattern, so a path the ledger would
+// refuse is asked for again with the reason, not found out when the review is recorded.
+export const FINDING_PATH_SHAPE = /^[^\s<>`]+( [^\s<>`]+)*$/;
+
 // One finding. `fixed` needs the regression test that pins it, or the reason
 // it has none (a workflow or prose finding); `dismissed` needs the evidence
 // that the reviewer was wrong, read from the code; `accepted` needs the reason
@@ -140,7 +183,7 @@ const findingFields = z.object({
   // New Projects/"), so it can't carry anything into the PR description that
   // plainText would have to undo: renderReport and the notes run it through
   // plainText, and a tab, newline or double space never gets that far.
-  path: z.string().trim().min(1).regex(/^[^\s<>`]+( [^\s<>`]+)*$/, "a path has no whitespace but single spaces between its parts, and no <, > or backtick"),
+  path: z.string().trim().min(1).regex(FINDING_PATH_SHAPE, "a path has no whitespace but single spaces between its parts, and no <, > or backtick"),
   line: z.number().int().nonnegative(),
   summary: z.string().trim().min(1),
   status: z.enum(["fixed", "dismissed", "accepted", "open"]),
@@ -226,8 +269,8 @@ export const isSecurity = (finding: Finding) =>
   finding.severity === "warning" || finding.security !== false || /security/i.test(finding.lens);
 
 // Whether a finding blocks the push: open, and not Advisory, or a security
-// finding whatever its grade.
-const isBlocking = (finding: Finding) => finding.status === "open" && (severityOf(finding) !== "advisory" || isSecurity(finding));
+// finding whatever its grade. The host-side review holds a PR as a draft while one is open, or when the review didn't finish (lib/build.mts), as the gate's check refuses the push.
+export const isBlocking = (finding: Finding) => finding.status === "open" && (severityOf(finding) !== "advisory" || isSecurity(finding));
 
 // An agent type name, with the optional plugin namespace (plugin:agent). No dot: www.example would autolink in the PR body.
 const reviewerAgentSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9_-]{0,63})?$/, "reviewerAgent is an agent type name");
@@ -287,43 +330,46 @@ export const ledgerSchema = z
 
 export type Ledger = z.infer<typeof ledgerSchema>;
 
-// The variables a hook sets, which would point a worktree's git at another
-// checkout's, and the ones that change what `git diff` prints.
-const hookGitVariables = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR", "GIT_DIFF_OPTS", "GIT_EXTERNAL_DIFF"];
-
 // Run git in `cwd` and return its stdout as bytes, with the hook variables
 // dropped. Replace refs are off, so the review reads and keys commits as they
 // are, not as a replace ref shows them.
 function gitBytes(cwd: string, args: readonly string[]): Buffer {
-  // GIT_ATTR_NOSYSTEM: not the machine's system-wide gitattributes file
-  // either, which could mark text files binary for one person's review only.
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_NO_REPLACE_OBJECTS: "1", GIT_ATTR_NOSYSTEM: "1" };
-  for (const name of hookGitVariables) {
-    delete env[name];
-  }
-  return execFileSync("git", args, { cwd, env, stdio: ["ignore", "pipe", "pipe"], maxBuffer: 512 * 1024 * 1024 });
+  return hostExecFileSync("git", args, { cwd, env: ledgerGitEnv(cwd), stdio: ["ignore", "pipe", "pipe"], maxBuffer: 512 * 1024 * 1024 });
+}
+
+// Whether a git call was ended by the host's time limit (lib/host-limit.mts kills it with SIGKILL and fails with ETIMEDOUT) and not by
+// git's own answer. The callers below read a git failure as "no" (not an ancestor, no such main, not the reviewed code); a call that
+// never answered says nothing, so it is rethrown instead.
+// Any SIGKILL counts, not only the host's own: a git that was killed (even out of memory) gave no answer either.
+function endedByLimit(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { code, signal } = error as { code?: unknown; signal?: unknown };
+  return code === "ETIMEDOUT" || signal === "SIGKILL";
 }
 
 const git = (cwd: string, ...args: string[]) => gitBytes(cwd, args).toString("utf8").trim();
 
 // Whether `ancestor` is an ancestor of (or is) `commit`. A commit git doesn't
 // have counts as not.
-function isAncestor(cwd: string, ancestor: string, commit: string): boolean {
+export function isAncestor(cwd: string, ancestor: string, commit: string): boolean {
   try {
     gitBytes(cwd, ["merge-base", "--is-ancestor", ancestor, commit]);
     return true;
-  } catch {
+  } catch (error) {
+    if (endedByLimit(error)) throw error;
     return false;
   }
 }
 
-// Where this branch left origin/main. Throws when there's no origin/main: the
-// review can't say what the branch changed, so the check fails closed.
-export function mergeBase(cwd: string): string {
+// Where `head` (HEAD by default) left `main` (origin/main by default). Throws
+// when there's no such main: the review can't say what the branch changed, so
+// the check fails closed.
+export function mergeBase(cwd: string, main: string = "origin/main", head: string = "HEAD"): string {
   try {
-    return git(cwd, "merge-base", "origin/main", "HEAD");
+    return git(cwd, "merge-base", main, head);
   } catch (error) {
-    throw new Error("can't find where this branch left origin/main: run `git fetch origin main` first", { cause: error });
+    if (endedByLimit(error)) throw error;
+    throw new Error(`can't find where this branch left ${main}: fetch it first (for origin/main, run \`git fetch origin main\`)`, { cause: error });
   }
 }
 
@@ -441,6 +487,156 @@ export function patchKey(patch: Buffer): string {
   return hash.digest("hex");
 }
 
+// How big a branch a review is asked to cover. Past either limit (strictly more, so exactly 30 files or 3,000 lines is fine) the review
+// warns that the branch is better split: the rounds and the findings grow with the diff. The warning only advises.
+export const REVIEW_SIZE_MAX_FILES = 30;
+export const REVIEW_SIZE_MAX_LINES = 3000;
+
+// The bytes of a path git quoted (C-style escapes, octal for non-ASCII), as text.
+function unquote(quoted: string): string {
+  const bytes: number[] = [];
+  const escapes: Record<string, number> = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 34, "\\": 92 };
+  for (let index = 0; index < quoted.length; index++) {
+    const char = quoted[index]!;
+    if (char !== "\\") {
+      bytes.push(...Buffer.from(char));
+      continue;
+    }
+    const octal = /^[0-3][0-7]{2}/.exec(quoted.slice(index + 1, index + 4))?.[0];
+    if (octal !== undefined) {
+      bytes.push(Number.parseInt(octal, 8));
+      index += 3;
+    } else {
+      bytes.push(escapes[quoted[index + 1] ?? ""] ?? (quoted[index + 1] ?? "\\").charCodeAt(0));
+      index += 1;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+// The path in a `diff --git` header's second half, and the rest after a quoted first half.
+function quotedToken(text: string): [string, string] | undefined {
+  const match = /^"((?:[^"\\]|\\.)*)"/.exec(text);
+  return match === null ? undefined : [unquote(match[1]!), text.slice(match[0].length).trimStart()];
+}
+
+// The repository paths a patch changes, in patch order, once each, read from its `diff --git` headers. The review's patch
+// has renames off, so both halves of a header name the same path; a deleted file keeps its old one.
+export function patchPaths(patch: string): string[] {
+  const paths = new Set<string>();
+  for (const line of patch.split("\n")) {
+    if (!line.startsWith("diff --git ")) continue;
+    const rest = line.slice("diff --git ".length);
+    let path: string | undefined;
+    const first = quotedToken(rest);
+    if (first !== undefined) {
+      const second = quotedToken(first[1]);
+      path = (second === undefined ? first[1] : second[0]).replace(/^b\//, "");
+    } else {
+      // Unquoted: "a/<p> b/<p>". With spaces in <p> only the midpoint splits it.
+      const half = (rest.length - 5) / 2;
+      path = Number.isInteger(half) && rest.slice(0, 2) === "a/" && rest.slice(2, 2 + half) === rest.slice(half + 5) ? rest.slice(2, 2 + half) : /^a\/.+ b\/(.+)$/.exec(rest)?.[1];
+    }
+    // A header it can't read still counts as a changed file, so no lens is skipped for it.
+    paths.add(path ?? rest);
+  }
+  return [...paths];
+}
+
+// In the dotfiles repository an Owned Template file is held twice, at the repository root and under this path. In other repositories nothing starts
+// with it, so everything that reads it does nothing there.
+export const TEMPLATE_OWNED_PREFIX = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+
+// The patch the reviewers read: `patch` without the sections of verbatim Template mirrors. A section is a mirror when its path is
+// TEMPLATE_OWNED_PREFIX + <P> and the same patch has a root section for <P> with the same final state (the same after-blob and the same
+// final mode, or both deleted). A path can have two sections (git writes a deletion and an addition for a type change, such as a symlink that
+// becomes a file): they are matched in order, the first of the mirror's with the first of the root's, so a type change on both sides leaves out
+// both of the mirror's sections and never one. `test.sh` already fails when a copy drifts, so reading both only doubles the reading. Anything else
+// stays: a mirror with no root section, a mirror that differs from its root copy (drift), a quoted or unreadable header, a section with no
+// after-blob. The key is not computed from this: it stays that of the whole diff. The patch is read at LF only, byte for byte (latin1), so the kept
+// sections are the input's own bytes; the same bytes are returned when nothing is left out.
+export function readerPatch(patch: Buffer): Buffer {
+  const text = patch.toString("latin1");
+  const parts = text.split(/(?<=\n)(?=diff --git )/);
+  // The lines before the first hunk are git's own header; a changed line can't start with `index `, and the lines are cut at LF only.
+  const finalState = (part: string): string | undefined => {
+    const header: string[] = [];
+    for (const line of part.split("\n")) {
+      if (line.startsWith("@@ ")) break;
+      header.push(line);
+    }
+    if (header.some((line) => line.startsWith("deleted file mode "))) return "deleted";
+    const blob = header.map((line) => /^index [0-9a-f]+\.\.([0-9a-f]+)(?: (\d+))?$/.exec(line)).find((found) => found !== null && found !== undefined);
+    if (blob === undefined || blob === null) return undefined;
+    const mode =
+      header.map((line) => /^new mode (\d+)$/.exec(line)?.[1]).find((found) => found !== undefined) ??
+      header.map((line) => /^new file mode (\d+)$/.exec(line)?.[1]).find((found) => found !== undefined) ??
+      blob[2];
+    return mode === undefined ? undefined : `${blob[1]}:${mode}`;
+  };
+  const pathOf = (part: string): string | undefined => {
+    const header = part.slice(0, part.indexOf("\n") === -1 ? undefined : part.indexOf("\n"));
+    if (!header.startsWith("diff --git a/")) return undefined;
+    const path = patchPaths(header)[0];
+    return path !== undefined && header === `diff --git a/${path} b/${path}` ? path : undefined;
+  };
+  // The final states of a path's sections, in order (git writes two for a type change). A mirror is left out only when its whole sequence equals
+  // the root copy's, so a mirror that deletes while its root copy deletes and creates a symlink is kept.
+  const sections = parts.map((part) => {
+    const path = pathOf(part);
+    return { part, path, state: path === undefined ? undefined : finalState(part) };
+  });
+  const sequences = new Map<string, (string | undefined)[]>();
+  for (const { path, state } of sections) if (path !== undefined) sequences.set(path, [...(sequences.get(path) ?? []), state]);
+  const sameSequence = (mirror: string): boolean => {
+    const root = sequences.get(mirror.slice(TEMPLATE_OWNED_PREFIX.length));
+    const own = sequences.get(mirror);
+    return root !== undefined && own !== undefined && root.length === own.length && root.every((state, at) => state !== undefined && state === own[at]);
+  };
+  const kept = sections.filter(({ path }) => path === undefined || !path.startsWith(TEMPLATE_OWNED_PREFIX) || !sameSequence(path));
+  return kept.length === parts.length ? patch : Buffer.from(kept.map(({ part }) => part).join(""), "latin1");
+}
+
+// The files and lines (added plus deleted) a patch changes, from the hunks. The patch is read line by line at `\n` only: a lone carriage return,
+// or a Unicode line separator, inside a changed line is file content and starts nothing. Sections of the same path (git writes a deletion and an
+// addition for a type change, such as a symlink that becomes a file) add up. A file and its Template mirror count once, and their lines once
+// (the larger of the two, since `test.sh` makes them equal). A binary file, a mode change and an empty file count as a file with no lines.
+export function branchSize(patch: Buffer | string): { files: number; lines: number } {
+  const text = typeof patch === "string" ? patch : patch.toString("latin1");
+  const byPath = new Map<string, number>();
+  let current: string | undefined;
+  let inHunk = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      // A header patchPaths can't read still counts as a file (keyed by its text), as it does for the reviewers' lens choice: a size is never undercounted.
+      current = patchPaths(line)[0];
+      inHunk = false;
+      if (current !== undefined && !byPath.has(current)) byPath.set(current, 0);
+    } else if (current !== undefined) {
+      // The file header's own `---` and `+++` lines come before the first hunk header; a body line starts with a space, `+`, `-` or `\`
+      // (so an added line that reads `++ x` is still one added line, and "\ No newline" is none).
+      if (!inHunk) inHunk = line.startsWith("@@ ");
+      else if (line.startsWith("+") || line.startsWith("-")) byPath.set(current, (byPath.get(current) ?? 0) + 1);
+    }
+  }
+  const lines = new Map<string, number>();
+  for (const [path, changed] of byPath) {
+    const key = path.startsWith(TEMPLATE_OWNED_PREFIX) ? path.slice(TEMPLATE_OWNED_PREFIX.length) : path;
+    lines.set(key, Math.max(lines.get(key) ?? 0, changed));
+  }
+  let total = 0;
+  for (const count of lines.values()) total += count;
+  return { files: lines.size, lines: total };
+}
+
+// The warning for a branch past the limits, or undefined.
+export function sizeWarning(patch: Buffer | string): string | undefined {
+  const { files, lines } = branchSize(patch);
+  if (files <= REVIEW_SIZE_MAX_FILES && lines <= REVIEW_SIZE_MAX_LINES) return undefined;
+  const count = (n: number, noun: string) => `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+  return `this branch changes ${count(files, "file")} and ${count(lines, "line")}, past ${count(REVIEW_SIZE_MAX_FILES, "file")} or ${count(REVIEW_SIZE_MAX_LINES, "line")} (a file and its Template mirror count once): a review this size takes more rounds and keeps finding problems in its own fixes. Consider splitting the branch before pushing it.`;
+}
+
 // The ledger key for `head`'s diff against `base`.
 export const diffKey = (cwd: string, base: string, head: string = headCommit(cwd)) => patchKey(reviewPatch(cwd, base, head));
 
@@ -453,19 +649,21 @@ export function isReviewedCode(cwd: string, reviewedHead: string, base: string, 
   try {
     const merged = git(cwd, "merge-tree", "--write-tree", reviewedHead, base).split("\n")[0];
     return merged === git(cwd, "rev-parse", `${head}^{tree}`);
-  } catch {
+  } catch (error) {
+    if (endedByLimit(error)) throw error;
     return false;
   }
 }
 
 // Whether this git has `merge-tree --write-tree` (2.38 and later), which
 // isReviewedCode needs to see a merge of main as the reviewed code.
-function mergeTreeWorks(cwd: string): boolean {
+export function mergeTreeWorks(cwd: string): boolean {
   const head = headCommit(cwd);
   try {
     git(cwd, "merge-tree", "--write-tree", head, head);
     return true;
-  } catch {
+  } catch (error) {
+    if (endedByLimit(error)) throw error;
     return false;
   }
 }
@@ -611,8 +809,32 @@ export function takenIds(cwd: string, base: string, head: string = headCommit(cw
   return Math.max(highestId(replaced), ...branchLedgers(cwd, base, head).map(({ ledger }) => highestId(ledger)));
 }
 
+// What one review round reads: the whole diff, the fixes since the round before (a later round only), the key the diff
+// has and the commits it was made between. Both the CLI's `prepare` and the host's review (lib/host-review.mts) call
+// prepareRound, so they cannot diverge. `patch` and `fixes` are whole: they feed the key and the size warning. `readPatch` and
+// `readFixes` leave out the verbatim Template mirrors (readerPatch) and are what the reviewers read, what the size limit and the lens choice
+// apply to, and what gets written to disk.
+export type PreparedRound = { patch: Buffer; fixes: Buffer | undefined; readPatch: Buffer; readFixes: Buffer | undefined; key: string; head: string; base: string };
+
+// The body of `prepare` without its file I/O: `head` (HEAD by default) against
+// where it left `main` (origin/main by default), plus, for a later round, the
+// fixes since `since.commit`. `since.preparedHead` is the HEAD the round before
+// read, which `fixesPatch` checks `since.commit` against. Throws an Error with
+// `prepare`'s message when the fixes can't be told.
+export function prepareRound(
+  cwd: string,
+  { main = "origin/main", head = headCommit(cwd), since }: { main?: string; head?: string; since?: { commit: string; preparedHead: string | undefined } },
+): PreparedRound {
+  const base = mergeBase(cwd, main, head);
+  const patch = reviewPatch(cwd, base, head);
+  const fixes = since === undefined ? undefined : fixesPatch(cwd, since.preparedHead, since.commit, base, head, main);
+  if (typeof fixes === "string") throw new Error(fixes);
+  return { patch, fixes, readPatch: readerPatch(patch), readFixes: fixes === undefined ? undefined : readerPatch(fixes), key: patchKey(patch), head, base };
+}
+
 // Record a review of HEAD's diff, replacing any ledger at the same diff.
-// Refuses a dirty worktree, and a HEAD that isn't the code the last round
+// Without `at`, refuses a dirty worktree; with `at` the caller names the commit and the branch and answers for the
+// worktree it reviewed (the host's review of a sandbox's worktree: the gate ran clean on that commit). Refuses a HEAD that isn't the code the last round
 // reviewed: the review would vouch for code it never read. Also refuses any id
 // at or below the highest the ledger it replaces or any earlier review of the
 // branch's own commits took, so an id names one finding along the branch: a
@@ -631,19 +853,23 @@ export function recordReview(
   input: ReviewInput,
   now: Date = new Date(),
   taken: typeof takenIds = takenIds,
-  { slug = REPO_SLUG, onSecurity }: { slug?: string; onSecurity?: (outcome: SecurityOutcome) => void } = {},
+  { slug = REPO_SLUG, onSecurity, at }: { slug?: string; onSecurity?: (outcome: SecurityOutcome) => void; at?: { head: string; branch: string } } = {},
 ): Ledger {
   const parsed = reviewInputSchema.parse(input);
   // The security record is local and not code (see security-record.mts): an untracked README, or a symlink put in its
   // place, isn't a change HEAD fails to vouch for. Tracked changes there still count.
-  const dirty = git(cwd, "status", "--porcelain", "--untracked-files=all")
-    .split("\n")
-    .filter((line) => !/^\?\? \.security(\/|$)/.test(line))
-    .join("\n");
-  if (dirty !== "") {
-    throw new Error(`the worktree has uncommitted changes, so the review can't vouch for HEAD:\n${dirty}`);
+  // With `at` the caller names the commit and branch (the host's review of a sandbox's worktree, whose gate ran clean on that
+  // commit), so this checkout's own worktree and HEAD are not what is vouched for.
+  if (at === undefined) {
+    const dirty = git(cwd, "status", "--porcelain", "--untracked-files=all")
+      .split("\n")
+      .filter((line) => !/^\?\? \.security(\/|$)/.test(line))
+      .join("\n");
+    if (dirty !== "") {
+      throw new Error(`the worktree has uncommitted changes, so the review can't vouch for HEAD:\n${dirty}`);
+    }
   }
-  const head = headCommit(cwd);
+  const head = at === undefined ? headCommit(cwd) : git(cwd, "rev-parse", "--verify", `${at.head}^{commit}`);
   const key = diffKey(cwd, base, head);
   if (key !== parsed.reviewedKey || !isReviewedCode(cwd, parsed.reviewedHead, base, head)) {
     throw new Error("HEAD isn't the code the last review round read: commits landed after it started. Review again before recording.");
@@ -651,7 +877,7 @@ export function recordReview(
   let ledger: Ledger = {
     version: 1,
     key,
-    branch: git(cwd, "branch", "--show-current"),
+    branch: at === undefined ? git(cwd, "branch", "--show-current") : at.branch,
     base,
     head,
     recordedAt: now.toISOString(),
@@ -721,7 +947,7 @@ export type ReviewCheck = { ok: boolean; message: string };
 // The gate's review check: HEAD's diff has a recorded review with no open
 // Critical or Warning finding. Three things pass without one: `GATE_SKIP_REVIEW=1` (that value
 // only), a branch with no changes against the base, and a Baseline re-Apply
-// on REAPPLY_BRANCH that changes only Owned files.
+// on REAPPLY_BRANCH that changes only Owned files, REVIEWED_ON_REAPPLY apart.
 export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = process.env): ReviewCheck {
   if (env[SKIP_REVIEW_ENV] === "1") {
     return { ok: true, message: `Review check skipped (${SKIP_REVIEW_ENV}=1).` };
@@ -729,6 +955,7 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
   const head = headCommit(cwd);
   const key = diffKey(cwd, base, head);
   if (key === EMPTY_DIFF_KEY) return { ok: true, message: "No changes against origin/main to review." };
+  let withheld: string[] = [];
   if (git(cwd, "branch", "--show-current") === REAPPLY_BRANCH) {
     // The key's own pins: no renames (a file moved into an Owned folder is
     // still a change elsewhere), no ignored submodules, no relative paths, and
@@ -746,7 +973,8 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
       changes.push({ status, mode, path: raw[index + 1]! });
     }
     const writtenByApply = (change: { status: string; mode: string; path: string }) =>
-      (change.status === "A" || change.status === "M") && (change.mode === "100644" || change.mode === "100755") && isOwnedPath(change.path);
+      (change.status === "A" || change.status === "M") && (change.mode === "100644" || change.mode === "100755") && isOwnedPath(change.path) && !REVIEWED_ON_REAPPLY.has(change.path);
+    withheld = changes.filter((change) => REVIEWED_ON_REAPPLY.has(change.path)).map((change) => change.path);
     if (changes.length > 0 && changes.every(writtenByApply)) {
       return { ok: true, message: "A Baseline re-Apply that changes only Owned files: the Template's own review covers them." };
     }
@@ -759,7 +987,8 @@ export function checkReview(cwd: string, base: string, env: NodeJS.ProcessEnv = 
     };
   }
   if (ledger === undefined || !isReviewedCode(cwd, ledger.head, base, head)) {
-    return { ok: false, message: "No review is recorded for this diff. Run /pre-push-review, which reviews, fixes and records it." };
+    const why = withheld.length > 0 ? ` A re-Apply skips the review only for Owned files that carry no behaviour; it is withheld for: ${withheld.join(", ")}.` : "";
+    return { ok: false, message: `No review is recorded for this diff. Run /pre-push-review, which reviews, fixes and records it.${why}` };
   }
   const blocking = ledger.findings.filter(isBlocking);
   if (blocking.length > 0) {
@@ -959,16 +1188,17 @@ export function spliceReviewNotes(body: string, notes: string): string {
 // HEAD the last prepare in `dir` printed (it would leave fixes unread; an
 // earlier one only rereads more, as when a round is prepared twice), a merge
 // of main since (the patch would hold main's changes), or no fixes at all.
-function fixesPatch(cwd: string, dir: string, since: string, base: string, head: string): Buffer | string {
+// `preparedHead` is the HEAD that prepare printed (`dir`'s `head` file for the
+// CLI), and `main` what the branch is compared with.
+function fixesPatch(cwd: string, preparedHead: string | undefined, since: string, base: string, head: string, main: string): Buffer | string {
   if (!isAncestor(cwd, since, head)) {
     return `${since} isn't one of HEAD's commits: give the HEAD prepare printed in the round before. After an amend or a rebase there's none: start again at round 1 (prepare without <since>).`;
   }
-  const headFile = join(dir, "head");
-  const before = existsSync(headFile) ? readFileSync(headFile, "utf8").trim() : undefined;
+  const before = preparedHead;
   if (before === undefined || !isAncestor(cwd, since, before)) {
     return `${since} is later than the HEAD prepare printed in the round before (${before ?? "none in this folder"}): give that one, so no fix goes unread.`;
   }
-  if (git(cwd, "merge-base", "origin/main", since) !== base) {
+  if (git(cwd, "merge-base", main, since) !== base) {
     return "main was merged in since the round before, so the fixes can't be told from main's changes: start again at round 1.";
   }
   const fixes = reviewPatch(cwd, since, head);
@@ -1015,7 +1245,9 @@ function sameFile(cwd: string, a: string, b: string): boolean {
 const USAGE = `Usage: scripts/review.sh <command>
   prepare <absolute dir> [<since>]
                          write HEAD's diff to <dir>/diff.patch for the reviewers, and with <since> (the HEAD
-                         the round before printed) the fixes since to <dir>/fixes.patch; print the key, then HEAD
+                         the round before printed) the fixes since to <dir>/fixes.patch, both without the
+                         Template mirrors that are verbatim copies of a root file in the same patch; print
+                         the key of the whole diff, then HEAD
   key                    print the ledger key of HEAD's diff against origin/main
   check [<base>]         the gate's check: exit 1 unless HEAD's diff was reviewed clean
   record <file>          record a review from JSON ({ reviewedKey, reviewedHead, rounds, reviewerAgent, pr, findings }); - reads stdin
@@ -1054,22 +1286,24 @@ export function main(args: readonly string[], cwd: string = process.cwd(), env: 
         // An absolute folder only: an empty shell variable would otherwise
         // write the diff somewhere no reviewer is told to look.
         if (rest[0] === undefined || !isAbsolute(rest[0])) return fail(USAGE);
-        // One read of the patch gives both, so the key names exactly the text
-        // the reviewers get.
+        // One prepareRound gives both: the key is that of the whole diff, and the files written below hold what the reviewers read (readPatch
+        // and readFixes), which leave out the verbatim Template mirrors.
         // A fixes patch is only ever this prepare's: an earlier round's would
         // have the reviewers read old fixes.
         rmSync(join(rest[0], "fixes.patch"), { force: true });
-        const head = headCommit(cwd);
-        const base = mergeBase(cwd);
-        const patch = reviewPatch(cwd, base, head);
-        const fixes = rest[1] === undefined ? undefined : fixesPatch(cwd, rest[0], rest[1], base, head);
-        if (typeof fixes === "string") return fail(fixes);
+        const headFile = join(rest[0], "head");
+        const preparedHead = existsSync(headFile) ? readFileSync(headFile, "utf8").trim() : undefined;
+        const round = prepareRound(cwd, rest[1] === undefined ? {} : { since: { commit: rest[1], preparedHead } });
         mkdirSync(rest[0], { recursive: true });
-        writeFileSync(join(rest[0], "diff.patch"), patch);
-        if (fixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), fixes);
+        // What the reviewers read, without the verbatim Template mirrors; the key printed below is that of the whole diff.
+        writeFileSync(join(rest[0], "diff.patch"), round.readPatch);
+        if (round.readFixes !== undefined) writeFileSync(join(rest[0], "fixes.patch"), round.readFixes);
         // The HEAD this round reads, for the next round's fixesPatch.
-        writeFileSync(join(rest[0], "head"), `${head}\n`);
-        out(`${patchKey(patch)}\n${head}`);
+        writeFileSync(join(rest[0], "head"), `${round.head}\n`);
+        // On stderr, since callers read the two lines on stdout. Round 1 only: a later round is the same branch.
+        const size = rest[1] === undefined ? sizeWarning(round.patch) : undefined;
+        if (size !== undefined) process.stderr.write(`⚠ ${size}\n`);
+        out(`${round.key}\n${round.head}`);
         return 0;
       }
       case "check": {

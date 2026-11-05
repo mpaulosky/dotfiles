@@ -81,14 +81,19 @@
 //                               the scribe (when picked) documents the change,
 //                               a reviewer runs, main is merged in when the
 //                               branch doesn't contain it, and the gate runs
-//                               again (checkpoint 2). A red gate gets two gate-fixer
+//                               again (checkpoint 2). Then the host runs the pre-push
+//                               review's rounds (lib/host-review.mts); each round that
+//                               fixes something is followed by the gate again (checkpoint 3).
+//                               A red gate gets two gate-fixer
 //                               attempts per checkpoint; past that nothing is
 //                               pushed. A red checkpoint or a failed architect,
 //                               tester, backend or UI run is a failed build
 //                               attempt: the first gets a comment, the second
 //                               hands the issue back with sandcastle:needs-human
-//                               (lib/handback.mts). A failed scribe or reviewer
-//                               still publishes, with a note in the PR.
+//                               (lib/handback.mts). A failed scribe, reviewer or
+//                               local review still publishes, with a note in the PR (a local review that didn't finish holds the PR as a draft);
+//                               a usage-limit stop or a stalled sandbox leaves the branch for a later round, and a
+//                               time-budget stop or the review's time cap publishes what passed the gate.
 //                               Otherwise the host scans the commits for the
 //                               sandbox's secrets, pushes the commit the gate
 //                               passed on from the main checkout with git hooks
@@ -170,14 +175,20 @@ import {
   intakeStopReport,
   outcomeReport,
   renderSummary,
+  LOGS_DIR,
   REPORT_DIR,
+  runEnding,
+  stallStop,
   usageReport,
   waitingPrReport,
   writeRunReport,
   type RunEnding,
 } from "./lib/report.mts";
 import { publishedIssues, roundOutcomes, roundSummary } from "./lib/round.mts";
+import { copyReviewerLogs, reviewerLogsDir } from "./lib/role-logs.mts";
+import { timelineReport } from "./lib/role-timeline.mts";
 import { githubTokensIn } from "./lib/sandbox-env.mts";
+import { exitAfterStall } from "./lib/host-limit.mts";
 import { forgetGatedHead } from "./lib/shell.mts";
 import { umbrellaPhase } from "./lib/umbrella.mts";
 import { findWork } from "./lib/work.mts";
@@ -219,8 +230,8 @@ try {
 runLimits.start(budgetMinutes);
 console.log(`Time budget: ${budgetMinutes} minutes`);
 
-// How the run ended, for the run report: set to "finished" or "stopped" by
-// the try below, so anything that throws past it reads as a crash.
+// How the run ended, for the run report: set to "finished", "stopped" or "stalled"
+// (lib/report.mts#runEnding) by the try below, so anything that throws past it reads as a crash.
 let ending: RunEnding = { kind: "crashed" };
 
 // Whether protectHostGit() has pinned every git command's environment. Only
@@ -234,10 +245,11 @@ let ending: RunEnding = { kind: "crashed" };
 let startedUp = false;
 
 // An UncountedStopError from any phase (intake, the planner, the critique)
-// means the budget has passed or Claude's usage limit was hit: the catch below
-// ends the run cleanly rather than crash, since the next run picks the work up.
+// means the budget has passed, Claude's usage limit was hit or a sandbox step
+// stalled: the catch below ends the run rather than crash, cleanly for the first
+// two (the next run picks the work up) and red for a stall.
 // The try starts this early so its finally writes the run report
-// (.sandcastle/logs/) after every run that got past reading its arguments,
+// (the report folder, lib/report.mts#REPORT_DIR) after every run that got past reading its arguments,
 // even one that fails a startup check: a workflow step reads handbacks.json.
 try {
   const envFile = ".sandcastle/.env";
@@ -337,7 +349,8 @@ try {
     // -----------------------------------------------------------------------
     // See lib/follow-up-pass.mts#followUpPassPhase: each pass runs in its own
     // sandbox, in parallel, and the build phase starts after them. A failed
-    // pass is logged and the sweep finds its PR again next round.
+    // pass is logged and the sweep finds its PR again next round. A stalled one is skipped for the rest
+    // of the run, and recorded, so the run still ends red.
     if (passes.length > 0) {
       const passBase = fetchMain();
       await followUpPassPhase(passes, loadQueue(), passBase);
@@ -466,6 +479,8 @@ try {
     // Log any agents that threw (network error, sandbox crash, timeout, etc.).
     // A clean stop is named in the round summary instead.
     for (const [i, outcome] of settled.entries()) {
+      const stall = outcome.status === "rejected" ? stallStop(outcome.reason) : undefined;
+      if (stall !== undefined) intakeStopReport.record(stall);
       if (outcome.status === "rejected" && !(outcome.reason instanceof UncountedStopError)) {
         console.error(
           `  ✗ #${work[i]!.issue.number} (${work[i]!.branch}) failed: ${outcome.reason}`,
@@ -485,19 +500,29 @@ try {
     if (summary.stop !== undefined) {
       // Nothing reached a PR, so the next plan would pick the same issues and
       // repeat the same round: stop and let a human look. Or a build stopped
-      // cleanly on the time budget or usage limit, so nothing more can start.
+      // on the time budget, the usage limit or a stalled step, so nothing more can start.
       console.log(summary.stop);
       break;
     }
   }
-  // A loop that ended on the time budget or the usage limit (no new round,
+  // A loop that ended on the time budget, the usage limit or a stalled step (no new round,
   // or a build that stopped) stopped rather than finished.
   const limitReason = runLimits.stopReason();
-  ending = limitReason === undefined ? { kind: "finished" } : { kind: "stopped", reason: limitReason };
+  // A stall sets no run limit, but it ends the run red, so the report says it stalled.
+  ending = runEnding(limitReason, intakeStopReport.items());
 } catch (error) {
   if (!(error instanceof UncountedStopError)) throw error;
-  ending = { kind: "stopped", reason: error.message };
-  console.log(`\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`);
+  const stall = stallStop(error);
+  if (stall !== undefined) intakeStopReport.record(stall);
+  // A stall a follow-up pass recorded earlier in the run counts too: the ending comes from everything recorded.
+  ending = runEnding(error.message, intakeStopReport.items());
+  console.log(
+    ending.kind !== "stalled"
+      ? `\n⏹ Stopping the run cleanly: ${error.message}. Nothing more starts; the next run picks the work up.`
+      : stall !== undefined
+        ? `\n⏹ Stopping the run, which ends red: ${error.message}. Nothing more starts; the next run meets the same stall until a person looks.`
+        : `\n⏹ Stopping the run: ${error.message}. Nothing more starts. It ends red because a sandbox step stalled earlier (${ending.reason}).`,
+  );
 } finally {
   console.log("\nToken usage by role:");
   const lines = usageReport.lines();
@@ -505,7 +530,7 @@ try {
 
   // Only logged and written here. Ending the run red on a hand-back is the
   // trigger workflow's final step, reading the list written to
-  // .sandcastle/logs/handbacks.json below; exiting non-zero here would make a
+  // handbacks.json (in the report folder) below; exiting non-zero here would make a
   // local run that hands something back look like a crash.
   const handBacks = handBackReport.items();
   if (handBacks.length > 0) {
@@ -537,8 +562,10 @@ try {
     humanThreads,
     usage: usageReport.totals(),
     stops: intakeStopReport.items(),
+    timeline: timelineReport.lines(),
   });
   writeRunReport(summary, handBacks);
+  copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR));
   console.log(`\nRun report: ${REPORT_DIR}/summary.md`);
 
   // Unlike a hand-back, an intake stop means the host couldn't run a role at
@@ -548,6 +575,9 @@ try {
     console.error(`\n✗ Intake stopped: ${reason}. First error: ${firstError}`);
   }
   process.exitCode = intakeStopExitCode(intakeStopReport.items());
+  // A call the host gave up on (a Docker create or close, or a sandbox exec) may still hold something that keeps Node running; end the
+  // process after a grace period. A close the host gave up on after finished work also makes this set exit code 1, so that run ends red.
+  exitAfterStall();
 }
 
 console.log("\nAll done.");

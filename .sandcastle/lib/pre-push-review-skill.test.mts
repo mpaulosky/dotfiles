@@ -10,6 +10,7 @@ const agent = readFileSync(new URL("../../.claude/agents/pre-push-reviewer.md", 
 const skill = readFileSync(new URL("../../.claude/skills/pre-push-review/SKILL.md", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../../.github/workflows/claude-review.yml", import.meta.url), "utf8");
 const bar = readFileSync(new URL("../../.claude/skills/pre-push-review/review-bar.md", import.meta.url), "utf8");
+const lenses = readFileSync(new URL("../../.claude/skills/pre-push-review/lenses.md", import.meta.url), "utf8");
 const hardening = readFileSync(new URL("../../.claude/skills/hardening-review/SKILL.md", import.meta.url), "utf8");
 
 describe("the pre-push-review skill's reviewers", () => {
@@ -603,5 +604,62 @@ describe("the skills' reading of the .security record", () => {
 
     assert.match(text, /Do not read `\.security\/`/);
     assert.match(text, /fixed entry/);
+  });
+});
+
+describe("the pre-push-review skill's fewer-rounds rules", () => {
+  const row = (name: string) => lenses.split("\n").find((line) => line.startsWith(`| ${name} |`)) ?? "";
+
+  it("has lenses.md carry the edge-case checklist", () => {
+    assert.match(lenses, /^## Edge-case checklist$/m);
+    // The section alone: the Edge cases and Tests rows hold some of these words too.
+    const checklist = lenses.slice(lenses.indexOf("## Edge-case checklist"), lenses.indexOf("## Out of scope"));
+    for (const inputClass of ["what falls outside it", "a missing final newline", "a combining mark", "a byte-order mark", "a non-breaking space", "a code fence, a tag, a quote", "nested in the first", "n-1, n and n\\+1"]) {
+      assert.match(checklist, new RegExp(inputClass), inputClass);
+    }
+  });
+
+  it("has the Edge cases row carry the essentials itself, since the host gives a reviewer only its row", () => {
+    const edge = row("Edge cases");
+
+    for (const inputClass of ["what falls outside it", "n-1, n and n\\+1", "a lone", "a surrogate pair cut in half, whitespace, and a cut", "open construct"]) {
+      assert.match(edge, new RegExp(inputClass), inputClass);
+    }
+  });
+
+  it("has the Tests row ask for n-1, n and n+1 tests that fail when removed or shifted", () => {
+    assert.match(row("Tests"), /have a test at n-1, n and n\+1 that fails when it is removed or shifted by one/);
+  });
+
+  it("has the fixer check its fix before committing, and replace a function that two rounds in a row fixed", () => {
+    assert.match(skill, /Check the fix before committing it/);
+    assert.match(skill, /Write n-1, n and n\+1 boundary tests for each/);
+    assert.match(skill, /\(a mutation check\)/);
+    assert.match(skill, /\]\(\.\.\/hardening-review\/references\/mutations\.md\)/);
+    assert.match(skill, /\*\*Edge-case checklist\*\* in \[lenses\.md\]/);
+    assert.match(skill, /^4\. Commit the test and the fix together/m);
+    assert.match(skill, /in the fixes of two rounds in a row, stop patching it/);
+    const flatSkill = skill.replace(/\s+/g, " ");
+    assert.match(flatSkill, /refuses a dirty file, so use it only after the commit/);
+    assert.match(flatSkill, /Find the repeats with `git log -p` over the earlier round's `fix\(` commits/);
+  });
+
+  it("gives a later round's reviewers the whole function around each changed line", () => {
+    assert.match(skill.replace(/\s+/g, " "), /the whole function around each changed line and its callers/);
+  });
+
+  it("tells the person about the size warning: past 30 files or 3,000 lines, mirrors once, advice only", () => {
+    const flat = skill.replace(/\s+/g, " ");
+
+    assert.match(flat, /more than 30 files or more than 3,000 lines, a file and its Template mirror counting once/);
+    assert.match(flat, /it only advises, and the review goes on/);
+  });
+
+  it("tells the person and the reviewers that verbatim Template mirrors are left out, while the key covers the whole diff", () => {
+    const flat = skill.replace(/\s+/g, " ");
+
+    assert.match(flat, /without the Template mirror copies that are verbatim copies of a root file in the same patch/);
+    assert.match(flat, /The key is that of the whole diff, mirrors included, so a change in a mirror alone still needs a new review/);
+    assert.match(flat, /Template mirror copies identical to the root copy are left out of the patch, so the root file is the one to read/);
   });
 });

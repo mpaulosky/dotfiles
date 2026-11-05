@@ -68,7 +68,7 @@ post, word for word. Keep it current: after every follow-up commit, update it so
   the PR couldn't merge until it's up to date: bring main in with `git merge origin/main`. Then it runs
   `scripts/gate.sh`: the lints, the local review's check (a clean record for the diff; a clean merge of `main` keeps
   it, a new commit needs a new one), the build and the tests CI runs. `GATE_SKIP_REVIEW=1` skips the review check for
-  gate runs while iterating, never for a push. Sandcastle's sandboxes set it: its own reviewer role stands in there.
+  gate runs while iterating, never for a push. Sandcastle's sandboxes set it: the host runs the review's rounds on a built branch itself (`lib/host-review.mts`).
 - **Required checks:** Build Solution, Test Suite, Branch name, PR title, actionlint, zizmor, shellcheck, markdownlint
   and yamllint. A docs-only PR skips the build and tests, and so does a Dependabot GitHub Actions bump; a skipped check
   counts as passing.

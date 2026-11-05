@@ -69,7 +69,8 @@ pass its tests.
 
 ### 3. Gather earlier decisions
 
-Earlier reviews of this branch are context. What they fixed or dismissed isn't raised again; what a person accepted, and
+Earlier reviews of this branch are context. What they dismissed isn't raised again; a fixed item isn't proof it is fixed, so
+the reviewers read the code at its `path:line` and raise it again if the problem is still there; what a person accepted, and
 what was left open, is raised again for the person to decide for this code:
 
 - `scripts/review.sh latest`: the nearest earlier review of this branch's own commits, whatever the branch was called
@@ -119,11 +120,15 @@ already holds the issue or the PR (Sandcastle), use that.
 
 ### 4. Review the diff
 
-Run `scripts/review.sh prepare <run>`. It writes the branch's whole diff against its merge base with `origin/main` to
-`<run>/diff.patch` and prints two lines, the diff's key and HEAD: keep both, since they name exactly the code this round
-reviews. In a later round, run `scripts/review.sh prepare <run> <HEAD the round before printed>`: it also writes the
-diff of that round's fixes to `<run>/fixes.patch`. Write to `<run>/decisions.md` the earlier decisions from step 3 and every finding this run's earlier rounds
-raised, each with its id, outcome and reason, so no round raises again what an earlier one fixed or dismissed. Label
+Run `scripts/review.sh prepare <run>`. It writes the branch's diff against its merge base with `origin/main` to
+`<run>/diff.patch`, without the Template mirror copies that are verbatim copies of a root file in the same patch (`test.sh` already fails when
+a copy drifts, so reading both doubles the reading; a mirror that differs from its root copy, or has none, stays; for a path git writes two sections for, such as a symlink that becomes a file,
+the sections must match in order), and prints two lines on stdout, the diff's
+key and HEAD: keep both, since they name exactly the code this round reviews. The key is that of the whole diff, mirrors included, so a change in a
+mirror alone still needs a new review. In a later round, run `scripts/review.sh prepare <run> <HEAD the round before printed>`: it also writes the
+diff of that round's fixes to `<run>/fixes.patch`, filtered the same way. Write to `<run>/decisions.md` the earlier decisions from step 3 and every finding this run's earlier rounds
+raised, each with its id, outcome and reason, so no round raises again what an earlier one dismissed. A fixed item stays settled only until
+a reviewer reads the code at its `path:line` and finds the problem still there, then it is raised again. Label
 accepted and open ones "raise again if still in the code". Give a security finding (every finding the report marks
 `(security)`: a Warning, one whose lens names security, or any not marked `security: false`) whose
 weakness is still in the code (open, accepted, or decided as part of another), from `latest` or from this run's earlier
@@ -134,9 +139,15 @@ source at the pinned commit into `<run>/actions/<owner>/<repo>/<path>`, as the r
 (`repo="$(scripts/review.sh repo)" && GH_REPO="$repo" gh api -H 'Accept: application/vnd.github.raw' 'repos/<action owner>/<action repo>/contents/<path>?ref=<sha>'`), since reviewers
 can't.
 
+In round 1, when the branch changes more than 30 files
+or more than 3,000 lines, a file and its Template mirror counting once, `prepare` also writes a warning to stderr, so stdout stays the two lines
+(the host review logs the same one). Tell the person and suggest splitting the branch; it only
+advises, and the review goes on.
+
 Round 1 reviews the whole branch. A later round reviews the fixes, not the whole branch again: its reviewers get
 `<run>/fixes.patch` to review and `<run>/diff.patch` as context, and raise only problems on the lines the fixes changed or
-problems the fixes cause elsewhere, such as a caller a changed function now breaks. Choose a later round's reviewers by
+problems the fixes cause elsewhere, such as a caller a changed function now breaks. Give them the whole function around
+each changed line and its callers to read, not only the patch: a fix's lines are judged by what they sit in. Choose a later round's reviewers by
 the files `fixes.patch` changes. This, with the severities, is what ends the review.
 
 Start the reviewers in parallel, all in one message. Then change nothing in the worktree, not even a commit or an amend,
@@ -153,7 +164,8 @@ Give every reviewer:
 - The worktree's absolute path (`git rev-parse --show-toplevel`): every repository file is read under it by absolute
   path, and it is Grep's and Glob's `path`, or they search the checkout the session started in.
 - [review-bar.md](review-bar.md), its lens's row, the **Severities** table above, and `<run>/diff.patch` (in a later
-  round, `<run>/fixes.patch` to review and `<run>/diff.patch` as context).
+  round, `<run>/fixes.patch` to review and `<run>/diff.patch` as context). When `prepare` left a mirror out (the patch it wrote is shorter than the whole diff), say that Template mirror
+  copies identical to the root copy are left out of the patch, so the root file is the one to read.
 - The sources of truth to read for the files it reviews: [lenses.md](lenses.md), and the repository's own guidance
   where it has it: `.claude/skills/code-review/SKILL.md`, `.sandcastle/CODING_STANDARDS.md` (or `docs/CODING_STANDARDS.md`, where the repository has
   one), `CLAUDE.md`, `CONTEXT.md`, the ADRs in `docs/adr/` the change touches, and the `.claude/rules/` files whose paths match.
@@ -220,7 +232,19 @@ Fix the Critical, Warning and Advisory findings. For each one:
 1. Write the test first, in the test project that mirrors the code (`tests/<Project>.Tests.<Kind>/`, a
    `.sandcastle/lib/*.test.mts`). Run it and see it fail for the reason the finding names.
 2. Fix the code, and see the test pass.
-3. Commit the test and the fix together: `fix(<scope>): <Summary>`.
+3. Check the fix before committing it. A fix is new code with its own edge cases, which is where most later findings come from:
+   - List every branch, constant, regex, cap and window the fix adds.
+   - Write n-1, n and n+1 boundary tests for each.
+   - Show that removing each one, or shifting it by one, fails a test (a mutation check): edit the line, see a test fail, restore it.
+     `mutate.py` ([the hardening-review's runner](../hardening-review/references/mutations.md)) does the same on a committed fix,
+     but refuses a dirty file, so use it only after the commit.
+   - Go through the **Edge-case checklist** in [lenses.md](lenses.md) on the lines the fix wrote.
+4. Commit the test and the fix together: `fix(<scope>): <Summary>`.
+
+If a function is in the fixes of two rounds in a row, stop patching it. Replace the mechanism with one that rules the class
+out, and test the new one. For example, put the parts that must survive before the part that gets cut and cut last, so
+nothing needs closing; or refuse an input over a fixed count outright instead of telling constructs apart inside windows. Find
+the repeats with `git log -p` over the earlier round's `fix(` commits.
 
 A finding no test can pin, such as one in a workflow or in prose, gets a deterministic check in
 `.github/ci/gate-checks.sh` when one can express it, or a reason saying why it has no test. A security finding (every Warning) is
@@ -291,8 +315,9 @@ happened to it, and its test or reason.
 When Critical or Warning findings are open, the push is blocked: say so, and for each one say what decision it needs and
 the suggested fix. The person either accepts it with `scripts/review.sh accept R3 "<reason>"`, or asks you to fix it:
 fix it as in step 6, then start a new run at step 1, in which the record just made is step 3's earlier review. The
-Advisory findings left open never block. Sandcastle doesn't run this review yet: its sandboxes skip the check and see an empty
-`.git/review`, and how a Sandcastle run records a review is still to be decided.
+Advisory findings left open never block. For a branch Sandcastle builds, the host runs these rounds itself (`.sandcastle/lib/host-review.mts`), with these
+reviewers, the Bar and lenses, and `prepare` and `record` run by the host in the main checkout, so no session records for it and no agent reaches `.git/review`;
+its sandboxes still skip the gate's review check and see an empty `.git/review`.
 
 File the open Advisory findings in one follow-up issue per branch. The body is the output of
 `scripts/review.sh advisory`, written to `<run>/advisory.md` as it is: it lists each open Advisory finding with its id,

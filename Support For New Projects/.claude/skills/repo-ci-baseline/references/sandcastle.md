@@ -25,17 +25,20 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 | `.gitignore` | Keeps `.env` and a run's `logs/`, `worktrees/`, `work/` and `follow-up.json` out of git; the older repos lacked the last two |
 | `.env.example` | The settings Sandcastle reads, documented once; five variants had grown |
 | `intake-prompt.md`, `critique-prompt.md` | Judge an issue or a plan against the issue alone, with no repo-specific text |
-| `lib/host-safety.mts`, `lib/shell.mts` and their tests | The guardrails that keep agent-written code off the host; they import only each other, so a repo's own code can't break them |
+| `lib/host-safety.mts`, `lib/shell.mts`, `lib/host-limit.mts` and their tests | The guardrails that keep agent-written code off the host, and the time limits on its own `gh`, `git` and Docker waits; they import only each other and `lib/errors.mts`, so a repo's own code can't break them |
 | `check.sh` | The local gate's Sandcastle check: type-checks and tests `.sandcastle/` when it or a file its tests read changed; the repo's extra files are in the Seed `check-paths.txt` |
 | `main.mts` | The run's phases and round loop; it reads its round cap from `lib/repo-config.mts` |
 | `status.mts`, `lib/status.mts` and their tests | The read-only `sandcastle:status` command ([Status](#status)); it shares the sweep's decision code (`sweepContext`, `admitToSweep`, `decide`) so it can't disagree with it |
 | `lib/config.mts` and its test | What every Sandcastle repo shares: the role names (`ROLES`, plus the opt-in `ui` as `OptInRole`), limits, labels (`SANDCASTLE_LABELS`, and `FOLLOW_UP_LABEL` kept apart from them, with `HOST_LABELS` the host creates), markers (`SESSION_REPLY_MARKER` too), the Copilot reviewer settings, and the queue-scope (`isDefaultQueueScope`) and budget parsing |
+| `lib/host-review.mts`, `lib/host-review-prompts.mts` and their tests | The host-side pre-push review of a built branch ([pre-push-review.md](pre-push-review.md#sandcastle-runs-the-review-on-the-host)): the reviewers, triage, the backend role's fixes and the host's record; the host holds the PR as a draft while Critical or Warning findings (or a security finding) are open, or when the review didn't finish, until a person accepts them (or runs the review again) and marks it ready, and files the open Advisory ones in a follow-up issue |
 | The other `lib/` modules and their tests, `lib/errors.mts`, `lib/git-sandbox-fake.mts` and `lib/ui-role-fixture.mts` (the test helper for the opt-in `ui` role) | They import each other as one cluster, so they're Owned together; their tests pin no per-repo value |
 
 The Owned modules read only the names `lib/repo-config.mts` exports (below), and `config.mts` imports nothing from it.
 A change to an Owned module that reads a new name breaks every repo until it adds that name, and `tsc --noEmit` reports it in the repo's own check.
 
-Outside `.sandcastle/`, the Owned Sandcastle section also has `.github/workflows/sandcastle.yml` ([The workflow](#the-workflow)), a root copy in dotfiles like the rest.
+Outside `.sandcastle/`, the Owned Sandcastle section also has `.github/workflows/sandcastle.yml` ([The workflow](#the-workflow)), a root copy in dotfiles like the rest,
+and `.claude/rules/sandcastle-hand-off.md`, the session guidance for handing a pull request off to Sandcastle with `sandcastle:follow-up` ([Hand-off PRs](#hand-off-prs)).
+It loads in every session and holds no per-repo value, so Apply keeps it current.
 
 Under `.sandcastle/`, the no-placeholders check refuses only Apply's `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}`:
 Sandcastle fills its own `{{NAME}}`s (`{{ISSUES_JSON}}`, `{{SHARED_RULES}}` and the rest) when it runs a prompt.
@@ -50,12 +53,11 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.sandcastle/roles/shared-rules.md` | The repo's paragraph, its stacks and test commands; the one file every role reads about the repo |
 | `.sandcastle/plan-prompt.md`, `.sandcastle/review-prompt.md` | The optional roles' rules and the docs the review follows |
 | `.sandcastle/CODING_STANDARDS.md` | The repo's code and test standards, which every role and the review follow |
-| `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`), and optional Chromium libraries for Playwright (`INSTALL_PLAYWRIGHT_DEPS`, `PLAYWRIGHT_VERSION`) |
+| `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`), optional Chromium libraries for Playwright (`INSTALL_PLAYWRIGHT_DEPS`, `PLAYWRIGHT_VERSION`), and `tini` as PID 1 (`ENTRYPOINT ["tini", "--", "sleep", "infinity"]`) |
 | `.sandcastle/check-paths.txt` | The files, besides the Template's own list, whose change makes the Owned `check.sh` run Sandcastle's check: those the repo's `.sandcastle/` tests read (`CLAUDE.md`, `.github/workflows`, the solution file and so on); one pathspec per line |
 | `package.json`, `pnpm-workspace.yaml` | Sandcastle's packages and scripts; a repo with its own Node tooling merges them |
-| `.claude/rules/sandcastle-hand-off.md` | The session guidance for handing a pull request off to Sandcastle with `sandcastle:follow-up` ([Hand-off PRs](#hand-off-prs)); it loads in every session, and a repo can keep or reword it |
 | `.github/ci/sandcastle-skills.txt` | The skills the Sandcastle workflow installs on the runner for the run (a pinned dotfiles commit and skill names, read as data); empty until filled ([The workflow](#the-workflow)) |
-| `.sandcastle/lib/repo-config.mts` | `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` for the local review ([pre-push-review.md](pre-push-review.md)), `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
+| `.sandcastle/lib/repo-config.mts` | `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` for the local review ([pre-push-review.md](pre-push-review.md)), `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), how long the host lets that gate run before it kills it (`GATE_LIMIT_MINUTES`, 10 in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
 
 The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-prompts.test.mts` checks).
 `test.sh` keeps dotfiles' own text out of them, and checks that the Dockerfile's linter versions match the Owned `scripts/gate.sh` and its .NET channel matches `global.json`.
@@ -64,6 +66,10 @@ so its E2E tests find Chromium's system libraries in the sandbox. The step runs 
 keep `PLAYWRIGHT_VERSION` near the repo's `Microsoft.Playwright` version. It installs only the libraries: the browser itself is left to the test fixture at run time,
 so a Playwright bump needs no image change.
 A Seed file is written once, so an existing repo keeps its own Dockerfile and adds the step by hand.
+A repo that already has a Dockerfile adds `tini` to its `apt-get install` list and replaces its `ENTRYPOINT ["sleep", "infinity"]`
+with `ENTRYPOINT ["tini", "--", "sleep", "infinity"]`: with `sleep` as PID 1,
+nothing reaps the processes the gate orphans, they stay zombies holding their PIDs, and a long build ends unable to fork (the gate fails with `Resource temporarily unavailable`,
+claude-code aborts with exit 134, git stops answering). Sandcastle's `docker()` has no `--init` option, so the image has to do it. `lib/dockerfile.test.mts` pins it in dotfiles' and the Seed's Dockerfile.
 `roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo that gets `.sandcastle/`, where it stays unused. To opt in, add a `ui` entry to
 `ROLE_AGENTS` in `lib/repo-config.mts` (the Seed carries it commented out) and add this bullet to `plan-prompt.md`'s ROLES list, so the planner can pick the role:
 `` - `ui`: the issue adds or changes Blazor components or pages (`.razor` files, their code-behind, layout or styling). Leave it out when the issue changes no markup. ``
@@ -179,6 +185,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
 
 - **Which.** `sweepSubject` in `lib/follow-up.mts` accepts a labelled pull request that isn't a Sandcastle issue's (host-authored, marked, on an issue's branch, in this run's scope or not) when it is
   from the same repository, into `main`, not a draft, and its branch name passes `scripts/check-branch-name.sh` (`isHandOffBranch` in `lib/branches.mts`).
+  A PR the host-side review holds as a draft ([pre-push-review.md](pre-push-review.md#sandcastle-runs-the-review-on-the-host))
+  is not swept until a person marks it ready, so CI failures and review feedback on it need a person.
   A Sandcastle pull request carrying the label is never a hand-off:
   it is swept as its issue's when `sweepSkipReason` lets it through, and skipped otherwise. Only the default queue scope (`isDefaultQueueScope`: the `Sandcastle` label,
   what GitHub Actions always runs) follows hand-offs.
@@ -212,7 +220,7 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   Two behaviours of GitHub are assumed and not checked here. One: `update-branch` makes a two-parent commit that web-flow signs and the calling account authors,
   and no API lets another account produce one with the host as author. Two: a fresh comment's `updated_at` equals its `created_at`
   (`handOffApproval` counts a record only then, so a change in GitHub would stop every hand-off, and the log would say the head isn't recorded).
-  The Seed `.claude/rules/sandcastle-hand-off.md` is never overwritten, so a repo that has it keeps the older text (which says a push after the label isn't checked) until it deletes the file and re-Applies.
+  The Owned `.claude/rules/sandcastle-hand-off.md` is rewritten on every Apply, so a repo's copy never keeps older text (which said a push after the label isn't checked).
   A repository an organisation owns, which has no owner login to match, follows no hand-off.
 - **The claim.** A hand-off pull request has no issue to carry `sandcastle:building`, so the pass puts it on the pull request itself, and startup clears a stale one.
   When its branch names an issue (`feature/{n}-…`), the pass claims that issue too, since a build of the issue pushes to the same branch.
@@ -223,8 +231,8 @@ red checks or falling behind `main`, and PR Auto-Merge holds it on every unresol
   [PROCESS.md](../template/owned/docs/PROCESS.md)). A thread whose last bot, host or owner comment carries it, posted under the host's login or another owner's, counts as answered,
   and the follow-up role is not shown it. The marker counts anywhere in the comment's body, so a host or owner comment that quotes it is taken for a session's reply too.
 - **The prompt.** The follow-up role gets the pull request's number, title and description in the place of an issue's, under a note saying it is not an issue.
-- **The session guidance** is the Seed `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
-  which Apply can't edit. It is the repo's once written, so Apply never overwrites it.
+- **The session guidance** is the Owned `.claude/rules/sandcastle-hand-off.md`: a rules file has no `paths:` and loads in every session, like a `CLAUDE.md`,
+  which Apply can't edit. Apply overwrites it, so a repo adds its own guidance in a separate rules file or its `CLAUDE.md`.
 
 The workflow's `pull_request_target` `labeled` trigger starts only the `record-head` job, never a Sandcastle run: the schedule and the existing triggers pick a labelled pull request up,
 and `chore/` branches are not in the `workflow_run` and review lists.
@@ -258,6 +266,28 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
 - **A repo opts in with the `SANDCASTLE_GH_TOKEN` secret** (a fine-grained PAT with Contents, Issues, Pull requests and Actions read and write, and no Workflows permission),
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
   locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
+- **The run report artifact holds an allowlisted view of the reviewers' logs, never a whole log.** `lib/role-logs.mts` writes, for each `*-reviewer.log`
+  (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), the last host status lines (the start line without its timestamp),
+  the last known tool calls' names without arguments (an MCP tool only as `mcp__(...)`) and the last few error lines
+  (cut short, and left out when they hold a long run of token characters), and a note in place of a view that looks like a secret.
+  Beside them it writes `index.txt`: for each number, the issue whose build wrote the log, or that the run started no build for it, and whether the view could
+  not be copied. Only an issue number and fixed words go in, never a file name; a log is matched to a build by its name, which an agent that can write the logs
+  could choose, so the label is a hint and not proof of where a log came from.
+  A run with no `*-reviewer.log` to copy has no `reviewer-logs/` folder and no `index.txt` in its report, and the copy step says nothing:
+  a run that starts no role (the planner alone) leaves none, with no `.sandcastle/logs` at all on Actions,
+  and so does one whose logs are only a non-reviewer role's and the pre-push review's. An absent folder is normal.
+  On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
+  the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
+  This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.
+  An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
+  After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit
+  or time-budget stop), or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes, zombies, the limits on forking
+  (`Max processes` and the cgroup's `pids.current` and `pids.max`) and core files (`lib/diagnostics.mts`); the probe runs under its own `timeout`, and a failed probe is only logged.
+  The host also times each role's tool calls from the agent's stream (`lib/role-timeline.mts`; it reads the stream's own lines, since Sandcastle's parser reports only Bash,
+  web and Agent calls), and `summary.md` lists, for each role, its runs, tool calls, total time and the longest stretches between calls, each named for
+  the call before it (a tool's name only, never its arguments, and only a name in `KNOWN_TOOLS`, else `other`). A stretch is that call running plus the model
+  producing the next one, so a long stretch after a `Bash` call is usually a command that ran long, such as a gate. The first stretch (`start`) includes the
+  sandbox and agent starting, and the last one the closing message.
 - **`.github/ci/sandcastle-skills.txt` lists the skills the run mounts (Seed).** A hosted runner has no `~/.claude/skills`, which `lib/skills.mts` mounts
   the `SANDBOX_SKILLS` from. The file is data: a `dotfiles-sha` line (the commit of mpaulosky/dotfiles' `main` to take them from, 40 lowercase hex digits, pinned like an action)
   and a `skill` line per skill name; the Seed has neither, and installs nothing.
@@ -293,21 +323,27 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
    A Seed `package.json` is written once, so a repo that already has one adds the script by hand.
 3. Diff the repo's role prompts, `Dockerfile` and `package.json` against the Template's Seed files, and bring over what the repo lacks.
 4. Run `pnpm install`, then commit `pnpm-lock.yaml` with the change.
-5. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.
-6. Take the Template's `sandcastle.yml` and drop the repo's own from `NOT_OWNED_BASELINE_PATHS`; move the skills it installs into `.github/ci/sandcastle-skills.txt` ([The workflow](#the-workflow)).
-7. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
+5. Add `GATE_LIMIT_MINUTES` to `lib/repo-config.mts` (the Seed's is 10): the Owned `lib/step-limit.mts` imports it, so a repo without it fails to load.
+   Size it for the repo's slowest gate under parallel builds. The host runs every sandbox command under `timeout` (GNU coreutils, in the Template's
+   `node:22-trixie` image; a different base image needs it too) and kills a step that runs over. The gate that runs over is a red gate (exit 124, the step named). The value must be
+   a positive number of minutes the host's timer can wait for, or `createCheckedSandbox` throws. Any other command that runs over, or one
+   the host gives up on (the gate too), throws `StalledStepError` naming it, as does every later command and role start in that sandbox, and the run ends red
+   (`main.mts`) instead of reading a stall as an answer.
+6. Keep the older repos' `claude-opus-4-8` pin by setting it in `lib/repo-config.mts`'s `ROLE_AGENTS`; moving off it is that repo's follow-up.
+7. Take the Template's `sandcastle.yml` and drop the repo's own from `NOT_OWNED_BASELINE_PATHS`; move the skills it installs into `.github/ci/sandcastle-skills.txt` ([The workflow](#the-workflow)).
+8. The sandbox has no Docker daemon. A repo whose test projects start containers sets `GATE_COMMAND` in `lib/repo-config.mts` to a script that leaves
    those out and keeps the lints, and points the gate-fixer and follow-up roles' instructions at it. Name it `.sandcastle/sandbox-gate.sh`, not `.sandcastle/check.sh`, which is Owned:
    IssueManager, IssueTracker and TicketManager rename theirs, in a PR that merges before the Apply that brings in the Owned one.
-8. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/sandbox-gate.sh`, the script of step 7), and list in `CHECK_PATHS` every place
+9. Set `GATE_SCRIPT` in `lib/repo-config.mts` to the committed file `GATE_COMMAND` runs (`.sandcastle/sandbox-gate.sh`, the script of step 8), and list in `CHECK_PATHS` every place
    the gate reads its checks from: its scripts and tests, `.github/workflows/`, `.github/scripts/check_gh_repo.py`, `.claude/skills/` (the gate's `gh` check reads them)
    and `package.json`. A gate whose branch changes `GATE_SCRIPT`, or a `GATE_SCRIPT` that isn't a file at the
    branch's base, fails without running.
 
-9. Add `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` to `lib/repo-config.mts` as one-line `export const` lines, and the settings deny rules, as [pre-push-review.md](pre-push-review.md#adapting) says.
+10. Add `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` to `lib/repo-config.mts` as one-line `export const` lines, and the settings deny rules, as [pre-push-review.md](pre-push-review.md#adapting) says.
 
 `.sandcastle/check.sh` is Owned, so Apply refreshes it: the unset of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` and the review paths arrive with it.
 A repo that had edited its copy's list of watched paths (Blazor-Server and auth0-management-app) moves those paths, one per line, into the Seed `.sandcastle/check-paths.txt` before it Applies.
-A repo whose `check.sh` is its sandbox gate (the three older repos) renames it first and points `GATE_COMMAND` and `GATE_SCRIPT` at the new name (step 7).
+A repo whose `check.sh` is its sandbox gate (the three older repos) renames it first and points `GATE_COMMAND` and `GATE_SCRIPT` at the new name (step 8).
 Apply keeps a `.sandcastle/check.sh` that either names,
 and reports it as a known conflict with the rename to make, since the Owned script would otherwise replace the gate and pass it without the repo's lints and tests.
 The list is read as written: a line is a git pathspec, and an `:(exclude)` line only trims the list, never the Template's own paths.

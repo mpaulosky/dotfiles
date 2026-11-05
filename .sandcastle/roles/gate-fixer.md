@@ -34,7 +34,8 @@ You can't reach GitHub from here, and don't need to: everything the issue says i
 
 Checkpoint 1 runs after the last developer run. There you may finish the implementation: add or change production code the issue asks for until its tests pass.
 
-Checkpoint 2 runs after the review, just before the branch is published. There you may only repair: fix the build, lint errors and broken tests, and add no behaviour the branch
+Checkpoint 2 runs after the reviewer, and again after the pre-push review's fixes,
+just before the branch is published. There you may only repair: fix the build, lint errors and broken tests, and add no behaviour the branch
 doesn't already have.
 
 This is checkpoint {{CHECKPOINT}}.

@@ -25,8 +25,11 @@ export function issuePromptArgs(issue: SandcastleIssue, branch: string) {
 
 // The gate-fixer needs the issue, since at checkpoint 1 it may finish the
 // implementation, plus the red gate's output and which checkpoint it's at.
+// The Seed gate-fixer prompt knows two checkpoints. Checkpoint 3, the gate
+// after the host-side review's fixes, is a repair-only one like the second, so
+// the fixer is told it is at "2".
 export function gateFixerPromptArgs(issue: SandcastleIssue, branch: string, checkpoint: Checkpoint, gateOutput: string) {
-  return { ...issuePromptArgs(issue, branch), CHECKPOINT: String(checkpoint), GATE_OUTPUT: gateOutput };
+  return { ...issuePromptArgs(issue, branch), CHECKPOINT: String(checkpoint === 3 ? 2 : checkpoint), GATE_OUTPUT: gateOutput };
 }
 
 // What the host refuses in the reviewer's PR description, filled in as

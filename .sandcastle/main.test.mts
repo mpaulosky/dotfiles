@@ -332,6 +332,19 @@ describe("main.mts's reportRepo wiring", () => {
   });
 });
 
+// The run report lists each role's tool-call timing (lib/role-timeline.mts), which only main.mts hands to renderSummary.
+describe("main.mts's tool-call timing", () => {
+  it("passes timelineReport.lines() to the run report's summary", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const summaryCall = mainMts.indexOf("renderSummary(");
+    const writeReportCall = mainMts.indexOf("writeRunReport(", summaryCall);
+
+    assert.notEqual(summaryCall, -1, "main.mts doesn't call renderSummary(");
+    assert.match(mainMts.slice(summaryCall, writeReportCall), /timeline: timelineReport\.lines\(\)/);
+    assert.match(mainMts, /import \{ timelineReport \} from "\.\/lib\/role-timeline\.mts";/);
+  });
+});
+
 // #320: a run whose intake stopped (a repeated failure, such as the missing
 // Docker image in the first automatic runs) must end red, whatever hand-backs
 // it also made, rather than exit 0 and leave the queue stuck with no signal.
@@ -347,6 +360,33 @@ describe("main.mts's intake-stop exit code", () => {
     const assignment = mainMts.slice(exitCodeAssignment, mainMts.indexOf(";", exitCodeAssignment));
     assert.match(assignment, /intakeStopExitCode\(/, "main.mts doesn't derive the exit code from intakeStopExitCode(");
     assert.match(assignment, /intakeStopReport\.items\(\)/, "main.mts doesn't pass intakeStopReport.items() to the exit-code decision");
+  });
+
+  it("ends with exitAfterStall() from lib/host-limit.mts as the last statement of the finally block, after the exit code is set", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const opener = mainMts.lastIndexOf("} finally {", mainMts.indexOf("writeRunReport("));
+    // main.mts's finally block is top-level, so its closing brace is the first line that starts with one.
+    const body = mainMts
+      .slice(opener, mainMts.indexOf("\n}", opener))
+      .split(/\r?\n/)
+      .filter((line) => !/^\s*\/\//.test(line))
+      .join("\n")
+      .trimEnd();
+
+    assert.match(mainMts, /import \{ exitAfterStall \} from "\.\/lib\/host-limit\.mts";/, "main.mts doesn't import exitAfterStall from ./lib/host-limit.mts");
+    assert.notEqual(opener, -1, "the run report isn't written in a finally block");
+    assert.ok(body.endsWith("exitAfterStall();"), "the finally block doesn't end with exitAfterStall();");
+    assert.ok(body.indexOf("process.exitCode = intakeStopExitCode(") < body.lastIndexOf("exitAfterStall();"), "exitAfterStall(); doesn't come after the exit code is set");
+    assert.equal(/\bprocess\.exit\(/.test(body), false, "the finally block ends the process itself instead of through exitAfterStall()");
+  });
+
+  it("records a stalled step's entry from a settled build and from the run-stopping catch, so either ends the run red", () => {
+    const mainMts = read(".sandcastle/main.mts");
+
+    assert.match(mainMts, /stallStop\(outcome\.reason\)[\s\S]{0,120}intakeStopReport\.record\(/, "the settled-builds loop doesn't record a stall");
+    assert.match(mainMts, /stallStop\(error\)[\s\S]{0,120}intakeStopReport\.record\(/, "the UncountedStopError catch doesn't record a stall");
+    assert.match(mainMts, /ending = runEnding\(limitReason, intakeStopReport\.items\(\)\)/, "main.mts doesn't take the loop's ending from runEnding");
+    assert.match(mainMts, /runEnding\(error\.message, intakeStopReport\.items\(\)\)/, "the catch doesn't take its ending from everything recorded");
   });
 });
 
@@ -532,6 +572,44 @@ describe(".sandcastle/.env.example mode", () => {
       if (line.includes("SANDCASTLE_MODE")) {
         assert.match(line.trim(), /^#/, `expected "${line}" to be commented out`);
       }
+    }
+  });
+});
+
+// The reviewer logs reach the run report's artifact through two things that nothing else ties together: main.mts writes
+// their views to reviewer-logs/ in the report folder (reviewerLogsDir(REPORT_DIR)) after the report is written, and the Sandcastle
+// workflow uploads and reads that whole folder. If either drifts, the artifact silently carries no reviewer log: summary.md always
+// matches the upload, so its `if-no-files-found: warn` no longer says so.
+describe("main.mts's reviewer-log wiring", () => {
+  it("copies the reviewer logs into the report folder right after the run report is written, in the same finally", () => {
+    const mainMts = read(".sandcastle/main.mts");
+    const report = mainMts.indexOf("writeRunReport(summary, handBacks);");
+    const copy = mainMts.indexOf("copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR));");
+
+    assert.notEqual(report, -1, "main.mts doesn't write the run report as expected");
+    assert.notEqual(copy, -1, "main.mts doesn't call copyReviewerLogs(LOGS_DIR, reviewerLogsDir(REPORT_DIR))");
+    assert.ok(report < copy, "main.mts copies the reviewer logs before the run report is written");
+    const between = mainMts.slice(report + "writeRunReport(summary, handBacks);".length, copy);
+    assert.match(between, /^\r?\n\s*$/, "something sits between the report and the log copy, so it may not run in the same block");
+    assert.match(mainMts, /import \{ copyReviewerLogs, reviewerLogsDir \} from "\.\/lib\/role-logs\.mts";/);
+  });
+
+  it("uploads the report folder the host writes outside the checkout, and reads hand-backs from it, in the workflow and the Template's copy", async () => {
+    const { REPORT_DIR_NAME } = await import("./lib/report.mts");
+    for (const path of [".github/workflows/sandcastle.yml", "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/.github/workflows/sandcastle.yml"]) {
+      const workflow = read(path);
+      const step = workflow.slice(workflow.indexOf("- name: Upload the run report"));
+      const block = /path: \|\r?\n((?: {12}\S.*\r?\n)+)/.exec(step)?.[1];
+
+      assert.ok(block, `${path} has no upload path block`);
+      assert.deepEqual(
+        block.trim().split(/\r?\n/).map((line) => line.trim()),
+        ["${{ runner.temp }}/" + REPORT_DIR_NAME],
+        `${path} uploads something else than the report folder, which the host writes outside the checkout`,
+      );
+      // The step that fails the run on a hand-back reads the same copy, not a file under the checkout a sandbox could have rewritten.
+      assert.ok(workflow.includes(`handbacks="$RUNNER_TEMP/${REPORT_DIR_NAME}/handbacks.json"`), `${path} reads handbacks.json from somewhere else`);
+      assert.ok(!workflow.includes(".sandcastle/logs/handbacks.json") && !workflow.includes(".sandcastle/logs/summary.md"), `${path} still names a report file under the checkout`);
     }
   });
 });

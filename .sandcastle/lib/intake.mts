@@ -13,7 +13,8 @@
 // fix/.
 // ---------------------------------------------------------------------------
 
-import { execFileSync } from "node:child_process";
+import type { execFileSync } from "node:child_process";
+import { hostExecFileSync } from "./host-limit.mts";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { z } from "zod";
 import { runRole } from "./agents.mts";
@@ -173,7 +174,7 @@ const runIntake: IntakeRun = intakeRunner();
 export function applyVerdicts(
   issues: readonly SandcastleIssue[],
   verdicts: readonly IntakeVerdict[],
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   report: HandBackReport = handBackReport,
   log: (line: string) => void = console.log,
@@ -615,7 +616,7 @@ export async function intakeRound(
   issues: readonly SandcastleIssue[],
   openPrs: readonly OpenPullRequest[],
   run: IntakeRun = runIntake,
-  gh: typeof execFileSync = execFileSync,
+  gh: typeof execFileSync = hostExecFileSync,
   repo: string = repoName(),
   report: HandBackReport = handBackReport,
   log: (line: string) => void = console.log,

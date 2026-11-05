@@ -12,10 +12,10 @@ You review one branch's diff through the lens your prompt names. You can only re
 ## Where
 
 - Worktree (read every repository file under it by absolute path, and pass it as Grep's and Glob's `path`): <worktree>
-- The whole diff: <run>/diff.patch
+- The whole diff: <run>/diff.patch (Template mirror copies identical to the root copy are left out of it and of fixes.patch: read the root file)
 - Pass <N>. <In pass 2 and later: "Read <run>/fixes.patch first, since regressions cluster there, then review the whole
   diff: a problem anywhere counts.">
-- Already decided: <run>/decisions.md. Do not raise again what it records as fixed or dismissed, nor a weakness it lists as a
+- Already decided: <run>/decisions.md. Do not raise again what it records as dismissed. What it records as fixed is not settled on that word: read the code at its path:line and raise it again if the problem is still there. Do not raise again a weakness it lists as a
   fixed entry of `.security/` (the local security record, listed there by id, lens, path and status). Do not read `.security/`:
   the list is all of it you get, and a fixed entry you are given is settled. An `accepted` or `open` entry: raise it again if it is still in the code.
 - Known open (accepted or deferred by the person), as id, lens, path, range and changed:

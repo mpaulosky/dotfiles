@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  isAncestor,
+  mergeTreeWorks,
+  isReviewedCode,
+  ledgerGitEnv,
+  pinLedgerGit,
   acceptFinding,
+  branchSize,
+  REVIEW_SIZE_MAX_FILES,
+  REVIEW_SIZE_MAX_LINES,
+  sizeWarning,
   checkReview,
   diffKey,
   EMPTY_DIFF_KEY,
@@ -16,6 +25,10 @@ import {
   main,
   mergeBase,
   OWNED_PATHS,
+  prepareRound,
+  patchKey,
+  readerPatch,
+  TEMPLATE_OWNED_PREFIX,
   latestLedger,
   readLedger,
   recordReview,
@@ -598,6 +611,62 @@ describe("diffKey", () => {
   });
 });
 
+describe("ledgerGitEnv", () => {
+  it("turns replace refs off and drops the variables a hook sets", () => {
+    const saved = { common: process.env.GIT_COMMON_DIR, index: process.env.GIT_INDEX_FILE };
+    process.env.GIT_COMMON_DIR = "/elsewhere/.git";
+    process.env.GIT_INDEX_FILE = "/elsewhere/index";
+    try {
+      const env = ledgerGitEnv("/nowhere-pinned");
+
+      assert.equal(env.GIT_NO_REPLACE_OBJECTS, "1");
+      assert.equal(env.GIT_COMMON_DIR, undefined);
+      assert.equal(env.GIT_INDEX_FILE, undefined);
+    } finally {
+      for (const [name, value] of [["GIT_COMMON_DIR", saved.common], ["GIT_INDEX_FILE", saved.index]] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  it("pins the shared .git directory for a checkout the host asked for, and for no other", () => {
+    pinLedgerGit("/main/checkout", "/main/checkout/.git");
+
+    assert.equal(ledgerGitEnv("/main/checkout").GIT_COMMON_DIR, "/main/checkout/.git");
+    assert.equal(ledgerGitEnv("/some/worktree").GIT_COMMON_DIR, undefined);
+  });
+
+  it("turns grafts off for a pinned checkout, where an agent can write .git/info/grafts, and leaves a person's checkout alone", () => {
+    pinLedgerGit("/main/checkout", "/main/checkout/.git");
+
+    assert.equal(ledgerGitEnv("/main/checkout").GIT_GRAFT_FILE, "/dev/null/no-grafts");
+    assert.equal(ledgerGitEnv("/some/worktree").GIT_GRAFT_FILE, undefined);
+  });
+
+  it("makes git ignore a planted graft in a pinned checkout, so the review reads the commits the branch has", () => {
+    const repo = mkdtempSync(join(tmpdir(), "graft-repo-"));
+    try {
+      const run = (...args: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: repo, encoding: "utf8" }).trim();
+      run("init", "-q", "-b", "main");
+      run("commit", "-q", "--allow-empty", "-m", "one");
+      const first = run("rev-parse", "HEAD");
+      run("commit", "-q", "--allow-empty", "-m", "two");
+      const second = run("rev-parse", "HEAD");
+      writeFileSync(join(repo, ".git", "info", "grafts"), `${second}\n`);
+      pinLedgerGit(repo, join(repo, ".git"));
+
+      const seen = (env: NodeJS.ProcessEnv) => execFileSync("git", ["rev-list", "--count", second], { cwd: repo, env, encoding: "utf8" }).trim();
+
+      assert.equal(seen({ ...process.env }), "1", "without the pin the graft cuts the history");
+      assert.equal(seen(ledgerGitEnv(repo)), "2");
+      assert.notEqual(first, second);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+});
+
 describe("checkReview", () => {
   it("fails when no review is recorded for the diff", () => {
     const result = checkReview(repo, mergeBase(repo), {});
@@ -783,15 +852,62 @@ describe("checkReview", () => {
   it("passes a Baseline re-Apply that changes only Owned files", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, "scripts"));
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     commit(repo, "scripts/check-branch-name.sh", "#!/bin/sh\n", "re-Apply");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
   });
 
+  it("reviews a re-Apply that changes an Owned file that carries behaviour (the coverage gate, the hand-off rules, an issue template, the reviewer agent, a judging prompt, global.json), though all are Owned: they carry behaviour a path alone can't vouch for", () => {
+    for (const path of [".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md", ".claude/agents/pre-push-reviewer.md", ".sandcastle/critique-prompt.md", ".sandcastle/intake-prompt.md", "global.json"]) {
+      run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+      mkdirSync(join(repo, dirname(path)), { recursive: true });
+      commit(repo, ".editorconfig", "{}\n", "re-Apply");
+      commit(repo, path, "0\n", "re-Apply");
+
+      assert.equal(isOwnedPath(path), true, `${path} is still Owned`);
+      assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false, path);
+    }
+  });
+
+  it("says which Owned files a re-Apply's review was withheld for, so the person knows why a re-Apply asks for one", () => {
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    mkdirSync(join(repo, ".github/ci"), { recursive: true });
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
+    commit(repo, ".github/ci/coverage-threshold", "80\n", "re-Apply");
+
+    const result = checkReview(repo, mergeBase(repo), {});
+
+    assert.equal(result.ok, false);
+    assert.match(result.message, /No review is recorded for this diff/);
+    assert.match(result.message, /\.github\/ci\/coverage-threshold/);
+    assert.doesNotMatch(result.message, /\.editorconfig/);
+  });
+
+  it("gives the plain message, with no note about withheld files, on a branch that isn't a re-Apply, though it changes one", () => {
+    mkdirSync(join(repo, ".github/ci"), { recursive: true });
+    commit(repo, ".github/ci/coverage-threshold", "80\n", "change the gate");
+
+    const result = checkReview(repo, mergeBase(repo), {});
+
+    assert.equal(result.ok, false);
+    assert.equal(result.message, "No review is recorded for this diff. Run /pre-push-review, which reviews, fixes and records it.");
+  });
+
+  it("names no withheld file when a re-Apply is refused for a change that isn't Owned", () => {
+    run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
+    commit(repo, "app.cs", "sneaked in\n", "not Owned");
+
+    const result = checkReview(repo, mergeBase(repo), {});
+
+    assert.equal(result.ok, false);
+    assert.doesNotMatch(result.message, /withheld/);
+  });
+
   it("reviews a re-Apply branch that changes anything not Owned", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     commit(repo, "app.cs", "sneaked in\n", "not Owned");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
@@ -813,18 +929,18 @@ describe("checkReview", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     run(repo, "update-index", "--add", "--cacheinfo", `160000,${run(sub, "rev-parse", "HEAD")},vendor`);
     run(repo, "-c", "diff.ignoreSubmodules=none", "commit", "--quiet", "-m", "submodule");
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
     run(repo, "config", "diff.ignoreSubmodules", "all");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });
 
   it("reviews a re-Apply checked from a folder, whatever diff.relative says", () => {
-    // From sub/, a relative diff would list sub/global.json as global.json,
+    // From sub/, a relative diff would list sub/.editorconfig as .editorconfig,
     // which is Owned.
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, "sub"));
-    commit(repo, "sub/global.json", "not Owned\n", "not Owned");
+    commit(repo, "sub/.editorconfig", "not Owned\n", "not Owned");
     run(repo, "config", "diff.relative", "true");
 
     assert.equal(checkReview(join(repo, "sub"), mergeBase(repo), {}).ok, false);
@@ -832,17 +948,17 @@ describe("checkReview", () => {
 
   it("reviews a re-Apply whose first path starts with whitespace", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    commit(repo, "global.json", "{}\n", "re-Apply");
-    commit(repo, "\tglobal.json", "sneaked in\n", "not Owned");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
+    commit(repo, "\t.editorconfig", "sneaked in\n", "not Owned");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });
 
   it("reviews a re-Apply that deletes an Owned file, which Apply never does", () => {
-    commit(upstream, "global.json", "{}\n", "main has an Owned file");
+    commit(upstream, ".editorconfig", "{}\n", "main has an Owned file");
     run(repo, "fetch", "--quiet", "origin", "main");
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    run(repo, "rm", "--quiet", "global.json");
+    run(repo, "rm", "--quiet", ".editorconfig");
     run(repo, "commit", "--quiet", "-m", "delete an Owned file");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
@@ -850,8 +966,8 @@ describe("checkReview", () => {
 
   it("reviews a re-Apply that turns an Owned path into a symlink", () => {
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
-    symlinkSync("/etc/passwd", join(repo, "global.json"));
-    run(repo, "add", "global.json");
+    symlinkSync("/etc/passwd", join(repo, ".editorconfig"));
+    run(repo, "add", ".editorconfig");
     run(repo, "commit", "--quiet", "-m", "symlink");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
@@ -866,7 +982,7 @@ describe("checkReview", () => {
   });
 
   it("still passes a re-Apply that adds a new executable Owned file and edits one main already has", () => {
-    commit(upstream, "global.json", "[]\n", "main has an Owned file");
+    commit(upstream, ".editorconfig", "[]\n", "main has an Owned file");
     run(repo, "fetch", "--quiet", "origin", "main");
     run(repo, "switch", "--quiet", "-C", "chore/reapply-baseline", "origin/main");
     mkdirSync(join(repo, "scripts"), { recursive: true });
@@ -874,14 +990,14 @@ describe("checkReview", () => {
     chmodSync(join(repo, "scripts/check-pr-title.sh"), 0o755);
     run(repo, "add", "scripts/check-pr-title.sh");
     run(repo, "commit", "--quiet", "-m", "re-Apply");
-    commit(repo, "global.json", "{}\n", "re-Apply");
+    commit(repo, ".editorconfig", "{}\n", "re-Apply");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
   });
 
   it("reviews Owned-only changes on any other branch", () => {
-    run(repo, "switch", "--quiet", "-C", "chore/edit-global", "origin/main");
-    commit(repo, "global.json", "{}\n", "edit");
+    run(repo, "switch", "--quiet", "-C", "chore/edit-editorconfig", "origin/main");
+    commit(repo, ".editorconfig", "{}\n", "edit");
 
     assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false);
   });
@@ -2539,7 +2655,7 @@ describe("repoSlugProblem and the repo command", () => {
 
 describe("OWNED_PATHS", () => {
   it("matches folders and globs as the rule means them", () => {
-    for (const path of [".github/workflows/ci.yml", ".github/hooks/tests/pre-push.test.sh", ".github/scripts/a/b/c.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".claude/skills/hardening-review/SKILL.md", ".claude/skills/hardening-review/scripts/mutate.py", ".claude/skills/hardening-review/references/brief.md", ".sandcastle/lib/build.mts"]) {
+    for (const path of [".github/workflows/ci.yml", ".github/hooks/tests/pre-push.test.sh", ".github/scripts/a/b/c.sh", "global.json", ".claude/skills/pre-push-review/SKILL.md", ".claude/skills/hardening-review/SKILL.md", ".claude/skills/hardening-review/scripts/mutate.py", ".claude/skills/hardening-review/references/brief.md", ".sandcastle/lib/build.mts", ".github/ci/coverage-threshold", ".claude/rules/sandcastle-hand-off.md", ".claude/skills/README.md", ".security/README.md", "LICENSE", "docs/CODE_OF_CONDUCT.md", ".github/ISSUE_TEMPLATE/bug_report.md", ".github/ISSUE_TEMPLATE/config.yml", ".github/ISSUE_TEMPLATE/feature_request.md"]) {
       assert.equal(isOwnedPath(path), true, path);
     }
     for (const path of [
@@ -2555,6 +2671,11 @@ describe("OWNED_PATHS", () => {
       "global.json.bak",
       "globalxjson",
       "xglobal.json",
+      ".github/ISSUE_TEMPLATE/question.md",
+      ".github/ISSUE_TEMPLATE/sub/bug_report.md",
+      "docs/LICENSE",
+      "LICENSE.bak",
+      ".security/0001-an-entry.md",
     ]) {
       assert.equal(isOwnedPath(path), false, path);
     }
@@ -2972,3 +3093,602 @@ describe("the security record", () => {
     assert.match(cli(["nonsense"]).err, /^ {2}security {3,}/m);
   });
 });
+
+// The host-side review (lib/host-review.mts) calls the ledger's functions in-process, in the main checkout, for a commit the sandbox
+// holds: it never runs the worktree's scripts/review.sh.
+describe("prepareRound", () => {
+  // What `prepare` printed and wrote for HEAD now.
+  function prepared() {
+    const dir = join(root, "run");
+    const [key, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    return { dir, key, head, patch: readFileSync(join(dir, "diff.patch")) };
+  }
+
+  it("gives the patch, key, head and base that prepare gives for the same HEAD", () => {
+    const expected = prepared();
+
+    const round = prepareRound(repo, {});
+
+    assert.equal(round.key, expected.key);
+    assert.equal(round.head, expected.head);
+    assert.equal(round.base, mergeBase(repo));
+    assert.ok(round.patch.equals(expected.patch));
+    assert.equal(round.fixes, undefined);
+  });
+
+  it("reads the commit it is given, not the checkout's HEAD, which the sandbox may have moved on", () => {
+    const expected = prepared();
+    commit(repo, "other.cs", "later\n", "a later commit");
+
+    const round = prepareRound(repo, { head: expected.head, main: "origin/main" });
+
+    assert.equal(round.head, expected.head);
+    assert.equal(round.key, expected.key);
+    assert.ok(round.patch.equals(expected.patch));
+    assert.doesNotMatch(round.patch.toString("utf8"), /later/);
+  });
+
+  it("takes the merge base against the main it is given", () => {
+    const expected = prepared();
+    const mainCommit = run(repo, "rev-parse", "origin/main");
+
+    const round = prepareRound(repo, { main: mainCommit });
+
+    assert.equal(round.base, mergeBase(repo));
+    assert.equal(round.key, expected.key);
+  });
+
+  it("gives the fixes since the commit the round before read, beside the whole diff", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "fixed\n", "fix");
+
+    const round = prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } });
+
+    assert.match(round.fixes?.toString("utf8") ?? "", /^\+fixed$/m);
+    assert.doesNotMatch(round.fixes?.toString("utf8") ?? "", /^\+changed$/m);
+    assert.match(round.patch.toString("utf8"), /^\+changed$/m);
+    assert.equal(round.head, run(repo, "rev-parse", "HEAD"));
+  });
+
+  it("gives the fixes of a given head, not of the checkout's", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "fixed\n", "fix");
+    const fixed = run(repo, "rev-parse", "HEAD");
+    commit(repo, "other.cs", "fixed again\n", "another");
+
+    const round = prepareRound(repo, { head: fixed, since: { commit: first.head, preparedHead: first.head } });
+
+    assert.match(round.fixes?.toString("utf8") ?? "", /^\+fixed$/m);
+    assert.doesNotMatch(round.fixes?.toString("utf8") ?? "", /fixed again/);
+  });
+
+  it("refuses a since that isn't one of the head's commits, with prepare's message", () => {
+    const first = prepared();
+    run(repo, "commit", "--quiet", "--amend", "-m", "amended", "--allow-empty");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } }), /isn't one of HEAD's commits/);
+  });
+
+  it("refuses a since later than the head the round before printed, so no fix goes unread", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "one\n", "one");
+    const second = run(repo, "rev-parse", "HEAD");
+    commit(repo, "other.cs", "two\n", "two");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: second, preparedHead: first.head } }), /later than the HEAD prepare printed/);
+  });
+
+  it("refuses a since when no round was prepared before", () => {
+    const first = prepared();
+    commit(repo, "other.cs", "one\n", "one");
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: undefined } }), /later than the HEAD prepare printed/);
+  });
+
+  it("refuses a round with no fixes since", () => {
+    const first = prepared();
+
+    assert.throws(() => prepareRound(repo, { since: { commit: first.head, preparedHead: first.head } }), /no fixes since/);
+  });
+
+  it("writes nothing under the checkout: the host decides where the patches go", () => {
+    const before = readdirSync(repo).sort();
+
+    prepareRound(repo, {});
+
+    assert.deepEqual(readdirSync(repo).sort(), before);
+    assert.equal(run(repo, "status", "--porcelain"), "");
+  });
+});
+
+describe("recordReview at a commit", () => {
+  it("records the review for the commit it is given, not the checkout's HEAD", () => {
+    const first = reviewed();
+    commit(repo, "other.cs", "later\n", "a later commit");
+
+    const ledger = recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+      at: { head: first.reviewedHead, branch: "feature/387-the-host-review" },
+    });
+
+    assert.equal(ledger.head, first.reviewedHead);
+    assert.equal(ledger.branch, "feature/387-the-host-review");
+    assert.equal(ledger.key, first.reviewedKey);
+    assert.equal(readLedger(repo, first.reviewedKey)?.head, first.reviewedHead);
+  });
+
+  it("doesn't look at the checkout's worktree, which the caller has checked is clean at the commit", () => {
+    const first = reviewed();
+    writeFileSync(join(repo, "app.cs"), "edited by hand\n");
+
+    assert.throws(() => recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }), /uncommitted changes/);
+    const ledger = recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+      at: { head: first.reviewedHead, branch: "feature/1-thing" },
+    });
+
+    assert.equal(ledger.head, first.reviewedHead);
+  });
+
+  it("still refuses a key that isn't the diff of the commit it is given", () => {
+    const first = reviewed();
+    commit(repo, "app.cs", lines(50, (index) => (index === 2 ? "changed again" : undefined)), "another change");
+    const later = run(repo, "rev-parse", "HEAD");
+
+    assert.throws(
+      () =>
+        recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [] }, undefined, undefined, {
+          at: { head: later, branch: "feature/1-thing" },
+        }),
+      /Review again/,
+    );
+  });
+
+  it("still refuses ids an earlier review of the branch took", () => {
+    const first = reviewed();
+    record([finding({ id: "R3" })]);
+
+    assert.throws(
+      () =>
+        recordReview(repo, mergeBase(repo), { ...first, rounds: 1, findings: [finding({ id: "R2" })] }, undefined, undefined, {
+          at: { head: first.reviewedHead, branch: "feature/1-thing" },
+        }),
+      /taken by earlier reviews/,
+    );
+  });
+});
+
+// A git the host's time limit killed is not an answer: "not an ancestor" or "no such main" would be a wrong one.
+describe("a git call the host's time limit ended", () => {
+  // The error execFileSync throws for a killed child, not a message about a missing main.
+  const killedByLimit = (error: unknown) => (error as { signal?: unknown }).signal === "SIGKILL";
+  const killedGit = (body: (cwd: string) => void) => () => {
+    const bin = mkdtempSync(join(tmpdir(), "killed-git-"));
+    const cwd = mkdtempSync(join(tmpdir(), "killed-cwd-"));
+    const path = process.env.PATH;
+    try {
+      writeFileSync(join(bin, "git"), "#!/bin/sh\nkill -9 $$\n");
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+      body(cwd);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 5 });
+    }
+  };
+
+  it("makes isAncestor throw, not answer that a commit isn't an ancestor", () => {
+    assert.throws(killedGit((cwd) => void isAncestor(cwd, "a".repeat(40), "b".repeat(40))), killedByLimit);
+  });
+
+  it("makes mergeTreeWorks throw when only the merge-tree call is killed, not answer that this git lacks merge-tree", () => {
+    const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const bin = mkdtempSync(join(tmpdir(), "merge-tree-git-"));
+    const repo = mkdtempSync(join(tmpdir(), "merge-tree-repo-"));
+    const path = process.env.PATH;
+    try {
+      execFileSync(real, ["init", "-q"], { cwd: repo });
+      execFileSync(real, ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "x"], { cwd: repo });
+      writeFileSync(join(bin, "git"), `#!/bin/sh\ncase "$*" in *merge-tree*) kill -9 $$ ;; *) exec ${real} "$@" ;; esac\n`);
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+
+      assert.throws(() => mergeTreeWorks(repo), killedByLimit);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes mergeBase and isReviewedCode throw the limit's error, not report a missing main or unreviewed code", () => {
+    assert.throws(killedGit((cwd) => void mergeBase(cwd, "origin/main", "HEAD")), killedByLimit);
+    assert.throws(killedGit((cwd) => void isReviewedCode(cwd, "a".repeat(40), "b".repeat(40), "c".repeat(40))), killedByLimit);
+  });
+});
+
+describe("branchSize and sizeWarning", () => {
+  const MIRROR = "Support For New Projects/.claude/skills/repo-ci-baseline/template/owned/";
+  // A patch that adds `added` lines to each named file.
+  const patchOf = (files: { path: string; added: number }[]) =>
+    files
+      .map(({ path, added }) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1,${added} @@\n${"+x\n".repeat(added)}`)
+      .join("");
+  const files = (count: number, added = 1) => Array.from({ length: count }, (_, index) => ({ path: `src/f${index}.ts`, added }));
+
+  it("counts the files and the added and deleted lines of the hunks", () => {
+    const patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,2 @@\n-old\n+new\n same\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 2 });
+    assert.deepEqual(branchSize(Buffer.from(patch)), { files: 1, lines: 2 });
+  });
+
+  it("counts an added line that starts with ++ or -- once, not as a file header", () => {
+    const patch = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n-- sql comment\n+++ x\n+-- y\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3 });
+  });
+
+  it("counts a binary file as a file with no lines", () => {
+    const patch = "diff --git a/i.png b/i.png\nindex 1..2 100644\nBinary files a/i.png and b/i.png differ\n";
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 0 });
+  });
+
+  it("counts a file and its Template mirror once, in both files and lines", () => {
+    const patch = patchOf([{ path: "scripts/a.sh", added: 5 }, { path: `${MIRROR}scripts/a.sh`, added: 5 }, { path: "docs/b.md", added: 2 }]);
+
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 7 });
+  });
+
+  it("counts a mirror with no root copy as its own file", () => {
+    assert.deepEqual(branchSize(patchOf([{ path: `${MIRROR}scripts/a.sh`, added: 3 }, { path: "scripts/b.sh", added: 1 }])), { files: 2, lines: 4 });
+  });
+
+  it("says nothing at 29, 30 and warns at 31 files", () => {
+    assert.equal(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES - 1))), undefined);
+    assert.equal(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES))), undefined);
+    assert.match(sizeWarning(patchOf(files(REVIEW_SIZE_MAX_FILES + 1))) ?? "", /changes 31 files and 31 lines, past 30 files or 3,000 lines/);
+  });
+
+  it("says nothing at 2,999 and 3,000 lines, and warns at 3,001", () => {
+    const one = (lines: number) => patchOf([{ path: "src/a.ts", added: lines }]);
+
+    assert.equal(sizeWarning(one(REVIEW_SIZE_MAX_LINES - 1)), undefined);
+    assert.equal(sizeWarning(one(REVIEW_SIZE_MAX_LINES)), undefined);
+    assert.match(sizeWarning(one(REVIEW_SIZE_MAX_LINES + 1)) ?? "", /changes 1 file and 3,001 lines, past 30 files or 3,000 lines/);
+  });
+
+  it("doesn't count the mirrors twice toward the limit: 30 files with a mirror each is 30 files", () => {
+    const paired = files(REVIEW_SIZE_MAX_FILES).flatMap((file) => [file, { ...file, path: `${MIRROR}${file.path}` }]);
+
+    assert.equal(sizeWarning(patchOf(paired)), undefined);
+  });
+
+  it("keeps two files whose directory name holds ' b/' apart, and counts their lines separately", () => {
+    const patch = patchOf([{ path: "docs/a b/c.md", added: 2 }, { path: "docs/a b/d.md", added: 3 }]);
+
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 5 });
+  });
+
+  it("reads a quoted path (a non-ASCII or special character) as one file, and pairs it with its mirror", () => {
+    const quoted = (path: string, added: number) => `diff --git "a/${path}" "b/${path}"\n--- "a/${path}"\n+++ "b/${path}"\n@@ -0,0 +1 @@\n${"+x\n".repeat(added)}`;
+    const patch = quoted("caf\\303\\251 b/x.txt", 2) + quoted("caf\\303\\251 b/y.txt", 3) + quoted(`${MIRROR}caf\\303\\251 b/x.txt`, 2);
+
+    assert.deepEqual(branchSize(patch), { files: 2, lines: 5 });
+  });
+
+  it("pairs a mirror whose path holds spaces with its root copy", () => {
+    assert.deepEqual(branchSize(patchOf([{ path: "docs/a b/c.md", added: 4 }, { path: `${MIRROR}docs/a b/c.md`, added: 4 }])), { files: 1, lines: 4 });
+  });
+
+  it("takes the larger line count of a mirrored pair, whichever comes first", () => {
+    assert.deepEqual(branchSize(patchOf([{ path: "a.sh", added: 5 }, { path: `${MIRROR}a.sh`, added: 3 }])), { files: 1, lines: 5 });
+    assert.deepEqual(branchSize(patchOf([{ path: "a.sh", added: 3 }, { path: `${MIRROR}a.sh`, added: 5 }])), { files: 1, lines: 5 });
+  });
+
+  it("counts a mode-only change as a file with no lines, a deletion by its removed lines, and ignores a no-newline marker", () => {
+    const mode = "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n";
+    const deletion = "diff --git a/old.ts b/old.ts\ndeleted file mode 100644\n--- a/old.ts\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-a\n-b\n-c\n";
+    const noNewline = "diff --git a/n.ts b/n.ts\n--- a/n.ts\n+++ b/n.ts\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n";
+
+    assert.deepEqual(branchSize(mode), { files: 1, lines: 0 });
+    assert.deepEqual(branchSize(deletion), { files: 1, lines: 3 });
+    assert.deepEqual(branchSize(noNewline), { files: 1, lines: 2 });
+  });
+
+  it("counts a header it cannot read as a file, so a size is never undercounted, also as the last section with no newline", () => {
+    // The last section is a Template mirror with no newline after its header: cut short, its key would not pair with the root copy.
+    const patch =
+      patchOf([{ path: "a.ts", added: 1 }, { path: "last.ts", added: 1 }]) + "diff --git garbage\n" + 'diff --git "a/unterminated b/x\n' + `diff --git a/${MIRROR}last.ts b/${MIRROR}last.ts`;
+
+    assert.deepEqual(branchSize(patch), { files: 4, lines: 2 });
+  });
+
+  it("keeps a carriage return or a line separator inside a changed line as content, never as the start of a header", () => {
+    const body = "+progress\rdiff --git a/example b/example\n".repeat(2) + "+a\u2028diff --git a/x b/x\n";
+    const patch = `diff --git a/one.txt b/one.txt\n--- a/one.txt\n+++ b/one.txt\n@@ -0,0 +1,3 @@\n${body}`;
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3 });
+  });
+
+  it("adds the deletion and the addition git writes for one path, as when a symlink becomes a file", () => {
+    const patch =
+      "diff --git a/link b/link\ndeleted file mode 120000\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-target\n\\ No newline at end of file\n" +
+      `diff --git a/link b/link\nnew file mode 100644\n--- /dev/null\n+++ b/link\n@@ -0,0 +1,3000 @@\n${"+x\n".repeat(3000)}`;
+
+    assert.deepEqual(branchSize(patch), { files: 1, lines: 3001 });
+    assert.match(sizeWarning(patch) ?? "", /1 file and 3,001 lines/);
+  });
+
+  it("still takes the larger of a mirrored pair when each side is a deletion plus an addition", () => {
+    const conversion = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-t\n` + `diff --git a/${path} b/${path}\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,2 @@\n+x\n+y\n`;
+
+    assert.deepEqual(branchSize(conversion("l") + conversion(`${MIRROR}l`)), { files: 1, lines: 3 });
+  });
+
+  it("counts the lines of a CRLF file once each", () => {
+    assert.deepEqual(branchSize("diff --git a/w.txt b/w.txt\r\n--- a/w.txt\r\n+++ b/w.txt\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n"), { files: 1, lines: 2 });
+  });
+
+  it("is advice: the warning says to consider splitting, and nothing in prepare stops", () => {
+    assert.match(sizeWarning(patchOf(files(31))) ?? "", /Consider splitting the branch/);
+  });
+});
+
+describe("prepare's size warning", () => {
+  const addFiles = (count: number) => {
+    for (let index = 0; index < count; index++) commit(repo, `many${index}.cs`, "x\n", `add ${index}`);
+  };
+
+  it("stays quiet at 30 changed files (app.cs and 29 new ones) and warns on stderr at 31, leaving stdout's two lines alone", () => {
+    addFiles(REVIEW_SIZE_MAX_FILES - 1);
+    const quiet = cli(["prepare", join(root, "run")]);
+    assert.equal(quiet.err, "");
+
+    commit(repo, "one-more.cs", "x\n", "one more");
+    const loud = cli(["prepare", join(root, "run2")]);
+
+    assert.match(loud.err, /^⚠ this branch changes 31 files/);
+    assert.equal(loud.out.trim().split("\n").length, 2);
+    assert.equal(loud.code, 0);
+  });
+
+  it("warns past 3,000 lines in one file, and not at 3,000", () => {
+    commit(repo, "big.cs", "x\n".repeat(REVIEW_SIZE_MAX_LINES - 2), "big");
+    assert.equal(cli(["prepare", join(root, "run")]).err, "", "app.cs's 2 lines and 2,998 more are 3,000");
+
+    commit(repo, "big.cs", "x\n".repeat(REVIEW_SIZE_MAX_LINES - 1), "bigger");
+    assert.match(cli(["prepare", join(root, "run2")]).err, /changes 2 files and 3,001 lines/);
+  });
+
+  it("warns in round 1 only, since a later round is the same branch", () => {
+    addFiles(REVIEW_SIZE_MAX_FILES + 1);
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commit(repo, "fix.cs", "y\n", "a fix");
+
+    assert.equal(cli(["prepare", dir, head]).err, "");
+  });
+});
+
+describe("readerPatch", () => {
+  const MIRROR = TEMPLATE_OWNED_PREFIX;
+  const ZERO = "0000000000000000000000000000000000000000";
+  const A = "a".repeat(40);
+  const B = "b".repeat(40);
+  const C = "c".repeat(40);
+  const hunk = "@@ -1 +1 @@\n-old\n+new\n";
+  // One file's section, as git writes it.
+  const modified = (path: string, blob = B, mode = "100644") => `diff --git a/${path} b/${path}\nindex ${A}..${blob} ${mode}\n--- a/${path}\n+++ b/${path}\n${hunk}`;
+  const created = (path: string, blob = B, mode = "100644") => `diff --git a/${path} b/${path}\nnew file mode ${mode}\nindex ${ZERO}..${blob}\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1 @@\n+new\n`;
+  const deleted = (path: string) => `diff --git a/${path} b/${path}\ndeleted file mode 100644\nindex ${A}..${ZERO}\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n`;
+  const text = (patch: Buffer) => patch.toString("latin1");
+  const read = (patch: string) => text(readerPatch(Buffer.from(patch, "latin1")));
+
+  it("leaves out a mirror whose root section has the same after-blob and mode", () => {
+    assert.equal(read(modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`)), modified("scripts/a.sh"));
+    assert.equal(read(modified(`${MIRROR}scripts/a.sh`) + modified("scripts/a.sh")), modified("scripts/a.sh"), "whichever comes first");
+  });
+
+  it("keeps a mirror whose after-blob differs from the root copy's: drift is for the reviewers to see", () => {
+    const patch = modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`, C);
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("keeps a mirror whose mode differs from the root copy's", () => {
+    const patch = modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`, B, "100755");
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("reads a mode change from new mode, and keeps a mirror whose new mode differs", () => {
+    const withNewMode = (path: string, mode: string) => `diff --git a/${path} b/${path}\nold mode 100644\nnew mode ${mode}\nindex ${A}..${B}\n--- a/${path}\n+++ b/${path}\n${hunk}`;
+
+    assert.equal(read(withNewMode("x.sh", "100755") + withNewMode(`${MIRROR}x.sh`, "100755")), withNewMode("x.sh", "100755"));
+    const drift = withNewMode("x.sh", "100755") + withNewMode(`${MIRROR}x.sh`, "100644");
+    assert.equal(read(drift), drift);
+  });
+
+  it("keeps a mirror with no root section in the patch, and always keeps a root section", () => {
+    const alone = modified(`${MIRROR}scripts/a.sh`);
+    const root = modified("scripts/a.sh");
+
+    assert.equal(read(alone), alone);
+    assert.equal(read(root), root);
+    assert.equal(read(root + modified(`${MIRROR}scripts/other.sh`)), root + modified(`${MIRROR}scripts/other.sh`));
+  });
+
+  it("leaves out a mirror when both sides are deleted, or both are new files", () => {
+    assert.equal(read(deleted("scripts/a.sh") + deleted(`${MIRROR}scripts/a.sh`)), deleted("scripts/a.sh"));
+    assert.equal(read(created("scripts/a.sh") + created(`${MIRROR}scripts/a.sh`)), created("scripts/a.sh"));
+  });
+
+  it("keeps a mirror that is deleted while its root copy is not", () => {
+    const patch = modified("scripts/a.sh") + deleted(`${MIRROR}scripts/a.sh`);
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("leaves unrelated sections and the bytes of the kept ones untouched", () => {
+    const patch = modified("docs/a.md") + modified("scripts/a.sh") + modified(`${MIRROR}scripts/a.sh`) + modified("src/b.ts");
+
+    assert.equal(read(patch), modified("docs/a.md") + modified("scripts/a.sh") + modified("src/b.ts"));
+  });
+
+  it("keeps a section whose header is quoted or can't be read, and one with no after-blob", () => {
+    const quoted = `diff --git "a/caf\\303\\251.sh" "b/caf\\303\\251.sh"\nindex ${A}..${B} 100644\n--- "a/caf\\303\\251.sh"\n+++ "b/caf\\303\\251.sh"\n${hunk}`;
+    const mirrorQuoted = quoted.replaceAll("caf", `${MIRROR}caf`);
+    const modeOnly = (path: string) => `diff --git a/${path} b/${path}\nold mode 100644\nnew mode 100755\n`;
+
+    assert.equal(read(quoted + mirrorQuoted), quoted + mirrorQuoted);
+    assert.equal(read(modeOnly("x.sh") + modeOnly(`${MIRROR}x.sh`)), modeOnly("x.sh") + modeOnly(`${MIRROR}x.sh`));
+    assert.equal(read("diff --git garbage\n"), "diff --git garbage\n");
+  });
+
+  it("keeps a section whose two halves of the header name different paths, which a --no-renames patch never holds", () => {
+    const odd = `diff --git a/scripts/a.sh b/${MIRROR}scripts/a.sh\nindex ${A}..${B} 100644\n--- a/scripts/a.sh\n+++ b/${MIRROR}scripts/a.sh\n${hunk}`;
+    const patch = modified("scripts/a.sh") + odd;
+
+    assert.equal(read(patch), patch);
+  });
+
+  it("keeps a path that is one character off the Owned prefix", () => {
+    const seed = `${MIRROR.replace("template/owned/", "template/seed/")}scripts/a.sh`;
+    const patch = modified("scripts/a.sh") + modified(seed);
+
+    assert.equal(read(patch), patch);
+    assert.equal(read(modified("scripts/a.sh") + modified(`${MIRROR.slice(0, -1)}x/scripts/a.sh`)), modified("scripts/a.sh") + modified(`${MIRROR.slice(0, -1)}x/scripts/a.sh`));
+  });
+
+  it("returns the very same bytes when nothing is left out, and keeps every byte of the rest", () => {
+    const bytes = Buffer.concat([Buffer.from(modified("a.ts")), Buffer.from([0x80, 0xff, 0x0d, 0x00, 0xe2, 0x80, 0xa8, 0x0a]), Buffer.from(modified("b.ts").replace("new", "new\u00e9"), "latin1")]);
+
+    assert.equal(readerPatch(bytes), bytes);
+    const withMirror = Buffer.concat([bytes, Buffer.from(modified("scripts/a.sh")), Buffer.from(modified(`${MIRROR}scripts/a.sh`))]);
+    assert.ok(readerPatch(withMirror).equals(Buffer.concat([bytes, Buffer.from(modified("scripts/a.sh"))])));
+  });
+
+  it("starts a section at an LF-delimited header only: a carriage return in a changed line is content", () => {
+    const tricky = `diff --git a/x.sh b/x.sh\nindex ${A}..${B} 100644\n--- a/x.sh\n+++ b/x.sh\n@@ -1 +1 @@\n-old\n+progress\rdiff --git a/${MIRROR}x.sh b/${MIRROR}x.sh\n`;
+
+    assert.equal(read(tricky + modified("y.sh") + modified(`${MIRROR}y.sh`)), tricky + modified("y.sh"));
+  });
+
+  it("matches the sections of a path by their order: a type change is two sections, deleted then created", () => {
+    const typeChange = (path: string) => deleted(path) + created(path, B, "120000");
+
+    assert.equal(read(typeChange("l.sh") + typeChange(`${MIRROR}l.sh`)), typeChange("l.sh"), "both mirror sections go");
+    const oneSide = typeChange("l.sh") + deleted(`${MIRROR}l.sh`);
+    assert.equal(read(oneSide), oneSide, "a mirror that only deletes differs from a root that also creates");
+    const otherMode = typeChange("l.sh") + deleted(`${MIRROR}l.sh`) + created(`${MIRROR}l.sh`, B, "100644");
+    assert.equal(read(otherMode), otherMode, "a mirror whose second section differs is kept whole");
+  });
+
+  it("leaves out a symlink or submodule mirror only when blob and mode both match", () => {
+    assert.equal(read(created("l", B, "120000") + created(`${MIRROR}l`, B, "120000")), created("l", B, "120000"));
+    assert.equal(read(created("m", B, "160000") + created(`${MIRROR}m`, B, "160000")), created("m", B, "160000"));
+    const drift = created("m", B, "160000") + created(`${MIRROR}m`, C, "160000");
+    assert.equal(read(drift), drift);
+  });
+
+  it("compares a created file with a modified one by the state it ends in", () => {
+    assert.equal(read(created("a.sh") + modified(`${MIRROR}a.sh`)), created("a.sh"), "same blob and mode: dropped");
+    const deletedRoot = deleted("a.sh") + modified(`${MIRROR}a.sh`);
+    assert.equal(read(deletedRoot), deletedRoot, "a deleted root against a modified mirror: kept");
+    const modeDrift = created("a.sh") + created(`${MIRROR}a.sh`, B, "100755");
+    assert.equal(read(modeDrift), modeDrift, "created with a different mode: kept");
+  });
+
+  it("returns an empty patch for an empty patch, and keeps text before the first header", () => {
+    assert.equal(read(""), "");
+    assert.equal(read("preamble\n" + modified("a.ts")), "preamble\n" + modified("a.ts"));
+  });
+});
+
+describe("a branch that holds Template mirrors", () => {
+  const MIRROR = TEMPLATE_OWNED_PREFIX;
+  // Commit one file at a path below the repository, creating its folders.
+  const commitAt = (file: string, content: string, message: string) => {
+    mkdirSync(dirname(join(repo, file)), { recursive: true });
+    commit(repo, file, content, message);
+  };
+
+  it("prepares a patch with the mirror and a read patch without it, keyed by the whole diff", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+
+    const round = prepareRound(repo, {});
+
+    assert.match(round.patch.toString("utf8"), new RegExp(`diff --git a/${MIRROR.replaceAll("/", "\\/")}scripts/a.sh`));
+    assert.doesNotMatch(round.readPatch.toString("utf8"), /template\/owned/);
+    assert.match(round.readPatch.toString("utf8"), /diff --git a\/scripts\/a\.sh/);
+    assert.equal(round.key, patchKey(round.patch));
+    assert.notEqual(round.key, patchKey(round.readPatch));
+    assert.equal(round.key, diffKey(repo, mergeBase(repo)), "the key is that of the whole diff, as `key` prints it");
+  });
+
+  it("has prepare write the read patch to diff.patch and print the key of the whole diff", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    const dir = join(root, "run");
+
+    const [key] = cli(["prepare", dir]).out.trim().split("\n") as [string];
+
+    assert.doesNotMatch(readFileSync(join(dir, "diff.patch"), "utf8"), /template\/owned/);
+    assert.equal(key, cli(["key"]).out.trim());
+  });
+
+  it("leaves a verbatim mirror out of the fixes of a later round, and keeps a fix that touches a mirror alone", () => {
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    commitAt(`${MIRROR}scripts/only.sh`, "echo only\n", "a mirror alone");
+
+    const round = prepareRound(repo, { since: { commit: head, preparedHead: head } });
+
+    assert.doesNotMatch(round.readFixes!.toString("utf8"), /owned\/scripts\/a\.sh/);
+    assert.match(round.readFixes!.toString("utf8"), /owned\/scripts\/only\.sh/);
+    assert.match(round.fixes!.toString("utf8"), /owned\/scripts\/a\.sh/);
+  });
+
+  it("has prepare write the read fixes to fixes.patch and print the key of the whole diff", () => {
+    const dir = join(root, "run");
+    const [, head] = cli(["prepare", dir]).out.trim().split("\n") as [string, string];
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    commitAt(`${MIRROR}scripts/only.sh`, "echo only\n", "a mirror alone");
+
+    const [key] = cli(["prepare", dir, head]).out.trim().split("\n") as [string];
+
+    const fixes = readFileSync(join(dir, "fixes.patch"), "utf8");
+    assert.doesNotMatch(fixes, /owned\/scripts\/a\.sh/);
+    assert.match(fixes, /owned\/scripts\/only\.sh/);
+    assert.equal(key, cli(["key"]).out.trim());
+  });
+
+  it("still asks for a new review when only a mirror changes", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    record([finding()]);
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, true);
+
+    commitAt(`${MIRROR}scripts/a.sh`, "echo changed\n", "the mirror drifts");
+
+    assert.equal(checkReview(repo, mergeBase(repo), {}).ok, false, "a change in a mirror alone is a change to the diff the review covers");
+  });
+
+  it("has a root-and-mirror change keep the key of the whole diff whether or not the mirror is read", () => {
+    commitAt("scripts/a.sh", "echo a\n", "root copy");
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a\n", "mirror");
+    const before = prepareRound(repo, {}).key;
+
+    commitAt(`${MIRROR}scripts/a.sh`, "echo a2\n", "only the mirror changes");
+    const after = prepareRound(repo, {});
+
+    assert.notEqual(after.key, before, "the mirror's content is in the key");
+    assert.match(after.readPatch.toString("utf8"), /owned\/scripts\/a\.sh/, "a mirror that no longer matches its root copy is read");
+  });
+});
+

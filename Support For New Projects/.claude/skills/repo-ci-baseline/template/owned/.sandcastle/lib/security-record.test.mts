@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   fingerprint,
   markAccepted,
+  pinLedgerGit,
   readEntries,
   recordSecurity,
   renderSecurityList,
@@ -66,6 +67,28 @@ describe("securityDir", () => {
 
     assert.equal(securityDir(repo), join(repo, ".security"));
     assert.equal(securityDir(join(root, "wt")), join(repo, ".security"));
+  });
+
+  it("runs its git with the shared .git directory pinned, grafts off and hooks off once the host pinned the checkout", () => {
+    const bin = mkdtempSync(join(tmpdir(), "security-git-"));
+    const seen = join(bin, "seen");
+    const path = process.env.PATH;
+    try {
+      writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf '%s|%s|%s\\n' "$GIT_COMMON_DIR" "$GIT_GRAFT_FILE" "$*" > '${seen}'\nprintf 'worktree /main\\0\\0'\n`);
+      chmodSync(join(bin, "git"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+      pinLedgerGit(repo, join(repo, ".git"));
+
+      assert.equal(securityDir(repo), join("/main", ".security"));
+
+      const [commonDir, graftFile, args] = readFileSync(seen, "utf8").trim().split("|");
+      assert.equal(commonDir, join(repo, ".git"));
+      assert.equal(graftFile, "/dev/null/no-grafts");
+      assert.match(args ?? "", /^-c core\.hooksPath=\/dev\/null worktree list/);
+    } finally {
+      process.env.PATH = path;
+      rmSync(bin, { recursive: true, force: true, maxRetries: 5 });
+    }
   });
 
   it("is undefined in a bare repository, which has no main checkout", () => {

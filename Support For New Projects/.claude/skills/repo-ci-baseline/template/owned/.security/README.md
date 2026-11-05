@@ -36,7 +36,7 @@ recorded `fixed` for is updated in place.
   issue, the pull request's Review notes and the report never quote them. Sandcastle's sandboxes see an empty folder here.
 - The review writes the entries. A person may edit them: a hand edit is read back as it stands, and an entry whose
   `- Status:` line can't be read never suppresses anything.
-- This README comes from the Baseline's Seed once. A re-Apply leaves it, and every entry, as they are.
+- This README is an Owned Baseline file: a re-Apply restores it, so keep notes in an entry, not here. A re-Apply leaves every entry as it is.
 
 ## Relation to ADRs
 

@@ -4,7 +4,7 @@
 // of each round, so a run never starts a round or a role once the budget has
 // passed or the usage limit has been hit.
 
-import { UncountedStopError } from "./errors.mts";
+import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 
 // Keeps the run's own stop state. A module singleton (see runLimits), like
 // usageReport and the queue scope: tests pass their own instance through the
@@ -45,11 +45,12 @@ export class RunLimits {
     return undefined;
   }
 
-  // Throws new UncountedStopError(stopReason()) when stopReason() is set.
+  // Throws an UncountedStopError with stopReason() when it is set: a TimeBudgetStopError when the time budget is the reason.
   throwIfStopped(): void {
     const reason = this.stopReason();
     if (reason !== undefined) {
-      throw new UncountedStopError(reason);
+      // A usage stop comes first in stopReason(), so a stop with no usage reason recorded is the time budget's.
+      throw this.usageReason === undefined ? new TimeBudgetStopError(reason) : new UncountedStopError(reason);
     }
   }
 }

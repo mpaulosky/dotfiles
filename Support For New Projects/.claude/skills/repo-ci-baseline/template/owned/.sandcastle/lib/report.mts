@@ -1,10 +1,12 @@
 // The run's report: token usage per role, what became of each issue and PR it
 // touched, its hand-backs and the PRs waiting on people — collected during the
-// run and written at its end to .sandcastle/logs/ and the job summary (see
+// run and written at its end to the report folder (REPORT_DIR) and the job summary (see
 // "Observability" in Blazor-Server's docs/plans/sandcastle-workflow.md).
 
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { IterationUsage } from "@ai-hero/sandcastle";
+import { StalledStepError } from "./errors.mts";
 
 type Usage = { -readonly [K in keyof IterationUsage]: number };
 
@@ -188,9 +190,32 @@ export function intakeStopExitCode(stops: readonly IntakeStopEntry[]): number {
   return stops.length > 0 ? 1 : 0;
 }
 
+// The reason of a stall's report entry; runEnding reads it to tell a stall from an intake stop. A stall ends the run red, and
+// stops it when a build hit it; a follow-up pass's stall is recorded while the run carries on.
+export const STALL_STOP_REASON = "a sandbox step stalled";
+
+// The report entry for a stalled sandbox step (a StalledStepError reaching main.mts, or a follow-up pass that ended in one), so the run ends red with the step
+// named: it recorded no hand-back and spent no failed attempt, and the next run would otherwise meet the same stall unseen.
+// It shares the intake stops' report and exit code. Undefined for any other error.
+export function stallStop(error: unknown): IntakeStopEntry | undefined {
+  return error instanceof StalledStepError ? { reason: STALL_STOP_REASON, unjudged: [], firstError: error.message } : undefined;
+}
+
 // How the run ended, so the summary tells a hand-back from a crash
 // ("Notification: the run ends red" in Blazor-Server's docs/plans/sandcastle-workflow.md).
-export type RunEnding = { kind: "finished" } | { kind: "stopped"; reason: string } | { kind: "crashed" };
+export type RunEnding =
+  | { kind: "finished" }
+  | { kind: "stopped"; reason: string }
+  | { kind: "stalled"; reason: string }
+  | { kind: "crashed" };
+
+// How a run that reached the end of its loop ended: a recorded stall first (it ends the run red, and a limit must not hide
+// it), then the time budget or usage limit, else finished.
+export function runEnding(limitReason: string | undefined, stops: readonly IntakeStopEntry[]): RunEnding {
+  const stall = stops.find((entry) => entry.reason === STALL_STOP_REASON);
+  if (stall !== undefined) return { kind: "stalled", reason: stall.firstError };
+  return limitReason === undefined ? { kind: "finished" } : { kind: "stopped", reason: limitReason };
+}
 
 // Everything renderSummary needs to render the run's Markdown report.
 export type SummaryInput = {
@@ -203,13 +228,15 @@ export type SummaryInput = {
   humanThreads: readonly HumanThreadEntry[];
   usage: ReadonlyMap<string, IterationUsage>;
   stops: readonly IntakeStopEntry[];
+  // One line per role (lib/role-timeline.mts#TimelineReport.lines). Left out of the report when there are none.
+  timeline?: readonly string[];
 };
 
-// The run's report as Markdown, for .sandcastle/logs/summary.md and (when set)
+// The run's report as Markdown, for summary.md in the report folder and (when set)
 // $GITHUB_STEP_SUMMARY: the queue and ending sentence, a table of every touched
 // issue and PR with its outcome (plus one row per hand-back), the hand-backs
 // themselves with links, the PRs waiting on a person, any round where intake
-// stopped, and a token-usage table by role with a total row.
+// stopped, a token-usage table by role with a total row, and, when any role ran, a section on each role's tool-call timing.
 export function renderSummary(input: SummaryInput): string {
   const { repo } = input;
   const link = (target: ReportTarget): string =>
@@ -236,7 +263,15 @@ export function renderSummary(input: SummaryInput): string {
     "",
     ...usageLines(input.usage),
     "",
+    ...timelineSection(input.timeline ?? []),
   ].join("\n");
+}
+
+// Where each role's time went: its run count, tool calls, total time and longest stretches between calls. Nothing at all when no
+// role ran (a run that found no work), so such a report reads as it always did.
+function timelineSection(timeline: readonly string[]): string[] {
+  if (timeline.length === 0) return [];
+  return ["### Tool-call timing by role", "", ...timeline.map((line) => `- ${cell(line)}`), ""];
 }
 
 function targetName(target: ReportTarget): string {
@@ -249,6 +284,8 @@ function endingSentence(ending: RunEnding): string {
       return "The run finished.";
     case "stopped":
       return `The run stopped cleanly: ${cell(ending.reason.replace(/\.$/, ""))}.`;
+    case "stalled":
+      return `The run ends red: ${cell(ending.reason.replace(/\.$/, ""))}.`;
     case "crashed":
       return "The run ended on an error; see the run log.";
   }
@@ -366,8 +403,21 @@ export function handBacksJson(handBacks: readonly HandBackEntry[]): string {
   return `${JSON.stringify(handBacks, null, 2)}\n`;
 }
 
-// Where writeRunReport writes summary.md and handbacks.json.
-export const REPORT_DIR = ".sandcastle/logs";
+// Where Sandcastle writes the roles' logs. Sandboxes mount the checkout this sits in.
+export const LOGS_DIR = ".sandcastle/logs";
+
+// The report folder's name under the runner's temp folder, which the workflow uploads and reads hand-backs from.
+export const REPORT_DIR_NAME = "sandcastle-report";
+
+// Where writeRunReport writes summary.md and handbacks.json. On Actions (RUNNER_TEMP is set) that is a folder under the runner's temp
+// folder, outside the checkout: the planner, critique and intake sandboxes mount the checkout read-write and one the host gave up on
+// can keep running, so a file under .sandcastle/logs/ could be rewritten between the host's write and the workflow's upload, or its
+// read of handbacks.json to fail the run. Anywhere else it stays beside the logs, where a person looks for it.
+export function reportDir(env: Record<string, string | undefined> = process.env): string {
+  return env.RUNNER_TEMP ? join(env.RUNNER_TEMP, REPORT_DIR_NAME) : LOGS_DIR;
+}
+
+export const REPORT_DIR = reportDir();
 
 // The filesystem writeRunReport needs; tests pass a stub that records calls.
 export type ReportFs = {

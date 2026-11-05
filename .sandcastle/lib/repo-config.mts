@@ -70,6 +70,12 @@ export const GATE_COVERED_CHECKS: readonly string[] = ["Template tests"];
 // Docker-backed tests, so it keeps the Template's default.
 export const GATE_COMMAND = "scripts/gate.sh";
 
+// How long the gate may run in the sandbox, in minutes, before the host kills it and counts the checkpoint
+// red (lib/step-limit.mts). Parallel builds share one host, so size it for the slowest gate under that load;
+// lib/config.test.mts adds it to the longest build when it checks BUILDING_LABEL_MAX_AGE_MS. A repo whose gate
+// takes a few minutes keeps the default.
+export const GATE_LIMIT_MINUTES = 10;
+
 // The committed file GATE_COMMAND runs. It is written in the worktree by the
 // agents whose work it judges, so a gate whose branch changes it fails without
 // running (lib/checkpoint.mts#gateScriptChange); a file that isn't committed at
@@ -143,6 +149,7 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".claude/skills/hardening-review/references/triage.md",
   ".claude/skills/hardening-review/scripts/known_open.py",
   ".claude/skills/hardening-review/scripts/mutate.py",
+  ".security/README.md",
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
   ".sandcastle/.markdownlint-cli2.jsonc",
@@ -163,6 +170,8 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/config.test.mts",
   ".sandcastle/lib/critique.mts",
   ".sandcastle/lib/critique.test.mts",
+  ".sandcastle/lib/diagnostics.mts",
+  ".sandcastle/lib/diagnostics.test.mts",
   ".sandcastle/lib/errors.mts",
   ".sandcastle/lib/follow-up-pass.mts",
   ".sandcastle/lib/follow-up-pass.test.mts",
@@ -177,6 +186,12 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/github.test.mts",
   ".sandcastle/lib/handback.mts",
   ".sandcastle/lib/handback.test.mts",
+  ".sandcastle/lib/host-limit.mts",
+  ".sandcastle/lib/host-limit.test.mts",
+  ".sandcastle/lib/host-review-prompts.mts",
+  ".sandcastle/lib/host-review-prompts.test.mts",
+  ".sandcastle/lib/host-review.mts",
+  ".sandcastle/lib/host-review.test.mts",
   ".sandcastle/lib/host-safety.mts",
   ".sandcastle/lib/host-safety.test.mts",
   ".sandcastle/lib/intake.mts",
@@ -198,6 +213,10 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/report.test.mts",
   ".sandcastle/lib/review-ledger.mts",
   ".sandcastle/lib/review-ledger.test.mts",
+  ".sandcastle/lib/role-logs.mts",
+  ".sandcastle/lib/role-logs.test.mts",
+  ".sandcastle/lib/role-timeline.mts",
+  ".sandcastle/lib/role-timeline.test.mts",
   ".sandcastle/lib/round.mts",
   ".sandcastle/lib/round.test.mts",
   ".sandcastle/lib/sandbox-env.mts",
@@ -212,6 +231,8 @@ export const TEMPLATE_ROOT_COPIES: readonly string[] = [
   ".sandcastle/lib/skills.test.mts",
   ".sandcastle/lib/status.mts",
   ".sandcastle/lib/status.test.mts",
+  ".sandcastle/lib/step-limit.mts",
+  ".sandcastle/lib/step-limit.test.mts",
   ".sandcastle/lib/ui-role-fixture.mts",
   ".sandcastle/lib/ui-role-fixture.test.mts",
   ".sandcastle/lib/umbrella.mts",

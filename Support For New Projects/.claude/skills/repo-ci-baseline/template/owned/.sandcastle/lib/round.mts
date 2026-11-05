@@ -10,12 +10,12 @@ type BuildResult = { prUrl: string | undefined; publishFailed: boolean };
 type BuildReportFields = Pick<OutcomeEntry, "outcome" | "detail">;
 
 // The summary's lines: each pull request the round opened, then each branch
-// that passed both checkpoints but couldn't be pushed or get a PR. That work is
+// that passed its checkpoints but couldn't be pushed or get a PR. That work is
 // done but stranded, which a person needs to hear apart from a round that
 // built nothing. `stop` is the line to stop the run on when no pull request
 // opened, and undefined when one did. `settled` holds each `work` item's
 // build, in the same order. A build that stopped with UncountedStopError (the
-// time budget or Claude's usage limit) gets a ⏹ line, and stops the run
+// time budget, Claude's usage limit or a stalled sandbox step) gets a ⏹ line, and stops the run
 // whatever else the round published: nothing more can start.
 export function roundSummary(
   work: readonly { issue: { number: number }; branch: string }[],
@@ -65,7 +65,7 @@ export function roundSummary(
 
 // This round's outcomes, for the run report (lib/report.mts): a fulfilled
 // build's own outcome and detail, a build that rejected with
-// UncountedStopError (the time budget or Claude's usage limit) as
+// UncountedStopError (the time budget, Claude's usage limit or a stalled sandbox step) as
 // "stopped" with its message, and any other rejection as "not published",
 // since the build threw rather than return a result.
 export function roundOutcomes(

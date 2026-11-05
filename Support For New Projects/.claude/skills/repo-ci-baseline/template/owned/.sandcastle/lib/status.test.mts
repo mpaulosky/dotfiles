@@ -24,6 +24,7 @@ import {
   liveStatusGitHub,
   renderStatus,
   terminalLine,
+  hasHiddenText,
   terminalText,
   statusCommand,
   statusOf,
@@ -1259,5 +1260,46 @@ describe("liveStatusGitHub", () => {
     assert.equal(typeof liveStatusGitHub.passesUsed, "function");
     assert.equal(typeof liveStatusGitHub.workflowRuns, "function");
     assert.equal(typeof liveStatusGitHub.openPullRequests, "function");
+  });
+});
+
+// hasHiddenText is terminalText's rule asked as a question: would it drop anything but whitespace?
+describe("hasHiddenText", () => {
+  it("is false for ordinary text, whitespace of every kind, and an empty text", () => {
+    for (const text of ["", "A stale sentence.", "tab\there", "line\nbreak", "crlf\r\nbreak", "non\u00a0breaking", "  padded  ", "Café naïve 日本語"]) {
+      assert.equal(hasHiddenText(text), false, JSON.stringify(text));
+    }
+  });
+
+  it("is true for a character that draws as nothing or reorders text", () => {
+    for (const character of ["\u200b", "\u200e", "\u202e", "\u2060", "\u00ad", "\u034f", "\u3164", "\u2800", "\u0000", "\u0007", "\u009f", "\u{E0041}", "\u{E0100}", "\ufe0e", "\u0600", "\ufff9"]) {
+      assert.equal(hasHiddenText(`a${character}b`), true, JSON.stringify(character));
+    }
+  });
+
+  it("is false for the joiners in the places they stay: an emoji sequence, a selector after a pictograph, a non-joiner between Persian letters", () => {
+    for (const text of ["Careful \u26a0\ufe0f", "A family \u{1F468}\u200d\u{1F469}\u200d\u{1F467} emoji", "A \u2764\ufe0f\u200d\u{1F525} here", "می\u200cخواهم"]) {
+      assert.equal(hasHiddenText(text), false, JSON.stringify(text));
+    }
+  });
+
+  it("is true for a joiner where it does no work: between ASCII letters, at an end, beside a space", () => {
+    for (const text of ["x\u200dx", "x\u200cx", "\u200dstart", "end\u200d", "a \u200d b", "x\ufe0f", "\ufe0fstart"]) {
+      assert.equal(hasHiddenText(text), true, JSON.stringify(text));
+    }
+  });
+
+  it("allows eight kept joiners in a text and refuses the ninth", () => {
+    const sequence = (joiners: number) => `\u{1F468}${"\u200d\u{1F469}".repeat(joiners)}`;
+
+    assert.equal(hasHiddenText(sequence(8)), false);
+    assert.equal(hasHiddenText(sequence(9)), true);
+  });
+
+  it("allows eight private-use code points in a text and refuses the ninth, and eight stacked marks and refuses the ninth", () => {
+    assert.equal(hasHiddenText("\u{E000}".repeat(8)), false);
+    assert.equal(hasHiddenText("\u{E000}".repeat(9)), true);
+    assert.equal(hasHiddenText(`a${"\u0301".repeat(8)}`), false);
+    assert.equal(hasHiddenText(`a${"\u0301".repeat(9)}`), true);
   });
 });

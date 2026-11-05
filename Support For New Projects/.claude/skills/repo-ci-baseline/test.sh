@@ -15,6 +15,8 @@
 # under the skill, and it's the check to run before committing a Template
 # change.
 set -euo pipefail
+# The step headers carry SECONDS: count from here, whatever SECONDS a caller exported (mpaulosky/dotfiles#417).
+SECONDS=0
 
 skill_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 owned="$skill_dir/template/owned"
@@ -30,7 +32,9 @@ md_tmp="$(mktemp -d)"
 trap 'command rm -rf "$GIT_TEMPLATE_DIR" "$md_tmp"' EXIT
 
 failures=0
-step() { echo; echo "── $1"; }
+# Each header carries the seconds since test.sh started (bash's SECONDS, reset at the top), so a log shows which step ran long
+# (a step's time is the next header's minus its own) even when the run is killed at a limit (mpaulosky/dotfiles#417).
+step() { echo; echo "── $1 [+${SECONDS}s]"; }
 fail() { echo "FAIL: $1" >&2; failures=$((failures + 1)); }
 need() {
   command -v "$1" &>/dev/null || { echo "test.sh: $1 is required" >&2; exit 2; }
@@ -146,6 +150,20 @@ if grep -rnE '\{\{[A-Z_]+\}\}' --exclude-dir=.sandcastle "$owned" \
   || grep -rnE '\{\{(OWNER|REPO|SOLUTION)\}\}' "$owned/.sandcastle"; then
   fail "Owned files must not carry {{PLACEHOLDER}}s; per-repo values belong in Seed files"
 fi
+
+step "A file is Owned or Seed, never both, and the Owned files that moved from the Seed hold what Apply stamps on every repo"
+# Apply writes the Owned copy and then reports the Seed one as skipped, so a file back in both folders would sit unnoticed.
+both="$(comm -12 <(cd "$owned" && find . -type f | sort) <(cd "$seed" && find . -type f | sort))"
+[[ -z "$both" ]] || fail "these files are in both template/owned and template/seed: $both"
+threshold="$(tr -d '[:space:]' < "$owned/.github/ci/coverage-threshold")"
+if [[ ! "$threshold" =~ ^[0-9]+$ ]] || (( 10#$threshold > 100 )); then
+  fail "the Owned .github/ci/coverage-threshold must hold a whole percentage from 0 to 100 (ci.yml refuses anything else), not '$threshold'"
+fi
+grep -qxF 'Copyright (c) 2021 mpaulosky' "$owned/LICENSE" || fail "the Owned LICENSE must read 'Copyright (c) 2021 mpaulosky': the oldest year in use, the same in every repo"
+for template in bug_report.md feature_request.md; do
+  grep -qxF 'assignees: mpaulosky' "$owned/.github/ISSUE_TEMPLATE/$template" \
+    || fail "the Owned $template must carry 'assignees: mpaulosky': an Owned file has no {{OWNER}} to fill"
+done
 
 step "Issue references in Owned files name their repo"
 # Applied into a repo, a bare #N reads as that repo's own issue or PR
@@ -265,23 +283,25 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .claude/skills/hardening-review/references/mutations.md .claude/skills/hardening-review/references/state.md \
   .claude/skills/hardening-review/references/triage.md .claude/skills/hardening-review/scripts/known_open.py \
   .claude/skills/hardening-review/scripts/mutate.py \
+  .security/README.md \
   .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/check.sh .sandcastle/critique-prompt.md \
   .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
   .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
   .sandcastle/lib/building.test.mts .sandcastle/lib/checkpoint.mts .sandcastle/lib/checkpoint.test.mts .sandcastle/lib/config.mts \
-  .sandcastle/lib/config.test.mts .sandcastle/lib/critique.mts .sandcastle/lib/critique.test.mts .sandcastle/lib/errors.mts \
+  .sandcastle/lib/config.test.mts .sandcastle/lib/critique.mts .sandcastle/lib/critique.test.mts .sandcastle/lib/diagnostics.mts .sandcastle/lib/diagnostics.test.mts .sandcastle/lib/errors.mts \
   .sandcastle/lib/follow-up-pass.mts .sandcastle/lib/follow-up-pass.test.mts .sandcastle/lib/follow-up-run.mts .sandcastle/lib/follow-up-run.test.mts \
   .sandcastle/lib/follow-up.mts \
   .sandcastle/lib/follow-up.test.mts .sandcastle/lib/gate.mts .sandcastle/lib/gate.test.mts .sandcastle/lib/git-sandbox-fake.mts \
   .sandcastle/lib/github.mts .sandcastle/lib/github.test.mts .sandcastle/lib/handback.mts .sandcastle/lib/handback.test.mts \
+  .sandcastle/lib/host-limit.mts .sandcastle/lib/host-limit.test.mts .sandcastle/lib/host-review-prompts.mts .sandcastle/lib/host-review-prompts.test.mts .sandcastle/lib/host-review.mts .sandcastle/lib/host-review.test.mts \
   .sandcastle/lib/host-safety.mts .sandcastle/lib/host-safety.test.mts .sandcastle/lib/intake.mts .sandcastle/lib/intake.test.mts \
   .sandcastle/lib/limits.mts .sandcastle/lib/limits.test.mts .sandcastle/lib/overlap.mts .sandcastle/lib/overlap.test.mts \
   .sandcastle/lib/plain-text.mts .sandcastle/lib/plain-text.test.mts .sandcastle/lib/plan.mts .sandcastle/lib/plan.test.mts .sandcastle/lib/pre-push-review-skill.test.mts .sandcastle/lib/prompts.mts .sandcastle/lib/prompts.test.mts \
   .sandcastle/lib/queue.mts .sandcastle/lib/queue.test.mts .sandcastle/lib/report.mts .sandcastle/lib/report.test.mts \
-  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts \
+  .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/role-logs.mts .sandcastle/lib/role-logs.test.mts .sandcastle/lib/role-timeline.mts .sandcastle/lib/role-timeline.test.mts \
   .sandcastle/lib/round.mts .sandcastle/lib/round.test.mts .sandcastle/lib/sandbox-env.mts .sandcastle/lib/sandbox-env.test.mts \
   .sandcastle/lib/scan.mts .sandcastle/lib/scan.test.mts .sandcastle/lib/security-record.mts .sandcastle/lib/security-record.test.mts .sandcastle/lib/shell.mts .sandcastle/lib/shell.test.mts \
-  .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/status.mts .sandcastle/lib/status.test.mts .sandcastle/lib/ui-role-fixture.mts .sandcastle/lib/ui-role-fixture.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
+  .sandcastle/lib/skills.mts .sandcastle/lib/skills.test.mts .sandcastle/lib/status.mts .sandcastle/lib/status.test.mts .sandcastle/lib/step-limit.mts .sandcastle/lib/step-limit.test.mts .sandcastle/lib/ui-role-fixture.mts .sandcastle/lib/ui-role-fixture.test.mts .sandcastle/lib/umbrella.mts .sandcastle/lib/umbrella.test.mts \
   .sandcastle/lib/work.mts .sandcastle/lib/work.test.mts .sandcastle/main.mts .sandcastle/status.mts .sandcastle/status.test.mts .sandcastle/tsconfig.json; do
   cmp -s "$owned/$file" "$dotfiles/$file" || fail "dotfiles' $file differs from the Template's; copy it over"
   # The mode too: a hook that isn't executable doesn't run.
@@ -301,13 +321,13 @@ while IFS= read -r rel; do
     || fail "dotfiles' .claude/skills/hardening-review/$rel differs from the Template's; copy it over"
 done < <(cd "$owned/.claude/skills/hardening-review" && find . -type f -printf '%P\n' | sort)
 
-step "The security record: its README is a Seed file, and the .gitignore keeps its entries out"
+step "The security record: its README is Owned, and the .gitignore keeps its entries out"
 # The review writes .security/NNNN-<slug>.md in the main checkout, one per security finding. The entries are local and never
-# published, so the Owned .gitignore ignores them (the README excepted, so it can be committed); the README comes from the Seed
-# once, and a repo keeps its own edits and entries across a re-Apply.
-[[ -f "$seed/.security/README.md" ]] || fail "the Seed must carry .security/README.md"
-[[ ! -e "$owned/.security" ]] || fail "the Template's .security/ must be Seed only: an Owned copy would be overwritten on every Apply"
-[[ -f "$dotfiles/.security/README.md" ]] || fail "dotfiles must carry its own .security/README.md, written from the Seed"
+# published, so the Owned .gitignore ignores them (the README excepted, so it can be committed); the README is Owned, so Apply
+# keeps it current, and a re-Apply leaves the entries alone.
+[[ -f "$owned/.security/README.md" ]] || fail "the Template must carry .security/README.md as an Owned file"
+[[ ! -e "$seed/.security" ]] || fail "the Template's .security/README.md is Owned: the Seed must not carry a copy"
+[[ -f "$dotfiles/.security/README.md" ]] || fail "dotfiles must carry its own .security/README.md, a copy of the Template's"
 for ignore_file in "$owned/.gitignore" "$dotfiles/.gitignore"; do
   grep -qxF '.security/*' "$ignore_file" || fail "$ignore_file must ignore .security/*"
   grep -qxF '!.security/README.md' "$ignore_file" || fail "$ignore_file must keep .security/README.md"
@@ -320,12 +340,12 @@ for ignore_file in "$owned/.gitignore" "$dotfiles/.gitignore"; do
     fail "$ignore_file must not ignore .security/README.md"
   fi
 done
-# A re-Apply of the real Template leaves the README's edits and the entries alone, and --dry-run lists neither as overwritten.
+# A re-Apply of the real Template restores the README, leaves the entries alone, and --dry-run lists no entry as overwritten.
 security_repo="$md_tmp/security-repo"
 git init -q -b main "$security_repo"
 git -C "$security_repo" remote add origin "https://github.com/acme/Widget.git"
 "$skill_dir/apply.sh" "$security_repo" > /dev/null || fail "apply.sh failed on an empty repo"
-[[ -f "$security_repo/.security/README.md" ]] || fail "apply.sh must write .security/README.md from the Seed"
+[[ -f "$security_repo/.security/README.md" ]] || fail "apply.sh must write .security/README.md from the Template"
 mkdir -p "$security_repo/.security"
 printf '\nOur own note on the record.\n' >> "$security_repo/.security/README.md"
 printf '# 0001: An entry\n\n- Status: fixed\n' > "$security_repo/.security/0001-an-entry.md"
@@ -334,16 +354,17 @@ printf '# 0001: An entry\n\n- Status: fixed\n' > "$security_repo/.security/0001-
 git -C "$security_repo" -c core.hooksPath=/dev/null add -A
 git -C "$security_repo" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.com commit -q -m "apply"
 git -C "$security_repo" switch -q -c chore/standardize-baseline
-security_before="$(cat "$security_repo/.security/README.md" "$security_repo/.security/0001-an-entry.md")"
 security_dry="$("$skill_dir/apply.sh" --dry-run "$security_repo")"
-if awk '/^Owned files that would be (added|overwritten)/ {on = 1; next} /^$/ {on = 0} on' <<< "$security_dry" | grep -q '\.security/'; then
-  fail "apply.sh --dry-run must not list .security/ files as added or overwritten"
+if awk '/^Owned files that would be (added|overwritten)/ {on = 1; next} /^$/ {on = 0} on' <<< "$security_dry" | grep -q '\.security/0001'; then
+  fail "apply.sh --dry-run must not list a .security entry as added or overwritten"
 fi
-grep -A40 '^Seed files skipped' <<< "$security_dry" | grep -qF '.security/README.md' \
-  || fail "apply.sh --dry-run must list .security/README.md as a Seed file skipped"
+grep -A40 '^Owned files that would be overwritten' <<< "$security_dry" | grep -qF '.security/README.md' \
+  || fail "apply.sh --dry-run must list an edited .security/README.md as an Owned file it would overwrite"
 "$skill_dir/apply.sh" "$security_repo" > /dev/null || fail "a re-Apply failed"
-[[ "$(cat "$security_repo/.security/README.md" "$security_repo/.security/0001-an-entry.md")" == "$security_before" ]] \
-  || fail "a re-Apply must leave .security/README.md and its entries alone"
+cmp -s "$owned/.security/README.md" "$security_repo/.security/README.md" || fail "a re-Apply must restore .security/README.md"
+[[ "$(cat "$security_repo/.security/0001-an-entry.md")" == "# 0001: An entry
+
+- Status: fixed" ]] || fail "a re-Apply must leave the .security entries alone"
 
 step "Sandcastle workflow"
 # A repo without the SANDCASTLE_GH_TOKEN secret doesn't run Sandcastle in Actions, and its cron would fail every two hours if the workflow
@@ -438,7 +459,7 @@ run_skills() { # the list's text; sets skills_rc, skills_log, skills_home
   [[ $1 == "<none>" ]] || printf '%s' "$1" > "$ws/.github/ci/sandcastle-skills.txt"
   [[ -z ${skills_preexisting:-} ]] || mkdir -p "$md_tmp/skills-home/.claude/skills/$skills_preexisting"
   skills_home="$md_tmp/skills-home"; skills_rc=0; log="$md_tmp/skills.log"
-  (cd "$ws" && env -i PATH="$PATH" HOME="$skills_home" RUNNER_TEMP="$md_tmp/skills-runner" DOTFILES_URL="$skills_url" \
+  (cd "$ws" && env -i PATH="${skills_path_prefix:-}$PATH" HOME="$skills_home" RUNNER_TEMP="$md_tmp/skills-runner" DOTFILES_URL="$skills_url" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash --noprofile --norc -e "$skills_script") &>"$log" || skills_rc=$?
   skills_log="$(<"$log")"
   # No line of the list is ever run as a command, whatever the outcome.
@@ -483,9 +504,12 @@ for list in "${bad_lists[@]}"; do
   [[ $skills_rc -ne 0 && ! -e "$skills_home/.claude" ]] || fail "sandcastle.yml: a bad skills list must fail and install nothing (exit $skills_rc, list '$list')"
 done
 # The rules are the step's own, not git's or the file system's: each bad list is refused for its reason.
-check_refused() { # the list's text, the part of the error it must give
+refused_with() { # the list's text, the part of the error it must give, and optionally another wording of the same error
   run_skills "$1"
-  [[ $skills_rc -ne 0 && $skills_log == *"$2"* ]] || fail "sandcastle.yml: a skills list '$1' must be refused with '$2' (exit $skills_rc): $skills_log"
+  [[ $skills_rc -ne 0 && ( $skills_log == *"$2"* || ( -n ${3:-} && $skills_log == *"$3"* ) ) ]]
+}
+check_refused() { # the same arguments
+  refused_with "$@" || fail "sandcastle.yml: a skills list '$1' must be refused with '$2'${3:+ or $3} (exit $skills_rc): $skills_log"
 }
 check_refused "dotfiles-sha ${good_sha^^}"$'\nskill alpha' "40-digit"
 check_refused "dotfiles-sha ${good_sha:0:39}"$'\nskill alpha' "40-digit"
@@ -509,8 +533,35 @@ skills_url="file://$fixture2"
 check_refused "dotfiles-sha $ancestor_sha"$'\nskill alpha' "holds a symlink"
 skills_url="file://$fixture"
 skills_preexisting=alpha
-check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "File exists"
+check_refused "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists"
 [[ ! -e "$skills_home/.claude/skills/alpha/alpha" ]] || fail "sandcastle.yml: a skill linked itself inside an existing folder"
+# ubuntu-latest became ubuntu-26.04 on 2026-11-03, whose ln is uutils': it says "Already exists" where GNU's says "File exists"
+# (mpaulosky/dotfiles#423). The step must still refuse, and the check must read either wording, on any runner: a stub ln gives
+# the uutils wording here, and a stub whose message has neither wording must not pass for it.
+uutils_bin="$md_tmp/uutils-bin"; boom_bin="$md_tmp/boom-bin"; mkdir -p "$uutils_bin" "$boom_bin"
+cat > "$uutils_bin/ln" <<'STUB'
+#!/usr/bin/env bash
+echo "ln: failed to create symbolic link '${@: -1}': Already exists (uutils stub)" >&2
+exit 1
+STUB
+cat > "$boom_bin/ln" <<'STUB'
+#!/usr/bin/env bash
+echo "ln: boom" >&2
+exit 1
+STUB
+chmod +x "$uutils_bin/ln" "$boom_bin/ln"
+skills_path_prefix="$uutils_bin:"
+refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists" \
+  || fail "sandcastle.yml: a skill that exists already must be refused whichever way ln words it, GNU's 'File exists' or uutils' 'Already exists' (exit $skills_rc): $skills_log"
+# Only the stub ends its message with "(uutils stub)", whatever the runner's own ln is, so this shows the step ran it.
+[[ $skills_log == *"(uutils stub)"* ]] || fail "sandcastle.yml: the stub ln was not the one the skills step ran: $skills_log"
+skills_path_prefix="$boom_bin:"
+if refused_with "dotfiles-sha $good_sha"$'\nskill alpha' "File exists" "Already exists"; then
+  fail "sandcastle.yml: an ln error with neither wording must not pass for 'File exists' or 'Already exists'"
+fi
+# The control only counts when the step reached the stub: any other early failure would also have no wording.
+[[ $skills_rc -ne 0 && $skills_log == *"ln: boom"* ]] || fail "sandcastle.yml: the stub ln that says neither wording was not run by the skills step (exit $skills_rc): $skills_log"
+skills_path_prefix=
 skills_preexisting=
 # A line is never printed, whichever rule rejects it: one starting with :: would otherwise run as a workflow command from the log.
 for list in "::add-mask::secretvalue" "::add-mask::secretvalue x" "skill ::add-mask::secretvalue" "dotfiles-sha ::add-mask::secretvalue" \
@@ -554,18 +605,18 @@ channel="$(sed -nE 's/^ARG DOTNET_CHANNEL=([^ ]+).*/\1/p' "$seed/.sandcastle/Doc
   || fail "the Seed .sandcastle/Dockerfile's DOTNET_CHANNEL is '$channel'; global.json's SDK is $sdk"
 
 step "Hand-off PRs (the sandcastle:follow-up label)"
-# The session guidance is a Seed rules file, so a repo can keep or change it and Apply never overwrites it. It loads in every
+# The session guidance is an Owned rules file, so Apply keeps it current in a Sandcastle repo. It loads in every
 # session (no paths: frontmatter), says what the label does, who may add it, and the marker a session ends its replies with.
-hand_off="$seed/.claude/rules/sandcastle-hand-off.md"
-[[ -f "$hand_off" ]] || fail "the Seed must carry .claude/rules/sandcastle-hand-off.md, the session guidance for handing a PR off with sandcastle:follow-up"
+hand_off="$owned/.claude/rules/sandcastle-hand-off.md"
+[[ -f "$hand_off" ]] || fail "the Template must carry .claude/rules/sandcastle-hand-off.md as an Owned file, the session guidance for handing a PR off with sandcastle:follow-up"
 if grep -q '^paths:' "$hand_off"; then
-  fail "the Seed .claude/rules/sandcastle-hand-off.md must load in every session: it takes no paths: frontmatter"
+  fail "the Owned .claude/rules/sandcastle-hand-off.md must load in every session: it takes no paths: frontmatter"
 fi
 session_marker="$(sed -nE 's/^export const SESSION_REPLY_MARKER = "([^"]+)";.*/\1/p' "$owned/.sandcastle/lib/config.mts")"
 [[ -n "$session_marker" ]] || fail "lib/config.mts must export SESSION_REPLY_MARKER as a one-line string"
 for needle in 'sandcastle:follow-up' 'check-branch-name.sh' 'needs-human' 'opened by the repository' "$session_marker"; do
   if [[ -z "$needle" ]] || ! grep -qF -- "$needle" "$hand_off"; then
-    fail "the Seed .claude/rules/sandcastle-hand-off.md must mention '$needle'"
+    fail "the Owned .claude/rules/sandcastle-hand-off.md must mention '$needle'"
   fi
 done
 grep -qF -- "$session_marker" "$owned/docs/PROCESS.md" \
@@ -644,6 +695,16 @@ grep -qF -- '#146' "$adr_0002" \
 for adr in "$adr_0002" "$adr_0004"; do
   grep -qF -- 'mpaulosky/dotfiles#375' "$adr" || fail "${adr#"$skill_dir"/} must cite mpaulosky/dotfiles#375"
 done
+# mpaulosky/dotfiles#413: the reviewers read the patch without verbatim Template mirrors, the key still covers the whole diff.
+for mirror_doc in "$owned/.claude/skills/pre-push-review/SKILL.md" "$skill_dir/references/pre-push-review.md"; do
+  grep -qF -- 'verbatim' "$mirror_doc" \
+    || fail "${mirror_doc#"$skill_dir"/} must say the patch leaves out Template mirrors that are verbatim copies of a root file (mpaulosky/dotfiles#413)"
+  tr '\n' ' ' < "$mirror_doc" | tr -s ' ' | grep -qF -- 'a change in a mirror alone still needs a new review' \
+    || fail "${mirror_doc#"$skill_dir"/} must say a change in a mirror alone still needs a new review (mpaulosky/dotfiles#413)"
+done
+grep -qF -- 'identical to the root copy' "$owned/.claude/skills/hardening-review/references/brief.md" \
+  || fail "the hardening-review brief must tell its reviewers that identical Template mirrors are left out (mpaulosky/dotfiles#413)"
+
 # mpaulosky/dotfiles#380: Claude Review reads the Template's file, not an identical root copy; a drifting copy is still read.
 claude_review_wf="$owned/.github/workflows/claude-review.yml"
 for copy_doc in "$adr_0004" "$automerge_doc" "$claude_review_wf"; do
@@ -903,13 +964,13 @@ for needle in 'unlabeled' 'conflict' 'fork' 'mpaulosky/dotfiles#368'; do
     || fail "ADR 0009's Decisions must say why unlabeled runs on pull_request_target: it lacks '$needle' (conflicting PRs, main's copy of the workflow, fork PRs never had the secrets)"
 done
 if grep -nE 'dotfiles|repo-ci-baseline|Support For New Projects' "$hand_off"; then
-  fail "the Seed .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
+  fail "the Owned .claude/rules/sandcastle-hand-off.md is written into other repos; describe any Baseline repo instead of dotfiles"
 fi
 for needle in 'sandcastle:follow-up' '.claude/rules/sandcastle-hand-off.md' 'SANDCASTLE_LABELS' 'claude-session'; do
   grep -qF -- "$needle" "$skill_dir/references/sandcastle.md" || fail "references/sandcastle.md must document the hand-off PRs: it doesn't mention '$needle'"
 done
 grep -qF -- '.claude/rules/sandcastle-hand-off.md' "$skill_dir/CONTEXT.md" \
-  || fail "CONTEXT.md's Sandcastle section must list the Seed .claude/rules/sandcastle-hand-off.md"
+  || fail "CONTEXT.md's Sandcastle section must list the Owned .claude/rules/sandcastle-hand-off.md"
 
 step "apply.sh smoke test"
 "$skill_dir/tests/apply.test.sh" || fail "apply.test.sh"
@@ -924,7 +985,7 @@ step "reapply.sh smoke test"
 
 echo
 if [[ $failures -gt 0 ]]; then
-  echo "test.sh: $failures check(s) failed"
+  echo "test.sh: $failures check(s) failed [+${SECONDS}s]"
   exit 1
 fi
-echo "test.sh: all checks passed"
+echo "test.sh: all checks passed [+${SECONDS}s]"

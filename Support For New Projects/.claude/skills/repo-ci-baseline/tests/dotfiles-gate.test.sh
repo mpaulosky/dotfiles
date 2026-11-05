@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Tests for dotfiles' own scripts/gate.sh: its "Local review" step (before test.sh,
-# refusing a push the local review hasn't passed) and when it runs the Sandcastle
-# check. Each case runs a copy of the gate in a throwaway repo, with stub
-# scripts/review.sh, test.sh and pnpm that log their calls, so nothing real runs.
+# refusing a push the local review hasn't passed), when it runs the Sandcastle
+# check, and the seconds its step headers carry (and the ones test.sh's carry: test.sh
+# itself is only read here, never run). Each gate case runs a copy of the gate in a
+# throwaway repo, with stub scripts/review.sh, test.sh and pnpm that log their calls,
+# so nothing real runs.
 # Usage: tests/dotfiles-gate.test.sh
 set -uo pipefail
 
@@ -18,7 +20,7 @@ LOG="$WORK/calls.log"
 
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
 # The caller may be iterating with the review check skipped; the cases set what they need.
-unset GATE_SKIP_REVIEW FAIL_REVIEW
+unset GATE_SKIP_REVIEW FAIL_REVIEW SLOW_REVIEW
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
@@ -35,6 +37,7 @@ cp "$GATE" "$REPO/scripts/gate.sh"
 cat > "$REPO/scripts/review.sh" <<EOF
 #!/usr/bin/env bash
 echo "review.sh \$*" >> "$LOG"
+[[ -z "\${SLOW_REVIEW:-}" ]] || sleep "\$SLOW_REVIEW"
 [[ -z "\${FAIL_REVIEW:-}" ]]
 EOF
 cat > "$REPO/$SKILL_REL/test.sh" <<EOF
@@ -84,6 +87,14 @@ first_before_second() { # the first pattern's line comes before the second's
   [[ -n "$a" && -n "$b" && "$a" -lt "$b" ]]
 }
 
+# The step headers end with the seconds since the script started (mpaulosky/dotfiles#417).
+# stamped: the header is there with some number of seconds. started_at_zero: the number is 0 to 9
+# (the slack is for a slow git call on a loaded runner), which a gate run with SECONDS=500 in its
+# environment shows only when the gate resets SECONDS itself. stamp_of: that number.
+stamped() { grep -Eq -- "^── $1 \[\+[0-9]+s\]\$" <<< "$OUTPUT"; }
+started_at_zero() { grep -Eq -- "^── $1 \[\+[0-9]s\]\$" <<< "$OUTPUT"; }
+stamp_of() { sed -nE "s/^── $1 \[\+([0-9]+)s\]\$/\1/p" <<< "$OUTPUT" | head -1; }
+
 # A branch that changed only an unrelated file.
 git -C "$REPO" switch -q -c work origin/main
 echo change >> "$REPO/other/file.txt"
@@ -94,6 +105,23 @@ check "a passing review check lets the gate run test.sh" test $STATUS -eq 0
 check "the review check gets the merge base" called "review.sh check $MAIN"
 check "the review check runs before test.sh" first_before_second "review.sh" "test.sh"
 check "an unrelated change skips the Sandcastle check" not called "pnpm run check:sandcastle"
+check "the Local review header carries the seconds since the gate started" stamped "Local review"
+check "the test.sh header carries them too" stamped "test.sh"
+run_gate_with_seconds_exported() { # the gate's shell starts with SECONDS=500 in its environment
+  : > "$LOG"
+  OUTPUT="$(cd "$REPO" && env SECONDS=500 PATH="$STUBS:$PATH" bash scripts/gate.sh 2>&1)"
+  STATUS=$?
+}
+run_gate_with_seconds_exported
+check "an inherited SECONDS doesn't offset the headers" started_at_zero "Local review"
+
+# The numbers are elapsed time, not a constant: a review check that takes two seconds sits between the Local review header and the
+# test.sh one, so the second is later than the first by at least those two seconds. Only the difference is checked, since how long the
+# gate's own git calls take before its first header depends on the machine.
+SLOW_REVIEW=2 run_gate
+review_to_test_sh() { echo $(( $(stamp_of 'test.sh') - $(stamp_of 'Local review') )); }
+check "the test.sh header counts the review check's two seconds after the Local review header" test "$(review_to_test_sh)" -ge 2
+check "and not much more than those two" test "$(review_to_test_sh)" -lt 12
 
 FAIL_REVIEW=1 run_gate
 check "a failing review check refuses the push" test $STATUS -ne 0
@@ -128,7 +156,27 @@ for path in scripts/review.sh .claude/skills/pre-push-review/SKILL.md .claude/sk
   git -C "$REPO" commit -qam "touch $path"
   run_gate
   check "a change to $path runs the Sandcastle check" called "pnpm run check:sandcastle"
+  check "the Sandcastle check header carries the seconds too ($path)" stamped "Sandcastle check"
 done
+
+# test.sh's own step headers and closing lines: its body runs everything, so read its step() and closing lines from the file.
+TEST_SH="$SKILL_DIR/test.sh"
+check "test.sh has exactly one step() definition line to read" test "$(grep -c '^step() ' "$TEST_SH")" -eq 1
+step_header() { ( eval "$(grep '^step() ' "$TEST_SH")"; SECONDS=7; step "Some step" ); }
+# A second boundary between the assignment and the read makes bash report 8, so 7 or 8 both count.
+step_header_has_seven_or_eight() { [[ "$(step_header)" =~ ^$'\n'"── Some step [+"[78]"s]"$ ]]; }
+check "test.sh's step() prints the seconds since test.sh started" step_header_has_seven_or_eight
+reset_before_first_step() {
+  local reset first
+  reset="$(grep -nx 'SECONDS=0' "$TEST_SH" | head -1 | cut -d: -f1)"
+  first="$(grep -n '^step "' "$TEST_SH" | head -1 | cut -d: -f1)"
+  [[ -n "$reset" && -n "$first" && "$reset" -lt "$first" ]]
+}
+check "test.sh resets SECONDS before its first step" reset_before_first_step
+# shellcheck disable=SC2016 # the text to find holds a literal ${SECONDS}; it must not expand here
+check "test.sh's pass line carries the seconds" grep -qF 'echo "test.sh: all checks passed [+${SECONDS}s]"' "$TEST_SH"
+# shellcheck disable=SC2016 # the text to find holds a literal ${SECONDS}; it must not expand here
+check "test.sh's fail line carries the seconds" grep -qF 'echo "test.sh: $failures check(s) failed [+${SECONDS}s]"' "$TEST_SH"
 
 echo
 echo "$PASSED passed, $FAILED failed"

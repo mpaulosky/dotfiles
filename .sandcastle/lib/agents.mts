@@ -9,11 +9,14 @@
 
 import { readFileSync } from "node:fs";
 import * as sandcastle from "@ai-hero/sandcastle";
-import type { AnyRole, RoleAgent } from "./config.mts";
+import { FIXED_ROLE_AGENTS, ROLE_RUN_GRACE_MINUTES, type AnyRole, type RoleAgent } from "./config.mts";
+import { MAX_TIMER_MS, markHostCallAbandoned } from "./host-limit.mts";
 import { ROLE_AGENTS } from "./repo-config.mts";
-import { UncountedStopError } from "./errors.mts";
+import { StalledStepError, UncountedStopError } from "./errors.mts";
+import { markSandboxStalled, stalledStepOf } from "./step-limit.mts";
 import { MAX_CAUSE_DEPTH, RunLimits, runLimits, usageLimitLine } from "./limits.mts";
 import { usageReport } from "./report.mts";
+import { RoleRun, timedProvider, timelineReport } from "./role-timeline.mts";
 
 // ROLE_AGENTS as every repo may write it: a repo-config.mts written before the
 // `ui` role existed names none, and ROLE_AGENTS' own type then has no `ui` key.
@@ -25,10 +28,11 @@ export function uiEnabled(): boolean {
   return agents.ui !== undefined;
 }
 
-// The agent and budget ROLE_AGENTS gives one role. A role the repo left out
-// (only `ui` may be) is a bug in the caller, so it throws.
+// The agent and budget one role runs with: FIXED_ROLE_AGENTS for a role the
+// skill fixes, else ROLE_AGENTS'. A role the repo left out (only `ui` may be)
+// is a bug in the caller, so it throws.
 export function roleAgent(role: AnyRole): RoleAgent {
-  const agent = agents[role];
+  const agent = role === "pre-push-reviewer" ? FIXED_ROLE_AGENTS[role] : agents[role];
   if (agent === undefined) throw new Error(`ROLE_AGENTS in lib/repo-config.mts has no ${role} entry`);
   return agent;
 }
@@ -36,11 +40,66 @@ export function roleAgent(role: AnyRole): RoleAgent {
 // The options a role fixes; callers supply everything else.
 type RoleFixed = "name" | "agent" | "maxIterations" | "signal";
 
-export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout) {
+// The tools a pre-push reviewer gets: it only reads.
+export const REVIEWER_TOOLS = ["Read", "Grep", "Glob"] as const;
+
+// Rules that keep an agent from reading, writing or running the local review's
+// ledger, which only the host records. They are a convenience on top of the
+// empty read-only mount over `.git/review` (lib/skills.mts), which is the
+// boundary: a rule alone cannot stop a command that was never named here.
+export const LEDGER_DENIED_TOOLS: readonly string[] = [
+  ...["Read", "Edit", "Write"].flatMap((tool) => [`${tool}(//**/.git/review)`, `${tool}(//**/.git/review/**)`]),
+  "Bash(scripts/review.sh:*)",
+];
+
+// What a role's agent is held to besides its model and effort: the only tools
+// it gets, rules it is denied, and whether only the MCP servers named on the
+// command line may start, and whether Claude Code reads only the user's settings, not the branch's .claude/settings.json (whose hooks
+// would run shell commands, with the sandbox's environment, in a run that is meant to hold no shell).
+export type AgentRestrictions = { tools?: readonly string[]; denied?: readonly string[]; strictMcp?: boolean; userSettingsOnly?: boolean };
+
+const PRINT_COMMAND_START = "claude --print ";
+
+// `value` as one single-quoted shell word.
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+// `sandcastle.claudeCode` with `restrictions` put into its command as Claude
+// Code flags. Sandcastle builds the command, so this fails closed when it
+// doesn't start as expected: an agent run without the restrictions asked for
+// would read more than it was meant to.
+export function restrictedClaudeCode(
+  model: string,
+  effort: RoleAgent["effort"],
+  restrictions: AgentRestrictions,
+  build: typeof sandcastle.claudeCode = sandcastle.claudeCode,
+): sandcastle.AgentProvider {
+  const provider = build(model, { effort });
+  const { tools, denied, strictMcp, userSettingsOnly } = restrictions;
+  const flags = [
+    ...(tools === undefined ? [] : ["--tools", shellWord(tools.join(","))]),
+    ...(strictMcp === true ? ["--strict-mcp-config"] : []),
+    ...(userSettingsOnly === true ? ["--setting-sources", "user"] : []),
+    ...(denied === undefined || denied.length === 0 ? [] : ["--disallowedTools", ...denied.map(shellWord)]),
+  ];
+  if (flags.length === 0) return provider;
+  const restricted = (printed: { command: string; stdin?: string }) => {
+    if (!printed.command.startsWith(PRINT_COMMAND_START)) {
+      throw new Error(`Sandcastle's Claude Code command no longer starts with \`${PRINT_COMMAND_START.trim()}\`, so its restrictions cannot be applied`);
+    }
+    return { ...printed, command: `${PRINT_COMMAND_START}${flags.join(" ")} ${printed.command.slice(PRINT_COMMAND_START.length)}` };
+  };
+  // Probe once now, so a changed command shape fails where the provider is built, not midway through a run.
+  restricted(provider.buildPrintCommand({ prompt: "", dangerouslySkipPermissions: true }));
+  return { ...provider, buildPrintCommand: (options) => restricted(provider.buildPrintCommand(options)) };
+}
+
+export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal = AbortSignal.timeout, restrictions?: AgentRestrictions) {
   const { model, effort, maxIterations, timeoutMinutes } = roleAgent(role);
   return {
     name: role,
-    agent: sandcastle.claudeCode(model, { effort }),
+    agent: restrictions === undefined ? sandcastle.claudeCode(model, { effort }) : restrictedClaudeCode(model, effort, restrictions),
     maxIterations,
     signal: timeout(timeoutMinutes * 60_000),
   };
@@ -62,25 +121,40 @@ export function runRole<T>(
   role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed | "output"> & { output: sandcastle.OutputObjectDefinition<T> },
   limits?: RunLimits,
+  execute?: typeof sandcastle.run,
 ): Promise<sandcastle.RunResult & { output: T }>;
 export function runRole(
   role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed>,
   limits?: RunLimits,
+  execute?: typeof sandcastle.run,
 ): Promise<sandcastle.RunResult>;
 export async function runRole(
   role: AnyRole,
   options: Omit<sandcastle.RunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
+  // Starts the run; for tests.
+  execute: typeof sandcastle.run = sandcastle.run,
 ): Promise<sandcastle.RunResult> {
   usageReport.record(role, []);
-  const result = await runWithinLimits(
-    role,
-    () => sandcastle.run({ ...withSharedRules(options), ...roleOptions(role) }),
-    limits,
-  );
-  usageReport.record(role, result.iterations);
-  return result;
+  // Timed from the moment the role starts: a role the run's limits refuse, or whose options can't be built, never does, and must not be
+  // listed as one that ran. So the options come first, and the agent is wrapped (lib/role-timeline.mts) once the clock is running.
+  let timing: RoleRun | undefined;
+  try {
+    const result = await runWithinLimits(
+      role,
+      () => {
+        const prepared = { ...withSharedRules(options), ...roleOptions(role) };
+        timing = timelineReport.begin(role);
+        return execute({ ...prepared, agent: timedProvider(prepared.agent, timing) });
+      },
+      limits,
+    );
+    usageReport.record(role, result.iterations);
+    return result;
+  } finally {
+    timing?.end(Date.now());
+  }
 }
 
 export async function runRoleInSandbox(
@@ -88,15 +162,70 @@ export async function runRoleInSandbox(
   role: AnyRole,
   options: Omit<sandcastle.SandboxRunOptions, RoleFixed>,
   limits: RunLimits = runLimits,
+  restrictions?: AgentRestrictions,
+  // How long to wait for the run, in milliseconds; for tests. The default is the role's timeoutMinutes plus ROLE_RUN_GRACE_MINUTES.
+  backstop: { backstopMs?: number } = {},
 ): Promise<sandcastle.SandboxRunResult> {
+  // Defensive: the first stall already threw from the exec that hit it, so only a caller that swallowed that throw gets here (agents.test.mts is its only test).
+  // A role runs through sandbox.run, not the limited exec, so it would start in a container that may still be running the
+  // stalled command; the build's own tolerant reads can have swallowed the throw that said so.
+  const stalled = stalledStepOf(sandbox);
+  if (stalled !== undefined) throw new StalledStepError(`the ${role} wasn't started: the step "${stalled}" didn't end at its limit, so the sandbox is stalled.`);
+  // Before the usage record: a timeout the host can't wait for throws here, and a role that never started must not be listed as one that ran.
+  const backstopMs = backstop.backstopMs ?? roleBackstopMs(role);
   usageReport.record(role, []);
-  const result = await runWithinLimits(
-    role,
-    () => sandbox.run({ ...withSharedRules(options), ...roleOptions(role) }),
-    limits,
-  );
-  usageReport.record(role, result.iterations);
-  return result;
+  // Timed from the moment the role starts (see runRole); a run the host gives up on ends here too, and the late events of its stream are ignored.
+  let timing: RoleRun | undefined;
+  try {
+    const result = await runWithinLimits(
+      role,
+      () => {
+        const prepared = { ...withSharedRules(options), ...roleOptions(role, undefined, restrictions) };
+        timing = timelineReport.begin(role);
+        return withinBackstop(sandbox, role, backstopMs, sandbox.run({ ...prepared, agent: timedProvider(prepared.agent, timing) }));
+      },
+      limits,
+    );
+    usageReport.record(role, result.iterations);
+    return result;
+  } finally {
+    timing?.end(Date.now());
+  }
+}
+
+// How long the host waits for a role's sandbox run: the role's timeoutMinutes and ROLE_RUN_GRACE_MINUTES, in milliseconds. Throws for a
+// timeout that isn't a positive number the host can wait for: a longer or non-numeric delay fires at once, which would give up on every run.
+export function backstopMsFor(timeoutMinutes: number): number {
+  const ms = (timeoutMinutes + ROLE_RUN_GRACE_MINUTES) * 60_000;
+  if (!Number.isFinite(timeoutMinutes) || timeoutMinutes <= 0 || ms > MAX_TIMER_MS) {
+    throw new Error(`a role's timeoutMinutes must be a positive number of minutes the host can wait for, not ${timeoutMinutes}`);
+  }
+  return ms;
+}
+
+export const roleBackstopMs = (role: AnyRole): number => backstopMsFor(roleAgent(role).timeoutMinutes);
+
+// Waits for a role's sandbox run for at most `ms`. The run's own AbortSignal ends one that answers it; a Docker exec that never answers
+// would hold the review until the job's cap. Giving up stalls the sandbox (stalledStepOf, so no later role or exec starts in a container
+// that may still be running the role), records the call (markHostCallAbandoned, so the process ends after its cleanup) and throws. The run itself can't be
+// cancelled, but its container doesn't outlive the build: the StalledStepError ends the work, and buildIssue's finally closes the stalled sandbox within the
+// Docker call limit (closeAfterWork), which removes the container and so the run. Only a close that stalls too leaves it, and the exit warning names that.
+async function withinBackstop<R>(sandbox: object, role: AnyRole, ms: number, run: Promise<R>): Promise<R> {
+  run.catch(() => undefined);
+  let timer: NodeJS.Timeout | undefined;
+  const gaveUp = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const what = `the ${role} run`;
+      markSandboxStalled(sandbox, what);
+      markHostCallAbandoned(`the sandbox ${what}`);
+      reject(new StalledStepError(`The ${role} run didn't finish within its timeout and the host's grace, so the host gave up on it.`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([run, gaveUp]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Exact names a role's own timeout carries: AbortSignal.timeout's

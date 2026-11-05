@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import { describe, it } from "node:test";
+import { StalledStepError, UncountedStopError } from "./errors.mts";
 import {
   handBacksJson,
   intakeStopExitCode,
   IntakeStopReport,
   OutcomeReport,
+  LOGS_DIR,
   REPORT_DIR,
+  REPORT_DIR_NAME,
+  reportDir,
   renderSummary,
+  runEnding,
+  STALL_STOP_REASON,
+  stallStop,
   targetUrl,
   UsageReport,
   WaitingPrReport,
@@ -115,6 +123,41 @@ describe("IntakeStopReport", () => {
   });
 });
 
+describe("runEnding", () => {
+  const stall = stallStop(new StalledStepError("The step stalled."))!;
+  const intakeStop: IntakeStopEntry = { reason: "intake could not run", unjudged: [], firstError: "boom" };
+
+  it("is finished with no limit and no stall, even with an ordinary intake stop", () => {
+    assert.deepEqual(runEnding(undefined, []), { kind: "finished" });
+    assert.deepEqual(runEnding(undefined, [intakeStop]), { kind: "finished" });
+  });
+
+  it("is stopped on a limit with no stall", () => {
+    assert.deepEqual(runEnding("the time budget passed", []), { kind: "stopped", reason: "the time budget passed" });
+  });
+
+  it("is stalled, naming the step, when a stall was recorded, and a limit does not hide it", () => {
+    assert.deepEqual(runEnding(undefined, [intakeStop, stall]), { kind: "stalled", reason: "The step stalled." });
+    assert.deepEqual(runEnding("usage limit", [stall]), { kind: "stalled", reason: "The step stalled." });
+  });
+});
+
+describe("stallStop", () => {
+  it("makes a report entry naming the step for a StalledStepError, which ends the run red like an intake stop", () => {
+    const entry = stallStop(new StalledStepError('The step "git fetch" ran over its 10-minute limit and was killed.'));
+
+    assert.equal(entry?.reason, STALL_STOP_REASON);
+    assert.match(entry?.firstError ?? "", /"git fetch" ran over its 10-minute limit/);
+    assert.equal(intakeStopExitCode(entry === undefined ? [] : [entry]), 1);
+  });
+
+  it("makes none for any other error, including a usage-limit stop", () => {
+    assert.equal(stallStop(new UncountedStopError("usage limit")), undefined);
+    assert.equal(stallStop(new Error("boom")), undefined);
+    assert.equal(stallStop("boom"), undefined);
+  });
+});
+
 // AC: "The host exits with code 1 after writing the run report when a stop
 // was recorded, and with code 0 when there were none, whatever the
 // hand-backs (tested)." intakeStopExitCode is the pure decision main.mts's
@@ -168,6 +211,19 @@ describe("renderSummary", () => {
     stops: [],
   };
 
+  it("lists each role's tool-call timing when there is some, and has no such section when there is none", () => {
+    const withTiming = renderSummary({ ...fullInput, timeline: ["backend: 1 run, 3 tool calls, 129 s in all; longest stretches between calls: 120 s after Bash"] });
+    assert.match(withTiming, /### Tool-call timing by role\n\n- backend: 1 run, 3 tool calls, 129 s in all; longest stretches between calls: 120 s after Bash\n/);
+    assert.ok(!renderSummary(fullInput).includes("Tool-call timing"));
+    assert.ok(!renderSummary({ ...fullInput, timeline: [] }).includes("Tool-call timing"));
+  });
+
+  it("keeps a table-breaking character in a timing line from breaking the report", () => {
+    const summary = renderSummary({ ...fullInput, timeline: ["a|b\nc"] });
+    assert.ok(!summary.includes("a|b"));
+    assert.ok(!summary.includes("b\nc"));
+  });
+
   it("names the queue and says the run finished", () => {
     const summary = renderSummary(fullInput);
 
@@ -179,6 +235,13 @@ describe("renderSummary", () => {
     const summary = renderSummary({ ...fullInput, ending: { kind: "stopped", reason: "the time budget passed" } });
 
     assert.match(summary, /The run stopped cleanly: the time budget passed\./);
+  });
+
+  it("says a stalled run ended red, never that it stopped cleanly", () => {
+    const summary = renderSummary({ ...fullInput, ending: { kind: "stalled", reason: 'The step "git fetch" ran over its limit.' } });
+
+    assert.match(summary, /The run ends red: The step "git fetch" ran over its limit\./);
+    assert.doesNotMatch(summary, /stopped cleanly/);
   });
 
   it("says the run ended on an error, when it crashed", () => {
@@ -479,5 +542,21 @@ describe("writeRunReport", () => {
     );
 
     assert.ok(warnings.length > 0);
+  });
+});
+
+describe("reportDir", () => {
+  it("is a folder under RUNNER_TEMP, outside the checkout, on Actions, and the logs folder anywhere else", () => {
+    assert.equal(LOGS_DIR, ".sandcastle/logs");
+    assert.equal(REPORT_DIR_NAME, "sandcastle-report");
+    assert.equal(reportDir({ RUNNER_TEMP: join("runner", "_temp") }), join("runner", "_temp", "sandcastle-report"));
+    assert.equal(reportDir({}), LOGS_DIR);
+    assert.equal(reportDir({ RUNNER_TEMP: "" }), LOGS_DIR);
+  });
+
+  it("is what REPORT_DIR, the folder writeRunReport writes to and main.mts reads, is built from", () => {
+    assert.equal(REPORT_DIR, reportDir(process.env));
+    if (process.env.RUNNER_TEMP) assert.equal(REPORT_DIR, join(process.env.RUNNER_TEMP, REPORT_DIR_NAME));
+    else assert.equal(REPORT_DIR, LOGS_DIR);
   });
 });

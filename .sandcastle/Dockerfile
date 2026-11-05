@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
   git \
   curl \
   jq \
+  tini \
   python3 \
   python3-pip \
   ruby \
@@ -97,4 +98,8 @@ WORKDIR /home/agent
 # In worktree sandbox mode, Sandcastle bind-mounts the git worktree at /home/agent/workspace
 # and overrides the working directory to /home/agent/workspace at container start.
 # Structure your Dockerfile so that /home/agent/workspace can serve as the project root.
-ENTRYPOINT ["sleep", "infinity"]
+
+# PID 1 is tini, which reaps orphaned processes. `sleep` alone never waits for a child, so each process the gate
+# orphaned stayed a zombie holding its PID, until a long build could no longer fork:
+# the gate failed, claude-code aborted (exit 134) and git stopped answering. Sandcastle's docker() takes no `--init`.
+ENTRYPOINT ["tini", "--", "sleep", "infinity"]

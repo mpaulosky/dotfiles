@@ -53,11 +53,12 @@ printf 'other\n' > "$skill/template/owned/.claude/skills/other/SKILL.md"
 # The Sandcastle workflow and the Seed skills list it reads are part of the Sandcastle section too.
 printf 'name: Sandcastle\n' > "$skill/template/owned/.github/workflows/sandcastle.yml"
 printf '# skills\n' > "$skill/template/seed/.github/ci/sandcastle-skills.txt"
-# The session guidance for handing a pull request off to Sandcastle (a Seed rules file, so a repo can keep or change it).
-printf '# Hand a pull request off to Sandcastle\n' > "$skill/template/seed/.claude/rules/sandcastle-hand-off.md"
-# The security record's README: a Seed file in every repo, whose entries and edits a re-Apply leaves alone.
-mkdir -p "$skill/template/seed/.security"
-printf '# The security record\n' > "$skill/template/seed/.security/README.md"
+# The session guidance for handing a pull request off to Sandcastle (an Owned rules file, in the Sandcastle section).
+mkdir -p "$skill/template/owned/.claude/rules"
+printf '# Hand a pull request off to Sandcastle\n' > "$skill/template/owned/.claude/rules/sandcastle-hand-off.md"
+# The security record's README: Owned in every repo, while its entries are left alone by a re-Apply.
+mkdir -p "$skill/template/owned/.security"
+printf '# The security record\n' > "$skill/template/owned/.security/README.md"
 apply="$skill/apply.sh"
 
 # Hooks off: a global init.templateDir can install hooks (such as a
@@ -222,7 +223,7 @@ check "sandcastle, .sandcastle/ present: the hand-off guidance is written" '[[ -
 check "sandcastle, .sandcastle/ present: nothing left out" 'grep -q "Sandcastle files left out.*: 0" <<< "$out"'
 check "sandcastle, .sandcastle/ present: Sandcastle placeholders not reported as unfilled" 'grep -q "unfilled placeholders (0)" <<< "$out"'
 
-# The hand-off guidance is a Seed file: a repo that changed it keeps its version, and the report says it was skipped.
+# The hand-off guidance is an Owned file: a repo's own version is overwritten, and the report says it changed.
 repo="$work/sandcastle own hand-off guidance"
 new_repo "$repo"
 mkdir -p "$repo/.sandcastle" "$repo/.claude/rules"
@@ -231,11 +232,11 @@ printf '# our own hand-off rule\n' > "$repo/.claude/rules/sandcastle-hand-off.md
 commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
 out="$("$apply" "$repo")"
-check "sandcastle, own hand-off guidance: kept" 'grep -qx "# our own hand-off rule" "$repo/.claude/rules/sandcastle-hand-off.md"'
-check "sandcastle, own hand-off guidance: reported as a kept Seed file" 'grep -A3 "Seed files skipped" <<< "$out" | grep -q "sandcastle-hand-off.md"'
+check "sandcastle, own hand-off guidance: overwritten" 'grep -qx "# Hand a pull request off to Sandcastle" "$repo/.claude/rules/sandcastle-hand-off.md"'
+check "sandcastle, own hand-off guidance: reported as a changed Owned file" 'grep -q "sandcastle-hand-off.md" <<< "$out" && ! grep -A3 "Seed files skipped" <<< "$out" | grep -q "sandcastle-hand-off.md"'
 
 # The ledger imports REPO_SLUG and NOT_OWNED_BASELINE_PATHS from the repo's own repo-config.mts (Seed, never
-# rewritten): a repo whose copy lacks them gets the rest of the Sandcastle files, not the four that import it.
+# rewritten), and Sandcastle's build.mts imports the ledger: a repo whose copy lacks them is refused, with nothing written.
 ledger_files=(scripts/review.sh .sandcastle/lib/review-ledger.mts .sandcastle/lib/review-ledger.test.mts .sandcastle/lib/pre-push-review-skill.test.mts)
 repo="$work/ledger waits"
 new_repo "$repo"
@@ -243,15 +244,15 @@ mkdir -p "$repo/.sandcastle/lib"
 printf 'export const ROLE_AGENTS = {};\n' > "$repo/.sandcastle/lib/repo-config.mts"
 commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
-out="$("$apply" "$repo")"
+rc=0
+out="$("$apply" "$repo" 2>&1)" || rc=$?
+check "ledger prerequisite: Apply refuses (exit 1)" '[[ $rc -eq 1 ]]'
+check "ledger prerequisite: it names the missing exports" 'grep -q "REPO_SLUG or NOT_OWNED_BASELINE_PATHS" <<< "$out"'
 for f in "${ledger_files[@]}"; do
-  check "ledger waits: $f not written" '[[ ! -e "$repo/$f" ]]'
+  check "ledger prerequisite: $f not written" '[[ ! -e "$repo/$f" ]]'
 done
-check "ledger waits: the rest of the Sandcastle files are written" '[[ -f "$repo/.sandcastle/tsconfig.json" ]]'
-check "ledger waits: the skill and agent are written" '[[ -f "$repo/.claude/agents/pre-push-reviewer.md" ]]'
-check "ledger waits: the repo's repo-config.mts is untouched" 'grep -qx "export const ROLE_AGENTS = {};" "$repo/.sandcastle/lib/repo-config.mts"'
-check "ledger waits: the report names the four and says what to add" \
-  'grep -A4 "Local review files left out" <<< "$out" | grep -q "review-ledger.mts" && grep -q "REPO_SLUG or NOT_OWNED_BASELINE_PATHS" <<< "$out"'
+check "ledger prerequisite: nothing else is written" '[[ ! -e "$repo/.sandcastle/tsconfig.json" && ! -e "$repo/.claude/agents/pre-push-reviewer.md" ]]'
+check "ledger prerequisite: the repo's repo-config.mts is untouched" 'grep -qx "export const ROLE_AGENTS = {};" "$repo/.sandcastle/lib/repo-config.mts"'
 
 # Each name is checked on its own, as a whole word, on a line of its own that isn't a comment.
 n=0
@@ -269,8 +270,9 @@ for config in 'export const REPO_SLUG = "o/r";' \
   printf '%s\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
   commit_all "$repo" "init"
   git_q -C "$repo" switch -q -c chore/standardize-baseline
-  out="$("$apply" "$repo")"
-  check "ledger waits ($n): the ledger is held back" '[[ ! -e "$repo/.sandcastle/lib/review-ledger.mts" ]]'
+  rc=0
+  "$apply" "$repo" >/dev/null 2>&1 || rc=$?
+  check "ledger prerequisite ($n): Apply refuses and the ledger is not written" '[[ $rc -eq 1 && ! -e "$repo/.sandcastle/lib/review-ledger.mts" ]]'
 done
 
 # One-line exports with a `let`, or with extra spaces, count: the same forms review.sh takes.
@@ -282,7 +284,6 @@ commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
 out="$("$apply" "$repo")"
 check "ledger ready (let, extra spaces): the ledger is written" '[[ -f "$repo/.sandcastle/lib/review-ledger.mts" ]]'
-check "ledger ready (let, extra spaces): nothing held back" '! grep -q "Local review files left out" <<< "$out"'
 
 repo="$work/ledger ready"
 new_repo "$repo"
@@ -294,7 +295,6 @@ out="$("$apply" "$repo")"
 for f in "${ledger_files[@]}"; do
   check "ledger ready: $f written" '[[ -f "$repo/$f" ]]'
 done
-check "ledger ready: nothing held back" '! grep -q "Local review files left out" <<< "$out"'
 
 # A Seed file with an Apply placeholder still counts as unfilled under .sandcastle/ (no remote, so {{REPO}} stays).
 repo="$work/sandcastle unfilled"
@@ -303,7 +303,7 @@ out="$("$apply" --dry-run "$repo")"
 check "sandcastle, dry run without a remote: {{REPO}} in a Sandcastle Seed file is unfilled" \
   'grep -A3 "unfilled placeholders" <<< "$out" | grep -q ".sandcastle/roles/architect.md"'
 
-# ── The security record: README from the Seed once, entries and edits left alone ───
+# ── The security record: README is Owned, entries left alone ───
 repo="$work/security record"
 new_repo "$repo"
 touch "$repo/Widget.slnx"
@@ -311,21 +311,19 @@ printf '.security/*\n!.security/README.md\n' > "$repo/.gitignore"
 commit_all "$repo" "init"
 git_q -C "$repo" switch -q -c chore/standardize-baseline
 "$apply" "$repo" >/dev/null
-check "security record: the README is written from the Seed" 'grep -qx "# The security record" "$repo/.security/README.md"'
+check "security record: the README is written from the Template" 'grep -qx "# The security record" "$repo/.security/README.md"'
 printf 'Our own note.\n' >> "$repo/.security/README.md"
 printf '# 0001: An entry\n\n- Status: fixed\n' > "$repo/.security/0001-an-entry.md"
 commit_all "$repo" "apply"
-before="$(cat "$repo/.security/README.md" "$repo/.security/0001-an-entry.md")"
 dry="$("$apply" --dry-run "$repo")"
-check "security record: dry run lists no .security file as overwritten or added" \
-  '! awk "/^Owned files that would be (added|overwritten)/ {on = 1; next} /^\$/ {on = 0} on" <<< "$dry" | grep -q "\.security/"'
-check "security record: dry run lists the README as a Seed file skipped" \
-  'grep -A5 "Seed files skipped" <<< "$dry" | grep -q "\.security/README.md"'
+check "security record: dry run lists no .security entry as overwritten or added" \
+  '! awk "/^Owned files that would be (added|overwritten)/ {on = 1; next} /^\$/ {on = 0} on" <<< "$dry" | grep -q "\.security/0001"'
+check "security record: dry run lists the edited README as an Owned file it would overwrite" \
+  'awk "/^Owned files that would be overwritten/ {on = 1; next} /^\$/ {on = 0} on" <<< "$dry" | grep -q "\.security/README.md"'
 check "security record: dry run lists the entry nowhere" '! grep -q "0001-an-entry" <<< "$dry"'
 "$apply" "$repo" >/dev/null
-check "security record: a re-Apply leaves the README's edits and the entry alone" \
-  '[[ "$(cat "$repo/.security/README.md" "$repo/.security/0001-an-entry.md")" == "$before" ]]'
-check "security record: a re-Apply leaves the worktree clean, the entry ignored" '[[ -z "$(git -C "$repo" status --porcelain)" ]]'
+check "security record: a re-Apply restores the README" 'grep -qx "# The security record" "$repo/.security/README.md" && ! grep -q "Our own note" "$repo/.security/README.md"'
+check "security record: a re-Apply leaves the entry alone" '[[ "$(cat "$repo/.security/0001-an-entry.md")" == "$(printf "# 0001: An entry\n\n- Status: fixed")" ]]'
 
 # .sandcastle/check.sh is Owned, but a repo whose GATE_COMMAND or GATE_SCRIPT names it uses it as its sandbox gate (the three older
 # repos did): Apply keeps that copy and says to rename it, since the Owned script would pass the gate without its lints and tests.
@@ -338,7 +336,7 @@ for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export cons
   repo="$work/gate check $n"
   new_repo "$repo"
   mkdir -p "$repo/.sandcastle/lib"
-  printf '%s\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
+  printf '%s\nexport const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
   printf '#!/usr/bin/env bash\necho sandbox gate\n' > "$repo/.sandcastle/check.sh"
   commit_all "$repo" "init"
   git_q -C "$repo" switch -q -c chore/standardize-baseline
@@ -354,7 +352,7 @@ for config in '// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export co
   repo="$work/gate check other $n"
   new_repo "$repo"
   mkdir -p "$repo/.sandcastle/lib"
-  printf '%s\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
+  printf '%s\nexport const REPO_SLUG = "o/r";\nexport const NOT_OWNED_BASELINE_PATHS = [];\n' "$config" > "$repo/.sandcastle/lib/repo-config.mts"
   printf '#!/usr/bin/env bash\necho old copy\n' > "$repo/.sandcastle/check.sh"
   commit_all "$repo" "init"
   git_q -C "$repo" switch -q -c chore/standardize-baseline

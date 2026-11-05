@@ -2,27 +2,42 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Sandbox, SandboxRunOptions } from "@ai-hero/sandcastle";
 import { spawnSync, type execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { worktreePathFor } from "./host-safety.mts";
+import { hostExecFileSync } from "./host-limit.mts";
+import { forgetRepoName, repoName } from "./github.mts";
 import { join } from "node:path";
 import {
   buildIssue,
   createCheckedSandbox,
+  worktreeIsGone,
   designComment,
   designNoteIn,
+  HoldFailedError,
   latestDesignNote,
   isGitHubServerError,
   isWorkflowPushRejection,
   liveHostIdentity,
+  liveReviewHost,
   PR_BODY_LIMIT,
+  boundedCheckList,
+  cutDescription,
+  logSafeGateOutput,
+  PR_BODY_TOTAL_LIMIT,
   publicErrorText,
   prTitle,
   publish,
+  openHeldPullRequest,
+  DRAFT_NOTE,
   remoteBranchIsOnOrigin,
+  readSkillFiles,
   remoteMainIs,
   retryOnServerError,
   UncountedStopError,
   type BuildHost,
   type HostIdentity,
+  type LocalReviewArgs,
   workflowFilesFrom,
   workflowLogArgs,
 } from "./build.mts";
@@ -31,16 +46,23 @@ import {
   BUILD_ROLES,
   DESIGN_MARKER,
   GATE_FIXER_ATTEMPTS,
+  MAX_GATE_RUNS,
   PR_MARKER,
   PUBLISH_RETRY_ATTEMPTS,
   type OptionalRole,
 } from "./config.mts";
-import { TamperedWorktreeError } from "./errors.mts";
+import { LEDGER_DENIED_TOOLS } from "./agents.mts";
+import { SANDBOX_PROBE } from "./diagnostics.mts";
+import { StalledStepError, TamperedWorktreeError } from "./errors.mts";
 import { gitSandboxFake } from "./git-sandbox-fake.mts";
+import type { HostReviewResult } from "./host-review.mts";
 import { RunLimits } from "./limits.mts";
 import { PR_BODY_RULES } from "./prompts.mts";
+import { ledgerGitEnv, renderAdvisories, type Ledger } from "./review-ledger.mts";
 import type { SecretMatch } from "./scan.mts";
-import { GATE_COMMAND, GATE_SCRIPT } from "./repo-config.mts";
+import { buildLogs, reviewerLogFileName } from "./role-logs.mts";
+import { GATE_COMMAND, GATE_LIMIT_MINUTES, GATE_SCRIPT } from "./repo-config.mts";
+import { KILL_GRACE_SECONDS, LIMITED_COMMAND_PREFIX, LIMITED_COMMAND_SUFFIX, PROBE_LIMIT_MINUTES, limitSandboxExec, limitedCommand, markSandboxStalled, stalledStepOf } from "./step-limit.mts";
 import { withUiRole } from "./ui-role-fixture.mts";
 
 // These tests name the Template's gate command, whatever this repo's
@@ -66,6 +88,19 @@ const sampleSecretMatch: SecretMatch = {
 // A pr-body.md with the three headings the reviewer must write.
 const validPrBody = "## Why\n\nBecause.\n\n## What changed\n\nAdded X.\n\n## Verification\n\nRan the tests.";
 
+// A recorded review with no findings, as the default localReview returns.
+const emptyLedger = (head: string, ledgerBranch: string): Ledger => ({
+  version: 1,
+  key: "k",
+  branch: ledgerBranch,
+  base,
+  head,
+  recordedAt: "2026-01-01T00:00:00.000Z",
+  rounds: 1,
+  reviewerAgent: "pre-push-reviewer",
+  findings: [],
+});
+
 // A host whose sandbox records each role run and gate run in `steps`, and
 // answers the gate with the queued exit codes in order. A role in `failing`
 // throws, and one in `unfinished` ends without signalling completion. A role
@@ -82,6 +117,7 @@ function host(
     leaksOnlyInMergedMain,
     worktreeProblems = [],
     publishError,
+    publishHoldFailed,
     designNote,
     designFile = "",
     prBodyFile = validPrBody,
@@ -100,10 +136,19 @@ function host(
     baseExecError,
     baseIsAncestor = true,
     gateOutput,
+    sandboxDiesAfterGates,
+    sandboxDeathError,
     gateScriptChanged = "",
     checkFiles = "",
     checkFilesError,
+    localReview,
+    probeError,
+    probeOutput = "disk 10% used\n",
   }: {
+    // What the sandbox-state probe (lib/diagnostics.mts) throws, instead of printing a state.
+    probeError?: Error;
+    // What the probe prints.
+    probeOutput?: string;
     ahead?: number | number[];
     statuses?: string[];
     failing?: string[];
@@ -116,6 +161,7 @@ function host(
     leaksOnlyInMergedMain?: SecretMatch;
     worktreeProblems?: string[];
     publishError?: string;
+    publishHoldFailed?: boolean;
     // What latestDesignNote returns for the architect's prompt: the body of
     // its latest earlier design comment, or undefined on a first run.
     designNote?: string;
@@ -129,8 +175,13 @@ function host(
     // a reviewer that finished writes, so a test that pins the log isn't
     // handed the fallback's line.
     prBodyFile?: string;
-    // What every gate run prints, instead of "gate output, exit <n>".
-    gateOutput?: string;
+    // What every gate run prints, or what gate run <n> prints (counting from 1) when this is a function, instead of "gate output, exit <exit code>".
+    gateOutput?: string | ((gateRun: number) => string);
+    // `git rev-parse HEAD` fails once this many gate runs have printed, as in a sandbox that was killed during or right after the gate,
+    // with exit 128, or by throwing `sandboxDeathError` when that is set.
+    sandboxDiesAfterGates?: number;
+    // What `git rev-parse HEAD` throws, instead of failing with exit 128, once `sandboxDiesAfterGates` gate runs have printed.
+    sandboxDeathError?: Error;
     // The commit latestMain() resolves origin/main to just before checkpoint
     // 2, whether the branch already contains it, how `git merge` of it and
     // `git merge --abort` exit, and an error latestMain() throws instead (a
@@ -167,6 +218,9 @@ function host(
     checkFiles?: string;
     // An error listing the files under CHECK_PATHS throws instead.
     checkFilesError?: string;
+    // What the host's local review does once checkpoint 2 has passed. By default it records a review of the commit it was given
+    // without touching the branch, so the tests that don't care about the review see the build as before.
+    localReview?: (args: LocalReviewArgs) => Promise<HostReviewResult>;
   } = {},
 ) {
   const steps: string[] = [];
@@ -216,11 +270,20 @@ function host(
     },
     exec: async (rawCommand: string) => {
       const command = asDefaultGate(rawCommand);
+      if (command === SANDBOX_PROBE) {
+        probes.push(`${runs.length} roles run`);
+        if (probeError !== undefined) throw probeError;
+        return { stdout: probeOutput, stderr: "", exitCode: 0 };
+      }
       if (command.startsWith("git status")) {
         const stdout = worktreeStatuses.shift() ?? "";
         return { stdout, stderr: "", exitCode: 0 };
       }
       if (command === "git rev-parse HEAD") {
+        if (sandboxDiesAfterGates !== undefined && steps.filter((step) => step.startsWith("gate:")).length >= sandboxDiesAfterGates) {
+          if (sandboxDeathError !== undefined) throw sandboxDeathError;
+          return { stdout: "fatal: not a git repository\n", stderr: "", exitCode: 128 };
+        }
         return { stdout: `${head()}\n`, stderr: "", exitCode: 0 };
       }
       if (command.startsWith(`git merge-base --is-ancestor '${base}'`)) {
@@ -271,7 +334,9 @@ function host(
       steps.push(`gate: ${command}`);
       const exitCode = gateExitCodes.shift();
       if (exitCode === undefined) throw new Error("the gate ran more often than the test expected");
-      return { stdout: gateOutput ?? `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
+      const gateRun = steps.filter((step) => step.startsWith("gate:")).length;
+      const printed = typeof gateOutput === "function" ? gateOutput(gateRun) : gateOutput;
+      return { stdout: printed ?? `gate output, exit ${exitCode}\n`, stderr: "", exitCode };
     },
     close: async () => {
       steps.push("close");
@@ -279,6 +344,8 @@ function host(
       return {};
     },
   } as unknown as Sandbox;
+  // A note per probe of the sandbox's state.
+  const probes: string[] = [];
   const buildingCalls: number[] = [];
   const designNoteCalls: number[] = [];
   const gateGuardChecks: string[] = [];
@@ -288,6 +355,14 @@ function host(
   // per call, kept apart from publishCalls so existing assertions on that
   // shape don't have to change.
   const publishedPrBodies: (string | undefined)[] = [];
+  // The reviewNote argument buildMarkedIssue passed to host.publish (its 11th), one entry per call.
+  const publishedReviewNotes: (string | undefined)[] = [];
+  // The holdAsDraft argument buildMarkedIssue passed to host.publish (its 12th), one entry per call.
+  const publishedDrafts: (boolean | undefined)[] = [];
+  // Every follow-up issue the build filed for the review's open Advisory findings.
+  const advisoryIssues: { title: string; body: string }[] = [];
+  // Every localReview call's arguments.
+  const localReviewCalls: LocalReviewArgs[] = [];
   const startFromMainCalls: { issueNumber: number; branch: string; base: string }[] = [];
   const handBackWorkflowChangeCalls: { issueNumber: number; branch: string; detail: string; change: { head: string; files: string[] } }[] = [];
   const moveToLocalCalls: {
@@ -347,15 +422,23 @@ function host(
       scannedExclusions.push(mergedMain);
       return leaksSecret ?? (mergedMain === undefined ? leaksOnlyInMergedMain : undefined);
     },
-    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = []) => {
+    publish: async (_issue, publishedBranch, commit, reviewed, docsFailed, prBody, checkChanges = [], _push, _create, _wait, reviewNote, holdAsDraft) => {
+      // Only a publish that holds the PR as a draft can fail to hold it.
+      if (publishHoldFailed && holdAsDraft) throw new HoldFailedError(publishedBranch, new Error("gh pr ready failed:\nHTTP 422"));
       if (publishError) throw new Error(publishError);
       pushed.push({ branch: publishedBranch, commit });
       publishEvents.push("publish");
       publishCalls.push({ reviewed, docsFailed });
       publishedPrBodies.push(prBody);
+      publishedReviewNotes.push(reviewNote);
+      publishedDrafts.push(holdAsDraft);
       publishedCheckChanges.push(checkChanges);
       steps.push(`publish${reviewed ? "" : " unreviewed"}${docsFailed ? " docs-failed" : ""}`);
       return "https://github.com/o/r/pull/1";
+    },
+    fileAdvisoryIssue: (title, body) => {
+      publishEvents.push("file-advisory");
+      advisoryIssues.push({ title, body });
     },
     latestMain: () => {
       if (latestMainError !== undefined) throw new Error(latestMainError);
@@ -396,13 +479,54 @@ function host(
       publishEvents.push("delete-branch");
       deletedBranches.push({ branch: deletedBranch, commit });
     },
+    localReview: async (args) => {
+      localReviewCalls.push(args);
+      order.push("local-review");
+      if (localReview !== undefined) return localReview(args);
+      return { status: "recorded", head: args.startHead, rounds: 1, ledger: emptyLedger(args.startHead, args.branch), readPaths: new Set() };
+    },
   };
   return {
-    steps, runs, logs, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
+    steps, runs, logs, probes, comments, recordBuildFailureCalls, buildHost, aheadBranches, aheadBases, scanned, scannedBases, pushed, head,
     order, buildingCalls, designNoteCalls, publishCalls, publishedPrBodies, publishedCheckChanges, gateGuardChecks, workCommands, startFromMainCalls, handBackWorkflowChangeCalls,
     mainChecks, baseChecks, scannedExclusions, listedExclusions, workflowFileCalls, moveToLocalCalls, createdBranches, deletedBranches, publishEvents,
+    publishedReviewNotes, localReviewCalls, publishedDrafts, advisoryIssues,
   };
 }
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+describe("buildIssue when Docker never answers the close", () => {
+  // The host's sandbox, with a close that never answers and a 0.001-minute close limit.
+  function hungClose(options: Parameters<typeof host>[1] = {}) {
+    const hosted = host([0, 0], options);
+    hosted.buildHost.dockerCallMinutes = 0.001;
+    const createSandbox = hosted.buildHost.createSandbox;
+    hosted.buildHost.createSandbox = async (sandboxBranch) => {
+      const raw = await createSandbox(sandboxBranch);
+      return { ...raw, close: () => new Promise<never>(() => undefined) } as typeof raw;
+    };
+    return hosted;
+  }
+
+  it("keeps the published pull request: the hung close is logged and not reported as the build's outcome", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const { buildHost } = hungClose();
+
+    const result = await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(logged.some((line) => /closing the sandbox didn't finish within 0\.001 minutes/.test(line)), logged.join("\n"));
+  });
+
+  it("keeps the error that ended the work when the close then hangs", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    const hosted = hungClose({ failing: ["tester"], failWith: { tester: new UncountedStopError("usage limit") } });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, hosted.buildHost), UncountedStopError);
+  });
+});
 
 describe("buildIssue", () => {
   it("runs the tester, the backend developer, checkpoint 1, the reviewer and checkpoint 2 before publishing", async () => {
@@ -432,8 +556,10 @@ describe("buildIssue", () => {
     assert.deepEqual(logs, [
       "  #69 tester finished",
       "  #69 backend finished",
+      "  #69 sandbox state (before checkpoint 1):\n    | disk 10% used",
       "  #69 checkpoint 1: gate passed",
       "  #69 reviewer finished",
+      "  #69 sandbox state (before checkpoint 2):\n    | disk 10% used",
       "  #69 checkpoint 2: gate passed",
     ]);
   });
@@ -567,6 +693,128 @@ describe("buildIssue", () => {
     assert.deepEqual(recordBuildFailureCalls, []);
   });
 
+  it("logs the sandbox's state when the reviewer fails, and still publishes unreviewed", async () => {
+    const { logs, probes, pushed, buildHost } = host([0, 0], { failing: ["reviewer"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the reviewer failed\):\n    \| disk 10% used/.test(line)), logs.join("\n"));
+    assert.ok(probes.length >= 1, "the probe never ran");
+    assert.equal(pushed.length, 1);
+  });
+
+  it("logs the sandbox's state when a developer role fails, and still records the failed attempt", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([], { failing: ["backend"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the backend failed\):/.test(line)), logs.join("\n"));
+    assert.equal(recordBuildFailureCalls.length, 1);
+  });
+
+  it("logs the sandbox's state when a developer ran out of iterations unfinished, and records the failed attempt", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([], { unfinished: ["backend"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the backend ran out of iterations unfinished\):/.test(line)), logs.join("\n"));
+    assert.equal(recordBuildFailureCalls.length, 1);
+  });
+
+  it("records the same failed attempt when a developer role fails and the probe fails too", async () => {
+    const healthy = host([], { failing: ["backend"] });
+    await buildIssue(issue, branch, base, healthy.buildHost);
+    const broken = host([], { failing: ["backend"], probeError: new Error("docker exec failed") });
+
+    const result = await buildIssue(issue, branch, base, broken.buildHost);
+
+    assert.equal(result.outcome, "role failed");
+    assert.deepEqual(broken.recordBuildFailureCalls, healthy.recordBuildFailureCalls);
+    assert.ok(broken.logs.some((line) => /the probe failed/.test(line)), broken.logs.join("\n"));
+  });
+
+  it("cleans the probe's output like the gate's: every logged line is prefixed, and no ##[ command is left", async () => {
+    const { logs, buildHost } = host([0, 0], { probeOutput: "== core files ==\n::add-mask::secret\n::stop-commands::x\n##[error]y\n" });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const state = logs.filter((line) => line.includes("sandbox state"));
+    assert.ok(state.length > 0);
+    for (const line of state.flatMap((entry) => entry.split("\n").slice(1))) {
+      assert.ok(line.startsWith("    | "), line);
+      assert.ok(!line.includes("##["), line);
+    }
+  });
+
+  it("runs no probe when a usage-limit or time-budget stop ends a developer role or the reviewer", async () => {
+    for (const role of ["backend", "reviewer"]) {
+      const stop = new UncountedStopError("usage limit reached");
+      const { logs, probes, buildHost } = host([0], { failing: [role], failWith: { [role]: stop } });
+
+      await assert.rejects(() => buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stop);
+
+      assert.equal(probes.length, logs.filter((line) => line.includes("sandbox state (before checkpoint")).length, `${role}: a probe ran for the stop`);
+
+      assert.ok(!logs.some((line) => line.includes(`(the ${role} failed)`)), `${role}: ${logs.join("\n")}`);
+    }
+  });
+
+  // The state of the sandbox after the other roles fail too (mpaulosky/dotfiles#428): a gate-fixer or a scribe that dies can leave it as broken as a reviewer.
+  it("logs the sandbox's state when the gate-fixer fails, and carries on with the checkpoint's own handling", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([1, 1, 1], { failing: ["gate-fixer"] });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the gate-fixer failed\):/.test(line)), logs.join("\n"));
+    assert.equal(recordBuildFailureCalls.length, 1);
+  });
+
+  it("logs the sandbox's state when the scribe fails, and still publishes with a note", async () => {
+    const { logs, pushed, buildHost } = host([0, 0], { failing: ["scribe"] });
+
+    await buildIssue(withRoles(["scribe"]), branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(the scribe failed\):/.test(line)), logs.join("\n"));
+    assert.equal(pushed.length, 1);
+  });
+
+  it("runs no probe when a usage-limit or time-budget stop ends the gate-fixer or the scribe", async () => {
+    for (const role of ["gate-fixer", "scribe"]) {
+      const stop = new UncountedStopError("usage limit reached");
+      const { logs, buildHost } = host(role === "gate-fixer" ? [1] : [0, 0], { failing: [role], failWith: { [role]: stop } });
+
+      await assert.rejects(() => buildIssue(withRoles(["scribe"]), branch, base, buildHost), (error: unknown) => error === stop);
+
+      assert.ok(!logs.some((line) => line.includes(`(the ${role} failed)`)), `${role}: ${logs.join("\n")}`);
+    }
+  });
+
+  it("adds the build to the record the reviewer-log index reads", async () => {
+    const { buildHost } = host([0, 0]);
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(buildLogs.issueOf(reviewerLogFileName(branch)), issue.number);
+  });
+
+  it("logs the sandbox's state before each checkpoint's gate", async () => {
+    const { logs, buildHost } = host([0, 0]);
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /sandbox state \(before checkpoint 1\):/.test(line)), logs.join("\n"));
+    assert.ok(logs.some((line) => /sandbox state \(before checkpoint 2\):/.test(line)), logs.join("\n"));
+  });
+
+  it("builds the same when the probe of the sandbox's state fails", async () => {
+    const { logs, pushed, buildHost } = host([0, 0], { failing: ["reviewer"], probeError: new Error("docker exec failed") });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(logs.some((line) => /the probe failed:\n    \| Error: docker exec failed/.test(line)), logs.join("\n"));
+    assert.equal(pushed.length, 1);
+  });
+
   it("treats a checkpoint that stays red after the gate-fixer's attempts as a failed build attempt", async () => {
     const { recordBuildFailureCalls, buildHost } = host([1, 1, 1]);
 
@@ -574,6 +822,182 @@ describe("buildIssue", () => {
 
     assert.equal(recordBuildFailureCalls.length, 1);
     assert.equal(recordBuildFailureCalls[0]!.issueNumber, 69);
+  });
+
+  it("runs no gate-fixer, and records the dead sandbox, when git stops answering after the first gate", async () => {
+    const { steps, recordBuildFailureCalls, buildHost } = host([1], { sandboxDiesAfterGates: 1 });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!steps.some((step) => step.startsWith("gate-fixer")), steps.join(", "));
+    assert.equal(recordBuildFailureCalls.length, 1);
+    assert.match(recordBuildFailureCalls[0]!.detail, /after 0 gate-fixer attempts/);
+    assert.match(recordBuildFailureCalls[0]!.detail, /gate output, exit 1\n❌ The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run\./);
+  });
+
+  it("quotes the first red gate run before the last when they differ, and counts the fixers that ran", async () => {
+    const { recordBuildFailureCalls, buildHost } = host([1, 1, 1], { gateOutput: (run) => `run ${run} failed\n` });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.match(detail, /after 2 gate-fixer attempts/);
+    assert.match(detail, /first red gate run, before a gate-fixer ran:\n\n```text\nrun 1 failed\n```\n\nThe last 100 lines of the last gate output:\n\n```text\nrun 3 failed\n```/);
+  });
+
+  it("withholds a first red gate run that looks like it holds a secret, as it does the last", async () => {
+    const { recordBuildFailureCalls, buildHost } = host([1, 1, 1], {
+      gateOutput: (run) => (run === 1 ? "FAIL: env dump\nCLAUDE_CODE_OAUTH_TOKEN=ghp_abc\n" : "later failure\n"),
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.ok(!detail.includes("ghp_abc"), detail);
+    assert.match(detail, /first red gate run, before a gate-fixer ran:\n\n```text\n.*looked like it held a secret.*```\n\nThe last 100 lines of the last gate output:\n\n```text\nlater failure/s);
+  });
+
+  it("breaks a host marker's <!-- in the first red gate run, as in the last", async () => {
+    const { recordBuildFailureCalls, buildHost } = host([1, 1, 1], {
+      gateOutput: (run) => (run === 1 ? "FAIL: expected <!-- sandcastle:build-failed --> in the comment\n" : "later failure\n"),
+    });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.ok(!detail.includes("<!-- sandcastle:build-failed"), detail);
+    assert.match(detail, /first red gate run, before a gate-fixer ran:\n\n```text\nFAIL: expected .*build-failed -->/);
+  });
+
+  it("stops before the second gate-fixer when the sandbox goes down, quoting both runs and the attempts that ran", async () => {
+    const { steps, recordBuildFailureCalls, buildHost } = host([1, 1], { sandboxDiesAfterGates: 2, gateOutput: (run) => `run ${run} failed\n` });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.equal(steps.filter((step) => step.startsWith("gate-fixer")).length, 1, steps.join(", "));
+    const detail = recordBuildFailureCalls[0]!.detail;
+    assert.match(detail, /after 1 gate-fixer attempt, so/);
+    assert.match(detail, /```text\nrun 1 failed\n```/);
+    assert.match(detail, /run 2 failed\n❌ The sandbox no longer answers `git rev-parse HEAD`, so no gate-fixer was run\./);
+  });
+
+  it("withholds a secret in the sandbox probe's error from the log and the comment", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: new Error("exit 1: GH token ghp_abc in the output"),
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.ok(!logs.join("\n").includes("ghp_"), logs.join("\n"));
+    assert.ok(!recordBuildFailureCalls[0]!.detail.includes("ghp_"), recordBuildFailureCalls[0]!.detail);
+    assert.ok(logs.some((line) => line.includes("not run: The sandbox can't run a command")), logs.join("\n"));
+  });
+
+  it("doesn't point to a run log for a probe error it withheld, since only the scrubbed reason is logged", async () => {
+    const { logs, recordBuildFailureCalls, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: new Error("exit 1: GH token ghp_abc in the output"),
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    assert.doesNotMatch(logs.join("\n"), /run log/i);
+    assert.doesNotMatch(recordBuildFailureCalls[0]!.detail, /run log/i);
+  });
+
+  it("logs a failed gate-fixer attempt's error on one line through the real scrub, without a prefix", async () => {
+    const { logs, buildHost } = host([1, 1, 1], { failing: ["gate-fixer"], failWith: { "gate-fixer": new Error("boom\n##[add-mask]x") } });
+
+    await buildIssue(issue, branch, base, buildHost);
+
+    const failure = logs.find((line) => line.includes("gate-fixer attempt 1/2 failed"))!;
+    assert.match(failure, /failed: Error: boom ## \[add-mask\]x$/);
+    assert.ok(!failure.includes("|"), failure);
+  });
+
+  it("logs the first red gate run, scrubbed, when a stall on the probe ends the work", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { logs, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: stall,
+      gateOutput: "FAIL: env dump\nCLAUDE_CODE_OAUTH_TOKEN=ghp_abc\n",
+    });
+    buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    const text = logs.join("\n");
+    assert.match(text, /the first red gate run's output, before this stopped the checkpoint:\n.*looked like it held a secret/s);
+    assert.ok(!text.includes("ghp_abc"), text);
+  });
+
+  it("logs the first red gate run with every line prefixed and cleaned for a terminal, so none starts with ::", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { logs, buildHost } = host([1], {
+      sandboxDiesAfterGates: 1,
+      sandboxDeathError: stall,
+      gateOutput: "plain line\r::stop-commands::tok\n::error::x\n\u001b]0;title\u0007after\n",
+    });
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    const entry = logs.find((line) => line.includes("the first red gate run's output"))!;
+    const [, ...body] = entry.split("\n");
+    assert.ok(body.length >= 3, entry);
+    for (const line of body) assert.ok(line.startsWith("    | "), JSON.stringify(line));
+    assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f]/.test(body.join("")), JSON.stringify(entry));
+  });
+
+  it("drops a final newline, so the tail isn't spent on a blank line, and cuts a line at 500 characters", () => {
+    const logged = logSafeGateOutput("one\ntwo\n", (text) => text);
+    assert.equal(logged, "    | one\n    | two");
+
+    for (const [length, kept] of [[499, 499], [500, 500], [501, 500]] as const) {
+      assert.equal(logSafeGateOutput("y".repeat(length), (text) => text), `    | ${"y".repeat(kept)}`, `${length} characters`);
+    }
+    // The shapes a text can end in.
+    const same = (text: string) => logSafeGateOutput(text, (value) => value);
+    assert.equal(same("a\r\nb\r\n"), "    | a\n    | b");
+    assert.equal(same(""), "    | ");
+    assert.equal(same("\n"), "    | ");
+    assert.equal(same("a\n\n"), "    | a\n    | ");
+    // A text the real publicErrorText withholds comes out as one prefixed line.
+    const withheld = logSafeGateOutput(`${"y".repeat(900)}\nghp_abc`, (value) => publicErrorText(value, (cleaned) => cleaned.includes("ghp_")));
+    assert.match(withheld, /^    \| \(This text isn't shown: it looked like it held a secret\./);
+    assert.ok(!withheld.includes("\n"), withheld);
+    // A character outside the basic plane counts once, so the cut can't split it.
+    assert.equal(logSafeGateOutput(`${"y".repeat(499)}\u{1F600}z`, (text) => text), `    | ${"y".repeat(499)}\u{1F600}`);
+  });
+
+  it("changes a ##[ so the runner's legacy command form isn't left in a logged line", () => {
+    const logged = logSafeGateOutput("##[add-mask]checkpoint\nsee ##[error]x\n##\u200b[group]y", (value) => value);
+
+    assert.ok(!logged.includes("##["), logged);
+    assert.equal(logged, "    | ## [add-mask]checkpoint\n    | see ## [error]x\n    | ## [group]y");
+  });
+
+  it("cleans each line before the secret check, so a hidden character can't hide a token that is rebuilt afterwards", () => {
+    const publicError = (text: string) => publicErrorText(text, (cleaned) => cleaned.includes("ghp_abc"));
+
+    const logged = logSafeGateOutput("fine\nghp_a\u200bbc leaked", publicError);
+
+    assert.ok(!logged.includes("ghp_abc"), logged);
+    assert.match(logged, /looked like it held a secret/);
+    assert.ok(logged.split("\n").every((line) => line.startsWith("    | ")), logged);
+  });
+
+  it("lets a stall on the sandbox probe end the work instead of recording a failed build attempt", async () => {
+    const stall = new StalledStepError('The step "git rev-parse HEAD" ran over its limit.');
+    const { steps, recordBuildFailureCalls, buildHost } = host([1], { sandboxDiesAfterGates: 1, sandboxDeathError: stall });
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), (error: unknown) => error === stall);
+
+    assert.ok(!steps.some((step) => step.startsWith("gate-fixer")), steps.join(", "));
+    assert.deepEqual(recordBuildFailureCalls, []);
   });
 
   it("doesn't treat a gate-fixer attempt as a failed build attempt when the checkpoint later passes", async () => {
@@ -1350,6 +1774,66 @@ describe("buildIssue and the usage limit", () => {
     assert.notEqual(result.prUrl, undefined);
     assert.equal(pushed.length, 1);
     assert.deepEqual(recordBuildFailureCalls, []);
+  });
+});
+
+// A command that runs over its limit stalls the sandbox: the build ends with StalledStepError naming the step, whatever
+// the command was. The fake answers `match` with timeout's code, after what looks like a full limit on the clock below.
+describe("buildIssue when a step stalls the sandbox", () => {
+  function stalledOn(match: RegExp, { closeFails = false } = {}) {
+    const hosted = host([0, 0]);
+    const createSandbox = hosted.buildHost.createSandbox;
+    hosted.buildHost.createSandbox = async (sandboxBranch) => {
+      const raw = await createSandbox(sandboxBranch);
+      const slow = {
+        ...raw,
+        // The fake answers the commands as the build wrote them, so the `timeout … sh -c '…'` wrapper comes off first.
+        exec: async (wrapped: string, options?: unknown) => {
+          const command = (new RegExp(`^${escapeRegExp(LIMITED_COMMAND_PREFIX)}timeout -k \\d+s [\\d.]+m sh -c '(.*)'${escapeRegExp(LIMITED_COMMAND_SUFFIX)}$`, "s").exec(wrapped)?.[1] ?? wrapped).replaceAll("'\\''", "'");
+          return match.test(command) ? { stdout: "", stderr: "", exitCode: 124 } : raw.exec(command, options as never);
+        },
+        close: closeFails ? async () => Promise.reject(new Error("docker is gone")) : raw.close,
+      } as Sandbox;
+      let time = 0;
+      return limitSandboxExec(slow, { log: () => undefined, now: () => (time += 11 * 60_000) });
+    };
+    return hosted;
+  }
+
+  it("won't publish past a tolerated read (the reviewer's PR body) that stalled it, and releases the label", async () => {
+    const { steps, pushed, order, buildHost } = stalledOn(/^cat .*pr-body\.md/);
+
+    await assert.rejects(
+      buildIssue(issue, branch, base, buildHost),
+      (error: unknown) => error instanceof StalledStepError && /the step "cat .*pr-body\.md/.test(error.message),
+    );
+
+    assert.equal(pushed.length, 0);
+    assert.ok(!steps.some((step) => step.startsWith("publish")), steps.join(", "));
+    assert.ok(order.includes("unmark"), order.join(", "));
+  });
+
+  it("starts no gate-fixer when the stall is the gate's own first read, and spends no failed attempt", async () => {
+    const { steps, recordBuildFailureCalls, buildHost } = stalledOn(/cat-file/);
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), StalledStepError);
+
+    assert.ok(!steps.some((step) => step.startsWith("gate-fixer")), steps.join(", "));
+    assert.deepEqual(recordBuildFailureCalls, []);
+  });
+
+  it("throws on the first stall, so no later role starts even when the build ignores that command's result", async () => {
+    const { steps, buildHost } = stalledOn(/^rm -f .*pr-body\.md/);
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), StalledStepError);
+
+    assert.ok(!steps.some((step) => ["tester", "backend", "reviewer"].includes(step)), steps.join(", "));
+  });
+
+  it("reports the StalledStepError even when closing the stalled sandbox fails", async () => {
+    const { buildHost } = stalledOn(/^cat .*pr-body\.md/, { closeFails: true });
+
+    await assert.rejects(buildIssue(issue, branch, base, buildHost), StalledStepError);
   });
 });
 
@@ -2273,8 +2757,8 @@ describe("buildIssue marking the issue as building", () => {
     assert.deepEqual(recordBuildFailureCalls, []);
   });
 
-  // BUILDING_LABEL_MAX_AGE_MS is sized from BUILD_ROLES' timeouts (see
-  // config.test.mts), so a role buildIssue runs outside that list could make
+  // BUILDING_LABEL_MAX_AGE_MS is sized from BUILD_ROLES' timeouts and the
+  // gate's limit (see config.test.mts), so a role buildIssue runs outside that list could make
   // a live build outlast the label and let a second run clear it.
   it("runs every BUILD_ROLES role once, and the gate-fixer at most its attempts per checkpoint, on the longest build", async () => {
     // Each checkpoint: red, fixer, red, fixer, green. The planner picked
@@ -2290,6 +2774,18 @@ describe("buildIssue marking the issue as building", () => {
     assert.deepEqual(new Set(others), new Set(BUILD_ROLES));
     assert.equal(new Set(others).size, others.length);
     assert.equal(roles.filter((role) => role === "gate-fixer").length, 2 * GATE_FIXER_ATTEMPTS);
+  });
+
+  it("makes no more gate runs than MAX_GATE_RUNS, which sizes BUILDING_LABEL_MAX_AGE_MS, on the longest build", async () => {
+    // Checkpoint 1 turns green after its fixers. Main moved on, so checkpoint 2 gates the merged tree first, finds it red,
+    // and goes through every fixer attempt, all red.
+    const newerMain = "a".repeat(40);
+    const { steps, buildHost } = host([1, 1, 0, ...Array<number>(20).fill(1)], { latestMain: newerMain, containsMain: false });
+
+    await withUiRole(true, () => buildIssue(withRoles(["architect", "ui", "scribe"]), branch, base, buildHost)).catch(() => undefined);
+
+    const gateRuns = steps.filter((step) => step.startsWith("gate:")).length;
+    assert.equal(gateRuns, MAX_GATE_RUNS);
   });
 
   it("marks the issue as building exactly once and unmarks it exactly once per build", async () => {
@@ -2341,6 +2837,60 @@ describe("prTitle", () => {
 
   it("doesn't double a prefix the title has, and squeezes stray spaces", () => {
     assert.equal(titled("  chore:   Bump   the pins "), "chore: Bump the pins");
+  });
+});
+
+describe("openHeldPullRequest", () => {
+  const branch = "feature/4-add-search";
+  // A gh stub that lists one open PR for the branch with `body`, and records every call.
+  const gh = (isDraft: boolean, body: string) => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body });
+      return args[1] === "list"
+        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/3" }])
+        : "";
+    }) as unknown as typeof execFileSync;
+    return { calls, run };
+  };
+
+  it("adds the draft note to an existing PR whose body a person edited, so the body still says why it is a draft", () => {
+    const body = "Closes #4\n\n## Review notes\n\n- R1 accepted: fine.";
+    const { calls, run } = gh(false, body);
+
+    assert.equal(openHeldPullRequest(branch, "Add search", "new body", true, run, "o/r"), "https://github.com/o/r/pull/3");
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "ready"], ["pr", "view"], ["pr", "edit"]]);
+    assert.equal(calls[3]!.input, `${body}\n\n${DRAFT_NOTE}`);
+  });
+
+  // The clean rerun's note removal depends on the wrapper passing DRAFT_NOTE when the PR is not held: were it to stop, the note would stay on a draft for good.
+  it("passes the draft note on a rerun that no longer holds the PR, so the note is taken out of a draft that has it", () => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      if (args[1] === "view") return JSON.stringify({ body: `Closes #4\n\n${DRAFT_NOTE}` });
+      return args[1] === "list"
+        ? JSON.stringify([{ number: 3, headRefName: branch, isCrossRepository: false, isDraft: true, url: "https://github.com/o/r/pull/3" }])
+        : "";
+    }) as unknown as typeof execFileSync;
+
+    openHeldPullRequest(branch, "Add search", "new body", false, run, "o/r");
+
+    assert.deepEqual(calls.slice(1).map((call) => call.args.slice(0, 2)), [["pr", "view"], ["pr", "edit"]]);
+    assert.ok(!String(calls[2]!.input).includes(DRAFT_NOTE), String(calls[2]!.input));
+  });
+
+  it("opens a new PR as a draft with the body it was given", () => {
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      return args[1] === "list" ? "[]" : "https://github.com/o/r/pull/9\n";
+    }) as unknown as typeof execFileSync;
+
+    openHeldPullRequest(branch, "Add search", "new body", true, run, "o/r");
+    assert.ok(calls[1]!.args.includes("--draft"), calls[1]!.args.join(" "));
+    assert.equal(calls[1]!.input, "new body");
   });
 });
 
@@ -2422,6 +2972,91 @@ describe("publish", () => {
 
   // Covers "A scribe failure still publishes the PR, and its body says the
   // documentation step failed".
+  it("cuts the reviewer's description, never the marker, `Closes #n` or the review's note, so the whole body fits what GitHub takes", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+    const note = `Open findings:\n${"- R1 critical src/app.ts:1\n".repeat(250)}`;
+    const checks = Array.from({ length: 200 }, (_, index) => `.github/workflows/check-${index}.yml`);
+
+    await publish(issue, branch, "a".repeat(40), true, true, "d".repeat(PR_BODY_LIMIT), checks, () => {}, createPullRequest, async () => {}, note);
+
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, `${body.length} characters`);
+    assert.ok(body.includes(PR_MARKER) && body.includes(`Closes #${issue.number}`));
+    assert.ok(body.includes(note), "the review's note is kept whole");
+    assert.match(body, /the description was cut to fit a PR body/);
+  });
+
+  it("bounds a huge check-file list and cuts a description on a character boundary, closing a fence the cut left open", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+    const checks = Array.from({ length: 4000 }, (_, index) => `.sandcastle/lib/generated-check-${index}.mts`);
+    const description = `\`\`\`text\n${"😀".repeat(PR_BODY_LIMIT)}`;
+
+    await publish(issue, branch, "a".repeat(40), true, true, description, checks, () => {}, createPullRequest, async () => {}, "note");
+
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, `${body.length} characters`);
+    assert.match(body, /… and 3900 more/);
+    assert.ok(body.includes(PR_MARKER) && body.includes(`Closes #${issue.number}`));
+    assert.doesNotMatch(body, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    assert.match(body, /\n```\n\n… \(the description was cut/);
+  });
+
+  it("stops the check-file list at its character cap when a few paths are very long", () => {
+    const files = Array.from({ length: 10 }, (_, index) => `${index}${"x".repeat(4999)}`);
+
+    const list = boundedCheckList(files);
+
+    assert.ok(list.length <= 20_000 + 30, `${list.length} characters`);
+    assert.match(list, /\n… and 7 more$/);
+    assert.equal(boundedCheckList(["a", "b"]), "a\nb");
+    assert.equal(boundedCheckList([`${"y".repeat(30_000)}`]), "\n… and 1 more");
+  });
+
+  it("counts the closing fence in the room, however long the fence the description opened", () => {
+    for (const marks of ["```", "`".repeat(500), "~~~", "~".repeat(300)]) {
+      const room = 2000;
+      const cut = cutDescription(`${marks}text\n${"line of code\n".repeat(1000)}`, room);
+
+      assert.ok(cut.length <= room, `${marks.length}${marks[0]}: ${cut.length} characters`);
+      assert.ok(cut.includes(`\n${marks}\n\n… (the description was cut`), `${marks.length}${marks[0]}: the fence is closed before the note`);
+    }
+  });
+
+  it("closes a fence in a description with CRLF line endings too", () => {
+    const cut = cutDescription(`\`\`\`js\r\n${"code();\r\n".repeat(1000)}`, 1000);
+
+    assert.ok(cut.length <= 1000, `${cut.length} characters`);
+    assert.match(cut, /\n```\n\n… \(the description was cut/);
+  });
+
+  it("leaves a fence that the description closed, or a backtick line inside a tilde fence, alone", () => {
+    const closed = cutDescription(`\`\`\`js\nx\n\`\`\`\n${"prose ".repeat(2000)}`, 1000);
+    assert.doesNotMatch(closed, /\n```\n\n… \(the description/);
+
+    const inTilde = cutDescription(`~~~\n\`\`\`\n${"code\n".repeat(2000)}`, 1000);
+    assert.ok(inTilde.includes("\n~~~\n\n… (the description"));
+    assert.ok(!inTilde.includes("\n```\n\n…"));
+  });
+
+  it("leaves a description that fits alone", async () => {
+    let body = "";
+    const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
+      body = prBody;
+      return "https://github.com/o/r/pull/1";
+    };
+
+    await publish(issue, branch, "a".repeat(40), true, false, "short description", [], () => {}, createPullRequest, async () => {}, "note");
+
+    assert.match(body, /short description/);
+    assert.doesNotMatch(body, /was cut/);
+  });
+
   it("says the documentation step failed in the PR body when docsFailed is true", async () => {
     let body = "";
     const createPullRequest = (_branch: string, _title: string, prBody: string): string => {
@@ -2646,6 +3281,13 @@ describe("publicErrorText", () => {
 
   it("withholds an error that holds a secret", () => {
     assert.match(publicErrorText("token abcdefgh12345 rejected", (text) => text.includes("abcdefgh12345")), /isn't shown/);
+  });
+
+  // The raw error of a withheld text is dropped by most callers, so the text says it was withheld and doesn't point to a run log.
+  it("says a withheld error was withheld because it looked like it held a secret, without pointing to a run log", () => {
+    const text = publicErrorText("token abcdefgh12345 rejected", (cleaned) => cleaned.includes("abcdefgh12345"));
+
+    assert.equal(text, "(This text isn't shown: it looked like it held a secret. It was withheld.)");
   });
 });
 
@@ -2978,6 +3620,28 @@ describe("createCheckedSandbox's git identity", () => {
     assert.ok(checked.includes("/work/tree"));
   });
 
+  it("throws the setup error, and logs that the run ends red, when closing the refused sandbox times out", async () => {
+    const sandbox = {
+      worktreePath: "/work/tree",
+      exec: async () => ({ stdout: "", stderr: "could not lock config file", exitCode: 255 }),
+      close: () => new Promise(() => undefined),
+    } as unknown as Sandbox;
+    const logged: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+    try {
+      await assert.rejects(
+        createCheckedSandbox("feature", async () => sandbox, () => ({ name: "Host Person" }), () => [], { dockerCallMinutes: 0.001 }),
+        /setting the sandbox's git user\.name failed: could not lock config file/,
+      );
+      // The log line is written only by closeAfterWork's red-run branch, which also sets the flag exitAfterStall reads (the exit code itself is
+      // pinned in host-limit.test.mts, in a child process, since that flag is module state shared by this file's tests).
+      assert.ok(logged.some((line) => /closing the refused sandbox.*the run ends red/s.test(line)), logged.join("\n"));
+    } finally {
+      console.error = originalError;
+    }
+  });
+
   it("leaves the sandbox in place, and keeps the identity error, when checking the worktree throws", async () => {
     let closed = 0;
     const sandbox = {
@@ -3176,5 +3840,1705 @@ describe("PR_BODY_RULES against what the host refuses in the reviewer's PR body"
       new Set(probes.map((probe) => probe.group)).size,
       "reviewerPrBody has a refusal the probes and PR_BODY_RULES don't cover: add a probe and wording",
     );
+  });
+});
+
+describe("createCheckedSandbox's step limits", () => {
+  const identity = { name: "Host Person", email: "host@example.com" };
+  // The probe createCheckedSandbox runs through its own one-minute limited sandbox: the form every later command takes.
+  const probeCommand = limitedCommand("true", PROBE_LIMIT_MINUTES);
+
+  // A sandbox that records the commands exec is given. Its git config commands succeed, the timeout probe succeeds when
+  // `hasTimeout` and rejects when `probeRejects`, and any other command answers with `exitCode`.
+  function recordingSandbox(exitCode: number, hasTimeout = true, probeRejects = false, probeHangs = false) {
+    const commands: string[] = [];
+    let closed = false;
+    const sandbox = {
+      worktreePath: "/nonexistent/worktree",
+      close: async () => {
+        closed = true;
+      },
+      exec: async (command: string) => {
+        commands.push(command);
+        const isProbe = command.includes(` sh -c 'true'${LIMITED_COMMAND_SUFFIX}`);
+        if (isProbe && probeRejects) throw new Error("docker exec failed");
+        if (isProbe && probeHangs) return new Promise<never>(() => undefined);
+        if (isProbe) return { stdout: "", stderr: "", exitCode: hasTimeout ? 0 : 125 };
+        return { stdout: "", stderr: "", exitCode: command.includes("git config --global") ? 0 : exitCode };
+      },
+    } as unknown as Awaited<ReturnType<typeof createCheckedSandbox>>;
+    return { sandbox, commands, wasClosed: () => closed };
+  }
+
+  it("runs the sandbox's commands under a limit, and the git identity before it applies", async () => {
+    const { sandbox, commands } = recordingSandbox(0);
+    const checked = await createCheckedSandbox("feature", async () => sandbox, () => identity, () => []);
+
+    await checked.exec(`${GATE_COMMAND} 2>&1`);
+
+    assert.match(commands[0]!, /^git config --global user\.name /);
+    const last = commands.at(-1) ?? "";
+    assert.ok(last.startsWith(`${LIMITED_COMMAND_PREFIX}timeout -k ${KILL_GRACE_SECONDS}s ${GATE_LIMIT_MINUTES}m sh -c '${GATE_COMMAND}`), last);
+    assert.ok(
+      !commands.slice(0, -1).some((command) => command.includes("timeout -k") && command !== probeCommand),
+      "an exec before the wrapper was limited",
+    );
+  });
+
+  it("prefixes the step lines with the branch, so parallel builds can be told apart", async (t) => {
+    const lines: string[] = [];
+    t.mock.method(console, "log", (line: string) => lines.push(line));
+    const { sandbox } = recordingSandbox(0);
+    const checked = await createCheckedSandbox("fix/7-widget", async () => sandbox, () => identity, () => []);
+
+    await checked.exec("git status");
+
+    assert.ok(lines.some((line) => line.startsWith("  fix/7-widget: step start: git status")), lines.join("\n"));
+  });
+
+  it("refuses an image without timeout, closing the sandbox and saying why", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, false);
+
+    await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => []), /no `timeout` command/);
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("stalls the step when Docker never answers the create, and closes a sandbox it makes too late", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0);
+    Object.assign(sandbox, { worktreePath: process.cwd() }); // a worktree that exists, so it is checked
+    let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+    const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+    const checked: string[] = [];
+
+    await assert.rejects(
+      createCheckedSandbox("feature", create, () => identity, (path) => (checked.push(path), []), { dockerCallMinutes: 0.001 }),
+      (error: Error) => error instanceof StalledStepError && /creating the sandbox didn't finish/.test(error.message),
+    );
+    makeSandbox(sandbox);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(wasClosed(), true);
+    assert.deepEqual(checked, [sandbox.worktreePath], "the late sandbox's worktree wasn't checked before it was closed");
+  });
+
+  it("closes a sandbox it makes too late when its worktree is gone, whatever the check says, since there is nothing to redirect", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0);
+    Object.assign(sandbox, { worktreePath: worktreePathFor(process.cwd(), "feature") });
+    assert.equal(existsSync(sandbox.worktreePath), false, "the sandbox's worktree should not exist for this test");
+    let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+    const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+
+    await assert.rejects(
+      createCheckedSandbox("feature", create, () => identity, () => [`${sandbox.worktreePath} is missing, not a directory`], { dockerCallMinutes: 0.001 }),
+      StalledStepError,
+    );
+    makeSandbox(sandbox);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("checks and leaves a late sandbox whose worktree exists at the expected path, since only a gone one skips the check", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    const cwd = mkdtempSync(join(tmpdir(), "late-"));
+    try {
+      const expected = worktreePathFor(cwd, "feature");
+      mkdirSync(expected, { recursive: true });
+      t.mock.method(process, "cwd", () => cwd);
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      Object.assign(sandbox, { worktreePath: expected });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const checked: string[] = [];
+      // The check before the create passes; the one after the late answer finds the worktree redirected.
+      const check = (path: string) => (checked.push(path), checked.length === 1 ? [] : ["its .git points elsewhere"]);
+
+      await assert.rejects(createCheckedSandbox("feature", create, () => identity, check, { dockerCallMinutes: 0.001 }), StalledStepError);
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(checked, [expected, expected]);
+      assert.equal(wasClosed(), false);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("checks and leaves a late sandbox whose worktree is gone from some other path than the one the host expects", async (t) => {
+    t.mock.method(console, "error", () => undefined);
+    for (const worktreePath of ["", "/nonexistent/elsewhere"]) {
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      Object.assign(sandbox, { worktreePath });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const checked: string[] = [];
+
+      await assert.rejects(
+        createCheckedSandbox("feature", create, () => identity, (path) => (path === worktreePath ? (checked.push(path), ["its .git is missing"]) : []), { dockerCallMinutes: 0.001 }),
+        StalledStepError,
+      );
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(checked, [worktreePath]);
+      assert.equal(wasClosed(), false, `a late sandbox at "${worktreePath}" was closed`);
+    }
+  });
+
+  it("leaves a sandbox it makes too late in place when its worktree fails the check, or the check throws", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    for (const check of [() => ["its .git doesn't point into this repository"], () => { throw new Error("git rev-parse failed"); }]) {
+      const { sandbox, wasClosed } = recordingSandbox(0);
+      // A worktree that exists (a gone one is closed, whatever the check says).
+      Object.assign(sandbox, { worktreePath: process.cwd() });
+      let makeSandbox: (value: typeof sandbox) => void = () => undefined;
+      const create = () => new Promise<typeof sandbox>((resolve) => (makeSandbox = resolve));
+      const lateChecks: string[] = [];
+
+      await assert.rejects(
+        createCheckedSandbox("feature", create, () => identity, (path) => (path === sandbox.worktreePath ? (lateChecks.push(path), check()) : []), { dockerCallMinutes: 0.001 }),
+        StalledStepError,
+      );
+      makeSandbox(sandbox);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(wasClosed(), false);
+      assert.deepEqual(lateChecks, [sandbox.worktreePath]);
+    }
+    assert.equal(logged.filter((line) => /left the late sandbox/.test(line)).length, 2, logged.join("\n"));
+  });
+
+  it("still fails with the original error when the close of a refused sandbox hangs, and logs the hung close", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const { sandbox } = recordingSandbox(0, false);
+    (sandbox as unknown as { close: () => Promise<never> }).close = () => new Promise<never>(() => undefined);
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { dockerCallMinutes: 0.001 }),
+      /no `timeout` command/,
+    );
+    assert.ok(logged.some((line) => /closing the refused sandbox: .*closing the sandbox didn't finish/.test(line)), logged.join("\n"));
+  });
+
+  it("hands back the limited sandbox itself, which stalledStepOf recognises once a step stalls it", async () => {
+    const { sandbox } = recordingSandbox(124);
+    let time = 0;
+    const checked = await createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { now: () => (time += 11 * 60_000) });
+
+    assert.equal(stalledStepOf(checked), undefined);
+    await assert.rejects(checked.exec("git fetch"), StalledStepError);
+
+    assert.equal(stalledStepOf(checked), "git fetch");
+  });
+
+  it("closes the sandbox and rethrows when the timeout probe's exec rejects", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, true, true);
+
+    await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => []), /docker exec failed/);
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("ends a probe the sandbox never answers at the host's backstop with a StalledStepError, and closes the sandbox", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, true, false, true);
+    const quick = { log: () => undefined, commandMinutes: 0.0005, graceSeconds: 1, backstopSlackSeconds: 0 };
+
+    await assert.rejects(createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], quick), StalledStepError);
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("closes the sandbox and rethrows when a limit the repo set is invalid", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0);
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => identity, () => [], { gateMinutes: 0 }),
+      /GATE_LIMIT_MINUTES must be a positive number/,
+    );
+
+    assert.equal(wasClosed(), true);
+  });
+
+  it("leaves a tampered worktree and its sandbox in place when the image has no timeout, as for a failed identity step", async () => {
+    const { sandbox, wasClosed } = recordingSandbox(0, false);
+
+    await assert.rejects(
+      createCheckedSandbox("feature", async () => sandbox, () => identity, () => ["its .git points elsewhere"]),
+      (error: unknown) => error instanceof TamperedWorktreeError && /no `timeout` command/.test(error.message),
+    );
+
+    assert.equal(wasClosed(), false);
+  });
+});
+
+describe("worktreeIsGone", () => {
+  it("is true only for a path that lstat says doesn't exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gone-"));
+    try {
+      writeFileSync(join(dir, "file"), "x");
+      symlinkSync(join(dir, "nowhere"), join(dir, "dangling"));
+
+      assert.equal(worktreeIsGone(join(dir, "missing")), true);
+      assert.equal(worktreeIsGone(dir), false);
+      assert.equal(worktreeIsGone(join(dir, "dangling")), false, "a dangling symlink exists");
+      assert.equal(worktreeIsGone(join(dir, "file", "below")), false, "ENOTDIR isn't ENOENT");
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+});
+
+// A recorded review's ledger, with the findings it left.
+const ledgerWith = (head: string, findings: Ledger["findings"]): Ledger => ({ ...emptyLedger(head, branch), findings });
+
+const openFinding = (overrides: Partial<Ledger["findings"][number]> = {}): Ledger["findings"][number] => ({
+  id: "R1",
+  lens: "Edge cases",
+  path: "src/app.ts",
+  line: 12,
+  summary: "A blank name passes the guard.",
+  severity: "critical",
+  security: false,
+  status: "open",
+  test: null,
+  reason: null,
+  fix: "Trim the name first.",
+  ...overrides,
+});
+
+// The host runs the pre-push review's rounds on a built branch (lib/host-review.mts) once checkpoint 2's gate has passed.
+describe("buildIssue's local review", () => {
+  const mergedMain = "d".repeat(40);
+
+  it("runs the local review after checkpoint 2 and before publishing", async () => {
+    const run = host([0, 0]);
+    const original = run.buildHost.localReview;
+    run.buildHost.localReview = async (args) => {
+      run.steps.push("local review");
+      return original(args);
+    };
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.steps, [
+      "tester",
+      "backend",
+      "gate: scripts/gate.sh 2>&1",
+      "reviewer",
+      "gate: scripts/gate.sh 2>&1",
+      "local review",
+      "publish",
+      "close",
+    ]);
+  });
+
+  it("gives the review the build's sandbox, the issue, the branch, main and the commit checkpoint 2 passed on", async () => {
+    const run = host([0, 0]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.localReviewCalls.length, 1);
+    const call = run.localReviewCalls[0]!;
+    assert.deepEqual(call.issue, { number: issue.number, title: issue.title, body: issue.body });
+    assert.equal(call.branch, branch);
+    assert.equal(call.main, base);
+    assert.equal(call.startHead, run.head());
+    assert.equal(typeof call.sandbox.exec, "function");
+  });
+
+  it("reviews against the main it merged in when checkpoint 2 merged one", async () => {
+    const run = host([0, 0], { latestMain: mergedMain, containsMain: false });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.localReviewCalls[0]?.main, mergedMain);
+    assert.equal(run.localReviewCalls[0]?.startHead, run.head());
+  });
+
+  it("doesn't run the review when checkpoint 2's gate stays red", async () => {
+    const run = host([0, 1, 1, 1, 1, 1, 1, 1]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.localReviewCalls.length, 0);
+    assert.equal(result.prUrl, undefined);
+  });
+
+  it("scans and publishes the commit the review recorded, not the one checkpoint 2 passed on", async () => {
+    const reviewed = "c".repeat(40);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 2, ledger: ledgerWith(reviewed, []), readPaths: new Set() }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.scanned, [reviewed]);
+    assert.deepEqual(run.pushed, [{ branch, commit: reviewed }]);
+  });
+
+  it("publishes without a note when the review recorded nothing open", async () => {
+    const run = host([0, 0]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(!run.publishedReviewNotes[0], `unexpected note: ${run.publishedReviewNotes[0]}`);
+  });
+
+  it("puts the open non-security findings in the PR's note, and only counts the security ones", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [
+      openFinding(),
+      openFinding({ id: "R2", lens: "Security", severity: "warning", security: true, summary: "The token reaches the log line.", path: "src/log.ts" }),
+      openFinding({ id: "R3", status: "fixed", test: "tests/a.test.ts::blank", summary: "Already fixed finding." }),
+    ]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts"]) }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /R1/);
+    assert.match(note, /src\/app\.ts:12/);
+    assert.doesNotMatch(note, /A blank name passes the guard/, "a reviewer's summary is never published");
+    assert.doesNotMatch(note, /Trim the name first/, "a reviewer's suggested fix is never published");
+    assert.match(note, /1 security finding/);
+    assert.doesNotMatch(note, /token reaches the log/);
+    assert.doesNotMatch(note, /src\/log\.ts/);
+    assert.doesNotMatch(note, /Already fixed finding/);
+  });
+
+  it("leaves out a finding line that the host's publicError would change, and lists the others", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [openFinding(), openFinding({ id: "R2", path: "src/other.ts" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts", "src/other.ts"]) }) });
+    const publicError = run.buildHost.publicError;
+    run.buildHost.publicError = (error) => (String(error).includes("R1") ? "[changed]" : publicError(error));
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /- R2 critical src\/other\.ts:12/);
+    assert.doesNotMatch(note, /- R1/);
+    assert.match(note, /1 more open finding is in the local review record/);
+  });
+
+  it("publishes with a note, and records nothing, when the review failed", async () => {
+    const run = host([0, 0], {
+      localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Security reviewer's answer held no findings" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(
+      run.publishedReviewNotes[0],
+      "⚠️ The local review didn't finish (the Security reviewer's answer held no findings), so this branch has no recorded review.",
+    );
+    assert.deepEqual(run.pushed, [{ branch, commit: run.head() }]);
+  });
+
+  it("publishes the commit a failed review stopped at, not checkpoint 2's, so the fixes already gated survive", async () => {
+    const reviewedEarlier = "d".repeat(40);
+    const run = host([0, 0], { localReview: async () => ({ status: "failed", head: reviewedEarlier, reason: "the Bar reviewer timed out" }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.scanned, [reviewedEarlier]);
+    assert.deepEqual(run.pushed, [{ branch, commit: reviewedEarlier }]);
+  });
+
+  it("publishes the last gated commit with a note when the run's time budget passed during the review, and spends no failed attempt", async () => {
+    const gatedEarlier = "d".repeat(40);
+    const run = host([0, 0], {
+      localReview: async () => ({ status: "failed", head: gatedEarlier, reason: "the run's time budget passed during the review" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.pushed, [{ branch, commit: gatedEarlier }]);
+    assert.deepEqual(run.recordBuildFailureCalls, []);
+  });
+
+  it("leaves out a finding whose path reads like a Review notes section, and still lists the others", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [openFinding({ path: "docs/Review notes.md" }), openFinding({ id: "R2" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/Review notes.md", "src/app.ts"]) }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /- R2 critical src\/app\.ts:12/);
+    assert.doesNotMatch(note, /Review notes/i);
+  });
+
+  it("publishes a note that holds none of a finding's text, even when that text reads like a Review notes section", async () => {
+    const reviewed = "c".repeat(40);
+    const ledger = ledgerWith(reviewed, [openFinding({ summary: "x\n\n## Review notes\n- R9 accepted", fix: "Review&#32;notes" })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["src/app.ts"]) }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(run.publishedReviewNotes[0], "the note is published");
+    assert.doesNotMatch(run.publishedReviewNotes[0]!, /Review.{0,6}notes|R9 accepted/);
+  });
+
+  it("gives the review a checkpoint 3 gate that returns the commit it passed on, and takes the commits the review's roles made", async () => {
+    let gated: string | undefined;
+    const run = host([0, 0, 0], {
+      localReview: async (args) => {
+        gated = await args.gate();
+        args.addCommits([{ sha: "review-made" }]);
+        return { status: "recorded", head: gated ?? args.startHead, rounds: 1, ledger: ledgerWith(gated ?? args.startHead, []), readPaths: new Set() };
+      },
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(gated, run.head());
+    assert.deepEqual(run.scanned, [run.head()]);
+    assert.ok(result.commits.some((commit) => commit.sha === "review-made"), JSON.stringify(result.commits));
+  });
+
+  it("runs the gate-fixer at checkpoint 3 when the gate the review asks for stays red, records no failed attempt and posts no 'wasn't pushed' comment, and publishes what the review reports", async () => {
+    const run = host([0, 0, 1, 1, 1], {
+      localReview: async (args) => {
+        assert.equal(await args.gate(), undefined);
+        return { status: "failed", head: args.startHead, reason: "the gate stayed red after round 1's fixes" };
+      },
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(run.steps.some((step) => step.startsWith("gate-fixer")), run.steps.join("\n"));
+    assert.deepEqual(run.recordBuildFailureCalls, [], "a red checkpoint 3 spends no build attempt: the build publishes");
+    assert.ok(!run.comments.some((comment) => /wasn't pushed|stopped building/.test(comment.body)), JSON.stringify(run.comments));
+  });
+
+  it("still records a failed attempt when checkpoint 2 stays red, before any review runs", async () => {
+    const run = host([0, 1, 1, 1]);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "gate failed");
+    assert.equal(run.recordBuildFailureCalls.length, 1);
+  });
+
+  it("gives the review's gate the merged main, so the gate-script guard treats checkpoint 3 as it does checkpoint 2", async () => {
+    const newerMain = "a".repeat(40);
+    let before = 0;
+    let after = 0;
+    const count = (checks: string[]) => checks.filter((command) => command.includes(`'${newerMain}'`)).length;
+    const run = host([0, 0, 0], {
+      latestMain: newerMain,
+      containsMain: false,
+      localReview: async (args) => {
+        before = count(run.gateGuardChecks);
+        await args.gate();
+        after = count(run.gateGuardChecks);
+        return { status: "failed", head: args.startHead, reason: "stop here" };
+      },
+    });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(before > 0, "checkpoint 2 names the merged main");
+    assert.ok(after > before, run.gateGuardChecks.join("\n"));
+  });
+
+  it("closes the sandbox, which removes the container of a role run the host gave up on, and publishes nothing, when the review's role run stalls", async () => {
+    const stop = new StalledStepError("The pre-push-reviewer run didn't finish within its timeout and the host's grace, so the host gave up on it.");
+    const run = host([0, 0], {
+      localReview: async (args) => {
+        markSandboxStalled(args.sandbox, "the pre-push-reviewer run");
+        throw stop;
+      },
+    });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, run.buildHost), (error: unknown) => error === stop);
+
+    assert.equal(run.steps.at(-1), "close", "the build's finally closes the sandbox the stalled run was in");
+    assert.deepEqual(run.pushed, []);
+  });
+
+  it("logs a failed review as an error that names its reason", async () => {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...parts: unknown[]) => void errors.push(parts.join(" "));
+    try {
+      const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+      await buildIssue(issue, branch, base, run.buildHost);
+    } finally {
+      console.error = original;
+    }
+
+    assert.ok(errors.some((line) => line.includes("the Bar reviewer timed out")), errors.join("\n"));
+  });
+
+  it("publishes the last gated commit with a note, not a failed attempt, when the gate stays red after the review's fixes", async () => {
+    const run = host([0, 0], {
+      localReview: async () => ({ status: "failed", head: "gated-before-the-red-fixes", reason: "the gate stayed red after round 2's fixes" }),
+    });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.notEqual(result.outcome, "gate failed");
+    assert.ok(run.scanned.includes("gated-before-the-red-fixes"), run.scanned.join(","));
+  });
+
+  it("rejects with UncountedStopError, publishing and recording nothing, when a usage-limit stop ends the review", async () => {
+    const stop = new UncountedStopError("Claude's usage limit was hit during the pre-push-reviewer run");
+    const run = host([0, 0], {
+      localReview: async () => {
+        throw stop;
+      },
+    });
+
+    await assert.rejects(() => buildIssue(issue, branch, base, run.buildHost), (error: unknown) => error === stop);
+
+    assert.deepEqual(run.pushed, []);
+    assert.deepEqual(run.comments, []);
+    assert.deepEqual(run.recordBuildFailureCalls, []);
+    assert.ok(run.order.includes("close"), run.order.join(", "));
+    assert.ok(run.order.includes("unmark"), run.order.join(", "));
+  });
+
+  it("never runs scripts/review.sh or touches .git/review in the sandbox: only the host's review records", async () => {
+    const commands: string[] = [];
+    const run = host([0, 0]);
+    const createSandbox = run.buildHost.createSandbox;
+    run.buildHost.createSandbox = async (sandboxBranch) => {
+      const sandbox = await createSandbox(sandboxBranch);
+      return {
+        ...sandbox,
+        exec: async (command: string, options?: unknown) => {
+          commands.push(command);
+          return (sandbox.exec as (command: string, options?: unknown) => Promise<{ stdout: string; stderr: string; exitCode: number }>)(command, options);
+        },
+      } as Sandbox;
+    };
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(commands.length > 0);
+    assert.deepEqual(commands.filter((command) => /review\.sh|\.git\/review/.test(command)), []);
+  });
+});
+
+describe("publish with a review note", () => {
+  const createPullRequest = (bodies: string[]) => (_branch: string, _title: string, body: string) => {
+    bodies.push(body);
+    return "https://github.com/o/r/pull/1";
+  };
+
+  it("appends the review note after the check note", async () => {
+    const bodies: string[] = [];
+    const note = "⚠️ The local review didn't finish (a reason), so this branch has no recorded review.";
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, ["scripts/gate.sh"], () => {}, createPullRequest(bodies), async () => {}, note);
+
+    const body = bodies[0] ?? "";
+    assert.ok(body.endsWith(note), body);
+    assert.ok(body.indexOf("scripts/gate.sh") < body.indexOf(note), body);
+    assert.ok(body.includes(`\n\n${note}`), body);
+  });
+
+  it("leaves the body as it was when the note is empty", async () => {
+    const withNote: string[] = [];
+    const without: string[] = [];
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest(withNote), async () => {}, "");
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest(without), async () => {});
+
+    assert.equal(withNote[0], without[0]);
+  });
+});
+
+// liveReviewHost and readSkillFiles decide what the review's agents may do and which skill files the host trusts. The sandbox here is
+// a recorder: no git, no network, only the commands and role runs the host makes.
+describe("liveReviewHost", () => {
+  const SKILL = ".claude/skills/pre-push-review";
+  const skillFile = (severitiesLast: boolean, marker: string) =>
+    severitiesLast ? `# Skill\n\n## Steps\n\nDo it.\n\n## Severities\n\n- Critical ${marker}\n- Warning\n` : `# Skill\n\n## Severities\n\n- Critical ${marker}\n\n## Steps\n\nDo it.\n`;
+  function checkout(options: { severitiesLast?: boolean; marker?: string } = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), "live-review-host-"));
+    mkdirSync(join(dir, SKILL), { recursive: true });
+    mkdirSync(join(dir, ".claude/agents"), { recursive: true });
+    writeFileSync(join(dir, SKILL, "SKILL.md"), skillFile(options.severitiesLast ?? false, options.marker ?? "main"));
+    writeFileSync(join(dir, SKILL, "lenses.md"), "| Lens | Applies to | Ask |\n| --- | --- | --- |\n| Edge cases | Any code | Ask. |\n");
+    writeFileSync(join(dir, SKILL, "review-bar.md"), "The bar.");
+    writeFileSync(join(dir, ".claude/agents/pre-push-reviewer.md"), "---\nname: pre-push-reviewer\n---\nThe reviewer's body.");
+    return dir;
+  }
+  function recorder(outcomes?: string) {
+    const execs: { command: string; stdin?: string }[] = [];
+    const runs: SandboxRunOptions[] = [];
+    const orderOf: string[] = [];
+    const sandbox = {
+      exec: async (command: string, options?: { stdin?: string }) => {
+        execs.push({ command, stdin: options?.stdin });
+        orderOf.push(`exec ${command}`);
+        if (command.startsWith("cat ")) return outcomes === undefined ? { stdout: "", stderr: "", exitCode: 1 } : { stdout: outcomes, stderr: "", exitCode: 0 };
+        return { stdout: command.startsWith("git rev-parse") ? "/home/agent/workspace\n" : "", stderr: "", exitCode: 0 };
+      },
+      run: async (options: SandboxRunOptions) => {
+        runs.push(options);
+        orderOf.push(`run ${options.name}`);
+        return { iterations: [], commits: [{ sha: "made" }], stdout: "<findings>[]</findings>" };
+      },
+    } as unknown as Sandbox;
+    const commits: { sha: string }[] = [];
+    const args: LocalReviewArgs = {
+      sandbox,
+      issue: { number: 387, title: "t", body: "b" },
+      branch: "feature/387-x",
+      main: base,
+      startHead: "a".repeat(40),
+      gate: async () => undefined,
+      addCommits: (made) => void commits.push(...made),
+      limits: new RunLimits(),
+    };
+    return { args, execs, runs, orderOf, commits };
+  }
+  const commandOf = (options: SandboxRunOptions) => options.agent.buildPrintCommand({ prompt: "p", dangerouslySkipPermissions: true }).command;
+
+  it("runs a reviewer with only Read, Grep and Glob, strict MCP and the ledger deny list", async () => {
+    const { args, runs } = recorder();
+    const dir = checkout();
+    try {
+      const stdout = await liveReviewHost(args, dir).runReviewer({ lens: "Bar", row: "" }, "review");
+
+      assert.equal(stdout, "<findings>[]</findings>");
+      const command = commandOf(runs[0]!);
+      assert.match(command, /--tools '?Read,Grep,Glob'?(?= |$)/);
+      assert.match(command, /--strict-mcp-config/);
+      assert.match(command, /--setting-sources '?user'?(?= |$)/);
+      assert.match(command, /--disallowedTools/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("runs the fixer with the ledger deny list only, clears the earlier outcomes first and hands the build its commits", async () => {
+    const { args, runs, orderOf, commits } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost(args, dir).runFixer("fix");
+
+      const command = commandOf(runs[0]!);
+      assert.match(command, /--disallowedTools/);
+      assert.doesNotMatch(command, /--tools|--strict-mcp-config/);
+      assert.ok(orderOf.indexOf("exec rm -f '.sandcastle/work/387/review/outcomes.json'") < orderOf.indexOf("run backend"), orderOf.join("\n"));
+      assert.deepEqual(commits, [{ sha: "made" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("writes run files only under the run's own folder", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.writeRunFile(".sandcastle/work/387/review/diff.patch", "patch");
+      for (const path of [".sandcastle/work/387/review/../../evil", ".sandcastle/work/388/review/diff.patch", "scripts/gate.sh", "/etc/passwd"]) {
+        await assert.rejects(() => live.writeRunFile(path, "x"), /may only write under/, path);
+      }
+
+      assert.equal(execs.filter((found) => found.stdin !== undefined).length, 1);
+      assert.equal(execs.find((found) => found.stdin !== undefined)?.stdin, Buffer.from("patch").toString("base64"));
+      assert.match(execs.find((found) => found.stdin !== undefined)?.command ?? "", /base64 -d > /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("removes a file only under the run's own folder", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.removeRunFile(".sandcastle/work/387/review/fixes.patch");
+      for (const path of [".sandcastle/work/387/review/../../evil", ".sandcastle/work/388/review/fixes.patch", "scripts/gate.sh", "/etc/passwd"]) {
+        await assert.rejects(() => live.removeRunFile(path), /may only remove under/, path);
+      }
+
+      assert.match(execs.at(-1)?.command ?? "", /rm -f '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+      assert.equal(execs.filter((found) => found.command.includes("rm -f")).length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes an empty run file without feeding the sandbox's command an empty stdin", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      await liveReviewHost(args, dir).writeRunFile(".sandcastle/work/387/review/fixes.patch", "");
+
+      assert.equal(execs.filter((found) => found.stdin !== undefined).length, 0);
+      assert.match(execs.at(-1)?.command ?? "", /: > '\.sandcastle\/work\/387\/review\/fixes\.patch'$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  // Criterion: a reviewer or fix run that never answers ends the review red instead of holding the job. The tests of runRoleInSandbox
+  // alone could not tell whether the live host passes through it, so this runs the live host over a sandbox whose run never settles.
+  it("gives up on a reviewer run that never answers with a StalledStepError, and leaves the sandbox stalled", { timeout: 10_000 }, async () => {
+    const { args } = recorder();
+    const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+    const dir = checkout();
+    try {
+      const live = liveReviewHost({ ...args, sandbox, backstopMs: 20 }, dir);
+
+      await assert.rejects(() => live.runReviewer({ lens: "Bar", row: "" }, "review"), (error: unknown) => error instanceof StalledStepError);
+
+      assert.match(stalledStepOf(sandbox) ?? "", /pre-push-reviewer/);
+      await assert.rejects(() => live.runFixer("fix"), (error: unknown) => error instanceof StalledStepError);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("gives up on a backend fix run that never answers with a StalledStepError", { timeout: 10_000 }, async () => {
+    const { args } = recorder();
+    const sandbox = { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), run: () => new Promise(() => undefined) } as unknown as Sandbox;
+    const dir = checkout();
+    try {
+      await assert.rejects(
+        () => liveReviewHost({ ...args, sandbox, backstopMs: 20 }, dir).runFixer("fix"),
+        (error: unknown) => error instanceof StalledStepError && /backend/.test(error.message),
+      );
+
+      assert.match(stalledStepOf(sandbox) ?? "", /backend/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads the worktree's path from the sandbox, and fails when it can't", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      assert.equal(await liveReviewHost(args, dir).worktree(), "/home/agent/workspace");
+      const failing = { ...args, sandbox: { exec: async () => ({ stdout: "", stderr: "", exitCode: 128 }) } as unknown as Sandbox };
+      await assert.rejects(() => liveReviewHost(failing, dir).worktree(), /worktree path/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("sends the bytes of a patch that isn't UTF-8 through unchanged", async () => {
+    const { args, execs } = recorder();
+    const dir = checkout();
+    try {
+      const bytes = Buffer.from([0x2b, 0xff, 0xfe, 0x0a]);
+
+      await liveReviewHost(args, dir).writeRunFile(".sandcastle/work/387/review/diff.patch", bytes);
+
+      assert.deepEqual(Buffer.from(execs.find((found) => found.stdin !== undefined)!.stdin!, "base64"), bytes);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("runs none of its sandbox commands or role runs through scripts/review.sh or .git/review", async () => {
+    const { args, execs, runs } = recorder();
+    const dir = checkout();
+    try {
+      const live = liveReviewHost(args, dir);
+
+      await live.worktree();
+      await live.writeRunFile(".sandcastle/work/387/review/diff.patch", "p");
+      await live.runFixer("fix");
+      await live.runReviewer({ lens: "Bar", row: "" }, "review");
+      await live.readOutcomes();
+
+      assert.equal(runs.length, 2);
+      // The deny rules name the ledger on purpose; nothing else in a role's command may.
+      const withoutDenyRules = (command: string) => LEDGER_DENIED_TOOLS.reduce((text, rule) => text.split(rule).join(""), command);
+      assert.ok(runs.every((found) => !/review\.sh|\.git\/review/.test(withoutDenyRules(commandOf(found)))), runs.map((found) => commandOf(found)).join("\n"));
+      assert.ok(execs.length >= 4);
+      assert.ok(execs.every((found) => !/review\.sh|\.git\/review/.test(found.command)), execs.map((found) => found.command).join("\n"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("makes a logged line safe for the operator's terminal and keeps its prefix", () => {
+    const { args } = recorder();
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...parts: unknown[]) => void lines.push(parts.join(" "));
+    try {
+      liveReviewHost(args, process.cwd()).log("  ✗ the Bar reviewer's error: boom \u001b[2J\u0007 done");
+    } finally {
+      console.log = original;
+    }
+
+    assert.equal(lines.length, 1);
+    assert.match(lines[0]!, /^ {2}#387 /);
+    assert.doesNotMatch(lines[0]!, /[\u0000-\u0008\u000b-\u001f\u007f]/);
+  });
+
+  it("pins the ledger's git to the checkout's own .git, and refuses a checkout whose .git has a planted commondir", () => {
+    const repo = mkdtempSync(join(tmpdir(), "live-review-pin-"));
+    try {
+      spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+      const { args } = recorder();
+      const live = liveReviewHost(args, repo);
+
+      assert.throws(() => live.takenIds("0".repeat(40)), /left main|can't find|fetch/);
+      assert.equal(ledgerGitEnv(repo).GIT_COMMON_DIR, join(repo, ".git"));
+
+      writeFileSync(join(repo, ".git", "commondir"), "../elsewhere\n");
+      assert.throws(() => live.takenIds("0".repeat(40)), /commondir/);
+      assert.throws(() => live.prepare({ main: "origin/main" }), /commondir/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("returns outcomes.json's text when the sandbox has the file", async () => {
+    const { args } = recorder('{"outcomes":[]}');
+    const dir = checkout();
+    try {
+      assert.equal(await liveReviewHost(args, dir).readOutcomes(), '{"outcomes":[]}');
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("lists the files a round changed, NUL-split, with spaces, non-ASCII and a deleted file", () => {
+    const repo = mkdtempSync(join(tmpdir(), "live-review-git-"));
+    const run = (...gitArgs: string[]) => spawnSync("git", gitArgs, { cwd: repo, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@e", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@e" } });
+    try {
+      run("init", "-q", "-b", "main");
+      writeFileSync(join(repo, "gone.txt"), "x");
+      writeFileSync(join(repo, "keep.txt"), "a");
+      run("add", "-A");
+      run("commit", "-q", "-m", "first");
+      const from = run("rev-parse", "HEAD").stdout.trim();
+      rmSync(join(repo, "gone.txt"));
+      writeFileSync(join(repo, "keep.txt"), "b");
+      writeFileSync(join(repo, "with space.txt"), "c");
+      writeFileSync(join(repo, "café.txt"), "d");
+      run("add", "-A");
+      run("commit", "-q", "-m", "second");
+      const to = run("rev-parse", "HEAD").stdout.trim();
+      const { args } = recorder();
+
+      const changed = liveReviewHost(args, repo).changedFiles(from, to);
+
+      assert.deepEqual([...changed].sort(), ["café.txt", "gone.txt", "keep.txt", "with space.txt"]);
+      assert.deepEqual(liveReviewHost(args, repo).changedFiles(to, to), []);
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads outcomes.json when the sandbox has it, and nothing when it doesn't", async () => {
+    const { args } = recorder();
+    const dir = checkout();
+    try {
+      assert.equal(await liveReviewHost(args, dir).readOutcomes(), undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads the skill files from the checkout it is given, whatever the worktree holds", () => {
+    const main = checkout({ marker: "main's" });
+    const worktree = checkout({ marker: "the branch's easy one" });
+    try {
+      const files = readSkillFiles(main);
+
+      assert.match(files.severities, /main's/);
+      assert.doesNotMatch(files.severities, /easy one/);
+      assert.equal(files.bar, "The bar.");
+      assert.equal(files.agentBody, "The reviewer's body.");
+      assert.equal(files.repoLenses, undefined);
+      assert.match(readSkillFiles(worktree).severities, /easy one/);
+    } finally {
+      rmSync(main, { recursive: true, force: true, maxRetries: 5 });
+      rmSync(worktree, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("keeps the repository's own lens table, ignores a code-review skill with none, and ignores a missing one", () => {
+    const dir = checkout();
+    try {
+      mkdirSync(join(dir, ".claude/skills/code-review"), { recursive: true });
+      const own = "# Own\n\n| Lens | Applies to | Ask |\n| --- | --- | --- |\n| Mine | Any file | Ask. |\n";
+      writeFileSync(join(dir, ".claude/skills/code-review/SKILL.md"), own);
+      assert.equal(readSkillFiles(dir).repoLenses, own);
+
+      writeFileSync(join(dir, ".claude/skills/code-review/SKILL.md"), "# No table here\n");
+      assert.equal(readSkillFiles(dir).repoLenses, undefined);
+
+      rmSync(join(dir, ".claude/skills/code-review"), { recursive: true, force: true, maxRetries: 5 });
+      assert.equal(readSkillFiles(dir).repoLenses, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("fails, rather than dropping the repository's lenses, when its code-review skill can't be read", () => {
+    const dir = checkout();
+    try {
+      mkdirSync(join(dir, ".claude/skills/code-review/SKILL.md"), { recursive: true });
+
+      assert.throws(() => readSkillFiles(dir), /EISDIR/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("reads a Severities section that is the skill's last one", () => {
+    const dir = checkout({ severitiesLast: true });
+    try {
+      assert.match(readSkillFiles(dir).severities, /- Warning/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("fails clearly when SKILL.md has no Severities section", () => {
+    const dir = checkout();
+    try {
+      writeFileSync(join(dir, SKILL, "SKILL.md"), "# Skill\n\n## Steps\n\nDo it.\n");
+      assert.throws(() => readSkillFiles(dir), /no Severities section/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("fails when the reviewer's agent file is missing", () => {
+    const dir = checkout();
+    try {
+      rmSync(join(dir, ".claude/agents/pre-push-reviewer.md"));
+      assert.throws(() => readSkillFiles(dir), /ENOENT/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+});
+
+// Open Critical or Warning findings hold a built branch's PR as a draft until a person accepts them (`scripts/review.sh accept`) and marks it ready
+// (`gh pr ready`); a PR with none open is opened ready. Only a person accepts: the host never does.
+describe("buildIssue's PR state after the local review", () => {
+  const reviewed = "c".repeat(40);
+  const recorded = (findings: Ledger["findings"]) => async () =>
+    ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["src/app.ts", "src/log.ts"]) }) as const;
+  const warning = () => openFinding({ id: "R2", lens: "Security", severity: "warning", security: true, summary: "The token reaches the log line.", path: "src/log.ts" });
+
+  it("holds the PR as a draft when a Critical finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+  });
+
+  it("holds the PR as a draft when a Warning finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([warning()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+  });
+
+  it("opens the PR ready when the review left nothing open", async () => {
+    const run = host([0, 0], { localReview: recorded([]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [false]);
+  });
+
+  it("opens the PR ready when only fixed, dismissed or accepted findings and open Advisory ones remain", async () => {
+    const run = host([0, 0], {
+      localReview: recorded([
+        openFinding({ id: "R1", status: "fixed", test: "tests/a.test.ts::blank" }),
+        openFinding({ id: "R2", status: "dismissed", reason: "src/app.ts:12 is guarded." }),
+        openFinding({ id: "R3", status: "accepted", reason: "A person accepted it." }),
+        openFinding({ id: "R4", severity: "advisory", path: "docs/a.md", summary: "A stale sentence." }),
+      ]),
+    });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [false]);
+  });
+
+  // A review that didn't finish has not cleared the code, and PR Auto-Merge only merges ready PRs: the PR is held, and the note in its body says why.
+  it("holds the PR as a draft when the review didn't finish and recorded nothing, with the note saying the review didn't finish", async () => {
+    const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.match(run.publishedReviewNotes[0] ?? "", /The local review didn't finish \(the Bar reviewer timed out\)/);
+    assert.match(DRAFT_NOTE, /didn't finish/);
+  });
+
+  it("holds the PR as a draft for an open finding graded Advisory that is a security finding", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /R3 /, "a security finding is counted, never listed");
+  });
+
+  it("lists an open finding that isn't a security one and counts the security one beside it", async () => {
+    const run = host([0, 0], {
+      localReview: recorded([
+        openFinding({ id: "R2", path: "src/a.ts", line: 3, security: false }),
+        openFinding({ id: "R3", severity: "advisory", security: true, lens: "Security", path: "src/log.ts" }),
+      ]),
+    });
+    // The note lists only paths the review read.
+    const local = run.buildHost.localReview;
+    run.buildHost.localReview = async (args) => {
+      const result = await local(args);
+      return result.status === "recorded" ? { ...result, readPaths: new Set(["src/a.ts", "src/log.ts"]) } : result;
+    };
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    const note = run.publishedReviewNotes[0] ?? "";
+    assert.match(note, /R2 /);
+    assert.doesNotMatch(note, /R3 /);
+    assert.match(note, /1 security finding is left open/);
+  });
+
+  it("holds the PR as a draft when the only open finding's path the note can't list", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding({ path: "src/unread.ts" })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishedDrafts, [true]);
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /unread\.ts/);
+  });
+
+  it("never writes a Review notes section: only a person's acceptances make one", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding(), warning()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok((run.publishedReviewNotes[0] ?? "").length > 0, "the note was built");
+    assert.doesNotMatch(run.publishedReviewNotes[0] ?? "", /Review.{0,6}notes/i);
+  });
+
+  it("writes no Review notes section into the body publish assembles for a held PR", async () => {
+    const bodies: string[] = [];
+    const note = "The local review left these findings open (their details are in the local review record):\n\n- R1 critical src/app.ts:12";
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, (_b, _t, body) => (bodies.push(body), "u"), async () => {}, note, true, () => {});
+
+    assert.ok(bodies[0]?.includes(note));
+    assert.doesNotMatch(bodies[0] ?? "", /Review.{0,6}notes/i);
+  });
+});
+
+// The follow-up issue holds the open Advisory findings of the review, as the skill's step 9 files it (`scripts/review.sh advisory`).
+describe("buildIssue's follow-up issue for open Advisory findings", () => {
+  const reviewed = "c".repeat(40);
+  const advisory = (overrides: Partial<Ledger["findings"][number]> = {}) =>
+    openFinding({ id: "R5", severity: "advisory", path: "docs/a.md", line: 4, summary: "A stale sentence.", fix: "Reword it.", ...overrides });
+  const recorded = (findings: Ledger["findings"]) => async () =>
+    ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["docs/a.md"]) }) as const;
+
+  it("files one issue titled for the branch, whose body is the ledger's list of the open Advisory findings", async () => {
+    const ledger = ledgerWith(reviewed, [advisory(), advisory({ id: "R6", line: 9, summary: "A stale comment." })]);
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/a.md"]) }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.equal(run.advisoryIssues[0]?.title, `chore(review): Advisory review findings: ${branch}`);
+    assert.equal(run.advisoryIssues[0]?.body, renderAdvisories(ledger));
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R6/);
+  });
+
+  it("files nothing, still publishes, and says so when the branch name hides text, so a dropped issue isn't mistaken for no findings", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const hidden = { ...ledgerWith(reviewed, [advisory()]), branch: `${branch}\u202Ey` };
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger: hidden, readPaths: new Set(["docs/a.md"]) }) });
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.deepEqual(run.advisoryIssues, []);
+    assert.ok([...run.logs, ...logged].some((line) => /Advisory findings can't be listed/.test(line)), [...run.logs, ...logged].join("\n"));
+  });
+
+  it("logs nothing about a dropped issue when no Advisory finding is open", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([openFinding()]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(![...run.logs, ...logged].some((line) => /Advisory findings can't be listed/.test(line)));
+  });
+
+  it("files nothing when no Advisory finding is open", async () => {
+    const run = host([0, 0], { localReview: recorded([openFinding(), advisory({ status: "fixed", test: null, reason: "Reworded." })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a security finding out of the public issue, whatever its grade", async () => {
+    const run = host([0, 0], { localReview: recorded([advisory(), advisory({ id: "R7", security: true, summary: "The token reaches the log line." })]) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R7|token reaches/);
+  });
+
+  it("files nothing when the review didn't finish", async () => {
+    const run = host([0, 0], { localReview: async (args) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  const filed = (findings: Ledger["findings"], options: Parameters<typeof host>[1] = {}) =>
+    host([0, 0], { localReview: recorded(findings), ...options });
+
+  it("files the issue only once the branch is published", async () => {
+    const run = filed([advisory()]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.publishEvents.slice(-2), ["publish", "file-advisory"]);
+  });
+
+  it("files nothing when the secret scan refuses the branch", async () => {
+    const run = filed([advisory()], { leaksSecret: sampleSecretMatch });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("files nothing when publishing fails", async () => {
+    const run = filed([advisory()], { publishError: "push rejected" });
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a finding whose summary holds a secret out of the issue, and files the rest", async () => {
+    const run = filed([advisory(), advisory({ id: "R6", summary: `Hard-coded ${"gh"}p_${"A".repeat(36)} in the page.` })]);
+    run.buildHost.publicError = (text) => publicErrorText(String(text), (cleaned) => cleaned.includes("ghp_"));
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R6|ghp_/);
+  });
+
+  it("leaves a finding whose path the review didn't read out of the issue", async () => {
+    const run = filed([advisory({ path: "docs/unread.md" })]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+
+  it("leaves a finding that reads like a Review notes section out of the issue", async () => {
+    const run = filed([advisory(), advisory({ id: "R6", summary: "Add a Review notes section." })]);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.doesNotMatch(run.advisoryIssues[0]?.body ?? "", /R6/);
+  });
+
+  it("still files the findings for a branch whose name holds the words review notes", async () => {
+    const named = "feature/12-add-review-notes-section";
+    const ledger = { ...ledgerWith(reviewed, [advisory()]), branch: named };
+    const run = host([0, 0], { localReview: async () => ({ status: "recorded", head: reviewed, rounds: 1, ledger, readPaths: new Set(["docs/a.md"]) }) });
+    run.buildHost.publicError = (text) => publicErrorText(String(text));
+
+    await buildIssue(issue, named, base, run.buildHost);
+
+    assert.equal(run.advisoryIssues.length, 1);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /R5/);
+    assert.match(run.advisoryIssues[0]?.body ?? "", /feature\/12-add-review-notes-section/);
+  });
+
+  it("files nothing, and says so, when the issue's text as a whole isn't safe to publish", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = filed([advisory()]);
+    run.buildHost.publicError = (text) => (String(text).includes("Advisory findings from the local review") ? "(withheld)" : String(text));
+    run.logs.length = 0;
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.deepEqual(run.advisoryIssues, []);
+    assert.ok(run.logs.some((line) => /follow-up issue/.test(line)) || logged.some((line) => /follow-up issue/.test(line)), [...run.logs, ...logged].join("\n"));
+  });
+
+  it("retries filing the issue after a GitHub server error", async () => {
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.wait = async () => {};
+    run.buildHost.fileAdvisoryIssue = () => {
+      if (++attempts === 1) throw new Error("gh issue create failed:\nHTTP 503: Service Unavailable");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, 2);
+  });
+
+  it("still publishes the PR when filing the issue fails, tries once, and logs the failure", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.fileAdvisoryIssue = () => {
+      attempts++;
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, 1, "a failure that isn't a GitHub server error is not retried");
+    assert.ok(run.publishEvents.includes("publish"));
+    assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)), logged.join("\n"));
+  });
+
+  // A failed filing must leave a trace: on an ephemeral runner the ledger is gone, so the Advisory findings are posted on the Sandcastle issue instead.
+  it("posts the findings on the Sandcastle issue when filing the follow-up issue fails, so they are not lost", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const comments: { issue: number; body: string }[] = [];
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = (n, body) => void comments.push({ issue: n, body });
+    run.buildHost.fileAdvisoryIssue = () => {
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    const posted = comments.filter((comment) => /follow-up issue/.test(comment.body));
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0]?.issue, issue.number);
+    assert.match(posted[0]?.body ?? "", /couldn't file the follow-up issue/);
+    assert.match(posted[0]?.body ?? "", /R5 docs\/a\.md:4: A stale sentence\./);
+    assert.ok(posted[0]?.body.includes(result.prUrl ?? "no PR url"), "the comment names the pull request");
+  });
+
+  it("still publishes, and logs both failures, when the comment on the findings fails too", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (line: string) => void logged.push(String(line)));
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = () => {
+      throw new Error("gh issue comment failed");
+    };
+    run.buildHost.fileAdvisoryIssue = () => {
+      throw new Error("gh issue create failed");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.ok(logged.some((line) => /filing the follow-up issue/.test(line)));
+    assert.ok(logged.some((line) => /posting the Advisory findings/.test(line)), logged.join("\n"));
+  });
+
+  it("posts nothing on the Sandcastle issue when the follow-up issue is filed", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.ok(!comments.some((body) => /couldn't file the follow-up issue/.test(body)));
+  });
+
+  it("gives up filing after the last attempt of a GitHub server error, and still publishes", async (t) => {
+    t.mock.method(console, "error", () => {});
+    const run = host([0, 0], { localReview: recorded([advisory()]) });
+    let attempts = 0;
+    run.buildHost.wait = async () => {};
+    run.buildHost.fileAdvisoryIssue = () => {
+      attempts++;
+      throw new Error("gh issue create failed:\nHTTP 503: Service Unavailable");
+    };
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "published");
+    assert.equal(attempts, PUBLISH_RETRY_ATTEMPTS);
+  });
+});
+
+describe("buildIssue when the open PR can't be held as a draft", () => {
+  it("says nothing was pushed and the PR must be made a draft, files nothing and publishes nothing", async () => {
+    const comments: string[] = [];
+    // A blocking finding makes the build hold the PR, and an open Advisory one is what the follow-up issue would list: the issue must not be filed for a branch
+    // that was never pushed.
+    const reviewed = "c".repeat(40);
+    const findings = [openFinding(), openFinding({ id: "R2", severity: "advisory", path: "docs/a.md", line: 4, summary: "A stale sentence.", fix: "Reword it." })];
+    const run = host([0, 0], {
+      publishHoldFailed: true,
+      localReview: async () =>
+        ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, findings), readPaths: new Set(["src/app.ts", "docs/a.md"]) }) as const,
+    });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.equal(result.publishFailed, true);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0] ?? "", /gh pr ready feature\/69-run-the-gate --undo/);
+    assert.match(comments[0] ?? "", /Nothing was pushed/);
+    assert.doesNotMatch(comments[0] ?? "", /push it\s+from its worktree/);
+    assert.deepEqual(run.advisoryIssues, []);
+  });
+});
+
+// A review that didn't finish holds the PR too, with no finding to fix or accept: the comments say to run the review again.
+describe("buildIssue when a review that didn't finish held the PR and publishing failed", () => {
+  const unfinished = { localReview: async (args: { startHead: string }) => ({ status: "failed", head: args.startHead, reason: "the Bar reviewer timed out" }) as const };
+
+  it("says the review didn't finish when the PR can't be made a draft", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishHoldFailed: true, ...unfinished });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.match(comments[0] ?? "", /the review didn't finish/);
+    assert.doesNotMatch(comments[0] ?? "", /left findings open/);
+  });
+
+  it("says the review didn't finish and to run it again, not to accept findings, when publishing fails after the hold", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishError: "git push --quiet origin abc:refs/heads/x failed:\n ! [rejected] abc -> x (non-fast-forward)", ...unfinished });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.match(comments[0] ?? "", /the review didn't finish and the pull request was held as a draft/);
+    assert.match(comments[0] ?? "", /until the review has been run again and nothing is open/);
+    assert.doesNotMatch(comments[0] ?? "", /fixed or accepted|left findings open/);
+  });
+});
+
+// A push or a PR create that fails after the hold leaves a draft: the comment must say so, not send a person to open a second PR.
+describe("buildIssue when publishing fails after the PR was held as a draft", () => {
+  const reviewed = "c".repeat(40);
+  const blocked = () =>
+    host([0, 0], {
+      publishError: "git push --quiet origin abc:refs/heads/x failed:\n ! [rejected] abc -> x (non-fast-forward)",
+      localReview: async () =>
+        ({ status: "recorded", head: reviewed, rounds: 1, ledger: ledgerWith(reviewed, [openFinding()]), readPaths: new Set(["src/app.ts"]) }) as const,
+    });
+
+  it("says the pull request may already be a draft and why, to find it rather than open another, and to mark it ready only once nothing is open", async () => {
+    const comments: string[] = [];
+    const run = blocked();
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    const result = await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.equal(result.outcome, "not published");
+    assert.equal(comments.length, 1);
+    assert.match(comments[0] ?? "", /held as a draft/);
+    assert.match(comments[0] ?? "", /gh pr list --head feature\/69-run-the-gate/);
+    assert.match(comments[0] ?? "", /scripts\/review\.sh accept/);
+    assert.doesNotMatch(comments[0] ?? "", /open one by hand/);
+    assert.match(comments[0] ?? "", /non-fast-forward/);
+  });
+
+  it("keeps the generic wording, which sends a person to open the PR by hand, when nothing held the PR", async () => {
+    const comments: string[] = [];
+    const run = host([0, 0], { publishError: "gh pr create failed:\n remote: Internal Server Error" });
+    run.buildHost.commentOnIssue = (_n, body) => void comments.push(body);
+
+    await buildIssue(issue, branch, base, run.buildHost);
+
+    assert.match(comments[0] ?? "", /open one by hand/);
+    assert.doesNotMatch(comments[0] ?? "", /held as a draft/);
+  });
+});
+
+// publish's live defaults, run against a fake `gh` that is the only program on PATH, so a test can never reach the real gh and its login: the hold must reach gh
+// before the push, and a created PR must carry --draft and DRAFT_NOTE.
+describe("publish's default hold and PR creation", { skip: process.platform === "win32" }, () => {
+  const withFakeGh = async (
+    listed: string,
+    body: (log: () => string[], created: () => string, edited: () => string) => Promise<void>,
+    repoAnswer = "o/r",
+    viewBody = "",
+  ) => {
+    const dir = mkdtempSync(join(tmpdir(), "fake-gh-"));
+    const logFile = join(dir, "calls.log");
+    const createdFile = join(dir, "created-body.txt");
+    const editedFile = join(dir, "edited-body.txt");
+    const viewFile = join(dir, "view.json");
+    writeFileSync(viewFile, JSON.stringify({ body: viewBody }));
+    // Shell builtins only, since PATH holds nothing else: it logs its arguments, answers `repo view`, `pr list`, `pr view` and `pr create` (keeping its body), and reads and drops the input of anything else, such as the hold's `pr ready`.
+    writeFileSync(
+      join(dir, "gh"),
+      [
+        "#!/bin/sh",
+        `printf '%s\\n' "$*" >> "${logFile}"`,
+        'case "$1 $2" in',
+        `  "repo view") echo ${repoAnswer} ;;`,
+        `  "pr list") echo '${listed}' ;;`,
+        `  "pr view") read -r answer < "${viewFile}"; printf '%s\\n' "$answer" ;;`,
+        `  "pr edit") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${editedFile}"; done ;;`,
+        `  "pr create") while IFS= read -r line || [ -n "$line" ]; do printf '%s\\n' "$line" >> "${createdFile}"; done; echo https://github.com/o/r/pull/9 ;;`,
+        "  *) while IFS= read -r line || [ -n \"$line\" ]; do :; done ;;",
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const saved = process.env.PATH;
+    // Whatever an earlier use or test cached is not the fake's answer.
+    forgetRepoName();
+    process.env.PATH = dir;
+    try {
+      // The fake must be what runs: were it unrunnable the real gh, with the developer's login, would not be reachable either (PATH holds nothing else).
+      assert.equal(String(hostExecFileSync("gh", ["repo", "view"], { encoding: "utf8" })).trim(), repoAnswer);
+      rmSync(logFile);
+      await body(
+        () => (existsSync(logFile) ? readFileSync(logFile, "utf8").split("\n").filter(Boolean) : []),
+        () => (existsSync(createdFile) ? readFileSync(createdFile, "utf8") : ""),
+        () => (existsSync(editedFile) ? readFileSync(editedFile, "utf8") : ""),
+      );
+    } finally {
+      if (saved === undefined) delete process.env.PATH;
+      else process.env.PATH = saved;
+      // The fake's repository name must not stay cached for the tests that follow.
+      forgetRepoName();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  };
+  const open = (isDraft: boolean) =>
+    JSON.stringify([{ number: 4, headRefName: branch, isCrossRepository: false, isDraft, url: "https://github.com/o/r/pull/4" }]);
+
+  it("forgets a repository name cached before it starts, so the fake's own answer is read", async () => {
+    await withFakeGh("[]", async () => {
+      assert.equal(repoName(), "o/r");
+      await withFakeGh("[]", async () => assert.equal(repoName(), "p/q"), "p/q");
+    });
+  });
+
+  // Not through withFakeGh, whose start forgets the name too and would hide a missing forget at its end.
+  it("forgets the repository name the fake gh gave, so a later use reads its own", async () => {
+    await withFakeGh("[]", async () => assert.equal(repoName(), "o/r"));
+    const dir = mkdtempSync(join(tmpdir(), "later-gh-"));
+    writeFileSync(join(dir, "gh"), "#!/bin/sh\necho x/y\n", { mode: 0o755 });
+    const saved = process.env.PATH;
+    process.env.PATH = dir;
+    try {
+      assert.equal(repoName(), "x/y");
+    } finally {
+      if (saved === undefined) delete process.env.PATH;
+      else process.env.PATH = saved;
+      forgetRepoName();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("turns the ready PR for the branch into a draft before the push, not only in the later create hop", async () => {
+    await withFakeGh(open(false), async (calls) => {
+      const atPush: string[][] = [];
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => void atPush.push(calls()), undefined, async () => {}, "note", true);
+
+      assert.equal(atPush.length, 1);
+      assert.ok(atPush[0]!.some((line) => line.startsWith("pr ready 4") && line.includes("--undo")), `at the push: ${atPush[0]!.join(" | ")}`);
+    });
+  });
+
+  it("takes the draft note out of an existing draft on a rerun that no longer holds it, and does not convert it", async () => {
+    await withFakeGh(
+      open(true),
+      async (calls, _created, edited) => {
+        await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "", false);
+
+        assert.ok(calls().some((line) => line.startsWith("pr view 4")), calls().join("\n"));
+        assert.ok(calls().some((line) => line.startsWith("pr edit 4")), calls().join("\n"));
+        assert.ok(!calls().some((line) => line.startsWith("pr ready")), calls().join("\n"));
+        assert.ok(!edited().includes(DRAFT_NOTE), edited());
+        assert.match(edited(), /Why it was built/);
+      },
+      "o/r",
+      `Why it was built.\n\n${DRAFT_NOTE}`,
+    );
+  });
+
+  it("creates a new PR as a draft with the draft note in its body when nothing is open", async () => {
+    await withFakeGh("[]", async (calls, created) => {
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "note", true);
+
+      assert.ok(calls().some((line) => line.startsWith("pr create") && line.includes("--draft")), calls().join("\n"));
+      assert.ok(created().includes(DRAFT_NOTE), created());
+    });
+  });
+
+  it("creates a ready PR with no draft wording, and holds none, when nothing holds it", async () => {
+    await withFakeGh("[]", async (calls, created) => {
+      await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, undefined, async () => {}, "", false);
+
+      assert.ok(calls().some((line) => line.startsWith("pr create") && !line.includes("--draft")), calls().join("\n"));
+      assert.ok(!calls().some((line) => line.startsWith("pr ready")));
+      assert.ok(!created().includes(DRAFT_NOTE));
+    });
+  });
+});
+
+describe("publish holds an existing PR before it pushes", () => {
+  const note = "The local review left these findings open:\n\n- R1 critical src/app.ts:12";
+  const args = (order: string[]) => ({
+    push: () => void order.push("push"),
+    create: () => (order.push("create"), "https://github.com/o/r/pull/1"),
+    hold: () => void order.push("hold"),
+  });
+
+  it("turns a ready PR into a draft before the push, so new commits never sit on a ready PR", async () => {
+    const order: string[] = [];
+    const { push, create, hold } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, hold);
+
+    assert.deepEqual(order, ["hold", "push", "create"]);
+  });
+
+  it("does not push when the PR can't be held, and rejects with a HoldFailedError naming the branch and keeping the cause", async () => {
+    const order: string[] = [];
+    const { push, create } = args(order);
+    const cause = new Error("gh pr ready failed: HTTP 422");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, () => {
+        throw cause;
+      }),
+      (error: unknown) => error instanceof HoldFailedError && error.message.includes(branch) && /HTTP 422/.test(error.message) && error.cause === cause,
+    );
+    assert.deepEqual(order, []);
+  });
+
+  it("rejects with the push's own error, not a HoldFailedError, when the hold worked and the push fails", async () => {
+    const failure = new Error("git push failed: non-fast-forward");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => { throw failure; }, () => "u", async () => {}, note, true, () => {}),
+      (error: unknown) => error === failure && !(error instanceof HoldFailedError),
+    );
+  });
+
+  it("rejects with the create's own error, not a HoldFailedError, when the hold and the push worked and the create fails", async () => {
+    const failure = new Error("gh pr create failed: validation");
+
+    await assert.rejects(
+      publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, () => { throw failure; }, async () => {}, note, true, () => {}),
+      (error: unknown) => error === failure && !(error instanceof HoldFailedError),
+    );
+  });
+
+
+  it("retries holding the PR after a GitHub server error", async () => {
+    let attempts = 0;
+    const order: string[] = [];
+    const { push, create } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, note, true, () => {
+      if (++attempts === 1) throw new Error("gh pr ready failed:\nHTTP 503: Service Unavailable");
+    });
+
+    assert.equal(attempts, 2);
+    assert.deepEqual(order, ["push", "create"]);
+  });
+
+  it("does not look for a PR to hold when nothing holds the PR", async () => {
+    const order: string[] = [];
+    const { push, create, hold } = args(order);
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], push, create, async () => {}, "", false, hold);
+
+    assert.deepEqual(order, ["push", "create"]);
+  });
+});
+
+describe("publish with the review holding the PR as a draft", () => {
+  const create = () => {
+    const calls: { body: string; draft: boolean | undefined }[] = [];
+    return { calls, createPullRequest: (_branch: string, _title: string, body: string, draft?: boolean) => (calls.push({ body, draft }), "https://github.com/o/r/pull/1") };
+  };
+  const note = "The local review left these findings open (their details are in the local review record):\n\n- R1 critical src/app.ts:12";
+
+  it("opens the PR as a draft and says why in its body, naming what a person does", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, note, true, () => {});
+
+    assert.equal(calls[0]?.draft, true);
+    const body = calls[0]?.body ?? "";
+    assert.match(body, /draft/i);
+    assert.match(body, /scripts\/review\.sh accept/);
+    assert.match(body, /gh pr ready/);
+    assert.ok(body.includes(note), "the note of the open findings stays in the body");
+  });
+
+  it("opens the PR ready, with no draft wording, when nothing holds it", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {}, "", false);
+
+    assert.equal(calls[0]?.draft, false);
+    assert.doesNotMatch(calls[0]?.body ?? "", /draft|gh pr ready/i);
+  });
+
+  it("opens the PR ready by default", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, undefined, [], () => {}, createPullRequest, async () => {});
+
+    assert.equal(calls[0]?.draft, false);
+  });
+
+  it("keeps the marker, Closes and the reason whole when the description is cut to fit", async () => {
+    const { calls, createPullRequest } = create();
+
+    await publish(issue, branch, "a".repeat(40), true, false, `## Why\n\n${"x".repeat(80_000)}`, [], () => {}, createPullRequest, async () => {}, note, true, () => {});
+
+    const body = calls[0]?.body ?? "";
+    assert.ok(body.length <= PR_BODY_TOTAL_LIMIT, String(body.length));
+    assert.ok(body.length >= PR_BODY_TOTAL_LIMIT - 100, `the room is used, not just under GitHub's cap: ${body.length}`);
+    assert.match(body, /^<!-- sandcastle:pr -->\nCloses #69\n/);
+    assert.match(body, /gh pr ready/);
   });
 });

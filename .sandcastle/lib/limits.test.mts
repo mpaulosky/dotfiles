@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { isUsageLimitError, RunLimits } from "./limits.mts";
-import { UncountedStopError } from "./errors.mts";
+import { TimeBudgetStopError, UncountedStopError } from "./errors.mts";
 
 // A clock the test moves by hand, rather than the wall clock.
 function fakeClock(start = 0) {
@@ -46,6 +46,20 @@ describe("RunLimits", () => {
     assert.throws(
       () => limits.throwIfStopped(),
       (error: unknown) => error instanceof UncountedStopError && error.message === limits.stopReason(),
+    );
+  });
+
+  it("throws a TimeBudgetStopError for the time budget, and a plain UncountedStopError for a usage limit", () => {
+    const clock = fakeClock();
+    const limits = new RunLimits(clock.now);
+    limits.start(240);
+    clock.advance(240 * 60_000);
+    assert.throws(() => limits.throwIfStopped(), TimeBudgetStopError);
+
+    limits.hitUsageLimit("Claude's usage limit was hit");
+    assert.throws(
+      () => limits.throwIfStopped(),
+      (error: unknown) => error instanceof UncountedStopError && !(error instanceof TimeBudgetStopError),
     );
   });
 

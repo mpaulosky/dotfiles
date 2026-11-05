@@ -6,6 +6,7 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { TEMPLATE_OWNED_DIR } from "./repo-config.mts";
+import { copyReviewerLogs, liveRoleLogFs } from "./role-logs.mts";
 
 // The Template's .sandcastle/ as Apply writes it into a repo that isn't dotfiles: the Owned files, plus each Seed file Owned lacks.
 // The Owned modules must type-check and pass their own tests there, with the Seed's lib/repo-config.mts, so an Owned module that reads a
@@ -289,5 +290,139 @@ describe("the combining-mark cap and ADR 0010's wording", () => {
     assert.match(adr, /variation selector right after an assigned pictograph/);
     assert.doesNotMatch(adr, /between two pictographs/);
     assert.doesNotMatch(adr, /right after a pictograph/);
+  });
+});
+
+// A run that starts no role (the planner alone) has no .sandcastle/logs, so the report holds no reviewer-logs/ folder and no index.txt, and the
+// copy step says nothing (liveRoleLogFs.list treats a missing folder as no logs: mpaulosky/dotfiles#432). The reference's bullet on the reviewers' logs
+// has to say so, or a reader of the artifact can't tell that an absent folder is normal (mpaulosky/dotfiles#433).
+describe("references/sandcastle.md's bullet on the reviewers' logs, for a run that starts no role", () => {
+  const reference = readFileSync(join(skill, "references/sandcastle.md"), "utf8").replace(/\s+/g, " ");
+  const start = reference.indexOf("The run report artifact holds an allowlisted view of the reviewers' logs");
+  const next = reference.indexOf(" - **", start + 1);
+  const bullet = start === -1 ? "" : reference.slice(start, next === -1 ? undefined : next);
+  const sentences = bullet.split(/(?<=\.)\s+(?=[A-Z`])/);
+  const noRole = sentences.filter((sentence) => /\bno role\b/i.test(sentence));
+
+  it("is found, and keeps its existing description of the view", () => {
+    assert.notEqual(start, -1, "the bullet on the reviewers' logs is not in the reference");
+    assert.match(bullet, /`index\.txt`/);
+    assert.match(bullet, /`reviewer-<n>\.log`/);
+  });
+
+  it("has a sentence about a run that starts no role", () => {
+    assert.notEqual(noRole.length, 0, "no sentence in the bullet mentions a run with no role");
+  });
+
+  it("says such a run has no .sandcastle/logs folder, as copyReviewerLogs' listing finds", () => {
+    assert.ok(noRole.some((sentence) => sentence.includes(".sandcastle/logs")), `the sentence doesn't name .sandcastle/logs: ${noRole.join(" | ")}`);
+  });
+
+  it("says such a run leaves no reviewer-logs/ folder and no index.txt", () => {
+    assert.ok(
+      noRole.some((sentence) => /no `reviewer-logs\/` folder/.test(sentence) && /no `index\.txt`/.test(sentence)),
+      `the sentence doesn't say "no \`reviewer-logs/\` folder" and "no \`index.txt\`": ${noRole.join(" | ")}`,
+    );
+  });
+
+  it("says the copy step warns about nothing", () => {
+    assert.ok(
+      noRole.some((sentence) => /\b(says nothing|warns? (about )?nothing|prints no warning|no warning|without (a )?warning)\b/i.test(sentence)),
+      `the sentence doesn't say that nothing is warned about: ${noRole.join(" | ")}`,
+    );
+  });
+
+  // copyReviewerLogs returns at `names.length === 0`, before the mkdir and the index, so what decides the folder is a `*-reviewer.log`, not whether
+  // .sandcastle/logs exists (off Actions the summary and hand-backs create it with no role run).
+  it("names the condition the code uses: no *-reviewer.log to copy, which a run with other logs only also has", () => {
+    assert.ok(noRole.some((sentence) => sentence.includes("`*-reviewer.log`")), `the sentence doesn't name \`*-reviewer.log\`: ${noRole.join(" | ")}`);
+    assert.ok(
+      noRole.some((sentence) => /pre-push review/i.test(sentence) && /non-reviewer|other role/i.test(sentence)),
+      `the sentence doesn't say that a logs folder with only other logs also leaves no folder: ${noRole.join(" | ")}`,
+    );
+  });
+
+  it("is true of the code: a logs folder with no reviewer log (other roles' and the pre-push review's only) gives no warning, folder or index", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "other-role-logs-"));
+    try {
+      const logs = join(scratch, ".sandcastle", "logs");
+      mkdirSync(logs, { recursive: true });
+      writeFileSync(join(logs, "feature-1-developer.log"), "a developer log\n");
+      writeFileSync(join(logs, "feature-1-pre-push-reviewer.log"), "the pre-push review's log\n");
+      const out = join(scratch, "report", "reviewer-logs");
+      const warnings: string[] = [];
+      const copied = copyReviewerLogs(logs, out, liveRoleLogFs, (line) => warnings.push(line), []);
+
+      assert.deepEqual(copied, []);
+      assert.deepEqual(warnings, []);
+      assert.equal(existsSync(out), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("is true of the code: a missing logs folder gives no warning and writes no folder and no index", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "no-role-logs-"));
+    try {
+      const out = join(scratch, "report", "reviewer-logs");
+      const warnings: string[] = [];
+      const copied = copyReviewerLogs(join(scratch, ".sandcastle", "logs"), out, liveRoleLogFs, (line) => warnings.push(line), []);
+
+      assert.deepEqual(copied, []);
+      assert.deepEqual(warnings, []);
+      assert.equal(existsSync(out), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+// The host holds a built branch's PR as a draft while a Critical or Warning finding is open, and files the open Advisory ones in a follow-up issue
+// (mpaulosky/dotfiles#388). The docs must say so, and none may still say Sandcastle skips the review or leaves the follow-up issue unfiled.
+describe("the docs on the host-side review's PR state, record and follow-up issue", () => {
+  const read = (relative: string) => readFileSync(join(skill, relative), "utf8").replace(/\s+/g, " ");
+  const docs = {
+    "SKILL.md": read("SKILL.md"),
+    "CONTEXT.md": read("CONTEXT.md"),
+    "references/sandcastle.md": read("references/sandcastle.md"),
+    "references/pre-push-review.md": read("references/pre-push-review.md"),
+    "docs/adr/0003-github-settings-as-code.md": read("docs/adr/0003-github-settings-as-code.md"),
+    "docs/adr/0008-review-before-the-push.md": read("docs/adr/0008-review-before-the-push.md"),
+  };
+  const section = (docs["references/pre-push-review.md"].split("## Sandcastle runs the review on the host")[1] ?? "").split(/ ## /)[0] ?? "";
+
+  it("no doc says Sandcastle skips or doesn't run the pre-push review", () => {
+    for (const [name, text] of Object.entries(docs)) {
+      assert.doesNotMatch(text, /sandcastle[^.]{0,60}\b(skips?|doesn't run|does not run|never runs)\b[^.]{0,40}(pre-push|local) review/i, name);
+      assert.doesNotMatch(text, /(pre-push|local) review[^.]{0,40}\b(is|are) skipped\b[^.]{0,40}sandcastle/i, name);
+    }
+  });
+
+  it("the host-side section is found, and no longer says the follow-up Advisory issue isn't filed", () => {
+    assert.notEqual(section, "", "the section 'Sandcastle runs the review on the host' is not in references/pre-push-review.md");
+    assert.doesNotMatch(section, /follow-up Advisory issue isn't filed/);
+    assert.match(section, /follow-up (Advisory )?issue/i);
+  });
+
+  it("the host-side section says open Critical or Warning findings hold the PR as a draft until a person accepts them and marks it ready", () => {
+    assert.match(section, /draft/i);
+    assert.match(section, /Critical or Warning/);
+    assert.match(section, /`scripts\/review\.sh accept`/);
+    assert.match(section, /`gh pr ready`/);
+  });
+
+  it("the host-side section says the PR's ## Review notes hold only a person's acceptances", () => {
+    assert.match(section, /Review notes/);
+    assert.match(section, /only a person's acceptances|a person's acceptances only/i);
+  });
+
+  it("CONTEXT.md's Host-side review entry and ADR 0008 say a PR with open findings is held as a draft", () => {
+    const entry = (docs["CONTEXT.md"].split("**Host-side review**:")[1] ?? "").split("**Sandcastle section**")[0] ?? "";
+    assert.match(entry, /draft/i);
+    assert.match(docs["docs/adr/0008-review-before-the-push.md"], /draft/i);
+  });
+
+  it("references/sandcastle.md says the host holds the PR as a draft while Critical or Warning findings are open", () => {
+    assert.match(docs["references/sandcastle.md"], /draft[^.]{0,200}(Critical or Warning|Warning or Critical)|(Critical or Warning|Warning or Critical)[^.]{0,200}draft/i);
   });
 });

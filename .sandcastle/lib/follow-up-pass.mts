@@ -24,11 +24,13 @@ import {
   createCheckedSandbox,
   cutAtCharacter,
   isWorkflowPushRejection,
+  logSafeGateOutput,
   publicErrorText,
   retryOnServerError,
 } from "./build.mts";
+import { logSandboxState } from "./diagnostics.mts";
 import { claimBuildingLabel, claimPullRequestBuildingLabel, releaseBuildingLabel, releasePullRequestBuildingLabel } from "./building.mts";
-import { runCheckpoint, runGate, tail, type GateRun } from "./checkpoint.mts";
+import { endOf, runCheckpoint, runGate, sandboxDown, tail, textBlock, type GateRun } from "./checkpoint.mts";
 import {
   BUILDING_LABEL,
   FOLLOW_UP_LABEL,
@@ -42,6 +44,9 @@ import {
   WORKTREE_TAMPERED_MARKER,
 } from "./config.mts";
 import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { closeAfterWork } from "./host-limit.mts";
+import { stalledStepOf } from "./step-limit.mts";
+import { terminalText } from "./status.mts";
 import { issueNumberOf, recordApprovedHead, threadStanding, withoutOwnCheck, type CheckState, type PassTarget } from "./follow-up.mts";
 import {
   commentOnPullRequest,
@@ -66,7 +71,16 @@ import { runLimits, type RunLimits } from "./limits.mts";
 import { followUpPromptArgs, gateFixerPromptArgs } from "./prompts.mts";
 import { ownerCheck, type IsOwner } from "./queue.mts";
 import { GATE_COMMAND, GATE_COVERED_CHECKS } from "./repo-config.mts";
-import { humanThreadReport, outcomeReport, type HumanThreadEntry, type OutcomeEntry, type OutcomeReport } from "./report.mts";
+import {
+  humanThreadReport,
+  intakeStopReport,
+  outcomeReport,
+  stallStop,
+  type HumanThreadEntry,
+  type IntakeStopReport,
+  type OutcomeEntry,
+  type OutcomeReport,
+} from "./report.mts";
 import { containsSandboxSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
 import { git } from "./shell.mts";
@@ -410,27 +424,76 @@ function rerunLog(pr: number, names: readonly string[], host: PassHost, log: (li
   }
 }
 
+// The most characters of the first red gate run a hand-back quotes, so a first run of very long lines leaves the last run room in the
+// comment (giveUpComment cuts the last run further when the two together are still too long).
+const FIRST_RUN_CHARS = 20_000;
+
+// The most characters of a hand-back's reason, so a reason made of a PR's check names can't use up the comment.
+const REASON_CHARS = 2_000;
+
 // The PR hand-back comment for a pass that gave up (runPass's step 4, 9, 10,
 // 11): GIVE_UP_MARKER on a line of its own (so scripts/watch-pr.sh skips it),
 // why, then the tail of the last gate output or the role's error (when given)
-// in a fence longer than any backtick run in it, and how to re-queue the PR
-// (remove sandcastle:needs-human).
-export function giveUpComment(reason: string, output: string | undefined): string {
-  const parts = [
-    `Sandcastle stopped its follow-up passes on this PR: ${reason}. It's labelled \`sandcastle:needs-human\` until a person ` +
-      "has looked at it.",
-  ];
-  if (output !== undefined && output.trim() !== "") {
-    const quoted = tail(output, GATE_COMMENT_LINES);
-    const longestRun = Math.max(0, ...[...quoted.matchAll(/`+/g)].map((match) => match[0].length));
-    const fence = "`".repeat(Math.max(3, longestRun + 1));
-    parts.push(`The last ${GATE_COMMENT_LINES} lines of the output:\n\n${fence}text\n${quoted}\n${fence}`);
-  }
-  parts.push(
+// in a fence longer than any backtick run in it (textBlock), and how to re-queue
+// the PR (remove sandcastle:needs-human). `firstOutput`, when given, is the
+// gate's first red run, quoted in a fence of its own before the last run: a
+// gate-fixer attempt can leave the last run showing a dead sandbox or a timeout,
+// not the failure the pass began with. The first run is cut to its last
+// GATE_COMMENT_LINES lines and then to its last FIRST_RUN_CHARS characters, and
+// its header says both. The reason is cut to REASON_CHARS. When the comment is
+// still over COMMENT_LIMIT, the last run is cut at its front (endOf) as far as
+// fits, and its header then says so. So the comment always ends with the last
+// run's failure message, its fence and the re-queue instructions, which a cut of
+// the finished comment would drop.
+export function giveUpComment(reason: string, output: string | undefined, firstOutput?: string): string {
+  const why = reason.length > REASON_CHARS ? `${cutAtCharacter(reason, REASON_CHARS)}…` : reason;
+  const requeue =
     "To have Sandcastle pick the PR up again, remove `sandcastle:needs-human`. That also starts its count of follow-up " +
-      "passes again.",
-  );
-  return cutToLimit(`${GIVE_UP_MARKER}\n${parts.join("\n\n")}`);
+    "passes again.";
+  const first = firstOutput !== undefined && firstOutput.trim() !== "";
+  const hasLast = output !== undefined && output.trim() !== "";
+  const firstRun = first ? endOf(tail(firstOutput, GATE_COMMENT_LINES), FIRST_RUN_CHARS) : "";
+  const lastRun = hasLast ? tail(output, GATE_COMMENT_LINES) : "";
+  // The comment with the last `lastKeep` characters of the last run (all of it when lastKeep is its length, with the header saying so).
+  const assemble = (lastKeep: number): string => {
+    const parts = [
+      `Sandcastle stopped its follow-up passes on this PR: ${why}. It's labelled \`sandcastle:needs-human\` until a person ` +
+        "has looked at it.",
+    ];
+    if (first) {
+      parts.push(
+        `The end of the first red gate run (at most ${GATE_COMMENT_LINES} lines and ${FIRST_RUN_CHARS} characters), ` +
+          `before a gate-fixer ran:\n\n${textBlock(firstRun)}`,
+      );
+    }
+    if (hasLast) {
+      const cut = lastKeep < lastRun.length;
+      const name = first ? "last gate output" : "output";
+      // endOf(text, 0) would return the whole text, hence the check.
+      const kept = !cut ? lastRun : lastKeep === 0 ? "" : endOf(lastRun, lastKeep);
+      parts.push(
+        (cut
+          ? `The end of the ${name} (at most ${GATE_COMMENT_LINES} lines, cut at the front to fit the comment):`
+          : `The last ${GATE_COMMENT_LINES} lines of the ${name}:`) + `\n\n${textBlock(kept)}`,
+      );
+    }
+    return `${GIVE_UP_MARKER}\n${[...parts, requeue].join("\n\n")}`;
+  };
+  const whole = assemble(lastRun.length);
+  if (whole.length <= COMMENT_LIMIT || !hasLast) return cutToLimit(whole);
+  // The last run is cut at its front, as far as it takes for the whole comment to fit: cutting the finished comment would drop the last
+  // run's failure message, its closing fence and the re-queue instructions, which come last. The comment doesn't grow by one character
+  // per character kept (textBlock's fence grows with a backtick run in the kept text, and the header changes once the run is cut), so the
+  // most that fits is searched for, not computed. The first run (at most FIRST_RUN_CHARS, in a fence at most one character longer than
+  // its longest backtick run) and the reason (at most REASON_CHARS) together always fit the limit with an empty last run.
+  let fits = 0;
+  let over = lastRun.length;
+  while (fits < over - 1) {
+    const middle = Math.ceil((fits + over) / 2);
+    if (assemble(middle).length <= COMMENT_LIMIT) fits = middle;
+    else over = middle;
+  }
+  return cutToLimit(assemble(fits));
 }
 
 // What one call to runPass decided or did:
@@ -480,6 +543,8 @@ export function handOffIssue(target: PassTarget): SandcastleIssue {
 // What runPass needs from outside the pass itself; tests pass a stub. The
 // live wiring sits at the bottom of this module.
 export type PassHost = {
+  // How long the close of the pass's sandbox may take, in minutes (host-limit.mts#DOCKER_CALL_LIMIT_MINUTES by default); for tests.
+  dockerCallMinutes?: number;
   // The CI checks scripts/gate.sh reproduces (lib/repo-config.mts#GATE_COVERED_CHECKS).
   gateCovered: ReadonlySet<string>;
   // branches.mts's originGit.fetch, so the sandbox's createSandbox(branch)
@@ -650,6 +715,8 @@ async function followUpVerdicts(
     );
   } catch (error) {
     if (error instanceof UncountedStopError) throw error;
+    // The sandbox's state after the failed run, as a build logs it (lib/diagnostics.mts); it never throws.
+    await logSandboxState(sandbox, "the follow-up run failed", (line) => host.log(`  PR #${target.number} ${line}`), (text) => logSafeGateOutput(text, host.publicError));
     return stop("the follow-up run failed", String(error));
   }
   if (run.completionSignal === undefined) return stop("the follow-up run ended unfinished");
@@ -894,16 +961,28 @@ const tamperedWorktreeComment = (branch: string) =>
   "person to look at. Don't run git in it.";
 
 // Hands the PR back with sandcastle:needs-human (see giveUpComment), quoting
-// `output` once it's safe to post. `privateDetail`, when given, is added to
+// `output` and `firstOutput` once each is safe to post, scrubbed on its own so a
+// secret in one doesn't withhold the other. `privateDetail`, when given, is added to
 // the reason in the run log and the run report but left out of the PR comment,
 // for what's fine for the run's own records but not for the public PR, such as
 // where the secret scan matched. A hand-back that fails is logged: the
 // next round's sweep finds the PR again.
-function giveUp(target: PassTarget, host: PassHost, reason: string, output: string | undefined, privateDetail?: string): PassOutcome {
+function giveUp(
+  target: PassTarget,
+  host: PassHost,
+  reason: string,
+  output: string | undefined,
+  privateDetail?: string,
+  firstOutput?: string,
+): PassOutcome {
   const recorded = privateDetail === undefined ? reason : `${reason} (${privateDetail})`;
   host.log(`  ✋ PR #${target.number}: ${recorded}, so it's handed back.`);
   try {
-    host.handBack(target.number, recorded, giveUpComment(reason, output === undefined ? undefined : host.publicError(output)));
+    host.handBack(
+      target.number,
+      recorded,
+      giveUpComment(reason, output === undefined ? undefined : host.publicError(output), firstOutput === undefined ? undefined : host.publicError(firstOutput)),
+    );
   } catch (error) {
     console.error(`  ⚠ PR #${target.number}: handing it back failed, so the next round tries again: ${error}`);
   }
@@ -933,11 +1012,15 @@ async function passOnMarkedIssue(
 ): Promise<PassOutcome> {
   const branch = target.headRefName;
   const log = (line: string) => host.log(`  PR #${target.number} ${line}`);
-  const stop = (reason: string, output?: string, privateDetail?: string) => giveUp(target, host, reason, output, privateDetail);
+  const stop = (reason: string, output?: string, privateDetail?: string, firstOutput?: string) =>
+    giveUp(target, host, reason, output, privateDetail, firstOutput);
   let sandbox: sandcastle.Sandbox;
   try {
     sandbox = await host.createSandbox(branch);
   } catch (error) {
+    // A stall or a usage or time stop while the sandbox is made (the creation probe is limited too) isn't this PR's problem
+    // to hand back: it goes up uncounted, so the phase records it and the run ends red.
+    if (error instanceof UncountedStopError) throw error;
     // The sandbox and its worktree were left in place for a person, as the
     // finally below does for a worktree it finds tampered with, so the PR
     // says so too.
@@ -1076,14 +1159,27 @@ async function passOnMarkedIssue(
           unchangedGate = undefined;
           return known ?? (await runGate(sandbox, { base }));
         },
-        fix: (at, gateOutput) =>
-          runRoleInSandbox(
-            sandbox,
-            "gate-fixer",
-            { promptFile: "./.sandcastle/roles/gate-fixer.md", promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput) },
-            host.limits,
-          ),
+        fix: async (at, gateOutput) => {
+          try {
+            return await runRoleInSandbox(
+              sandbox,
+              "gate-fixer",
+              { promptFile: "./.sandcastle/roles/gate-fixer.md", promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput) },
+              host.limits,
+            );
+          } catch (error) {
+            // As the build's gate-fixer does: the sandbox's state, but not for the run's own stop.
+            if (!(error instanceof UncountedStopError)) await logSandboxState(sandbox, "the gate-fixer failed", log, (text) => logSafeGateOutput(text, host.publicError));
+            throw error;
+          }
+        },
         uncounted: (error) => error instanceof UncountedStopError,
+        // As the build's checkpoint does: a sandbox that no longer answers git gets no gate-fixer run.
+        alive: () => sandboxDown(sandbox, host.publicError),
+        // As the build's checkpoint does: the log goes to a public runner, so the first red run's output and a failed gate-fixer's error
+        // pass the host's secret check first.
+        scrub: (text) => logSafeGateOutput(text, host.publicError),
+        scrubLine: host.publicError,
       },
       log,
     );
@@ -1092,10 +1188,13 @@ async function passOnMarkedIssue(
     // moved or can't be read, as a gate that didn't pass, so the reason names
     // each and the quoted output says which.
     if (!gate.passed || gate.head === undefined) {
+      const attempts = gate.fixersRun ?? GATE_FIXER_ATTEMPTS;
       return stop(
-        `\`${GATE_COMMAND}\` didn't pass on a known, clean commit after ${GATE_FIXER_ATTEMPTS} gate-fixer attempts: it's ` +
+        `\`${GATE_COMMAND}\` didn't pass on a known, clean commit after ${attempts} gate-fixer ${attempts === 1 ? "attempt" : "attempts"}: it's ` +
           "red, the worktree isn't clean, or HEAD moved while it ran",
         gate.output,
+        undefined,
+        gate.firstOutput,
       );
     }
     const gated = gate.head;
@@ -1248,7 +1347,14 @@ async function passOnMarkedIssue(
         console.error(`  ⚠ PR #${target.number}: commenting on the tampered worktree failed: ${error}`);
       }
     } else {
-      await sandbox.close();
+      // A close the host gave up on is logged and ends the run red (closeAfterWork, exitAfterStall), and any close failure on a stalled
+      // sandbox (which may have a command still running) is only logged: the pull request or the StalledStepError that ended the work is
+      // what to report.
+      await closeAfterWork(sandbox, {
+        stalled: stalledStepOf(sandbox) !== undefined,
+        minutes: host.dockerCallMinutes,
+        log: (line) => console.error(`  ⚠ ${terminalText(line)}`),
+      });
     }
   }
 }
@@ -1279,15 +1385,21 @@ function answerThreads(actions: readonly ThreadAction[], host: PassHost, log: (l
   return failedWrites;
 }
 
+// The PRs whose pass stalled in this run: a stalled sandbox costs a whole step limit, so the run's later rounds don't pass
+// the same PR again (the next run does). A test passes its own set.
+const runStalledPrs = new Set<number>();
+
 // main.mts's pass phase: fetches every target's branch serially first (a
 // failed fetch skips that PR for the round, as prepareBranches'
 // lib/branches.mts#fetchMain-style fetches do), then runs runPass for each
 // PR whose issue is in `issues` (a hand-off PR needs none) with Promise.allSettled, logging each
-// outcome. A rejection is logged and the PR is swept again next round. Once
+// outcome. A rejection is logged and the PR is swept again next round (a stalled one, the next run). Once
 // every pass has settled, the first UncountedStopError among them (a usage
 // or time-budget stop from the follow-up role or the gate-fixer) is
 // rethrown, so main.mts's catch ends the run cleanly rather than the round
-// carrying on as if nothing had stopped it. Each settled pass reaches
+// carrying on as if nothing had stopped it. A StalledStepError is not
+// rethrown: it is that PR's failed pass (the other PRs, intake and the builds
+// carry on, and the run's later rounds skip that PR), recorded in `stalls` so the run still ends red. Each settled pass reaches
 // `report` first (passOutcomeEntry, or "stopped" for a stop), so a stop
 // doesn't lose the round's rows. Returns one outcome per target, in order; a
 // PR that wasn't passed on is "skipped".
@@ -1297,12 +1409,19 @@ export async function followUpPassPhase(
   base: string,
   host: PassHost = livePassHost,
   report: OutcomeReport = outcomeReport,
+  stalls: IntakeStopReport = intakeStopReport,
+  stalledPrs: Set<number> = runStalledPrs,
 ): Promise<PassOutcome[]> {
   const byNumber = new Map(issues.map((issue) => [issue.number, issue]));
   const outcomes: PassOutcome[] = targets.map(() => ({ kind: "skipped", reason: "not started" }));
   const started: { index: number; issue: SandcastleIssue }[] = [];
   // Serially, because concurrent fetches contend on the same ref lock.
   for (const [index, target] of targets.entries()) {
+    if (stalledPrs.has(target.number)) {
+      host.log(`  ⏹ PR #${target.number}: its pass stalled earlier in this run, so it's passed on until the next run.`);
+      outcomes[index] = { kind: "skipped", reason: "its pass stalled earlier in this run" };
+      continue;
+    }
     // A hand-off PR has no issue in the queue: the prompt sees the PR itself.
     const issue = target.handOff !== undefined ? handOffIssue(target) : byNumber.get(target.issueNumber);
     if (issue === undefined) {
@@ -1331,7 +1450,15 @@ export async function followUpPassPhase(
       continue;
     }
     const pr = { kind: "pr", number: target.number } as const;
-    if (result.reason instanceof UncountedStopError) {
+    const stall = stallStop(result.reason);
+    if (stall !== undefined) {
+      // One PR's stalled sandbox must not starve the queue: this pass failed like any other, but the run's later rounds skip
+      // the PR (stalledPrs), and the next run's sweep finds it again. The stall is recorded, so the run still ends red with the step named.
+      stalls.record(stall);
+      stalledPrs.add(target.number);
+      host.log(`  ⏹ PR #${target.number}: the follow-up pass stalled, so it's passed on until the next run: ${stall.firstError}`);
+      report.record({ ...pr, outcome: "stopped", detail: stall.firstError });
+    } else if (result.reason instanceof UncountedStopError) {
       stop ??= result.reason;
       host.log(`  ⏹ PR #${target.number}: the follow-up pass stopped uncounted: ${result.reason.message}`);
       report.record({ ...pr, outcome: "stopped", detail: result.reason.message });

@@ -2,13 +2,14 @@
 // from a single sandbox, so every role and the gate share the same worktree.
 // Nothing is merged locally: every change reaches main through a reviewed PR.
 
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import type { execFileSync } from "node:child_process";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { isRoleTimeout, runRoleInSandbox, uiEnabled } from "./agents.mts";
+import { isRoleTimeout, LEDGER_DENIED_TOOLS, REVIEWER_TOOLS, runRoleInSandbox, uiEnabled } from "./agents.mts";
 import { commitsAhead, fetchMain, headOfRef } from "./branches.mts";
-import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, textBlock, type Checkpoint } from "./checkpoint.mts";
+import { changedFiles, gateFailureComment, headOf, runCheckpoint, runGate, sandboxDown, textBlock, withoutRunnerCommands, type Checkpoint } from "./checkpoint.mts";
 import {
   BASE_BRANCH,
   BUILD_FAILED_MARKER,
@@ -19,20 +20,26 @@ import {
   type OptionalRole,
 } from "./config.mts";
 import { CHECK_PATHS, copyToWorktree, hooks } from "./repo-config.mts";
-import { TamperedWorktreeError, UncountedStopError } from "./errors.mts";
+import { StalledStepError, TamperedWorktreeError, UncountedStopError } from "./errors.mts";
 import { startFromMain as sweepStartFromMain } from "./follow-up.mts";
 import { claimBuildingLabel, releaseBuildingLabel } from "./building.mts";
-import { commentOnIssue, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
+import { commentOnIssue, fileIssueOnce, holdExistingPullRequest, markerComments, openPullRequest, repoName, type SandcastleIssue } from "./github.mts";
+import { advisoryIssueBody, openFindingsNote, runHostReview, type HostReviewHost, type HostReviewResult, type SkillFiles } from "./host-review.mts";
 import { handBackWorkflowChange, moveToLocalQueue, recordFailedAttempt, type WorkflowChange } from "./handback.mts";
-import { repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
+import { mainGitDir, repoGitDir, worktreeLinkProblems, worktreePathFor } from "./host-safety.mts";
 import { runLimits, type RunLimits } from "./limits.mts";
 import { architectPromptArgs, backendPromptArgs, gateFixerPromptArgs, issuePromptArgs, reviewerPromptArgs } from "./prompts.mts";
 import type { Outcome } from "./report.mts";
+import { isBlocking, mergeBase, pinLedgerGit, prepareRound, recordReview, renderAdvisories, takenIds } from "./review-ledger.mts";
 import { containsSandboxSecret, containsSecret, sandboxSecrets } from "./sandbox-env.mts";
 import { describeSecretMatch, firstSecretMatch, type SecretMatch } from "./scan.mts";
-import { git } from "./shell.mts";
+import { git, hostGitInvocation, runHostGit } from "./shell.mts";
 import { visibleLetters } from "./plain-text.mts";
 import { agentSandbox } from "./skills.mts";
+import { logSandboxState } from "./diagnostics.mts";
+import { buildLogs } from "./role-logs.mts";
+import { closeAfterWork, hostExecFileSync, withinDockerLimit } from "./host-limit.mts";
+import { PROBE_LIMIT_MINUTES, type StepLimitOptions, limitSandboxExec, stalledStepOf } from "./step-limit.mts";
 import { terminalText } from "./status.mts";
 
 // A conventional-commit prefix as scripts/check-pr-title.sh accepts it: a type,
@@ -64,7 +71,7 @@ export function prTitle(issue: Pick<SandcastleIssue, "number" | "title" | "label
 // Re-exported for the callers and tests that already import it from here.
 export { UncountedStopError };
 
-// Push the commit checkpoint 2's gate passed on to the issue branch, and open
+// Push the commit the last checkpoint's gate passed on (2, or 3 after a review round's fixes) to the issue branch, and open
 // (or reuse) the PR that closes the issue. Both run in the main checkout, with
 // git hooks off. Pushing from the worktree would run its pre-push hook: the
 // branch's own .github/hooks/pre-push, scripts/gate.sh and test code, files the
@@ -76,10 +83,14 @@ export { UncountedStopError };
 // work already there.
 //
 // A GitHub server error (a 5xx or "Internal Server Error" in git's or gh's
-// output) is transient, so the push and the PR creation are each tried up to
+// output) is transient, so the hold of an existing PR, the push and the PR creation are each tried up to
 // PUBLISH_RETRY_ATTEMPTS times in all, with backoff, before giving up. Any
 // other failure, such as a push that doesn't fast-forward, isn't retried: a
 // person needs to look at it regardless.
+//
+// `reviewNote` is the host-side review's note for the PR body, and `holdAsDraft` is true while a blocking finding is open, or when the review didn't finish: the PR is then created as a
+// draft with DRAFT_NOTE in its body. When it is false, a rerun leaves an existing draft a draft but takes DRAFT_NOTE out of its body (openPullRequest). `holdExisting` is what first turns a PR already open for the branch into a draft: it runs before the push, and a
+// failure throws HoldFailedError with nothing pushed.
 //
 // `docsFailed` is true when the planner picked the scribe for this issue and
 // its run failed. Unlike an architect, tester, backend or UI failure, that
@@ -106,9 +117,22 @@ export async function publish(
   checkChanges: readonly string[] = [],
   push: (branch: string, commit: string) => void = (pushBranch, pushCommit) =>
     void git("push", "--quiet", "origin", `${pushCommit}:refs/heads/${pushBranch}`),
-  createPullRequest: (branch: string, title: string, body: string) => string = openPullRequest,
+  createPullRequest: (branch: string, title: string, body: string, draft?: boolean) => string = (pushBranch, title, body, draft) =>
+    openHeldPullRequest(pushBranch, title, body, draft),
   wait: (ms: number) => Promise<void> = (ms) => sleep(ms),
+  reviewNote = "",
+  holdAsDraft = false,
+  holdExisting: (branch: string) => void = (heldBranch) => holdExistingPullRequest(heldBranch),
 ): Promise<string> {
+  // A PR already open for the branch (an earlier build's, opened ready) is made a draft before the new commits reach it, so PR Auto-Merge never sees
+  // a ready PR with commits the review hasn't cleared. A failure stops here, before the push.
+  if (holdAsDraft) {
+    try {
+      await retryOnServerError(() => holdExisting(branch), wait);
+    } catch (error) {
+      throw new HoldFailedError(branch, error);
+    }
+  }
   await retryOnServerError(() => push(branch, commit), wait);
   const reviewFailedNote = "⚠️ The review step failed, so no agent has reviewed this PR.";
   let description: string;
@@ -126,14 +150,56 @@ export async function publish(
     checkChanges.length > 0
       ? "\n\n⚠️ This branch changes files the gate and CI run, so it could have weakened a check. Look at these before merging:\n\n" +
         // File names are the agents' to choose, so they go in a fence that nothing in them can close.
-        textBlock(checkChanges.join("\n"))
+        textBlock(boundedCheckList(checkChanges))
       : "";
-  const body = `${PR_MARKER}\nCloses #${issue.number}\n\n${description}${docsNote}${checkNote}`;
+  // The host-side review's note (lib/host-review.mts): what it left open, or that it didn't finish.
+  const reviewSection = reviewNote === "" ? "" : `\n\n${reviewNote}`;
+  // Why the PR is a draft and what a person does about it: only a person accepts a finding, and only a person marks the PR ready.
+  const draftSection = holdAsDraft ? `\n\n${DRAFT_NOTE}` : "";
+  const head = `${PR_MARKER}\nCloses #${issue.number}\n\n`;
+  const tail = `${docsNote}${checkNote}${reviewSection}${draftSection}`;
+  // The marker, `Closes #n` and the notes are kept whole; the description gives way.
+  const room = PR_BODY_TOTAL_LIMIT - head.length - tail.length;
+  if (description.length > room) description = cutDescription(description, room);
+  const body = `${head}${description}${tail}`;
   // A retry after a create that GitHub carried out but answered with an error
   // finds that PR rather than open a second one: openPullRequest looks for an
   // open PR from the branch first.
-  return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body), wait);
+  return retryOnServerError(() => createPullRequest(branch, prTitle(issue), body, holdAsDraft), wait);
 }
+
+// The comment on the Sandcastle issue when the follow-up issue for the review's Advisory findings could not be filed: the findings (`advisories`, the body
+// checked for the public issue) are listed here so they are not lost with the runner.
+export function advisoryFilingFailedComment(prUrl: string, advisories: string): string {
+  return `Sandcastle published ${prUrl}, but it couldn't file the follow-up issue for the review's open Advisory findings, so they are listed here instead:\n\n${advisories}`;
+}
+
+// Thrown by publish when it could not turn the branch's open PR into a draft, so it pushed nothing. buildIssue tells a person so: the generic
+// "pushing failed" comment would send them to push the branch's commits onto a PR that is still ready.
+export class HoldFailedError extends Error {
+  constructor(branch: string, cause: unknown) {
+    super(`holding the open pull request for ${branch} as a draft failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "HoldFailedError";
+  }
+}
+
+// publish's live way to open the PR: openPullRequest with DRAFT_NOTE as the note to add when a held PR's body is a person's and is kept. It is a named function so a
+// test can pin that the note is passed: without it, a rerun that holds a PR with edited Review notes would make the PR a draft with nothing in the body saying why.
+export function openHeldPullRequest(
+  branch: string,
+  title: string,
+  body: string,
+  draft: boolean = false,
+  run?: typeof execFileSync,
+  repo?: string,
+): string {
+  return openPullRequest(branch, title, body, run, repo, draft, DRAFT_NOTE);
+}
+
+// The PR body's reason for a draft: open Critical or Warning findings, or security findings of any grade, the host's review left, or a review that didn't finish. It names the two steps only a person takes.
+export const DRAFT_NOTE =
+  "🚧 This PR is a draft because the local review left Critical or Warning findings (or a security finding of any grade) open, or didn't finish. A person decides each finding: " +
+  "fix it, or accept it with `scripts/review.sh accept <id> <reason>`; when the review didn't finish, run it again. Once nothing is open, mark the PR ready with `gh pr ready`.";
 
 // Whether a git or gh failure is GitHub's own server error, which a later
 // attempt may not hit. Matches what git and gh print for one ("remote: Internal
@@ -189,6 +255,57 @@ const DESIGN_NOTE_LIMIT = 60_000;
 // the marker, `Closes #n` and the warnings publish() adds around the
 // reviewer's sections.
 export const PR_BODY_LIMIT = 60_000;
+
+// The most a whole PR body may hold, leaving a margin under GitHub's 65,536. publish() cuts the reviewer's description to fit under it, and bounds the
+// check-file list, so the review's note and the warnings (none of which PR_BODY_LIMIT counts) can't push the body over and strand a pushed branch.
+export const PR_BODY_TOTAL_LIMIT = 65_000;
+const DESCRIPTION_CUT_NOTE = "\n\n… (the description was cut to fit a PR body)";
+// The check-file list in a PR body shows at most this many paths and characters, so it can't take the whole body.
+const CHECK_LIST_MAX_FILES = 100;
+const CHECK_LIST_MAX_CHARS = 20_000;
+
+export function boundedCheckList(files: readonly string[]): string {
+  const shown: string[] = [];
+  let chars = 0;
+  for (const file of files) {
+    if (shown.length >= CHECK_LIST_MAX_FILES || chars + file.length + 1 > CHECK_LIST_MAX_CHARS) break;
+    shown.push(file);
+    chars += file.length + 1;
+  }
+  const more = files.length - shown.length;
+  return more > 0 ? `${shown.join("\n")}\n… and ${more} more` : shown.join("\n");
+}
+
+// The fence (``` or ~~~, as long as it was opened) a cut text leaves open, or "" when it closes every fence it opens.
+function openFenceIn(text: string): string {
+  let open = "";
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!fence) continue;
+    const marks = fence[1]!;
+    if (open === "") {
+      if (marks[0] === "`" && fence[2]!.includes("`")) continue;
+      open = marks;
+    } else if (marks[0] === open[0] && marks.length >= open.length && fence[2]!.trim() === "") open = "";
+  }
+  return open;
+}
+
+// `description` cut to fit `room` characters, with the cut noted: on a character boundary, and with any code fence the cut left open closed (the closer is
+// counted in the room), so the notes after it don't render inside the block.
+export function cutDescription(description: string, room: number): string {
+  let reserve = 0;
+  for (let pass = 0; pass < 3; pass++) {
+    const kept = cutAtCharacter(description, Math.max(0, room - DESCRIPTION_CUT_NOTE.length - reserve));
+    const fence = openFenceIn(kept);
+    const closer = fence === "" ? "" : `\n${fence}`;
+    if (closer.length <= reserve || pass === 2) {
+      return `${kept}${closer.length <= reserve ? closer : ""}${DESCRIPTION_CUT_NOTE}`.slice(0, Math.max(room, DESCRIPTION_CUT_NOTE.length));
+    }
+    reserve = closer.length;
+  }
+  return DESCRIPTION_CUT_NOTE;
+}
 
 // A closing keyword and the issue it names, as GitHub reads one in a PR body:
 // #N, owner/repo#N or an issue URL. GitHub closes that issue when the PR
@@ -265,7 +382,7 @@ export function designNoteIn(body: string): string {
 export function latestDesignNote(
   issueNumber: number,
   repo: string = repoName(),
-  run: typeof execFileSync = execFileSync,
+  run: typeof execFileSync = hostExecFileSync,
   poster?: string,
 ): string | undefined {
   const latest = markerComments(issueNumber, "sandcastle:needs-human", DESIGN_MARKER, repo, run, poster).at(-1);
@@ -284,6 +401,8 @@ type DeveloperRole = "architect" | "tester" | "backend" | "ui";
 
 // What buildIssue needs from outside the pipeline; tests pass stubs.
 export type BuildHost = {
+  // How long the close of the build's sandbox may take, in minutes (host-limit.mts#DOCKER_CALL_LIMIT_MINUTES by default); for tests.
+  dockerCallMinutes?: number;
   createSandbox(branch: string): Promise<sandcastle.Sandbox>;
   // The commits on the branch that `base` doesn't have, counted by ref.
   commitsAhead(branch: string, base: string): number;
@@ -291,7 +410,7 @@ export type BuildHost = {
   // Records a failed build attempt (anything that stops the issue's
   // pipeline, see "When a role fails" in Blazor-Server's docs/plans/sandcastle-workflow.md):
   // posts the issue's `sandcastle:build-failed` comment with this attempt's
-  // number and `detail` (the tail of the gate output, or the role's error),
+  // number and `detail` (the tail of the last gate output and of the first red run's when it differs, or the role's error; see sameGateOutput in lib/checkpoint.mts),
   // and once that's the BUILD_FAILURE_CAPth attempt since
   // `sandcastle:needs-human` was last removed, hands the issue back instead
   // (see lib/handback.mts#recordFailedAttempt). Never called for a role run
@@ -328,6 +447,11 @@ export type BuildHost = {
   // (handing it back first) or a ref can't be deleted.
   startFromMain(issueNumber: number, branch: string, base: string): { pr: number; deleted: string[] } | undefined;
   publish: typeof publish;
+  // Files the follow-up issue for the review's open Advisory findings (its title and body), or reuses the host's own open one with that title and
+  // adds the body to it as a comment when neither its body nor a comment holds it yet (lib/github.mts#fileIssueOnce); a body a person edited is never replaced.
+  fileAdvisoryIssue(title: string, body: string): void;
+  // The backoff between retries of the filing above; tests replace it so they don't wait.
+  wait?(ms: number): Promise<void>;
   // Fetches origin/main and returns the commit it now names (see
   // lib/branches.mts#fetchMain), so a build can merge in what landed on main
   // while it ran. Throws when the fetch fails.
@@ -381,6 +505,28 @@ export type BuildHost = {
   // createBranchAt left when the push of the build's commits was then
   // refused. A branch that moved is left alone.
   deleteBranchAt(branch: string, commit: string): void;
+  // Runs the pre-push review's rounds on the host (lib/host-review.mts) once checkpoint 2's gate has passed on `startHead`, against
+  // `main`, and records them. Rejects with UncountedStopError for a usage-limit stop or a stalled sandbox; a time-budget stop or the review's time cap ends it as failed. Only the host records: the sandbox's agents
+  // get no shell on the ledger, no token and no scripts/review.sh.
+  localReview(args: LocalReviewArgs): Promise<HostReviewResult>;
+};
+
+// What localReview is given: the build's sandbox and the commit and main to review, plus what the review needs of the build.
+export type LocalReviewArgs = {
+  sandbox: sandcastle.Sandbox;
+  issue: Pick<SandcastleIssue, "number" | "title" | "body">;
+  branch: string;
+  main: string;
+  startHead: string;
+  // Checkpoint 3: the gate, with the gate-fixer while it is red, after a round's fixes. The commit it passed on, or undefined when it
+  // stayed red (nothing is recorded for it: the review ends as failed and the last gated commit is published).
+  gate(): Promise<string | undefined>;
+  // Hands the build the commits the review's roles made, for its report.
+  addCommits(commits: { sha: string }[]): void;
+  limits: RunLimits;
+  // How long the host waits for one reviewer or backend run before it gives up on it, in milliseconds; for tests. The default is the role's
+  // timeoutMinutes plus ROLE_RUN_GRACE_MINUTES (lib/agents.mts#roleBackstopMs).
+  backstopMs?: number;
 };
 
 // An error's text as it can go on a public issue: no colour codes, no
@@ -390,7 +536,7 @@ export function publicErrorText(text: string, holdsSecret: (text: string) => boo
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
     .trim();
-  return holdsSecret(cleaned) ? "(This text isn't shown: it looked like it held a secret. See the run log.)" : cleaned;
+  return holdsSecret(cleaned) ? "(This text isn't shown: it looked like it held a secret. It was withheld.)" : cleaned;
 }
 
 // The git arguments listing the .github/workflows/ files each commit from
@@ -470,6 +616,17 @@ const tamperedWorktreeComment = (branch: string) =>
   `Sandcastle stopped: the worktree for \`${branch}\` no longer points at this repository, so it was left for a ` +
   "person to look at. Don't run git in it.";
 
+// Whether nothing exists at the path: lstat says ENOENT. A dangling symlink exists, and any other lstat error (ENOTDIR, EACCES) is not "gone"
+// either, so the worktree check still sees them.
+export const worktreeIsGone = (worktreePath: string): boolean => {
+  try {
+    lstatSync(worktreePath);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+};
+
 const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktreePath, repoGitDir());
 
 // The live sandbox for `branch`, for a build and a follow-up pass
@@ -483,7 +640,21 @@ const worktreeProblems = (worktreePath: string) => worktreeLinkProblems(worktree
 // again before that close: Sandcastle's close() runs git in it, and one that
 // no longer points at this repository is left in place, with its sandbox, and
 // its problems added to the error, a TamperedWorktreeError for the caller to
-// report. A check that itself fails counts as a tampered worktree.
+// report. A check that itself fails counts as a tampered worktree. The sandbox
+// it returns runs every exec under a limit (lib/step-limit.mts), so a stalled
+// gate ends as exit code 124 with its name in the output (a red gate), and any other command that runs over throws
+// StalledStepError, as does every exec after it. The two git config commands that set the identity run first, on the
+// sandbox itself, and have none. The image needs `timeout` (GNU
+// coreutils), which the probe checks once, in the form every command takes, through its own one-minute limited
+// sandbox (so a Docker exec that never answers is a StalledStepError, not a hang): an
+// image without it is refused with a message that says so, rather than failing
+// every later command. The probe, and a limit the repo set badly, fail like
+// the identity step: a rejection or a refusal goes through the same worktree
+// check and close. `stepLimits` is for tests.
+//
+// The create runs under withinDockerLimit (stepLimits.dockerCallMinutes): a create Docker never answers is a StalledStepError, and a
+// sandbox it makes too late is closed once its worktree passes the check (a worktree that is gone from the path the host expects counts as
+// passing; one that fails it, whose check throws, or that is at any other path, is left in place with a warning). The close after a refusal is bounded the same way, and one the host gave up on ends the run red (closeAfterWork) while the setup error is still the one thrown.
 //
 // `create` (what makes the sandbox, once the worktree is checked),
 // `hostIdentity` (the host's git identity) and `checkWorktree` (the worktree
@@ -495,15 +666,47 @@ export async function createCheckedSandbox(
     sandcastle.createSandbox({ branch: name, sandbox: agentSandbox(), hooks, copyToWorktree }),
   hostIdentity: () => HostIdentity = liveHostIdentity,
   checkWorktree: (worktreePath: string) => string[] = worktreeProblems,
+  stepLimits: StepLimitOptions = {},
 ): Promise<sandcastle.Sandbox> {
   const existing = worktreePathFor(process.cwd(), branch);
   const problems = existsSync(existing) ? checkWorktree(existing) : [];
   if (problems.length > 0) {
     throw new Error(`the worktree left at ${existing} was tampered with: ${problems.join("; ")}`);
   }
-  const sandbox = await create(branch);
+  // Docker has no timeout of its own: a create that never answers stalls the step, and a sandbox it makes too late is closed if its worktree is
+  // sound (see below).
+  const sandbox = await withinDockerLimit("creating the sandbox", create(branch), stepLimits.dockerCallMinutes, (late) => {
+    // Closing runs git in the worktree, which the create's hooks may have redirected, so it gets the check a normal cleanup gets. One that
+    // fails the check, or the check itself failing, leaves the sandbox and its worktree in place. A worktree that is gone from the
+    // path the host expects has nothing to redirect, so its sandbox is closed: leaving it would only leak its container. Any other path (an
+    // empty one, one elsewhere) gets the check, which fails closed.
+    let tampered: string[];
+    try {
+      tampered = late.worktreePath === existing && worktreeIsGone(existing) ? [] : checkWorktree(late.worktreePath);
+    } catch (checkError) {
+      tampered = [`checking the worktree failed: ${checkError instanceof Error ? checkError.message : String(checkError)}`];
+    }
+    if (tampered.length > 0) {
+      console.error(`  ⚠ left the late sandbox at ${terminalText(late.worktreePath)} in place, as its worktree was tampered with: ${terminalText(tampered.join("; "))}`);
+      return;
+    }
+    void late.close().catch(() => undefined);
+  });
+  let limited: sandcastle.Sandbox;
   try {
     await setGitIdentity(sandbox, hostIdentity());
+    // The probe runs the form every later command takes (`timeout -k … sh -c …`), so an image whose `timeout` lacks
+    // an option, or has no `sh`, is refused here and not by every command after it. It goes through its own limited
+    // sandbox with a short limit, so a Docker exec that never answers stalls it on the host's backstop (a
+    // StalledStepError, which this catch rethrows) and doesn't hold sandbox creation for good.
+    const stepPrefix = `  ${terminalText(branch)}: `;
+    const probe = await limitSandboxExec(sandbox, { prefix: stepPrefix, commandMinutes: PROBE_LIMIT_MINUTES, ...stepLimits }).exec("true");
+    if (probe.exitCode !== 0) {
+      throw new Error("the sandbox image has no `timeout` command (GNU coreutils), which the step limits in lib/step-limit.mts need");
+    }
+    // Every later exec (the gate, the merge of main, the reads of git state) runs under a limit, so a stalled one ends the step.
+    // It throws on a limit the repo set badly, so it sits in the try: a throw there closes the sandbox like any other.
+    limited = limitSandboxExec(sandbox, { prefix: stepPrefix, ...stepLimits });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // The check itself can fail (the worktree gone, git failing). Then the
@@ -521,10 +724,16 @@ export async function createCheckedSandbox(
         sandbox.worktreePath,
       );
     }
-    await sandbox.close().catch(() => undefined);
+    // A close the host gave up on makes the run end red (closeAfterWork), as for any other close after work; any other close failure is
+    // only logged, and the setup error is the one thrown.
+    await closeAfterWork(sandbox, {
+      stalled: false,
+      minutes: stepLimits.dockerCallMinutes,
+      log: (line) => console.error(`  ⚠ closing the refused sandbox: ${terminalText(line)}`),
+    }).catch((closeError) => console.error(`  ⚠ closing the refused sandbox failed: ${terminalText(String(closeError))}`));
     throw error;
   }
-  return sandbox;
+  return limited;
 }
 
 // Whether origin's main is `commit` now, by its answer to git ls-remote. Only
@@ -563,6 +772,7 @@ const liveHost: BuildHost = {
   startFromMain: (issueNumber, branch, base) => sweepStartFromMain(issueNumber, branch, base),
   publicError: (error) => publicErrorText(String(error instanceof Error ? error.message : error), containsSandboxSecret),
   publish,
+  fileAdvisoryIssue: (title, body) => void fileIssueOnce(title, body),
   latestMain: fetchMain,
   isRemoteMain: (commit) => remoteMainIs(commit),
   worktreeProblems,
@@ -577,7 +787,123 @@ const liveHost: BuildHost = {
     moveToLocalQueue(issueNumber, branch, detail, change, createdAtBase),
   deleteBranchAt: (branch, commit) =>
     void git("push", "--quiet", `--force-with-lease=refs/heads/${branch}:${commit}`, "origin", `:refs/heads/${branch}`),
+  localReview: (args) => runLocalReview(args),
 };
+
+// The skill files the host-side review reads, from the main checkout and never the worktree: the worktree is the branch's, so a
+// branch could edit the Bar, a lens or the reviewer's instructions to go easy on itself.
+export function readSkillFiles(checkout: string = process.cwd()): SkillFiles {
+  const read = (path: string) => readFileSync(join(checkout, path), "utf8");
+  const skill = ".claude/skills/pre-push-review";
+  const severities = /^## Severities\n[\s\S]*?(?=^## |(?![\s\S]))/m.exec(read(`${skill}/SKILL.md`))?.[0];
+  if (severities === undefined) throw new Error(`${skill}/SKILL.md has no Severities section`);
+  let repoLenses: string | undefined;
+  try {
+    const own = read(".claude/skills/code-review/SKILL.md");
+    // Only a file that holds a lens table of the skill's shape: the repository's code-review skill may hold nothing of the kind.
+    if (/^\|\s*Lens\s*\|\s*Applies to\s*\|/im.test(own)) repoLenses = own;
+  } catch (error) {
+    // Only a missing file is "no code-review skill of its own", which is allowed: a file that can't be read would drop the repository's
+    // own lenses without a word, so that ends the review as failed instead.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return {
+    lenses: read(`${skill}/lenses.md`),
+    bar: read(`${skill}/review-bar.md`),
+    severities,
+    agentBody: read(".claude/agents/pre-push-reviewer.md").replace(/^---\n[\s\S]*?\n---\n/, ""),
+    ...(repoLenses === undefined ? {} : { repoLenses }),
+  };
+}
+
+// The host-side review's world for one build: the skill's files and the ledger from the main checkout, the reviewers and the backend
+// role in the build's sandbox. The host never runs the worktree's scripts/review.sh or its git: prepareRound and recordReview run in
+// the main checkout, on commits the sandbox made (the objects are shared), so no agent-written code runs on the host and no agent
+// reaches the ledger. The sandbox mounts an empty folder over .git/review and has no GitHub token.
+export function liveReviewHost(args: LocalReviewArgs, checkout: string = process.cwd()): HostReviewHost {
+  const { sandbox, issue, main, limits } = args;
+  const backstop = args.backstopMs === undefined ? {} : { backstopMs: args.backstopMs };
+  const runRel = `.sandcastle/work/${issue.number}/review`;
+  const outcomesFile = `${runRel}/outcomes.json`;
+  // The ledger's git commands run in the main checkout, whose .git agents can write: pinned to its own shared directory, whatever a
+  // commondir file says (lib/host-safety.mts).
+  const pin = () => pinLedgerGit(checkout, mainGitDir(checkout));
+  const baseOf = (head: string) => {
+    pin();
+    return mergeBase(checkout, main, head);
+  };
+  return {
+    readSkillFiles: () => readSkillFiles(checkout),
+    worktree: async () => {
+      const result = await sandbox.exec("git rev-parse --show-toplevel");
+      const path = result.stdout.trim();
+      if (result.exitCode !== 0 || !path.startsWith("/")) throw new Error("the sandbox's worktree path can't be read");
+      return path;
+    },
+    prepare: (opts) => {
+      pin();
+      return prepareRound(checkout, opts);
+    },
+    takenIds: (head) => takenIds(checkout, baseOf(head), head),
+    removeRunFile: async (path) => {
+      if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only remove under ${runRel}/, not ${path}`);
+      const removed = await sandbox.exec(`rm -f ${shellWord(path)}`);
+      if (removed.exitCode !== 0) throw new Error(`removing ${path} in the sandbox failed: ${removed.stderr.trim()}`);
+    },
+    writeRunFile: async (path, content) => {
+      // Only the run's own folder, which the sandbox git-ignores (.sandcastle/work/).
+      if (!path.startsWith(`${runRel}/`) || path.includes("..")) throw new Error(`the review may only write under ${runRel}/, not ${path}`);
+      // Base64, so the bytes git printed arrive as they are: a patch of a file that isn't UTF-8 would otherwise be rewritten in transit.
+      // An empty file is made without stdin: a command waiting on an empty stdin could hold the build until its limit.
+      const encoded = Buffer.from(content).toString("base64");
+      const written =
+        encoded === ""
+          ? await sandbox.exec(`mkdir -p ${shellWord(runRel)} && : > ${shellWord(path)}`)
+          : await sandbox.exec(`mkdir -p ${shellWord(runRel)} && base64 -d > ${shellWord(path)}`, { stdin: encoded });
+      if (written.exitCode !== 0) throw new Error(`writing ${path} in the sandbox failed: ${written.stderr.trim()}`);
+    },
+    runReviewer: async (_reviewer, prompt) => {
+      const run = await runRoleInSandbox(sandbox, "pre-push-reviewer", { prompt }, limits, {
+        tools: REVIEWER_TOOLS,
+        denied: LEDGER_DENIED_TOOLS,
+        strictMcp: true,
+        // Not the branch's .claude/settings.json: its hooks would run shell commands, with the sandbox's environment, in a run meant to hold no shell.
+        userSettingsOnly: true,
+      }, backstop);
+      return run.stdout;
+    },
+    runFixer: async (prompt) => {
+      // An earlier round's outcomes must not be read as this one's.
+      await sandbox.exec(`rm -f ${shellWord(outcomesFile)}`);
+      const run = await runRoleInSandbox(sandbox, "backend", { prompt }, limits, { denied: LEDGER_DENIED_TOOLS }, backstop);
+      args.addCommits(run.commits);
+    },
+    readOutcomes: async () => {
+      const read = await sandbox.exec(`cat ${shellWord(outcomesFile)} 2>/dev/null`);
+      return read.exitCode === 0 ? read.stdout : undefined;
+    },
+    head: () => headOf(sandbox),
+    changedFiles: (from, to) =>
+      runHostGit(checkout, hostGitInvocation(checkout, mainGitDir(checkout), ["diff", "--name-only", "-z", "--no-renames", from, to]))
+        .split("\0")
+        .filter((file) => file !== ""),
+    gate: () => args.gate(),
+    record: (input, at) =>
+      recordReview(checkout, baseOf(at.head), input, undefined, undefined, {
+        at,
+        onSecurity: (outcome) => {
+          for (const warning of outcome.warnings) console.error(`  ⚠ .security: ${terminalText(warning)}`);
+        },
+      }),
+    // The reviewers' and the backend role's words can reach a log line: made safe for the operator's terminal.
+    log: (line) => console.log(`  #${issue.number} ${terminalText(line)}`),
+  };
+}
+
+// The live local review of a built branch: the pre-push-review skill's rounds, run by the host over the build's sandbox.
+export function runLocalReview(args: LocalReviewArgs): Promise<HostReviewResult> {
+  return runHostReview(liveReviewHost(args), { issue: args.issue, branch: args.branch, main: args.main, startHead: args.startHead });
+}
 
 // `value` as one single-quoted shell word, for the commit and branch names
 // buildIssue puts in a sandbox command and the git identity setGitIdentity
@@ -597,8 +923,12 @@ function shellWord(value: string): string {
 // (checkpoint 2, on the reviewed commit when the merge conflicts or the merged
 // tree is red) before the branch is pushed and gets a pull request
 // that closes its issue. Returns the PR's URL, or undefined when a developer
-// run failed, the branch holds nothing to publish or a checkpoint's gate
-// stayed red. `publishFailed` is true only when the branch passed both
+// run failed, the branch holds nothing to publish or checkpoint 1's or 2's
+// gate stayed red. Between checkpoint 2 and the push the host runs the pre-push
+// review's rounds; a round that fixes something is followed by checkpoint 3,
+// and the last commit a checkpoint passed on is the one pushed (a red
+// checkpoint 3 doesn't stop the build: the review ends as failed and that
+// commit is published). `publishFailed` is true only when the branch passed its
 // checkpoints but publishing it still failed, so the caller's round summary can
 // tell that apart from a round that built nothing.
 //
@@ -639,6 +969,32 @@ export async function buildIssue(
 
 // What became of a build, for the run report (lib/report.mts).
 export type BuildOutcome = Extract<Outcome, "published" | "role failed" | "timed out" | "gate failed" | "not published">;
+
+// The most characters of one gate output line the host's log shows.
+const LOGGED_LINE_LIMIT = 500;
+
+// The first red gate run's output as lines safe for the host's log. The gate's
+// output is written by the branch's agents and the log is a terminal, and in
+// GitHub Actions a line that starts with `::` is a workflow command, so every
+// line is cleaned by terminalText first (before the secret check, so hidden
+// characters can't hide a token that is rebuilt afterwards), and the whole text
+// goes through `publicError`. Each line is then cleaned again, any `##[` in it is
+// changed (after the cleaning, so a hidden character can't split one that is
+// rebuilt, and before the cut, so the extra space is counted), and it is cut to
+// LOGGED_LINE_LIMIT characters (after the secret check, so the cut can't split a
+// token it has passed) and given a prefix no workflow command can start with.
+//
+// A final newline is dropped even when `publicError` doesn't trim, so the
+// caller's line count isn't spent on a blank line. terminalText folds runs of
+// whitespace into one space and trims each line, so the log is not byte for byte
+// what the gate printed.
+export function logSafeGateOutput(text: string, publicError: (text: string) => string): string {
+  const cleaned = text.replace(/\n$/, "").split("\n").map((line) => terminalText(line)).join("\n");
+  return publicError(cleaned)
+    .split("\n")
+    .map((line) => `    | ${[...withoutRunnerCommands(terminalText(line))].slice(0, LOGGED_LINE_LIMIT).join("")}`)
+    .join("\n");
+}
 
 // The detail of a build that ended because the branch holds no work to
 // publish.
@@ -689,6 +1045,13 @@ async function buildMarkedIssue(
   const unpublished = (outcome: BuildOutcome, detail: string): BuildResult =>
     ({ commits, prUrl: undefined, publishFailed: false, outcome, detail });
   const log = (line: string) => host.log(`  #${issue.number} ${line}`);
+  // The sandbox's disk, memory and process state in the log, after a role fails and before each gate. It never throws, and
+  // it runs under a limit of its own far below the sandbox's command limit (lib/diagnostics.mts), so a sandbox too broken to
+  // answer is a logged line and not a stalled sandbox. File and process names in it are written by agents, so it is cleaned
+  // like the gate's output.
+  const probeSandbox = (reason: string) => logSandboxState(sandbox, reason, log, (text) => logSafeGateOutput(text, host.publicError));
+  // The reviewer's log for this branch, so the run report's index of reviewer logs can say it belongs to this issue (lib/role-logs.mts).
+  buildLogs.add(issue.number, branch);
   const designNotePath = `.sandcastle/work/${issue.number}/design.md`;
   const prBodyPath = `.sandcastle/work/${issue.number}/pr-body.md`;
 
@@ -753,43 +1116,64 @@ async function buildMarkedIssue(
         : unpublished("role failed", `the ${role} failed`);
     }
     console.error(`  ✗ #${issue.number}: ${terminalText(logged ?? failure)}, so ${branch} isn't published.`);
+    await probeSandbox(failure);
     host.recordBuildFailure(issue.number, branch, developerFailureComment(failure, branch, error));
     return result;
   }
 
   // Run a gate checkpoint, with the gate-fixer while the gate is red. Returns
   // the commit the gate passed on. When it's still red past the fixer's
-  // attempts, nothing is published: the branch keeps its commits, and the
-  // issue's failed build attempt is recorded with the tail of the gate output.
+  // attempts at checkpoint 1 or 2, nothing is published: the branch keeps its
+  // commits, and the issue's failed build attempt is recorded with the tail of
+  // the last gate output, and of the first red run's when it differs (see sameGateOutput in lib/checkpoint.mts). Checkpoint 3 (the review's) records nothing: the earlier
+  // checkpoints' commit is published, so no comment may say it wasn't pushed
+  // and no attempt is spent on a build that published.
   // A gate-fixer run that stopped with UncountedStopError is rethrown.
-  async function gatePasses(checkpoint: Checkpoint): Promise<string | undefined> {
+  async function gatePasses(checkpoint: Checkpoint, mergedMain?: string): Promise<string | undefined> {
+    await probeSandbox(`before checkpoint ${checkpoint}`);
     const result = await runCheckpoint(
       checkpoint,
       {
-        gate: () => runGate(sandbox, { base }),
+        gate: () => runGate(sandbox, { base, ...(mergedMain === undefined ? {} : { mergedMain }) }),
         fix: async (at, gateOutput) => {
-          const fixer = await runRoleInSandbox(
-            sandbox,
-            "gate-fixer",
-            {
-              promptFile: "./.sandcastle/roles/gate-fixer.md",
-              promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput),
-            },
-            host.limits,
-          );
+          let fixer: sandcastle.SandboxRunResult;
+          try {
+            fixer = await runRoleInSandbox(
+              sandbox,
+              "gate-fixer",
+              {
+                promptFile: "./.sandcastle/roles/gate-fixer.md",
+                promptArgs: gateFixerPromptArgs(issue, branch, at, gateOutput),
+              },
+              host.limits,
+            );
+          } catch (error) {
+            // The state of the sandbox the failed gate-fixer leaves, as after any other role; runCheckpoint logs the error itself.
+            // Not for the run's own stop (usage or time), which says nothing about the sandbox.
+            if (!(error instanceof UncountedStopError)) await probeSandbox("the gate-fixer failed");
+            throw error;
+          }
           commits.push(...fixer.commits);
         },
         uncounted: (error) => error instanceof UncountedStopError,
+        alive: () => sandboxDown(sandbox, host.publicError),
+        scrub: (text) => logSafeGateOutput(text, host.publicError),
+        scrubLine: host.publicError,
       },
       log,
     );
     if (!result.passed || result.head === undefined) {
+      if (checkpoint === 3) {
+        console.error(`  ✗ #${issue.number}: the gate is still red at checkpoint 3, after the review's fixes: the last commit that passed is published.`);
+        return undefined;
+      }
       console.error(`  ✗ #${issue.number}: the gate is still red at checkpoint ${checkpoint}, so ${branch} isn't published.`);
       // The gate runs the branch's own scripts, which agents write, in the
       // sandbox that holds the Claude token, so its output is made safe to
       // post and its <!-- broken, like a role's error.
-      const output = host.publicError(result.output).replaceAll("<!--", BROKEN_COMMENT_OPEN);
-      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, output));
+      const safe = (text: string) => host.publicError(text).replaceAll("<!--", BROKEN_COMMENT_OPEN);
+      const first = result.firstOutput === undefined ? undefined : safe(result.firstOutput);
+      host.recordBuildFailure(issue.number, branch, gateFailureComment(checkpoint, branch, safe(result.output), { firstOutput: first, fixersRun: result.fixersRun }));
       return undefined;
     }
     return result.head;
@@ -890,6 +1274,7 @@ async function buildMarkedIssue(
     } catch (error) {
       if (error instanceof UncountedStopError) throw error;
       console.error(`  ⚠ #${issue.number}: scribe failed, publishing with a note: ${terminalText(String(error))}`);
+      await probeSandbox("the scribe failed");
     }
     return false;
   }
@@ -1155,12 +1540,77 @@ async function buildMarkedIssue(
       // say so in the PR, which gets a human review regardless.
       console.error(`  ⚠ #${issue.number}: reviewer failed, publishing unreviewed: ${terminalText(String(error))}`);
       reviewed = false;
+      await probeSandbox("the reviewer failed");
     }
 
     const checkpoint2 = await checkpoint2Passes();
     if (checkpoint2 === undefined) return unpublished("gate failed", "checkpoint 2");
-    const { gated } = checkpoint2;
+    let gated = checkpoint2.gated;
     const mergedMain = trustedMergedMain(checkpoint2.mergedMain);
+
+    // The pre-push review's rounds, on the host (lib/host-review.mts), on the commit checkpoint 2 passed on. A round that fixes
+    // something moves the branch on to a commit checkpoint 3 passes, and that commit is what is scanned and published. A usage-limit stop
+    // or a stalled sandbox (any UncountedStopError but the time budget's) leaves the branch for a later round; a review that can't finish, or that the time budget or its own cap ends, or whose fixes leave checkpoint 3 red, publishes the last gated commit with a note, as a draft.
+    let reviewNote = "";
+    let holdAsDraft = false;
+    // True when the hold is because the review didn't finish, not because it left findings: the hand-back comments then say the review didn't finish, and the one after a failed publish says to run it again.
+    let reviewUnfinished = false;
+    let advisories = "";
+    const review = await host.localReview({
+      sandbox,
+      issue: { number: issue.number, title: issue.title, body: issue.body },
+      branch,
+      main: checkpoint2.mergedMain ?? base,
+      startHead: gated,
+      gate: () => gatePasses(3, mergedMain),
+      addCommits: (made) => void commits.push(...made),
+      limits: host.limits,
+    });
+    if (review.status === "failed") {
+      console.error(`  ⚠ #${issue.number}: the local review failed (${terminalText(review.reason)}), publishing without a recorded review.`);
+      // The unfinished review's gated commit is published, not checkpoint 2's: earlier rounds' fixes passed checkpoint 3.
+      gated = review.head;
+      reviewNote = `⚠️ The local review didn't finish (${review.reason}), so this branch has no recorded review.`;
+      // It has not cleared the code, and PR Auto-Merge only merges ready PRs: the PR is held, and a person marks it ready after looking.
+      holdAsDraft = true;
+      reviewUnfinished = true;
+    } else {
+      gated = review.head;
+      // A line the host's public-text check would change, or that reads like a Review notes section, is left out on its own.
+      reviewNote = openFindingsNote(review.ledger, review.readPaths, (line) => host.publicError(line) === line && !visibleLetters(line).includes("reviewnotes"));
+      // The note holds only ids, severities and file paths, but a path comes from the branch: it goes out only if the host's public-text check leaves it
+      // as it is, a backstop behind the ledger's path shape and the note's length bounds.
+      if (reviewNote !== "" && host.publicError(reviewNote) !== reviewNote) {
+        log("the local review's open findings hold a path that isn't safe to publish, so the PR gets no note on them");
+        reviewNote = "";
+      }
+      // Only a person accepts a finding (scripts/review.sh accept) and marks the PR ready, so a blocking finding left open holds it as a draft.
+      holdAsDraft = review.ledger.findings.some(isBlocking);
+      // The open Advisory findings go to a follow-up issue, as the skill's step 9 files them, but only once the branch is published (below):
+      // the issue is public, so a branch the secret scan refuses or whose push fails gets none. Its text is a reviewer's, so it is held to the PR note's rules.
+      // Each finding's own line and its fields are checked (a branch named for review notes must not hide them all), and the whole body once more for what the header
+      // quotes, the branch name.
+      advisories = advisoryIssueBody(
+        review.ledger,
+        review.readPaths,
+        (line) => host.publicError(line) === line && !visibleLetters(line).includes("reviewnotes"),
+      );
+      // An empty body is also what a review with no open Advisory finding gives, so say when findings were open and none could be listed: none passed
+      // the checks on what goes in a public issue (hidden text, a link, a secret, a length bound, a path the review didn't read or that isn't plain file-name
+      // characters, a line that reads like a Review notes section), or the branch name failed them. Nothing else tells a person the follow-up issue was dropped.
+      if (advisories === "" && renderAdvisories(review.ledger) !== "") {
+        log("the local review's Advisory findings can't be listed (none passed the checks on what goes in a public issue), so no follow-up issue is filed for them");
+      }
+      if (advisories !== "" && host.publicError(advisories) !== advisories.trim()) {
+        log("the local review's Advisory findings hold text that isn't safe to publish, so no follow-up issue is filed for them");
+        advisories = "";
+      }
+    }
+    // Claude Review reads a "Review notes" section as the owner's accepted findings, so no note may pass for one, in any form.
+    if (visibleLetters(reviewNote).includes("reviewnotes")) {
+      log("the local review's note reads like a Review notes section, so the PR gets no note on it");
+      reviewNote = "";
+    }
 
     // The push is public, and the sandbox holds the Claude token or API key.
     // The comment doesn't say where the secret is, since the issue is public
@@ -1193,8 +1643,44 @@ async function buildMarkedIssue(
     const prBody = await reviewerPrBody();
     const checkChanges = await changedCheckFiles(gated, mergedMain);
     const branchAtBase = await triedCreatingBranchAtBase(gated);
+
+    // A step that stalled the sandbox during a read this build tolerates (the PR body, the changed files) still ends the
+    // build red, with the step named, rather than publishing past it.
+    const stalled = stalledStepOf(sandbox);
+    if (stalled !== undefined) throw new StalledStepError(`the step "${stalled}" didn't end at its limit, so ${branch} isn't published`);
     try {
-      const prUrl = await host.publish(issue, branch, gated, reviewed, docsFailed, prBody, checkChanges);
+      const prUrl = await host.publish(
+        issue,
+        branch,
+        gated,
+        reviewed,
+        docsFailed,
+        prBody,
+        checkChanges,
+        undefined,
+        undefined,
+        undefined,
+        reviewNote,
+        holdAsDraft,
+      );
+      // A failed filing never undoes the published PR.
+      if (advisories !== "") {
+        try {
+          await retryOnServerError(
+            () => host.fileAdvisoryIssue(`chore(review): Advisory review findings: ${branch}`, advisories),
+            host.wait ?? ((ms) => sleep(ms)),
+          );
+        } catch (error) {
+          console.error(`  ⚠ #${issue.number}: filing the follow-up issue for the Advisory findings failed: ${terminalText(String(error))}`);
+          // The ledger lives in the main checkout, which an Actions runner discards, so a findings list that isn't filed would be lost with it. The same
+          // text, already checked for the public issue, goes on the Sandcastle issue instead.
+          try {
+            host.commentOnIssue(issue.number, advisoryFilingFailedComment(prUrl, advisories));
+          } catch (commentError) {
+            console.error(`  ⚠ #${issue.number}: posting the Advisory findings on the issue failed too: ${terminalText(String(commentError))}`);
+          }
+        }
+      }
       return { commits, prUrl, publishFailed: false, outcome: "published", detail: prUrl };
     } catch (error) {
       console.error(`  ✗ #${issue.number}: publishing ${branch} failed: ${terminalText(String(error))}`);
@@ -1259,6 +1745,40 @@ async function buildMarkedIssue(
         };
       }
       const fence = "`".repeat(Math.max(3, ...[...detail.matchAll(/`+/g)].map((match) => match[0].length + 1)));
+      if (error instanceof HoldFailedError) {
+        host.commentOnIssue(
+          issue.number,
+          `Sandcastle couldn't publish \`${branch}\`: ${reviewUnfinished ? "the review didn't finish" : "the review left findings open"}, so its open pull request has to be a draft, and turning it into one ` +
+            "failed. Nothing was pushed, and that pull request may still be ready. A person needs to look at it: make it a draft " +
+            `with \`gh pr ready ${branch} --undo\` before pushing anything to \`${branch}\`, so PR Auto-Merge can't merge it.\n\n${fence}text\n${detail}\n${fence}`,
+        );
+        return {
+          commits,
+          prUrl: undefined,
+          publishFailed: true,
+          outcome: "not published",
+          detail: "turning its open pull request into a draft failed, so nothing was pushed",
+        };
+      }
+      if (holdAsDraft) {
+        // The hold ran before the push, so a pull request the branch already had is a draft now, with the body it had before; the failure came after.
+        host.commentOnIssue(
+          issue.number,
+          `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening or updating its pull request failed after the ` +
+            `${reviewUnfinished ? "review didn't finish" : "review left findings open"} and the pull request was held as a draft. The branch keeps its commits. A person needs to look at it. A pull ` +
+            `request from it may already be open as a draft, without the note saying why: find it with \`gh pr list --head ${branch}\` before opening ` +
+            `one, and do not mark it ready until ${reviewUnfinished ? "the review has been run again and nothing is open" : "each open finding is fixed or accepted (`scripts/review.sh accept <id> <reason>`)"}. If origin's ` +
+            `\`${branch}\` isn't at \`${gated}\`, the commit the gate passed, it still has to be pushed from its worktree, and if origin's branch has ` +
+            `commits the local one doesn't, the two need reconciling.\n\n${fence}text\n${detail}\n${fence}`,
+        );
+        return {
+          commits,
+          prUrl: undefined,
+          publishFailed: true,
+          outcome: "not published",
+          detail: "pushing it or opening its pull request failed after the pull request was held as a draft",
+        };
+      }
       host.commentOnIssue(
         issue.number,
         `Sandcastle couldn't publish \`${branch}\`: it passed the gate, but pushing it or opening its pull request ` +
@@ -1286,7 +1806,14 @@ async function buildMarkedIssue(
       console.error(`  ✗ #${issue.number}: left ${sandbox.worktreePath} and its sandbox in place: ${terminalText(problems.join("; "))}`);
       host.commentOnIssue(issue.number, tamperedWorktreeComment(branch));
     } else {
-      await sandbox.close();
+      // A close the host gave up on is logged and ends the run red (closeAfterWork, exitAfterStall), and any close failure on a stalled
+      // sandbox (which may have a command still running) is only logged: the pull request or the StalledStepError that ended the work is
+      // what to report.
+      await closeAfterWork(sandbox, {
+        stalled: stalledStepOf(sandbox) !== undefined,
+        minutes: host.dockerCallMinutes,
+        log: (line) => console.error(`  ⚠ ${terminalText(line)}`),
+      });
     }
   }
 }

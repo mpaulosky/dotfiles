@@ -36,7 +36,7 @@
 // file they can write, so protectHostGit() refuses a repository that has either
 // (worktreeConfigProblem, configIncludeProblem).
 
-import { execFileSync } from "node:child_process";
+import { hostExecFileSync } from "./host-limit.mts";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -98,7 +98,7 @@ export function repoGitDir(): string {
 // name a command (core.fsmonitor) for the host's next git command to run.
 // .git/config is mounted read-only (protectedGitMounts), but those files aren't.
 export function worktreeConfigProblem(gitDir: string): string | undefined {
-  const enabled = execFileSync("git", ["config", "--file", join(gitDir, "config"), "--type=bool", "--default", "false", "extensions.worktreeConfig"], {
+  const enabled = hostExecFileSync("git", ["config", "--file", join(gitDir, "config"), "--type=bool", "--default", "false", "extensions.worktreeConfig"], {
     encoding: "utf8",
     // git's stderr is captured, so a failure reaches the terminal only through the thrown message.
     stdio: ["ignore", "pipe", "pipe"],
@@ -136,7 +136,7 @@ export function configIncludeProblem(gitDir: string): string | undefined {
   const config = join(gitDir, "config");
   let output: string;
   try {
-    output = execFileSync("git", ["config", "--file", config, "--get-regexp", "-z", "^include(if\\..*)?\\.path$"], {
+    output = hostExecFileSync("git", ["config", "--file", config, "--get-regexp", "-z", "^include(if\\..*)?\\.path$"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });

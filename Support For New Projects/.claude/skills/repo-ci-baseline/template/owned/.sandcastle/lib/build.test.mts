@@ -2857,13 +2857,15 @@ describe("openHeldPullRequest", () => {
   });
 
   it("opens a new PR as a draft with the body it was given", () => {
-    const { calls, run } = gh(false, "");
-    const listOnly = ((cmd: string, args: readonly string[], options: { input?: unknown }) =>
-      args[1] === "list" ? "[]" : run(cmd, args, options)) as unknown as typeof execFileSync;
+    const calls: { args: readonly string[]; input: unknown }[] = [];
+    const run = ((_cmd: string, args: readonly string[], options: { input?: unknown }) => {
+      calls.push({ args, input: options.input });
+      return args[1] === "list" ? "[]" : "https://github.com/o/r/pull/9\n";
+    }) as unknown as typeof execFileSync;
 
-    openHeldPullRequest(branch, "Add search", "new body", true, listOnly, "o/r");
-    assert.ok(calls[0]!.args.includes("--draft"), calls[0]!.args.join(" "));
-    assert.equal(calls[0]!.input, "new body");
+    openHeldPullRequest(branch, "Add search", "new body", true, run, "o/r");
+    assert.ok(calls[1]!.args.includes("--draft"), calls[1]!.args.join(" "));
+    assert.equal(calls[1]!.input, "new body");
   });
 });
 

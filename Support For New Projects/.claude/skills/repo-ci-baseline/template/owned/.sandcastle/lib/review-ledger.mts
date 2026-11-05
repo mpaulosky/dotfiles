@@ -74,6 +74,7 @@ export const OWNED_PATHS = [
   ".claude/skills/pre-push-review/**",
   ".claude/skills/hardening-review/**",
   ".sandcastle/main.mts",
+  ".sandcastle/check.sh",
   ".sandcastle/status.mts",
   ".sandcastle/status.test.mts",
   ".sandcastle/lib/*.mts",
@@ -116,8 +117,9 @@ export const OWNED_PATHS = [
 // templates, whose front matter sets the labels and assignee of every issue
 // opened from them (a `Sandcastle` label would feed the unattended pipeline),
 // the reviewer agent, whose `tools:` front matter is what keeps reviewers
-// read-only, the two prompts that instruct the pipeline's judging roles, and
-// global.json, which sets the SDK and the msbuild-sdks a build runs.
+// read-only, the two prompts that instruct the pipeline's judging roles, the
+// local gate's .sandcastle/check.sh, whose watched paths and early exit decide
+// whether the Sandcastle check runs at all, and global.json, which sets the SDK and the msbuild-sdks a build runs.
 // The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
 // the READMEs under .security/ and .claude/skills/) are text. A re-Apply
 // overwrites them like any Owned file, but checkReview does not let a
@@ -132,6 +134,7 @@ export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
   ".claude/agents/pre-push-reviewer.md",
   ".sandcastle/critique-prompt.md",
   ".sandcastle/intake-prompt.md",
+  ".sandcastle/check.sh",
   "global.json",
 ]);
 

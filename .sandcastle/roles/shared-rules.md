@@ -7,7 +7,8 @@ the Template. `<skill>` below is `Support For New Projects/.claude/skills/repo-c
 
 - `<skill>/SKILL.md`, `<skill>/CONTEXT.md` (the domain language: Baseline, Template, Owned file, Seed file, Apply), `<skill>/references/` and `<skill>/docs/adr/` describe the
   Template and the decisions behind it.
-- The Template's files are under `<skill>/template/owned/` (Owned: Apply always overwrites a repo's copy) and `<skill>/template/seed/` (Seed: written only when a repo has none).
+- The Template's files are under `<skill>/template/owned/` (Owned: Apply overwrites a repo's copy, except a `.sandcastle/check.sh` the repo uses as its sandbox gate)
+  and `<skill>/template/seed/` (Seed: written only when a repo has none).
 - dotfiles carries copies of some Owned files at the repo root: `.github/workflows/claude-review.yml`, `.github/workflows/pr-automerge.yml`,
   `.github/workflows/pr-review-submitted.yml`, `.github/workflows/sandcastle.yml`,
   `.github/scripts/post_claude_review.py`, `.github/hooks/*`, `scripts/check-branch-name.sh` and the Owned files under `.sandcastle/`.

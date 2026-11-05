@@ -14,7 +14,8 @@ The single source of truth for the Baseline.
 _Avoid_: Copy set, scaffold, reference implementation
 
 **Owned file**:
-A Template file the Baseline controls outright; applying the Template always overwrites the repo's copy.
+A Template file the Baseline controls outright; applying the Template overwrites the repo's copy,
+except a `.sandcastle/check.sh` a repo uses as its sandbox gate, which Apply keeps and reports as a conflict.
 _Avoid_: Managed file, core file
 
 **Seed file**:

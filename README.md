@@ -97,7 +97,7 @@ rather than starting from the stock template. dotfiles runs Sandcastle too: its 
 no .NET, whose image carries the repo-ci-baseline skill's test tools instead of the SDK.
 
 The repo-ci-baseline Template now carries Sandcastle's shared files: its code (`main.mts`, `status.mts` and `lib/`), config, intake and
-critique prompts (Owned), and its per-repo values (`lib/repo-config.mts`), role prompts, Dockerfile, check and `package.json`
+critique prompts (Owned), and its per-repo values (`lib/repo-config.mts`), role prompts, Dockerfile, check-paths list and `package.json`
 (Seed). In a Baseline repo, create `.sandcastle/` and Apply again to get them. The skill's `references/sandcastle.md` says
 what each file is and how an existing Sandcastle repo migrates.
 

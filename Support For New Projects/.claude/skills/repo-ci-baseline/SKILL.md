@@ -10,7 +10,7 @@ Its single source of truth is `template/`: `apply.sh` copies it into a repo, and
 The vocabulary (Baseline, Template, Owned, Seed, Apply, Adapt, Standardize, Drift, Leftover) is in [CONTEXT.md](CONTEXT.md).
 Why it works this way is in [ADR 0001](docs/adr/0001-standardize-by-copying-a-template.md).
 
-- **Owned files** (`template/owned/`) are overwritten on every Apply, mode included.
+- **Owned files** (`template/owned/`) are overwritten on every Apply, mode included, except a `.sandcastle/check.sh` the repo uses as its sandbox gate, which Apply keeps and reports as a conflict.
   They carry no per-repo values.
 - **Seed files** (`template/seed/`) are written only where the repo has none, with `{{OWNER}}`, `{{REPO}}` and `{{SOLUTION}}` filled in.
   Per-repo CI setup goes in the Seed `.github/ci/prepare.sh`, which `ci.yml` calls; per-repo gate checks go in the Seed `.github/ci/gate-checks.sh`, which `scripts/gate.sh` calls.
@@ -86,7 +86,8 @@ Order across repos: `github/repos.txt`'s, the one list of the repos (retiring on
    - **One repo:** `reapply.sh --brings mpaulosky/dotfiles#<n>,#<n> <repo>` (what `rollout.sh` runs, and the way to retry a repo that failed)
      prepares the `chore/reapply-baseline` worktree, merges the remote branch and `main`, commits `apply.sh`'s output alone,
      pushes through the gate (which asks for a review when Apply writes the coverage threshold,
-     the hand-off rules, an issue template, the reviewer agent, a judging-role prompt or global.json), opens the re-Apply PR ready (or adds the commit to the open one) and requests Copilot;
+     the hand-off rules, an issue template, the reviewer agent, a judging-role prompt, the local gate's check.sh or global.json),
+     opens the re-Apply PR ready (or adds the commit to the open one) and requests Copilot;
      it records Copilot's ask on the PR when the request doesn't register, so Claude Review runs (a first re-Apply PR has the old PR Auto-Merge).
      Its header comment has the details; name the head it prints in thread replies.
    - **Land:** `land.sh <owner/repo#n>...` watches the PRs and acts on the landing decision until each PR and its release-blog PR land

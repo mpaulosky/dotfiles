@@ -3,7 +3,8 @@
 **Status:** accepted (mpaulosky/dotfiles#280); implemented in `template/owned/.sandcastle/`, `template/seed/.sandcastle/`, `apply.sh` and `test.sh`
 ([sandcastle.md](../../references/sandcastle.md)). Its decision to keep the rest of `lib/` and `main.mts` out is superseded by
 [ADR 0007](0007-sandcastle-code-is-owned-with-a-seed-repo-config.md), and its decision to keep `sandcastle.yml` out by
-[ADR 0009](0009-sandcastle-workflow-is-owned.md).
+[ADR 0009](0009-sandcastle-workflow-is-owned.md). Amended by mpaulosky/dotfiles#391: `.sandcastle/check.sh` is Owned, and a repo's extra
+watched paths are in the Seed `.sandcastle/check-paths.txt`.
 
 Seven repos carry a `.sandcastle/`, in two generations, and their settings have drifted: five `.env.example` variants, two `.gitignore`s,
 `test:sandcastle` against `check:sandcastle`, and a different Dockerfile in each.
@@ -13,12 +14,14 @@ The Template now carries one, split by the same rule as the rest of it (ADR 0001
 ## Decisions
 
 - **Owned:** `.sandcastle/tsconfig.json`, `.markdownlint-cli2.jsonc`, `.gitignore`, `.env.example`, `intake-prompt.md`, `critique-prompt.md`,
-  and `lib/host-safety.mts` and `lib/shell.mts` with their tests.
+  `check.sh` and `lib/host-safety.mts` and `lib/shell.mts` with their tests.
   These carry nothing about the repo, and the two modules import nothing but each other, so a repo can't break them through its own code.
   Keeping the host-safety guardrails identical everywhere is the point of owning them.
 - **Seed:** the role prompts (`roles/*.md`, `shared-rules.md` included), `plan-prompt.md`, `review-prompt.md`, `Dockerfile`, `CODING_STANDARDS.md`
-  and `check.sh` under `.sandcastle/`, and the root `package.json` and `pnpm-workspace.yaml`.
+  and `check-paths.txt` under `.sandcastle/`, and the root `package.json` and `pnpm-workspace.yaml`.
   Each one describes the repo (its stacks, test commands, docs, toolchain), so it's the repo's once written.
+  `check.sh` started as Seed and became Owned (mpaulosky/dotfiles#391): Blazor-Server and auth0-management-app had edited only its list of watched paths, which now lives in
+  `check-paths.txt`; the three older repos used the name for their sandbox gate, a different script that they rename before they Apply.
   mpaulosky/dotfiles#280 listed `roles/shared-rules.md` as Owned; it isn't, because it is the one file that describes the repo to every role.
 - **Superseded by ADR 0007: the rest of `lib/` and `main.mts` stay out of the Template for now.** Almost every module imports `lib/config.mts`, which holds
   per-repo values (labels, root copies, role models), so an Owned module would break whenever a repo's `config.mts` lacked a name it reads.

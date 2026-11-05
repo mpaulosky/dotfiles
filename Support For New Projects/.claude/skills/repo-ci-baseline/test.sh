@@ -123,7 +123,7 @@ shell_files=(
   "$owned/scripts/sync-copilot-review.sh" "$owned/scripts/tests/sync-copilot-review.test.sh"
   "$owned/scripts/watch-pr.sh" "$owned/scripts/tests/watch-pr.test.sh"
   "$owned/scripts/check-git-hooks.sh" "$owned/scripts/tests/check-git-hooks.test.sh" "$owned/scripts/review.sh"
-  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$seed/.sandcastle/check.sh"
+  "$seed/.github/ci/prepare.sh" "$seed/.github/ci/gate-checks.sh" "$owned/.sandcastle/check.sh"
   "$owned/.github/hooks/pre-commit" "$owned/.github/hooks/pre-push" "$owned/.github/hooks/post-checkout"
   "$owned/.github/hooks/tests/pre-commit.test.sh" "$owned/.github/hooks/tests/pre-push.test.sh"
 )
@@ -284,7 +284,7 @@ for file in .github/workflows/claude-review.yml .github/workflows/pr-automerge.y
   .claude/skills/hardening-review/references/triage.md .claude/skills/hardening-review/scripts/known_open.py \
   .claude/skills/hardening-review/scripts/mutate.py \
   .security/README.md \
-  .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/critique-prompt.md \
+  .sandcastle/.env.example .sandcastle/.gitignore .sandcastle/.markdownlint-cli2.jsonc .sandcastle/check.sh .sandcastle/critique-prompt.md \
   .sandcastle/intake-prompt.md .sandcastle/lib/agents.mts .sandcastle/lib/agents.test.mts .sandcastle/lib/branches.mts \
   .sandcastle/lib/branches.test.mts .sandcastle/lib/build.mts .sandcastle/lib/build.test.mts .sandcastle/lib/building.mts \
   .sandcastle/lib/building.test.mts .sandcastle/lib/checkpoint.mts .sandcastle/lib/checkpoint.test.mts .sandcastle/lib/config.mts \

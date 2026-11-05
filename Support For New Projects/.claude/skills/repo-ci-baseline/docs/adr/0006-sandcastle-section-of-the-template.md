@@ -3,7 +3,8 @@
 **Status:** accepted (mpaulosky/dotfiles#280); implemented in `template/owned/.sandcastle/`, `template/seed/.sandcastle/`, `apply.sh` and `test.sh`
 ([sandcastle.md](../../references/sandcastle.md)). Its decision to keep the rest of `lib/` and `main.mts` out is superseded by
 [ADR 0007](0007-sandcastle-code-is-owned-with-a-seed-repo-config.md), and its decision to keep `sandcastle.yml` out by
-[ADR 0009](0009-sandcastle-workflow-is-owned.md).
+[ADR 0009](0009-sandcastle-workflow-is-owned.md). Amended by mpaulosky/dotfiles#391: `.sandcastle/check.sh` is Owned, and a repo's extra
+watched paths are in the Seed `.sandcastle/check-paths.txt`.
 
 Seven repos carry a `.sandcastle/`, in two generations, and their settings have drifted: five `.env.example` variants, two `.gitignore`s,
 `test:sandcastle` against `check:sandcastle`, and a different Dockerfile in each.

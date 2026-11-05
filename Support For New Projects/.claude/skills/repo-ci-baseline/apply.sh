@@ -3,7 +3,8 @@
 #
 #   apply.sh [--dry-run] <target-repo>
 #
-# Owned files (template/owned) always overwrite the repo's copy, mode included. Seed files
+# Owned files (template/owned) overwrite the repo's copy, mode included, except a repo's own sandbox gate named
+# .sandcastle/check.sh, which is kept and reported as a conflict. Seed files
 # (template/seed) are written only where the repo has none, with {{OWNER}},
 # {{REPO}} and {{SOLUTION}} filled in. Then core.hooksPath is pointed at
 # .github/hooks. Nothing is ever deleted. Sandcastle's files (.sandcastle/, its
@@ -94,11 +95,22 @@ fi
 
 # .sandcastle/check.sh is Owned, but a repo whose GATE_COMMAND or GATE_SCRIPT names it uses it as its sandbox gate (IssueManager,
 # IssueTracker and TicketManager did). The Owned script only type-checks and tests .sandcastle/, so replacing the gate with it would
-# pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it.
+# pass the sandbox without the repo's lints, build and tests: Apply keeps that copy until the repo renames it. This fails closed: it reads
+# the repo-config.mts and the older config.mts, drops `//` comments, puts each `export` on a line of its own whatever the formatter did
+# to the statement (a value on the next line, a `;` inside the string, a type annotation), and keeps the copy when any GATE_COMMAND or
+# GATE_SCRIPT statement mentions check.sh as a path or a bare name. A false match only adds a conflict to report; a miss weakens the gate.
+gate_config_statements() {
+  local file nl=$'\n'
+  for file in "$target/.sandcastle/lib/repo-config.mts" "$target/.sandcastle/lib/config.mts"; do
+    if [[ -f "$file" ]]; then cat "$file"; fi
+  done | sed -E 's#(^|[[:space:]])//.*#\1#' | tr '\n' ' ' | sed -E "s/export[[:space:]]/\\${nl}&/g"
+}
 gate_check_kept=false
-if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" && -f "$target/.sandcastle/lib/repo-config.mts" ]] \
-  && grep -qE '^export[[:space:]]+(const|let)[[:space:]]+GATE_(COMMAND|SCRIPT)\b[^;]*\.sandcastle/check\.sh' "$target/.sandcastle/lib/repo-config.mts"; then
-  gate_check_kept=true
+if $with_sandcastle && [[ -f "$target/.sandcastle/check.sh" ]]; then
+  gate_statements="$(gate_config_statements)"
+  if grep -qE "^export[[:space:]]+(const|let)[[:space:]]+GATE_(COMMAND|SCRIPT)\\b.*(\\.sandcastle/|\\./|[[:space:]\"'\`])check\\.sh([^[:alnum:]_.-]|\$)" <<< "$gate_statements"; then
+    gate_check_kept=true
+  fi
 fi
 
 # ── Placeholder values ──────────────────────────────────────────────────────

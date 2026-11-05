@@ -66,19 +66,21 @@ check() { # check <name> <condition...>
   if "$@"; then pass "$name"; else fail "$name"; fi
 }
 not() { ! "$@"; }
+# A skipped check is a clean exit that never called pnpm: a script that crashed before pnpm would pass `not ran_check` alone.
+not_ran() { ! ran_check && [[ $STATUS -eq 0 ]]; }
 
 run_check
 check "with no merge base the check runs" ran_check
 
 run_check "$BASE"
 check "with nothing changed it exits 0 and runs nothing" test $STATUS -eq 0
-check "with nothing changed pnpm is not called" not ran_check
+check "with nothing changed pnpm is not called" not_ran
 
 git -C "$REPO" switch -q -c unrelated
 echo more >> "$REPO/docs/unrelated.md"
 git -C "$REPO" commit -qam "unrelated"
 run_check "$BASE"
-check "a change to a file the check doesn't read runs nothing" not ran_check
+check "a change to a file the check doesn't read runs nothing" not_ran
 check "a change to a file the check doesn't read exits 0" test $STATUS -eq 0
 git -C "$REPO" switch -q main
 
@@ -117,7 +119,7 @@ check "pnpm run check:sandcastle doesn't inherit GIT_DIR, GIT_WORK_TREE, GIT_IND
 
 run_check_in_hook "$BASE"
 check "with the variables set and nothing changed it exits 0" test $STATUS -eq 0
-check "with the variables set, the changed-files diff reads the repo it runs in, not GIT_DIR's" not ran_check
+check "with the variables set, the changed-files diff reads the repo it runs in, not GIT_DIR's" not_ran
 
 git -C "$REPO" switch -q -c hook-touch main
 echo more >> "$REPO/package.json"
@@ -156,13 +158,13 @@ touch_file() { # touch_file <path>: change it on a new branch and run the check 
 
 set_list '# a comment, then a blank line\n\nCLAUDE.md\n:(glob)docs/guides/**\n'
 run_check "$LISTBASE"
-check "with a paths list and nothing changed since it, nothing runs" not ran_check
+check "with a paths list and nothing changed since it, nothing runs" not_ran
 touch_file CLAUDE.md
 check "a change to CLAUDE.md, listed in check-paths.txt, runs the Sandcastle check" ran_check
 touch_file docs/guides/sub/a.md
 check "a change under a listed :(glob) path runs the Sandcastle check" ran_check
 touch_file docs/unrelated.md
-check "a file the list doesn't name runs nothing" not ran_check
+check "a file the list doesn't name runs nothing" not_ran
 
 set_list '# crlf\r\nCLAUDE.md\r\n'
 touch_file CLAUDE.md
@@ -182,9 +184,9 @@ check "a UTF-8 byte order mark before the first path is ignored" ran_check
 
 set_list '  #*\n\t\n   \n-dashed.md\n'
 touch_file '#notes.md'
-check "an indented comment names no path (#* would otherwise match #notes.md)" not ran_check
+check "an indented comment names no path (#* would otherwise match #notes.md)" not_ran
 touch_file docs/unrelated.md
-check "whitespace-only lines name no path (an empty pathspec would run the check)" not ran_check
+check "whitespace-only lines name no path (an empty pathspec would run the check)" not_ran
 touch_file -dashed.md
 check "a path beginning with - is watched" ran_check
 
@@ -196,6 +198,20 @@ check "a :^ line can't switch off the package.json check" ran_check
 touch_file .sandcastle/check-paths.txt
 check "a change to the list itself runs the check" ran_check
 
+# A list of exclude lines alone is "everything else" to git: it must not widen the watch to the whole repo.
+for only in ':(exclude)docs\n' ':^docs\n' ':!docs\n' ':(top,exclude)docs\n' ':(exclude,top)docs\n' '# note\n:(exclude)CLAUDE.md\n:^docs\n'; do
+  set_list "$only"
+  touch_file -dashed.md
+  check "a list of only exclude lines (${only%%\\n*}) watches nothing, so a change outside the excluded paths runs nothing" not_ran
+  touch_file package.json
+  check "a list of only exclude lines (${only%%\\n*}) leaves the built-in package.json check on" ran_check
+done
+set_list 'CLAUDE.md\n:(exclude)docs\n'
+touch_file docs/unrelated.md
+check "an exclude line beside a positive one still runs nothing for an unrelated change" not_ran
+touch_file CLAUDE.md
+check "an exclude line beside a positive one still watches the positive path" ran_check
+
 set_list ':(bogus)x\n'
 touch_file docs/unrelated.md
 check "an invalid pathspec runs the check rather than skipping it" ran_check
@@ -205,7 +221,7 @@ git -C "$REPO" add -A
 git -C "$REPO" commit -q -m "no list"
 LISTBASE="$(git -C "$REPO" rev-parse HEAD)"
 touch_file docs/unrelated.md
-check "with no check-paths.txt a file the check doesn't read runs nothing" not ran_check
+check "with no check-paths.txt a file the check doesn't read runs nothing" not_ran
 touch_file package.json
 check "with no check-paths.txt package.json still runs the check" ran_check
 
@@ -225,6 +241,16 @@ check "run from a subfolder, a change to package.json runs the check" ran_check
 run_check_from "$WORK" "$REPO/.sandcastle/check.sh" "$LISTBASE"
 check "run by absolute path from outside the repo, a change to package.json runs the check" ran_check
 git -C "$REPO" switch -q main
+
+# When git can't say where the repo's top is, the script stops rather than diffing and running pnpm in the caller's folder.
+mkdir -p "$WORK/failbin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/failbin/git"
+chmod +x "$WORK/failbin/git"
+: > "$LOG"
+OUTPUT="$(cd "$WORK" && PATH="$WORK/failbin:$STUBS:$PATH" bash "$REPO/.sandcastle/check.sh" "$LISTBASE" 2>&1)"
+STATUS=$?
+check "when git can't find the repo's top the script fails" test $STATUS -ne 0
+check "when git can't find the repo's top pnpm is not called" not ran_check
 
 # The Seed list ships with comments only: a pathspec there would widen every repo's watch list.
 SEED_LIST="$SKILL_DIR/template/seed/.sandcastle/check-paths.txt"

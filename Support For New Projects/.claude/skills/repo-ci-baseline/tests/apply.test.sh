@@ -331,7 +331,10 @@ printf '#!/usr/bin/env bash\necho owned\n' > "$skill/template/owned/.sandcastle/
 chmod +x "$skill/template/owned/.sandcastle/check.sh"
 n=0
 for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/check.sh";' \
-  'export  let GATE_COMMAND = "bash .sandcastle/check.sh";'; do
+  'export  let GATE_COMMAND = "bash .sandcastle/check.sh";' \
+  $'export const GATE_COMMAND =\n  "bash .sandcastle/check.sh";' 'export const GATE_COMMAND = "pnpm lint; .sandcastle/check.sh";' \
+  'export const GATE_SCRIPT: string = ".sandcastle/check.sh";' 'export const GATE_COMMAND = "cd .sandcastle && ./check.sh";' \
+  'export const A = "x"; export const GATE_SCRIPT = ".sandcastle/check.sh";'; do
   n=$((n + 1))
   repo="$work/gate check $n"
   new_repo "$repo"
@@ -347,7 +350,9 @@ for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export cons
   check "gate check ($n): a dry run says it too" 'grep -q "check.sh is Owned.*rename" <<< "$dry"'
 done
 n=0
-for config in '// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'export const ROLE_AGENTS = {};'; do
+for config in '// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_SCRIPT = ".sandcastle/sandbox-gate.sh";' 'export const ROLE_AGENTS = {};' \
+  'export const GATE_COMMAND = ".sandcastle/check.sh.bak";' 'export const GATE_COMMAND = ".sandcastle/my-check.sh";' \
+  $'// .sandcastle/check.sh\nexport const GATE_COMMAND = "x";' 'export const NOTE = ".sandcastle/check.sh";'; do
   n=$((n + 1))
   repo="$work/gate check other $n"
   new_repo "$repo"
@@ -360,6 +365,18 @@ for config in '// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export co
   check "gate check other ($n): the Owned check.sh replaces the copy" 'grep -q "echo owned" "$repo/.sandcastle/check.sh"'
   check "gate check other ($n): no rename warning" '! grep -q "check.sh is Owned" <<< "$out"'
 done
+
+# An older repo has no repo-config.mts yet (the Seed brings it) and names its sandbox gate in lib/config.mts: kept too.
+repo="$work/gate check old config"
+new_repo "$repo"
+mkdir -p "$repo/.sandcastle/lib"
+printf 'export const GATE_COMMAND = "bash .sandcastle/check.sh";\n' > "$repo/.sandcastle/lib/config.mts"
+printf '#!/usr/bin/env bash\necho sandbox gate\n' > "$repo/.sandcastle/check.sh"
+commit_all "$repo" "init"
+git_q -C "$repo" switch -q -c chore/standardize-baseline
+out="$("$apply" "$repo")"
+check "gate check (old config.mts): the repo's sandbox gate is kept" 'grep -q "sandbox gate" "$repo/.sandcastle/check.sh"'
+check "gate check (old config.mts): the report says to rename it" 'grep -q "check.sh is Owned.*rename" <<< "$out"'
 
 echo "apply.test.sh: $pass passed, $failed failed"
 [[ $failed -eq 0 ]]

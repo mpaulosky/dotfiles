@@ -11,8 +11,8 @@ The pipeline's per-repo values sit in one Seed file, `lib/repo-config.mts`, so t
 
 - Every Sandcastle repo type-checks with the same `tsconfig.json`, lints its prompts with the same rules, ignores the same run output, and documents the same `.env` settings.
 - The pipeline's code (`main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`), the intake and critique prompts, and the host-safety
-  guardrails (`lib/host-safety.mts`, `lib/shell.mts`) are identical everywhere.
-- A new repo starts from the same role prompts, Dockerfile, check and `package.json` scripts (`sandcastle`, `sandcastle:status` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`).
+  guardrails (`lib/host-safety.mts`, `lib/shell.mts`) are identical everywhere, as is `check.sh`, the local gate's Sandcastle check.
+- A new repo starts from the same role prompts, Dockerfile, check-paths list and `package.json` scripts (`sandcastle`, `sandcastle:status` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`).
 
 ## Owned files
 
@@ -344,9 +344,11 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
 `.sandcastle/check.sh` is Owned, so Apply refreshes it: the unset of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` and the review paths arrive with it.
 A repo that had edited its copy's list of watched paths (Blazor-Server and auth0-management-app) moves those paths, one per line, into the Seed `.sandcastle/check-paths.txt` before it Applies.
 A repo whose `check.sh` is its sandbox gate (the three older repos) renames it first and points `GATE_COMMAND` and `GATE_SCRIPT` at the new name (step 8).
-Apply keeps a `.sandcastle/check.sh` that either names,
+Apply keeps a `.sandcastle/check.sh` that `GATE_COMMAND` or `GATE_SCRIPT` names,
+in `lib/repo-config.mts` or the older `lib/config.mts`, however the statement is wrapped,
 and reports it as a known conflict with the rename to make, since the Owned script would otherwise replace the gate and pass it without the repo's lints and tests.
-The list is read as written: a line is a git pathspec, and an `:(exclude)` line only trims the list, never the Template's own paths.
+The list is read as written: a line is a git pathspec, and an `:(exclude)` line only trims the list's other lines, never the Template's own paths.
+A list of exclude lines alone is treated as empty, since git would read it as "everything else".
 
 Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES
 list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and

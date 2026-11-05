@@ -6,7 +6,9 @@
 # A repo adds the other files its own tests read in .sandcastle/check-paths.txt (Seed):
 # one git pathspec per line, surrounding whitespace ignored, blank lines and lines starting
 # with # skipped (a # after a path is part of it). The list only adds to the built-in paths:
-# the two are diffed separately, so an :(exclude) or :^ line can't remove one of them.
+# the two are diffed separately, so an :(exclude) or :^ line can't remove one of them. An exclude
+# line only trims the list's other lines; git reads a list of exclude lines alone as "everything
+# else", so such a list is treated as empty rather than watching the whole repo.
 #
 #   .sandcastle/check.sh <merge-base>
 set -euo pipefail
@@ -17,11 +19,14 @@ base="${1-}"
 here="$(cd "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 extra="$here/check-paths.txt"
 # Pathspecs and `pnpm run` are relative to the repo root, wherever this is run from.
-cd "$(git -C "$here" rev-parse --show-toplevel)"
+root="$(git -C "$here" rev-parse --show-toplevel)"
+cd "$root"
 
 paths=(.sandcastle package.json ':(glob)pnpm-*.yaml'
   scripts/review.sh .claude/skills/pre-push-review .claude/skills/hardening-review .claude/agents/pre-push-reviewer.md .github/workflows/claude-review.yml)
 listed=()
+positive=0
+exclude='^:(\((.*,)?exclude(,.*)?\)|[!^])'
 if [[ -f "$extra" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
@@ -30,8 +35,10 @@ if [[ -f "$extra" ]]; then
     line="${line%"${line##*[![:space:]]}"}"
     [[ -z "$line" || "$line" == \#* ]] && continue
     listed+=("$line")
+    [[ "$line" =~ $exclude ]] || positive=$((positive + 1))
   done < "$extra"
 fi
+[[ $positive -gt 0 ]] || listed=()
 
 unchanged() { git diff --quiet --no-renames "$base" HEAD -- "$@"; }
 # A pathspec git rejects makes unchanged fail, so the check runs rather than being skipped.

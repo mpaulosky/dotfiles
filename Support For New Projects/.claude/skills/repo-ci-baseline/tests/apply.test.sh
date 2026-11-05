@@ -343,6 +343,7 @@ for config in 'export const GATE_COMMAND = ".sandcastle/check.sh";' 'export cons
   'export const GATE_SCRIPT = "check.sh";' "export const GATE_SCRIPT = 'check.sh';" 'export const GATE_SCRIPT = `check.sh`;' 'export const GATE_COMMAND = "cd .sandcastle && bash check.sh";' \
   $'/* the gate */ export const GATE_COMMAND = ".sandcastle/check.sh"; /* x */' $'export const GATE_COMMAND = ".sandcastle/check.sh"\nexport const A = 1' \
   $'export const WATCH = ["src/*.ts", "**/*"];\nexport const GATE_COMMAND = "eslint \'src/**/*.ts\' && .sandcastle/check.sh"; /** The gate. */' \
+  $'/* export const GATE_COMMAND = ".sandcastle/check.sh"; */' $'/**\n * GATE_SCRIPT: .sandcastle/check.sh */' \
   $'/* see // here */ export const GATE_COMMAND = ".sandcastle/check.sh";' $'// a note\nexport const GATE_COMMAND = ".sandcastle/check.sh";' \
   $'// export const GATE_SCRIPT = ".sandcastle/check.sh";' 'export const GATE_COMMAND = "x"; // formerly .sandcastle/check.sh' \
   $'export const GATE_COMMAND = "x";\nexport const CHECKS = [".sandcastle/check.sh"];\nexport const B = 1' \

@@ -80,7 +80,8 @@ The Owned prompts keep every Sandcastle `{{NAME}}` (`{{SHARED_RULES}}`, `{{REPO_
 that names the UI files: the components, pages, markup, layout and styling, their tests, and any rule for them.
 The host fills in `{{UI_ROLE}}` in `plan-prompt.md` with the planner's `ui` bullet when the repo opted in (`lib/prompts.mts#plannerPromptArgs`),
 and with nothing when it didn't; it fills in `backend.md`'s `{{UI_DEVELOPER}}` too, which tells the developer to leave the UI files the shared rules name to the UI developer.
-`config.test.mts` fails when a repo has the entry but lacks `roles/ui.md`, `backend.md`'s `{{UI_DEVELOPER}}` or `plan-prompt.md`'s `{{UI_ROLE}}`.
+`config.test.mts` fails when a repo has the entry but lacks `roles/ui.md`, `backend.md`'s `{{UI_DEVELOPER}}` or `plan-prompt.md`'s `{{UI_ROLE}}`,
+or when `roles/shared-rules.md` has no "UI developer" heading or the section holds only a comment (the Seed's state), so a repo that opts in must write the section.
 `ui` is not in `ROLES`, so a `repo-config.mts` written before it existed still type-checks; without the entry
 `lib/agents.mts#uiEnabled` is false, and the planner's `ui` pick and the fallback "every optional role" both leave it out.
 With it, the role runs after the developer.

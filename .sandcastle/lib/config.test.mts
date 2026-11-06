@@ -67,12 +67,18 @@ describe("ROLE_AGENTS", () => {
     assert.match(readFileSync(file("roles/backend.md"), "utf8"), /\{\{UI_DEVELOPER\}\}/);
     assert.match(readFileSync(file("plan-prompt.md"), "utf8"), /\{\{UI_ROLE\}\}/, "plan-prompt.md is missing {{UI_ROLE}}, where the host puts the planner's ui bullet");
     // The planner's bullet, backend.md and roles/ui.md all send the reader to the shared rules for which files are the UI developer's. The file is
-    // the repo's own Seed, so only the section's heading is checked, not its wording.
-    assert.match(
-      readFileSync(file("roles/shared-rules.md"), "utf8"),
-      /^#{1,6}\s+UI developer\s*$/m,
-      'roles/shared-rules.md has no "## UI developer" section: add one that names the UI files, or the developer and the ui role each leave them to the other',
-    );
+    // the repo's own Seed, so only that the section exists and has text of its own is checked, not its wording: the Seed ships the heading with
+    // only a comment under it, which a repo that opted in and edited nothing must not pass.
+    // The section ends at the next heading of its own level or a higher one, so sub-headings under it are part of it.
+    const rules = visibleMarkdown(readFileSync(file("roles/shared-rules.md"), "utf8"));
+    const heading = /^ {0,3}(#{1,6})\s+UI developer\s*$/m.exec(rules);
+
+    assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section outside a comment or an unclosed code fence (either hides everything after it): add one that names the UI files, or the developer and the ui role each leave them to the other');
+
+    const afterHeading = rules.slice(heading.index + heading[0].length);
+    const body = (afterHeading.split(new RegExp(`^ {0,3}#{1,${heading[1]!.length}}\\s`, "m"))[0] ?? "").trim();
+
+    assert.notEqual(body, "", 'roles/shared-rules.md\'s "## UI developer" section has only a comment: replace it with the UI files the ui role builds');
   });
 });
 
@@ -508,3 +514,66 @@ describe("the PR watcher", () => {
     assert.equal(wouldSkip("Look at <!-- sandcastle:give-up --> in the log."), 1);
   });
 });
+
+// The text of a Markdown file as a reader sees it, for the one check above: a comment that opens a line (as the Seed's does) is dropped up to the
+// line holding its "-->", an unclosed one running to the end of the file; a fenced block that holds text is replaced by "X", an unclosed one too,
+// since it runs to the end, and an empty one by nothing; and every other complete comment on a line is dropped, wherever it sits, a code span's
+// included. What is left, an unclosed "<!--" after other text or inside a code span among it, is text as written, so it never hides the heading
+// after it. Read line by line, so a "#" line inside a comment or a fence is never taken for a heading.
+function visibleMarkdown(markdown: string): string {
+  const out: string[] = [];
+  let fence: RegExp | undefined;
+  let fenceHasText = false;
+  let inComment = false;
+
+  for (const line of markdown.split(/\r?\n/)) {
+    if (fence) {
+      if (fence.test(line)) {
+        // An empty fence shows nothing, so only one with text counts as text.
+        if (fenceHasText) out.push("X");
+        fence = undefined;
+      } else if (line.trim() !== "") {
+        fenceHasText = true;
+      }
+      continue;
+    }
+
+    let rest = line;
+    if (inComment) {
+      const end = rest.indexOf("-->");
+      if (end === -1) continue;
+      inComment = false;
+      // The block ends on the line that holds "-->", so a "<!--" after it on that line opens nothing.
+      rest = rest.slice(end + 3);
+    } else {
+      const opener = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      // A backtick fence's info string holds no backtick, or the line is a code span.
+      if (opener && !(opener[1]!.startsWith("`") && opener[2]!.includes("`"))) {
+        const marker = opener[1]![0]!;
+        fence = new RegExp(`^ {0,3}\\${marker}{${opener[1]!.length},}\\s*$`);
+        fenceHasText = false;
+        continue;
+      }
+
+      const comment = /^ {0,3}<!--/.exec(line);
+      if (comment) {
+        // The close may overlap the opener, as in "<!-->", a complete comment of its own.
+        const end = line.indexOf("-->", comment[0].length - 2);
+        if (end === -1) {
+          inComment = true;
+          rest = "";
+        } else {
+          rest = line.slice(end + 3);
+        }
+      }
+    }
+
+    // A line that shows only comments shows nothing.
+    out.push(rest.replace(/<!--.*?-->/g, ""));
+  }
+
+  // A fence still open at the end runs to the end of the file, and what it held is shown.
+  if (fence && fenceHasText) out.push("X");
+
+  return out.join("\n");
+}

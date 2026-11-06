@@ -44,18 +44,21 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   `template/owned/`). A deleted Owned file, a symlink, a submodule, a file of the repo's own, a Seed file the re-Apply writes because the repo lacked it, or one of
   the Owned files that carry behaviour (`REVIEWED_ON_REAPPLY`: `.github/ci/coverage-threshold`, which ci.yml enforces at any value,
   `.claude/rules/sandcastle-hand-off.md`, which loads into every session, the three `.github/ISSUE_TEMPLATE/` files, whose front matter sets labels and assignees,
-  `.claude/agents/pre-push-reviewer.md`, whose `tools:` front matter keeps reviewers read-only, `.sandcastle/critique-prompt.md` and `intake-prompt.md`,
+  `.claude/agents/pre-push-reviewer.md`, whose `tools:` front matter keeps reviewers read-only, the `pre-push-review` skill's `SKILL.md`, `lenses.md` and `review-bar.md`,
+  which the host reads into the unattended reviewers' prompts (the bar, the lenses and the severities), `.sandcastle/critique-prompt.md` and `intake-prompt.md`,
   and `plan-prompt.md`, `review-prompt.md` and the role prompts under `.sandcastle/roles/`
   (`architect.md`, `backend.md`, `tester.md`, `follow-up.md`, `gate-fixer.md`, `scribe.md` and `ui.md`), which instruct the
   pipeline's roles, `.sandcastle/check.sh`, whose watched paths decide whether the Sandcastle check runs,
   and `global.json`, which sets the SDK and msbuild-sdks a build runs)
   needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files.
   The rest stay exempt on purpose: the workflows, hooks, scripts and `lib/` modules (and their tests) are linted and tested by the Template's own gate
-  (actionlint, zizmor, shellcheck, pytest, `node --test`, `tsc`), so a review in the repo would only raise findings nobody there may fix; the two review skills and
-  the `.github/instructions/` files are text a person's own session reads, not a prompt for an unattended role. The exemption still judges a path, not bytes, and is
-  a process aid, not a security boundary. A new Owned file is exempt only by a decision: dotfiles' `owned-paths.test.mts` fails until a single-file pattern is
-  classified (`REVIEWED_ON_REAPPLY` or its audited exempt list) and until a file under an exempt glob is the kind that glob's entry allows. A re-Apply
-  that writes one (a repo whose `coverage-threshold` isn't already `80`, or that lacks the file, gets it from its first one) is refused at `reapply.sh`'s first
+  (actionlint, zizmor, shellcheck, pytest, `node --test`, `tsc`), so a review in the repo would only raise findings nobody there may fix; the `hardening-review` skill is
+  text a person's own session reads, plus two `.py` scripts that pytest covers, and the `.github/instructions/` files steer Copilot's review and commit messages:
+  none of them is a prompt for an unattended role.
+  The exemption still judges a path, not bytes, and is a process aid, not a security boundary. A new Owned file is exempt only by a decision: dotfiles'
+  `owned-paths.test.mts` fails until a single-file pattern is classified (`REVIEWED_ON_REAPPLY` or its audited exempt list), and until a file under a glob is one the glob's
+  entry lists (the workflows, the instructions and `lib/`) or the kind it allows (hooks, scripts, `hardening-review/`, `scripts/tests/`). A re-Apply
+  that writes one of the reviewed files (a repo whose `coverage-threshold` isn't already `80`, or that lacks the file, gets it from its first one) is refused at `reapply.sh`'s first
   push, which leaves the Apply commit on `chore/reapply-baseline` unpushed. Review it in that worktree with `/pre-push-review`, then run `reapply.sh` again: step 1
   carries the never-pushed branch on. A finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.
 - `GATE_SKIP_REVIEW=1` skips the check for gate runs while iterating, never for a push: the pre-push hook runs the gate without it. Sandcastle's sandboxes set it (`SANDBOX_ENV` in `lib/skills.mts`):

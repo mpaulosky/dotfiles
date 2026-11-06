@@ -66,12 +66,17 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // except for REVIEWED_ON_REAPPLY below. The skip is a decision per file, not a
 // default: either the Template's own gate checks the file's content (the
 // workflows, hooks, scripts, .sandcastle/lib/ and their tests: actionlint,
-// zizmor, shellcheck, pytest, tsc and the rest), or it is text no one acts on
-// (the skills and instructions a person's own session reads). A file no
-// Template check can judge goes in REVIEWED_ON_REAPPLY. In dotfiles,
+// zizmor, shellcheck, pytest, tsc and the rest; the hardening-review skill's
+// .py scripts are covered by pytest), or it is text no unattended role reads
+// (the hardening-review skill's text, which a person's own session reads, and
+// the .github/instructions/ files, which steer Copilot's review). A file no
+// Template check can judge, or that an unattended role reads as its prompt (the
+// pre-push-review skill's SKILL.md, lenses.md and review-bar.md, which the host
+// puts into its reviewers' prompts), goes in REVIEWED_ON_REAPPLY. In dotfiles,
 // lib/owned-paths.test.mts enforces it: a single-file pattern must be
-// classified there, and a file under a glob must be the kind that glob's entry
-// allows, so a new Owned file is never exempt unseen.
+// classified there, and a file under a glob must be one the glob's entry lists
+// (workflows, instructions, lib/) or the kind it allows (hooks, scripts,
+// hardening-review, scripts/tests), so a new Owned file is never exempt unseen.
 export const OWNED_PATHS = [
   ".github/workflows/*.yml",
   ".github/hooks/**",
@@ -79,7 +84,9 @@ export const OWNED_PATHS = [
   ".github/instructions/*.md",
   ".github/pull_request_template.md",
   ".claude/agents/pre-push-reviewer.md",
-  ".claude/skills/pre-push-review/**",
+  ".claude/skills/pre-push-review/SKILL.md",
+  ".claude/skills/pre-push-review/lenses.md",
+  ".claude/skills/pre-push-review/review-bar.md",
   ".claude/skills/hardening-review/**",
   ".sandcastle/main.mts",
   ".sandcastle/check.sh",
@@ -134,7 +141,8 @@ export const OWNED_PATHS = [
 // templates, whose front matter sets the labels and assignee of every issue
 // opened from them (a `Sandcastle` label would feed the unattended pipeline),
 // the reviewer agent, whose `tools:` front matter is what keeps reviewers
-// read-only, the prompts that instruct the pipeline's roles, the
+// read-only, the pre-push-review skill's SKILL.md (its Severities), lenses.md and review-bar.md, which the host reads into the reviewers' prompts
+// (lib/build.mts#readSkillFiles), the prompts that instruct the pipeline's roles, the
 // local gate's .sandcastle/check.sh, whose watched paths and early exit decide
 // whether the Sandcastle check runs at all, and global.json, which sets the SDK and the msbuild-sdks a build runs.
 // The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
@@ -149,6 +157,9 @@ export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
   ".github/ISSUE_TEMPLATE/config.yml",
   ".github/ISSUE_TEMPLATE/feature_request.md",
   ".claude/agents/pre-push-reviewer.md",
+  ".claude/skills/pre-push-review/SKILL.md",
+  ".claude/skills/pre-push-review/lenses.md",
+  ".claude/skills/pre-push-review/review-bar.md",
   ".sandcastle/critique-prompt.md",
   ".sandcastle/intake-prompt.md",
   ".sandcastle/plan-prompt.md",

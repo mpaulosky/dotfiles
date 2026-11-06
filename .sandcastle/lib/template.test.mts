@@ -94,8 +94,9 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
   // config.test.mts skips its check of the ui prompts in a repo that hasn't opted in, which is every config this repo runs it under, so
   // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented. The role is Owned and opt-in
   // (mpaulosky/dotfiles#392), so the Template's own prompts pass it as shipped, and it fails when roles/ui.md, the planner's {{UI_ROLE}} or
-  // backend.md's {{UI_DEVELOPER}} is missing, or the repo's roles/shared-rules.md has no UI developer section for them to point at.
-  it("passes config.test.mts's ui prompt check for an opted-in repo as the Template ships, and fails it without roles/ui.md, plan-prompt.md's {{UI_ROLE}}, backend.md's {{UI_DEVELOPER}} or a UI developer section in roles/shared-rules.md", { timeout: 120_000 }, () => {
+  // backend.md's {{UI_DEVELOPER}} is missing, or the repo's roles/shared-rules.md has no UI developer section for them to point at, or one that holds only a comment
+  // (the Seed's state), and it passes when sub-headings are all the section holds.
+  it("passes config.test.mts's ui prompt check for an opted-in repo as the Template ships, and fails it without roles/ui.md, plan-prompt.md's {{UI_ROLE}}, backend.md's {{UI_DEVELOPER}} or a UI developer section with text in roles/shared-rules.md", { timeout: 120_000 }, () => {
     const config = join(sandcastle, "lib/repo-config.mts");
     const plan = join(sandcastle, "plan-prompt.md");
     const uiPrompt = join(sandcastle, "roles/ui.md");
@@ -118,6 +119,22 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       assert.notEqual(commentOnly.status, 0, "the check should fail while the UI developer section is only the Seed's comment");
       assert.match(commentOnly.stdout, failedCheck);
       assert.match(commentOnly.stdout, /has only a comment/);
+
+      // An unclosed comment hides the rest of the file, and a "#" line inside a comment doesn't end the section or leave half a comment behind.
+      const section = (text: string) => originals.get(rules)!.replace(/^## UI developer\n[\s\S]*?(?=^## Build and tests)/m, `## UI developer\n\n${text}\n\n`);
+      writeFileSync(rules, section("<!-- the UI files are everything under `src/Web/`."));
+      const unclosed = run();
+      assert.notEqual(unclosed.status, 0, "the check should fail when the section's text is all inside an unclosed comment");
+      assert.match(unclosed.stdout, /has only a comment/);
+
+      writeFileSync(rules, section("<!-- note\n# not a heading -->"));
+      const hashInComment = run();
+      assert.notEqual(hashInComment.status, 0, "the check should fail when a comment holds a line that starts with #");
+      assert.match(hashInComment.stdout, /has only a comment/);
+
+      writeFileSync(rules, section("### Files\n\nThe UI files are everything under `src/Web/`."));
+      const subHeading = run();
+      assert.equal(subHeading.status, 0, `${subHeading.stdout}${subHeading.stderr}`);
 
       writeFileSync(rules, originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n"));
       const complete = run();

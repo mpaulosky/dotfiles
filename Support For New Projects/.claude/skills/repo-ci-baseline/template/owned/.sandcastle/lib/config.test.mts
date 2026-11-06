@@ -69,13 +69,16 @@ describe("ROLE_AGENTS", () => {
     // The planner's bullet, backend.md and roles/ui.md all send the reader to the shared rules for which files are the UI developer's. The file is
     // the repo's own Seed, so only that the section exists and has text of its own is checked, not its wording: the Seed ships the heading with
     // only a comment under it, which a repo that opted in and edited nothing must not pass.
-    const rules = readFileSync(file("roles/shared-rules.md"), "utf8");
-    const heading = /^#{1,6}\s+UI developer\s*$/m.exec(rules);
+    // Comments go first, an unclosed one running to the end of the file as Markdown hides it, so a comment holding a "#" line neither hides the
+    // heading's real end nor leaves half a comment behind. The section then ends at the next heading of its own level or a higher one, so
+    // sub-headings under it are part of it.
+    const rules = readFileSync(file("roles/shared-rules.md"), "utf8").replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+    const heading = /^(#{1,6})\s+UI developer\s*$/m.exec(rules);
 
     assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section: add one that names the UI files, or the developer and the ui role each leave them to the other');
 
     const afterHeading = rules.slice(heading.index + heading[0].length);
-    const body = (afterHeading.split(/^#{1,6}\s/m)[0] ?? "").replace(/<!--[\s\S]*?-->/g, "").trim();
+    const body = (afterHeading.split(new RegExp(`^#{1,${heading[1]!.length}}\\s`, "m"))[0] ?? "").trim();
 
     assert.notEqual(body, "", 'roles/shared-rules.md\'s "## UI developer" section has only a comment: replace it with the UI files the ui role builds');
   });

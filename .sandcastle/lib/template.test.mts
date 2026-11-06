@@ -148,6 +148,16 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       assert.notEqual(deepEnds.status, 0, "the check should fail when a level-3 section holds only a comment before the next level-2 heading");
       assert.match(deepEnds.stdout, /has only a comment/);
 
+      // A literal "<!--" in a code span or a fenced block ahead of the section is text, not a comment: the section still counts.
+      const withText = (before: string) => originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n").replace(/^## UI developer\n/m, `${before}\n\n## UI developer\n`);
+      writeFileSync(rules, withText("Write `<!--` to open a comment."));
+      const spanOpener = run();
+      assert.equal(spanOpener.status, 0, `${spanOpener.stdout}${spanOpener.stderr}`);
+
+      writeFileSync(rules, withText("```md\n<!--\n```"));
+      const fenceOpener = run();
+      assert.equal(fenceOpener.status, 0, `${fenceOpener.stdout}${fenceOpener.stderr}`);
+
       // An unclosed comment before the heading hides it, which the failure says rather than claiming the heading is missing.
       writeFileSync(rules, `<!-- unclosed\n\n${originals.get(rules)!.replace(/^(## UI developer\n)/m, "$1\nThe UI files are everything under `src/Web/`.\n")}`);
       const hidden = run();

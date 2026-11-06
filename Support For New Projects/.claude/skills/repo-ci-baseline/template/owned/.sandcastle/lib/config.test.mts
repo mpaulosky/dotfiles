@@ -72,7 +72,11 @@ describe("ROLE_AGENTS", () => {
     // Comments go first, an unclosed one running to the end of the file as Markdown hides it, so a comment holding a "#" line neither hides the
     // heading's real end nor leaves half a comment behind. The section then ends at the next heading of its own level or a higher one, so
     // sub-headings under it are part of it.
-    const rules = readFileSync(file("roles/shared-rules.md"), "utf8").replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+    // A fenced block or a code span is text, so a literal "<!--" in one neither opens a comment nor hides the heading after it: both are masked first.
+    const rules = readFileSync(file("roles/shared-rules.md"), "utf8")
+      .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[`~]*[ \t]*$|$(?![\s\S]))/gm, "X")
+      .replace(/(`+)[^`\n]*?\1(?!`)/g, "X")
+      .replace(/<!--[\s\S]*?(?:-->|$)/g, "");
     const heading = /^(#{1,6})\s+UI developer\s*$/m.exec(rules);
 
     assert.ok(heading, 'roles/shared-rules.md has no "## UI developer" section outside a comment (an unclosed <!-- hides everything after it): add one that names the UI files, or the developer and the ui role each leave them to the other');

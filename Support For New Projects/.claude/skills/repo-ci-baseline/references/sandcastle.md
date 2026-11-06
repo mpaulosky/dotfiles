@@ -10,9 +10,10 @@ The pipeline's per-repo values sit in one Seed file, `lib/repo-config.mts`, so t
 ## What it guarantees
 
 - Every Sandcastle repo type-checks with the same `tsconfig.json`, lints its prompts with the same rules, ignores the same run output, and documents the same `.env` settings.
-- The pipeline's code (`main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`), the intake and critique prompts, and the host-safety
-  guardrails (`lib/host-safety.mts`, `lib/shell.mts`) are identical everywhere, as is `check.sh`, the local gate's Sandcastle check.
-- A new repo starts from the same role prompts, Dockerfile, check-paths list and `package.json` scripts (`sandcastle`, `sandcastle:status` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`).
+- The pipeline's code (`main.mts`, `status.mts` and every `lib/` module but `repo-config.mts`), the prompts (intake, critique, plan, review and every role's) and the host-safety
+  guardrails (`lib/host-safety.mts`, `lib/shell.mts`) are identical everywhere, as is `check.sh`, the local gate's Sandcastle check. A repo's own content reaches the prompts
+  through `roles/shared-rules.md` and `roles/skills.md`.
+- A new repo starts from the same Dockerfile, check-paths list and `package.json` scripts (`sandcastle`, `sandcastle:status` and `check:sandcastle`, on `tsx`, with `tsc --noEmit`).
 
 ## Owned files
 
@@ -25,6 +26,7 @@ Under `template/owned/.sandcastle/`. dotfiles' own `.sandcastle/` carries each o
 | `.gitignore` | Keeps `.env` and a run's `logs/`, `worktrees/`, `work/` and `follow-up.json` out of git; the older repos lacked the last two |
 | `.env.example` | The settings Sandcastle reads, documented once; five variants had grown |
 | `intake-prompt.md`, `critique-prompt.md` | Judge an issue or a plan against the issue alone, with no repo-specific text |
+| `plan-prompt.md`, `review-prompt.md`, `roles/architect.md`, `backend.md`, `tester.md`, `follow-up.md`, `gate-fixer.md`, `scribe.md` and `ui.md` | Judge/instruct the roles, with no repo text; a repo's content goes in `roles/shared-rules.md` and `roles/skills.md`, which the prompts read as `{{SHARED_RULES}}` and `{{REPO_SKILLS}}` |
 | `lib/host-safety.mts`, `lib/shell.mts`, `lib/host-limit.mts` and their tests | The guardrails that keep agent-written code off the host, and the time limits on its own `gh`, `git` and Docker waits; they import only each other and `lib/errors.mts`, so a repo's own code can't break them |
 | `check.sh` | The local gate's Sandcastle check: type-checks and tests `.sandcastle/` when it or a file its tests read changed; the repo's extra files are in the Seed `check-paths.txt`, and a line there that matches no tracked file is named on stderr |
 | `main.mts` | The run's phases and round loop; it reads its round cap from `lib/repo-config.mts` |
@@ -49,9 +51,8 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 
 | File | What the repo fills in |
 | --- | --- |
-| `.sandcastle/roles/*.md` (`architect`, `backend`, `tester`, `scribe`, `gate-fixer`, `follow-up`, and `ui`, which stays unused until the repo opts in) | Anything its roles do differently |
-| `.sandcastle/roles/shared-rules.md` | The repo's paragraph, its stacks and test commands; the one file every role reads about the repo |
-| `.sandcastle/plan-prompt.md`, `.sandcastle/review-prompt.md` | The optional roles' rules and the docs the review follows |
+| `.sandcastle/roles/shared-rules.md` | The repo's paragraph, its pointers (`docs/CODING_STANDARDS.md`, `CONTEXT.md`, `.claude/rules/`), its stacks and test commands, any "UI developer" section naming its UI files; the one file every role reads about the repo |
+| `.sandcastle/roles/skills.md` | The repo's `# SKILLS` block, empty in the Seed; injected into the `tester`, `backend` and `ui` prompts as `{{REPO_SKILLS}}` |
 | `.sandcastle/CODING_STANDARDS.md` | The repo's code and test standards, which every role and the review follow |
 | `.sandcastle/Dockerfile` | The sandbox image: the gate's linters as `ARG`s with their SHA-256s, an optional .NET SDK (`INSTALL_DOTNET`, `DOTNET_CHANNEL`), optional Chromium libraries for Playwright (`INSTALL_PLAYWRIGHT_DEPS`, `PLAYWRIGHT_VERSION`), and `tini` as PID 1 (`ENTRYPOINT ["tini", "--", "sleep", "infinity"]`) |
 | `.sandcastle/check-paths.txt` | The files, besides the Template's own list, whose change makes the Owned `check.sh` run Sandcastle's check: those the repo's `.sandcastle/` tests read (`CLAUDE.md`, `.github/workflows`, the solution file and so on); one pathspec per line, and a line that matches no file is named on stderr on every run |
@@ -59,8 +60,7 @@ Under `template/seed/`. Each one describes the repo, so it's the repo's once wri
 | `.github/ci/sandcastle-skills.txt` | The skills the Sandcastle workflow installs on the runner for the run (a pinned dotfiles commit and skill names, read as data); empty until filled ([The workflow](#the-workflow)) |
 | `.sandcastle/lib/repo-config.mts` | `REPO_SLUG` and `NOT_OWNED_BASELINE_PATHS` for the local review ([pre-push-review.md](pre-push-review.md)), `ROLE_AGENTS` (each role's model, effort, iterations and timeout), `MAX_ITERATIONS`, the sandbox `hooks`, `copyToWorktree`, the host skills to mount (`SANDBOX_SKILLS`), the CI jobs `scripts/gate.sh` reproduces (`GATE_COVERED_CHECKS`, `Build Solution` in the Seed), the command the host runs as the gate in the sandbox (`GATE_COMMAND`, `scripts/gate.sh` in the Seed), how long the host lets that gate run before it kills it (`GATE_LIMIT_MINUTES`, 10 in the Seed), the committed file it runs, which a branch may not change (`GATE_SCRIPT`), the paths whose changed files a PR's body lists for the reviewer (`CHECK_PATHS`), and `TEMPLATE_OWNED_DIR` and `TEMPLATE_ROOT_COPIES`, empty except in dotfiles |
 
-The prompts keep every Sandcastle `{{NAME}}` dotfiles' copies have (`lib/role-prompts.test.mts` checks).
-`test.sh` keeps dotfiles' own text out of them, and checks that the Dockerfile's linter versions match the Owned `scripts/gate.sh` and its .NET channel matches `global.json`.
+`test.sh` keeps dotfiles' own text out of the Seed's `roles/shared-rules.md`, and checks that the Dockerfile's linter versions match the Owned `scripts/gate.sh` and its .NET channel matches `global.json`.
 A repo with `Microsoft.Playwright` in its `Directory.Packages.props` sets `INSTALL_PLAYWRIGHT_DEPS=true` in the Dockerfile (it is `false` by default, where `INSTALL_DOTNET` is `true`),
 so its E2E tests find Chromium's system libraries in the sandbox. The step runs `pnpm dlx playwright@${PLAYWRIGHT_VERSION} install-deps chromium` as root and clears root's caches;
 keep `PLAYWRIGHT_VERSION` near the repo's `Microsoft.Playwright` version. It installs only the libraries: the browser itself is left to the test fixture at run time,
@@ -70,14 +70,20 @@ A repo that already has a Dockerfile adds `tini` to its `apt-get install` list a
 with `ENTRYPOINT ["tini", "--", "sleep", "infinity"]`: with `sleep` as PID 1,
 nothing reaps the processes the gate orphans, they stay zombies holding their PIDs, and a long build ends unable to fork (the gate fails with `Resource temporarily unavailable`,
 claude-code aborts with exit 134, git stops answering). Sandcastle's `docker()` has no `--init` option, so the image has to do it. `lib/dockerfile.test.mts` pins it in dotfiles' and the Seed's Dockerfile.
-`roles/ui.md` is the UI developer's prompt, the one role a repo opts into. Apply writes it into every repo that gets `.sandcastle/`, where it stays unused. To opt in, add a `ui` entry to
-`ROLE_AGENTS` in `lib/repo-config.mts` (the Seed carries it commented out) and add this bullet to `plan-prompt.md`'s ROLES list, so the planner can pick the role:
-`` - `ui`: the issue adds or changes Blazor components or pages (`.razor` files, their code-behind, layout or styling). Leave it out when the issue changes no markup. ``
-`config.test.mts` fails when a repo has the entry but lacks `roles/ui.md`, `backend.md`'s `{{UI_DEVELOPER}}` or that bullet.
+
+## Prompts, skills and run settings
+
+The Owned prompts keep every Sandcastle `{{NAME}}` (`{{SHARED_RULES}}`, `{{REPO_SKILLS}}` and `{{UI_ROLE}}` among them), and `lib/role-prompts.test.mts` checks them for text of any one repo.
+
+`roles/ui.md` is the UI developer's prompt, the one role a repo opts into. It is Owned, so Apply writes it into every repo that gets `.sandcastle/`, where it stays inert. To opt in, add a `ui` entry to
+`ROLE_AGENTS` in `lib/repo-config.mts` (the Seed carries it commented out) and add a "UI developer" section to `roles/shared-rules.md`
+that names the UI files: the components, pages, markup, layout and styling, their tests, and any rule for them.
+The host fills in `{{UI_ROLE}}` in `plan-prompt.md` with the planner's `ui` bullet when the repo opted in (`lib/prompts.mts#plannerPromptArgs`),
+and with nothing when it didn't; it fills in `backend.md`'s `{{UI_DEVELOPER}}` too, which tells the developer to leave the UI files the shared rules name to the UI developer.
+`config.test.mts` fails when a repo has the entry but lacks `roles/ui.md`, `backend.md`'s `{{UI_DEVELOPER}}` or `plan-prompt.md`'s `{{UI_ROLE}}`.
 `ui` is not in `ROLES`, so a `repo-config.mts` written before it existed still type-checks; without the entry
 `lib/agents.mts#uiEnabled` is false, and the planner's `ui` pick and the fallback "every optional role" both leave it out.
-With it, the role runs after the backend developer,
-and `backend.md`'s `{{UI_DEVELOPER}}` tells the backend developer to leave the Blazor components and pages to it.
+With it, the role runs after the developer.
 `review-prompt.md` holds `{{PR_BODY_RULES}}`, which `lib/prompts.mts` fills in with what the host refuses in the reviewer's PR description;
 `lib/config.test.mts` fails without it, so an existing repo adds it where it wrote those rules by hand.
 
@@ -90,7 +96,8 @@ export const SANDBOX_SKILLS: readonly string[] = [
 ];
 ```
 
-and by adding this section to the `tester`, `backend` and `ui` prompts (before `# EXECUTION`), one bullet for each skill:
+and by putting this block in `roles/skills.md`, one bullet for each skill. `lib/agents.mts#withSharedRules` passes the file's trimmed text as `{{REPO_SKILLS}}`,
+which the Owned `tester`, `backend` and `ui` prompts carry on a line of their own before `# EXECUTION`:
 
 ```markdown
 # SKILLS
@@ -105,8 +112,7 @@ For .NET work, these skills are mounted into the sandbox from the host's `~/.cla
 - `dotnet-inspect`: checking a NuGet package's API surface
 ```
 
-Other roles may list the skills they need the same way. `lib/skills.test.mts` keeps the two in step: no prompt lists a skill that isn't mounted, and the `tester`, `backend`
-and (when opted in) `ui` prompts each list every mounted skill.
+`lib/skills.test.mts` keeps the two in step: `roles/skills.md` lists no skill that isn't mounted and every mounted one, and no prompt keeps a `# SKILLS` section of its own.
 
 **Reviewer mode.** `SANDCASTLE_REVIEWERS` (`sequential` or `subagents`; `.env.example` shows it only as a usage example in comments, since that file reaches the sandbox,
 so set it on the command line or in the workflow) picks how the host review starts a round's reviewers;
@@ -325,7 +331,9 @@ One PR per repo, each its own follow-up issue. The four older repos go first (Ar
    the `SANDBOX_SKILLS` from `lib/skills.mts` and the `GATE_COVERED_CHECKS` from `lib/follow-up-pass.mts` into `lib/repo-config.mts`.
 2. Rename the `test:sandcastle` script to `check:sandcastle`, run it with `tsx`, and add `tsc --noEmit`, and add `sandcastle:status` (`tsx .sandcastle/status.mts`).
    A Seed `package.json` is written once, so a repo that already has one adds the script by hand.
-3. Diff the repo's role prompts, `Dockerfile` and `package.json` against the Template's Seed files, and bring over what the repo lacks.
+3. **Before Apply**, move what the repo's role prompts, `plan-prompt.md` and `review-prompt.md` say about the repo: Apply overwrites them with the Owned ones.
+   Its pointers (`docs/CODING_STANDARDS.md`, `CONTEXT.md`, `.claude/rules/`), its repo-specific bullets and its UI notes go into `roles/shared-rules.md`, and its `# SKILLS` block into `roles/skills.md`.
+   Diff the repo's `Dockerfile` and `package.json` against the Template's Seed files, and bring over what the repo lacks.
 4. Run `pnpm install`, then commit `pnpm-lock.yaml` with the change.
 5. Add `GATE_LIMIT_MINUTES` to `lib/repo-config.mts` (the Seed's is 10): the Owned `lib/step-limit.mts` imports it, so a repo without it fails to load.
    Size it for the repo's slowest gate under parallel builds. The host runs every sandbox command under `timeout` (GNU coreutils, in the Template's
@@ -356,6 +364,9 @@ A value built from another constant (`const GATE = ".sandcastle/check.sh"; expor
 The list is read as written: a line is a git pathspec, and an `:(exclude)` line only trims the list's other lines, never the Template's own paths.
 A list of exclude lines alone is treated as empty, since git would read it as "everything else".
 
-Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`, adding the `ui` bullet to `plan-prompt.md`'s ROLES
-list and the `{{UI_DEVELOPER}}` line to `roles/backend.md`; its own `roles/ui.md` stays, and
-`lib/config.test.mts` fails while the repo has the `ui` entry but lacks the bullet or the `{{UI_DEVELOPER}}` line.
+Blazor-Server keeps its UI developer role by carrying its `ui` entry into the `ROLE_AGENTS` it moves to `lib/repo-config.mts`. **Before Apply**, it moves its UI pointers and the Blazor notes
+(the `.razor` files, code-behind and bUnit tests that are the UI developer's, and keeping pages that need no interactivity statically rendered) into a "UI developer" section of `roles/shared-rules.md`,
+its `.NET` `# SKILLS` block into `roles/skills.md`, and its pointers to `docs/CODING_STANDARDS.md`, `CONTEXT.md` and `.claude/rules/` into `roles/shared-rules.md`;
+Apply then replaces its role prompts with the Owned ones,
+`roles/ui.md` included, and `lib/config.test.mts` fails while the repo has the `ui` entry but lacks `roles/ui.md`, `{{UI_DEVELOPER}}` or `{{UI_ROLE}}`.
+auth0-management-app moves its pointers and `# SKILLS` block the same way.

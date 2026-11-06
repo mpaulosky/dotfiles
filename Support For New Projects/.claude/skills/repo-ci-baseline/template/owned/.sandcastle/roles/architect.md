@@ -48,15 +48,15 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to design the change.
 
-Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, and `.sandcastle/CODING_STANDARDS.md` for the code standards
-(see the rules below). A design that breaks a recorded decision must say so and why.
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` for the code standards, and
+whatever else the rules below point to. A design that breaks a recorded decision must say so and why.
 
 # EXECUTION
 
 1. Write the design note to `.sandcastle/work/{{TASK_ID}}/design.md`, creating the folder. It's gitignored, so don't commit it: the host posts it on the issue after your run.
    Keep it short enough to read in a few minutes, and cover:
    - **Functions, steps and outputs**: each new or changed function, workflow step, script option or message, with its signature or exact text.
-   - **Where each change goes**: the projects and files, and the type or module each change sits in.
+   - **Where each change goes**: the files and the type or module each change sits in, and anything the shared rules say about copies of a file.
    - **Tests**: what the tester should pin for each acceptance criterion, and where.
    - **Risks**: what could go wrong, what to watch for, and anything the issue leaves open that you decided.
 2. Write no production code, no tests and no stubs. The tester and the developers write those from your note.

@@ -97,7 +97,7 @@ rather than starting from the stock template. dotfiles runs Sandcastle too: its 
 no .NET, whose image carries the repo-ci-baseline skill's test tools instead of the SDK.
 
 The repo-ci-baseline Template now carries Sandcastle's shared files: its code (`main.mts`, `status.mts` and `lib/`), config, intake and
-critique prompts (Owned), and its per-repo values (`lib/repo-config.mts`), role prompts, Dockerfile, check-paths list and `package.json`
+critique, plan, review and role prompts (Owned), and its per-repo values (`lib/repo-config.mts`), `roles/shared-rules.md`, `roles/skills.md`, Dockerfile, check-paths list and `package.json`
 (Seed). In a Baseline repo, create `.sandcastle/` and Apply again to get them. The skill's `references/sandcastle.md` says
 what each file is and how an existing Sandcastle repo migrates.
 
@@ -177,7 +177,8 @@ would hand your GitHub token to the agents. Blazor-Server's `main.mts` refuses t
 
 ### 6. Adapt the prompts
 
-Edit `.sandcastle/plan-prompt.md`, `implement-prompt.md` and `review-prompt.md` for the repo:
+The prompts are Owned and read the same in every repo, so put the repo's own text in `.sandcastle/roles/shared-rules.md` (every role reads it) and `.sandcastle/roles/skills.md` (the skills block
+the tester, developer and UI developer read) instead of editing `plan-prompt.md`, `review-prompt.md` or a role's prompt:
 
 - Use the repo's build and test commands (`dotnet build <Solution>.slnx`, the test projects) instead of `npm`.
 - Point the agents at `CONTEXT.md`, `docs/adr/` and the coding standards, and have them work test-first.

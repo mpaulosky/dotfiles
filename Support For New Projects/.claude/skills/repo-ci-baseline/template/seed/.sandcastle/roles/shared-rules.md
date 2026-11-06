@@ -7,8 +7,15 @@ and anything every role must know before changing it.
 
 - `CLAUDE.md` says how the repo is built and laid out, `docs/PROCESS.md` how a change reaches `main`, and `docs/adr/` (where present) the decisions behind it.
 - `.sandcastle/CODING_STANDARDS.md` holds the code standards every role follows.
+- `CONTEXT.md` (where present) holds the domain language, and `.claude/rules/` (where present) the rules Claude loads for particular files. Add the repo's other pointers here.
 - The Baseline Template owns some files: Apply overwrites them, so a change to one here is undone by the next re-Apply. They include `scripts/gate.sh`, the workflows and
   scripts under `.github/`, `.github/hooks/`, `.github/instructions/` and `docs/PROCESS.md`. Don't change them; say in your commit body when an issue needs one changed.
+
+## UI developer
+
+<!-- Delete this section if the repo has no UI developer. To opt in, add the `ui` entry to ROLE_AGENTS in lib/repo-config.mts and name the UI files here: the components,
+pages, markup, layout and styling the UI developer builds, their tests, and any rule for them (for example, which pages stay statically rendered). The developer leaves
+those files to the UI developer, and the planner offers the `ui` role only in a repo that opted in. -->
 
 ## Build and tests
 

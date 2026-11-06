@@ -47,8 +47,7 @@ Then read the documents you own, below, and match their voice.
 # WHAT YOU NEVER TOUCH
 
 - ADRs under `docs/adr/`. Never create one: only the architect does.
-- Files the Baseline Template owns, such as `docs/PROCESS.md` and `.github/instructions/`: Apply overwrites them, so a change to them belongs in the Template.
-- Release-generated files (`docs/blogs/`, `docs/README.md`, `docs/index.html`): the release workflow writes them.
+- Release-generated files (`docs/blogs/`, `docs/README.md`, `docs/index.html`): the release workflow writes them, and anything the shared rules say belongs elsewhere.
 - Code, tests, configuration and Sandcastle's prompts.
 
 # EXECUTION

@@ -15,6 +15,23 @@ the Template. `<skill>` below is `Support For New Projects/.claude/skills/repo-c
   Edit the Template's file, then copy it over the root copy, mode included. The gate fails when a copy differs from the Template's.
 - An Owned file is copied into other repos, where a bare `#N` reads as that repo's own issue. Write `mpaulosky/dotfiles#N` (or `<Repo>#N` for another repo's) in Owned files.
 - dotfiles' own `scripts/gate.sh` and `.github/workflows/repo-ci-baseline.yml` belong to dotfiles, not the Template.
+  So do `.sandcastle/roles/shared-rules.md` and `.sandcastle/roles/skills.md` (this file and its skills block, empty here), and `.github/ci/sandcastle-skills.txt`.
+
+### Reading list
+
+- Read `<skill>/CONTEXT.md` for the domain language, `<skill>/docs/adr/` for recorded decisions, the `<skill>/references/` page for the part of the Template the issue touches,
+  and `.claude/rules/sandcastle.md` for Sandcastle's TypeScript in `.sandcastle/`. A change that breaks a recorded decision must say so and why.
+- Write a PR description as `<skill>/references/pr-process.md` says; dotfiles has no `docs/PROCESS.md`.
+- Name where each change goes in the design as: Owned or Seed for a Template file, which dotfiles copy follows it, and the module headers for `.sandcastle/`.
+- There is no UI developer here: dotfiles has no UI files and no `ui` entry in `ROLE_AGENTS`.
+
+### Copies of a file
+
+- When the issue changes an Owned file dotfiles carries a copy of, copy the Template's file over the copy before you finish.
+- The follow-up pass: a fix to a Template workflow goes in the Template's copy. Only `claude-review.yml`, `pr-automerge.yml`, `pr-review-submitted.yml` and `sandcastle.yml` have a root copy in dotfiles'
+  `.github/workflows/`; for those, make the same change there too, which `test.sh` checks for drift. Don't touch any other file there, and never create one. A thread that asks
+  for a change to any other file Apply overwrites is out of scope: say the fix belongs in the Template.
+- The planner lists both a Template file and its root copy in `files`.
 
 ## Build and tests
 
@@ -32,6 +49,10 @@ Nothing is compiled. Use the test command for each stack the issue touches:
 - The tests read a workflow's inline script or `run:` step out of the YAML and run it against fakes or scratch git repos, so they cover exactly the code the workflow runs. Follow
   the existing tests' helpers rather than copying code out of the workflow.
 - Tests must pass by the end of the last developer run, not on every commit.
+- Where tests go: `pr-automerge.test.mjs` for PR Auto-Merge's inline script, the pytest file for a Python script or workflow `run:` step, the `<name>.test.sh` beside a hook or
+  shell script, and `<module>.test.mts` beside a Sandcastle module. A tester's stub for a shell or Python function exits or raises with "Not implemented".
+- Build and type-check with `pnpm exec tsc --noEmit -p .sandcastle` for Sandcastle's TypeScript; nothing else is compiled. Lint YAML with
+  `yamllint -c "<skill>/template/owned/.yamllint.yml" <file>`.
 - A test that needs a string shaped like a secret (a GitHub token, an API key) builds it at run time, splitting the prefix from the body: `` `${"gh"}p_${"A".repeat(36)}` ``.
   Never write the whole shape in a source line, a fixture or a comment. The host scans every commit's added lines, and a match stops the issue from being published.
   A later commit does not clear it, because the scan reads each commit.
@@ -42,11 +63,20 @@ Nothing is compiled. Use the test command for each stack the issue touches:
 `scripts/gate.sh` is the one definition of "ready to push". It runs `<skill>/test.sh` (every Template test, the linters, the copy check and the apply and reapply smoke tests),
 then the Sandcastle check when `.sandcastle/`, `package.json` or the pnpm lockfile changed. Run it rather than the individual lint and test commands.
 
+- `test.sh` runs every step and counts the failures, each a `FAIL:` line, so fix them one at a time; the Sandcastle check runs only after `test.sh` passes.
 - If you committed anything, run `scripts/gate.sh` once as your last step, before `<promise>COMPLETE</promise>`, and fix what it reports.
 - The tester is exempt, because its tests are red on purpose. It still lints the files it changed.
 - The architect is exempt too. It commits at most one ADR, and lints that file with `markdownlint-cli2 <file>`.
 - After you finish, the host runs the gate itself. Its exit code decides whether the branch is published, not what you report.
 - Leave the worktree clean: commit or discard every change before you finish. Only commits are pushed, so the host fails the gate when anything is left uncommitted.
+
+## Documentation
+
+- The scribe owns `<skill>/CONTEXT.md` (the glossary: the term in bold, its definition, and an `_Avoid_:` line), `<skill>/SKILL.md`, `<skill>/references/*.md` (the page that
+  describes what the branch changed, such as `references/automerge.md` for PR Auto-Merge) and the root `README.md`.
+- Markdown inside `<skill>/template/owned/` and `<skill>/template/seed/` is copied into other repos, so it is the developer's, with the code it describes.
+- dotfiles has no release-generated files (`docs/blogs/`, `docs/README.md`, `docs/index.html`); the Template's release workflow writes them in the repos that use it.
+- ADRs go under `<skill>/docs/adr/`, and only the architect creates one.
 
 ## Commits
 

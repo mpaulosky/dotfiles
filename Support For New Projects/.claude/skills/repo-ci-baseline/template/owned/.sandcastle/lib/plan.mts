@@ -106,7 +106,7 @@ export async function planRound(ready: SandcastleIssue[]): Promise<PlannedIssue[
     hooks,
     sandbox: agentSandbox(),
     promptFile: "./.sandcastle/plan-prompt.md",
-    promptArgs: plannerPromptArgs(ready),
+    promptArgs: plannerPromptArgs(ready, uiEnabled()),
     // Extract and validate the <plan> JSON into a typed object. Throws
     // StructuredOutputError if the tag is missing, the JSON is malformed, or
     // validation fails — which aborts the loop.

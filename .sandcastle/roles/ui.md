@@ -20,8 +20,8 @@ Only work on the issue specified. You can't reach GitHub from here, and don't ne
 
 Work on branch {{BRANCH}}. It may already hold earlier commits for this issue. Build on them, don't redo them.
 
-You are the UI developer. The tester committed failing tests for the issue's acceptance criteria, then the backend developer made every test pass except those for Blazor
-components and pages. Your job is to build those components and pages, and make their tests pass.
+You are the UI developer. The tester committed failing tests for the issue's acceptance criteria, then the developer made every test pass except those for the UI files the
+shared rules name as yours. Your job is to build those files, and make their tests pass.
 
 The architect may have written a design note for this issue at `.sandcastle/work/{{TASK_ID}}/design.md`. When it exists, read it first and follow it. Where you have to depart
 from it, say what and why in your commit body, so the reviewer can check the difference is explained.
@@ -40,12 +40,14 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to complete the task.
 
-Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, and `.sandcastle/CODING_STANDARDS.md` for the code standards
-(see the rules below).
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` for the code standards, and
+whatever else the rules below point to.
 
-Read the tester's and the backend developer's commits on this branch first: the tests are the specification you implement, and the backend's code is what your components call.
+Read the tester's and the developer's commits on this branch first: the tests are the specification you implement, and the developer's code is what your UI calls.
 
-Use the domain terms from `CONTEXT.md` in markup, and keep pages that don't need interactivity statically rendered.
+Use the domain terms from `CONTEXT.md` (where present) in markup.
+
+{{REPO_SKILLS}}
 
 # EXECUTION
 

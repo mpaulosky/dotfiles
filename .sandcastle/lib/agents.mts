@@ -3,7 +3,8 @@
 // role's model, effort, iteration cap and timeout from ROLE_AGENTS and record
 // the run's token usage. The role is recorded before the run starts, so one
 // that times out or fails still appears in the end-of-run report. Every role's
-// prompt file also gets the shared role rules as {{SHARED_RULES}}. No role
+// prompt file also gets the shared role rules as {{SHARED_RULES}} and the
+// repo's skills block as {{REPO_SKILLS}}. No role
 // starts once the run's limits (lib/limits.mts) say stop, and a run that hits
 // Claude's usage limit ends in an UncountedStopError.
 
@@ -175,15 +176,20 @@ export function roleOptions(role: AnyRole, timeout: (ms: number) => AbortSignal 
 }
 
 let sharedRules: string | undefined;
+let repoSkills: string | undefined;
 
-// Add .sandcastle/roles/shared-rules.md to a prompt file's arguments. An inline
-// prompt is left alone: Sandcastle rejects prompt arguments for one.
+// Add .sandcastle/roles/shared-rules.md and the trimmed text of
+// .sandcastle/roles/skills.md (the repo's # SKILLS block, empty when it mounts
+// none) to a prompt file's arguments, as {{SHARED_RULES}} and {{REPO_SKILLS}}.
+// An inline prompt is left alone: Sandcastle rejects prompt arguments for one.
+// A missing file throws, as shared-rules.md's always has: both are Seed files.
 export function withSharedRules<T extends { prompt?: string; promptFile?: string; promptArgs?: sandcastle.PromptArgs }>(
   options: T,
 ): T & { promptArgs?: sandcastle.PromptArgs } {
   if (options.promptFile === undefined) return options;
   sharedRules ??= readFileSync(new URL("../roles/shared-rules.md", import.meta.url), "utf8");
-  return { ...options, promptArgs: { ...options.promptArgs, SHARED_RULES: sharedRules } };
+  repoSkills ??= readFileSync(new URL("../roles/skills.md", import.meta.url), "utf8").trim();
+  return { ...options, promptArgs: { ...options.promptArgs, SHARED_RULES: sharedRules, REPO_SKILLS: repoSkills } };
 }
 
 export function runRole<T>(

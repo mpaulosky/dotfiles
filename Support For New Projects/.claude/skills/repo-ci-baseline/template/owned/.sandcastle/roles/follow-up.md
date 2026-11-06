@@ -94,8 +94,8 @@ You can't reach GitHub from here, and don't need to: everything the PR and the i
 
 - Never rebase, amend, reset, squash or otherwise rewrite a commit that's already on the branch, and never force anything. The host pushes your commits without force, so a
   rewritten history is refused.
-- Don't change a file the Baseline Template owns, such as `scripts/gate.sh` or a workflow under `.github/workflows/`: Apply overwrites it, so decline such a
-  thread as out of scope and say the fix belongs in the Template. A run in Actions can't push a workflow change either; the host then hands the PR back to a person.
+- Change a file the Baseline Template owns only as the shared rules say. Where they say not to, decline the thread as out of scope and say the fix belongs in the Template.
+  A run in Actions can't push a workflow change; the host then hands the PR back to a person.
 - Commit every change you keep, and leave the worktree clean apart from `.sandcastle/follow-up.json`. The host runs `scripts/gate.sh` after you, and pushes only if it
   passes.
 - Never weaken, skip or delete a test to answer a thread.

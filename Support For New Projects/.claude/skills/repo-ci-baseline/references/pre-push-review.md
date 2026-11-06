@@ -44,8 +44,10 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   `template/owned/`). A deleted Owned file, a symlink, a submodule, a file of the repo's own, a Seed file the re-Apply writes because the repo lacked it, or one of
   the Owned files that carry behaviour (`REVIEWED_ON_REAPPLY`: `.github/ci/coverage-threshold`, which ci.yml enforces at any value,
   `.claude/rules/sandcastle-hand-off.md`, which loads into every session, the three `.github/ISSUE_TEMPLATE/` files, whose front matter sets labels and assignees,
-  `.claude/agents/pre-push-reviewer.md`, whose `tools:` front matter keeps reviewers read-only, `.sandcastle/critique-prompt.md` and `intake-prompt.md`, which instruct the
-  pipeline's judging roles, `.sandcastle/check.sh`, whose watched paths decide whether the Sandcastle check runs,
+  `.claude/agents/pre-push-reviewer.md`, whose `tools:` front matter keeps reviewers read-only, `.sandcastle/critique-prompt.md` and `intake-prompt.md`,
+  and `plan-prompt.md`, `review-prompt.md` and the role prompts under `.sandcastle/roles/`
+  (`architect.md`, `backend.md`, `tester.md`, `follow-up.md`, `gate-fixer.md`, `scribe.md` and `ui.md`), which instruct the
+  pipeline's roles, `.sandcastle/check.sh`, whose watched paths decide whether the Sandcastle check runs,
   and `global.json`, which sets the SDK and msbuild-sdks a build runs)
   needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files. A re-Apply
   that writes one (a repo whose `coverage-threshold` isn't already `80`, or that lacks the file, gets it from its first one) is refused at `reapply.sh`'s first

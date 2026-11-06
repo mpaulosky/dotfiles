@@ -39,20 +39,22 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to complete the task.
 
-Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, and `.sandcastle/CODING_STANDARDS.md` for the code standards
-(see the rules below).
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` for the code standards, and
+whatever else the rules below point to.
 
 Pay extra attention to existing test files near the code the issue touches, and follow their layout and naming.
+
+{{REPO_SKILLS}}
 
 # EXECUTION
 
 1. List the issue's acceptance criteria. Each one needs at least one test, and the name of each test should make it clear which criterion it checks.
-2. Write the tests through the behaviour the issue describes, in the test project or file that already covers the code it touches (see the rules below): the project
-   under `tests/` for the project under `src/`, and `<module>.test.mts` beside a Sandcastle module.
+2. Write the tests through the behaviour the issue describes, in the test project or file that already covers the code it touches (see the rules below), and follow where
+   the rules say tests go: for example `<module>.test.mts` beside a Sandcastle module.
 3. When a test calls something that doesn't exist yet, add the smallest stub that lets it load: for C#, `throw new NotImplementedException();`; for TypeScript,
-   `throw new Error("Not implemented")`. Write no real behaviour. When the change is to existing behaviour, the test needs no stub: it fails against the
-   current code.
-4. Build what you changed and fix every error: `dotnet build` for C#, and `pnpm exec tsc --noEmit -p .sandcastle` for Sandcastle's TypeScript.
+   `throw new Error("Not implemented")`; for a shell or Python function, one that exits or raises with "Not implemented". Write no real behaviour. When the change is to
+   existing behaviour, the test needs no stub: it fails against the current code.
+4. Build what you changed with the build commands in the rules below and fix every error.
 5. Run the tests you wrote with the stack's test command, and confirm each one fails for the reason you expect: an assertion failing or the stub throwing, not a syntax error, a
    missing fixture or a broken setup.
 6. Lint the files you changed: `markdownlint-cli2 <file>` for Markdown, `shellcheck <file>` for shell, and `yamllint -c .yamllint.yml <file>` for YAML.

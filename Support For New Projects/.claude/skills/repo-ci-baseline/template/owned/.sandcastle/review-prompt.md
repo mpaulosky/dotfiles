@@ -63,7 +63,7 @@ Comments on the issue from the repository owner:
    - Remove helpful abstractions that improve code organization
    - Make the code harder to debug or extend
 
-5. **Apply project standards**: Follow the rules below and `.sandcastle/CODING_STANDARDS.md`
+5. **Apply project standards**: Follow the rules below, `CLAUDE.md` and `.sandcastle/CODING_STANDARDS.md`
 
 6. **Preserve functionality**: Never change what the code does - only how it does it. All original features, outputs, and behaviors must remain intact.
 
@@ -82,7 +82,7 @@ If the code is already clean and well-structured, change nothing.
 
 Either way, write the PR description last, once the branch is final, to `.sandcastle/work/{{TASK_ID}}/pr-body.md`, creating the folder. It's gitignored, so don't commit it:
 the host reads it after your run and publishes it as the PR's body, under its own marker and `Closes #{{TASK_ID}}`. The description is published word for word as the squash
-commit's message, the Release's notes and the release blog post, so follow `docs/PROCESS.md` and write it for a reader who wasn't there, in plain
+commit's message, the Release's notes and the release blog post, so follow `docs/PROCESS.md` where the repo has one and write it for a reader who wasn't there, in plain
 sentences. Use exactly these three headings, in this order, and no others at that level:
 
 ```markdown

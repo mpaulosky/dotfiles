@@ -49,7 +49,12 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   (`architect.md`, `backend.md`, `tester.md`, `follow-up.md`, `gate-fixer.md`, `scribe.md` and `ui.md`), which instruct the
   pipeline's roles, `.sandcastle/check.sh`, whose watched paths decide whether the Sandcastle check runs,
   and `global.json`, which sets the SDK and msbuild-sdks a build runs)
-  needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files. A re-Apply
+  needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files.
+  The rest stay exempt on purpose: the workflows, hooks, scripts and `lib/` modules (and their tests) are linted and tested by the Template's own gate
+  (actionlint, zizmor, shellcheck, pytest, `node --test`, `tsc`), so a review in the repo would only raise findings nobody there may fix; the two review skills and
+  the `.github/instructions/` files are text a person's own session reads, not a prompt for an unattended role. The exemption still judges a path, not bytes, and is
+  a process aid, not a security boundary. A new Owned file is exempt only by a decision: dotfiles' `owned-paths.test.mts` fails until a single-file pattern is
+  classified (`REVIEWED_ON_REAPPLY` or its audited exempt list) and until a file under an exempt glob is the kind that glob's entry allows. A re-Apply
   that writes one (a repo whose `coverage-threshold` isn't already `80`, or that lacks the file, gets it from its first one) is refused at `reapply.sh`'s first
   push, which leaves the Apply commit on `chore/reapply-baseline` unpushed. Review it in that worktree with `/pre-push-review`, then run `reapply.sh` again: step 1
   carries the never-pushed branch on. A finding in a Template file goes to the Template in a dotfiles PR, not to an edit in the repo.

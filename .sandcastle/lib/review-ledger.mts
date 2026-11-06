@@ -63,7 +63,15 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // list and needs a review), and they're reviewed in the Template's own PRs; a
 // repository must never change them, so a review there could only raise
 // findings nobody there may fix. A re-Apply skips the local review for them,
-// except for REVIEWED_ON_REAPPLY below.
+// except for REVIEWED_ON_REAPPLY below. The skip is a decision per file, not a
+// default: either the Template's own gate checks the file's content (the
+// workflows, hooks, scripts, .sandcastle/lib/ and their tests: actionlint,
+// zizmor, shellcheck, pytest, tsc and the rest), or it is text no one acts on
+// (the skills and instructions a person's own session reads). A file no
+// Template check can judge goes in REVIEWED_ON_REAPPLY. In dotfiles,
+// lib/owned-paths.test.mts enforces it: a single-file pattern must be
+// classified there, and a file under a glob must be the kind that glob's entry
+// allows, so a new Owned file is never exempt unseen.
 export const OWNED_PATHS = [
   ".github/workflows/*.yml",
   ".github/hooks/**",

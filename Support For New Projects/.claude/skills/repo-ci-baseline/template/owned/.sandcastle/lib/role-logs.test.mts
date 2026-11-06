@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import {
   allowlistedView,
   BuildLogs,
+  buildLogs,
   copyReviewerLogs,
   REVIEWER_LOG_INDEX,
   reviewerLogFileName,
@@ -116,6 +117,20 @@ describe("allowlistedView", () => {
       "terminated", "exit code", "exited code", "exit with", "exited with", "signal", "crash", "crashed", "unauthorized", "unauthorised", "rate limit", "overloaded"];
     const errorView = allowlistedView(words.concat(words).map((word) => `x ${word} y`).join("\n"));
     assert.equal(errorView, `${words.map((word) => `[error line: ${word}]`).sort().join("\n")}\n`);
+  });
+
+  it("has 30 host kinds once numbers are masked, and shows each once", () => {
+    const phrases = ["Setting up sandbox", "Collecting commits", "Capturing session", "Expanding shell expressions", "No commits to sync out", "Syncing 2 commits to host", "Syncing 1 commit to host"];
+    const forms = phrases.flatMap((phrase) => [phrase, `${phrase} done (1s)`, `${phrase} done (1.5s)`]);
+    const others = [
+      "--- Run started: 2026-11-03T10:00:00.123Z ---", "Iteration 1/3", "Agent started", "Agent stopped", "Agent signaled completion after 2 iteration(s).",
+      "Context window: 42k", "Reached max iterations (3).", "Run complete: agent finished after 2 iteration(s).", "Run complete: reached 3 iteration(s) without completion signal.",
+    ];
+    const lines = [...forms, ...others];
+    const masked = [...new Set(lines.map((line) => (line.startsWith("--- Run started") ? "--- Run started ---" : line.replace(/\d+/g, "#"))))];
+    assert.equal(masked.length, 30);
+    const view = allowlistedView(lines.join("\n"));
+    assert.equal(view, `${[...masked].sort().join("\n")}\n`);
   });
 
   it("asks the caller's check only about an error line that holds no run of token characters, once for each", () => {
@@ -585,6 +600,14 @@ describe("the log limit", () => {
       const lines = Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log: issue #${100 + i}`);
       assert.equal(written["logs/report/index.txt"], `${[...lines, ...(count > REPORT_LOG_LIMIT ? [more] : [])].join("\n")}\n`, `${count} logs`);
     }
+  });
+
+  it("copies by default only the logs of builds the global record knows, the record every build adds itself to", () => {
+    buildLogs.add(4242, "zz/default-record-test");
+    const { fs, written } = fakeFs({ [reviewerLogFileName("zz/default-record-test")]: "Bash(1)", "x-reviewer.log": "Read(2)" });
+    assert.deepEqual(copyReviewerLogs("logs", "logs/report", fs, none, []), ["reviewer-1.log"]);
+    assert.equal(written["logs/report/reviewer-1.log"], "Bash(...)\n");
+    assert.equal(written["logs/report/index.txt"], `reviewer-1.log: issue #4242\n${others}\n`);
   });
 
   it("copies no log that no build of this run wrote, however many a sandbox adds, and says so once in the index", () => {

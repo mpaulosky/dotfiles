@@ -492,7 +492,7 @@ describe("references/sandcastle.md's bullet on the reviewers' logs, for a run th
     );
   });
 
-  // copyReviewerLogs returns at `names.length === 0`, before the mkdir and the index, so what decides the folder is a `*-reviewer.log`, not whether
+  // copyReviewerLogs returns at `all.length === 0` (no listed `*-reviewer.log`), before the mkdir and the index, so what decides the folder is a `*-reviewer.log`, not whether
   // .sandcastle/logs exists (off Actions the summary and hand-backs create it with no role run).
   it("names the condition the code uses: no *-reviewer.log to copy, which a run with other logs only also has", () => {
     assert.ok(noRole.some((sentence) => sentence.includes("`*-reviewer.log`")), `the sentence doesn't name \`*-reviewer.log\`: ${noRole.join(" | ")}`);

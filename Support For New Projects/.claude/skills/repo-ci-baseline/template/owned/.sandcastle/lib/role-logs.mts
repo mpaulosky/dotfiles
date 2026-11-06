@@ -156,12 +156,12 @@ function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
 export const REVIEWER_LOG_INDEX = "index.txt";
 
 // The name Sandcastle gives a reviewer's log for a build's branch: the branch with the characters a file name can't hold replaced by a
-// hyphen, then `-reviewer.log` (its buildLogFilename). A name that no longer matches this only leaves a log unlabelled in the index.
+// hyphen, then `-reviewer.log` (its buildLogFilename). A name that no longer matches this means the log is not copied at all (copyReviewerLogs copies only the logs a BuildLogs record knows).
 export function reviewerLogFileName(branch: string): string {
   return `${branch.replace(/[/\\:*?"<>|]/g, "-")}-reviewer.log`;
 }
 
-// The builds this run started, by the name of the reviewer log each one writes, so the index can say which build a numbered view is.
+// The builds this run started, by the name of the reviewer log each one writes, so the index can say which build a numbered view is and the report copies only the logs of these builds.
 // Only the host's own issue numbers and branches go in, and only an issue number comes out: a log's name in the folder is whatever an
 // agent that can write there chose, so it is looked up here and never printed. That lookup is by name, so an agent could name a file
 // for another build's log and take its label: the label is a hint for a person reading a diagnostic, not proof of where a log came from.
@@ -177,7 +177,7 @@ export class BuildLogs {
   }
 }
 
-// The one record every build adds itself to.
+// The one record every build adds itself to. It says which build wrote each log, and so which logs the report copies.
 export const buildLogs = new BuildLogs();
 
 // Copy the allowlisted view of each `*-reviewer.log` in `logsDir` to `outDir`, as `reviewer-<n>.log` (reviewerLogsDir of the run report's folder, which is outside the checkout on Actions), with a short

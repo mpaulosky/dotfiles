@@ -293,11 +293,15 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   A run with no `*-reviewer.log` to copy has no `reviewer-logs/` folder and no `index.txt` in its report, and the copy step says nothing:
   a run that starts no role (the planner alone) leaves none, with no `.sandcastle/logs` at all on Actions,
   and so does one whose logs are only a non-reviewer role's and the pre-push review's. An absent folder is normal.
+  A logs folder that holds `*-reviewer.log` files but none that a build of this run wrote (logs left by earlier local runs, or files a sandbox added) gets an `index.txt`
+  with its one fixed line and no views.
   On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
   the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
   This keeps free text and numbers out of the artifact. What a steered reviewer can still choose is which fixed lines appear: about 30 host kinds, 15 tools and 26 error words,
-  one bit each, so about 72 bits in the log of each build, and a few bits more in `index.txt` (whether a copy failed, whether a view was held). A token of 40 characters
-  is about 240 bits, so it would take the logs of several builds, each steered; that residue is accepted.
+  one bit each, so about 72 bits in the log of each build the run recorded, and a few bits more in `index.txt` (whether a copy failed, whether a view was held). A sandbox that can write
+  the logs folder (a head-mode sandbox mounts the checkout) can set the content of the log of any recorded build, not only its own, so the bound is about 72 bits for each
+  recorded build, at most 20 of them. A token of 40 characters is about 240 bits, so it fits in the logs of a handful of builds; that residue, a steered sandbox with write access
+  to the logs folder, is accepted and is the most the artifact can carry.
   A line holding a long run of token characters, or one the secret check holds, is left out whole and leaves no message.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit

@@ -94,13 +94,14 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
   // config.test.mts skips its check of the ui prompts in a repo that hasn't opted in, which is every config this repo runs it under, so
   // here it runs where it can fail: a scratch repo with the Seed's ui entry uncommented. The role is Owned and opt-in
   // (mpaulosky/dotfiles#392), so the Template's own prompts pass it as shipped, and it fails when roles/ui.md, the planner's {{UI_ROLE}} or
-  // backend.md's {{UI_DEVELOPER}} is missing.
-  it("passes config.test.mts's ui prompt check for an opted-in repo as the Template ships, and fails it without roles/ui.md, plan-prompt.md's {{UI_ROLE}} or backend.md's {{UI_DEVELOPER}}", { timeout: 120_000 }, () => {
+  // backend.md's {{UI_DEVELOPER}} is missing, or the repo's roles/shared-rules.md has no UI developer section for them to point at.
+  it("passes config.test.mts's ui prompt check for an opted-in repo as the Template ships, and fails it without roles/ui.md, plan-prompt.md's {{UI_ROLE}}, backend.md's {{UI_DEVELOPER}} or a UI developer section in roles/shared-rules.md", { timeout: 120_000 }, () => {
     const config = join(sandcastle, "lib/repo-config.mts");
     const plan = join(sandcastle, "plan-prompt.md");
     const uiPrompt = join(sandcastle, "roles/ui.md");
     const backend = join(sandcastle, "roles/backend.md");
-    const originals = new Map([config, plan, uiPrompt, backend].map((file) => [file, readFileSync(file, "utf8")]));
+    const rules = join(sandcastle, "roles/shared-rules.md");
+    const originals = new Map([config, plan, uiPrompt, backend, rules].map((file) => [file, readFileSync(file, "utf8")]));
     const optedIn = originals.get(config)!.replace(/^\/\/ {3}(ui: .*)$/m, "  $1");
     assert.notEqual(optedIn, originals.get(config), "the Seed's repo-config.mts has no commented ui entry");
     const run = () =>
@@ -136,6 +137,15 @@ describe("the Template's .sandcastle/ in a repo that isn't dotfiles", () => {
       assert.notEqual(withoutPlaceholder.status, 0, "the check should fail when backend.md drops {{UI_DEVELOPER}}");
       assert.match(withoutPlaceholder.stdout, failedCheck);
       assert.match(withoutPlaceholder.stdout, /UI_DEVELOPER/);
+
+      // The section is a heading: a line that only mentions the UI developer (as dotfiles' own rules do, to say there is none) is not one.
+      writeFileSync(backend, originals.get(backend)!);
+      assert.match(originals.get(rules)!, /^## UI developer$/m, "the Template's shared-rules.md has no UI developer section");
+      writeFileSync(rules, originals.get(rules)!.replace(/^## UI developer$/m, "There is no UI developer here."));
+      const withoutSection = run();
+      assert.notEqual(withoutSection.status, 0, "the check should fail when roles/shared-rules.md has no UI developer section");
+      assert.match(withoutSection.stdout, failedCheck);
+      assert.match(withoutSection.stdout, /roles\/shared-rules\.md has no "## UI developer" section/);
     } finally {
       for (const [file, text] of originals) writeFileSync(file, text);
     }

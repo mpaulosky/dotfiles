@@ -66,6 +66,13 @@ describe("ROLE_AGENTS", () => {
     assert.ok(existsSync(file("roles/ui.md")), "roles/ui.md is missing");
     assert.match(readFileSync(file("roles/backend.md"), "utf8"), /\{\{UI_DEVELOPER\}\}/);
     assert.match(readFileSync(file("plan-prompt.md"), "utf8"), /\{\{UI_ROLE\}\}/, "plan-prompt.md is missing {{UI_ROLE}}, where the host puts the planner's ui bullet");
+    // The planner's bullet, backend.md and roles/ui.md all send the reader to the shared rules for which files are the UI developer's. The file is
+    // the repo's own Seed, so only the section's heading is checked, not its wording.
+    assert.match(
+      readFileSync(file("roles/shared-rules.md"), "utf8"),
+      /^#{1,6}\s+UI developer\s*$/m,
+      'roles/shared-rules.md has no "## UI developer" section: add one that names the UI files, or the developer and the ui role each leave them to the other',
+    );
   });
 });
 

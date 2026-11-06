@@ -64,17 +64,23 @@ export const REAPPLY_BRANCH = "chore/reapply-baseline";
 // repository must never change them, so a review there could only raise
 // findings nobody there may fix. A re-Apply skips the local review for them,
 // except for REVIEWED_ON_REAPPLY below. The skip is a decision per file, not a
-// default: either the Template's own gate checks the file's content (the
-// workflows, hooks, scripts, .sandcastle/lib/ and their tests: actionlint,
-// zizmor, shellcheck, pytest, tsc and the rest; the hardening-review skill's
-// .py scripts are covered by pytest), or it is text no Sandcastle role reads
+// default: either the Template's own gate checks the file's content and the
+// file neither runs nor feeds the review and the gate (the workflows, the
+// other hooks, scripts and .sandcastle/lib/ modules, and their tests:
+// actionlint, zizmor, shellcheck, pytest, tsc and the rest; the
+// hardening-review skill's .py scripts are covered by pytest), or it is text no Sandcastle role reads
 // (the hardening-review skill's text, which a person's own session reads), or
 // it steers only Copilot's review and commit messages and widens no tool and
 // runs no code (the .github/instructions/ files, so a wrong instruction can only
 // shape advice). A file no Template check can judge, or that a Sandcastle role
 // reads as its prompt (the
 // pre-push-review skill's SKILL.md, lenses.md and review-bar.md, which the host
-// puts into its reviewers' prompts), goes in REVIEWED_ON_REAPPLY. In dotfiles,
+// puts into its reviewers' prompts, and docs/PROCESS.md, which review-prompt.md
+// tells a role to follow), or that is part of the chain that runs the review and
+// the gate (scripts/gate.sh, scripts/review.sh, .github/hooks/pre-push, and the
+// lib/ modules review-ledger, host-safety, sandbox-env, host-review,
+// host-review-prompts and build: the Template's checks run in the Template, so
+// in a repo they judge whatever bytes the re-Apply wrote), goes in REVIEWED_ON_REAPPLY. In dotfiles,
 // lib/owned-paths.test.mts enforces it: a single-file pattern must be
 // classified there, and a file under a glob must be listed in that glob's
 // entry, so a new Owned file is never exempt unseen.
@@ -146,11 +152,12 @@ export const OWNED_PATHS = [
 // (lib/build.mts#readSkillFiles), the prompts that instruct the pipeline's roles, the
 // local gate's .sandcastle/check.sh, whose watched paths and early exit decide
 // whether the Sandcastle check runs at all, and global.json, which sets the SDK and the msbuild-sdks a build runs.
+// the gate chain (see OWNED_PATHS above), and docs/PROCESS.md.
 // The other files that moved from Seed to Owned (LICENSE, CODE_OF_CONDUCT.md,
-// the READMEs under .security/ and .claude/skills/) are text. A re-Apply
-// overwrites them like any Owned file, but checkReview does not let a
-// re-Apply branch skip the review for them: the exemption below judges a path,
-// never the bytes, and a repository has no copy of the Template to compare with.
+// the READMEs under .security/ and .claude/skills/) are audited text that no
+// role reads, and a wrong one only misleads a person, so they stay exempt.
+// The exemption judges a path, never the bytes, since a repository has no copy
+// of the Template to compare with.
 export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
   ".github/ci/coverage-threshold",
   ".claude/rules/sandcastle-hand-off.md",
@@ -174,6 +181,16 @@ export const REVIEWED_ON_REAPPLY: ReadonlySet<string> = new Set([
   ".sandcastle/roles/ui.md",
   ".sandcastle/check.sh",
   "global.json",
+  "docs/PROCESS.md",
+  "scripts/gate.sh",
+  "scripts/review.sh",
+  ".github/hooks/pre-push",
+  ".sandcastle/lib/review-ledger.mts",
+  ".sandcastle/lib/host-safety.mts",
+  ".sandcastle/lib/sandbox-env.mts",
+  ".sandcastle/lib/host-review.mts",
+  ".sandcastle/lib/host-review-prompts.mts",
+  ".sandcastle/lib/build.mts",
 ]);
 
 // The files under an Owned pattern that the Template doesn't supply: its Seed

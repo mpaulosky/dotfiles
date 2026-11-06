@@ -61,6 +61,8 @@ describe("OWNED_PATHS against the Template's template/owned/", () => {
 // tooling the Template's own review covers. A file that carries behaviour goes in REVIEWED_ON_REAPPLY
 // instead. checkReview exempts a path by its name, so a new single-file pattern in OWNED_PATHS is
 // exempt by default: it fails the test below until someone puts it in one list or the other.
+// Why they stay exempt: text or tooling config no Sandcastle role reads as a prompt (a wrong one only misleads a person or fails a lint the Template
+// runs), or Sandcastle's entrypoint and status command, which neither run the review nor the gate and which the Sandcastle tests cover.
 const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".github/pull_request_template.md",
   ".sandcastle/main.mts",
@@ -70,14 +72,11 @@ const EXEMPT_ON_REAPPLY_AUDITED: readonly string[] = [
   ".sandcastle/.env.example",
   ".sandcastle/.gitignore",
   ".sandcastle/.markdownlint-cli2.jsonc",
-  "scripts/gate.sh",
   "scripts/check-branch-name.sh",
   "scripts/check-git-hooks.sh",
   "scripts/check-pr-title.sh",
   "scripts/sync-copilot-review.sh",
-  "scripts/review.sh",
   "scripts/watch-pr.sh",
-  "docs/PROCESS.md",
   "docs/CODE_OF_CONDUCT.md",
   ".claude/skills/README.md",
   ".security/README.md",
@@ -125,6 +124,19 @@ describe("the role prompts (mpaulosky/dotfiles#392)", () => {
   });
 });
 
+// The files that run the review and the gate: the Template's checks run in the Template, so in a repo they judge whatever bytes a re-Apply wrote.
+const GATE_CHAIN = [
+  "scripts/gate.sh",
+  "scripts/review.sh",
+  ".github/hooks/pre-push",
+  ".sandcastle/lib/review-ledger.mts",
+  ".sandcastle/lib/host-safety.mts",
+  ".sandcastle/lib/sandbox-env.mts",
+  ".sandcastle/lib/host-review.mts",
+  ".sandcastle/lib/host-review-prompts.mts",
+  ".sandcastle/lib/build.mts",
+];
+
 describe("the files a re-Apply may write without a review", () => {
   const singleFiles: string[] = OWNED_PATHS.filter((pattern) => !pattern.includes("*"));
 
@@ -144,6 +156,8 @@ describe("the files a re-Apply may write without a review", () => {
       ".sandcastle/intake-prompt.md",
       ".sandcastle/check.sh",
       "global.json",
+      "docs/PROCESS.md",
+      ...GATE_CHAIN,
       ...ROLE_PROMPTS,
     ]) {
       assert.equal(REVIEWED_ON_REAPPLY.has(file), true, file);
@@ -159,9 +173,12 @@ describe("the files a re-Apply may write without a review", () => {
     assert.equal(underOwnedPattern(".claude/skills/pre-push-review/new-file.md"), false, "a new file in the skill's folder is not Owned, so it is never exempt unseen");
   });
 
-  it("lists no file in both, and no file that isn't a single-file Owned pattern", () => {
+  it("lists no file in both, no audited file that isn't a single-file Owned pattern, and no reviewed file outside every Owned pattern", () => {
     for (const file of REVIEWED_ON_REAPPLY) assert.equal(EXEMPT_ON_REAPPLY_AUDITED.includes(file), false, `${file} is in both lists`);
-    const stale = [...REVIEWED_ON_REAPPLY, ...EXEMPT_ON_REAPPLY_AUDITED].filter((file) => !singleFiles.includes(file));
+    const stale = [
+      ...EXEMPT_ON_REAPPLY_AUDITED.filter((file) => !singleFiles.includes(file)),
+      ...[...REVIEWED_ON_REAPPLY].filter((file) => !underOwnedPattern(file)),
+    ];
 
     assert.deepEqual(stale, []);
   });
@@ -186,7 +203,6 @@ const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, GlobEntry>> = {
   ".github/hooks/**": { files: [
       ".github/hooks/post-checkout",
       ".github/hooks/pre-commit",
-      ".github/hooks/pre-push",
       ".github/hooks/tests/pre-commit.test.sh",
       ".github/hooks/tests/pre-push.test.sh",
     ], why: "the bash hook tests and shellcheck run over them; they run on the host, so a new hook is a decision" },
@@ -232,15 +248,15 @@ const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, GlobEntry>> = {
     ], why: "text a person's session reads when they run the hardening review, and its two .py scripts, which pytest covers; no Sandcastle role reads them" },
   ".sandcastle/lib/*.mts": {
     files: [
-      "agents.mts", "agents.test.mts", "branches.mts", "branches.test.mts", "build.mts", "build.test.mts", "building.mts", "building.test.mts", "checkpoint.mts",
+      "agents.mts", "agents.test.mts", "branches.mts", "branches.test.mts", "build.test.mts", "building.mts", "building.test.mts", "checkpoint.mts",
       "checkpoint.test.mts", "config.mts", "config.test.mts", "critique.mts", "critique.test.mts", "diagnostics.mts", "diagnostics.test.mts", "errors.mts",
       "follow-up-pass.mts", "follow-up-pass.test.mts", "follow-up-run.mts", "follow-up-run.test.mts", "follow-up.mts", "follow-up.test.mts", "gate.mts",
       "gate.test.mts", "git-sandbox-fake.mts", "github.mts", "github.test.mts", "handback.mts", "handback.test.mts", "host-limit.mts", "host-limit.test.mts",
-      "host-review-prompts.mts", "host-review-prompts.test.mts", "host-review.mts", "host-review.test.mts", "host-safety.mts", "host-safety.test.mts",
+      "host-review-prompts.test.mts", "host-review.test.mts", "host-safety.test.mts",
       "intake.mts", "intake.test.mts", "limits.mts", "limits.test.mts", "overlap.mts", "overlap.test.mts", "plain-text.mts", "plain-text.test.mts", "plan.mts",
       "plan.test.mts", "pre-push-review-skill.test.mts", "prompts.mts", "prompts.test.mts", "queue.mts", "queue.test.mts", "report.mts", "report.test.mts",
-      "review-ledger.mts", "review-ledger.test.mts", "role-logs.mts", "role-logs.test.mts", "role-timeline.mts", "role-timeline.test.mts", "round.mts",
-      "round.test.mts", "sandbox-env.mts", "sandbox-env.test.mts", "scan.mts", "scan.test.mts", "security-record.mts", "security-record.test.mts", "shell.mts",
+      "review-ledger.test.mts", "role-logs.mts", "role-logs.test.mts", "role-timeline.mts", "role-timeline.test.mts", "round.mts",
+      "round.test.mts", "sandbox-env.test.mts", "scan.mts", "scan.test.mts", "security-record.mts", "security-record.test.mts", "shell.mts",
       "shell.test.mts", "skills.mts", "skills.test.mts", "status.mts", "status.test.mts", "step-limit.mts", "step-limit.test.mts", "ui-role-fixture.mts",
       "ui-role-fixture.test.mts", "umbrella.mts", "umbrella.test.mts", "work.mts", "work.test.mts",
     ].map((name) => `.sandcastle/lib/${name}`),
@@ -318,6 +334,11 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
     assert.deepEqual(filesDrift(present, { ...withoutFile, [glob]: { ...entry, files: [...entry.files!, file] } }, reviewedWithFile), [glob]);
   });
 
+  it("matches paths the way checkReview does: patternFor agrees with underOwnedPattern", () => {
+    const paths = [...filesUnder(owned), ".sandcastle/lib/new.mts", ".sandcastle/lib/sub/new.mts", ".github/hooks/tests/x.sh", "scripts/tests/a/b.sh", "src/Program.cs", ".github/workflows/a/b.yml"];
+    for (const file of paths) assert.equal(OWNED_PATHS.some((pattern) => patternFor(pattern)(file)), underOwnedPattern(file), file);
+  });
+
   it("finds files under every exempt glob, so a check isn't vacuous", () => {
     const files = filesUnder(owned);
     for (const glob of Object.keys(EXEMPT_GLOBS_AUDITED)) assert.ok(files.some(patternFor(glob)), glob);
@@ -334,6 +355,7 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
       ".claude/skills/hardening-review/**": ".claude/skills/hardening-review/scripts/new.py",
       "scripts/tests/**": "scripts/tests/new.test.sh",
     };
+    assert.deepEqual(Object.keys(fabricated).sort(), Object.keys(EXEMPT_GLOBS_AUDITED).sort(), "a new exempt glob needs a fabricated file here");
     for (const [glob, file] of Object.entries(fabricated)) {
       assert.ok(patternFor(glob)(file), `${file} is under ${glob}`);
       assert.deepEqual(unclassifiedUnderGlobs([...present, file], EXEMPT_GLOBS_AUDITED, REVIEWED_ON_REAPPLY), [`${file} (under ${glob})`]);

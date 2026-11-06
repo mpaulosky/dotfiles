@@ -49,12 +49,16 @@ where `.sandcastle/lib/review-ledger.mts` is missing.
   and `plan-prompt.md`, `review-prompt.md` and the role prompts under `.sandcastle/roles/`
   (`architect.md`, `backend.md`, `tester.md`, `follow-up.md`, `gate-fixer.md`, `scribe.md` and `ui.md`), which instruct the
   pipeline's roles, `.sandcastle/check.sh`, whose watched paths decide whether the Sandcastle check runs,
-  and `global.json`, which sets the SDK and msbuild-sdks a build runs)
+  `global.json`, which sets the SDK and msbuild-sdks a build runs, `docs/PROCESS.md`, which `review-prompt.md` tells a role to follow, and the chain that runs the review and the gate:
+  `scripts/gate.sh`, `scripts/review.sh`, `.github/hooks/pre-push` and the `lib/` modules `review-ledger.mts`, `host-safety.mts`, `sandbox-env.mts`, `host-review.mts`,
+  `host-review-prompts.mts` and `build.mts`, since the Template's checks run in the Template and in a repo judge whatever bytes the re-Apply wrote)
   needs a review like any other change: the exemption judges a path, and a repo has no Template copy to compare. The gate's message names those files.
-  The rest stay exempt on purpose: the workflows, hooks, scripts and `lib/` modules (and their tests) are linted and tested by the Template's own gate
+  The rest stay exempt on purpose: the workflows, the other hooks, scripts and `lib/` modules (and their tests) are linted and tested by the Template's own gate
   (actionlint, zizmor, shellcheck, pytest, `node --test`, `tsc`), so a review in the repo would only raise findings nobody there may fix; the `hardening-review` skill is
   text a person's own session reads, plus two `.py` scripts that pytest covers, and no Sandcastle role reads them; the `.github/instructions/` files steer Copilot's review
   and commit messages, widen no tool and run no code, so a wrong instruction can only shape advice.
+  The remaining single files (`.sandcastle/main.mts` and `status.mts`, configs such as `.editorconfig` and `tsconfig.json`, `LICENSE` and the READMEs) are text or
+  tooling config no role reads as a prompt; `owned-paths.test.mts` lists them.
   The exemption still judges a path, not bytes, and is a process aid, not a security boundary. A new Owned file is exempt only by a decision: dotfiles'
   `owned-paths.test.mts` fails until a single-file pattern is classified (`REVIEWED_ON_REAPPLY` or its audited exempt list), and until a file under a glob is listed in
   that glob's entry (the workflows, hooks, scripts, instructions, `hardening-review/`, `lib/` and `scripts/tests/`). A re-Apply

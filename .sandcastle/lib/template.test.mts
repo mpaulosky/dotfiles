@@ -597,4 +597,12 @@ describe("the docs of the Owned role prompts (mpaulosky/dotfiles#392)", () => {
     assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?plan-prompt\.md/);
     assert.match(text, /REVIEWED_ON_REAPPLY[\s\S]*?review-prompt\.md/);
   });
+
+  it("says in references/pre-push-review.md that the workflows, hooks, scripts and lib/ stay exempt on a re-Apply, and that a new Owned file is exempt only by a decision (mpaulosky/dotfiles#394)", () => {
+    const text = readFileSync(join(skill, "references/pre-push-review.md"), "utf8");
+
+    assert.match(text, /exempt[\s\S]*?workflows[\s\S]*?hooks[\s\S]*?scripts[\s\S]*?lib\//);
+    assert.match(text, /owned-paths\.test\.mts/);
+    assert.match(text, /decision/);
+  });
 });

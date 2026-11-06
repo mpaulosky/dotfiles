@@ -14,6 +14,12 @@ import { NOT_OWNED_BASELINE_PATHS, TEMPLATE_OWNED_DIR } from "./repo-config.mts"
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const owned = join(root, TEMPLATE_OWNED_DIR);
 
+// A glob from OWNED_PATHS as a test on a path, the way lib/review-ledger.mts reads it: `**` crosses folders, `*` doesn't.
+const patternFor = (pattern: string) => {
+  const regexp = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\u0000/g, ".*")}$`);
+  return (file: string) => regexp.test(file);
+};
+
 const filesUnder = (folder: string): string[] =>
   (readdirSync(folder, { recursive: true }) as string[])
     .filter((entry) => statSync(join(folder, entry)).isFile())
@@ -30,10 +36,6 @@ describe("OWNED_PATHS against the Template's template/owned/", () => {
 
   it("has no pattern that matches none of them", () => {
     const files = filesUnder(owned);
-    const patternFor = (pattern: string) => {
-      const regexp = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, "\u0000").replace(/\*/g, "[^/]*").replace(/\u0000/g, ".*")}$`);
-      return (file: string) => regexp.test(file);
-    };
     const idle = OWNED_PATHS.filter((pattern) => !files.some(patternFor(pattern)));
 
     assert.deepEqual(idle, []);
@@ -150,5 +152,64 @@ describe("the files a re-Apply may write without a review", () => {
     const stale = [...REVIEWED_ON_REAPPLY, ...EXEMPT_ON_REAPPLY_AUDITED].filter((file) => !singleFiles.includes(file));
 
     assert.deepEqual(stale, []);
+  });
+});
+
+// mpaulosky/dotfiles#394: a glob in OWNED_PATHS exempts every file under it from the re-Apply review by path, so a new file under one is exempt
+// unseen. Each glob is a decision here: the kind of file it may hold, and why skipping the review is safe for that kind. A file of another
+// kind fails the test below until someone classifies it: name it as a single-file pattern in OWNED_PATHS (and put it in REVIEWED_ON_REAPPLY or
+// EXEMPT_ON_REAPPLY_AUDITED), or widen `allowed` on purpose.
+const EXEMPT_GLOBS_AUDITED: Readonly<Record<string, { allowed: RegExp; why: string }>> = {
+  ".github/workflows/*.yml": { allowed: /\.yml$/, why: "the Template's gate runs actionlint, zizmor, yamllint and the workflow tests over them" },
+  ".github/hooks/**": { allowed: /(?:^|\/)(?:[^./]+|[^/]*\.sh)$/, why: "the bash hook tests and shellcheck run over them" },
+  ".github/scripts/**": { allowed: /\.(?:py|mjs)$/, why: "pytest and node --test run over them" },
+  ".github/instructions/*.md": { allowed: /\.md$/, why: "text for Copilot, linted by markdownlint" },
+  ".claude/skills/pre-push-review/**": { allowed: /\.md$/, why: "read by a person's session when they run the review, not by an unattended role" },
+  ".claude/skills/hardening-review/**": { allowed: /\.(?:md|py)$/, why: "read by a person's session like the other skill; the scripts are tested" },
+  ".sandcastle/lib/*.mts": { allowed: /\.mts$/, why: "tsc and the Sandcastle tests run over them" },
+  "scripts/tests/**": { allowed: /\.test\.sh$/, why: "test.sh runs them" },
+};
+
+describe("the globs that exempt a whole folder from the re-Apply review (mpaulosky/dotfiles#394)", () => {
+  const globs = OWNED_PATHS.filter((pattern) => pattern.includes("*"));
+
+  it("has every glob in OWNED_PATHS classified in EXEMPT_GLOBS_AUDITED", () => {
+    const unclassified = globs.filter((glob) => !Object.hasOwn(EXEMPT_GLOBS_AUDITED, glob));
+
+    assert.deepEqual(unclassified, [], "a new glob exempts every file under it from the re-Apply review: add it to EXEMPT_GLOBS_AUDITED with the kind of file it may hold and why skipping the review is safe, or name the files as single-file patterns");
+  });
+
+  it("has no EXEMPT_GLOBS_AUDITED entry that isn't a glob in OWNED_PATHS", () => {
+    const stale = Object.keys(EXEMPT_GLOBS_AUDITED).filter((glob) => !(globs as string[]).includes(glob));
+
+    assert.deepEqual(stale, []);
+  });
+
+  it("gives each entry a reason", () => {
+    for (const [glob, { why }] of Object.entries(EXEMPT_GLOBS_AUDITED)) assert.ok(why.trim().length > 0, glob);
+  });
+
+  it("holds under each exempt glob only the kind of file its entry allows", () => {
+    const files = filesUnder(owned);
+    const unexpected: string[] = [];
+    for (const [glob, { allowed }] of Object.entries(EXEMPT_GLOBS_AUDITED)) {
+      const under = patternFor(glob);
+      for (const file of files) {
+        if (under(file) && !allowed.test(file)) unexpected.push(`${file} (under ${glob})`);
+      }
+    }
+
+    assert.deepEqual(unexpected, [], "a file of a new kind under an exempt glob would skip the re-Apply review unseen: name it as a single-file pattern in OWNED_PATHS and classify it (REVIEWED_ON_REAPPLY or EXEMPT_ON_REAPPLY_AUDITED), or widen the entry's `allowed` on purpose");
+  });
+
+  it("finds files under every exempt glob, so a `allowed` check isn't vacuous", () => {
+    const files = filesUnder(owned);
+    for (const glob of Object.keys(EXEMPT_GLOBS_AUDITED)) assert.ok(files.some(patternFor(glob)), glob);
+  });
+
+  it("keeps every file REVIEWED_ON_REAPPLY names out of the exempt globs' reach", () => {
+    for (const file of REVIEWED_ON_REAPPLY) {
+      for (const glob of Object.keys(EXEMPT_GLOBS_AUDITED)) assert.equal(patternFor(glob)(file), false, `${file} is reviewed on a re-Apply but also falls under the exempt glob ${glob}`);
+    }
   });
 });

@@ -290,8 +290,8 @@ export type ReviewerMode = "sequential" | "subagents";
 export class ReviewerModeError extends Error {}
 
 // SANDCASTLE_REVIEWERS from `env` as the reviewer mode.
-// Unset or empty is "sequential", and stays so until a person accepts the relay risk and the items pre-push-review.md still lists as open are settled (the allowlist under
-// `--setting-sources user`, an out-of-allowlist request, the lead holding no Bash). Any other value throws ReviewerModeError: a typo must not silently pick a path. main.mts reads it at start-up, so a typo
+// Unset or empty is "sequential", and stays so until a person accepts the relay risk and the items pre-push-review.md still lists as open are settled (a plugin agent from an
+// installed marketplace plugin, the ledger denials, a refused out-of-allowlist request in a sandbox run). Any other value throws ReviewerModeError: a typo must not silently pick a path. main.mts reads it at start-up, so a typo
 // exits before any sandbox starts and not after a build, at its review.
 export function reviewerMode(env: Record<string, string | undefined> = process.env): ReviewerMode {
   const value = env.SANDCASTLE_REVIEWERS;

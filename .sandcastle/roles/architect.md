@@ -48,7 +48,7 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to design the change.
 
-Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` for the code standards, and
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` where the repo has one for the code standards, and
 whatever else the rules below point to. A design that breaks a recorded decision must say so and why.
 
 # EXECUTION

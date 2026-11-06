@@ -82,6 +82,15 @@ describe("developer roles across stacks", () => {
     assert.match(rules, /FAIL:/);
   });
 
+  // dotfiles has no .sandcastle/CODING_STANDARDS.md (only the Template's Seed has one), so its shared rules say where its standards are instead.
+  it("says in the shared rules where dotfiles' code standards are, since it has no .sandcastle/CODING_STANDARDS.md", () => {
+    assert.equal(existsSync(sandcastleFile("CODING_STANDARDS.md")), false, "dotfiles gained a CODING_STANDARDS.md: point the roles at it and drop this test");
+    const rules = read("roles/shared-rules.md").replace(/\s+/g, " ");
+
+    assert.match(rules, /no `\.sandcastle\/CODING_STANDARDS\.md`/);
+    assert.match(rules, /code standards[^.]*`\.claude\/rules\/sandcastle\.md`/);
+  });
+
   it("names every node:test, pytest and test-script way to skip or todo a test as weakening it", () => {
     for (const role of ["backend", "gate-fixer"]) {
       const prompt = read(`roles/${role}.md`);
@@ -393,7 +402,27 @@ describe("the Template's Owned prompts", () => {
 
       assert.doesNotMatch(text, /\{\{(OWNER|REPO|SOLUTION)\}\}/, "Apply would fill it, and an Owned file is overwritten");
       assert.doesNotMatch(text, /Blazor|\.razor|bUnit|dotnet|\.slnx/);
+      // dotfiles' own text belongs in its shared-rules.md: test.sh greps the Seed's .sandcastle for these words, but not the Owned prompts.
+      // `mpaulosky/dotfiles#N` is how an Owned file names a dotfiles issue, so it is let through.
+      assert.doesNotMatch(
+        text.replace(/mpaulosky\/dotfiles#\d+/g, ""),
+        /dotfiles|repo-ci-baseline|Support For New Projects/,
+        "dotfiles' own text goes in dotfiles' roles/shared-rules.md",
+      );
       assert.doesNotMatch(text, /(?<![\w/])#\d+\b/, "a bare #N reads as the repo's own issue");
+    });
+  }
+
+  for (const prompt of prompts) {
+    it(`${prompt} tells no role a yamllint config path or a CODING_STANDARDS.md the repo may lack`, () => {
+      const text = owned(prompt);
+
+      assert.doesNotMatch(text, /yamllint -c \S*\.yamllint\.yml/, "the shared rules give the yamllint command: a repo's config path differs (dotfiles has no root .yamllint.yml)");
+      // Whitespace is collapsed first: a prompt wraps its lines anywhere.
+      const flat = text.replace(/\s+/g, " ");
+      const named = flat.match(/\.sandcastle\/CODING_STANDARDS\.md/g)?.length ?? 0;
+      const hedged = flat.match(/\.sandcastle\/CODING_STANDARDS\.md` where the repo has one/g)?.length ?? 0;
+      assert.equal(hedged, named, "a repo may have no .sandcastle/CODING_STANDARDS.md: say `.sandcastle/CODING_STANDARDS.md` where the repo has one");
     });
   }
 

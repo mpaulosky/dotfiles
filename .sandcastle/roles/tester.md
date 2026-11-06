@@ -39,7 +39,7 @@ Here are the last 10 commits:
 
 Explore the repo and fill your context window with relevant information that will allow you to complete the task.
 
-Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` for the code standards, and
+Read `CLAUDE.md` for how the repo is built and laid out, `docs/adr/` (where present) for recorded decisions, `.sandcastle/CODING_STANDARDS.md` where the repo has one for the code standards, and
 whatever else the rules below point to.
 
 Pay extra attention to existing test files near the code the issue touches, and follow their layout and naming.
@@ -57,7 +57,7 @@ Pay extra attention to existing test files near the code the issue touches, and 
 4. Build what you changed with the build commands in the rules below and fix every error.
 5. Run the tests you wrote with the stack's test command, and confirm each one fails for the reason you expect: an assertion failing or the stub throwing, not a syntax error, a
    missing fixture or a broken setup.
-6. Lint the files you changed: `markdownlint-cli2 <file>` for Markdown, `shellcheck <file>` for shell, and `yamllint -c .yamllint.yml <file>` for YAML.
+6. Lint the files you changed: `markdownlint-cli2 <file>` for Markdown, `shellcheck <file>` for shell, and `yamllint` for YAML (the command is in the rules below).
 7. Commit the tests and stubs red, with `test(<scope>): <Summary>`. Say in the body which test covers which criterion.
 
 When a criterion can't be tested automatically (for example, it's about docs or a manual step), don't write a test that doesn't check it. Name the criterion and why it can't be

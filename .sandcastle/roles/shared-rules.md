@@ -21,6 +21,7 @@ the Template. `<skill>` below is `Support For New Projects/.claude/skills/repo-c
 
 - Read `<skill>/CONTEXT.md` for the domain language, `<skill>/docs/adr/` for recorded decisions, the `<skill>/references/` page for the part of the Template the issue touches,
   and `.claude/rules/sandcastle.md` for Sandcastle's TypeScript in `.sandcastle/`. A change that breaks a recorded decision must say so and why.
+- dotfiles has no `.sandcastle/CODING_STANDARDS.md`: its code standards are in `.claude/rules/sandcastle.md` and the ADRs.
 - Write a PR description as `<skill>/references/pr-process.md` says; dotfiles has no `docs/PROCESS.md`.
 - Name where each change goes in the design as: Owned or Seed for a Template file, which dotfiles copy follows it, and the module headers for `.sandcastle/`.
 - There is no UI developer here: dotfiles has no UI files and no `ui` entry in `ROLE_AGENTS`.

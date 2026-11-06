@@ -40,7 +40,7 @@ An empty list, `[]`, means the issue needs none of them. If you leave `roles` ou
 # FILES
 
 For each issue you pick, also list in `files` the repo-relative path of every file the issue will add, change, delete or rename (both names for a rename). Find them by reading
-the repo (`CLAUDE.md` says how it is laid out, `.sandcastle/CODING_STANDARDS.md` holds its code standards, and the rules below say what else to read), not by guessing from the
+the repo (`CLAUDE.md` says how it is laid out, `.sandcastle/CODING_STANDARDS.md` where the repo has one holds its code standards, and the rules below say what else to read), not by guessing from the
 title. Give paths only: no globs and no directories, unless the issue adds files under a new directory, in which case name the directory, which covers every path under it.
 
 This list matters. Sandcastle won't build two picks that name the same file in one round, or a pick that names a file an open pull request changes, and it builds a pick with no

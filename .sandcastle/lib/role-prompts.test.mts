@@ -395,8 +395,12 @@ describe("the Template's Seed prompts", () => {
 
   it("lists the Owned prompts in the Seed coding standards, so a repo doesn't edit one a re-Apply overwrites", () => {
     const standards = readFileSync(new URL("CODING_STANDARDS.md", seedSandcastle), "utf8").replace(/\s+/g, " ");
+    const owned = new URL("../../owned/.sandcastle/", seedSandcastle);
+    const prompts = readdirSync(owned).filter((name) => name.endsWith("-prompt.md"));
 
-    assert.match(standards, /`plan-prompt\.md`, `review-prompt\.md` and every role prompt under `roles\/` but `shared-rules\.md` and `skills\.md` are owned/);
+    assert.ok(prompts.length >= 4, `expected the Owned top-level prompts, found ${JSON.stringify(prompts)}`);
+    for (const name of prompts) assert.ok(standards.includes(`\`${name}\``), `the Seed coding standards don't name the Owned ${name}`);
+    assert.match(standards, /every role prompt under `roles\/` but `shared-rules\.md` and `skills\.md` are owned/);
   });
 });
 

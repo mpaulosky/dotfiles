@@ -5,12 +5,12 @@
 // So a log is never copied whole. Only an allowlisted view is: the host's own status lines (the last few, the start line without its
 // timestamp, since a forged line's digits are data), the name
 // of each of the last few tool calls without its arguments (only a known tool's name, an MCP tool as `mcp__(...)`), and the few lines that name an
-// error or an abort. Those error lines are the one
-// place free text gets through, so they are cut short, limited in number, and left out when they hold a
-// long run of token characters (where an encoded secret would sit). Whatever the view still holds is
-// checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
-// view that fails the check is replaced by a note. This narrows what can leave the sandbox in a log; it
-// can't promise that a steered reviewer cannot get a few words of its own onto an error line.
+// error or an abort. Those are kept as a fixed message that names the error word the line matched
+// (`[error line: timed out]`), never as the line itself, so no word of a log's free text reaches the view: a secret an error line printed
+// with invisible fillers between its characters, or as spaced-out hex, can't get through a check that only knows the shapes it looks for.
+// The number of them is limited, and a line holding a long run of token characters is left out. Whatever the view holds is
+// still checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
+// view that fails the check is replaced by a note.
 // The output folder is emptied before it is written, in case an earlier run left files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot. A log is read only as far as its last REPORT_INPUT_LIMIT
 // bytes, since the view keeps the last lines of each kind and the sandbox chooses how long a log is; a view of a longer log starts with the left-out marker.
@@ -27,11 +27,7 @@ export function reviewerLogsDir(reportDir: string): string {
   return join(reportDir, REVIEWER_LOGS_NAME);
 }
 
-// The most of one kept error line, so a long line can't carry much.
-export const REPORT_LINE_LIMIT = 200;
-
-// The most error lines of free text one view keeps (the last ones, where an abort shows), so a steered
-// reviewer can't carry much out by printing the word `error` on many lines.
+// The most error lines one view keeps (the last ones, where an abort shows), as fixed messages.
 export const REPORT_ERROR_LINES = 20;
 
 // The most host status lines one view keeps (the last ones): their numbers are the only data a line shaped like one can carry,
@@ -100,7 +96,7 @@ function toolName(line: string): string | undefined {
   return /^mcp__[A-Za-z0-9-]{1,30}__[A-Za-z0-9_-]{1,40}$/.test(name) ? "mcp__(...)" : undefined;
 }
 
-// A line that says a run went wrong, which the view keeps as free text (the last REPORT_ERROR_LINES of them) whoever wrote it.
+// A line that says a run went wrong, which the view keeps as a fixed message (the last REPORT_ERROR_LINES of them) whoever wrote it.
 const errorLine = /\b(?:abort(?:ed)?|error|errors|fail(?:ed|ure|ures)?|exception|fatal|panic|timed out|timeout|killed|terminated|exit(?:ed)? (?:code|with)|signal|crash(?:ed)?|unauthori[sz]ed|rate limit|overloaded)\b/i;
 
 // A run of token characters long enough to be an encoded secret.
@@ -109,16 +105,16 @@ const tokenRun = new RegExp(`[A-Za-z0-9+/_=-]{${REPORT_TOKEN_RUN},}`);
 // A token shape without the word boundaries, for the view with its spacing taken out, where a boundary can't hold.
 const looseTokenShape = /sk-ant-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/;
 
-// `text` cut to `limit` characters, never ending on half of a surrogate pair.
-function cut(text: string, limit: number): string {
-  const head = text.slice(0, limit);
-  return /[\uD800-\uDBFF]$/.test(head) && text.length > limit ? head.slice(0, -1) : head;
+// The fixed message that stands for an error line: the error word it matched, which only ASCII letters and single spaces can spell
+// (a case-insensitive match without the `u` flag never lets a non-ASCII character stand for an ASCII one), never the line. Only a line `errorLine` matched comes here.
+function errorMessage(line: string): string {
+  return `[error line: ${errorLine.exec(line)![0].toLowerCase()}]`;
 }
 
 // The allowlisted view of a reviewer log, of its last REPORT_INPUT_LIMIT characters from a whole line (behind LEFT_OUT when it was longer):
 // its last REPORT_HOST_LINES host status lines and the names of its last REPORT_TOOL_LINES known tool calls, with a
 // `[... lines left out]` marker (no count) for each run of lines it left out. Of the lines that name an error, the last REPORT_ERROR_LINES
-// are kept as free text cut to REPORT_LINE_LIMIT, unless one holds a run of REPORT_TOKEN_RUN token characters or
+// are kept as fixed `[error line: <word>]` messages, unless one holds a run of REPORT_TOKEN_RUN token characters or
 // `held` says it looks like a secret. Model prose, tool arguments and tool output are what it leaves out.
 export function allowlistedView(text: string, held: (line: string) => boolean = () => false): string {
   // One character more than the limit, so a cut that lands on a line break leaves that line whole: the line break is the part dropped. A log
@@ -143,7 +139,7 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
   for (const index of hosts.slice(-REPORT_HOST_LINES)) keep[index] = lines[index]!.startsWith("--- Run started") ? "--- Run started ---" : lines[index];
   for (const index of tools.slice(-REPORT_TOOL_LINES)) keep[index] = toolName(lines[index]!);
   for (const index of errors.slice(-REPORT_ERROR_LINES)) {
-    keep[index] = cut(lines[index]!, REPORT_LINE_LIMIT);
+    keep[index] = errorMessage(lines[index]!);
   }
   const out: string[] = [];
   let left = 0;

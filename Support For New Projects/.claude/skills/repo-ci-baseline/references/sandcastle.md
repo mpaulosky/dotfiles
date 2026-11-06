@@ -281,7 +281,8 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
 - **The run report artifact holds an allowlisted view of the reviewers' logs, never a whole log.** `lib/role-logs.mts` writes, for each `*-reviewer.log`
   (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), the last host status lines (the start line without its timestamp),
   the last known tool calls' names without arguments (an MCP tool only as `mcp__(...)`) and the last few error lines
-  (cut short, and left out when they hold a long run of token characters), and a note in place of a view that looks like a secret. The host reads only the last
+  as a fixed message that names the error word they matched (`[error line: timed out]`), never the line's own text
+  (a line holding a long run of token characters is left out), and a note in place of a view that looks like a secret. The host reads only the last
   4 MiB of a log (`REPORT_INPUT_LIMIT`), from a whole line, so the memory it spends on one log is bounded by that and not by the log's size; the view of a
   longer log starts with the left-out marker and lacks what came before.
   Beside them it writes `index.txt`: for each number, the issue whose build wrote the log, or that the run started no build for it, and whether the view could

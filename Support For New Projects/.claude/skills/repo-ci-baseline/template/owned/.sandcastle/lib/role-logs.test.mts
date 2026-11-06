@@ -16,7 +16,6 @@ import {
   REPORT_HOST_LINES,
   REPORT_INPUT_LIMIT,
   REPORT_TOOL_LINES,
-  REPORT_LINE_LIMIT,
   REPORT_TOKEN_RUN,
   liveRoleLogFs,
   readLogTail,
@@ -183,75 +182,73 @@ describe("allowlistedView", () => {
     for (const line of forms) assert.equal(allowlistedView(line), `${line}\n`, line);
   });
 
-  it("keeps a line for each word that names an error, and only as a word", () => {
+  it("keeps a fixed message for each word that names an error, and only as a word", () => {
     const words = [
       "abort", "aborted", "error", "errors", "fail", "failed", "failure", "failures", "exception", "fatal", "panic", "timed out", "timeout",
-      "killed", "terminated", "exit code 1", "exited with 2", "signal", "crash", "crashed", "unauthorized", "unauthorised", "rate limit", "overloaded",
+      "killed", "terminated", "exit code", "exited with", "signal", "crash", "crashed", "unauthorized", "unauthorised", "rate limit", "overloaded",
     ];
-    for (const word of words) assert.equal(allowlistedView(`it ${word} now`), `it ${word} now\n`, word);
+    for (const word of words) assert.equal(allowlistedView(`it ${word} 1 now`), `[error line: ${word}]\n`, word);
     for (const near of ["panicky", "fatally", "terrorism", "errorless", "exit codes", "unauthorizeds"]) {
       assert.equal(allowlistedView(`it ${near} now`), "[... lines left out]\n", near);
     }
-    assert.equal(allowlistedView("An ERROR happened"), "An ERROR happened\n");
+    assert.equal(allowlistedView("An ERROR happened"), "[error line: error]\n");
   });
 
-  it("keeps an error line, not the prose around it, and the host lines and tool names near it", () => {
+  it("keeps an error line as a message, not the prose around it, and the host lines and tool names near it", () => {
     const view = allowlistedView("prose a\nBash(secret)\nthe claude-code process aborted\nAgent stopped\nprose b\n");
-    assert.equal(view, "[... lines left out]\nBash(...)\nthe claude-code process aborted\nAgent stopped\n[... lines left out]\n");
+    assert.equal(view, "[... lines left out]\nBash(...)\n[error line: aborted]\nAgent stopped\n[... lines left out]\n");
   });
 
-  it("cuts an error line at the line limit exactly, and never in the middle of a surrogate pair", () => {
-    assert.equal(REPORT_LINE_LIMIT, 200);
-    const line = (length: number) => `error ${" x".repeat(length)}`.slice(0, length);
-    assert.equal(allowlistedView(line(REPORT_LINE_LIMIT - 1)), `${line(REPORT_LINE_LIMIT - 1)}\n`);
-    assert.equal(allowlistedView(line(REPORT_LINE_LIMIT)), `${line(REPORT_LINE_LIMIT)}\n`);
-    assert.equal(allowlistedView(line(REPORT_LINE_LIMIT + 1)), `${line(REPORT_LINE_LIMIT)}\n`);
-  });
-
-  it("drops a surrogate pair the cut would split, and keeps one that ends at the limit", () => {
+  it("publishes no text of an error line, however long, with any characters", () => {
     const emoji = String.fromCodePoint(0x1f600);
-    const withPairAt = (index: number, tail: string) => `${`error${" x".repeat(100)}`.slice(0, index)}${emoji}${tail}`;
-    const split = withPairAt(REPORT_LINE_LIMIT - 1, "yyyy");
-    assert.equal(split.indexOf(emoji), REPORT_LINE_LIMIT - 1);
-    assert.equal(allowlistedView(split), `${split.slice(0, REPORT_LINE_LIMIT - 1)}\n`);
-    const whole = withPairAt(REPORT_LINE_LIMIT - 2, "yyyy");
-    assert.equal(whole.indexOf(emoji), REPORT_LINE_LIMIT - 2);
-    assert.equal(allowlistedView(whole), `${whole.slice(0, REPORT_LINE_LIMIT)}\n`);
-    const loneHigh = `${`error${" x".repeat(100)}`.slice(0, REPORT_LINE_LIMIT - 1)}\uD83D`;
-    assert.equal(allowlistedView(loneHigh), `${loneHigh}\n`);
-    const exact = withPairAt(REPORT_LINE_LIMIT - 2, "");
-    assert.equal(exact.length, REPORT_LINE_LIMIT);
-    assert.equal(allowlistedView(exact), `${exact}\n`);
+    for (const line of [`error ${" x".repeat(500)}`, `error ${emoji}${emoji} tail`, "error \uD83D lone", "fatal: the key is hunter2 ok"]) {
+      assert.match(allowlistedView(line), /^\[error line: [a-z ]+\]\n$/, line);
+    }
+  });
+
+  it("does not publish a secret an error line spaced out with invisible fillers or as hex chunks", () => {
+    const secret = "s3cr3tValueForTesting12345678";
+    const fillers = ["\u3164", "\u2800", "\u115F", "\u200B"];
+    const hex = Buffer.from(secret).toString("hex").match(/.{1,4}/g)!.join(" ");
+    const lines = [...fillers.map((filler) => `error ${secret.split("").join(filler)}`), `error ${hex}`, `error ${secret}`];
+    for (const line of lines) {
+      const view = allowlistedView(line, (candidate) => candidate.includes(secret));
+      assert.ok(!view.includes(secret) && !view.includes(hex) && !view.includes("\u3164") && !view.includes("\u2800"), line);
+    }
+    for (const line of lines.slice(0, -1)) {
+      const view = copy(line, [secret]);
+      assert.ok(!view.includes(secret) && !view.includes(hex) && !/[\u3164\u2800]/.test(view), line);
+    }
   });
 
   it("leaves out an error line with a run of token characters, at n-1, n and n+1", () => {
     assert.equal(REPORT_TOKEN_RUN, 24);
     const withRun = (length: number) => `error ${"A".repeat(length)}`;
-    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN - 1)), `${withRun(REPORT_TOKEN_RUN - 1)}\n`);
+    assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN - 1)), "[error line: error]\n");
     assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN)), "[... lines left out]\n");
     assert.equal(allowlistedView(withRun(REPORT_TOKEN_RUN + 1)), "[... lines left out]\n");
     for (const ch of ["+", "/", "_", "=", "-", "9", "z"]) assert.equal(allowlistedView(`error ${ch.repeat(REPORT_TOKEN_RUN)}`), "[... lines left out]\n", ch);
   });
 
-  it("leaves out an error line the caller's check holds, before the line is cut", () => {
+  it("leaves out an error line the caller's check holds", () => {
     const secret = `error ${"x ".repeat(98)}hunter2`;
-    assert.ok(secret.length > REPORT_LINE_LIMIT);
     assert.equal(allowlistedView(secret, (line) => line.includes("hunter2")), "[... lines left out]\n");
-    assert.notEqual(allowlistedView(secret), "[... lines left out]\n");
+    assert.equal(allowlistedView(secret), "[error line: error]\n");
   });
 
   it("keeps only the last REPORT_ERROR_LINES error lines", () => {
     assert.equal(REPORT_ERROR_LINES, 20);
-    const lines = (count: number) => Array.from({ length: count }, (_, i) => `error number ${i}`);
-    assert.equal(allowlistedView(lines(REPORT_ERROR_LINES).join("\n")), `${lines(REPORT_ERROR_LINES).join("\n")}\n`);
+    const message = (i: number) => (i === 0 ? "[error line: fatal]" : "[error line: panic]");
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => `${i === 0 ? "fatal" : "panic"} number ${i}`);
+    assert.equal(allowlistedView(lines(REPORT_ERROR_LINES).join("\n")), `${Array.from({ length: REPORT_ERROR_LINES }, (_, i) => message(i)).join("\n")}\n`);
     const over = allowlistedView(lines(REPORT_ERROR_LINES + 1).join("\n"));
-    assert.ok(!over.includes("error number 0\n"));
-    assert.ok(over.startsWith("[... lines left out]\nerror number 1\n"));
-    assert.ok(over.endsWith(`error number ${REPORT_ERROR_LINES}\n`));
+    assert.ok(!over.includes("fatal"));
+    assert.ok(over.startsWith("[... lines left out]\n[error line: panic]\n"));
+    assert.equal(over.split("\n").filter((line) => line.startsWith("[error line")).length, REPORT_ERROR_LINES);
   });
 
   it("keeps a first-line-only error log, and reads CRLF lines", () => {
-    assert.equal(allowlistedView("aborted"), "aborted\n");
+    assert.equal(allowlistedView("aborted"), "[error line: aborted]\n");
     assert.equal(allowlistedView("Agent started\r\nAgent stopped\r\n"), "Agent started\nAgent stopped\n");
   });
 });
@@ -260,7 +257,7 @@ describe("copyReviewerLogs", () => {
   it("copies only the reviewer logs, as their view, into the report folder", () => {
     const { fs, written } = fakeFs({ "a-reviewer.log": "aborted", "a-backend.log": "other" });
     assert.deepEqual(copyTo("logs", fs, none, []), ["reviewer-1.log"]);
-    assert.deepEqual(written, { "logs/report/reviewer-1.log": "aborted\n", "logs/report/index.txt": "reviewer-1.log: a build this run did not start\n" });
+    assert.deepEqual(written, { "logs/report/reviewer-1.log": "[error line: aborted]\n", "logs/report/index.txt": "reviewer-1.log: a build this run did not start\n" });
   });
 
   it("never copies the review lead's log (issue 399), which lists the subagents' answers", () => {
@@ -326,7 +323,7 @@ describe("copyReviewerLogs", () => {
       writeFileSync(join(dir, "ok-reviewer.log"), "the reviewer aborted\n");
       assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["reviewer-1.log"]);
       assert.ok(!existsSync(join(dir, "report", "planted-reviewer.log")), "a planted log survived");
-      assert.equal(readFileSync(join(dir, "report", "reviewer-1.log"), "utf8"), "the reviewer aborted\n");
+      assert.equal(readFileSync(join(dir, "report", "reviewer-1.log"), "utf8"), "[error line: aborted]\n");
       // With no reviewer log at all, a planted file is still removed.
       rmSync(join(dir, "ok-reviewer.log"));
       writeFileSync(join(dir, "report", "planted-reviewer.log"), "planted\n");
@@ -342,7 +339,7 @@ describe("copyReviewerLogs", () => {
         copyTo(dir, undefined, () => undefined, []);
         assert.ok(existsSync(join(elsewhere, "keep-reviewer.log")), "the link's target was emptied");
         assert.ok(!existsSync(join(elsewhere, "reviewer-1.log")), "a view was written through the link");
-        assert.equal(readFileSync(join(dir, "report", "reviewer-1.log"), "utf8"), "aborted again\n");
+        assert.equal(readFileSync(join(dir, "report", "reviewer-1.log"), "utf8"), "[error line: aborted]\n");
       } finally {
         rmSync(elsewhere, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
@@ -391,18 +388,15 @@ describe("copyReviewerLogs", () => {
     }
   });
 
-  it("replaces a view whose token is wrapped across error lines, each short enough to pass alone, with a note", () => {
-    const note = "Left out: the view held something shaped like a secret.\n";
+  it("publishes no text of a token wrapped across error lines, each short enough to pass alone", () => {
     // The second line ends its run of token characters with `!`, so the word after it can't lengthen the body.
     const wrapped = (head: string, filler: string, count: number) => copy(`error ${head}${filler.repeat(10)}\n${filler.repeat(count)}! failed`);
-    assert.equal(wrapped("ghp_", "D", 10), note);
-    assert.notEqual(wrapped("ghp_", "D", 9), note);
-    assert.equal(wrapped("sk-ant-", "E", 6), note);
-    assert.notEqual(wrapped("sk-ant-", "E", 5), note);
-    for (const prefix of ["gho_", "ghu_", "ghs_", "ghr_"]) assert.equal(wrapped(prefix, "F", 10), note, prefix);
-    assert.equal(wrapped("github_pat_", "G", 10), note);
-    assert.notEqual(wrapped("github_pat_", "G", 9), note);
-    assert.equal(copy("error hunter2\nhunter2 failed", ["hunter2hunter2"]), note);
+    for (const [head, filler] of [["ghp_", "D"], ["sk-ant-", "E"], ["gho_", "F"], ["ghu_", "F"], ["ghs_", "F"], ["ghr_", "F"], ["github_pat_", "G"]] as const) {
+      const out = wrapped(head, filler, 10);
+      assert.equal(out, "[error line: error]\n[error line: failed]\n", head);
+      assert.ok(!out.includes(filler) && !out.includes(head), head);
+    }
+    assert.equal(copy("error hunter2\nhunter2 failed", ["hunter2hunter2"]), "[error line: error]\n[error line: failed]\n");
   });
 
   it("publishes no secret that sits in prose, a tool's arguments or a tool-call lookalike, in any form, and none plain on an error line", () => {
@@ -423,7 +417,7 @@ describe("copyReviewerLogs", () => {
 
   it("still copies an ordinary log whose words are spaced and coloured", () => {
     const out = copy("Agent started\n\u001b[32mgreen\u001b[0m prose about ghp and sk-ant\nthe run failed: exit code 1\n");
-    assert.ok(out.includes("the run failed: exit code 1"));
+    assert.ok(out.includes("[error line: failed]") && !out.includes("exit code 1"));
     assert.ok(!out.startsWith("Left out"));
   });
 
@@ -493,7 +487,7 @@ describe("copyReviewerLogs", () => {
       process.chdir(dir);
       assert.deepEqual(copyTo("logs", undefined, () => undefined).sort(), ["reviewer-1.log", "reviewer-2.log"]);
       assert.equal(readFileSync(join(dir, "logs", "report", "reviewer-1.log"), "utf8"), "[... lines left out]\n");
-      assert.equal(readFileSync(join(dir, "logs", "report", "reviewer-2.log"), "utf8"), "error plain\n");
+      assert.equal(readFileSync(join(dir, "logs", "report", "reviewer-2.log"), "utf8"), "[error line: error]\n");
     } finally {
       process.chdir(before);
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -510,7 +504,7 @@ describe("copyReviewerLogs", () => {
       mkdirSync(join(dir, "report"), { recursive: true });
       assert.deepEqual(copyTo(dir, undefined, () => undefined, []), ["reviewer-2.log"]);
       assert.deepEqual(readdirSync(join(dir, "report")).sort(), ["index.txt", "reviewer-2.log"], "a symlinked log was copied");
-      assert.equal(readFileSync(join(dir, "report", "reviewer-2.log"), "utf8"), "the reviewer aborted\n");
+      assert.equal(readFileSync(join(dir, "report", "reviewer-2.log"), "utf8"), "[error line: aborted]\n");
       assert.ok(!existsSync(join(dir, "report", "ok-backend.log")));
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -615,8 +609,8 @@ describe("reviewer log index", () => {
 
 // A reviewer log is written by the sandbox, so its size is the sandbox's choice: the host reads at most the end of it, which is all the view keeps.
 describe("the input limit", () => {
-  const early = "Error: early failure\n";
-  const late = "Error: late failure\n";
+  const early = "Fatal: early failure\n";
+  const late = "Panic: late failure\n";
   const LEFT_OUT = "[... lines left out]";
   // A log of exactly `length` characters: the early error line, one long line of filler, the late error line.
   const logOf = (length: number) => `${early}${"a".repeat(length - early.length - late.length - 1)}\n${late}`;
@@ -633,8 +627,8 @@ describe("the input limit", () => {
     assert.equal(REPORT_INPUT_LIMIT, 4 * 1024 * 1024);
     for (const [length, cut] of [[REPORT_INPUT_LIMIT - 1, false], [REPORT_INPUT_LIMIT, false], [REPORT_INPUT_LIMIT + 1, true]] as const) {
       const view = allowlistedView(logOf(length));
-      assert.equal(view.includes("Error: early failure"), !cut, `length ${length}`);
-      assert.ok(view.includes("Error: late failure"), `length ${length}`);
+      assert.equal(view.includes("[error line: fatal]"), !cut, `length ${length}`);
+      assert.ok(view.includes("[error line: panic]"), `length ${length}`);
       assert.equal(view.startsWith(`${LEFT_OUT}\n`), cut, `length ${length}`);
     }
   });
@@ -645,8 +639,8 @@ describe("the input limit", () => {
       for (const [bytes, cut] of [[REPORT_INPUT_LIMIT - 1, false], [REPORT_INPUT_LIMIT, false], [REPORT_INPUT_LIMIT + 1, true]] as const) {
         writeFileSync(file, logOf(bytes));
         const text = liveRoleLogFs.read(file);
-        assert.equal(text.includes("Error: early failure"), !cut, `${bytes} bytes`);
-        assert.ok(text.includes("Error: late failure"), `${bytes} bytes`);
+        assert.equal(text.includes("Fatal: early failure"), !cut, `${bytes} bytes`);
+        assert.ok(text.includes("Panic: late failure"), `${bytes} bytes`);
         assert.equal(text.startsWith(`${LEFT_OUT}\n`), cut, `${bytes} bytes`);
         assert.ok(Buffer.byteLength(text) <= REPORT_INPUT_LIMIT + LEFT_OUT.length + 1, `${bytes} bytes`);
       }
@@ -663,7 +657,7 @@ describe("the input limit", () => {
     inTemp((root) => {
       const file = join(root, "a-reviewer.log");
       writeFileSync(file, logOf(REPORT_INPUT_LIMIT + 1));
-      assert.equal(allowlistedView(liveRoleLogFs.read(file)), `${LEFT_OUT}\n${late}`);
+      assert.equal(allowlistedView(liveRoleLogFs.read(file)), `${LEFT_OUT}\n[error line: panic]\n`);
     });
   });
 
@@ -671,20 +665,20 @@ describe("the input limit", () => {
     // The window (the last REPORT_INPUT_LIMIT + 1 characters) starts on a line break: the early line after it is whole, so it stays.
     const aligned = `x\n${early}${"a".repeat(REPORT_INPUT_LIMIT - early.length - late.length - 1)}\n${late}`;
     assert.equal(aligned.length, REPORT_INPUT_LIMIT + 2);
-    assert.ok(allowlistedView(aligned).includes("Error: early failure"));
+    assert.ok(allowlistedView(aligned).includes("[error line: fatal]"));
     // One character further in, the early line starts exactly where the window begins: nothing shows it began a line, so it goes,
     // which keeps the result within the limit.
     const exact = `x\n${early}${"a".repeat(REPORT_INPUT_LIMIT - early.length - late.length)}\n${late}`;
     assert.equal(exact.length, REPORT_INPUT_LIMIT + 3);
-    assert.ok(!allowlistedView(exact).includes("Error: early failure"));
+    assert.ok(!allowlistedView(exact).includes("[error line: fatal]"));
     inTemp((root) => {
       const file = join(root, "a-reviewer.log");
       writeFileSync(file, aligned);
-      assert.ok(liveRoleLogFs.read(file).includes("Error: early failure"));
+      assert.ok(liveRoleLogFs.read(file).includes("Fatal: early failure"));
       // The marker read adds in front makes the text a little longer than the limit; the view's own cut still keeps the whole tail.
-      assert.ok(allowlistedView(liveRoleLogFs.read(file)).includes("Error: early failure"));
+      assert.ok(allowlistedView(liveRoleLogFs.read(file)).includes("[error line: fatal]"));
       writeFileSync(file, exact);
-      assert.ok(!liveRoleLogFs.read(file).includes("Error: early failure"));
+      assert.ok(!liveRoleLogFs.read(file).includes("Fatal: early failure"));
     });
   });
 
@@ -703,12 +697,12 @@ describe("the input limit", () => {
     const crlf = `${early.replace("\n", "\r\n")}${"a".repeat(REPORT_INPUT_LIMIT)}\r\n${late.replace("\n", "\r\n")}`;
     assert.ok(crlf.length > REPORT_INPUT_LIMIT);
     const view = allowlistedView(crlf);
-    assert.ok(view.includes("Error: late failure\n") && !view.includes("\r"));
-    assert.ok(!view.includes("Error: early failure"));
+    assert.ok(view.includes("[error line: panic]\n") && !view.includes("\r"));
+    assert.ok(!view.includes("[error line: fatal]"));
     inTemp((root) => {
       const file = join(root, "a-reviewer.log");
       writeFileSync(file, crlf);
-      assert.ok(allowlistedView(liveRoleLogFs.read(file)).includes("Error: late failure\n"));
+      assert.ok(allowlistedView(liveRoleLogFs.read(file)).includes("[error line: panic]\n"));
     });
   });
 
@@ -724,7 +718,7 @@ describe("the input limit", () => {
         const text = liveRoleLogFs.read(file);
         assert.ok(!text.includes("\uFFFD"), `offset ${offset}: a half character became U+FFFD`);
         assert.ok(!text.includes("é"), `offset ${offset}: the cut line was kept`);
-        assert.ok(text.includes("Error: late failure"));
+        assert.ok(text.includes("Panic: late failure"));
       }
     });
   });

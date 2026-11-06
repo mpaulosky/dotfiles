@@ -441,7 +441,7 @@ describe("the pre-push review lead role", () => {
 
 describe("LEAD_DENIED_TOOLS", () => {
   // A deny list can't name a tool a later release adds, so this is a second layer behind the definition's tools, not a guarantee.
-  it("also denies the known shell, write, network and spawn tools, so a lead that starts without its definition's tools is still held back from them", () => {
+  it("also denies the known tools that run commands, write files, reach the network, load skills or enter worktrees, so a lead that starts without its definition's tools is still held back from them", () => {
     const known = ["Bash", "BashOutput", "KillShell", "Monitor", "PowerShell", "Edit", "MultiEdit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Skill", "EnterWorktree"];
     for (const tool of known) assert.ok(LEAD_DENIED_TOOLS.includes(tool), `${tool} isn't denied`);
     // `Task` is the old name of the Agent tool and may alias it in deny rules, and a bare `Agent` is the tool itself: denying either could leave the lead unable to start a lens.

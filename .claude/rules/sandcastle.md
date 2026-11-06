@@ -85,8 +85,8 @@ guardrails keep agent-written code from running on the host. A change keeps ever
   `leadTools` builds the list and it is written as the `tools` of the lead's own `--agents` definition, `pre-push-review-lead`, started with `--agent` and no `--tools`
   (in `--tools` the allowlist would leave the lead no `Agent` tool). `restrictedClaudeCode` enforces it: it refuses a bare `Agent`, any tool beyond Read, Grep and Glob,
   and a lead whose `denied` lacks any of `LEAD_DENIED_TOOLS` or that lacks `strictMcp` or `userSettingsOnly`.
-  The name `pre-push-review-lead` is reserved, and `LEAD_DENIED_TOOLS` denies every known built-in subagent type and the known shell, write, network and spawn tools
-  as further layers (a deny list can't name a later release's tool).
+  The name `pre-push-review-lead` is reserved, and `LEAD_DENIED_TOOLS` denies every known built-in subagent type and the known tools that run commands, write files, reach the network,
+  load skills or enter worktrees (not `Task` or a bare `Agent`, which may alias the lead's Agent tool) as further layers (a deny list can't name a later release's tool).
   It starts the reviewers as subagents defined on its command line, which hold Read, Grep and Glob only; the lead holds Agent, Read, Grep and Glob and nothing else:
   no shell, no network and no write tool, by its definition's tools and those denials. That the lead holds no Bash under `--agent` is still unprobed (`references/pre-push-review.md`).
 - The sandbox gets no GitHub token (`main.mts` refuses one in `.sandcastle/.env`); the host does every GitHub write.

@@ -210,15 +210,33 @@ describe("allowlistedView", () => {
     const secret = "s3cr3tValueForTesting12345678";
     const fillers = ["\u3164", "\u2800", "\u115F", "\u200B"];
     const hex = Buffer.from(secret).toString("hex").match(/.{1,4}/g)!.join(" ");
-    const lines = [...fillers.map((filler) => `error ${secret.split("").join(filler)}`), `error ${hex}`, `error ${secret}`];
-    for (const line of lines) {
-      const view = allowlistedView(line, (candidate) => candidate.includes(secret));
-      assert.ok(!view.includes(secret) && !view.includes(hex) && !view.includes("\u3164") && !view.includes("\u2800"), line);
+    const spaced = [...fillers.map((filler) => `error ${secret.split("").join(filler)}`), `error ${hex}`];
+    for (const line of spaced) {
+      assert.equal(allowlistedView(line, (candidate) => candidate.includes(secret)), "[error line: error]\n", line);
+      // copy() also holds a line whose characters, once format characters are taken out, spell the secret.
+      assert.match(copy(line, [secret]), /^(?:\[error line: error\]|\[\.\.\. lines left out\])\n$/, line);
     }
-    for (const line of lines.slice(0, -1)) {
-      const view = copy(line, [secret]);
-      assert.ok(!view.includes(secret) && !view.includes(hex) && !/[\u3164\u2800]/.test(view), line);
+    // Plain, the secret is held; its run of token characters would leave the line out anyway.
+    assert.equal(allowlistedView(`error ${secret}`, (candidate) => candidate.includes(secret)), "[... lines left out]\n");
+  });
+
+  it("keeps a message only for an ASCII error word: a look-alike character never spells one", () => {
+    // U+017F (long s) and U+212A (Kelvin sign) fold to s and k under a Unicode case-insensitive match, which errorLine must never use.
+    for (const line of ["\u017Fignal lost", "\u212Ailled", "err\u200Bor", "exit\u00A0code 1", "exit  code 1"]) {
+      assert.equal(allowlistedView(line), "[... lines left out]\n", line);
     }
+    assert.equal(allowlistedView("\u017Fignal \u212Ailled and a real ERROR"), "[error line: error]\n");
+    assert.equal(allowlistedView("exit code 1"), "[error line: exit code]\n");
+    assert.equal(allowlistedView("fatal\u0131"), "[error line: fatal]\n");
+    assert.doesNotMatch(allowlistedView("\u017Fignal \u212Ailled and a real ERROR"), /[^\x00-\x7f]/);
+  });
+
+  it("replaces a view that holds a secret value with a note, even a value that is only a fixed message or host line", () => {
+    const note = "Left out: the view held something shaped like a secret.\n";
+    assert.equal(copy("Agent stopped", ["Agent stopped"]), note);
+    assert.equal(copy("Bash(x)", ["Bash(...)"]), note);
+    assert.equal(copy("fatal", ["error line: fatal"]), note);
+    assert.equal(copy("Agent stopped", ["Agent stopped!"]), "Agent stopped\n");
   });
 
   it("leaves out an error line with a run of token characters, at n-1, n and n+1", () => {
@@ -389,7 +407,7 @@ describe("copyReviewerLogs", () => {
   });
 
   it("publishes no text of a token wrapped across error lines, each short enough to pass alone", () => {
-    // The second line ends its run of token characters with `!`, so the word after it can't lengthen the body.
+    // Each line is short enough to pass the token-run check alone; both come out as fixed messages, so no part of the token reaches the view.
     const wrapped = (head: string, filler: string, count: number) => copy(`error ${head}${filler.repeat(10)}\n${filler.repeat(count)}! failed`);
     for (const [head, filler] of [["ghp_", "D"], ["sk-ant-", "E"], ["gho_", "F"], ["ghu_", "F"], ["ghs_", "F"], ["ghr_", "F"], ["github_pat_", "G"]] as const) {
       const out = wrapped(head, filler, 10);
@@ -693,11 +711,11 @@ describe("the input limit", () => {
     });
   });
 
-  it("cuts a log with CRLF line endings at a whole line and keeps its error lines free of the carriage return", () => {
+  it("cuts a log with CRLF line endings at a whole line", () => {
     const crlf = `${early.replace("\n", "\r\n")}${"a".repeat(REPORT_INPUT_LIMIT)}\r\n${late.replace("\n", "\r\n")}`;
     assert.ok(crlf.length > REPORT_INPUT_LIMIT);
     const view = allowlistedView(crlf);
-    assert.ok(view.includes("[error line: panic]\n") && !view.includes("\r"));
+    assert.ok(view.includes("[error line: panic]\n"));
     assert.ok(!view.includes("[error line: fatal]"));
     inTemp((root) => {
       const file = join(root, "a-reviewer.log");

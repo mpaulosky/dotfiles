@@ -10,7 +10,9 @@
 // with invisible fillers between its characters, or as spaced-out hex, can't get through a check that only knows the shapes it looks for.
 // The number of them is limited, and a line holding a long run of token characters is left out. Whatever the view holds is
 // still checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
-// view that fails the check is replaced by a note.
+// view that fails the check is replaced by a note. This keeps free text out; it is not leak-free: a steered reviewer still
+// chooses the digits of a line shaped like a host status line, which kinds of line are kept and in what order, and where the
+// left-out markers fall. That is a small, accepted channel, not text.
 // The output folder is emptied before it is written, in case an earlier run left files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot. A log is read only as far as its last REPORT_INPUT_LIMIT
 // bytes, since the view keeps the last lines of each kind and the sandbox chooses how long a log is; a view of a longer log starts with the left-out marker.
@@ -97,6 +99,8 @@ function toolName(line: string): string | undefined {
 }
 
 // A line that says a run went wrong, which the view keeps as a fixed message (the last REPORT_ERROR_LINES of them) whoever wrote it.
+// It must keep no `g` or `y` flag (`test` and `exec` would then depend on lastIndex) and no `u` flag (a Unicode case-insensitive match
+// lets U+017F or U+212A stand for `s` or `k`, and the message would copy them).
 const errorLine = /\b(?:abort(?:ed)?|error|errors|fail(?:ed|ure|ures)?|exception|fatal|panic|timed out|timeout|killed|terminated|exit(?:ed)? (?:code|with)|signal|crash(?:ed)?|unauthori[sz]ed|rate limit|overloaded)\b/i;
 
 // A run of token characters long enough to be an encoded secret.
@@ -159,8 +163,9 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
   return `${out.join("\n")}\n`;
 }
 
-// Whether the view holds one of the secrets or a token shape, as written or with whitespace and control and format
-// characters taken out (and ANSI colour codes first), so a token an error line printed spaced out or wrapped is whole again for the check.
+// Whether the text holds one of the secrets or a token shape, as written or with whitespace and control and format
+// characters taken out (and ANSI colour codes first), so a token printed spaced out or wrapped is whole again for the check. It runs on
+// each log line before an error line is reduced to its fixed message (the `held` callback), and on the finished view as a second check.
 function looksLikeSecret(view: string, secrets: readonly string[]): boolean {
   const spaceless = view.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/g, "").replace(/[\s\p{Cc}\p{Cf}\p{M}]/gu, "");
   return [view, spaceless].some((form) => containsSecret(form, secrets) || looseTokenShape.test(form));

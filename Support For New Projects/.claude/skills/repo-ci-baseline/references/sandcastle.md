@@ -293,7 +293,9 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   and so does one whose logs are only a non-reviewer role's and the pre-push review's. An absent folder is normal.
   On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
   the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
-  This narrows what a steered reviewer can print into the artifact; it can't promise that a few words on an error line stay out.
+  This keeps free text out of the artifact: an error line reaches it only as the fixed message for the word it matched. A steered reviewer can still choose the digits
+  of a host-shaped line, which kinds of line are kept and in what order, and where the left-out markers fall; that small channel is accepted.
+  A line holding a long run of token characters, or one the secret check holds, is left out whole and leaves no message.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit
   or time-budget stop), or before a checkpoint's gate, the host logs the sandbox's disk, memory, processes, zombies, the limits on forking

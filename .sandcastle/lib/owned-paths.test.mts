@@ -311,10 +311,11 @@ describe("the globs that exempt a whole folder from the re-Apply review (mpaulos
     const entry = EXEMPT_GLOBS_AUDITED[glob]!;
     const present = [...filesUnder(owned), file];
     const withoutFile = { ...EXEMPT_GLOBS_AUDITED, [glob]: entry };
+    const reviewedWithFile = new Set([...REVIEWED_ON_REAPPLY, file]);
 
-    assert.deepEqual(filesDrift(present, withoutFile, new Set([file])), []);
-    assert.deepEqual(filesDrift(present, withoutFile, new Set()), [glob]);
-    assert.deepEqual(filesDrift(present, { ...withoutFile, [glob]: { ...entry, files: [...entry.files!, file] } }, new Set([file])), [glob]);
+    assert.deepEqual(filesDrift(present, withoutFile, reviewedWithFile), []);
+    assert.deepEqual(filesDrift(present, withoutFile, REVIEWED_ON_REAPPLY), [glob]);
+    assert.deepEqual(filesDrift(present, { ...withoutFile, [glob]: { ...entry, files: [...entry.files!, file] } }, reviewedWithFile), [glob]);
   });
 
   it("finds files under every exempt glob, so a check isn't vacuous", () => {

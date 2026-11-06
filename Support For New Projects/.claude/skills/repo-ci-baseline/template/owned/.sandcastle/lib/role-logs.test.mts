@@ -14,6 +14,7 @@ import {
   REVIEWER_LOGS_NAME,
   REPORT_ERROR_LINES,
   REPORT_HOST_LINES,
+  REPORT_LOG_LIMIT,
   REPORT_INPUT_LIMIT,
   REPORT_TOOL_LINES,
   REPORT_TOKEN_RUN,
@@ -71,18 +72,20 @@ const copyTo = (logsDir: string, fs?: RoleLogFs, warn?: (line: string) => void, 
   copyReviewerLogs(logsDir, join(logsDir, "report"), fs, warn, secrets);
 
 describe("allowlistedView", () => {
-  it("keeps every host status line as written, but for the start line's timestamp", () => {
-    const kept = hostLines.map((line) => (line.startsWith("--- Run started") ? "--- Run started ---" : line));
+  it("keeps every host status line with its numbers masked, and the start line without its timestamp", () => {
+    const kept = hostLines.map((line) => (line.startsWith("--- Run started") ? "--- Run started ---" : line.replace(/\d+/g, "#")));
+    assert.ok(kept.some((line) => line.includes("#")) && kept.every((line) => !/\d/.test(line)));
     assert.equal(allowlistedView(hostLines.join("\n")), `${kept.join("\n")}\n`);
   });
 
   it("keeps only the last REPORT_HOST_LINES host lines", () => {
     assert.equal(REPORT_HOST_LINES, 30);
-    const lines = (count: number) => Array.from({ length: count }, (_, i) => `Iteration ${i}/99`);
+    // Two kinds in turn, so no line repeats the one before it (a repeat is shown once).
+    const kind = (i: number) => (i % 2 === 0 ? "Agent started" : "Agent stopped");
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => kind(i));
     assert.equal(allowlistedView(lines(REPORT_HOST_LINES).join("\n")), `${lines(REPORT_HOST_LINES).join("\n")}\n`);
     const over = allowlistedView(lines(REPORT_HOST_LINES + 1).join("\n"));
-    assert.ok(over.startsWith("[... lines left out]\nIteration 1/99\n"));
-    assert.ok(over.endsWith(`Iteration ${REPORT_HOST_LINES}/99\n`));
+    assert.equal(over, `[... lines left out]\n${lines(REPORT_HOST_LINES + 1).slice(1).join("\n")}\n`);
   });
 
   it("limits every number in a host line to three digits (two after a decimal point), and needs one", () => {
@@ -96,7 +99,7 @@ describe("allowlistedView", () => {
       const line = (digits: number) => template.replace("{n}", "7".repeat(digits));
       // `held` rejects every error line, so only a host line can be kept (one worded with an error word, as one is, would be kept as an error otherwise).
       const view = (text: string) => allowlistedView(text, () => true);
-      assert.equal(view(line(limit)), `${line(limit)}\n`, line(limit));
+      assert.equal(view(line(limit)), `${line(limit).replace(/\d+/g, "#")}\n`, line(limit));
       assert.equal(view(line(limit + 1)), "[... lines left out]\n", line(limit + 1));
       assert.equal(view(line(0)), "[... lines left out]\n", line(0));
     }
@@ -179,7 +182,24 @@ describe("allowlistedView", () => {
 
   it("keeps the singular sync line, whole-second durations and every other host form", () => {
     const forms = ["Syncing 1 commit to host", "Setting up sandbox done (3s)", "Reached max iterations (10).", "Capturing session", "Expanding shell expressions", "Iteration 123/123"];
-    for (const line of forms) assert.equal(allowlistedView(line), `${line}\n`, line);
+    for (const line of forms) assert.equal(allowlistedView(line), `${line.replace(/\d+/g, "#")}\n`, line);
+  });
+
+  it("masks the numbers of a host line, so a forged line carries no digits out", () => {
+    // 40 forged lines whose digits spell a token would, unmasked, carry it out; masked they are the same line.
+    const forged = Array.from({ length: 40 }, (_, i) => `Iteration ${100 + i}/${200 + i}`);
+    assert.equal(allowlistedView(forged.join("\n")), "[... lines left out]\nIteration #/#\n");
+    assert.equal(allowlistedView("Iteration 1/3\nIteration 2/3"), allowlistedView("Iteration 9/9\nIteration 8/8"));
+    assert.equal(allowlistedView("Context window: 42k"), "Context window: #k\n");
+    assert.equal(allowlistedView("Setting up sandbox done (1.5s)"), "Setting up sandbox done (#.#s)\n");
+  });
+
+  it("shows a kept line once when it repeats the one before it, and again after a gap or another line", () => {
+    assert.equal(allowlistedView("Agent started\nAgent started\nAgent started"), "Agent started\n");
+    assert.equal(allowlistedView("Agent started\nprose\nAgent started"), "Agent started\n[... lines left out]\nAgent started\n");
+    assert.equal(allowlistedView("Agent started\nAgent stopped\nAgent started"), "Agent started\nAgent stopped\nAgent started\n");
+    assert.equal(allowlistedView("Bash(a)\nBash(b)\nRead(c)"), "Bash(...)\nRead(...)\n");
+    assert.equal(allowlistedView("error 1\nerror 2"), "[error line: error]\n");
   });
 
   it("keeps a fixed message for each word that names an error, and only as a word", () => {
@@ -256,13 +276,14 @@ describe("allowlistedView", () => {
 
   it("keeps only the last REPORT_ERROR_LINES error lines", () => {
     assert.equal(REPORT_ERROR_LINES, 20);
-    const message = (i: number) => (i === 0 ? "[error line: fatal]" : "[error line: panic]");
-    const lines = (count: number) => Array.from({ length: count }, (_, i) => `${i === 0 ? "fatal" : "panic"} number ${i}`);
-    assert.equal(allowlistedView(lines(REPORT_ERROR_LINES).join("\n")), `${Array.from({ length: REPORT_ERROR_LINES }, (_, i) => message(i)).join("\n")}\n`);
+    // Two words in turn, so no message repeats the one before it (a repeat is shown once); the first line is the only `abort`.
+    const word = (i: number) => (i === 0 ? "abort" : i % 2 === 1 ? "fatal" : "panic");
+    const lines = (count: number) => Array.from({ length: count }, (_, i) => `${word(i)} number ${i}`);
+    const messages = (count: number) => Array.from({ length: count }, (_, i) => `[error line: ${word(i)}]`);
+    assert.equal(allowlistedView(lines(REPORT_ERROR_LINES).join("\n")), `${messages(REPORT_ERROR_LINES).join("\n")}\n`);
     const over = allowlistedView(lines(REPORT_ERROR_LINES + 1).join("\n"));
-    assert.ok(!over.includes("fatal"));
-    assert.ok(over.startsWith("[... lines left out]\n[error line: panic]\n"));
-    assert.equal(over.split("\n").filter((line) => line.startsWith("[error line")).length, REPORT_ERROR_LINES);
+    assert.equal(over, `[... lines left out]\n${messages(REPORT_ERROR_LINES + 1).slice(1).join("\n")}\n`);
+    assert.ok(!over.includes("abort"));
   });
 
   it("keeps a first-line-only error log, and reads CRLF lines", () => {
@@ -531,6 +552,25 @@ describe("copyReviewerLogs", () => {
 });
 
 // The numbered views carry no name, so the host says which build each one is (mpaulosky/dotfiles#428).
+describe("the log limit", () => {
+  it("copies at most REPORT_LOG_LIMIT logs, by sorted name, and says in the index that the rest were not copied (n-1, n, n+1)", () => {
+    assert.equal(REPORT_LOG_LIMIT, 20);
+    const name = (i: number) => `log-${String(i).padStart(3, "0")}-reviewer.log`;
+    for (const [count, omitted] of [[REPORT_LOG_LIMIT - 1, false], [REPORT_LOG_LIMIT, false], [REPORT_LOG_LIMIT + 1, true], [REPORT_LOG_LIMIT + 30, true]] as const) {
+      const files = Object.fromEntries(Array.from({ length: count }, (_, i) => [name(i), "aborted"]));
+      const { fs, written } = fakeFs(files);
+      const copied = copyTo("logs", fs, none, []);
+      const limit = Math.min(count, REPORT_LOG_LIMIT);
+      assert.equal(copied.length, limit, `${count} logs`);
+      assert.deepEqual(copied, Array.from({ length: limit }, (_, i) => `reviewer-${i + 1}.log`));
+      assert.ok(!(`logs/report/reviewer-${limit + 1}.log` in written), `${count} logs`);
+      const index = written["logs/report/index.txt"]!;
+      assert.equal(index.includes(`more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`), omitted, `${count} logs`);
+      assert.equal(index.split("\n").length, limit + (omitted ? 2 : 1), `${count} logs`);
+    }
+  });
+});
+
 describe("reviewer log index", () => {
   it("names a log the way Sandcastle does: the branch with the characters a file name can't hold as hyphens", () => {
     assert.equal(reviewerLogFileName("feature/214-say-in-pr-auto-merges"), "feature-214-say-in-pr-auto-merges-reviewer.log");

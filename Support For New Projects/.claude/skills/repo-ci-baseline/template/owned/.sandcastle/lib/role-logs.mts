@@ -2,17 +2,17 @@
 // 641-byte report and no log, so nothing named why. The artifact of a public repository can be
 // downloaded by any signed-in user and GitHub masks secrets in step logs, not artifacts, and a log
 // holds what an agent printed: model prose and command text anyone who can write an issue can steer.
-// So a log is never copied whole. Only an allowlisted view is: the host's own status lines (the last few, the start line without its
-// timestamp, since a forged line's digits are data), the name
+// So a log is never copied whole. Only an allowlisted view is: the host's own status lines (the last few, every number in them
+// masked as `#` and the start line without its timestamp, since a forged line's digits are data), the name
 // of each of the last few tool calls without its arguments (only a known tool's name, an MCP tool as `mcp__(...)`), and the few lines that name an
 // error or an abort. Those are kept as a fixed message that names the error word the line matched
 // (`[error line: timed out]`), never as the line itself, so no word of a log's free text reaches the view: a secret an error line printed
 // with invisible fillers between its characters, or as spaced-out hex, can't get through a check that only knows the shapes it looks for.
 // The number of them is limited, and a line holding a long run of token characters is left out. Whatever the view holds is
 // still checked for the sandbox's secret values and for token shapes, also with its spacing taken out, and a
-// view that fails the check is replaced by a note. This keeps free text out; it is not leak-free: a steered reviewer still
-// chooses the digits of a line shaped like a host status line, which kinds of line are kept and in what order, and where the
-// left-out markers fall. That is a small, accepted channel, not text.
+// view that fails the check is replaced by a note. A kept line that repeats the one before it is shown once, and at most
+// REPORT_LOG_LIMIT logs are copied. No text and no number gets through; what a steered reviewer can still choose is which of the fixed
+// lines appear, in what order, and where the left-out markers fall: a few bits a line, in at most about a hundred lines a log.
 // The output folder is emptied before it is written, in case an earlier run left files in it.
 // A reviewer run the host gave up on may still be writing its log, so a copy is a snapshot. A log is read only as far as its last REPORT_INPUT_LIMIT
 // bytes, since the view keeps the last lines of each kind and the sandbox chooses how long a log is; a view of a longer log starts with the left-out marker.
@@ -32,12 +32,16 @@ export function reviewerLogsDir(reportDir: string): string {
 // The most error lines one view keeps (the last ones, where an abort shows), as fixed messages.
 export const REPORT_ERROR_LINES = 20;
 
-// The most host status lines one view keeps (the last ones): their numbers are the only data a line shaped like one can carry,
-// and a real run prints a few per iteration.
+// The most host status lines one view keeps (the last ones); a real run prints a few per iteration. A kept line has its numbers masked (see
+// maskedHostLine), so a forged one carries no data beyond which line it is.
 export const REPORT_HOST_LINES = 30;
 
 // The most tool-call lines one view keeps (the last ones): which tool a line names is data a forged line can choose.
 export const REPORT_TOOL_LINES = 30;
+
+// The most reviewer logs one run report copies (the first by sorted name). Their number is the sandbox's choice, and each view and each index line
+// is data a log's writer picks, so the rest are named in the index only as a count of logs not copied.
+export const REPORT_LOG_LIMIT = 20;
 
 // A run of this many token characters in an error line (base64, hex, a key) leaves the line out.
 export const REPORT_TOKEN_RUN = 24;
@@ -80,6 +84,12 @@ const hostLine = new RegExp(
     String.raw`Run complete: (?:agent finished after \d{1,3} iteration\(s\)|reached \d{1,3} iteration\(s\) without completion signal)\.`,
   ].join("|")})$`,
 );
+
+// A host status line with every number replaced by : the numbers are free digits a forged line could use to carry a secret out, and the
+// view says which kind of line ran, not how many.
+function maskedHostLine(line: string): string {
+  return line.replace(/\d+/g, "#");
+}
 
 // The tools a role is given, the only names the view keeps. An MCP tool (`mcp__<server>__<tool>`) is kept as `mcp__(...)`,
 // since the names there are free text.
@@ -140,7 +150,7 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
     }
   });
   // The start line's timestamp is free digits, so it is kept without it.
-  for (const index of hosts.slice(-REPORT_HOST_LINES)) keep[index] = lines[index]!.startsWith("--- Run started") ? "--- Run started ---" : lines[index];
+  for (const index of hosts.slice(-REPORT_HOST_LINES)) keep[index] = lines[index]!.startsWith("--- Run started") ? "--- Run started ---" : maskedHostLine(lines[index]!);
   for (const index of tools.slice(-REPORT_TOOL_LINES)) keep[index] = toolName(lines[index]!);
   for (const index of errors.slice(-REPORT_ERROR_LINES)) {
     keep[index] = errorMessage(lines[index]!);
@@ -156,7 +166,8 @@ export function allowlistedView(text: string, held: (line: string) => boolean = 
       if (lines[index]!.trim() !== "") left++;
     } else {
       flush();
-      out.push(kept);
+      // A kept line that repeats the one before it (nothing left out between) is shown once: how many times a forged line was printed is data.
+      if (out.at(-1) !== kept) out.push(kept);
     }
   });
   flush();
@@ -230,6 +241,8 @@ export function copyReviewerLogs(
       .filter((name) => name.endsWith("-reviewer.log") && !name.endsWith("-pre-push-reviewer.log"))
       .sort();
     if (names.length === 0) return copied;
+    const omitted = Math.max(0, names.length - REPORT_LOG_LIMIT);
+    names.splice(REPORT_LOG_LIMIT);
     const known = secrets ?? [...sandboxSecrets().values()];
     fs.mkdir(outDir);
     // A view is written under a name the host makes, never the source's: the source name is whatever an agent that can write the logs
@@ -254,6 +267,7 @@ export function copyReviewerLogs(
         index.push(`${outName}: ${label} (not copied)`);
       }
     });
+    if (omitted > 0) index.push(`more than ${REPORT_LOG_LIMIT} reviewer logs: the rest were not copied`);
     try {
       fs.write(join(outDir, REVIEWER_LOG_INDEX), `${index.join("\n")}\n`);
     } catch (error) {

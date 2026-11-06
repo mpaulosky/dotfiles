@@ -279,7 +279,7 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   and a Claude credential (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Without the token every step but the first is skipped, so a repo that runs Sandcastle only
   locally gets a green run with a notice on every trigger the sandcastle job's `if:` lets through, not a failure every two hours. With the token but no Claude credential the run fails.
 - **The run report artifact holds an allowlisted view of the reviewers' logs, never a whole log.** `lib/role-logs.mts` writes, for each `*-reviewer.log`
-  (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), the last host status lines (the start line without its timestamp),
+  (not the pre-push review's), as `reviewer-<n>.log` and never under the source's name (an agent chose it), the last host status lines (every number masked as `#`, the start line without its timestamp),
   the last known tool calls' names without arguments (an MCP tool only as `mcp__(...)`) and the last few error lines
   as a fixed message that names the error word they matched (`[error line: timed out]`), never the line's own text
   (a line holding a long run of token characters is left out), and a note in place of a view that looks like a secret. The host reads only the last
@@ -293,8 +293,10 @@ Apply writes it, and `.github/ci/sandcastle-skills.txt`, only into a repo that r
   and so does one whose logs are only a non-reviewer role's and the pre-push review's. An absent folder is normal.
   On Actions the whole report folder (`summary.md`, `handbacks.json`, `reviewer-logs/`) is `$RUNNER_TEMP/sandcastle-report/`, outside the checkout, because a head-mode sandbox mounts
   the main checkout and one the host gave up on may keep running; the workflow uploads it and the `Fail on hand-backs` step reads `handbacks.json` from it.
-  This keeps free text out of the artifact: an error line reaches it only as the fixed message for the word it matched. A steered reviewer can still choose the digits
-  of a host-shaped line, which kinds of line are kept and in what order, and where the left-out markers fall; that small channel is accepted.
+  This keeps free text out of the artifact: an error line reaches it only as the fixed message for the word it matched.
+  A host line's numbers are masked as `#`, a kept line that repeats the one before it is shown once,
+  and at most `REPORT_LOG_LIMIT` (20) logs are copied (`index.txt` says when more were not). A steered reviewer can still choose which of the fixed lines appear, in what
+  order, and where the left-out markers fall: a few bits a line, in at most about a hundred lines a log.
   A line holding a long run of token characters, or one the secret check holds, is left out whole and leaves no message.
   An artifact of a public repository is downloadable by any signed-in user and GitHub doesn't mask secrets in it.
   After a role fails (a developer, the reviewer, the scribe, the gate-fixer, or a follow-up pass's follow-up role or gate-fixer; not for a usage-limit
